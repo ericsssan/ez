@@ -1,0 +1,567 @@
+const std = @import("std");
+const ast = @import("ast.zig");
+const ScopeId = @import("scope.zig").ScopeId;
+
+// ── Symbol identifier ──────────────────────────────────────
+
+pub const SymbolId = enum(u32) {
+    none = std.math.maxInt(u32),
+    _,
+
+    pub fn unwrap(self: SymbolId) ?u32 {
+        return if (self == .none) null else @intFromEnum(self);
+    }
+
+    pub fn toInt(self: SymbolId) u32 {
+        return @intFromEnum(self);
+    }
+
+    pub fn fromInt(i: u32) SymbolId {
+        return @enumFromInt(i);
+    }
+};
+
+// ── Symbol flags (packed into u16) ─────────────────────────
+
+pub const SymbolFlags = packed struct(u16) {
+    is_var: bool = false,
+    is_let: bool = false,
+    is_const: bool = false,
+    is_function: bool = false,
+    is_class: bool = false,
+    is_parameter: bool = false,
+    is_catch_param: bool = false,
+    is_import: bool = false,
+    is_export: bool = false,
+    is_hoisted: bool = false,
+    is_written: bool = false,
+    is_read: bool = false,
+    is_type_of: bool = false,
+    is_implicit_global: bool = false,
+    _padding: u2 = 0,
+
+    pub const EMPTY: SymbolFlags = .{};
+
+    /// Returns true if the symbol was declared with block scoping (let, const, class).
+    pub fn isBlockScoped(self: SymbolFlags) bool {
+        return self.is_let or self.is_const or self.is_class;
+    }
+
+    /// Returns true if the symbol is hoisted (var or function declaration in sloppy mode).
+    pub fn isHoisted(self: SymbolFlags) bool {
+        return self.is_hoisted;
+    }
+
+    /// Returns true if the symbol is immutable (const or import binding).
+    pub fn isImmutable(self: SymbolFlags) bool {
+        return self.is_const or self.is_import;
+    }
+
+    /// Returns true if the symbol has any declaration flag set.
+    pub fn isDeclared(self: SymbolFlags) bool {
+        return self.is_var or self.is_let or self.is_const or
+            self.is_function or self.is_class or self.is_parameter or
+            self.is_catch_param or self.is_import;
+    }
+};
+
+// ── Binding kind ───────────────────────────────────────────
+
+/// What kind of binding created this symbol.
+///
+/// Binding semantics:
+///   var            — hoisted to function/global scope, no TDZ, can be redeclared
+///   let            — block-scoped, has TDZ, cannot be redeclared in same scope
+///   const          — like let but also immutable (no reassignment)
+///   function_decl  — hoisted to function/global scope (sloppy), block-scoped in strict
+///   class_decl     — block-scoped, has TDZ
+///   parameter      — function-scoped, can be shadowed by var
+///   catch_param    — catch-scoped, can be shadowed
+///   import_binding — module-scoped, immutable (like const)
+///   implicit_global — never declared, just referenced
+pub const BindingKind = enum {
+    @"var",
+    let,
+    @"const",
+    function_decl,
+    class_decl,
+    parameter,
+    catch_param,
+    import_binding,
+    implicit_global,
+
+    /// Returns true if the binding introduces a TDZ (temporal dead zone).
+    pub fn hasTDZ(self: BindingKind) bool {
+        return switch (self) {
+            .let, .@"const", .class_decl => true,
+            else => false,
+        };
+    }
+
+    /// Returns true if the binding is hoisted to function/global scope.
+    pub fn isHoisted(self: BindingKind) bool {
+        return switch (self) {
+            .@"var", .function_decl => true,
+            else => false,
+        };
+    }
+
+    /// Returns true if the binding can be redeclared in the same scope.
+    pub fn canRedeclare(self: BindingKind) bool {
+        return switch (self) {
+            .@"var", .function_decl => true,
+            else => false,
+        };
+    }
+
+    /// Returns true if the binding is immutable after initialization.
+    pub fn isImmutable(self: BindingKind) bool {
+        return switch (self) {
+            .@"const", .import_binding => true,
+            else => false,
+        };
+    }
+};
+
+// ── Reference range ────────────────────────────────────────
+
+/// A range into a separate reference table (indices [start..end)).
+pub const RefRange = struct {
+    start: u32 = 0,
+    end: u32 = 0,
+
+    pub fn len(self: RefRange) u32 {
+        return self.end - self.start;
+    }
+
+    pub fn isEmpty(self: RefRange) bool {
+        return self.start == self.end;
+    }
+};
+
+// ── Symbol table (struct-of-arrays) ────────────────────────
+
+/// SoA symbol table following Oxc's design.
+///
+/// Each field is a separate contiguous array indexed by SymbolId.
+/// When a lint rule iterates over all symbol names (e.g., checking naming
+/// conventions), it reads a dense array of name slices without loading
+/// flags, scopes, or other metadata into cache.
+///
+/// All ArrayLists are unmanaged (Zig 0.16 convention) — the allocator
+/// is passed explicitly to each mutating call via the `gpa` field.
+pub const SymbolTable = struct {
+    /// Symbol name — slice into the source buffer (zero-copy).
+    names: std.ArrayList([]const u8) = .{},
+    /// Packed flags describing the symbol's properties.
+    flags: std.ArrayList(SymbolFlags) = .{},
+    /// What kind of binding created this symbol.
+    binding_kinds: std.ArrayList(BindingKind) = .{},
+    /// Scope where the symbol was declared.
+    scope_ids: std.ArrayList(ScopeId) = .{},
+    /// AST node of the declaration site.
+    decl_nodes: std.ArrayList(ast.NodeIndex) = .{},
+    /// Range of references to this symbol in an external reference table.
+    references: std.ArrayList(RefRange) = .{},
+
+    gpa: std.mem.Allocator,
+
+    pub fn init(gpa: std.mem.Allocator) SymbolTable {
+        return .{ .gpa = gpa };
+    }
+
+    pub fn deinit(self: *SymbolTable) void {
+        self.names.deinit(self.gpa);
+        self.flags.deinit(self.gpa);
+        self.binding_kinds.deinit(self.gpa);
+        self.scope_ids.deinit(self.gpa);
+        self.decl_nodes.deinit(self.gpa);
+        self.references.deinit(self.gpa);
+        self.* = undefined;
+    }
+
+    /// Add a new symbol to the table. Returns its SymbolId.
+    pub fn addSymbol(
+        self: *SymbolTable,
+        name: []const u8,
+        symbol_flags: SymbolFlags,
+        binding_kind: BindingKind,
+        scope_id: ScopeId,
+        decl_node: ast.NodeIndex,
+    ) !SymbolId {
+        const id: u32 = @intCast(self.names.items.len);
+
+        // Pre-allocate all parallel arrays together so that if any
+        // allocation fails we haven't partially grown the SoA.
+        try self.names.ensureUnusedCapacity(self.gpa, 1);
+        try self.flags.ensureUnusedCapacity(self.gpa, 1);
+        try self.binding_kinds.ensureUnusedCapacity(self.gpa, 1);
+        try self.scope_ids.ensureUnusedCapacity(self.gpa, 1);
+        try self.decl_nodes.ensureUnusedCapacity(self.gpa, 1);
+        try self.references.ensureUnusedCapacity(self.gpa, 1);
+
+        // Append without capacity checks — all arrays were pre-allocated above.
+        self.names.appendAssumeCapacity(name);
+        self.flags.appendAssumeCapacity(symbol_flags);
+        self.binding_kinds.appendAssumeCapacity(binding_kind);
+        self.scope_ids.appendAssumeCapacity(scope_id);
+        self.decl_nodes.appendAssumeCapacity(decl_node);
+        self.references.appendAssumeCapacity(.{});
+
+        return SymbolId.fromInt(id);
+    }
+
+    // ── Getters ────────────────────────────────────────────
+
+    pub fn getName(self: *const SymbolTable, id: SymbolId) []const u8 {
+        return self.names.items[id.toInt()];
+    }
+
+    pub fn getFlags(self: *const SymbolTable, id: SymbolId) SymbolFlags {
+        return self.flags.items[id.toInt()];
+    }
+
+    pub fn getScope(self: *const SymbolTable, id: SymbolId) ScopeId {
+        return self.scope_ids.items[id.toInt()];
+    }
+
+    pub fn getBindingKind(self: *const SymbolTable, id: SymbolId) BindingKind {
+        return self.binding_kinds.items[id.toInt()];
+    }
+
+    pub fn getDeclNode(self: *const SymbolTable, id: SymbolId) ast.NodeIndex {
+        return self.decl_nodes.items[id.toInt()];
+    }
+
+    pub fn getRefRange(self: *const SymbolTable, id: SymbolId) RefRange {
+        return self.references.items[id.toInt()];
+    }
+
+    // ── Setters ────────────────────────────────────────────
+
+    pub fn setFlags(self: *SymbolTable, id: SymbolId, symbol_flags: SymbolFlags) void {
+        self.flags.items[id.toInt()] = symbol_flags;
+    }
+
+    pub fn setRefRange(self: *SymbolTable, id: SymbolId, range: RefRange) void {
+        self.references.items[id.toInt()] = range;
+    }
+
+    // ── Mutation helpers ───────────────────────────────────
+
+    /// Mark a symbol as read/referenced.
+    pub fn markRead(self: *SymbolTable, id: SymbolId) void {
+        self.flags.items[id.toInt()].is_read = true;
+    }
+
+    /// Mark a symbol as written/assigned after declaration.
+    pub fn markWritten(self: *SymbolTable, id: SymbolId) void {
+        self.flags.items[id.toInt()].is_written = true;
+    }
+
+    /// Mark a symbol as used in a typeof expression.
+    pub fn markTypeOf(self: *SymbolTable, id: SymbolId) void {
+        self.flags.items[id.toInt()].is_type_of = true;
+    }
+
+    /// Mark a symbol as exported.
+    pub fn markExported(self: *SymbolTable, id: SymbolId) void {
+        self.flags.items[id.toInt()].is_export = true;
+    }
+
+    // ── Queries ────────────────────────────────────────────
+
+    /// Check if a symbol is used (read, written, or typeof'd).
+    pub fn isUsed(self: *const SymbolTable, id: SymbolId) bool {
+        const f = self.flags.items[id.toInt()];
+        return f.is_read or f.is_written or f.is_type_of;
+    }
+
+    /// Check if a symbol is in the temporal dead zone.
+    /// True for let/const/class declarations (they are not hoisted).
+    pub fn isInTDZ(self: *const SymbolTable, id: SymbolId) bool {
+        return self.binding_kinds.items[id.toInt()].hasTDZ();
+    }
+
+    /// Check if a symbol is immutable (const or import binding).
+    pub fn isImmutable(self: *const SymbolTable, id: SymbolId) bool {
+        return self.binding_kinds.items[id.toInt()].isImmutable();
+    }
+
+    /// Check if a symbol is an implicit global (referenced but never declared).
+    pub fn isImplicitGlobal(self: *const SymbolTable, id: SymbolId) bool {
+        return self.flags.items[id.toInt()].is_implicit_global;
+    }
+
+    /// Get the number of symbols in the table.
+    pub fn count(self: *const SymbolTable) u32 {
+        return @intCast(self.names.items.len);
+    }
+
+    // ── Bulk iteration helpers ─────────────────────────────
+
+    /// Returns a slice of all symbol names (dense, cache-friendly iteration).
+    pub fn allNames(self: *const SymbolTable) []const []const u8 {
+        return self.names.items;
+    }
+
+    /// Returns a slice of all symbol flags (dense, cache-friendly iteration).
+    pub fn allFlags(self: *const SymbolTable) []const SymbolFlags {
+        return self.flags.items;
+    }
+
+    /// Returns a slice of all binding kinds (dense, cache-friendly iteration).
+    pub fn allBindingKinds(self: *const SymbolTable) []const BindingKind {
+        return self.binding_kinds.items;
+    }
+
+    /// Returns a slice of all scope ids (dense, cache-friendly iteration).
+    pub fn allScopeIds(self: *const SymbolTable) []const ScopeId {
+        return self.scope_ids.items;
+    }
+};
+
+// ── Flags construction helpers ─────────────────────────────
+
+/// Create SymbolFlags from a BindingKind, setting the appropriate declaration
+/// and hoisting flags automatically.
+pub fn flagsFromBindingKind(kind: BindingKind) SymbolFlags {
+    var f = SymbolFlags.EMPTY;
+    switch (kind) {
+        .@"var" => {
+            f.is_var = true;
+            f.is_hoisted = true;
+        },
+        .let => {
+            f.is_let = true;
+        },
+        .@"const" => {
+            f.is_const = true;
+        },
+        .function_decl => {
+            f.is_function = true;
+            f.is_hoisted = true;
+        },
+        .class_decl => {
+            f.is_class = true;
+        },
+        .parameter => {
+            f.is_parameter = true;
+        },
+        .catch_param => {
+            f.is_catch_param = true;
+        },
+        .import_binding => {
+            f.is_import = true;
+        },
+        .implicit_global => {
+            f.is_implicit_global = true;
+        },
+    }
+    return f;
+}
+
+// ── Tests ──────────────────────────────────────────────────
+
+test "SymbolFlags size is u16" {
+    try std.testing.expectEqual(@as(usize, 2), @sizeOf(SymbolFlags));
+}
+
+test "SymbolTable add and query" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const id = try table.addSymbol(
+        "foo",
+        flagsFromBindingKind(.@"const"),
+        .@"const",
+        root_scope,
+        ast.NodeIndex.fromInt(1),
+    );
+
+    try std.testing.expectEqual(@as(u32, 0), id.toInt());
+    try std.testing.expectEqualStrings("foo", table.getName(id));
+    try std.testing.expect(table.getFlags(id).is_const);
+    try std.testing.expect(!table.getFlags(id).is_var);
+    try std.testing.expectEqual(BindingKind.@"const", table.getBindingKind(id));
+    try std.testing.expectEqual(root_scope, table.getScope(id));
+    try std.testing.expectEqual(ast.NodeIndex.fromInt(1), table.getDeclNode(id));
+    try std.testing.expectEqual(@as(u32, 1), table.count());
+}
+
+test "SymbolTable mark read/written" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const id = try table.addSymbol(
+        "x",
+        flagsFromBindingKind(.let),
+        .let,
+        root_scope,
+        ast.NodeIndex.fromInt(0),
+    );
+
+    try std.testing.expect(!table.isUsed(id));
+
+    table.markRead(id);
+    try std.testing.expect(table.isUsed(id));
+    try std.testing.expect(table.getFlags(id).is_read);
+
+    table.markWritten(id);
+    try std.testing.expect(table.getFlags(id).is_written);
+}
+
+test "SymbolTable TDZ semantics" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const var_id = try table.addSymbol("a", flagsFromBindingKind(.@"var"), .@"var", root_scope, ast.NodeIndex.fromInt(0));
+    const let_id = try table.addSymbol("b", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(1));
+    const const_id = try table.addSymbol("c", flagsFromBindingKind(.@"const"), .@"const", root_scope, ast.NodeIndex.fromInt(2));
+    const fn_id = try table.addSymbol("d", flagsFromBindingKind(.function_decl), .function_decl, root_scope, ast.NodeIndex.fromInt(3));
+    const class_id = try table.addSymbol("e", flagsFromBindingKind(.class_decl), .class_decl, root_scope, ast.NodeIndex.fromInt(4));
+
+    // var and function are not in TDZ (they are hoisted)
+    try std.testing.expect(!table.isInTDZ(var_id));
+    try std.testing.expect(!table.isInTDZ(fn_id));
+
+    // let, const, and class are in TDZ
+    try std.testing.expect(table.isInTDZ(let_id));
+    try std.testing.expect(table.isInTDZ(const_id));
+    try std.testing.expect(table.isInTDZ(class_id));
+}
+
+test "SymbolTable immutability" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const let_id = try table.addSymbol("a", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(0));
+    const const_id = try table.addSymbol("b", flagsFromBindingKind(.@"const"), .@"const", root_scope, ast.NodeIndex.fromInt(1));
+    const import_id = try table.addSymbol("c", flagsFromBindingKind(.import_binding), .import_binding, root_scope, ast.NodeIndex.fromInt(2));
+
+    try std.testing.expect(!table.isImmutable(let_id));
+    try std.testing.expect(table.isImmutable(const_id));
+    try std.testing.expect(table.isImmutable(import_id));
+}
+
+test "flagsFromBindingKind sets correct flags" {
+    const var_flags = flagsFromBindingKind(.@"var");
+    try std.testing.expect(var_flags.is_var);
+    try std.testing.expect(var_flags.is_hoisted);
+    try std.testing.expect(!var_flags.is_let);
+
+    const fn_flags = flagsFromBindingKind(.function_decl);
+    try std.testing.expect(fn_flags.is_function);
+    try std.testing.expect(fn_flags.is_hoisted);
+
+    const param_flags = flagsFromBindingKind(.parameter);
+    try std.testing.expect(param_flags.is_parameter);
+    try std.testing.expect(!param_flags.is_hoisted);
+
+    const global_flags = flagsFromBindingKind(.implicit_global);
+    try std.testing.expect(global_flags.is_implicit_global);
+}
+
+test "SymbolId.none sentinel" {
+    try std.testing.expectEqual(std.math.maxInt(u32), @intFromEnum(SymbolId.none));
+}
+
+test "RefRange" {
+    const empty = RefRange{};
+    try std.testing.expect(empty.isEmpty());
+    try std.testing.expectEqual(@as(u32, 0), empty.len());
+
+    const range = RefRange{ .start = 3, .end = 7 };
+    try std.testing.expect(!range.isEmpty());
+    try std.testing.expectEqual(@as(u32, 4), range.len());
+}
+
+test "SymbolTable multiple symbols with bulk iteration" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    _ = try table.addSymbol("alpha", flagsFromBindingKind(.@"var"), .@"var", root_scope, ast.NodeIndex.fromInt(0));
+    _ = try table.addSymbol("beta", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(1));
+    _ = try table.addSymbol("gamma", flagsFromBindingKind(.@"const"), .@"const", root_scope, ast.NodeIndex.fromInt(2));
+
+    const names = table.allNames();
+    try std.testing.expectEqual(@as(usize, 3), names.len);
+    try std.testing.expectEqualStrings("alpha", names[0]);
+    try std.testing.expectEqualStrings("beta", names[1]);
+    try std.testing.expectEqualStrings("gamma", names[2]);
+
+    const all_flags = table.allFlags();
+    try std.testing.expect(all_flags[0].is_var);
+    try std.testing.expect(all_flags[1].is_let);
+    try std.testing.expect(all_flags[2].is_const);
+}
+
+test "setFlags overwrites flags" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const id = try table.addSymbol("x", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(0));
+
+    try std.testing.expect(!table.getFlags(id).is_export);
+
+    var new_flags = table.getFlags(id);
+    new_flags.is_export = true;
+    table.setFlags(id, new_flags);
+
+    try std.testing.expect(table.getFlags(id).is_export);
+    try std.testing.expect(table.getFlags(id).is_let);
+}
+
+test "setRefRange and getRefRange" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const id = try table.addSymbol("x", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(0));
+
+    // Initially empty.
+    try std.testing.expect(table.getRefRange(id).isEmpty());
+
+    table.setRefRange(id, .{ .start = 5, .end = 10 });
+    const r = table.getRefRange(id);
+    try std.testing.expectEqual(@as(u32, 5), r.start);
+    try std.testing.expectEqual(@as(u32, 10), r.end);
+    try std.testing.expectEqual(@as(u32, 5), r.len());
+}
+
+test "markExported and markTypeOf" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const id = try table.addSymbol("x", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(0));
+
+    try std.testing.expect(!table.getFlags(id).is_export);
+    try std.testing.expect(!table.getFlags(id).is_type_of);
+    try std.testing.expect(!table.isUsed(id));
+
+    table.markExported(id);
+    try std.testing.expect(table.getFlags(id).is_export);
+
+    table.markTypeOf(id);
+    try std.testing.expect(table.getFlags(id).is_type_of);
+    try std.testing.expect(table.isUsed(id)); // typeof counts as usage
+}
+
+test "isImplicitGlobal" {
+    var table = SymbolTable.init(std.testing.allocator);
+    defer table.deinit();
+
+    const root_scope = ScopeId.fromInt(0);
+    const declared = try table.addSymbol("x", flagsFromBindingKind(.let), .let, root_scope, ast.NodeIndex.fromInt(0));
+    const global = try table.addSymbol("console", flagsFromBindingKind(.implicit_global), .implicit_global, root_scope, ast.NodeIndex.fromInt(1));
+
+    try std.testing.expect(!table.isImplicitGlobal(declared));
+    try std.testing.expect(table.isImplicitGlobal(global));
+}

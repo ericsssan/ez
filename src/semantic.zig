@@ -1,0 +1,906 @@
+const std = @import("std");
+const ast_mod = @import("ast.zig");
+const Ast = ast_mod.Ast;
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
+const SubRange = ast_mod.SubRange;
+const ExtraIndex = ast_mod.ExtraIndex;
+const TokenIndex = ast_mod.TokenIndex;
+const FnData = ast_mod.FnData;
+const ClassData = ast_mod.ClassData;
+const ArrowData = ast_mod.ArrowData;
+const ForData = ast_mod.ForData;
+const ForInOfData = ast_mod.ForInOfData;
+const TryData = ast_mod.TryData;
+const ImportData = ast_mod.ImportData;
+const IfData = ast_mod.IfData;
+const Conditional = ast_mod.Conditional;
+const MethodData = ast_mod.MethodData;
+const scope_mod = @import("scope.zig");
+const ScopeTree = scope_mod.ScopeTree;
+const ScopeId = scope_mod.ScopeId;
+const ScopeKind = scope_mod.ScopeKind;
+const ScopeFlags = scope_mod.ScopeFlags;
+const symbol_mod = @import("symbol.zig");
+const SymbolTable = symbol_mod.SymbolTable;
+const SymbolId = symbol_mod.SymbolId;
+const SymbolFlags = symbol_mod.SymbolFlags;
+const BindingKind = symbol_mod.BindingKind;
+const ref_mod = @import("reference.zig");
+const ReferenceTable = ref_mod.ReferenceTable;
+const ReferenceId = ref_mod.ReferenceId;
+const ReferenceKind = ref_mod.ReferenceKind;
+const Span = @import("span.zig").Span;
+const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const Severity = @import("diagnostic.zig").Severity;
+
+// ── Semantic Result ────────────────────────────────────────
+
+/// The result of semantic analysis: populated scope tree, symbol table,
+/// reference table, and any diagnostics produced during the walk.
+pub const SemanticResult = struct {
+    scopes: ScopeTree,
+    symbols: SymbolTable,
+    references: ReferenceTable,
+    diagnostics: []const Diagnostic,
+
+    pub fn deinit(self: *SemanticResult, allocator: std.mem.Allocator) void {
+        self.scopes.deinit();
+        self.symbols.deinit();
+        self.references.deinit();
+        allocator.free(self.diagnostics);
+        self.* = undefined;
+    }
+};
+
+// ── Semantic Analyzer ──────────────────────────────────────
+
+/// A single-pass AST walker that builds scopes, declares symbols, and
+/// resolves identifier references. After analysis, the caller receives a
+/// `SemanticResult` containing the fully populated tables.
+pub const SemanticAnalyzer = struct {
+    ast: *const Ast,
+    scopes: ScopeTree,
+    symbols: SymbolTable,
+    references: ReferenceTable,
+    diagnostics: std.ArrayList(Diagnostic),
+    allocator: std.mem.Allocator,
+
+    /// The scope that is currently being visited.
+    current_scope: ScopeId,
+
+    // ── Lifecycle ──────────────────────────────────────────
+
+    pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
+        return .{
+            .ast = ast,
+            .scopes = ScopeTree.init(allocator),
+            .symbols = SymbolTable.init(allocator),
+            .references = ReferenceTable.init(allocator),
+            .diagnostics = .{},
+            .allocator = allocator,
+            .current_scope = .none,
+        };
+    }
+
+    pub fn deinit(self: *SemanticAnalyzer) void {
+        self.scopes.deinit();
+        self.symbols.deinit();
+        self.references.deinit();
+        self.diagnostics.deinit(self.allocator);
+    }
+
+    /// Main entry point. Walks the AST and populates scopes/symbols/references.
+    pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
+        var self = SemanticAnalyzer.init(allocator, ast);
+        errdefer self.deinit();
+
+        try self.visitNode(.root);
+
+        return .{
+            .scopes = self.scopes,
+            .symbols = self.symbols,
+            .references = self.references,
+            .diagnostics = try self.diagnostics.toOwnedSlice(self.allocator),
+        };
+    }
+
+    // ── Scope helpers ──────────────────────────────────────
+
+    fn enterScope(self: *SemanticAnalyzer, scope_kind: ScopeKind, node: NodeIndex) !ScopeId {
+        const id = try self.scopes.addScope(scope_kind, self.current_scope, node);
+        self.current_scope = id;
+        return id;
+    }
+
+    fn leaveScope(self: *SemanticAnalyzer) void {
+        self.current_scope = self.scopes.parent(self.current_scope);
+    }
+
+    // ── Declaration helpers ────────────────────────────────
+
+    /// Declare a binding in the given scope. Checks for illegal redeclarations
+    /// and emits diagnostics as needed.
+    fn declareBinding(
+        self: *SemanticAnalyzer,
+        name: []const u8,
+        node: NodeIndex,
+        binding_kind: BindingKind,
+        scope: ScopeId,
+    ) !SymbolId {
+        // Check for redeclaration in the target scope.
+        if (self.findSymbolInScope(name, scope)) |existing_id| {
+            const existing_kind = self.symbols.getBindingKind(existing_id);
+            if (!self.isRedeclarationAllowed(existing_kind, binding_kind)) {
+                try self.diagnostics.append(self.allocator, .{
+                    .message = "Identifier has already been declared",
+                    .span = self.ast.nodeSpan(node),
+                    .severity = .@"error",
+                });
+                // Still declare it so analysis can continue.
+            }
+        }
+
+        const symbol_flags = symbol_mod.flagsFromBindingKind(binding_kind);
+        return self.symbols.addSymbol(name, symbol_flags, binding_kind, scope, node);
+    }
+
+    /// Check whether redeclaring `existing` with `new` in the same scope is legal.
+    fn isRedeclarationAllowed(_: *const SemanticAnalyzer, existing: BindingKind, new: BindingKind) bool {
+        // var + var  => OK
+        // function_decl + var  => OK
+        // var + function_decl  => OK
+        // function_decl + function_decl  => OK
+        // parameter + var  => OK (var in function body shadows parameter)
+        // Everything else in the same scope => error
+        return existing.canRedeclare() and new.canRedeclare();
+    }
+
+    /// Find a symbol by name in a specific scope (not walking up the chain).
+    fn findSymbolInScope(self: *const SemanticAnalyzer, name: []const u8, scope: ScopeId) ?SymbolId {
+        const count = self.symbols.count();
+        if (count == 0) return null;
+        var i: u32 = count;
+        while (i > 0) {
+            i -= 1;
+            const id = SymbolId.fromInt(i);
+            if (self.symbols.getScope(id).toInt() == scope.toInt()) {
+                if (std.mem.eql(u8, self.symbols.getName(id), name)) {
+                    return id;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ── Reference resolution ───────────────────────────────
+
+    /// Walk up the scope chain looking for a symbol with the given name.
+    fn resolveReference(self: *SemanticAnalyzer, name: []const u8, ref_id: ReferenceId) void {
+        var scope = self.current_scope;
+        while (scope.isValid()) {
+            if (self.findSymbolInScope(name, scope)) |sym_id| {
+                self.references.resolve(ref_id, sym_id);
+                // Update symbol usage flags based on reference kind.
+                const kind = self.references.getKind(ref_id);
+                if (kind.isRead()) self.symbols.markRead(sym_id);
+                if (kind.isWrite()) self.symbols.markWritten(sym_id);
+                if (kind == .type_of) self.symbols.markTypeOf(sym_id);
+                return;
+            }
+            scope = self.scopes.parent(scope);
+        }
+        // Unresolved — leave ref as .none (implicit global).
+    }
+
+    // ── Visitor dispatch ───────────────────────────────────
+
+    fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) std.mem.Allocator.Error!void {
+        if (idx == .none) return;
+
+        const tag = self.ast.nodeTag(idx);
+        const data = self.ast.nodeData(idx);
+
+        switch (tag) {
+            // ── Program ────────────────────────────────────
+            .root => try self.visitRoot(idx, data),
+
+            // ── Scope-creating statements ──────────────────
+            .block_stmt => try self.visitBlockStmt(idx, data),
+            .for_stmt => try self.visitForStmt(data),
+            .for_in_stmt, .for_of_stmt, .for_await_of_stmt => try self.visitForInOfStmt(data),
+            .switch_stmt => try self.visitSwitchStmt(idx, data),
+            .catch_clause => try self.visitCatchClause(idx, data),
+            .with_stmt => try self.visitWithStmt(idx, data),
+            .static_block => try self.visitStaticBlock(idx, data),
+
+            // ── Function declarations ──────────────────────
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => {
+                try self.visitFnDecl(idx, data, tag);
+            },
+
+            // ── Function expressions ───────────────────────
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
+                try self.visitFnExpr(idx, data, tag);
+            },
+
+            // ── Arrow functions ────────────────────────────
+            .arrow_fn, .async_arrow_fn => try self.visitArrowFn(idx, data),
+
+            // ── Class ──────────────────────────────────────
+            .class_decl => try self.visitClassDecl(idx, data),
+            .class_expr => try self.visitClassExpr(idx, data),
+
+            // ── Declarations ───────────────────────────────
+            .var_decl => try self.visitVarDecl(data, .@"var"),
+            .let_decl => try self.visitVarDecl(data, .let),
+            .const_decl => try self.visitVarDecl(data, .@"const"),
+
+            // ── Imports ────────────────────────────────────
+            .import_decl => try self.visitImportDecl(data),
+            .import_specifier => try self.visitImportSpecifier(idx),
+            .import_default_specifier => try self.visitImportDefaultSpecifier(idx),
+            .import_namespace_specifier => try self.visitImportNamespaceSpecifier(idx),
+
+            // ── Exports ────────────────────────────────────
+            .export_named => try self.visitSubRangeFromData(data),
+            .export_default_expr => try self.visitNode(data.lhs),
+            .export_default_fn => try self.visitNode(data.lhs),
+            .export_default_class => try self.visitNode(data.lhs),
+
+            // ── Identifier references ──────────────────────
+            .identifier => try self.visitIdentifier(idx),
+
+            // ── Assignments ────────────────────────────────
+            .assign => try self.visitAssignment(data, .write),
+            .add_assign, .sub_assign, .mul_assign, .div_assign,
+            .mod_assign, .exp_assign, .and_assign, .or_assign,
+            .xor_assign, .shl_assign, .shr_assign, .ushr_assign,
+            .logical_and_assign, .logical_or_assign, .nullish_assign,
+            => try self.visitAssignment(data, .read_write),
+
+            // ── Update expressions ─────────────────────────
+            .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => {
+                try self.visitUpdateExpr(data);
+            },
+
+            // ── typeof ─────────────────────────────────────
+            .typeof_expr => try self.visitTypeofExpr(data),
+
+            // ── Control flow with children ─────────────────
+            .if_stmt => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .if_else_stmt => {
+                try self.visitNode(data.lhs);
+                const if_data = self.ast.extraData(IfData, @intFromEnum(data.rhs));
+                try self.visitNode(if_data.consequent);
+                try self.visitNode(if_data.alternate);
+            },
+            .while_stmt => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .do_while_stmt => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .try_stmt => try self.visitTryStmt(data),
+            .labeled_stmt => try self.visitNode(data.lhs),
+            .return_stmt => try self.visitNode(data.lhs),
+            .throw_stmt => try self.visitNode(data.lhs),
+            .expression_stmt => try self.visitNode(data.lhs),
+
+            // ── Switch cases ───────────────────────────────
+            .switch_case => {
+                try self.visitNode(data.lhs);
+                // Case body is a SubRange stored in rhs as extra index.
+                const body_range = self.readSubRange(@intFromEnum(data.rhs));
+                try self.visitSubRange(body_range);
+            },
+            .switch_default => {
+                const body_range = self.readSubRange(@intFromEnum(data.rhs));
+                try self.visitSubRange(body_range);
+            },
+
+            // ── Expressions with children ──────────────────
+            .conditional => {
+                try self.visitNode(data.lhs);
+                const cond = self.ast.extraData(Conditional, @intFromEnum(data.rhs));
+                try self.visitNode(cond.consequent);
+                try self.visitNode(cond.alternate);
+            },
+            .call_expr, .new_expr, .optional_call_expr => {
+                try self.visitNode(data.lhs);
+                if (data.rhs != .none) {
+                    const args_range = self.readSubRange(@intFromEnum(data.rhs));
+                    try self.visitSubRange(args_range);
+                }
+            },
+            .member_expr, .optional_member_expr => {
+                try self.visitNode(data.lhs);
+            },
+            .computed_member_expr, .optional_computed_member_expr => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .sequence_expr => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+            .array_literal => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+            .object_literal => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+            .template_literal => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+            .tagged_template => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .property, .computed_property => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .shorthand_property => {
+                try self.visitNode(data.lhs);
+            },
+            .spread_element, .rest_element => {
+                try self.visitNode(data.lhs);
+            },
+            .grouping_expr => try self.visitNode(data.lhs),
+            .import_expr => try self.visitNode(data.lhs),
+
+            // ── Unary expressions ──────────────────────────
+            .unary_plus, .unary_minus, .bitwise_not, .logical_not,
+            .void_expr, .delete_expr, .await_expr, .yield_expr, .yield_delegate,
+            => try self.visitNode(data.lhs),
+
+            // ── Binary expressions ─────────────────────────
+            .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
+            .equal, .not_equal, .strict_equal, .strict_not_equal,
+            .less_than, .greater_than, .less_equal, .greater_equal,
+            .instanceof_expr, .in_expr,
+            .bitwise_and, .bitwise_or, .bitwise_xor,
+            .shift_left, .shift_right, .unsigned_shift_right,
+            .logical_and, .logical_or, .nullish_coalesce,
+            => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+
+            // ── Patterns (in binding positions) ────────────
+            .assignment_pattern => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            .array_pattern => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+            .object_pattern => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+
+            // ── Declarator (handled by visitVarDecl) ──────
+            .declarator => {
+                // When visited standalone (e.g., from a for-in binding), just visit children.
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+
+            // ── Class members ──────────────────────────────
+            .method_def, .computed_method_def => try self.visitMethodDef(idx, data),
+            .getter_def, .computed_getter_def => try self.visitMethodDef(idx, data),
+            .setter_def, .computed_setter_def => try self.visitMethodDef(idx, data),
+            .constructor_def => try self.visitMethodDef(idx, data),
+            .property_def, .computed_property_def => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+
+            // ── Formal parameters (handled by fn visitors) ─
+            .formal_parameters => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                try self.visitSubRange(range);
+            },
+
+            // ── Leaf nodes / no-ops ────────────────────────
+            .empty_stmt, .break_stmt, .break_label, .continue_stmt,
+            .continue_label, .debugger_stmt, .this_expr, .super_expr,
+            .number_literal, .string_literal, .boolean_literal,
+            .null_literal, .regex_literal, .bigint_literal,
+            .template_element, .import_meta, .new_target,
+            .export_all, .export_specifier,
+            .error_node,
+            => {},
+        }
+    }
+
+    // ── Specific visitors ──────────────────────────────────
+
+    fn visitRoot(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        _ = try self.enterScope(.global, idx);
+        const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        try self.visitSubRange(range);
+        self.leaveScope();
+    }
+
+    fn visitBlockStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        _ = try self.enterScope(.block, idx);
+        const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        try self.visitSubRange(range);
+        self.leaveScope();
+    }
+
+    fn visitForStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
+        // for (init; cond; update) body
+        // Create a block scope for let/const in the init clause.
+        const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
+        _ = try self.enterScope(.block, data.rhs);
+        try self.visitNode(for_data.init);
+        try self.visitNode(for_data.condition);
+        try self.visitNode(for_data.update);
+        try self.visitNode(data.rhs);
+        self.leaveScope();
+    }
+
+    fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
+        const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
+        _ = try self.enterScope(.block, fiof_data.body);
+        try self.visitNode(fiof_data.binding);
+        try self.visitNode(fiof_data.expr);
+        try self.visitNode(fiof_data.body);
+        self.leaveScope();
+    }
+
+    fn visitSwitchStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        try self.visitNode(data.lhs); // discriminant — visited in outer scope
+        _ = try self.enterScope(.switch_stmt, idx);
+        const cases_range = self.readSubRange(@intFromEnum(data.rhs));
+        try self.visitSubRange(cases_range);
+        self.leaveScope();
+    }
+
+    fn visitCatchClause(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        _ = try self.enterScope(.catch_clause, idx);
+        // Declare catch parameter if present.
+        if (data.lhs != .none) {
+            try self.extractBindingNames(data.lhs, self.current_scope, .catch_param);
+        }
+        try self.visitNode(data.rhs); // body block
+        self.leaveScope();
+    }
+
+    fn visitWithStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        try self.visitNode(data.lhs); // object expr in outer scope
+        _ = try self.enterScope(.with_stmt, idx);
+        try self.visitNode(data.rhs); // body
+        self.leaveScope();
+    }
+
+    fn visitStaticBlock(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        _ = try self.enterScope(.static_block, idx);
+        const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        try self.visitSubRange(range);
+        self.leaveScope();
+    }
+
+    // ── Functions ──────────────────────────────────────────
+
+    fn visitFnDecl(
+        self: *SemanticAnalyzer,
+        idx: NodeIndex,
+        data: Node.Data,
+        tag: Node.Tag,
+    ) !void {
+        const fn_data = self.ast.extraData(FnData, @intFromEnum(data.lhs));
+
+        // Declare the function name in the current (outer) scope — hoisted.
+        if (fn_data.name != .none) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+            _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
+        }
+
+        // Enter function scope.
+        const fn_scope = try self.enterScope(.function, idx);
+        self.applyFnFlags(fn_scope, tag);
+
+        // Declare params.
+        try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
+
+        // Visit body.
+        try self.visitNode(fn_data.body);
+
+        self.leaveScope();
+    }
+
+    fn visitFnExpr(
+        self: *SemanticAnalyzer,
+        idx: NodeIndex,
+        data: Node.Data,
+        tag: Node.Tag,
+    ) !void {
+        const fn_data = self.ast.extraData(FnData, @intFromEnum(data.lhs));
+
+        // Enter function scope.
+        const fn_scope = try self.enterScope(.function, idx);
+        self.applyFnFlags(fn_scope, tag);
+
+        // Optionally declare the function name inside its own scope.
+        if (fn_data.name != .none) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+            _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
+        }
+
+        try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
+        try self.visitNode(fn_data.body);
+
+        self.leaveScope();
+    }
+
+    fn visitArrowFn(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        const arrow_data = self.ast.extraData(ArrowData, @intFromEnum(data.lhs));
+
+        // Arrow functions create a function scope but have no `this`/`arguments`.
+        const fn_scope = try self.enterScope(.function, idx);
+        var scope_flags = self.scopes.getFlags(fn_scope);
+        scope_flags.has_arguments = false;
+        scope_flags.has_this_binding = false;
+        self.scopes.setFlags(fn_scope, scope_flags);
+
+        try self.visitParams(SubRange{ .start = arrow_data.params_start, .end = arrow_data.params_end });
+        try self.visitNode(arrow_data.body);
+
+        self.leaveScope();
+    }
+
+    fn applyFnFlags(self: *SemanticAnalyzer, fn_scope: ScopeId, tag: Node.Tag) void {
+        var scope_flags = self.scopes.getFlags(fn_scope);
+        switch (tag) {
+            .async_fn_decl, .async_fn_expr => {
+                scope_flags.is_async = true;
+            },
+            .generator_fn_decl, .generator_fn_expr => {
+                scope_flags.is_generator = true;
+            },
+            .async_generator_fn_decl, .async_generator_fn_expr => {
+                scope_flags.is_async = true;
+                scope_flags.is_generator = true;
+            },
+            else => {},
+        }
+        self.scopes.setFlags(fn_scope, scope_flags);
+    }
+
+    fn visitParams(self: *SemanticAnalyzer, range: SubRange) !void {
+        const items = self.ast.extraSlice(range);
+        for (items) |raw| {
+            const param_idx: NodeIndex = @enumFromInt(raw);
+            if (param_idx == .none) continue;
+            try self.extractBindingNames(param_idx, self.current_scope, .parameter);
+        }
+    }
+
+    // ── Classes ────────────────────────────────────────────
+
+    fn visitClassDecl(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        const class_data = self.ast.extraData(ClassData, @intFromEnum(data.lhs));
+
+        // Declare the class name in the outer scope (TDZ).
+        if (class_data.name != .none) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+            _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
+        }
+
+        // Visit superclass in outer scope.
+        try self.visitNode(class_data.super_class);
+
+        // Enter class scope (always strict).
+        _ = try self.enterScope(.class, idx);
+
+        // Optionally declare the class name inside its own scope for self-reference.
+        if (class_data.name != .none) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+            _ = try self.declareBinding(name, class_data.name, .@"const", self.current_scope);
+        }
+
+        const body_range = SubRange{ .start = class_data.body_start, .end = class_data.body_end };
+        try self.visitSubRange(body_range);
+
+        self.leaveScope();
+    }
+
+    fn visitClassExpr(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        const class_data = self.ast.extraData(ClassData, @intFromEnum(data.lhs));
+
+        // Visit superclass in outer scope.
+        try self.visitNode(class_data.super_class);
+
+        // Enter class scope.
+        _ = try self.enterScope(.class, idx);
+
+        // Optionally declare the class name inside its own scope.
+        if (class_data.name != .none) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+            _ = try self.declareBinding(name, class_data.name, .@"const", self.current_scope);
+        }
+
+        const body_range = SubRange{ .start = class_data.body_start, .end = class_data.body_end };
+        try self.visitSubRange(body_range);
+
+        self.leaveScope();
+    }
+
+    fn visitMethodDef(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        // Visit the key expression (it may contain computed identifiers).
+        try self.visitNode(data.lhs);
+
+        // rhs is extra index to MethodData containing params + body.
+        const method_data = self.ast.extraData(MethodData, @intFromEnum(data.rhs));
+
+        const fn_scope = try self.enterScope(.function, idx);
+        _ = fn_scope;
+        try self.visitParams(SubRange{ .start = method_data.params_start, .end = method_data.params_end });
+        try self.visitNode(method_data.body);
+        self.leaveScope();
+    }
+
+    // ── Variable declarations ──────────────────────────────
+
+    fn visitVarDecl(self: *SemanticAnalyzer, data: Node.Data, binding_kind: BindingKind) !void {
+        const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        const items = self.ast.extraSlice(range);
+        for (items) |raw| {
+            const decl_idx: NodeIndex = @enumFromInt(raw);
+            if (decl_idx == .none) continue;
+            try self.visitDeclarator(decl_idx, binding_kind);
+        }
+    }
+
+    fn visitDeclarator(self: *SemanticAnalyzer, idx: NodeIndex, binding_kind: BindingKind) !void {
+        const data = self.ast.nodeData(idx);
+
+        // Determine the scope where this binding should be declared.
+        const target_scope = if (binding_kind == .@"var")
+            self.scopes.nearestVarScope(self.current_scope)
+        else
+            self.current_scope;
+
+        // lhs = binding pattern or identifier.
+        if (data.lhs != .none) {
+            try self.extractBindingNames(data.lhs, target_scope, binding_kind);
+        }
+
+        // rhs = initializer — visit for references.
+        if (data.rhs != .none) {
+            try self.visitNode(data.rhs);
+        }
+    }
+
+    // ── Imports ────────────────────────────────────────────
+
+    fn visitImportDecl(self: *SemanticAnalyzer, data: Node.Data) !void {
+        const import_data = self.ast.extraData(ImportData, @intFromEnum(data.lhs));
+        const specifiers_range = SubRange{
+            .start = import_data.specifiers_start,
+            .end = import_data.specifiers_end,
+        };
+        try self.visitSubRange(specifiers_range);
+    }
+
+    fn visitImportSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
+        // import { x as y } — rhs = local name token.
+        const data = self.ast.nodeData(idx);
+        const local_token = @intFromEnum(data.rhs);
+        const name = self.ast.tokenText(local_token);
+        _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
+    }
+
+    fn visitImportDefaultSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
+        // import x — lhs = local name token.
+        const data = self.ast.nodeData(idx);
+        const local_token = @intFromEnum(data.lhs);
+        const name = self.ast.tokenText(local_token);
+        _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
+    }
+
+    fn visitImportNamespaceSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
+        // import * as x — lhs = local name token.
+        const data = self.ast.nodeData(idx);
+        const local_token = @intFromEnum(data.lhs);
+        const name = self.ast.tokenText(local_token);
+        _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
+    }
+
+    // ── Identifier references ──────────────────────────────
+
+    fn visitIdentifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
+        const name = self.ast.tokenText(self.ast.nodeMainToken(idx));
+        const ref_id = try self.references.addReference(
+            .read,
+            idx,
+            self.current_scope,
+        );
+        self.resolveReference(name, ref_id);
+    }
+
+    // ── Assignments ────────────────────────────────────────
+
+    fn visitAssignment(self: *SemanticAnalyzer, data: Node.Data, kind: ReferenceKind) !void {
+        // If the LHS is a simple identifier, create a write (or read_write) reference.
+        if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+            const ref_id = try self.references.addReference(
+                kind,
+                data.lhs,
+                self.current_scope,
+            );
+            self.resolveReference(name, ref_id);
+        } else {
+            try self.visitNode(data.lhs);
+        }
+        try self.visitNode(data.rhs);
+    }
+
+    // ── Update expressions (++, --) ────────────────────────
+
+    fn visitUpdateExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
+        if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+            const ref_id = try self.references.addReference(
+                .read_write,
+                data.lhs,
+                self.current_scope,
+            );
+            self.resolveReference(name, ref_id);
+        } else {
+            try self.visitNode(data.lhs);
+        }
+    }
+
+    // ── typeof ─────────────────────────────────────────────
+
+    fn visitTypeofExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
+        if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+            const ref_id = try self.references.addReference(
+                .type_of,
+                data.lhs,
+                self.current_scope,
+            );
+            self.resolveReference(name, ref_id);
+        } else {
+            try self.visitNode(data.lhs);
+        }
+    }
+
+    // ── Try/catch ──────────────────────────────────────────
+
+    fn visitTryStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
+        // lhs = try block, rhs = extra index to TryData
+        try self.visitNode(data.lhs);
+        const try_data = self.ast.extraData(TryData, @intFromEnum(data.rhs));
+        // catch clause (which creates its own scope via visitCatchClause)
+        if (try_data.catch_body != .none) {
+            // Build a synthetic catch_clause visit: param + body.
+            _ = try self.enterScope(.catch_clause, try_data.catch_body);
+            if (try_data.catch_param != .none) {
+                try self.extractBindingNames(try_data.catch_param, self.current_scope, .catch_param);
+            }
+            try self.visitNode(try_data.catch_body);
+            self.leaveScope();
+        }
+        // finally block
+        try self.visitNode(try_data.finally_body);
+    }
+
+    // ── Binding extraction (handles destructuring) ─────────
+
+    /// Recursively extract binding names from a pattern node and declare
+    /// each name in the given scope with the given binding kind.
+    fn extractBindingNames(
+        self: *SemanticAnalyzer,
+        node: NodeIndex,
+        scope: ScopeId,
+        binding_kind: BindingKind,
+    ) !void {
+        if (node == .none) return;
+
+        const tag = self.ast.nodeTag(node);
+        const data = self.ast.nodeData(node);
+
+        switch (tag) {
+            .identifier => {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+                _ = try self.declareBinding(name, node, binding_kind, scope);
+            },
+            .array_pattern => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const items = self.ast.extraSlice(range);
+                for (items) |raw| {
+                    const elem: NodeIndex = @enumFromInt(raw);
+                    try self.extractBindingNames(elem, scope, binding_kind);
+                }
+            },
+            .object_pattern => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const items = self.ast.extraSlice(range);
+                for (items) |raw| {
+                    const prop: NodeIndex = @enumFromInt(raw);
+                    if (prop == .none) continue;
+                    const prop_tag = self.ast.nodeTag(prop);
+                    const prop_data = self.ast.nodeData(prop);
+                    switch (prop_tag) {
+                        // { key: value } — value is the binding.
+                        .property => {
+                            try self.extractBindingNames(prop_data.rhs, scope, binding_kind);
+                        },
+                        // { x } shorthand — x is both key and binding.
+                        .shorthand_property => {
+                            try self.extractBindingNames(prop_data.lhs, scope, binding_kind);
+                        },
+                        // { [computed]: value } — value is the binding.
+                        .computed_property => {
+                            // Visit computed key for references.
+                            try self.visitNode(prop_data.lhs);
+                            try self.extractBindingNames(prop_data.rhs, scope, binding_kind);
+                        },
+                        // ...rest
+                        .rest_element => {
+                            try self.extractBindingNames(prop_data.lhs, scope, binding_kind);
+                        },
+                        else => {
+                            try self.extractBindingNames(prop, scope, binding_kind);
+                        },
+                    }
+                }
+            },
+            .assignment_pattern => {
+                // target = default — declare the target, visit default for references.
+                try self.extractBindingNames(data.lhs, scope, binding_kind);
+                try self.visitNode(data.rhs);
+            },
+            .rest_element => {
+                try self.extractBindingNames(data.lhs, scope, binding_kind);
+            },
+            else => {
+                // Not a pattern — might be an expression in a parameter position;
+                // just visit it for any references it contains.
+                try self.visitNode(node);
+            },
+        }
+    }
+
+    // ── SubRange helpers ───────────────────────────────────
+
+    fn visitSubRange(self: *SemanticAnalyzer, range: SubRange) !void {
+        const items = self.ast.extraSlice(range);
+        for (items) |raw| {
+            const child: NodeIndex = @enumFromInt(raw);
+            try self.visitNode(child);
+        }
+    }
+
+    fn visitSubRangeFromData(self: *SemanticAnalyzer, data: Node.Data) !void {
+        const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        try self.visitSubRange(range);
+    }
+
+    /// Read a SubRange stored at an extra_data index.
+    /// The SubRange is encoded as two consecutive u32 values: start, end.
+    fn readSubRange(self: *const SemanticAnalyzer, index: ExtraIndex) SubRange {
+        return .{
+            .start = self.ast.extra_data[index],
+            .end = self.ast.extra_data[index + 1],
+        };
+    }
+};
