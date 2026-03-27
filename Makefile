@@ -2,7 +2,7 @@ ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.2637+6a9510c0e/files/zig
 SYSROOT := /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
 LINK_FLAGS := --sysroot $(SYSROOT) -fno-lld
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build run napi
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-test262 test-test262 run napi
 
 test: test-unit test-linter test-recovery test-config
 
@@ -27,6 +27,14 @@ test-js: napi
 
 test-conformance:
 	bash tests/conformance/run.sh
+
+build-test262:
+	@mkdir -p zig-out/bin
+	$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/test262_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
+
+test-test262: build-test262
+	@find tests/conformance/test262/test/language -name "*.js" -type f > /tmp/sx3lint-test262-filelist.txt
+	./zig-out/bin/test262_runner /tmp/sx3lint-test262-filelist.txt
 
 test-differential: build napi
 	node tests/differential/run.js

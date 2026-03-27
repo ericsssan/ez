@@ -26,6 +26,21 @@ pub const Lexer = struct {
     /// At 0, the `}` closes the template expression. Falls back to simple depth
     /// counting beyond 16 levels (sufficient for any real-world code).
     brace_depth_stack: [16]u32 = [_]u32{0} ** 16,
+    /// Brace context stack for regex/division disambiguation after `}`.
+    /// Tracks whether each `{` started an expression (object literal) or block.
+    /// true = expression context (object literal), false = block/statement.
+    brace_is_expr: [256]bool = [_]bool{false} ** 256,
+    brace_depth: u32 = 0,
+    /// Track function expression context for `}` → division disambiguation.
+    /// Set when `function` appears in expression position. The next `{` after
+    /// the matching `)` will be marked as expression context.
+    /// When true, the next `{` should be marked as expression context
+    /// (closing a function expression's param list).
+    fn_expr_next_brace: bool = false,
+    /// Paren depth at which function expression params were opened.
+    fn_expr_paren_depths: [32]u32 = [_]u32{0} ** 32,
+    fn_expr_depth_count: u32 = 0,
+    paren_depth: u32 = 0,
     language: Language,
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
@@ -2021,6 +2036,16 @@ pub const Lexer = struct {
             .kw_meta,
             => false,
 
+            // `}` can close either an expression (object literal → division) or
+            // a block/function body (→ regex). Use the brace context stack.
+            .r_brace => {
+                // Check if the matching `{` was in expression context
+                if (self.brace_depth < self.brace_is_expr.len and self.brace_is_expr[self.brace_depth]) {
+                    return false; // expression `}`, so `/` is division
+                }
+                return true; // block `}`, so `/` starts regex
+            },
+
             // In JSX mode, `<` followed by `/` is a closing tag `</tag>`, not regex.
             .less_than => !self.language.isJsx(),
 
@@ -2040,10 +2065,19 @@ pub const Lexer = struct {
         switch (c) {
             '(' => {
                 self.index += 1;
+                self.paren_depth += 1;
                 return self.makeToken(.l_paren, start);
             },
             ')' => {
                 self.index += 1;
+                if (self.paren_depth > 0) self.paren_depth -= 1;
+                // Check if this `)` closes a function expression's params
+                if (self.fn_expr_depth_count > 0 and
+                    self.fn_expr_paren_depths[self.fn_expr_depth_count - 1] == self.paren_depth)
+                {
+                    self.fn_expr_depth_count -= 1;
+                    self.fn_expr_next_brace = true;
+                }
                 return self.makeToken(.r_paren, start);
             },
             '{' => {
@@ -2051,6 +2085,72 @@ pub const Lexer = struct {
                 // Track brace depth for template expression matching
                 if (self.template_depth > 0 and self.template_depth <= self.brace_depth_stack.len) {
                     self.brace_depth_stack[self.template_depth - 1] += 1;
+                }
+                // Track whether this brace opens an expression (object literal) or block.
+                // `{` is an object literal after tokens that expect an expression:
+                //   ( [ , : ; = += -= *= /= %= **= <<= >>= >>>= &= |= ^= &&= ||= ??=
+                //   => ? || && ?? | ^ & == != === !== < > <= >= instanceof in
+                //   + - * / % ** << >> >>> ~ ! typeof void delete return throw new case
+                // Function expression body: `function(){` → expression context
+                const is_fn_expr_body = self.fn_expr_next_brace;
+                self.fn_expr_next_brace = false;
+                if (self.brace_depth < self.brace_is_expr.len) {
+                    self.brace_is_expr[self.brace_depth] = is_fn_expr_body or switch (self.prev_token_tag) {
+                        .l_paren,
+                        .l_bracket,
+                        .comma,
+                        .colon,
+                        .equal,
+                        .plus_equal,
+                        .minus_equal,
+                        .asterisk_equal,
+                        .slash_equal,
+                        .percent_equal,
+                        .ampersand_equal,
+                        .pipe_equal,
+                        .caret_equal,
+                        .arrow,
+                        .question,
+                        .pipe_pipe,
+                        .ampersand_ampersand,
+                        .question_question,
+                        .pipe,
+                        .caret,
+                        .ampersand,
+                        .equal_equal,
+                        .bang_equal,
+                        .equal_equal_equal,
+                        .bang_equal_equal,
+                        .less_than,
+                        .greater_than,
+                        .less_equal,
+                        .greater_equal,
+                        .kw_instanceof,
+                        .kw_in,
+                        .plus,
+                        .minus,
+                        .asterisk,
+                        .slash,
+                        .percent,
+                        .asterisk_asterisk,
+                        .tilde,
+                        .bang,
+                        .kw_typeof,
+                        .kw_void,
+                        .kw_delete,
+                        .kw_return,
+                        .kw_throw,
+                        .kw_new,
+                        .kw_case,
+                        .kw_yield,
+                        .kw_await,
+                        .template_head,
+                        .template_middle,
+                        .ellipsis,
+                        => true,
+                        else => false,
+                    };
+                    self.brace_depth += 1;
                 }
                 return self.makeToken(.l_brace, start);
             },
@@ -2061,12 +2161,14 @@ pub const Lexer = struct {
                         // This `}` closes the template expression
                         self.template_depth -= 1;
                         self.index += 1;
+                        if (self.brace_depth > 0) self.brace_depth -= 1;
                         return self.scanTemplateContent(start, false);
                     } else {
                         // This `}` closes a nested block inside the template expression
                         self.brace_depth_stack[self.template_depth - 1] -= 1;
                     }
                 }
+                if (self.brace_depth > 0) self.brace_depth -= 1;
                 self.index += 1;
                 return self.makeToken(.r_brace, start);
             },
@@ -2337,6 +2439,33 @@ pub const Lexer = struct {
 
     /// Create a token and update prev_token_tag for regex disambiguation.
     fn makeToken(self: *Lexer, tag: TokenTag, start: u32) Token.Token {
+        // Track function expression context for division disambiguation.
+        // `function` in expression position means the next `{` after `)`
+        // closes a function expression (value), so `}` → division.
+        if (tag == .kw_function) {
+            const is_expr_pos = switch (self.prev_token_tag) {
+                .l_paren, .l_bracket, .comma, .colon, .equal,
+                .plus_equal, .minus_equal, .asterisk_equal, .slash_equal,
+                .percent_equal, .ampersand_equal, .pipe_equal, .caret_equal,
+                .arrow, .question, .pipe_pipe, .ampersand_ampersand,
+                .question_question, .pipe, .caret, .ampersand,
+                .equal_equal, .bang_equal, .equal_equal_equal, .bang_equal_equal,
+                .less_than, .greater_than, .less_equal, .greater_equal,
+                .kw_instanceof, .kw_in, .plus, .minus, .asterisk, .slash,
+                .percent, .asterisk_asterisk, .tilde, .bang,
+                .kw_typeof, .kw_void, .kw_delete, .kw_return, .kw_throw,
+                .kw_new, .kw_case, .kw_yield, .kw_await,
+                .template_head, .template_middle, .ellipsis,
+                .semicolon, .r_brace,
+                => true,
+                else => false,
+            };
+            if (is_expr_pos and self.fn_expr_depth_count < self.fn_expr_paren_depths.len) {
+                // Record paren depth — when we see `)` at this depth, set fn_expr_next_brace
+                self.fn_expr_paren_depths[self.fn_expr_depth_count] = self.paren_depth;
+                self.fn_expr_depth_count += 1;
+            }
+        }
         self.prev_token_tag = tag;
         return .{ .tag = tag, .start = start };
     }

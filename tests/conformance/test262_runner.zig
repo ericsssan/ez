@@ -102,11 +102,11 @@ pub fn main(init: std.process.Init) !void {
             break :blk buf;
         } else source;
 
-        const has_error = tryParse(file_alloc, parse_source, is_module, kind == .must_reject);
+        const result = tryParseDetailed(file_alloc, parse_source, is_module, kind == .must_reject);
 
         switch (kind) {
             .must_reject => {
-                if (has_error) {
+                if (result.has_error) {
                     reject_pass += 1;
                 } else {
                     reject_fail += 1;
@@ -117,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             },
             .must_parse => {
-                if (!has_error) {
+                if (!result.has_error) {
                     parse_pass += 1;
                 } else {
                     parse_fail += 1;
@@ -166,31 +166,40 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn tryParse(allocator: std.mem.Allocator, source: []const u8, is_module: bool, run_lint: bool) bool {
-    var tokens = Lexer.tokenizeWithLanguage(allocator, source, .js) catch return true;
+const ErrorDetail = struct {
+    kind: enum { parse, semantic, lint },
+    count: u32,
+};
+
+fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module: bool, run_lint: bool) struct { has_error: bool, detail: ErrorDetail } {
+    var tokens = Lexer.tokenizeWithLanguage(allocator, source, .js) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } };
     defer tokens.deinit(allocator);
 
-    var tree = Parser.parseWithLanguage(allocator, source, tokens.slice(), .js, is_module) catch return true;
+    var tree = Parser.parseWithLanguage(allocator, source, tokens.slice(), .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } };
     defer tree.deinit(allocator);
 
-    if (tree.errors.len > 0) return true;
+    if (tree.errors.len > 0) return .{ .has_error = true, .detail = .{ .kind = .parse, .count = @intCast(tree.errors.len) } };
 
     // Run semantic analysis to catch early errors (duplicate bindings, etc.)
-    var sem = sx3lint.semantic.SemanticAnalyzer.analyze(allocator, &tree) catch return false;
+    var sem = sx3lint.semantic.SemanticAnalyzer.analyze(allocator, &tree) catch return .{ .has_error = false, .detail = .{ .kind = .semantic, .count = 0 } };
     defer sem.deinit(allocator);
 
-    if (sem.diagnostics.len > 0) return true;
+    if (sem.diagnostics.len > 0) return .{ .has_error = true, .detail = .{ .kind = .semantic, .count = @intCast(sem.diagnostics.len) } };
 
-    if (!run_lint) return false;
+    if (!run_lint) return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
 
     // Run lint rules for must-reject tests to catch early errors via lint rules.
-    const lint_diags = sx3lint.linter.lint(allocator, &tree, &sem, null) catch return false;
+    const lint_diags = sx3lint.linter.lint(allocator, &tree, &sem, null) catch return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
     if (lint_diags.len > 0) {
         allocator.free(lint_diags);
-        return true;
+        return .{ .has_error = true, .detail = .{ .kind = .lint, .count = @intCast(lint_diags.len) } };
     }
     allocator.free(lint_diags);
-    return false;
+    return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
+}
+
+fn tryParse(allocator: std.mem.Allocator, source: []const u8, is_module: bool, run_lint: bool) bool {
+    return tryParseDetailed(allocator, source, is_module, run_lint).has_error;
 }
 
 const TestKind = enum { must_reject, must_parse, skip };

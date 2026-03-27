@@ -1010,7 +1010,8 @@ pub const Parser = struct {
                 break :init_blk try self.parseUsingDeclaratorList(main_tok);
             }
             if (self.peek() == .kw_await and self.peekAt(1) == .identifier and
-                std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and self.peekAt(2) == .identifier)
+                std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
+                (self.peekAt(2) == .identifier or self.peekAt(2) == .kw_of or self.peekAt(2) == .kw_let))
             {
                 const main_tok = self.tok_i;
                 _ = self.advance(); // eat 'await'
@@ -2284,9 +2285,9 @@ pub const Parser = struct {
             .kw_from, .kw_as, .kw_of, .kw_let, .kw_target, .kw_meta,
             => return self.parseIdentifier(),
             .hash => {
-                // Private field: #name
+                // Private field: #name (keywords are valid private names too: #await, #yield, etc.)
                 const hash_tok = self.advance();
-                if (self.peek() == .identifier) {
+                if (self.peek() == .identifier or self.peek().isKeyword() or self.peek() == .escaped_keyword) {
                     _ = self.advance(); // consume the name
                 }
                 return self.addNode(.{
