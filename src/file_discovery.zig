@@ -1,9 +1,8 @@
 const std = @import("std");
 const Io = std.Io;
 const GitIgnore = @import("gitignore.zig").GitIgnore;
-
-/// Set of JavaScript file extensions that Sx3lint processes.
-const js_extensions = [_][]const u8{ ".js", ".mjs", ".cjs" };
+const Language = @import("token.zig").Language;
+const Config = @import("config.zig").Config;
 
 /// Directories that are always skipped during recursive discovery,
 /// regardless of .gitignore settings.
@@ -118,13 +117,29 @@ pub const FileDiscovery = struct {
             return;
         } else |_| {}
 
-        // Not a JS file and not a directory — skip.
-        std.debug.print("sx3lint: skipping '{s}' (not a .js/.mjs/.cjs file or directory)\n", .{path});
+        // Not a recognized file and not a directory — skip.
+        std.debug.print("sx3lint: skipping '{s}' (not a recognized source file or directory)\n", .{path});
     }
 
     /// Return the collected file paths as a slice.
     pub fn getFiles(self: *const FileDiscovery) []const []const u8 {
         return self.files.items;
+    }
+
+    /// Filter discovered files against config include/exclude patterns.
+    pub fn filterByConfig(self: *FileDiscovery, config: *const Config) void {
+        if (!config.hasPatterns()) return;
+
+        var i: usize = 0;
+        while (i < self.files.items.len) {
+            const path = self.files.items[i];
+            if (!config.shouldLintFile(path)) {
+                self.allocator.free(path);
+                _ = self.files.swapRemove(i);
+            } else {
+                i += 1;
+            }
+        }
     }
 
     /// Sort the collected files lexicographically for deterministic output.
@@ -140,12 +155,9 @@ pub const FileDiscovery = struct {
 
 // ── Helpers ────────────────────────────────────────────────────────
 
-/// Returns `true` if `name` ends with one of the recognized JS extensions.
+/// Returns `true` if `name` ends with a recognized source file extension.
 pub fn hasJsExtension(name: []const u8) bool {
-    inline for (js_extensions) |ext| {
-        if (std.mem.endsWith(u8, name, ext)) return true;
-    }
-    return false;
+    return Language.fromExtension(name) != null;
 }
 
 /// Returns `true` if the directory name should always be skipped.

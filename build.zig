@@ -51,6 +51,54 @@ pub fn build(b: *std.Build) void {
     const run_linter_tests = b.addRunArtifact(linter_tests);
     test_step.dependOn(&run_linter_tests.step);
 
+    // ── Error recovery tests ────────────────────────────────
+    const recovery_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/error_recovery_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    recovery_test_mod.addImport("sx3lint", test_mod);
+    const recovery_tests = b.addTest(.{ .root_module = recovery_test_mod });
+    test_step.dependOn(&b.addRunArtifact(recovery_tests).step);
+
+    // ── Config integration tests ──────────────────────────────
+    const config_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/config_integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    config_test_mod.addImport("sx3lint", test_mod);
+    const config_tests = b.addTest(.{ .root_module = config_test_mod });
+    test_step.dependOn(&b.addRunArtifact(config_tests).step);
+
+    // ── Fuzz tests ────────────────────────────────────────────
+    const fuzz_test_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fuzz_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    fuzz_test_mod.addImport("sx3lint", test_mod);
+    const fuzz_tests = b.addTest(.{ .root_module = fuzz_test_mod });
+    const fuzz_step = b.step("fuzz", "Run fuzz tests");
+    fuzz_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
+
+    // ── NAPI shared library (JS plugin support) ────────────
+    const napi_mod = b.createModule(.{
+        .root_source_file = b.path("src/napi.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    const napi_lib = b.addLibrary(.{
+        .name = "sx3lint",
+        .root_module = napi_mod,
+        .linkage = .dynamic,
+    });
+    // NAPI symbols are resolved at load time by the JS runtime.
+    napi_lib.linker_allow_shlib_undefined = true;
+    const napi_install = b.addInstallArtifact(napi_lib, .{});
+    const napi_step = b.step("napi", "Build NAPI shared library for JS plugins");
+    napi_step.dependOn(&napi_install.step);
+
     // ── Benchmark ────────────────────────────────────────────
     const bench_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_parser.zig"),

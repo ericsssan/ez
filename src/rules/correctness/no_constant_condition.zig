@@ -21,6 +21,8 @@ fn isConstantExpr(tag: Node.Tag) bool {
         .null_literal,
         .array_literal,
         .object_literal,
+        // Assignments in conditions always evaluate to the RHS value
+        .assign,
         => true,
         else => false,
     };

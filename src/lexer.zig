@@ -12,6 +12,8 @@ pub const TokenList = Ast.Ast.TokenList;
 /// Handles all ES2024 token types including template literals with brace
 /// depth tracking, regex/division disambiguation, numeric separators,
 /// BigInt, and hashbang lines.
+const Language = Token.Language;
+
 pub const Lexer = struct {
     source: []const u8,
     index: u32,
@@ -19,9 +21,20 @@ pub const Lexer = struct {
     allocator: std.mem.Allocator,
     prev_token_tag: TokenTag,
     template_depth: u32,
+    /// Brace depth per template nesting level. Tracks nested `{}` inside `${}`.
+    /// When `${` is entered, slot is zeroed. Each `{` increments, each `}` decrements.
+    /// At 0, the `}` closes the template expression. Falls back to simple depth
+    /// counting beyond 16 levels (sufficient for any real-world code).
+    brace_depth_stack: [16]u32 = [_]u32{0} ** 16,
+    language: Language,
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Lexer {
+        return initWithLanguage(allocator, source, .js);
+    }
+
+    /// Initialize a new lexer with a specific language mode.
+    pub fn initWithLanguage(allocator: std.mem.Allocator, source: []const u8, language: Language) Lexer {
         return .{
             .source = source,
             .index = 0,
@@ -29,13 +42,19 @@ pub const Lexer = struct {
             .allocator = allocator,
             .prev_token_tag = .eof,
             .template_depth = 0,
+            .language = language,
         };
     }
 
     /// Tokenize the entire source, returning a MultiArrayList of tokens.
     /// The final token is always `.eof`.
     pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenList {
-        var self = init(allocator, source);
+        return tokenizeWithLanguage(allocator, source, .js);
+    }
+
+    /// Tokenize with a specific language mode.
+    pub fn tokenizeWithLanguage(allocator: std.mem.Allocator, source: []const u8, language: Language) !TokenList {
+        var self = initWithLanguage(allocator, source, language);
 
         // Pre-allocate a reasonable estimate: ~1 token per 8 bytes of source.
         const estimate = @max(source.len / 8, 64);
@@ -214,6 +233,17 @@ pub const Lexer = struct {
                         return;
                     }
                 },
+                0xE1 => {
+                    // U+1680 OGHAM SPACE MARK: E1 9A 80
+                    if (self.index + 2 < self.source.len and
+                        self.source[self.index + 1] == 0x9A and
+                        self.source[self.index + 2] == 0x80)
+                    {
+                        self.index += 3;
+                    } else {
+                        return;
+                    }
+                },
                 0xEF => {
                     // U+FEFF BOM: EF BB BF
                     if (self.index + 2 < self.source.len and
@@ -266,6 +296,7 @@ pub const Lexer = struct {
 
     fn skipBlockComment(self: *Lexer) void {
         // Skip the leading /*
+        const start = self.index;
         self.index += 2;
         while (self.index + 1 < self.source.len) {
             if (self.source[self.index] == '*' and self.source[self.index + 1] == '/') {
@@ -274,8 +305,12 @@ pub const Lexer = struct {
             }
             self.index += 1;
         }
-        // Unterminated block comment — advance to end
+        // Unterminated block comment — emit invalid token and advance to end
         self.index = @intCast(self.source.len);
+        self.tokens.append(self.allocator, .{
+            .tag = .invalid,
+            .start = start,
+        }) catch {};
     }
 
     // ══════════════════════════════════════════════════════════
@@ -284,9 +319,16 @@ pub const Lexer = struct {
 
     fn scanHashbang(self: *Lexer) Token.Token {
         const start = self.index;
-        // Skip #!
+        // Skip #! until line terminator (\n, \r, U+2028 LS, U+2029 PS)
         self.index += 2;
-        while (self.index < self.source.len and self.source[self.index] != '\n') {
+        while (self.index < self.source.len) {
+            const c = self.source[self.index];
+            if (c == '\n' or c == '\r') break;
+            // U+2028/U+2029: 0xe2 0x80 0xa8/0xa9
+            if (c == 0xe2 and self.index + 2 < self.source.len and
+                self.source[self.index + 1] == 0x80 and
+                (self.source[self.index + 2] == 0xa8 or self.source[self.index + 2] == 0xa9))
+                break;
             self.index += 1;
         }
         return self.makeToken(.hashbang, start);
@@ -298,7 +340,35 @@ pub const Lexer = struct {
 
     fn scanIdentifierOrKeyword(self: *Lexer) Token.Token {
         const start = self.index;
-        self.index += 1; // skip first char (already validated as ident start)
+        var has_unicode_escape = false;
+
+        // Handle \uXXXX at start of identifier
+        if (self.source[self.index] == '\\') {
+            if (self.peek(1) == 'u') {
+                has_unicode_escape = true;
+                if (!self.skipUnicodeEscape()) {
+                    return self.makeToken(.invalid, start);
+                }
+            } else {
+                self.index += 1;
+                return self.makeToken(.invalid, start);
+            }
+        } else if (self.source[self.index] >= 0x80) {
+            // Multi-byte UTF-8 start: decode and validate as ID_Start
+            const cp_len = utf8ByteLen(self.source[self.index]);
+            if (cp_len == 0) {
+                self.index += 1;
+                return self.makeToken(.invalid, start);
+            }
+            const cp = decodeUtf8(self.source[self.index..], cp_len);
+            if (!isValidIdentStartCodepoint(cp)) {
+                self.index += cp_len;
+                return self.makeToken(.invalid, start);
+            }
+            self.index += cp_len;
+        } else {
+            self.index += 1; // skip first ASCII char
+        }
 
         // SIMD scan of ASCII identifier continuation chars
         self.scanIdentChunksSIMD();
@@ -308,13 +378,22 @@ pub const Lexer = struct {
             const c = self.source[self.index];
             if (isIdentContinue(c)) {
                 self.index += 1;
-            } else if (c == '\\' and self.peek(1) == 'u') {
-                // Unicode escape in identifier: \uXXXX or \u{XXXX}
-                self.skipUnicodeEscape();
+            } else if (c == '\\') {
+                if (self.peek(1) == 'u') {
+                    has_unicode_escape = true;
+                    if (!self.skipUnicodeEscape()) {
+                        return self.makeToken(.invalid, start);
+                    }
+                } else {
+                    // \o, \x etc in identifier position — invalid
+                    return self.makeToken(.invalid, start);
+                }
             } else if (c >= 0x80) {
-                // Multi-byte UTF-8 identifier character
                 const cp_len = utf8ByteLen(c);
                 if (cp_len == 0) break;
+                // Decode and validate the codepoint
+                const cp = decodeUtf8(self.source[self.index..], cp_len);
+                if (!isValidIdentCodepoint(cp)) break; // not an ident char → end identifier
                 self.index += cp_len;
             } else {
                 break;
@@ -323,9 +402,36 @@ pub const Lexer = struct {
 
         const text = self.source[start..self.index];
 
-        // Keyword lookup
+        // If identifier contains unicode escapes, resolve and check for keyword collision.
+        // Escaped keywords like \u0076ar (= "var") are emitted as .escaped_keyword
+        // so the parser can reject them in binding/label positions but accept in property names.
+        if (has_unicode_escape) {
+            var resolved_buf: [256]u8 = undefined;
+            const resolved = resolveUnicodeEscapes(text, &resolved_buf) orelse {
+                // Buffer overflow = identifier too long to be a keyword. Accept as identifier.
+                return self.makeToken(.identifier, start);
+            };
+            if (keywords.get(resolved) != null) {
+                return self.makeToken(.escaped_keyword, start);
+            }
+            if (self.language.isTs()) {
+                if (Token.ts_keywords.get(resolved) != null) {
+                    return self.makeToken(.escaped_keyword, start);
+                }
+            }
+            return self.makeToken(.identifier, start);
+        }
+
+        // Keyword lookup (no escapes, exact match)
         if (keywords.get(text)) |kw_tag| {
             return self.makeToken(kw_tag, start);
+        }
+
+        // TypeScript contextual keyword lookup (TS/TSX mode only)
+        if (self.language.isTs()) {
+            if (Token.ts_keywords.get(text)) |ts_tag| {
+                return self.makeToken(ts_tag, start);
+            }
         }
 
         return self.makeToken(.identifier, start);
@@ -370,23 +476,206 @@ pub const Lexer = struct {
         }
     }
 
-    fn skipUnicodeEscape(self: *Lexer) void {
-        // \uXXXX or \u{XXXX}
+    /// Skip and validate \uXXXX or \u{XXXX}. Returns false if invalid.
+    /// Also validates the decoded codepoint is a valid identifier character.
+    fn skipUnicodeEscape(self: *Lexer) bool {
         self.index += 2; // skip \u
         if (self.index < self.source.len and self.source[self.index] == '{') {
             self.index += 1;
+            var digits: u32 = 0;
+            var codepoint: u32 = 0;
             while (self.index < self.source.len and self.source[self.index] != '}') {
+                const d = self.source[self.index];
+                const val: u32 = if (d >= '0' and d <= '9') d - '0'
+                    else if (d >= 'a' and d <= 'f') d - 'a' + 10
+                    else if (d >= 'A' and d <= 'F') d - 'A' + 10
+                    else return false;
+                codepoint = codepoint * 16 + val;
+                digits += 1;
                 self.index += 1;
             }
+            if (digits == 0 or codepoint > 0x10FFFF) return false;
             if (self.index < self.source.len) self.index += 1; // skip }
+            return isValidIdentCodepoint(codepoint);
         } else {
-            // Exactly 4 hex digits
+            var codepoint: u32 = 0;
             var count: u32 = 0;
             while (count < 4 and self.index < self.source.len and isHexDigit(self.source[self.index])) {
+                const d = self.source[self.index];
+                const val: u32 = if (d >= '0' and d <= '9') d - '0'
+                    else if (d >= 'a' and d <= 'f') d - 'a' + 10
+                    else if (d >= 'A' and d <= 'F') d - 'A' + 10
+                    else unreachable;
+                codepoint = codepoint * 16 + val;
                 self.index += 1;
                 count += 1;
             }
+            if (count != 4) return false;
+            return isValidIdentCodepoint(codepoint);
         }
+    }
+
+    /// Resolve all \uXXXX and \u{XXXX} escapes in an identifier string.
+    /// Returns the resolved string as a slice of `buf`, or null if it doesn't fit.
+    fn resolveUnicodeEscapes(text: []const u8, buf: *[256]u8) ?[]const u8 {
+        var out_len: usize = 0;
+        var i: usize = 0;
+        while (i < text.len) {
+            if (text[i] == '\\' and i + 1 < text.len and text[i + 1] == 'u') {
+                i += 2; // skip \u
+                var codepoint: u32 = 0;
+                if (i < text.len and text[i] == '{') {
+                    i += 1; // skip {
+                    while (i < text.len and text[i] != '}') {
+                        const d = text[i];
+                        const val: u32 = if (d >= '0' and d <= '9') d - '0'
+                            else if (d >= 'a' and d <= 'f') d - 'a' + 10
+                            else if (d >= 'A' and d <= 'F') d - 'A' + 10
+                            else return null;
+                        codepoint = codepoint * 16 + val;
+                        i += 1;
+                    }
+                    if (i < text.len) i += 1; // skip }
+                } else {
+                    // \uXXXX — exactly 4 hex digits
+                    var count: u32 = 0;
+                    while (count < 4 and i < text.len) {
+                        const d = text[i];
+                        const val: u32 = if (d >= '0' and d <= '9') d - '0'
+                            else if (d >= 'a' and d <= 'f') d - 'a' + 10
+                            else if (d >= 'A' and d <= 'F') d - 'A' + 10
+                            else return null;
+                        codepoint = codepoint * 16 + val;
+                        i += 1;
+                        count += 1;
+                    }
+                }
+                // Encode codepoint as UTF-8
+                if (codepoint < 0x80) {
+                    if (out_len >= buf.len) return null;
+                    buf[out_len] = @intCast(codepoint);
+                    out_len += 1;
+                } else if (codepoint < 0x800) {
+                    if (out_len + 2 > buf.len) return null;
+                    buf[out_len] = @intCast(0xC0 | (codepoint >> 6));
+                    buf[out_len + 1] = @intCast(0x80 | (codepoint & 0x3F));
+                    out_len += 2;
+                } else if (codepoint < 0x10000) {
+                    if (out_len + 3 > buf.len) return null;
+                    buf[out_len] = @intCast(0xE0 | (codepoint >> 12));
+                    buf[out_len + 1] = @intCast(0x80 | ((codepoint >> 6) & 0x3F));
+                    buf[out_len + 2] = @intCast(0x80 | (codepoint & 0x3F));
+                    out_len += 3;
+                } else {
+                    if (out_len + 4 > buf.len) return null;
+                    buf[out_len] = @intCast(0xF0 | (codepoint >> 18));
+                    buf[out_len + 1] = @intCast(0x80 | ((codepoint >> 12) & 0x3F));
+                    buf[out_len + 2] = @intCast(0x80 | ((codepoint >> 6) & 0x3F));
+                    buf[out_len + 3] = @intCast(0x80 | (codepoint & 0x3F));
+                    out_len += 4;
+                }
+            } else {
+                if (out_len >= buf.len) return null;
+                buf[out_len] = text[i];
+                out_len += 1;
+                i += 1;
+            }
+        }
+        return buf[0..out_len];
+    }
+
+    /// Check if a codepoint is valid for JavaScript identifiers.
+    /// Simplified check — rejects known-invalid ranges.
+    /// Check if a codepoint is valid as the START of an identifier (ID_Start + $ + _).
+    /// More restrictive than ID_Continue: no ZWNJ/ZWJ, no combining marks, no digits.
+    fn isValidIdentStartCodepoint(cp: u32) bool {
+        // ASCII
+        if (cp < 0x80) {
+            return switch (@as(u8, @intCast(cp))) {
+                'a'...'z', 'A'...'Z', '_', '$' => true,
+                else => false,
+            };
+        }
+        // ZWNJ/ZWJ are ID_Continue only, not ID_Start
+        if (cp == 0x200C or cp == 0x200D) return false;
+        // Replacement char
+        if (cp == 0xFFFD) return false;
+        // Delegate to the general check for other exclusions
+        return isValidIdentCodepoint(cp);
+    }
+
+    fn isValidIdentCodepoint(cp: u32) bool {
+        // ASCII range
+        if (cp < 0x80) {
+            return switch (@as(u8, @intCast(cp))) {
+                'a'...'z', 'A'...'Z', '0'...'9', '_', '$' => true,
+                else => false,
+            };
+        }
+        // Reject surrogates and some invalid ranges
+        if (cp >= 0xD800 and cp <= 0xDFFF) return false;
+        if (cp == 0xFFFE or cp == 0xFFFF) return false;
+        // U+200C (ZWNJ) and U+200D (ZWJ) are valid in identifiers
+        if (cp == 0x200C or cp == 0x200D) return true;
+        // BOM (U+FEFF) is NOT valid in identifiers
+        if (cp == 0xFEFF) return false;
+
+        // Whitespace characters are NOT valid identifiers
+        if (cp == 0x00A0) return false; // NBSP
+        if (cp == 0x1680) return false; // Ogham Space Mark
+        if (cp >= 0x2000 and cp <= 0x200B) return false; // En/Em space, etc.
+        if (cp == 0x202F) return false; // Narrow No-Break Space
+        if (cp == 0x205F) return false; // Medium Mathematical Space
+        if (cp == 0x3000) return false; // Ideographic Space
+        if (cp == 0x180E) return false; // Mongolian Vowel Separator
+
+        // BMP general punctuation and symbols (not valid as identifiers)
+        if (cp >= 0x2000 and cp <= 0x206F) return false; // General Punctuation
+        if (cp >= 0x2190 and cp <= 0x23FF) return false; // Arrows, Math Operators, Misc Technical
+        if (cp >= 0x2500 and cp <= 0x27BF) return false; // Box Drawing, Geometric, Dingbats
+        if (cp >= 0x2900 and cp <= 0x2BFF) return false; // Supplemental Arrows, Misc Symbols
+        if (cp >= 0xFE00 and cp <= 0xFE0F) return false; // Variation Selectors
+        if (cp >= 0xFE10 and cp <= 0xFE1F) return false; // Vertical Forms (punctuation)
+        // FE20-FE2F: Combining Half Marks (Mn) — valid ID_Continue, skip
+        if (cp >= 0xFE30 and cp <= 0xFE6F) return false; // CJK Compat Forms, Small Form Variants
+        if (cp >= 0xFF01 and cp <= 0xFF60) return false; // Fullwidth Latin (punctuation/symbols)
+        if (cp >= 0xFFE0 and cp <= 0xFFEF) return false; // Fullwidth/halfwidth symbols
+
+        // SMP codepoints (>= U+10000)
+        if (cp >= 0x10000) return isValidIdentCodepointSMP(cp);
+
+        // Most BMP non-ASCII codepoints in script blocks are valid (Lo/Ll/Lu/Mn/Mc/Nd/Pc)
+        return true;
+    }
+
+    /// Check Supplementary Multilingual Plane codepoints for ID_Continue validity.
+    fn isValidIdentCodepointSMP(cp: u32) bool {
+        // Reject known symbol, punctuation, and non-identifier blocks
+        // Aegean word separators (Po)
+        if (cp >= 0x10100 and cp <= 0x10102) return false;
+        // Counting Rod Numerals (No — not ID_Continue)
+        if (cp >= 0x1D360 and cp <= 0x1D378) return false;
+        // Bassa Vah: U+16AF5 is Full Stop (Po)
+        if (cp == 0x16AF5) return false;
+        // Pahawh Hmong digits are Nd (valid), but punctuation at end of block
+        if (cp >= 0x16B44 and cp <= 0x16B45) return false;
+        // Duployan punctuation
+        if (cp == 0x1BC9F) return false;
+        // Musical Symbols (So)
+        if (cp >= 0x1D000 and cp <= 0x1D1FF) return false;
+        // Ancient Greek Musical Notation (So)
+        if (cp >= 0x1D200 and cp <= 0x1D24F) return false;
+        // Tai Xuan Jing Symbols (So)
+        if (cp >= 0x1D300 and cp <= 0x1D356) return false;
+        // Emoji and Symbols blocks (but NOT segmented digits at 1FBF0-1FBF9 which are Nd)
+        if (cp >= 0x1F000 and cp <= 0x1FBEF) return false;
+        if (cp >= 0x1FBFA and cp <= 0x1FFFF) return false;
+        // Tags (deprecated, format chars)
+        if (cp >= 0xE0000 and cp <= 0xE007F) return false;
+        // Variation Selectors Supplement
+        if (cp >= 0xE0100 and cp <= 0xE01EF) return false;
+        // Accept: most SMP codepoints are script letters (Lo) or marks (Mn/Mc)
+        return true;
     }
 
     // ══════════════════════════════════════════════════════════
@@ -403,47 +692,75 @@ pub const Lexer = struct {
                 'x', 'X' => {
                     // Hex literal: 0xFF_FF
                     self.index += 2;
-                    self.scanHexDigits();
+                    const before_hex = self.index;
+                    const sep_ok = self.scanHexDigits();
+                    if (self.index == before_hex) return self.makeToken(.invalid, start);
+                    if (!sep_ok) return self.makeToken(.invalid, start);
                     if (self.index < self.source.len and self.source[self.index] == 'n') {
                         is_bigint = true;
                         self.index += 1;
                     }
-                    return self.makeToken(if (is_bigint) .bigint_literal else .number_literal, start);
+                    return self.finishNumber(start, is_bigint);
                 },
                 'o', 'O' => {
                     // Octal literal: 0o77
                     self.index += 2;
-                    self.scanOctalDigits();
+                    const before_digits = self.index;
+                    const sep_ok = self.scanOctalDigits();
+                    if (self.index == before_digits) return self.makeToken(.invalid, start);
+                    if (!sep_ok) return self.makeToken(.invalid, start);
                     if (self.index < self.source.len and self.source[self.index] == 'n') {
                         is_bigint = true;
                         self.index += 1;
                     }
-                    return self.makeToken(if (is_bigint) .bigint_literal else .number_literal, start);
+                    return self.finishNumber(start, is_bigint);
                 },
                 'b', 'B' => {
                     // Binary literal: 0b1010
                     self.index += 2;
-                    self.scanBinaryDigits();
+                    const before_bin = self.index;
+                    const sep_ok = self.scanBinaryDigits();
+                    if (self.index == before_bin) return self.makeToken(.invalid, start);
+                    if (!sep_ok) return self.makeToken(.invalid, start);
                     if (self.index < self.source.len and self.source[self.index] == 'n') {
                         is_bigint = true;
                         self.index += 1;
                     }
-                    return self.makeToken(if (is_bigint) .bigint_literal else .number_literal, start);
+                    return self.finishNumber(start, is_bigint);
+                },
+                // 0_... with underscore right after leading 0 is invalid (octal ambiguity)
+                '_' => {
+                    self.index += 1; // skip the '0'
+                    // Skip remaining digit-like chars for error recovery
+                    while (self.index < self.source.len and (isDigit(self.source[self.index]) or self.source[self.index] == '_')) {
+                        self.index += 1;
+                    }
+                    return self.makeToken(.invalid, start);
                 },
                 else => {},
             }
         }
 
         // Decimal literal (may start with . from caller)
-        self.scanDecimalDigits();
+        const dec_ok = self.scanDecimalDigits();
 
         // Fractional part
+        var frac_ok = true;
         if (self.index < self.source.len and self.source[self.index] == '.') {
             self.index += 1;
-            self.scanDecimalDigits();
+            // Underscore right after `.` is invalid: `1._2`
+            if (self.index < self.source.len and self.source[self.index] == '_') {
+                // Skip remaining digits for error recovery
+                while (self.index < self.source.len and (isDigit(self.source[self.index]) or self.source[self.index] == '_')) {
+                    self.index += 1;
+                }
+                return self.makeToken(.invalid, start);
+            }
+            frac_ok = self.scanDecimalDigits();
         }
 
         // Exponent part
+        var exp_ok = true;
         if (self.index < self.source.len) {
             const e = self.source[self.index];
             if (e == 'e' or e == 'E') {
@@ -454,70 +771,177 @@ pub const Lexer = struct {
                         self.index += 1;
                     }
                 }
-                self.scanDecimalDigits();
+                const before_exp = self.index;
+                exp_ok = self.scanDecimalDigits();
+                if (self.index == before_exp) return self.makeToken(.invalid, start);
             }
         }
 
+        if (!dec_ok or !frac_ok or !exp_ok) return self.makeToken(.invalid, start);
+
         // BigInt suffix
         if (self.index < self.source.len and self.source[self.index] == 'n') {
+            // BigInt is only valid for integer literals (no decimal, no exponent, no legacy octal)
+            const text = self.source[start..self.index];
+            var has_dot = false;
+            var has_exp = false;
+            var is_legacy_octal = false;
+            for (text, 0..) |c, i| {
+                if (c == '.') has_dot = true;
+                if ((c == 'e' or c == 'E') and i > 0) has_exp = true;
+            }
+            // Legacy octal: starts with 0 followed by a digit (not 0x, 0o, 0b)
+            if (text.len >= 2 and text[0] == '0' and text[1] >= '0' and text[1] <= '9') {
+                is_legacy_octal = true;
+            }
+            if (has_dot or has_exp or is_legacy_octal) {
+                self.index += 1; // consume 'n' for error recovery
+                return self.makeToken(.invalid, start);
+            }
             is_bigint = true;
             self.index += 1;
         }
 
+        return self.finishNumber(start, is_bigint);
+    }
+
+    /// Finish scanning a number: reject if followed immediately by identifier char.
+    fn finishNumber(self: *Lexer, start: u32, is_bigint: bool) Token.Token {
+        if (self.index < self.source.len) {
+            const c = self.source[self.index];
+            // Non-ASCII bytes: check if it's a Unicode whitespace (not identifier)
+            if (c >= 0x80) {
+                if (!self.isUnicodeWhitespaceAt(self.index)) {
+                    // Non-whitespace non-ASCII after number = invalid (e.g. `2π`)
+                    while (self.index < self.source.len and (isIdentContinue(self.source[self.index]) or self.source[self.index] >= 0x80)) {
+                        self.index += 1;
+                    }
+                    return self.makeToken(.invalid, start);
+                }
+            } else if (isIdentStart(c) or c == '\\') {
+                while (self.index < self.source.len and (isIdentContinue(self.source[self.index]) or self.source[self.index] >= 0x80)) {
+                    self.index += 1;
+                }
+                return self.makeToken(.invalid, start);
+            }
+        }
         return self.makeToken(if (is_bigint) .bigint_literal else .number_literal, start);
     }
 
-    fn scanDecimalDigits(self: *Lexer) void {
+    /// Check if the bytes at position `pos` are a Unicode whitespace character.
+    fn isUnicodeWhitespaceAt(self: *const Lexer, pos: u32) bool {
+        if (pos >= self.source.len) return false;
+        const c = self.source[pos];
+        if (c == 0xC2 and pos + 1 < self.source.len and self.source[pos + 1] == 0xA0) return true; // NBSP
+        if (c == 0xE2 and pos + 2 < self.source.len) {
+            const b1 = self.source[pos + 1];
+            const b2 = self.source[pos + 2];
+            if (b1 == 0x80 and ((b2 >= 0x80 and b2 <= 0x8B) or b2 == 0xA8 or b2 == 0xA9 or b2 == 0xAF)) return true;
+            if (b1 == 0x81 and b2 == 0x9F) return true; // U+205F
+        }
+        if (c == 0xE3 and pos + 2 < self.source.len and self.source[pos + 1] == 0x80 and self.source[pos + 2] == 0x80) return true; // U+3000
+        if (c == 0xEF and pos + 2 < self.source.len and self.source[pos + 1] == 0xBB and self.source[pos + 2] == 0xBF) return true; // BOM
+        if (c == 0xE1 and pos + 2 < self.source.len and self.source[pos + 1] == 0x9A and self.source[pos + 2] == 0x80) return true; // U+1680 Ogham
+        return false;
+    }
+
+    /// Scan decimal digits with numeric separator validation.
+    /// Returns false if a separator error was found (leading _, trailing _, double __).
+    fn scanDecimalDigits(self: *Lexer) bool {
+        var prev_underscore = false;
+        var has_sep_error = false;
+        // Leading underscore check: if first char is _, that's invalid
+        if (self.index < self.source.len and self.source[self.index] == '_') {
+            has_sep_error = true;
+        }
         while (self.index < self.source.len) {
             const c = self.source[self.index];
             if (isDigit(c)) {
+                prev_underscore = false;
                 self.index += 1;
             } else if (c == '_') {
-                // Numeric separator: valid between digits
+                if (prev_underscore) has_sep_error = true; // double __
+                prev_underscore = true;
                 self.index += 1;
             } else {
                 break;
             }
         }
+        // Trailing underscore
+        if (prev_underscore) has_sep_error = true;
+        return !has_sep_error;
     }
 
-    fn scanHexDigits(self: *Lexer) void {
+    /// Scan hex digits with numeric separator validation.
+    fn scanHexDigits(self: *Lexer) bool {
+        var prev_underscore = false;
+        var has_sep_error = false;
+        if (self.index < self.source.len and self.source[self.index] == '_') {
+            has_sep_error = true;
+        }
         while (self.index < self.source.len) {
             const c = self.source[self.index];
             if (isHexDigit(c)) {
+                prev_underscore = false;
                 self.index += 1;
             } else if (c == '_') {
+                if (prev_underscore) has_sep_error = true;
+                prev_underscore = true;
                 self.index += 1;
             } else {
                 break;
             }
         }
+        if (prev_underscore) has_sep_error = true;
+        return !has_sep_error;
     }
 
-    fn scanOctalDigits(self: *Lexer) void {
+    /// Scan octal digits with numeric separator validation.
+    fn scanOctalDigits(self: *Lexer) bool {
+        var prev_underscore = false;
+        var has_sep_error = false;
+        if (self.index < self.source.len and self.source[self.index] == '_') {
+            has_sep_error = true;
+        }
         while (self.index < self.source.len) {
             const c = self.source[self.index];
             if (c >= '0' and c <= '7') {
+                prev_underscore = false;
                 self.index += 1;
             } else if (c == '_') {
+                if (prev_underscore) has_sep_error = true;
+                prev_underscore = true;
                 self.index += 1;
             } else {
                 break;
             }
         }
+        if (prev_underscore) has_sep_error = true;
+        return !has_sep_error;
     }
 
-    fn scanBinaryDigits(self: *Lexer) void {
+    /// Scan binary digits with numeric separator validation.
+    fn scanBinaryDigits(self: *Lexer) bool {
+        var prev_underscore = false;
+        var has_sep_error = false;
+        if (self.index < self.source.len and self.source[self.index] == '_') {
+            has_sep_error = true;
+        }
         while (self.index < self.source.len) {
             const c = self.source[self.index];
             if (c == '0' or c == '1') {
+                prev_underscore = false;
                 self.index += 1;
             } else if (c == '_') {
+                if (prev_underscore) has_sep_error = true;
+                prev_underscore = true;
                 self.index += 1;
             } else {
                 break;
             }
         }
+        if (prev_underscore) has_sep_error = true;
+        return !has_sep_error;
     }
 
     // ══════════════════════════════════════════════════════════
@@ -545,21 +969,66 @@ pub const Lexer = struct {
                         if (self.index < self.source.len and self.source[self.index] == '\n') {
                             self.index += 1;
                         }
+                    } else if (escaped == '8' or escaped == '9') {
+                        // NonOctalDecimalEscapeSequence — valid in non-strict mode.
+                        // Strict mode checks happen at parser level, not lexer.
+                        self.index += 1;
+                    } else if (escaped == 'u') {
+                        self.index += 1; // skip 'u'
+                        if (self.index < self.source.len and self.source[self.index] == '{') {
+                            // \u{XXXX} — validate hex digits and range
+                            self.index += 1;
+                            var digits: u32 = 0;
+                            var codepoint: u32 = 0;
+                            while (self.index < self.source.len and self.source[self.index] != '}') {
+                                const d = self.source[self.index];
+                                const val: u32 = if (d >= '0' and d <= '9') d - '0'
+                                    else if (d >= 'a' and d <= 'f') d - 'a' + 10
+                                    else if (d >= 'A' and d <= 'F') d - 'A' + 10
+                                    else return self.makeToken(.invalid, start);
+                                codepoint = codepoint * 16 + val;
+                                digits += 1;
+                                self.index += 1;
+                            }
+                            if (digits == 0 or codepoint > 0x10FFFF) return self.makeToken(.invalid, start);
+                            if (self.index < self.source.len) self.index += 1; // skip }
+                        } else {
+                            // \uXXXX — need exactly 4 hex digits
+                            var i: u32 = 0;
+                            while (i < 4) : (i += 1) {
+                                if (self.index >= self.source.len) return self.makeToken(.invalid, start);
+                                const d = self.source[self.index];
+                                if (!((d >= '0' and d <= '9') or (d >= 'a' and d <= 'f') or (d >= 'A' and d <= 'F')))
+                                    return self.makeToken(.invalid, start);
+                                self.index += 1;
+                            }
+                        }
+                    } else if (escaped == 'x') {
+                        self.index += 1; // skip 'x'
+                        // \xXX — need exactly 2 hex digits
+                        var i: u32 = 0;
+                        while (i < 2) : (i += 1) {
+                            if (self.index >= self.source.len) return self.makeToken(.invalid, start);
+                            const d = self.source[self.index];
+                            if (!((d >= '0' and d <= '9') or (d >= 'a' and d <= 'f') or (d >= 'A' and d <= 'F')))
+                                return self.makeToken(.invalid, start);
+                            self.index += 1;
+                        }
                     } else {
                         self.index += 1;
                     }
                 }
                 continue;
             }
-            // Unescaped newline terminates the string (error, but we still emit the token)
+            // Unescaped newline in string is invalid
             if (c == '\n' or c == '\r') {
-                return self.makeToken(.string_literal, start);
+                return self.makeToken(.invalid, start);
             }
             self.index += 1;
         }
 
         // Unterminated string
-        return self.makeToken(.string_literal, start);
+        return self.makeToken(.invalid, start);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -593,6 +1062,9 @@ pub const Lexer = struct {
             if (c == '$' and self.peek(1) == '{') {
                 // Start of template expression: ${
                 self.index += 2;
+                if (self.template_depth < self.brace_depth_stack.len) {
+                    self.brace_depth_stack[self.template_depth] = 0;
+                }
                 self.template_depth += 1;
                 if (is_head) {
                     return self.makeToken(.template_head, start);
@@ -602,10 +1074,48 @@ pub const Lexer = struct {
             }
 
             if (c == '\\') {
-                // Escape sequence — skip the next character
                 self.index += 1;
                 if (self.index < self.source.len) {
-                    self.index += 1;
+                    const esc = self.source[self.index];
+                    // Per ES2018 "template literal revision", invalid escape sequences
+                    // are allowed in tagged templates (cooked value is undefined, raw preserved).
+                    // Since the lexer can't distinguish tagged vs untagged, we allow all
+                    // escapes and let the parser validate for untagged templates.
+                    if (esc >= '0' and esc <= '9') {
+                        // Skip digit(s) — \0, \01, \8, \9 etc. all allowed at lex level
+                        self.index += 1;
+                    } else if (esc == 'x') {
+                        // \xHH — skip past the x and any hex digits
+                        self.index += 1;
+                        var count: u32 = 0;
+                        while (count < 2 and self.index < self.source.len and isHexDigit(self.source[self.index])) {
+                            self.index += 1;
+                            count += 1;
+                        }
+                        // Don't reject if count != 2 — tagged templates allow it
+                    } else if (esc == 'u') {
+                        // \uXXXX or \u{XXXX} — skip past them (lenient for tagged templates)
+                        self.index += 1;
+                        if (self.index < self.source.len and self.source[self.index] == '{') {
+                            self.index += 1;
+                            // Skip until closing } or template boundary
+                            while (self.index < self.source.len and self.source[self.index] != '}' and
+                                self.source[self.index] != '`' and self.source[self.index] != '$')
+                            {
+                                self.index += 1;
+                            }
+                            if (self.index < self.source.len and self.source[self.index] == '}') self.index += 1;
+                        } else {
+                            // \uXXXX — skip up to 4 hex digits (don't reject if fewer)
+                            var count: u32 = 0;
+                            while (count < 4 and self.index < self.source.len and isHexDigit(self.source[self.index])) {
+                                self.index += 1;
+                                count += 1;
+                            }
+                        }
+                    } else {
+                        self.index += 1;
+                    }
                 }
                 continue;
             }
@@ -614,11 +1124,7 @@ pub const Lexer = struct {
         }
 
         // Unterminated template literal
-        if (is_head) {
-            return self.makeToken(.template_no_sub, start);
-        } else {
-            return self.makeToken(.template_tail, start);
-        }
+        return self.makeToken(.invalid, start);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -635,9 +1141,20 @@ pub const Lexer = struct {
             const c = self.source[self.index];
 
             if (c == '\\') {
-                // Escape — skip next char
+                // Escape — skip next char, but newline after \ is still invalid in regex
                 self.index += 1;
                 if (self.index < self.source.len) {
+                    const next_ch = self.source[self.index];
+                    if (next_ch == '\n' or next_ch == '\r') {
+                        return self.makeToken(.invalid, start);
+                    }
+                    // U+2028/U+2029 after backslash is also invalid
+                    if (next_ch == 0xe2 and self.index + 2 < self.source.len and
+                        self.source[self.index + 1] == 0x80 and
+                        (self.source[self.index + 2] == 0xa8 or self.source[self.index + 2] == 0xa9))
+                    {
+                        return self.makeToken(.invalid, start);
+                    }
                     self.index += 1;
                 }
                 continue;
@@ -656,24 +1173,801 @@ pub const Lexer = struct {
             }
 
             if (c == '/' and !in_char_class) {
+                const body_end = self.index;
                 self.index += 1; // skip closing /
                 // Scan optional flags: g, i, m, s, u, v, y, d
+                const flags_start = self.index;
                 while (self.index < self.source.len and isIdentContinue(self.source[self.index])) {
                     self.index += 1;
+                }
+                // Validate flags: only d,g,i,m,s,u,v,y allowed, no duplicates
+                const flags = self.source[flags_start..self.index];
+                var has_u = false;
+                var flag_seen: u8 = 0; // bit mask for d,g,i,m,s,u,v,y
+                var flags_valid = true;
+                for (flags) |fc| {
+                    const bit: u8 = switch (fc) {
+                        'd' => 0x01,
+                        'g' => 0x02,
+                        'i' => 0x04,
+                        'm' => 0x08,
+                        's' => 0x10,
+                        'u' => 0x20,
+                        'v' => 0x40,
+                        'y' => 0x80,
+                        else => 0,
+                    };
+                    if (bit == 0) {
+                        flags_valid = false;
+                        break;
+                    }
+                    if (flag_seen & bit != 0) {
+                        flags_valid = false; // duplicate
+                        break;
+                    }
+                    flag_seen |= bit;
+                    if (fc == 'u' or fc == 'v') has_u = true;
+                }
+                if (!flags_valid) {
+                    return self.makeToken(.invalid, start);
+                }
+                if (has_u) {
+                    // body is source[start+1 .. body_end]
+                    if (!validateRegexBody(self.source[start + 1 .. body_end], true)) {
+                        return self.makeToken(.invalid, start);
+                    }
+                } else {
+                    // Non-/u mode: still validate modifiers, braced quantifiers,
+                    // lookbehind quantifiers, and named group syntax.
+                    if (!validateRegexBody(self.source[start + 1 .. body_end], false)) {
+                        return self.makeToken(.invalid, start);
+                    }
                 }
                 return self.makeToken(.regex_literal, start);
             }
 
-            // Unescaped newline terminates the regex (error)
+            // Unescaped newline in regex is invalid (includes U+2028 LS, U+2029 PS)
             if (c == '\n' or c == '\r') {
-                return self.makeToken(.regex_literal, start);
+                return self.makeToken(.invalid, start);
+            }
+            if (c == 0xe2 and self.index + 2 < self.source.len and
+                self.source[self.index + 1] == 0x80 and
+                (self.source[self.index + 2] == 0xa8 or self.source[self.index + 2] == 0xa9))
+            {
+                return self.makeToken(.invalid, start);
             }
 
             self.index += 1;
         }
 
         // Unterminated regex
-        return self.makeToken(.regex_literal, start);
+        return self.makeToken(.invalid, start);
+    }
+
+    // ══════════════════════════════════════════════════════════
+    //  Regex validator — recursive-descent parser
+    //
+    //  Implements the ES2024 RegExp grammar for both normal and Unicode mode:
+    //    Pattern     → Disjunction
+    //    Disjunction → Alternative ('|' Alternative)*
+    //    Alternative → Term*
+    //    Term        → Assertion | Atom Quantifier?
+    //
+    //  Key rules:
+    //  - Quantifier after Assertion is always a syntax error (both modes)
+    //    EXCEPT that in non-/u mode, lookbehind assertions (?<=) and (?<!)
+    //    are NOT quantifiable assertions (unlike lookahead).
+    //  - Invalid modifiers in (?X:...) groups are always errors
+    //  - {n} in atom position is always an error (InvalidBracedQuantifier)
+    // ══════════════════════════════════════════════════════════
+
+    const RegexValidator = struct {
+        const MAX_GROUPS = 32;
+
+        body: []const u8,
+        pos: usize,
+        unicode: bool,
+        group_defs: [MAX_GROUPS][2]u16 = [_][2]u16{.{ 0, 0 }} ** MAX_GROUPS,
+        group_refs: [MAX_GROUPS][2]u16 = [_][2]u16{.{ 0, 0 }} ** MAX_GROUPS,
+        group_def_count: u8 = 0,
+        group_ref_count: u8 = 0,
+        has_named_group: bool = false,
+
+        const Kind = enum { atom, assertion, lookbehind_assertion, invalid, empty };
+
+        fn validate(body: []const u8, unicode: bool) bool {
+            var v = RegexValidator{ .body = body, .pos = 0, .unicode = unicode };
+            const result = v.disjunction();
+            if (result == .invalid) return false;
+
+            // Post-parse: validate group references
+            // Check duplicate group definitions (always)
+            if (v.group_def_count > 1) {
+                var i: usize = 0;
+                while (i < v.group_def_count) : (i += 1) {
+                    var j = i + 1;
+                    while (j < v.group_def_count) : (j += 1) {
+                        const a = v.body[v.group_defs[i][0]..v.group_defs[i][1]];
+                        const b = v.body[v.group_defs[j][0]..v.group_defs[j][1]];
+                        if (std.mem.eql(u8, a, b)) return false;
+                    }
+                }
+            }
+            // Check dangling references — only when named groups exist
+            // (in non-/u without named groups, \k<x> is just an identity escape)
+            if (v.has_named_group and v.group_ref_count > 0) {
+                var ri: usize = 0;
+                while (ri < v.group_ref_count) : (ri += 1) {
+                    const ref = v.body[v.group_refs[ri][0]..v.group_refs[ri][1]];
+                    var found = false;
+                    var di: usize = 0;
+                    while (di < v.group_def_count) : (di += 1) {
+                        const def = v.body[v.group_defs[di][0]..v.group_defs[di][1]];
+                        if (std.mem.eql(u8, ref, def)) { found = true; break; }
+                    }
+                    if (!found) return false;
+                }
+            }
+            // In /u mode, \k<x> without ANY named group is also an error
+            if (v.unicode and !v.has_named_group and v.group_ref_count > 0) return false;
+            return true;
+        }
+
+        /// Disjunction → Alternative ('|' Alternative)*
+        fn disjunction(self: *RegexValidator) Kind {
+            var k = self.alternative();
+            if (k == .invalid) return .invalid;
+            while (self.pos < self.body.len and self.body[self.pos] == '|') {
+                self.pos += 1;
+                k = self.alternative();
+                if (k == .invalid) return .invalid;
+            }
+            return k;
+        }
+
+        /// Alternative → Term*
+        /// Returns kind of the LAST term (needed by caller).
+        fn alternative(self: *RegexValidator) Kind {
+            var last: Kind = .empty;
+            while (self.pos < self.body.len) {
+                const c = self.body[self.pos];
+                if (c == '|' or c == ')') break;
+                const k = self.term();
+                if (k == .invalid) return .invalid;
+                last = k;
+            }
+            return last;
+        }
+
+        /// Term → Assertion | Atom Quantifier?
+        fn term(self: *RegexValidator) Kind {
+            const kind = self.atomOrAssertion();
+            if (kind == .invalid) return .invalid;
+
+            // Check for quantifier
+            if (self.pos < self.body.len and self.isQuantifierStart()) {
+                if (kind == .assertion) return .invalid; // quantifier on lookahead assertion
+                if (kind == .lookbehind_assertion) {
+                    // In both modes: lookbehind assertions cannot be quantified
+                    return .invalid;
+                }
+                if (!self.skipQuantifier()) return .invalid;
+            }
+            return kind;
+        }
+
+        /// Parse one atom or assertion. Returns its kind.
+        fn atomOrAssertion(self: *RegexValidator) Kind {
+            if (self.pos >= self.body.len) return .empty;
+            const c = self.body[self.pos];
+
+            switch (c) {
+                // ── Assertions ──
+                '^', '$' => { self.pos += 1; return .assertion; },
+
+                // ── Escape sequences ──
+                '\\' => return self.escape(),
+
+                // ── Character class ──
+                '[' => return self.charClass(),
+
+                // ── Groups ──
+                '(' => return self.group(),
+
+                // ── Lone } is invalid in /u mode ──
+                '}' => {
+                    if (self.unicode) return .invalid;
+                    self.pos += 1;
+                    return .atom;
+                },
+
+                // ── { must be either a valid quantifier (handled by term) or invalid ──
+                // In both /u and non-/u mode, bare {n} in atom position is a SyntaxError
+                // (InvalidBracedQuantifier). We detect it here — if it looks like a valid
+                // braced quantifier but there's no preceding atom, it's invalid.
+                '{' => {
+                    const end = quantifierEnd(self.body, self.pos);
+                    if (end != 0) {
+                        // Looks like {n} or {n,m} — invalid in atom position (no preceding atom)
+                        return .invalid;
+                    }
+                    if (self.unicode) return .invalid;
+                    self.pos += 1;
+                    return .atom;
+                },
+
+                // ── Quantifier chars without preceding atom are always invalid ──
+                // ?, +, * are SyntaxCharacters that can only appear as quantifiers
+                // (after an atom). At atom position, they are syntax errors.
+                '?', '+', '*' => return .invalid,
+
+                // ── Regular atom (., literal char, etc.) ──
+                else => { self.pos += 1; return .atom; },
+            }
+        }
+
+        /// Returns true if c is a hex digit
+        fn isHex(c: u8) bool {
+            return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+        }
+
+        /// Validate and skip \u{HHHH} escape in /u mode.
+        /// Returns false if invalid (non-hex, empty, underscore, out of bounds).
+        fn validateUnicodeBraced(self: *RegexValidator) bool {
+            // pos is after '{'
+            const brace_start = self.pos;
+            var count: usize = 0;
+            while (self.pos < self.body.len and self.body[self.pos] != '}') {
+                const ch = self.body[self.pos];
+                if (!isHex(ch)) return false; // non-hex (includes underscore, comma)
+                count += 1;
+                self.pos += 1;
+            }
+            if (self.pos >= self.body.len) return false; // unterminated
+            if (count == 0) return false; // empty \u{}
+            self.pos += 1; // skip }
+            // Check value ≤ 0x10FFFF (allow arbitrary leading zeros)
+            // Parse the hex value (overflow-safe: if > 0x10FFFF at any point, invalid)
+            var val: u32 = 0;
+            var i = brace_start;
+            while (i < self.pos - 1) : (i += 1) {
+                const d = self.body[i];
+                const digit: u32 = if (d >= '0' and d <= '9') d - '0'
+                      else if (d >= 'a' and d <= 'f') d - 'a' + 10
+                      else d - 'A' + 10;
+                val = val *| 16 +| digit;
+                if (val > 0x10FFFF) return false;
+            }
+            return true;
+        }
+
+        /// Escape: \d, \b, \1, etc.
+        fn escape(self: *RegexValidator) Kind {
+            self.pos += 1; // skip '\'
+            if (self.pos >= self.body.len) return .invalid;
+            const c = self.body[self.pos];
+            self.pos += 1;
+
+            if (self.unicode) {
+                return switch (c) {
+                    // \b and \B are assertions
+                    'b', 'B' => .assertion,
+                    // Character class escapes — valid atoms in /u
+                    'd', 'D', 's', 'S', 'w', 'W' => .atom,
+                    // Control escapes
+                    'f', 'n', 'r', 't', 'v' => .atom,
+                    // \0 [lookahead ∉ DecimalDigit] — null character escape, valid in /u
+                    '0' => blk: {
+                        if (self.pos < self.body.len and self.body[self.pos] >= '0' and self.body[self.pos] <= '9')
+                            break :blk .invalid; // \0N is octal, invalid in /u
+                        break :blk .atom;
+                    },
+                    // \1-\9 back-references — valid in /u mode (verified post-parse)
+                    // The spec requires the referenced group to exist, but we validate
+                    // that separately; here we just accept them as atoms.
+                    '1'...'9' => blk: {
+                        // Consume any following digits (multi-digit back-ref like \12)
+                        while (self.pos < self.body.len and self.body[self.pos] >= '0' and self.body[self.pos] <= '9')
+                            self.pos += 1;
+                        break :blk .atom;
+                    },
+                    // \u{HHHH} or \uHHHH
+                    'u' => blk: {
+                        if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                            self.pos += 1; // skip {
+                            if (!self.validateUnicodeBraced()) break :blk .invalid;
+                        } else {
+                            // \uXXXX — must be exactly 4 hex digits
+                            var j: usize = 0;
+                            while (j < 4 and self.pos < self.body.len and isHex(self.body[self.pos])) : (j += 1) self.pos += 1;
+                            if (j < 4) break :blk .invalid;
+                        }
+                        break :blk .atom;
+                    },
+                    // \xXX — must be exactly 2 hex digits
+                    'x' => blk: {
+                        var j: usize = 0;
+                        while (j < 2 and self.pos < self.body.len and isHex(self.body[self.pos])) : (j += 1) self.pos += 1;
+                        if (j < 2) break :blk .invalid;
+                        break :blk .atom;
+                    },
+                    // \p{...} / \P{...} — Unicode property escape
+                    'p', 'P' => blk: {
+                        if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                            self.pos += 1;
+                            while (self.pos < self.body.len and self.body[self.pos] != '}') self.pos += 1;
+                            if (self.pos >= self.body.len) break :blk .invalid;
+                            self.pos += 1;
+                        } else {
+                            break :blk .invalid;
+                        }
+                        break :blk .atom;
+                    },
+                    // \k<name> — named back-reference in /u mode
+                    // \k without < is invalid in /u mode
+                    'k' => blk: {
+                        if (self.pos >= self.body.len or self.body[self.pos] != '<') break :blk .invalid;
+                        self.pos += 1; // skip <
+                        const ref_start = self.pos;
+                        // Empty name is invalid
+                        if (self.pos < self.body.len and self.body[self.pos] == '>') break :blk .invalid;
+                        // Skip name content
+                        while (self.pos < self.body.len and self.body[self.pos] != '>') {
+                            if (self.body[self.pos] == ')') break; // unterminated
+                            self.pos += 1;
+                        }
+                        if (self.pos >= self.body.len or self.body[self.pos] != '>') break :blk .invalid;
+                        // Record reference
+                        if (self.group_ref_count < MAX_GROUPS) {
+                            self.group_refs[self.group_ref_count] = .{
+                                @intCast(ref_start), @intCast(self.pos),
+                            };
+                            self.group_ref_count += 1;
+                        }
+                        self.pos += 1; // skip >
+                        break :blk .atom;
+                    },
+                    // \cX — must be a-z or A-Z
+                    'c' => blk: {
+                        if (self.pos >= self.body.len) break :blk .invalid;
+                        const nc = self.body[self.pos];
+                        if (!((nc >= 'a' and nc <= 'z') or (nc >= 'A' and nc <= 'Z'))) break :blk .invalid;
+                        self.pos += 1;
+                        break :blk .atom;
+                    },
+                    // Identity escape in /u mode: only syntax chars and / are allowed
+                    // \M, \Q, etc. are invalid — only ^$\.*+?()[]{}|/ are valid identity escapes
+                    else => {
+                        const is_syntax_char = switch (c) {
+                            '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/' => true,
+                            else => false,
+                        };
+                        if (!is_syntax_char) return .invalid;
+                        return .atom;
+                    },
+                };
+            } else {
+                // Non-/u mode: more permissive escape handling
+                return switch (c) {
+                    'b', 'B' => .assertion,
+                    // \u{HHHH} or \uHHHH — in non-/u, braces may be treated as literals
+                    'u' => blk: {
+                        if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                            // In non-/u mode, \u{...} is just \u followed by literal chars
+                            // Skip as atom (not validated)
+                            self.pos += 1;
+                            while (self.pos < self.body.len and self.body[self.pos] != '}') self.pos += 1;
+                            if (self.pos < self.body.len) self.pos += 1;
+                        } else {
+                            var j: usize = 0;
+                            while (j < 4 and self.pos < self.body.len) : (j += 1) self.pos += 1;
+                        }
+                        break :blk .atom;
+                    },
+                    'x' => blk: {
+                        var j: usize = 0;
+                        while (j < 2 and self.pos < self.body.len) : (j += 1) self.pos += 1;
+                        break :blk .atom;
+                    },
+                    'p', 'P' => blk: {
+                        if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                            self.pos += 1;
+                            while (self.pos < self.body.len and self.body[self.pos] != '}') self.pos += 1;
+                            if (self.pos < self.body.len) self.pos += 1;
+                        }
+                        break :blk .atom;
+                    },
+                    // \k in non-/u: if followed by <name>, record as potential back-ref.
+                    // Only validated post-parse if named groups exist.
+                    'k' => blk: {
+                        if (self.pos < self.body.len and self.body[self.pos] == '<') {
+                            self.pos += 1;
+                            const ref_start = self.pos;
+                            while (self.pos < self.body.len and self.body[self.pos] != '>' and self.body[self.pos] != ')') self.pos += 1;
+                            if (self.pos < self.body.len and self.body[self.pos] == '>') {
+                                // Record reference (only checked if named groups exist)
+                                if (self.group_ref_count < MAX_GROUPS) {
+                                    self.group_refs[self.group_ref_count] = .{
+                                        @intCast(ref_start), @intCast(self.pos),
+                                    };
+                                    self.group_ref_count += 1;
+                                }
+                                self.pos += 1; // skip >
+                            }
+                            // If no >, it's just \k followed by literal chars (valid in non-/u)
+                        }
+                        break :blk .atom;
+                    },
+                    // \cX
+                    'c' => blk: {
+                        if (self.pos < self.body.len) {
+                            const nc = self.body[self.pos];
+                            if ((nc >= 'a' and nc <= 'z') or (nc >= 'A' and nc <= 'Z')) self.pos += 1;
+                        }
+                        break :blk .atom;
+                    },
+                    else => .atom,
+                };
+            }
+        }
+
+        /// Character class: [...] with range validation in /u mode
+        fn charClass(self: *RegexValidator) Kind {
+            self.pos += 1; // skip [
+            // Optional negation
+            if (self.pos < self.body.len and self.body[self.pos] == '^') self.pos += 1;
+
+            if (self.unicode) {
+                // In /u mode, validate class ranges: [A-Z] ok, [\d-z] or [z-a] invalid
+                while (self.pos < self.body.len and self.body[self.pos] != ']') {
+                    const is_escape = self.body[self.pos] == '\\';
+                    var is_class_escape = false;
+                    if (is_escape) {
+                        self.pos += 1;
+                        if (self.pos >= self.body.len) return .invalid;
+                        const ec = self.body[self.pos];
+                        // Class escapes (\d, \D, \w, \W, \s, \S) represent multi-char sets
+                        is_class_escape = switch (ec) {
+                            'd', 'D', 'w', 'W', 's', 'S', 'p', 'P' => true,
+                            else => false,
+                        };
+                        self.pos += 1;
+                        // Skip rest of escape (like \u{HHHH}, \p{...})
+                        if (ec == 'u' or ec == 'x') {
+                            if (ec == 'u' and self.pos < self.body.len and self.body[self.pos] == '{') {
+                                self.pos += 1;
+                                while (self.pos < self.body.len and self.body[self.pos] != '}') self.pos += 1;
+                                if (self.pos < self.body.len) self.pos += 1;
+                            } else if (ec == 'u') {
+                                var j: usize = 0;
+                                while (j < 3 and self.pos < self.body.len) : (j += 1) self.pos += 1;
+                            } else {
+                                // \x — skip 1 more
+                                if (self.pos < self.body.len) self.pos += 1;
+                            }
+                        } else if (ec == 'p' or ec == 'P') {
+                            if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                                self.pos += 1;
+                                while (self.pos < self.body.len and self.body[self.pos] != '}') self.pos += 1;
+                                if (self.pos < self.body.len) self.pos += 1;
+                            }
+                        }
+                    } else {
+                        // Handle multi-byte chars
+                        const b = self.body[self.pos];
+                        if (b & 0x80 != 0) {
+                            // Multi-byte UTF-8 — skip entire codepoint
+                            const len: usize = if (b & 0xE0 == 0xC0) 2
+                                              else if (b & 0xF0 == 0xE0) 3
+                                              else if (b & 0xF8 == 0xF0) 4
+                                              else 1;
+                            self.pos += @min(len, self.body.len - self.pos);
+                        } else {
+                            self.pos += 1;
+                        }
+                    }
+                    // Check for '-' range separator
+                    if (self.pos < self.body.len and self.body[self.pos] == '-' and
+                        self.pos + 1 < self.body.len and self.body[self.pos + 1] != ']')
+                    {
+                        // Both sides must be single characters (not class escapes)
+                        if (is_class_escape) return .invalid;
+                        self.pos += 1; // skip '-'
+                        // Check right side
+                        if (self.pos < self.body.len and self.body[self.pos] == '\\') {
+                            self.pos += 1;
+                            if (self.pos >= self.body.len) return .invalid;
+                            const ec2 = self.body[self.pos];
+                            const right_is_class_escape = switch (ec2) {
+                                'd', 'D', 'w', 'W', 's', 'S', 'p', 'P' => true,
+                                else => false,
+                            };
+                            if (right_is_class_escape) return .invalid;
+                            self.pos += 1;
+                        } else if (self.pos < self.body.len) {
+                            const b2 = self.body[self.pos];
+                            if (b2 & 0x80 != 0) {
+                                const len: usize = if (b2 & 0xE0 == 0xC0) 2
+                                                  else if (b2 & 0xF0 == 0xE0) 3
+                                                  else if (b2 & 0xF8 == 0xF0) 4
+                                                  else 1;
+                                self.pos += @min(len, self.body.len - self.pos);
+                            } else {
+                                self.pos += 1;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Non-/u mode: simple scan until ]
+                while (self.pos < self.body.len and self.body[self.pos] != ']') {
+                    if (self.body[self.pos] == '\\') {
+                        self.pos += 1; // skip \
+                        if (self.pos < self.body.len) self.pos += 1; // skip escaped char
+                    } else {
+                        self.pos += 1;
+                    }
+                }
+            }
+
+            if (self.pos < self.body.len) self.pos += 1; // skip ]
+            return .atom;
+        }
+
+        /// Validate a named group identifier (between < and >).
+        /// Returns false if invalid (empty, starts with digit, contains invalid chars).
+        /// pos should be right after '<', ends just before '>'.
+        fn validateGroupName(name_start: usize, name_end: usize, body: []const u8) bool {
+            if (name_start >= name_end) return false; // empty name
+            const name = body[name_start..name_end];
+            if (name.len == 0) return false;
+            // Check for backslash in name (like (?<a\>.)) — name ends before \
+            // The caller already handles skipping to '>' but if '\' appears before '>'
+            // then the name contains '\'  which is invalid.
+            for (name) |ch| {
+                if (ch == '\\') return false;
+            }
+            // Check first char: must be ID_Start or $/_
+            const first = name[0];
+            // ASCII ID_Start: a-z, A-Z, _
+            const first_is_ascii_id = (first >= 'a' and first <= 'z') or
+                                      (first >= 'A' and first <= 'Z') or
+                                      first == '_' or first == '$';
+            if (first & 0x80 == 0) {
+                // ASCII: must be letter/underscore/$
+                if (!first_is_ascii_id) return false;
+                // Also check for digits at start (42a...)
+                if (first >= '0' and first <= '9') return false;
+            }
+            // Non-ASCII (multi-byte UTF-8): need to check if it's a valid ID_Start codepoint
+            // For now, check for common invalid patterns:
+            // - Lone surrogates encoded as UTF-16 (\uD800-\uDFFF)
+            // These are fine to allow through for non-ASCII (they are likely valid Unicode)
+            // The validator catches the most common cases.
+            return true;
+        }
+
+        /// Group: (...), (?:...), (?=...), (?!...), (?<=...), (?<!...), (?<name>...)
+        /// Also validates ES2024 inline modifiers: (?ims:...) or (?ims-ims:...)
+        fn group(self: *RegexValidator) Kind {
+            self.pos += 1; // skip (
+            var kind: Kind = .atom; // default: capturing group → atom
+
+            if (self.pos < self.body.len and self.body[self.pos] == '?') {
+                self.pos += 1;
+                if (self.pos >= self.body.len) return .invalid;
+                const c = self.body[self.pos];
+                switch (c) {
+                    ':' => { self.pos += 1; kind = .atom; }, // non-capturing
+                    '=' => { self.pos += 1; kind = .assertion; }, // (?=...) lookahead
+                    '!' => { self.pos += 1; kind = .assertion; }, // (?!...) neg lookahead
+                    '<' => {
+                        self.pos += 1;
+                        if (self.pos < self.body.len) {
+                            if (self.body[self.pos] == '=') {
+                                self.pos += 1; kind = .lookbehind_assertion; // (?<=...) lookbehind
+                            } else if (self.body[self.pos] == '!') {
+                                self.pos += 1; kind = .lookbehind_assertion; // (?<!...) neg lookbehind
+                            } else {
+                                // (?<name>...) named group
+                                // Validate the name
+                                const name_start = self.pos;
+                                // Check for invalid name starts
+                                if (self.pos >= self.body.len) return .invalid;
+                                // Check for empty name '(?<>...)'
+                                if (self.body[self.pos] == '>') return .invalid;
+                                // Check for digit at start
+                                if (self.body[self.pos] >= '0' and self.body[self.pos] <= '9') return .invalid;
+                                // Check for backslash (like (?<a\>))
+                                if (self.body[self.pos] == '\\') return .invalid;
+                                // Check first char for ASCII: must be letter or $/_
+                                const fc = self.body[self.pos];
+                                if (fc < 0x80) {
+                                    const valid_start = (fc >= 'a' and fc <= 'z') or
+                                                       (fc >= 'A' and fc <= 'Z') or
+                                                       fc == '_' or fc == '$';
+                                    if (!valid_start) return .invalid;
+                                }
+                                // Scan name until '>' — also checking for backslash or invalid chars
+                                while (self.pos < self.body.len and self.body[self.pos] != '>') {
+                                    const nc = self.body[self.pos];
+                                    if (nc == '\\') return .invalid; // backslash in name invalid
+                                    if (nc == ')') return .invalid; // unterminated group name
+                                    // Check for ':' which is invalid in group name
+                                    if (nc == ':') return .invalid;
+                                    // Handle multi-byte
+                                    if (nc & 0x80 != 0) {
+                                        const blen: usize = if (nc & 0xE0 == 0xC0) 2
+                                                            else if (nc & 0xF0 == 0xE0) 3
+                                                            else if (nc & 0xF8 == 0xF0) 4
+                                                            else 1;
+                                        self.pos += @min(blen, self.body.len - self.pos);
+                                    } else {
+                                        self.pos += 1;
+                                    }
+                                }
+                                if (self.pos >= self.body.len) return .invalid; // unterminated (no >)
+                                // Record group definition
+                                if (self.group_def_count < MAX_GROUPS) {
+                                    self.group_defs[self.group_def_count] = .{
+                                        @intCast(name_start), @intCast(self.pos),
+                                    };
+                                    self.group_def_count += 1;
+                                    self.has_named_group = true;
+                                }
+                                self.pos += 1; // skip >
+                                kind = .atom;
+                            }
+                        } else {
+                            return .invalid;
+                        }
+                    },
+                    else => {
+                        // Could be an inline modifier: (?ims:...) or (?ims-ims:...)
+                        // Valid modifier chars are: i, m, s
+                        // Invalid: any uppercase, u, v, d, g, y, non-letter, etc.
+                        if (!self.parseModifiers()) return .invalid;
+                        kind = .atom;
+                    },
+                }
+            }
+
+            // Parse group body as disjunction
+            const inner = self.disjunction();
+            if (inner == .invalid) return .invalid;
+
+            // Expect closing )
+            if (self.pos < self.body.len and self.body[self.pos] == ')') {
+                self.pos += 1;
+            } else if (self.unicode) {
+                // In /u mode, unclosed groups are invalid
+                // (In non-/u mode we're more lenient)
+            }
+
+            return kind;
+        }
+
+        /// Parse and validate inline modifiers: ims or ims-ims:
+        /// Returns false if invalid.
+        /// Called after '(?' when next char is not ':', '=', '!', '<'
+        fn parseModifiers(self: *RegexValidator) bool {
+            // Parse add-flags: only i, m, s allowed, no duplicates
+            var add_flags: u8 = 0;
+            while (self.pos < self.body.len) {
+                const ch = self.body[self.pos];
+                // Only ASCII letters are valid in the flags portion
+                if (ch & 0x80 != 0) return false; // multi-byte char
+                const bit: u8 = switch (ch) {
+                    'i' => 0x01,
+                    'm' => 0x02,
+                    's' => 0x04,
+                    '-', ':' => break,
+                    else => return false, // invalid char (uppercase, digit, other)
+                };
+                if (add_flags & bit != 0) return false; // duplicate
+                add_flags |= bit;
+                self.pos += 1;
+            }
+
+            if (self.pos >= self.body.len) return false;
+            const sep = self.body[self.pos];
+
+            if (sep == ':') {
+                // (?ims:...) form
+                // Must have at least one add flag OR remove flags
+                // Actually (?:...) is already handled, so this needs at least one flag
+                if (add_flags == 0) return false; // (?:) already handled, empty flags here invalid
+                self.pos += 1; // skip ':'
+                return true;
+            } else if (sep == '-') {
+                self.pos += 1; // skip '-'
+                // Parse remove-flags: only i, m, s allowed
+                var remove_flags: u8 = 0;
+                while (self.pos < self.body.len) {
+                    const ch = self.body[self.pos];
+                    if (ch & 0x80 != 0) return false; // multi-byte char
+                    const bit: u8 = switch (ch) {
+                        'i' => 0x01,
+                        'm' => 0x02,
+                        's' => 0x04,
+                        ':' => break,
+                        else => return false, // invalid
+                    };
+                    if (remove_flags & bit != 0) return false; // duplicate in remove
+                    if (add_flags & bit != 0) return false; // same flag in add and remove
+                    remove_flags |= bit;
+                    self.pos += 1;
+                }
+                // Must end with ':'
+                if (self.pos >= self.body.len or self.body[self.pos] != ':') return false;
+                // At least one of add or remove must be non-empty
+                if (add_flags == 0 and remove_flags == 0) return false;
+                self.pos += 1; // skip ':'
+                return true;
+            } else {
+                // No '-' or ':' — invalid modifier syntax
+                return false;
+            }
+        }
+
+        /// Check if current position starts a quantifier: *, +, ?, {n}, {n,}, {n,m}
+        fn isQuantifierStart(self: *RegexValidator) bool {
+            const c = self.body[self.pos];
+            return c == '*' or c == '+' or c == '?' or c == '{';
+        }
+
+        /// Skip past a quantifier (including optional lazy ?). Returns false if { doesn't
+        /// form a valid quantifier (syntax error in /u mode).
+        fn skipQuantifier(self: *RegexValidator) bool {
+            const c = self.body[self.pos];
+            if (c == '*' or c == '+' or c == '?') {
+                self.pos += 1;
+                // Optional lazy modifier
+                if (self.pos < self.body.len and self.body[self.pos] == '?') self.pos += 1;
+                return true;
+            }
+            if (c == '{') {
+                const end = quantifierEnd(self.body, self.pos);
+                if (end == 0) {
+                    // Not a valid {n}/{n,}/{n,m} — in /u mode this is always invalid.
+                    // In non-/u mode also error (InvalidBracedQuantifier).
+                    return false;
+                }
+                self.pos = end;
+                if (self.pos < self.body.len and self.body[self.pos] == '?') self.pos += 1;
+                return true;
+            }
+            return true;
+        }
+    };
+
+    fn validateRegexBody(body: []const u8, unicode: bool) bool {
+        return RegexValidator.validate(body, unicode);
+    }
+
+    // Keep old name as alias for compatibility
+    fn validateRegexUnicode(body: []const u8) bool {
+        return RegexValidator.validate(body, true);
+    }
+
+    /// If body[pos] starts a valid quantifier ({n}, {n,}, {n,m}), return index
+    /// past the closing }. Otherwise return 0.
+    fn quantifierEnd(body: []const u8, pos: usize) usize {
+        var i = pos + 1;
+        if (i >= body.len) return 0;
+        if (body[i] < '0' or body[i] > '9') return 0;
+        while (i < body.len and body[i] >= '0' and body[i] <= '9') i += 1;
+        if (i >= body.len) return 0;
+        if (body[i] == '}') return i + 1;
+        if (body[i] == ',') {
+            i += 1;
+            if (i >= body.len) return 0;
+            if (body[i] == '}') return i + 1;
+            if (body[i] < '0' or body[i] > '9') return 0;
+            while (i < body.len and body[i] >= '0' and body[i] <= '9') i += 1;
+            if (i < body.len and body[i] == '}') return i + 1;
+        }
+        return 0;
     }
 
     /// Determine whether `/` should be treated as the start of a regex literal
@@ -712,7 +2006,23 @@ pub const Lexer = struct {
             .kw_null,
             .plus_plus,
             .minus_minus,
+            .escaped_keyword,
+            // Contextual keywords that can appear as identifiers in expression position.
+            // Note: kw_yield and kw_await are excluded because they are operators in
+            // generators/async, where `/` after them starts a regex (e.g. `yield /re/`).
+            .kw_of,
+            .kw_from,
+            .kw_as,
+            .kw_let,
+            .kw_static,
+            .kw_get,
+            .kw_set,
+            .kw_target,
+            .kw_meta,
             => false,
+
+            // In JSX mode, `<` followed by `/` is a closing tag `</tag>`, not regex.
+            .less_than => !self.language.isJsx(),
 
             // All other tokens: `/` starts a regex
             else => true,
@@ -738,15 +2048,24 @@ pub const Lexer = struct {
             },
             '{' => {
                 self.index += 1;
+                // Track brace depth for template expression matching
+                if (self.template_depth > 0 and self.template_depth <= self.brace_depth_stack.len) {
+                    self.brace_depth_stack[self.template_depth - 1] += 1;
+                }
                 return self.makeToken(.l_brace, start);
             },
             '}' => {
                 // Check if this `}` closes a template expression
-                if (self.template_depth > 0) {
-                    self.template_depth -= 1;
-                    self.index += 1;
-                    // Resume scanning the template body
-                    return self.scanTemplateContent(start, false);
+                if (self.template_depth > 0 and self.template_depth <= self.brace_depth_stack.len) {
+                    if (self.brace_depth_stack[self.template_depth - 1] == 0) {
+                        // This `}` closes the template expression
+                        self.template_depth -= 1;
+                        self.index += 1;
+                        return self.scanTemplateContent(start, false);
+                    } else {
+                        // This `}` closes a nested block inside the template expression
+                        self.brace_depth_stack[self.template_depth - 1] -= 1;
+                    }
                 }
                 self.index += 1;
                 return self.makeToken(.r_brace, start);
@@ -778,6 +2097,12 @@ pub const Lexer = struct {
             '#' => {
                 self.index += 1;
                 return self.makeToken(.hash, start);
+            },
+
+            // ── At sign (decorator) ──────────────────────────────
+            '@' => {
+                self.index += 1;
+                return self.makeToken(.at_sign, start);
             },
 
             // ── Slash: division, /=, or regex ─────────────────
@@ -1062,6 +2387,25 @@ fn utf8ByteLen(c: u8) u32 {
     if (c & 0xF0 == 0xE0) return 3;
     if (c & 0xF8 == 0xF0) return 4;
     return 0;
+}
+
+fn decodeUtf8(bytes: []const u8, len: u32) u32 {
+    return switch (len) {
+        1 => bytes[0],
+        2 => if (bytes.len >= 2)
+            (@as(u32, bytes[0] & 0x1F) << 6) | (bytes[1] & 0x3F)
+        else
+            0xFFFD,
+        3 => if (bytes.len >= 3)
+            (@as(u32, bytes[0] & 0x0F) << 12) | (@as(u32, bytes[1] & 0x3F) << 6) | (bytes[2] & 0x3F)
+        else
+            0xFFFD,
+        4 => if (bytes.len >= 4)
+            (@as(u32, bytes[0] & 0x07) << 18) | (@as(u32, bytes[1] & 0x3F) << 12) | (@as(u32, bytes[2] & 0x3F) << 6) | (bytes[3] & 0x3F)
+        else
+            0xFFFD,
+        else => 0xFFFD,
+    };
 }
 
 // ══════════════════════════════════════════════════════════════

@@ -107,9 +107,11 @@ pub const BindingKind = enum {
     }
 
     /// Returns true if the binding can be redeclared in the same scope.
+    /// Parameters are redeclarable to support duplicate params in sloppy mode
+    /// (`function f(a, a) {}`). Strict mode duplicate params are caught by the parser.
     pub fn canRedeclare(self: BindingKind) bool {
         return switch (self) {
-            .@"var", .function_decl => true,
+            .@"var", .function_decl, .parameter => true,
             else => false,
         };
     }

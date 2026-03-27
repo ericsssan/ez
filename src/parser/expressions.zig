@@ -25,6 +25,22 @@ const parser_mod = @import("../parser.zig");
 pub const Parser = parser_mod.Parser;
 const Error = parser_mod.Error;
 
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Unwrap nested grouping_expr nodes to find the innermost expression.
+/// `(x)`, `((x))`, `(((x)))` all resolve to the tag of `x`.
+pub fn unwrapGroupingTag(p: *const Parser, node: NodeIndex) Node.Tag {
+    var current = node;
+    var tag = p.nodes.items(.tag)[current.toInt()];
+    while (tag == .grouping_expr) {
+        const inner = p.nodes.items(.data)[current.toInt()].lhs;
+        if (inner == .none) break;
+        current = inner;
+        tag = p.nodes.items(.tag)[current.toInt()];
+    }
+    return tag;
+}
+
 // ── Precedence ────────────────────────────────────────────────────────
 
 pub const Precedence = enum(u8) {
@@ -95,6 +111,30 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         const tag = p.peek();
         if (tag == .eof) break;
 
+        // TS: `as` type assertion (postfix, same prec as relational)
+        if (tag == .kw_as and p.language.isTs()) {
+            if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+            left = try parseTsTypePostfix(p, left, .ts_as_expr);
+            continue;
+        }
+
+        // TS: `satisfies` type check (postfix, same prec as relational)
+        if (tag == .kw_satisfies and p.language.isTs()) {
+            if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+            left = try parseTsTypePostfix(p, left, .ts_satisfies_expr);
+            continue;
+        }
+
+        // TS: `!` non-null assertion (postfix, no newline before)
+        if (tag == .bang and p.language.isTs() and !p.isOnNewLine()) {
+            // Only treat as non-null assertion if it wouldn't make sense as logical not
+            // (i.e., we're not at the start of an expression)
+            const post_prec = Precedence.postfix;
+            if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
+            left = try parseTsNonNullExpression(p, left);
+            continue;
+        }
+
         // Postfix ++ / -- require no newline before the operator.
         if ((tag == .plus_plus or tag == .minus_minus) and !p.isOnNewLine()) {
             const post_prec = Precedence.postfix;
@@ -106,6 +146,14 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         // Call / member / optional-chain / tagged-template precedence.
         if (isCallPrec(tag)) {
             if (@intFromEnum(Precedence.call) < @intFromEnum(min_prec)) break;
+            // Arrow functions are not valid call/member targets without parens
+            if (tag == .l_paren and left != .none) {
+                const left_tag = p.nodes.items(.tag)[left.toInt()];
+                if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
+                    try p.emitError("Arrow function is not directly callable (wrap in parens)");
+                    break;
+                }
+            }
             left = try parseCallLevelInfix(p, left);
             continue;
         }
@@ -113,6 +161,16 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         const infix_prec = getInfixPrecedence(p, tag);
         if (infix_prec == .none) break;
         if (@intFromEnum(infix_prec) < @intFromEnum(min_prec)) break;
+
+        // yield [no LineTerminator here] — if yield returned with no operand
+        // and next operator is on a new line, don't consume it
+        if (left != .none and p.isOnNewLine()) {
+            const left_tag = p.nodes.items(.tag)[left.toInt()];
+            if (left_tag == .yield_expr) {
+                const d = p.nodes.items(.data)[left.toInt()];
+                if (d.lhs == .none) break; // yield with no operand — ASI boundary
+            }
+        }
 
         left = try parseInfixExpression(p, left, infix_prec);
     }
@@ -140,7 +198,20 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
         // ── Keyword unary ────────────────────────────────────
         .kw_typeof => try parseUnaryOp(p, .typeof_expr),
         .kw_void => try parseUnaryOp(p, .void_expr),
-        .kw_delete => try parseUnaryOp(p, .delete_expr),
+        .kw_delete => blk: {
+            const del_node = try parseUnaryOp(p, .delete_expr);
+            // In strict mode, `delete identifier` is a syntax error
+            if (p.in_strict and del_node != .none) {
+                const del_data = p.nodes.items(.data)[del_node.toInt()];
+                if (del_data.lhs != .none) {
+                    const operand_tag = p.nodes.items(.tag)[del_data.lhs.toInt()];
+                    if (operand_tag == .identifier) {
+                        try p.emitError("'delete' of unqualified identifier in strict mode");
+                    }
+                }
+            }
+            break :blk del_node;
+        },
 
         // ── Await ────────────────────────────────────────────
         .kw_await => try parseAwaitExpression(p),
@@ -161,6 +232,33 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
 fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
     const tok = p.advance();
     const operand = try parseExpressionPrec(p, .unary);
+
+    // Validate prefix ++/-- operand (parenthesized identifiers valid: ++(x), ++((x)))
+    if (node_tag == .prefix_inc or node_tag == .prefix_dec) {
+        const op_tag = unwrapGroupingTag(p, operand);
+        switch (op_tag) {
+            .identifier, .member_expr, .computed_member_expr => {},
+            .optional_member_expr, .optional_computed_member_expr => {
+                try p.emitError("Invalid left-hand side in prefix operation: optional chain");
+                return error.ParseError;
+            },
+            else => try p.emitError("Invalid left-hand side in prefix operation"),
+        }
+        // Strict mode: cannot update eval/arguments
+        if (op_tag == .identifier and p.in_strict) {
+            const op_tok = p.nodes.items(.main_token)[operand.toInt()];
+            try p.checkStrictAssignTarget(op_tok);
+        }
+    }
+
+    // Arrow functions are AssignmentExpressions, not valid as unary operands
+    if (operand != .none) {
+        const op_tag = p.nodes.items(.tag)[operand.toInt()];
+        if (op_tag == .arrow_fn or op_tag == .async_arrow_fn) {
+            try p.emitError("Arrow function is not allowed as operand of unary expression");
+        }
+    }
+
     return p.addNode(.{
         .tag = node_tag,
         .main_token = tok,
@@ -170,6 +268,21 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 
 
 fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
+    // Operand must be assignable (parenthesized identifiers are valid: (x)++, ((x))++)
+    const op_tag = unwrapGroupingTag(p, operand);
+    switch (op_tag) {
+        .identifier, .member_expr, .computed_member_expr => {},
+        .optional_member_expr, .optional_computed_member_expr => {
+            try p.emitError("Invalid left-hand side in postfix operation: optional chain");
+            return error.ParseError;
+        },
+        else => try p.emitError("Invalid left-hand side in postfix operation"),
+    }
+    // Strict mode: cannot update eval/arguments
+    if (op_tag == .identifier and p.in_strict) {
+        const op_tok = p.nodes.items(.main_token)[operand.toInt()];
+        try p.checkStrictAssignTarget(op_tok);
+    }
     const tag = p.peek();
     const node_tag: Node.Tag = if (tag == .plus_plus) .postfix_inc else .postfix_dec;
     const tok = p.advance();
@@ -184,6 +297,11 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
 
 fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
     if (!p.in_async) {
+        // In module mode, `await` is a reserved word
+        if (p.is_module) {
+            try p.emitError("'await' is not allowed as an identifier in module mode");
+            return error.ParseError;
+        }
         // `await` used outside async context — treat as identifier.
         return parseIdentifier(p);
     }
@@ -200,8 +318,13 @@ fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
 
 fn parseYieldExpression(p: *Parser) Error!NodeIndex {
     if (!p.in_generator) {
-        // `yield` outside a generator — treat as identifier.
-        return parseIdentifier(p);
+        // In strict mode / module, `yield` cannot be used as an identifier
+        if (p.in_strict or p.is_module) {
+            try p.emitError("'yield' is not allowed as an identifier in strict mode");
+            return error.ParseError;
+        }
+        // `yield` outside a generator — treat as identifier (may be arrow param).
+        return parseIdentifierOrArrow(p);
     }
     const tok = p.advance(); // consume `yield`
 
@@ -235,9 +358,285 @@ fn parseYieldExpression(p: *Parser) Error!NodeIndex {
 
 fn isYieldTerminator(tag: TokenTag) bool {
     return switch (tag) {
-        .semicolon, .r_paren, .r_bracket, .r_brace, .comma, .colon, .eof => true,
+        .semicolon, .r_paren, .r_bracket, .r_brace, .comma, .colon, .eof,
+        .template_middle, .template_tail,
+        => true,
         else => false,
     };
+}
+
+/// Check if a token index appears as an identifier param earlier in the list.
+fn hasDuplicateParam(p: *Parser, params: []const u32, current_idx: usize, tok: TokenIndex) bool {
+    const name = p.source[p.tokens.items(.start)[tok]..];
+    for (params[0..current_idx]) |other_raw| {
+        const other = NodeIndex.fromInt(other_raw);
+        var other_tok: ?TokenIndex = null;
+        const other_tag = p.nodes.items(.tag)[other.toInt()];
+        if (other_tag == .identifier) {
+            other_tok = p.nodes.items(.main_token)[other.toInt()];
+        } else if (other_tag == .rest_element or other_tag == .spread_element) {
+            const d = p.nodes.items(.data)[other.toInt()];
+            if (d.lhs != .none and p.nodes.items(.tag)[d.lhs.toInt()] == .identifier) {
+                other_tok = p.nodes.items(.main_token)[d.lhs.toInt()];
+            }
+        }
+        if (other_tok) |ot| {
+            const other_name = p.source[p.tokens.items(.start)[ot]..];
+            // Compare identifier text (up to non-ident char)
+            var len: usize = 0;
+            while (len < name.len and len < other_name.len and isIdentChar(name[len]) and isIdentChar(other_name[len])) : (len += 1) {}
+            if (len > 0 and len < name.len and !isIdentChar(name[len]) and len < other_name.len and !isIdentChar(other_name[len])) {
+                const n1 = name[0..len];
+                const n2 = other_name[0..len];
+                if (std.mem.eql(u8, n1, n2)) return true;
+            }
+        }
+    }
+    return false;
+}
+
+fn isIdentChar(c: u8) bool {
+    return switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '_', '$' => true,
+        else => false,
+    };
+}
+
+// ── Pattern validation ───────────────────────────────────────────────
+
+fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
+    if (node == .none) return;
+    const tag = p.nodes.items(.tag)[node.toInt()];
+
+    if (tag == .array_pattern) {
+        const data = p.nodes.items(.data)[node.toInt()];
+        const start = data.lhs.toInt();
+        const end = data.rhs.toInt();
+        if (end > start) {
+            var i = start;
+            while (i < end) : (i += 1) {
+                const child = NodeIndex.fromInt(p.extra_data.items[i]);
+                if (child == .none) continue;
+                const child_tag = p.nodes.items(.tag)[child.toInt()];
+                // Rest must be last (also reject trailing comma after rest = elision)
+                if (child_tag == .rest_element) {
+                    // Check: any non-none elements after this?
+                    var has_after = false;
+                    var j = i + 1;
+                    while (j < end) : (j += 1) {
+                        const next = NodeIndex.fromInt(p.extra_data.items[j]);
+                        if (next != .none) has_after = true;
+                    }
+                    // Even if only .none after (trailing comma), rest can't have trailing comma
+                    if (i < end - 1 or has_after) {
+                        try p.emitError("Rest element must be last in destructuring pattern");
+                        return error.ParseError;
+                    }
+                    // Rest target cannot have a default value, be parenthesized, or a literal
+                    const rest_data = p.nodes.items(.data)[child.toInt()];
+                    if (rest_data.lhs != .none) {
+                        const rest_target_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
+                        if (rest_target_tag == .grouping_expr or rest_target_tag == .assign or
+                            rest_target_tag == .assignment_pattern)
+                        {
+                            try p.emitError("Invalid rest element target in destructuring");
+                            return error.ParseError;
+                        }
+                        // Recursively validate rest target (e.g. [...{a: 0}] where 0 is invalid)
+                        try validatePattern(p, rest_data.lhs);
+                    }
+                }
+                // Literals, compound assignments, parenthesized as targets are invalid
+                if (child_tag == .number_literal or child_tag == .string_literal or
+                    child_tag == .boolean_literal or child_tag == .null_literal or
+                    child_tag == .grouping_expr or
+                    child_tag == .add_assign or child_tag == .sub_assign or
+                    child_tag == .mul_assign or child_tag == .div_assign or
+                    child_tag == .mod_assign or child_tag == .exp_assign or
+                    child_tag == .and_assign or child_tag == .or_assign or
+                    child_tag == .xor_assign or child_tag == .shl_assign or
+                    child_tag == .shr_assign or child_tag == .ushr_assign or
+                    child_tag == .logical_and_assign or child_tag == .logical_or_assign or
+                    child_tag == .nullish_assign or
+                    child_tag == .call_expr or child_tag == .new_expr or
+                    child_tag == .this_expr or child_tag == .regex_literal or
+                    child_tag == .template_literal or child_tag == .tagged_template or
+                    child_tag == .super_expr or child_tag == .class_expr or
+                    child_tag == .fn_expr)
+                {
+                    try p.emitError("Invalid destructuring target");
+                    return error.ParseError;
+                }
+            }
+        }
+    }
+
+    if (tag == .object_pattern) {
+        const data = p.nodes.items(.data)[node.toInt()];
+        const start = data.lhs.toInt();
+        const end = data.rhs.toInt();
+        var i = start;
+        while (i < end) : (i += 1) {
+            const prop = NodeIndex.fromInt(p.extra_data.items[i]);
+            if (prop == .none) continue;
+            const prop_tag = p.nodes.items(.tag)[prop.toInt()];
+            // Getter/setter/method definitions are not valid in destructuring patterns
+            if (prop_tag == .getter_def or prop_tag == .setter_def or prop_tag == .method_def or
+                prop_tag == .computed_method_def or prop_tag == .computed_getter_def or
+                prop_tag == .computed_setter_def)
+            {
+                try p.emitError("Invalid destructuring target: method definition in pattern");
+                return error.ParseError;
+            }
+            // Rest must be last in object pattern
+            if (prop_tag == .rest_element) {
+                if (i < end - 1) {
+                    try p.emitError("Rest element must be last in destructuring pattern");
+                    return error.ParseError;
+                }
+            }
+            // Check property values for invalid targets
+            if (prop_tag == .property) {
+                const prop_data = p.nodes.items(.data)[prop.toInt()];
+                if (prop_data.rhs != .none) {
+                    const val_tag = p.nodes.items(.tag)[prop_data.rhs.toInt()];
+                    if (val_tag == .this_expr or val_tag == .grouping_expr or
+                        val_tag == .number_literal or val_tag == .string_literal or
+                        val_tag == .boolean_literal or val_tag == .null_literal or
+                        val_tag == .add_assign or val_tag == .sub_assign or
+                        val_tag == .mul_assign or val_tag == .div_assign or
+                        val_tag == .mod_assign or val_tag == .exp_assign or
+                        val_tag == .and_assign or val_tag == .or_assign or
+                        val_tag == .xor_assign or val_tag == .shl_assign or
+                        val_tag == .shr_assign or val_tag == .ushr_assign or
+                        val_tag == .logical_and_assign or val_tag == .logical_or_assign or
+                        val_tag == .nullish_assign or
+                        val_tag == .call_expr or val_tag == .new_expr or
+                        val_tag == .regex_literal or val_tag == .template_literal or
+                        val_tag == .tagged_template or val_tag == .super_expr or
+                        val_tag == .class_expr or val_tag == .fn_expr)
+                    {
+                        try p.emitError("Invalid destructuring target");
+                        return error.ParseError;
+                    }
+                    // Recursively validate nested patterns
+                    try validatePattern(p, prop_data.rhs);
+                }
+            }
+            // Shorthand with numeric/string key
+            if (prop_tag == .number_literal or prop_tag == .string_literal) {
+                try p.emitError("Invalid shorthand property in destructuring");
+                return error.ParseError;
+            }
+            // Shorthand property with non-identifier key (e.g. {0}, {'a'})
+            if (prop_tag == .shorthand_property) {
+                const sp_data = p.nodes.items(.data)[prop.toInt()];
+                if (sp_data.lhs != .none) {
+                    const sp_key_tag = p.nodes.items(.tag)[sp_data.lhs.toInt()];
+                    if (sp_key_tag == .number_literal or sp_key_tag == .string_literal) {
+                        try p.emitError("Invalid shorthand property in destructuring");
+                        return error.ParseError;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── Strict mode checks ───────────────────────────────────────────────
+
+/// Recursively validate arrow parameter — reject member expressions, literals, etc. deep in patterns.
+fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
+    if (node == .none) return;
+    const tag = p.nodes.items(.tag)[node.toInt()];
+    switch (tag) {
+        .identifier, .assignment_pattern, .assign => {},
+        .rest_element, .spread_element => {
+            // Validate rest target recursively
+            const d = p.nodes.items(.data)[node.toInt()];
+            if (d.lhs != .none) try validateArrowParam(p, d.lhs);
+        },
+        .array_literal, .array_pattern => {
+            const d = p.nodes.items(.data)[node.toInt()];
+            const s = d.lhs.toInt();
+            const e = d.rhs.toInt();
+            var i = s;
+            while (i < e) : (i += 1) {
+                try validateArrowParam(p, NodeIndex.fromInt(p.extra_data.items[i]));
+            }
+        },
+        .object_literal, .object_pattern => {
+            const d = p.nodes.items(.data)[node.toInt()];
+            const s = d.lhs.toInt();
+            const e = d.rhs.toInt();
+            var i = s;
+            while (i < e) : (i += 1) {
+                const prop = NodeIndex.fromInt(p.extra_data.items[i]);
+                const prop_tag = p.nodes.items(.tag)[prop.toInt()];
+                if (prop_tag == .property or prop_tag == .computed_property) {
+                    // Validate the value (rhs) of the property
+                    const prop_data = p.nodes.items(.data)[prop.toInt()];
+                    try validateArrowParam(p, prop_data.rhs);
+                } else if (prop_tag == .shorthand_property) {
+                    // Shorthand property key must be an identifier, not a literal
+                    const prop_data = p.nodes.items(.data)[prop.toInt()];
+                    if (prop_data.lhs != .none) {
+                        const key_tag = p.nodes.items(.tag)[prop_data.lhs.toInt()];
+                        if (key_tag == .number_literal or key_tag == .string_literal or
+                            key_tag == .boolean_literal)
+                        {
+                            return p.emitError("Invalid destructuring in arrow function parameter");
+                        }
+                    }
+                } else if (prop_tag == .getter_def or prop_tag == .setter_def or prop_tag == .method_def) {
+                    return p.emitError("Invalid destructuring in arrow function parameter");
+                }
+            }
+        },
+        .member_expr, .computed_member_expr, .call_expr,
+        .getter_def, .setter_def, .method_def,
+        .number_literal, .string_literal,
+        => return p.emitError("Invalid destructuring in arrow function parameter"),
+        else => {},
+    }
+}
+
+/// Emit diagnostic for octal number in strict mode (non-fatal — parsing continues).
+fn checkStrictOctalNumber(p: *Parser) !void {
+    const start = p.tokens.items(.start)[p.tok_i];
+    if (start >= p.source.len) return;
+    if (p.source[start] == '0' and start + 1 < p.source.len) {
+        const next = p.source[start + 1];
+        if (next >= '0' and next <= '7') {
+            try p.emitError("Octal literals are not allowed in strict mode");
+        } else if (next == '8' or next == '9') {
+            try p.emitError("Decimals with leading zeros are not allowed in strict mode");
+        }
+    }
+}
+
+/// Emit diagnostic for octal escape in string in strict mode (non-fatal).
+fn checkStrictOctalString(p: *Parser) !void {
+    const start = p.tokens.items(.start)[p.tok_i];
+    if (start >= p.source.len) return;
+    const quote = p.source[start];
+    var i = start + 1;
+    while (i < p.source.len and p.source[i] != quote) {
+        if (p.source[i] == '\\' and i + 1 < p.source.len) {
+            const esc = p.source[i + 1];
+            if (esc >= '1' and esc <= '7') {
+                try p.emitError("Octal escape sequences are not allowed in strict mode");
+                return;
+            }
+            if (esc == '0' and i + 2 < p.source.len and p.source[i + 2] >= '0' and p.source[i + 2] <= '9') {
+                try p.emitError("Octal escape sequences are not allowed in strict mode");
+                return;
+            }
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
 }
 
 // =====================================================================
@@ -247,25 +646,91 @@ fn isYieldTerminator(tag: TokenTag) bool {
 pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
     const tag = p.peek();
     return switch (tag) {
-        .identifier => try parseIdentifierOrArrow(p),
-        .number_literal => try parseLiteral(p, .number_literal),
-        .string_literal => try parseLiteral(p, .string_literal),
+        .identifier, .escaped_keyword,
+        .kw_get, .kw_set, .kw_of, .kw_from, .kw_as, .kw_target, .kw_meta,
+        .kw_let, .kw_static, .kw_implements, .kw_interface,
+        => try parseIdentifierOrArrow(p),
+        // await/yield as identifiers when not in their reserved contexts
+        .kw_await => if (!p.in_async and !p.is_module) try parseIdentifierOrArrow(p) else {
+            try p.emitError("Expected expression");
+            return p.makeErrorNode();
+        },
+        .kw_yield => if (!p.in_generator and !p.in_strict) try parseIdentifierOrArrow(p) else {
+            try p.emitError("Expected expression");
+            return p.makeErrorNode();
+        },
+        .number_literal => blk: {
+            if (p.in_strict) try checkStrictOctalNumber(p);
+            break :blk try parseLiteral(p, .number_literal);
+        },
+        .string_literal => blk: {
+            if (p.in_strict) try checkStrictOctalString(p);
+            break :blk try parseLiteral(p, .string_literal);
+        },
         .bigint_literal => try parseLiteral(p, .bigint_literal),
         .regex_literal => try parseLiteral(p, .regex_literal),
         .kw_true, .kw_false => try parseLiteral(p, .boolean_literal),
         .kw_null => try parseLiteral(p, .null_literal),
         .kw_this => try parseLiteral(p, .this_expr),
-        .kw_super => try parseLiteral(p, .super_expr),
+        .kw_super => blk: {
+            if (!p.in_class and !p.in_method) try p.emitError("'super' is only valid inside a class or method");
+            // super must be followed by `.`, `[`, or `(` — bare `super` is invalid
+            const next = p.peekAt(1);
+            if (next != .dot and next != .l_bracket and next != .l_paren) {
+                try p.emitError("'super' keyword unexpected here");
+            }
+            break :blk try parseLiteral(p, .super_expr);
+        },
         .template_head, .template_no_sub => try parseTemplateLiteral(p),
         .l_paren => try parseParenthesized(p),
         .l_bracket => try parseArrayLiteral(p),
         .l_brace => try parseObjectLiteral(p),
         .kw_function => try parseFunctionExpression(p),
         .kw_class => try parseClassExpression(p),
+        .at_sign => blk: {
+            // Decorator(s) before class expression: @expr class { }
+            while (p.peek() == .at_sign) {
+                _ = p.advance(); // eat @
+                _ = try parseAssignmentExpression(p);
+            }
+            if (p.peek() == .kw_class) {
+                break :blk try parseClassExpression(p);
+            }
+            try p.emitError("Expected class after decorator");
+            break :blk try p.makeErrorNode();
+        },
         .kw_async => try parseAsyncExpressionOrIdentifier(p),
         .kw_import => try parseImportExpression(p),
-        else => {
+        .hash => blk: {
+            // #identifier — private brand check (used with `in`: `#x in obj`)
+            const hash_tok = p.advance();
+            if (p.peek() == .identifier) _ = p.advance();
+            break :blk try p.addNode(.{
+                .tag = .identifier,
+                .main_token = hash_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        },
+        .less_than => {
+            // JSX element: <tag> or <> fragment
+            if (p.language.isJsx()) {
+                const jsx_mod = @import("jsx.zig");
+                _ = p.advance(); // consume '<'
+                return jsx_mod.parseJsxElement(p);
+            }
+            // TS type assertion: <Type>expr
+            if (p.language.isTs()) {
+                return parseTsTypeAssertion(p);
+            }
             try p.emitError("Expected expression");
+            return p.makeErrorNode();
+        },
+        else => {
+            if (tag.isTsContextualKeyword()) {
+                return try parseIdentifier(p);
+            }
+            try p.emitError("Expected expression");
+            _ = p.advance(); // skip unexpected token to guarantee forward progress
             return p.makeErrorNode();
         },
     };
@@ -337,8 +802,10 @@ fn parseAsyncExpressionOrIdentifier(p: *Parser) Error!NodeIndex {
         return parseAsyncParenArrowOrCall(p, async_tok);
     }
 
-    // async ident => body
-    if (next_tag == .identifier) {
+    // async ident => body (includes contextual keywords like `of`, `let`, etc.)
+    if (next_tag == .identifier or next_tag == .kw_of or next_tag == .kw_let or
+        next_tag == .kw_get or next_tag == .kw_set or next_tag == .kw_from or
+        next_tag == .kw_as or next_tag == .kw_static) {
         const ident_tok = p.advance();
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             return parseArrowFunctionBody(p, ident_tok, true);
@@ -375,6 +842,7 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
 
     // Optional name
     const name_node: NodeIndex = if (p.peek() == .identifier) blk: {
+        try p.checkStrictBinding(p.tok_i);
         const name_tok = p.advance();
         break :blk try p.addNode(.{
             .tag = .identifier,
@@ -383,16 +851,19 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
         });
     } else .none;
 
-    const params_range = try parseFormalParameters(p);
-
+    // Set async/generator BEFORE parsing params — await/yield reserved in params
     const saved_fn = p.in_function;
-    p.in_function = true;
-    defer p.in_function = saved_fn;
     const saved_async = p.in_async;
+    const saved_gen = p.in_generator;
+    p.in_function = true;
     p.in_async = true;
+    p.in_generator = is_generator;
+    defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
+    defer p.in_generator = saved_gen;
 
-    const body = try parseBlockBody(p);
+    const params_range = try parseFormalParameters(p);
+    const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
 
     const fn_tag: Node.Tag = if (is_generator) .async_generator_fn_expr else .async_fn_expr;
 
@@ -439,14 +910,40 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         for (params) |node_raw| {
             reinterpretAsPattern(p, NodeIndex.fromInt(node_raw));
         }
+
+        // Check restrictions on async arrow params
+        for (params) |node_raw| {
+            const param_node = NodeIndex.fromInt(node_raw);
+            if (param_node == .none) continue;
+            const pt = p.nodes.items(.tag)[param_node.toInt()];
+            if (pt == .identifier) {
+                const ptok = p.nodes.items(.main_token)[param_node.toInt()];
+                // In async arrows, `await` cannot be a parameter name
+                const ptext = p.tokenText(ptok);
+                if (std.mem.eql(u8, ptext, "await")) {
+                    try p.emitError("'await' is not allowed as a parameter name in async arrow");
+                    return error.ParseError;
+                }
+                if (p.in_strict) {
+                    try p.checkStrictBinding(ptok);
+                }
+            }
+        }
+
         const params_range = try p.addSlice(params);
         p.scratchPop(scratch_top);
 
         _ = p.advance(); // consume `=>`
         const saved_async = p.in_async;
+        const saved_fn4 = p.in_function;
         p.in_async = true;
-        const body = try parseArrowBody(p);
-        p.in_async = saved_async;
+        p.in_function = true;
+        defer p.in_async = saved_async;
+        defer p.in_function = saved_fn4;
+        const body = if (p.peek() == .l_brace)
+            try parseBlockBodyWithStrictChecks(p, params_range, .none)
+        else
+            try parseAssignmentExpression(p);
 
         const extra = try p.addExtra(ast.ArrowData, .{
             .params_start = params_range.start,
@@ -493,6 +990,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         _ = p.advance(); // consume `)`
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
+            const saved_fn2 = p.in_function;
+            p.in_function = true;
+            defer p.in_function = saved_fn2;
             const body = try parseArrowBody(p);
             const params_range = try p.addSlice(&[_]u32{});
             const extra = try p.addExtra(ast.ArrowData, .{
@@ -529,14 +1029,98 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     // If `=>` follows, reinterpret as arrow parameters.
     if (p.peek() == .arrow and !p.isOnNewLine()) {
         const params = p.scratchSlice(scratch_top);
+
+        // Validate arrow parameters
+        for (params, 0..) |node_raw, idx| {
+            const param_node = NodeIndex.fromInt(node_raw);
+            const param_tag = p.nodes.items(.tag)[param_node.toInt()];
+            switch (param_tag) {
+                .identifier => {
+                    const tok = p.nodes.items(.main_token)[param_node.toInt()];
+                    if (hasDuplicateParam(p, params, idx, tok)) {
+                        try p.emitError("Duplicate parameter name in arrow function");
+                        return p.makeErrorNode();
+                    }
+                },
+                .assign, .assignment_pattern => {},
+                .array_pattern, .object_pattern, .array_literal,
+                .object_literal,
+                => {
+                    // Deep validate for member exprs, literals, etc.
+                    validateArrowParam(p, param_node) catch {
+                        return p.makeErrorNode();
+                    };
+                },
+                .member_expr, .computed_member_expr, .call_expr,
+                .getter_def, .setter_def, .method_def,
+                => {
+                    try p.emitError("Invalid destructuring in arrow function parameter");
+                    return p.makeErrorNode();
+                },
+                .rest_element, .spread_element => {
+                    if (idx < params.len - 1) {
+                        try p.emitError("Rest parameter must be last");
+                        return p.makeErrorNode();
+                    }
+                    // Validate rest target contents (reject literals in patterns)
+                    const rest_data = p.nodes.items(.data)[param_node.toInt()];
+                    if (rest_data.lhs != .none) {
+                        const rest_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
+                        if (rest_tag == .identifier) {
+                            const rest_tok = p.nodes.items(.main_token)[rest_data.lhs.toInt()];
+                            if (hasDuplicateParam(p, params, idx, rest_tok)) {
+                                try p.emitError("Duplicate parameter name in arrow function");
+                                return p.makeErrorNode();
+                            }
+                        } else {
+                            validateArrowParam(p, rest_data.lhs) catch {
+                                return p.makeErrorNode();
+                            };
+                        }
+                    }
+                },
+                .number_literal, .string_literal, .boolean_literal,
+                .null_literal, .this_expr, .grouping_expr,
+                .yield_expr, .yield_delegate, .await_expr,
+                => {
+                    try p.emitError("Invalid arrow function parameter");
+                    return p.makeErrorNode();
+                },
+                else => {},
+            }
+        }
+
         for (params) |node_raw| {
             reinterpretAsPattern(p, NodeIndex.fromInt(node_raw));
         }
+
+        // Check strict-mode restrictions on arrow params
+        if (p.in_strict) {
+            for (params) |node_raw| {
+                const param_node = NodeIndex.fromInt(node_raw);
+                if (param_node == .none) continue;
+                const pt = p.nodes.items(.tag)[param_node.toInt()];
+                if (pt == .identifier) {
+                    const ptok = p.nodes.items(.main_token)[param_node.toInt()];
+                    try p.checkStrictBinding(ptok);
+                }
+            }
+        }
+
         const params_range = try p.addSlice(params);
         p.scratchPop(scratch_top);
 
         _ = p.advance(); // consume `=>`
-        const body = try parseArrowBody(p);
+
+        const saved_fn3 = p.in_function;
+        p.in_function = true;
+        defer p.in_function = saved_fn3;
+
+        // Arrow body: block { } with strict checks, or concise expression
+        const body = if (p.peek() == .l_brace)
+            try parseBlockBodyWithStrictChecks(p, params_range, .none)
+        else
+            try parseAssignmentExpression(p);
 
         const extra = try p.addExtra(ast.ArrowData, .{
             .params_start = params_range.start,
@@ -550,9 +1134,40 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Not an arrow.  If there was a single expression, wrap as grouping.
+    // Not an arrow — validate no spread elements (spread is only valid in arrows, arrays, calls)
     const elems = p.scratchSlice(scratch_top);
+    for (elems) |elem_raw| {
+        const elem_node = NodeIndex.fromInt(elem_raw);
+        if (elem_node != .none and p.nodes.items(.tag)[elem_node.toInt()] == .spread_element) {
+            try p.emitError("Unexpected spread in parenthesized expression (not an arrow function)");
+        }
+    }
+
     if (elems.len == 1) {
+        const first_tag = p.nodes.items(.tag)[first.toInt()];
+
+        // Parenthesized super is invalid — super must be followed directly by `.`, `[`, or `(`
+        if (first_tag == .super_expr) {
+            try p.emitError("'super' keyword unexpected here");
+        }
+
+        // Check for CoverInitializedName: ({a = 0}) without => is invalid
+        if (first_tag == .object_literal) {
+            const d = p.nodes.items(.data)[first.toInt()];
+            const s = d.lhs.toInt();
+            const e = d.rhs.toInt();
+            var i = s;
+            while (i < e) : (i += 1) {
+                const prop = NodeIndex.fromInt(p.extra_data.items[i]);
+                if (prop != .none) {
+                    const pt = p.nodes.items(.tag)[prop.toInt()];
+                    if (pt == .assignment_pattern) {
+                        try p.emitError("Invalid shorthand property initializer (not a destructuring pattern)");
+                    }
+                }
+            }
+        }
+
         p.scratchPop(scratch_top);
         return p.addNode(.{
             .tag = .grouping_expr,
@@ -583,6 +1198,9 @@ fn parseArrowBody(p: *Parser) Error!NodeIndex {
 /// Build an arrow node for a single-parameter arrow: `ident => body`.
 /// `param_tok` is the identifier token for the parameter.
 fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Error!NodeIndex {
+    // Check strict-mode restrictions on the single parameter
+    try p.checkStrictBinding(param_tok);
+
     const arrow_tok = p.advance(); // consume `=>`
     _ = arrow_tok;
 
@@ -595,10 +1213,13 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
 
     const params = try p.addSlice(&[_]u32{param_node.toInt()});
 
+    const saved_fn = p.in_function;
     const saved_async = p.in_async;
+    p.in_function = true;
     if (is_async) p.in_async = true;
+    defer p.in_function = saved_fn;
+    defer p.in_async = saved_async;
     const body = try parseArrowBody(p);
-    p.in_async = saved_async;
 
     const extra = try p.addExtra(ast.ArrowData, .{
         .params_start = params.start,
@@ -635,6 +1256,10 @@ fn parseAssignmentOrSpread(p: *Parser) Error!NodeIndex {
 fn parseArrayLiteral(p: *Parser) Error!NodeIndex {
     const open = p.advance(); // consume `[`
     const scratch_top = p.scratchLen();
+    // Array elements allow `in` even in for-loop context (for destructuring defaults)
+    const saved_allow_in_arr = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in_arr;
 
     while (p.peek() != .r_bracket and p.peek() != .eof) {
         // Elision (hole): consecutive commas
@@ -658,6 +1283,21 @@ fn parseArrayLiteral(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.r_bracket);
 
     const elements = p.scratchSlice(scratch_top);
+
+    // Check rest/spread with trailing comma: [...a,] is invalid in all contexts
+    if (elements.len > 0) {
+        const last_elem = NodeIndex.fromInt(elements[elements.len - 1]);
+        if (last_elem != .none and p.nodes.items(.tag)[last_elem.toInt()] == .spread_element) {
+            // Spread is the last element AND there was a trailing comma (peek was comma → advance → break)
+            // The trailing comma was consumed, so if the previous token was `,`, it was trailing
+            if (p.tok_i > 0 and p.tokenTagAt(p.tok_i - 1) == .r_bracket and
+                p.tok_i > 1 and p.tokenTagAt(p.tok_i - 2) == .comma)
+            {
+                try p.emitError("Rest element may not have a trailing comma");
+            }
+        }
+    }
+
     const range = try p.addSlice(elements);
     p.scratchPop(scratch_top);
 
@@ -679,6 +1319,10 @@ fn parseObjectLiteral(p: *Parser) Error!NodeIndex {
     while (p.peek() != .r_brace and p.peek() != .eof) {
         const prop = try parseObjectProperty(p);
         try p.scratchPush(prop);
+
+        // Note: duplicate __proto__ is a syntax error in object literals but NOT in
+        // destructuring patterns. Since we can't distinguish at parse time (cover grammar),
+        // we defer this check to semantic analysis / lint rules.
 
         if (p.peek() == .comma) {
             _ = p.advance();
@@ -744,30 +1388,60 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
 
     const key = try parsePropertyName(p);
 
+    // Set method flags BEFORE parsing params so super works in setter param defaults
+    const saved_fn = p.in_function;
+    const saved_method = p.in_method;
+    p.in_function = true;
+    p.in_method = true;
+    defer p.in_function = saved_fn;
+    defer p.in_method = saved_method;
+
     // Parse function part
     _ = try p.expect(.l_paren);
 
+    // Validate getter/setter parameter count before parsing
+    if (accessor_tag == .kw_get and p.peek() != .r_paren) {
+        try p.emitError("Getter must have zero parameters");
+        return error.ParseError;
+    }
+    if (accessor_tag == .kw_set and p.peek() == .r_paren) {
+        try p.emitError("Setter must have exactly one parameter");
+        return error.ParseError;
+    }
+
     const params_range = if (accessor_tag == .kw_set) blk: {
-        // Setter has exactly one parameter.
         const scratch_top = p.scratchLen();
         const param = try parseBindingElement(p);
+        const param_tag = p.nodes.items(.tag)[param.toInt()];
+        // Setter param must not be rest
+        if (param_tag == .rest_element) {
+            try p.emitError("Setter parameter must not be a rest parameter");
+            return error.ParseError;
+        }
+        // In strict mode, eval/arguments cannot be setter param names
+        if (p.in_strict and param_tag == .identifier) {
+            const param_name = p.tokenText(p.nodes.items(.main_token)[param.toInt()]);
+            if (std.mem.eql(u8, param_name, "eval") or std.mem.eql(u8, param_name, "arguments")) {
+                try p.emitError("'eval' or 'arguments' can't be used as parameter name in strict mode");
+                return error.ParseError;
+            }
+        }
         try p.scratchPush(param);
+        if (p.peek() == .comma) {
+            try p.emitError("Setter must have exactly one parameter");
+            return error.ParseError;
+        }
         const params = p.scratchSlice(scratch_top);
         const range = try p.addSlice(params);
         p.scratchPop(scratch_top);
         break :blk range;
     } else blk: {
-        // Getter has no parameters.
         break :blk try p.addSlice(&[_]u32{});
     };
 
     _ = try p.expect(.r_paren);
 
-    const saved_fn = p.in_function;
-    p.in_function = true;
-    defer p.in_function = saved_fn;
-
-    const body = try parseBlockBody(p);
+    const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
         .params_start = params_range.start,
@@ -789,17 +1463,23 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     if (is_generator) _ = p.advance();
 
     const key = try parsePropertyName(p);
-    const params_range = try parseFormalParameters(p);
+
+    // Set flags BEFORE parsing params
     const saved_fn = p.in_function;
-    p.in_function = true;
-    defer p.in_function = saved_fn;
     const saved_async = p.in_async;
-    p.in_async = true;
-    defer p.in_async = saved_async;
     const saved_gen = p.in_generator;
+    const saved_method = p.in_method;
+    p.in_function = true;
+    p.in_async = true;
     p.in_generator = is_generator;
+    p.in_method = true;
+    defer p.in_function = saved_fn;
+    defer p.in_async = saved_async;
     defer p.in_generator = saved_gen;
-    const body = try parseBlockBody(p);
+    defer p.in_method = saved_method;
+
+    const params_range = try parseFormalParameters(p);
+    const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
         .params_start = params_range.start,
@@ -816,14 +1496,20 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
 fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     const star_tok = p.advance(); // consume `*`
     const key = try parsePropertyName(p);
-    const params_range = try parseFormalParameters(p);
+
+    // Set flags BEFORE parsing params
     const saved_fn = p.in_function;
-    p.in_function = true;
-    defer p.in_function = saved_fn;
     const saved_gen = p.in_generator;
+    const saved_method = p.in_method;
+    p.in_function = true;
     p.in_generator = true;
+    p.in_method = true;
+    defer p.in_function = saved_fn;
     defer p.in_generator = saved_gen;
-    const body = try parseBlockBody(p);
+    defer p.in_method = saved_method;
+
+    const params_range = try parseFormalParameters(p);
+    const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
         .params_start = params_range.start,
@@ -839,16 +1525,23 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
 
 fn parseComputedProperty(p: *Parser) Error!NodeIndex {
     const open = p.advance(); // consume `[`
+    // Computed property keys always allow `in` (e.g. `{ ['x' in obj]() {} }` in for-loop)
+    const saved_allow_in = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in;
     const key_expr = try parseAssignmentExpression(p);
     _ = try p.expect(.r_bracket);
 
     // Computed method: [expr]() { }
     if (p.peek() == .l_paren) {
-        const params_range = try parseFormalParameters(p);
         const saved_fn = p.in_function;
+        const saved_method = p.in_method;
         p.in_function = true;
+        p.in_method = true;
         defer p.in_function = saved_fn;
-        const body = try parseBlockBody(p);
+        defer p.in_method = saved_method;
+        const params_range = try parseFormalParameters(p);
+        const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
             .params_end = params_range.end,
@@ -861,8 +1554,12 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Computed property: [expr]: value
+    // Computed property: [expr]: value (only valid in object literals, not class bodies)
     if (p.peek() == .colon) {
+        if (p.in_class) {
+            try p.emitError("Unexpected ':' in class body (use '=' for field initializers)");
+            return error.ParseError;
+        }
         _ = p.advance();
         const value = try parseAssignmentExpression(p);
         return p.addNode(.{
@@ -872,7 +1569,28 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Computed property definition (class body) or error
+    // Computed field with initializer (class body)
+    if (p.peek() == .equal) {
+        _ = p.advance();
+        const value = try parseAssignmentExpression(p);
+        _ = p.eat(.semicolon);
+        return p.addNode(.{
+            .tag = .computed_property_def,
+            .main_token = open,
+            .data = .{ .lhs = key_expr, .rhs = value },
+        });
+    }
+
+    // Computed field without initializer (class body)
+    if (p.in_class) {
+        _ = p.eat(.semicolon);
+        return p.addNode(.{
+            .tag = .computed_property_def,
+            .main_token = open,
+            .data = .{ .lhs = key_expr, .rhs = .none },
+        });
+    }
+
     try p.emitError("Expected ':' or '(' after computed property name");
     return p.makeErrorNode();
 }
@@ -883,11 +1601,15 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
 
     // Method shorthand: name() { }
     if (p.peek() == .l_paren) {
-        const params_range = try parseFormalParameters(p);
+        // Set method flags BEFORE parsing params so super.prop works in defaults
         const saved_fn = p.in_function;
+        const saved_method = p.in_method;
         p.in_function = true;
+        p.in_method = true;
         defer p.in_function = saved_fn;
-        const body = try parseBlockBody(p);
+        defer p.in_method = saved_method;
+        const params_range = try parseFormalParameters(p);
+        const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
             .params_end = params_range.end,
@@ -900,9 +1622,12 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // key: value
+    // key: value (allow `in` for destructuring defaults: `{ a: b = 'x' in {} }`)
     if (p.peek() == .colon) {
         _ = p.advance();
+        const saved_allow_in2 = p.allow_in;
+        p.allow_in = true;
+        defer p.allow_in = saved_allow_in2;
         const value = try parseAssignmentExpression(p);
         return p.addNode(.{
             .tag = .property,
@@ -911,10 +1636,40 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         });
     }
 
+    // Shorthand: key token must be a valid binding name, not a reserved keyword.
+    // { function } or { var } are invalid shorthand (reserved words can't be bindings).
+    // { function: val } and class { function(){} } are fine (handled above).
+    const key_tag = p.tokenTag(key_tok);
+    if (key_tag.isKeyword()) {
+        const is_contextual = isContextualKeyword(key_tag);
+        // yield is reserved in generators, await is reserved in async/module
+        const yield_reserved = key_tag == .kw_yield and p.in_generator;
+        const await_reserved = key_tag == .kw_await and (p.in_async or p.is_module);
+        // let/static are reserved as binding names in strict mode
+        const let_reserved = (key_tag == .kw_let or key_tag == .kw_static) and p.in_strict;
+        if (!is_contextual or yield_reserved or await_reserved or let_reserved) {
+            try p.emitError("Unexpected reserved word as shorthand property");
+            return error.ParseError;
+        }
+    }
+    // In strict mode, future reserved words (package, private, etc.) can't be bindings.
+    // These are lexed as .identifier, so check the source text.
+    if (p.in_strict and key_tag == .identifier) {
+        const name = p.tokenText(key_tok);
+        if (isStrictFutureReserved(name)) {
+            try p.emitError("Unexpected strict mode reserved word as shorthand property");
+            return error.ParseError;
+        }
+    }
+
     // Shorthand property: { x }  or  { x = default }
     if (p.peek() == .equal) {
         // Shorthand with default — cover grammar for destructuring.
+        // Default value allows `in` expressions even in for-of context.
         _ = p.advance();
+        const saved_allow_in = p.allow_in;
+        p.allow_in = true;
+        defer p.allow_in = saved_allow_in;
         const default_val = try parseAssignmentExpression(p);
         return p.addNode(.{
             .tag = .assignment_pattern,
@@ -934,9 +1689,17 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
 fn parsePropertyName(p: *Parser) Error!NodeIndex {
     const tag = p.peek();
     return switch (tag) {
-        .identifier, .kw_get, .kw_set, .kw_async, .kw_static,
-        .kw_let, .kw_of, .kw_from, .kw_as, .kw_target, .kw_meta,
-        => {
+        .hash => {
+            // Private name: #field
+            const hash_tok = p.advance();
+            if (p.peek() == .identifier) _ = p.advance();
+            return p.addNode(.{
+                .tag = .identifier,
+                .main_token = hash_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        },
+        .identifier, .escaped_keyword => {
             const tok = p.advance();
             return p.addNode(.{
                 .tag = .identifier,
@@ -944,31 +1707,66 @@ fn parsePropertyName(p: *Parser) Error!NodeIndex {
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         },
-        .string_literal => parseLiteral(p, .string_literal),
-        .number_literal => parseLiteral(p, .number_literal),
+        .string_literal => blk: {
+            if (p.in_strict) try checkStrictOctalString(p);
+            break :blk parseLiteral(p, .string_literal);
+        },
+        .number_literal => blk: {
+            if (p.in_strict) try checkStrictOctalNumber(p);
+            break :blk parseLiteral(p, .number_literal);
+        },
+        .bigint_literal => parseLiteral(p, .bigint_literal),
         .l_bracket => {
             _ = p.advance(); // consume `[`
+            // Computed property keys always allow `in`
+            const saved_allow_in = p.allow_in;
+            p.allow_in = true;
+            defer p.allow_in = saved_allow_in;
             const expr = try parseAssignmentExpression(p);
             _ = try p.expect(.r_bracket);
             return expr;
         },
         else => {
+            // All keywords are valid as property names (e.g. { void: 1, enum: 2 })
+            if (tag.isKeyword()) {
+                const tok = p.advance();
+                return p.addNode(.{
+                    .tag = .identifier,
+                    .main_token = tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+            }
             try p.emitError("Expected property name");
             return p.makeErrorNode();
         },
     };
 }
 
-fn isPropertyNameStart(tag: TokenTag) bool {
+/// Strict mode future reserved words (lexed as .identifier, not keyword tokens).
+fn isStrictFutureReserved(name: []const u8) bool {
+    return std.mem.eql(u8, name, "implements") or
+        std.mem.eql(u8, name, "interface") or
+        std.mem.eql(u8, name, "package") or
+        std.mem.eql(u8, name, "private") or
+        std.mem.eql(u8, name, "protected") or
+        std.mem.eql(u8, name, "public");
+}
+
+/// Contextual keywords that can be used as identifiers/bindings in non-strict mode.
+fn isContextualKeyword(tag: TokenTag) bool {
     return switch (tag) {
-        .identifier, .string_literal, .number_literal, .l_bracket,
         .kw_get, .kw_set, .kw_async, .kw_static, .kw_let, .kw_of,
-        .kw_from, .kw_as, .kw_target, .kw_meta, .kw_new, .kw_delete,
-        .kw_typeof, .kw_void, .kw_in, .kw_instanceof, .kw_return,
-        .kw_case, .kw_default, .kw_class, .kw_extends, .kw_super,
-        .kw_this, .kw_yield, .kw_await, .kw_null, .kw_true, .kw_false,
+        .kw_from, .kw_as, .kw_target, .kw_meta, .kw_yield, .kw_await,
         => true,
         else => false,
+    };
+}
+
+fn isPropertyNameStart(tag: TokenTag) bool {
+    return switch (tag) {
+        .identifier, .escaped_keyword, .string_literal, .number_literal, .l_bracket, .hash,
+        => true,
+        else => tag.isKeyword(),
     };
 }
 
@@ -986,8 +1784,15 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const is_generator = p.peek() == .asterisk;
     if (is_generator) _ = p.advance();
 
-    // Optional name.
-    const name_node: NodeIndex = if (p.peek() == .identifier) blk: {
+    // Optional name (includes contextual keywords like yield/await when allowed).
+    // Per spec, FunctionExpression uses BindingIdentifier[~Yield, ~Await], so
+    // yield/await are only reserved when this function itself is a generator/async,
+    // NOT when the enclosing function is.
+    const can_be_name = p.peek() == .identifier or p.peek() == .escaped_keyword or
+        (p.peek() == .kw_yield and !is_generator and !p.in_strict) or
+        (p.peek() == .kw_await and !p.in_async and !p.is_module);
+    const name_node: NodeIndex = if (can_be_name) blk: {
+        try p.checkStrictBinding(p.tok_i);
         const name_tok = p.advance();
         break :blk try p.addNode(.{
             .tag = .identifier,
@@ -996,15 +1801,16 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
         });
     } else .none;
 
-    const params_range = try parseFormalParameters(p);
-
+    // Set generator flag BEFORE parsing params — yield is reserved in generator params
     const saved_fn = p.in_function;
     p.in_function = true;
     defer p.in_function = saved_fn;
     const saved_gen = p.in_generator;
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
-    const body = try parseBlockBody(p);
+
+    const params_range = try parseFormalParameters(p);
+    const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
 
     const fn_tag: Node.Tag = if (is_generator) .generator_fn_expr else .fn_expr;
 
@@ -1028,8 +1834,11 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
 fn parseClassExpression(p: *Parser) Error!NodeIndex {
     const class_tok = p.advance(); // consume `class`
 
-    // Optional name.
-    const name_node: NodeIndex = if (p.peek() == .identifier) blk: {
+    // Optional name (contextual keywords allowed when not reserved).
+    const can_name = p.peek() == .identifier or p.peek() == .escaped_keyword or
+        (p.peek() == .kw_await and !p.in_async and !p.is_module) or
+        (p.peek() == .kw_yield and !p.in_generator and !p.in_strict);
+    const name_node: NodeIndex = if (can_name) blk: {
         const name_tok = p.advance();
         break :blk try p.addNode(.{
             .tag = .identifier,
@@ -1040,20 +1849,43 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
 
     // Optional extends.
     const super_node: NodeIndex = if (p.eat(.kw_extends)) |_| blk: {
-        break :blk try parseExpressionPrec(p, .call);
+        const expr = try parseExpressionPrec(p, .call);
+        const et = p.nodes.items(.tag)[expr.toInt()];
+        switch (et) {
+            .logical_not, .bitwise_not, .unary_plus, .unary_minus,
+            .typeof_expr, .void_expr, .delete_expr,
+            => try p.emitError("extends requires a constructor, not an expression"),
+            else => {},
+        }
+        break :blk expr;
     } else .none;
 
     // Class body.
     _ = try p.expect(.l_brace);
+    const prev_in_class = p.in_class;
+    const prev_strict = p.in_strict;
+    p.in_class = true;
+    p.in_strict = true;
+    defer p.in_class = prev_in_class;
+    defer p.in_strict = prev_strict;
     const scratch_top = p.scratchLen();
 
-    while (p.peek() != .r_brace and p.peek() != .eof) {
-        // Skip semicolons in class body (empty class elements).
+    while (p.peek() != .r_brace and p.peek() != .eof and p.peek() != .r_paren) {
         if (p.peek() == .semicolon) {
             _ = p.advance();
             continue;
         }
-        const member = try parseClassMember(p);
+        const before = p.tok_i;
+        const member = parseClassMember(p) catch |err| switch (err) {
+            error.ParseError => {
+                p.synchronize();
+                if (p.tok_i == before) _ = p.advance();
+                const err_node = p.makeErrorNode() catch return error.OutOfMemory;
+                try p.scratchPush(err_node);
+                continue;
+            },
+            error.OutOfMemory => return error.OutOfMemory,
+        };
         try p.scratchPush(member);
     }
 
@@ -1077,14 +1909,26 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
 }
 
 fn parseClassMember(p: *Parser) Error!NodeIndex {
-    // `static` prefix
-    const is_static = p.peek() == .kw_static;
+    // Skip decorators
+    while (p.peek() == .at_sign) {
+        _ = p.advance();
+        _ = try parseAssignmentExpression(p);
+    }
+
+    // `static` prefix — only consume as modifier when next token indicates modifier usage
+    var is_static = false;
     var main_tok = p.tok_i;
 
-    if (is_static) {
-        _ = p.advance();
+    if (p.peek() == .kw_static) {
+        const next = p.peekAt(1);
+        if (next != .l_paren and next != .equal and next != .semicolon and
+            next != .colon and next != .r_brace)
+        {
+            is_static = true;
+            _ = p.advance();
+        }
         // static { ... } — static block (direct SubRange encoding)
-        if (p.peek() == .l_brace) {
+        if (is_static and p.peek() == .l_brace) {
             _ = try p.expect(.l_brace);
             const range = try p.parseStatementList(.r_brace);
             _ = try p.expect(.r_brace);
@@ -1097,6 +1941,13 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
                 },
             });
         }
+    }
+
+    // `accessor` field modifier (ES2024)
+    if (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "accessor") and
+        isPropertyNameStart(p.peekAt(1)))
+    {
+        _ = p.advance(); // eat 'accessor'
     }
 
     const tag = p.peek();
@@ -1125,17 +1976,27 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     main_tok = p.tok_i;
     const key = try parsePropertyName(p);
 
-    // Method
+    // Method (regular — not async/generator, those have their own paths above)
     if (p.peek() == .l_paren) {
+        const is_ctor = !is_static and isConstructorKey(p, main_tok);
+        const saved_fn = p.in_function;
+        const saved_method_m = p.in_method;
+        const saved_ctor = p.in_constructor;
+        p.in_function = true;
+        p.in_method = true;
+        p.in_constructor = is_ctor;
+        defer p.in_function = saved_fn;
+        defer p.in_method = saved_method_m;
+        defer p.in_constructor = saved_ctor;
         const params_range = try parseFormalParameters(p);
-        const body = try parseBlockBody(p);
+        const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
             .params_end = params_range.end,
             .body = body,
         });
         // Check if constructor
-        const node_tag: Node.Tag = if (isConstructorKey(p, main_tok)) .constructor_def else .method_def;
+        const node_tag: Node.Tag = if (is_ctor) .constructor_def else .method_def;
         return p.addNode(.{
             .tag = node_tag,
             .main_token = main_tok,
@@ -1147,7 +2008,11 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     if (p.peek() == .equal) {
         _ = p.advance();
         const value = try parseAssignmentExpression(p);
-        _ = p.eat(.semicolon);
+        // Require ; or ASI after field
+        if (p.eat(.semicolon) == null and p.peek() != .r_brace and !p.isOnNewLine()) {
+            try p.emitError("Expected ';' after class field definition");
+            return error.ParseError;
+        }
         return p.addNode(.{
             .tag = .property_def,
             .main_token = main_tok,
@@ -1155,8 +2020,17 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Field without initializer
-    _ = p.eat(.semicolon);
+    // Colon in class body is invalid (not an object literal)
+    if (p.peek() == .colon) {
+        try p.emitError("Unexpected ':' in class body (use '=' for field initializers)");
+        return error.ParseError;
+    }
+
+    // Field without initializer — require ; or ASI
+    if (p.eat(.semicolon) == null and p.peek() != .r_brace and !p.isOnNewLine()) {
+        try p.emitError("Expected ';' after class field definition");
+        return error.ParseError;
+    }
     return p.addNode(.{
         .tag = .property_def,
         .main_token = main_tok,
@@ -1179,7 +2053,7 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
     // new.target
     if (p.peek() == .dot) {
         _ = p.advance(); // consume `.`
-        if (p.peek() == .kw_target) {
+        if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "target"))) {
             _ = p.advance(); // consume `target`
             return p.addNode(.{
                 .tag = .new_target,
@@ -1199,12 +2073,28 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         callee = try parsePrimaryExpression(p);
     }
 
+    // `new super()` is invalid — use `super()` instead
+    // `new import(...)` is invalid — import() is a CallExpression, not a valid new target
+    if (callee != .none) {
+        const callee_tag = p.nodes.items(.tag)[callee.toInt()];
+        if (callee_tag == .super_expr) {
+            try p.emitError("'super' is not valid as a new expression target");
+        }
+        if (callee_tag == .import_expr) {
+            try p.emitError("Cannot use 'new' with 'import()'");
+        }
+    }
+
     // Consume member accesses that bind tighter than new (`.prop`, `[expr]`).
     while (true) {
         switch (p.peek()) {
             .dot => {
                 _ = p.advance();
-                const prop_tok = try p.expect(.identifier);
+                // Accept identifier, keyword, or escaped keyword after `.`
+                const prop_tok = if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword)
+                    p.advance()
+                else
+                    try p.expect(.identifier); // will emit error
                 callee = try p.addNode(.{
                     .tag = .member_expr,
                     .main_token = prop_tok,
@@ -1343,30 +2233,41 @@ pub fn parseTemplateLiteral(p: *Parser) Error!NodeIndex {
 fn parseImportExpression(p: *Parser) Error!NodeIndex {
     const import_tok = p.advance(); // consume `import`
 
-    // import.meta
+    // import.meta / import.defer / import.<future>
     if (p.peek() == .dot) {
         _ = p.advance(); // consume `.`
-        if (p.peek() == .kw_meta) {
-            _ = p.advance(); // consume `meta`
+        if (p.peek() == .identifier or p.peek() == .kw_meta or p.peek().isKeyword()) {
+            _ = p.advance(); // consume property name
             return p.addNode(.{
                 .tag = .import_meta,
                 .main_token = import_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         }
-        try p.emitError("Expected 'meta' after 'import.'");
+        try p.emitError("Expected property name after 'import.'");
         return p.makeErrorNode();
     }
 
-    // import(source)
+    // import(source) or import(source, options) — always allow `in` in args
     _ = try p.expect(.l_paren);
+    const saved_allow_in = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in;
     const source = try parseAssignmentExpression(p);
+    // Optional second argument (import attributes)
+    var options: NodeIndex = .none;
+    if (p.eat(.comma) != null) {
+        if (p.peek() != .r_paren) {
+            options = try parseAssignmentExpression(p);
+            _ = p.eat(.comma); // trailing comma
+        }
+    }
     _ = try p.expect(.r_paren);
 
     return p.addNode(.{
         .tag = .import_expr,
         .main_token = import_tok,
-        .data = .{ .lhs = source, .rhs = .none },
+        .data = .{ .lhs = source, .rhs = options },
     });
 }
 
@@ -1477,6 +2378,39 @@ fn parseCallLevelInfix(p: *Parser, left: NodeIndex) Error!NodeIndex {
 fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!NodeIndex {
     const op_tok = p.advance();
     const op_tag = p.tokenTag(op_tok);
+
+    // Nullish coalescing cannot be mixed with || or && without parentheses
+    if (op_tag == .question_question and left != .none) {
+        const left_tag = p.nodes.items(.tag)[left.toInt()];
+        if (left_tag == .logical_or or left_tag == .logical_and) {
+            try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
+            return error.ParseError;
+        }
+    }
+    if ((op_tag == .pipe_pipe or op_tag == .ampersand_ampersand) and left != .none) {
+        const left_tag = p.nodes.items(.tag)[left.toInt()];
+        if (left_tag == .nullish_coalesce) {
+            try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
+            return error.ParseError;
+        }
+    }
+
+    // Exponentiation: unary operators cannot be the base of **
+    // (e.g., `delete x ** 2` is invalid — must use `(delete x) ** 2`)
+    if (op_tag == .asterisk_asterisk and left != .none) {
+        const left_tag = p.nodes.items(.tag)[left.toInt()];
+        switch (left_tag) {
+            .delete_expr, .typeof_expr, .void_expr,
+            .logical_not, .bitwise_not, .unary_plus, .unary_minus,
+            .await_expr,
+            => {
+                try p.emitError("Unary expression cannot be the left operand of exponentiation");
+                return error.ParseError;
+            },
+            else => {},
+        }
+    }
+
     const rhs = try parseExpressionPrec(p, prec.next());
 
     const node_tag: Node.Tag = tokenToBinaryTag(op_tag);
@@ -1521,12 +2455,50 @@ fn tokenToBinaryTag(tag: TokenTag) Node.Tag {
 // ── Assignment expression ────────────────────────────────────────
 
 fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
+    const left_tag = p.nodes.items(.tag)[left.toInt()];
+    const op_tag = p.tokenTag(p.tok_i);
+
+    // Array/object destructuring only valid with plain `=`
+    if (op_tag != .equal) {
+        switch (left_tag) {
+            .array_literal, .array_pattern, .object_literal, .object_pattern => {
+                try p.emitError("Invalid left-hand side in compound assignment");
+                return error.ParseError;
+            },
+            else => {},
+        }
+    }
+
+    // Validate assignment target — reject literals, binary exprs, calls, optional chains, etc.
+    // Parenthesized simple targets: (x) = 1, ((x)) = 1, (a.b) = 1 are valid
+    const effective_left_tag = if (left_tag == .grouping_expr) unwrapGroupingTag(p, left) else left_tag;
+    switch (effective_left_tag) {
+        .identifier, .member_expr, .computed_member_expr,
+        .array_literal, .array_pattern, .object_literal, .object_pattern,
+        .assignment_pattern, .spread_element, .rest_element,
+        => {},
+        .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
+            try p.emitError("Invalid left-hand side in assignment: optional chain");
+            return error.ParseError;
+        },
+        else => {
+            try p.emitError("Invalid left-hand side in assignment");
+            return error.ParseError;
+        },
+    }
+
+    // Strict mode: cannot assign to eval or arguments
+    if (left_tag == .identifier and p.in_strict) {
+        const left_tok = p.nodes.items(.main_token)[left.toInt()];
+        try p.checkStrictAssignTarget(left_tok);
+    }
+
     const op_tok = p.advance();
-    const op_tag = p.tokenTag(op_tok);
 
     // Plain `=` may need the LHS converted to a pattern.
     if (op_tag == .equal) {
         reinterpretAsPattern(p, left);
+        try validatePattern(p, left);
     }
 
     // Right-associative: recurse at assignment precedence.
@@ -1616,6 +2588,17 @@ fn parseSequenceExpression(p: *Parser, first: NodeIndex) Error!NodeIndex {
 // =====================================================================
 
 fn parseCallExpression(p: *Parser, callee: NodeIndex) Error!NodeIndex {
+    // super() is only valid in class constructors
+    if (callee != .none) {
+        const callee_tag = p.nodes.items(.tag)[callee.toInt()];
+        if (callee_tag == .super_expr) {
+            if (p.in_class_field) {
+                try p.emitError("'super()' is not allowed in class field initializers");
+            } else if (!p.in_constructor) {
+                try p.emitError("'super()' is only valid in class constructors");
+            }
+        }
+    }
     const open_paren = p.tok_i;
     const args_range = try parseArgumentList(p);
     const range_extra = try p.addExtra(SubRange, .{
@@ -1659,10 +2642,15 @@ fn parseArgumentList(p: *Parser) Error!SubRange {
 fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
     _ = p.advance(); // consume `.`
 
-    // Allow keywords as property names.
-    const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier)
+    // Allow keywords and private names as property names.
+    const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier or p.peek() == .escaped_keyword)
         p.advance()
-    else blk: {
+    else if (p.peek() == .hash) blk: {
+        // Private field access: obj.#field
+        const hash = p.advance();
+        if (p.peek() == .identifier) _ = p.advance();
+        break :blk hash;
+    } else blk: {
         try p.emitError("Expected property name after '.'");
         break :blk p.tok_i;
     };
@@ -1721,9 +2709,24 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
                 .data = .{ .lhs = object, .rhs = index_expr },
             });
         },
-        // obj?.prop
+        // obj?.prop or obj?.#private
         else => {
-            const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier)
+            // Accept private identifier: obj?.#field
+            if (p.peek() == .hash) {
+                const hash_tok = p.advance();
+                if (p.peek() == .identifier) _ = p.advance();
+                const prop_node = try p.addNode(.{
+                    .tag = .identifier,
+                    .main_token = hash_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+                return p.addNode(.{
+                    .tag = .optional_member_expr,
+                    .main_token = hash_tok,
+                    .data = .{ .lhs = object, .rhs = prop_node },
+                });
+            }
+            const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier or p.peek() == .escaped_keyword)
                 p.advance()
             else blk: {
                 try p.emitError("Expected property name after '?.'");
@@ -1743,6 +2746,20 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
 // =====================================================================
 
 fn parseTaggedTemplate(p: *Parser, tag_expr: NodeIndex) Error!NodeIndex {
+    // Tagged templates require MemberExpression or CallExpression
+    if (tag_expr != .none) {
+        const te = p.nodes.items(.tag)[tag_expr.toInt()];
+        if (te == .postfix_inc or te == .postfix_dec or te == .prefix_inc or te == .prefix_dec) {
+            try p.emitError("Tagged template cannot follow an update expression");
+        }
+        // Optional chaining cannot have a tagged template in tail position
+        if (te == .optional_member_expr or te == .optional_computed_member_expr or
+            te == .optional_call_expr)
+        {
+            try p.emitError("Tagged template cannot follow an optional chain");
+            return error.ParseError;
+        }
+    }
     const main_tok = p.tok_i;
     const tmpl = try parseTemplateLiteral(p);
     return p.addNode(.{
@@ -1764,6 +2781,13 @@ fn parseFormalParameters(p: *Parser) Error!SubRange {
         const param = try parseBindingElement(p);
         try p.scratchPush(param);
 
+        // Check: rest parameter cannot have trailing comma
+        const ptag = p.nodes.items(.tag)[param.toInt()];
+        if (ptag == .rest_element and p.peek() == .comma) {
+            try p.emitError("Rest parameter must not have a trailing comma");
+            return error.ParseError;
+        }
+
         if (p.peek() == .comma) {
             _ = p.advance();
         } else {
@@ -1774,6 +2798,18 @@ fn parseFormalParameters(p: *Parser) Error!SubRange {
     _ = try p.expect(.r_paren);
 
     const params = p.scratchSlice(scratch_top);
+
+    // Rest parameter must be last
+    if (params.len > 1) {
+        for (params[0 .. params.len - 1]) |param_raw| {
+            const ptag = p.nodes.items(.tag)[@intCast(param_raw)];
+            if (ptag == .rest_element) {
+                try p.emitError("Rest parameter must be last formal parameter");
+                return error.ParseError;
+            }
+        }
+    }
+
     const range = try p.addSlice(params);
     p.scratchPop(scratch_top);
     return range;
@@ -1814,6 +2850,37 @@ fn parseBindingPattern(p: *Parser) Error!NodeIndex {
         .identifier => parseIdentifier(p),
         .l_brace => parseObjectBindingPattern(p),
         .l_bracket => parseArrayBindingPattern(p),
+        // yield can be binding name outside generators/strict
+        .kw_yield => {
+            if (p.in_generator or p.in_strict) {
+                try p.emitError("'yield' cannot be used as binding name in this context");
+                return p.makeErrorNode();
+            }
+            return parseIdentifier(p);
+        },
+        // await can be binding name outside async/module
+        .kw_await => {
+            if (p.in_async or p.is_module) {
+                try p.emitError("'await' cannot be used as binding name in this context");
+                return p.makeErrorNode();
+            }
+            return parseIdentifier(p);
+        },
+        // Contextual keywords that can be binding names in non-strict
+        .kw_let, .kw_static, .kw_of, .kw_from, .kw_as, .kw_get, .kw_set => {
+            if (p.in_strict and (p.peek() == .kw_let or p.peek() == .kw_static)) {
+                try p.emitError("Cannot use reserved word as binding in strict mode");
+                return p.makeErrorNode();
+            }
+            return parseIdentifier(p);
+        },
+        .escaped_keyword => {
+            if (p.in_strict) {
+                try p.emitError("escaped reserved word cannot be used as binding name in strict mode");
+                return p.makeErrorNode();
+            }
+            return parseIdentifier(p);
+        },
         else => {
             try p.emitError("Expected binding pattern");
             return p.makeErrorNode();
@@ -1902,7 +2969,17 @@ fn parseBindingProperty(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Shorthand { x }
+    // Shorthand { x } — check for reserved keyword as binding name
+    const key_tag_bp = p.tokenTag(key_tok);
+    if (key_tag_bp == .kw_yield and p.in_generator) {
+        try p.emitError("'yield' is not allowed as a binding name in generator");
+        return error.ParseError;
+    }
+    if (key_tag_bp == .kw_await and (p.in_async or p.is_module)) {
+        try p.emitError("'await' is not allowed as a binding name here");
+        return error.ParseError;
+    }
+
     return p.addNode(.{
         .tag = .shorthand_property,
         .main_token = key_tok,
@@ -1964,6 +3041,66 @@ fn parseArrayBindingPattern(p: *Parser) Error!NodeIndex {
 /// Parse `{ statements }`.  Delegates to the statement parser in
 /// parser.zig.  This is a thin wrapper that consumes braces.
 fn parseBlockBody(p: *Parser) Error!NodeIndex {
+    return parseBlockBodyWithStrictChecks(p, null, .none);
+}
+
+/// Parse block body with optional strict-mode checks for function params/name.
+fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex) Error!NodeIndex {
+    // Check for "use strict" directive in function body
+    const prev_strict = p.in_strict;
+    var has_use_strict = false;
+    var became_strict = false;
+    if (p.peek() == .l_brace) {
+        // Look past the { for directive prologue
+        const saved = p.tok_i;
+        _ = p.tok_i; // don't advance, just peek ahead
+        var pos = saved + 1; // skip {
+        while (pos < p.tokens.len) {
+            const tag = p.tokens.items(.tag)[pos];
+            if (tag != .string_literal) break;
+            const start = p.tokens.items(.start)[pos];
+            const text = p.getStringContent(start);
+            if (std.mem.eql(u8, text, "use strict")) {
+                has_use_strict = true;
+                if (!prev_strict) {
+                    p.in_strict = true;
+                    became_strict = true;
+                }
+                break;
+            }
+            pos += 1;
+            if (pos < p.tokens.len and p.tokens.items(.tag)[pos] == .semicolon) pos += 1;
+        }
+    }
+    defer p.in_strict = prev_strict;
+
+    // "use strict" with non-simple parameters is ALWAYS a SyntaxError (even if already strict)
+    if (has_use_strict) {
+        if (params) |pr| {
+            if (p.hasNonSimpleParams(pr)) {
+                try p.emitError("\"use strict\" directive not allowed in function with non-simple parameters");
+                return error.ParseError;
+            }
+        }
+    }
+
+    // If body made us newly strict, check additional restrictions retroactively
+    if (became_strict) {
+        if (params) |pr| {
+            // Check params for eval/arguments
+            try p.checkParamsStrictMode(pr);
+        }
+        // Function name must not be eval/arguments in strict mode
+        if (name != .none) {
+            const fn_name_tok = p.nodes.items(.main_token)[name.toInt()];
+            const fn_name_text = p.tokenText(fn_name_tok);
+            if (std.mem.eql(u8, fn_name_text, "eval") or std.mem.eql(u8, fn_name_text, "arguments")) {
+                try p.emitError("Unexpected eval or arguments in strict mode");
+                return error.ParseError;
+            }
+        }
+    }
+
     return p.parseBlock();
 }
 
@@ -2063,6 +3200,46 @@ pub fn reinterpretAsPattern(p: *Parser, node: NodeIndex) void {
         // targets and don't need tag changes.
         else => {},
     }
+}
+
+// =====================================================================
+// TypeScript expression extensions
+// =====================================================================
+
+/// Parse `expr as Type` or `expr satisfies Type`.
+fn parseTsTypePostfix(p: *Parser, left: NodeIndex, node_tag: Node.Tag) Error!NodeIndex {
+    const op_tok = p.advance();
+    const ts_mod = @import("typescript.zig");
+    const type_node = try ts_mod.parseType(p);
+    return p.addNode(.{
+        .tag = node_tag,
+        .main_token = op_tok,
+        .data = .{ .lhs = left, .rhs = type_node },
+    });
+}
+
+/// Parse `expr!` — TS non-null assertion.
+fn parseTsNonNullExpression(p: *Parser, left: NodeIndex) Error!NodeIndex {
+    const bang_tok = p.advance(); // consume `!`
+    return p.addNode(.{
+        .tag = .ts_non_null_expr,
+        .main_token = bang_tok,
+        .data = .{ .lhs = left, .rhs = .none },
+    });
+}
+
+/// Parse `<Type>expr` — TS type assertion (angle bracket form).
+fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
+    const lt_tok = p.advance(); // consume `<`
+    const ts_mod = @import("typescript.zig");
+    const type_node = try ts_mod.parseType(p);
+    _ = try p.expect(.greater_than);
+    const expr = try parseExpressionPrec(p, .unary);
+    return p.addNode(.{
+        .tag = .ts_type_assertion,
+        .main_token = lt_tok,
+        .data = .{ .lhs = type_node, .rhs = expr },
+    });
 }
 
 // =====================================================================

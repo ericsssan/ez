@@ -1,0 +1,22 @@
+# Build artifacts
+.zig-cache/
+zig-out/
+*.o
+main
+
+# Test binaries
+test_json
+test_json2
+test_json3
+
+# Downloaded test suites (large, external)
+tests/conformance/test262/
+tests/conformance/test262-parser-tests/
+tests/conformance/babel-parser/
+tests/conformance/typescript/
+
+# Benchmark baselines (local)
+bench/baseline.json
+
+# Node
+node_modules/

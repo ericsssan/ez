@@ -37,7 +37,9 @@ pub const Node = struct {
     main_token: TokenIndex,
     data: Data,
 
-    pub const Data = struct {
+    /// Extern struct for guaranteed C-compatible layout (needed for
+    /// zero-copy JS buffer transfer — JS reads lhs/rhs at known offsets).
+    pub const Data = extern struct {
         lhs: NodeIndex,
         rhs: NodeIndex,
     };
@@ -384,6 +386,95 @@ pub const Node = struct {
         /// (a, b, c). lhs = extra index to SubRange of parameters
         formal_parameters,
 
+        // ── TypeScript Declarations ────────────────────────────
+        /// interface Name [extends ...] { ... }. lhs = extra index to InterfaceData
+        ts_interface_decl,
+        /// type Name = Type. lhs = extra index to TypeAliasData
+        ts_type_alias_decl,
+        /// enum Name { ... }. lhs = extra index to EnumData
+        ts_enum_decl,
+        /// name = value (inside enum). lhs = name node, rhs = value (or none)
+        ts_enum_member,
+        /// namespace Name { ... }. lhs = name, rhs = body block
+        ts_namespace_decl,
+        /// module Name { ... }. lhs = name, rhs = body block
+        ts_module_decl,
+
+        // ── TypeScript Types ──────────────────────────────────
+        /// : Type  annotation. lhs = type node
+        ts_type_annotation,
+        /// Foo, Foo<T>. lhs = name node, rhs = type args SubRange extra (or none)
+        ts_type_reference,
+        /// x is Type. lhs = param name, rhs = type node
+        ts_type_predicate,
+        /// A | B. lhs = extra SubRange of types
+        ts_union_type,
+        /// A & B. lhs = extra SubRange of types
+        ts_intersection_type,
+        /// [A, B, C]. lhs = extra SubRange of types
+        ts_tuple_type,
+        /// T[]. lhs = element type
+        ts_array_type,
+        /// (params) => ReturnType. lhs = extra index to FnData
+        ts_function_type,
+        /// new (params) => Type. lhs = extra index to FnData
+        ts_constructor_type,
+        /// { members }. lhs = extra SubRange of members
+        ts_type_literal,
+        /// { [K in T]: V }. lhs = extra SubRange of contents
+        ts_mapped_type,
+        /// T extends U ? X : Y. lhs = extra index
+        ts_conditional_type,
+        /// infer T. lhs = type parameter
+        ts_infer_type,
+        /// typeof x. lhs = expression
+        ts_typeof_type,
+        /// keyof T. lhs = type
+        ts_keyof_type,
+        /// T[K]. lhs = object type, rhs = index type
+        ts_indexed_access_type,
+        /// `str${Type}`. lhs = extra SubRange of parts
+        ts_template_literal_type,
+        /// typeof import("x"). lhs = source
+        ts_type_query,
+        /// (Type). lhs = inner type
+        ts_parenthesized_type,
+
+        // ── TypeScript Expressions ────────────────────────────
+        /// expr as Type. lhs = expression, rhs = type node
+        ts_as_expr,
+        /// expr satisfies Type. lhs = expression, rhs = type node
+        ts_satisfies_expr,
+        /// expr!  (non-null assertion). lhs = expression
+        ts_non_null_expr,
+        /// <Type>expr. lhs = type node, rhs = expression
+        ts_type_assertion,
+
+        // ── TypeScript Other ──────────────────────────────────
+        /// Parameter property: public/private/protected/readonly param.
+        /// lhs = parameter binding, rhs = default (or none)
+        ts_parameter_property,
+
+        // ── JSX ───────────────────────────────────────────────
+        /// <tag attrs>children</tag>. lhs = extra index to JsxElementData
+        jsx_element,
+        /// <tag attrs />. lhs = extra index to JsxOpeningData
+        jsx_self_closing,
+        /// <tag attrs>. lhs = extra index to JsxOpeningData
+        jsx_opening_element,
+        /// </tag>. lhs = name node
+        jsx_closing_element,
+        /// name=value. lhs = name (identifier), rhs = value
+        jsx_attribute,
+        /// {...expr}. lhs = expression
+        jsx_spread_attribute,
+        /// {expr} inside JSX children. lhs = expression (or none for {})
+        jsx_expression_container,
+        /// Raw text between JSX tags. main_token = jsx_text token
+        jsx_text_node,
+        /// <>children</>. lhs = extra SubRange of children
+        jsx_fragment,
+
         // ── Special ────────────────────────────────────────────
         /// Error recovery node. main_token = position of error
         error_node,
@@ -467,6 +558,49 @@ pub const MethodData = struct {
     params_start: ExtraIndex,
     params_end: ExtraIndex,
     body: NodeIndex,
+};
+
+// ── TypeScript ExtraData structs ────────────────────────────
+
+/// interface Name<T> extends A, B { members }
+pub const InterfaceData = struct {
+    name: u32, // token index of name
+    type_params: u32, // SubRange start of type params (0 if none)
+    type_params_end: u32, // SubRange end
+    extends_start: u32, // SubRange start of extends types (0 if none)
+    extends_end: u32, // SubRange end
+    body_start: u32, // SubRange start of members
+    body_end: u32, // SubRange end
+};
+
+/// enum Name { members }
+pub const EnumData = struct {
+    name: u32, // token index of name
+    members_start: u32,
+    members_end: u32,
+};
+
+/// type Name<T> = Type
+pub const TypeAliasData = struct {
+    name: u32, // token index of name
+    type_params: u32, // SubRange start of type params (0 if none)
+    type_params_end: u32, // SubRange end
+    type_node: NodeIndex, // the aliased type
+};
+
+/// <tag attrs>children</tag>
+pub const JsxElementData = struct {
+    opening: NodeIndex,
+    children_start: u32,
+    children_end: u32,
+    closing: NodeIndex,
+};
+
+/// <tag attrs> or <tag attrs />
+pub const JsxOpeningData = struct {
+    name: NodeIndex,
+    attrs_start: u32,
+    attrs_end: u32,
 };
 
 // ── AST Top-Level ──────────────────────────────────────────
@@ -585,6 +719,11 @@ pub const Ast = struct {
             },
             .hashbang => {
                 while (end < self.source.len and self.source[end] != '\n') {
+                    end += 1;
+                }
+            },
+            .jsx_text => {
+                while (end < self.source.len and self.source[end] != '<' and self.source[end] != '{') {
                     end += 1;
                 }
             },

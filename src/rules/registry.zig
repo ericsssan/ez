@@ -106,6 +106,16 @@ const no_unneeded_ternary = @import("style/no_unneeded_ternary.zig");
 const no_useless_computed_key = @import("style/no_useless_computed_key.zig");
 const prefer_template = @import("style/prefer_template.zig");
 
+// ── TypeScript rules (8) ──────────────────────────────────────
+const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
+const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
+const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
+const ts_no_empty_interface = @import("typescript/no_empty_interface.zig");
+const ts_no_namespace = @import("typescript/no_namespace.zig");
+const ts_no_unnecessary_type_assertion = @import("typescript/no_unnecessary_type_assertion.zig");
+const ts_prefer_interface = @import("typescript/prefer_interface.zig");
+const ts_no_require_imports = @import("typescript/no_require_imports.zig");
+
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
     // Correctness (40)
@@ -209,6 +219,15 @@ pub const all_rules = .{
     no_unneeded_ternary,
     no_useless_computed_key,
     prefer_template,
+    // TypeScript (8)
+    ts_no_explicit_any,
+    ts_no_non_null_assertion,
+    ts_prefer_as_const,
+    ts_no_empty_interface,
+    ts_no_namespace,
+    ts_no_unnecessary_type_assertion,
+    ts_prefer_interface,
+    ts_no_require_imports,
 };
 
 /// Total number of registered lint rules.

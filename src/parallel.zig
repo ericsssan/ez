@@ -8,6 +8,9 @@ const lint_context_mod = @import("lint_context.zig");
 const LintDiagnostic = lint_context_mod.LintDiagnostic;
 const Location = @import("span.zig").Location;
 const Severity = @import("diagnostic.zig").Severity;
+const Language = @import("token.zig").Language;
+const Config = @import("config.zig").Config;
+const InlineDisables = @import("inline_disable.zig").InlineDisables;
 
 /// Simple spin-lock mutex using std.atomic.Mutex.
 /// Provides a blocking `lock()` via busy-wait on `tryLock()`.
@@ -43,6 +46,7 @@ pub const ParallelRunner = struct {
     allocator: std.mem.Allocator,
     results: std.ArrayList(FileResult),
     mutex: SpinLock,
+    config: ?*const Config = null,
 
     pub fn init(allocator: std.mem.Allocator) ParallelRunner {
         return .{
@@ -136,7 +140,9 @@ pub const ParallelRunner = struct {
             return;
         };
 
-        var tokens = Lexer.tokenize(arena, source) catch {
+        const lang = Language.fromExtension(file_path) orelse .js;
+
+        var tokens = Lexer.tokenizeWithLanguage(arena, source, lang) catch {
             const msg = std.fmt.allocPrint(
                 self.allocator,
                 "{s}: error: tokenization failed\n",
@@ -151,9 +157,9 @@ pub const ParallelRunner = struct {
             });
             return;
         };
-        _ = &tokens;
 
-        var tree = parser_mod.Parser.parse(arena, source, tokens.slice()) catch {
+        const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
+        var tree = parser_mod.Parser.parseWithLanguage(arena, source, tokens.slice(), lang, is_module) catch {
             const msg = std.fmt.allocPrint(
                 self.allocator,
                 "{s}: error: parsing failed\n",
@@ -168,7 +174,6 @@ pub const ParallelRunner = struct {
             });
             return;
         };
-        _ = &tree;
 
         var sem_result = semantic_mod.SemanticAnalyzer.analyze(arena, &tree) catch {
             const msg = std.fmt.allocPrint(
@@ -185,9 +190,8 @@ pub const ParallelRunner = struct {
             });
             return;
         };
-        _ = &sem_result;
 
-        const diagnostics = linter_mod.lint(arena, &tree, &sem_result) catch {
+        const raw_diagnostics = linter_mod.lint(arena, &tree, &sem_result, self.config) catch {
             const msg = std.fmt.allocPrint(
                 self.allocator,
                 "{s}: error: linting failed\n",
@@ -202,6 +206,10 @@ pub const ParallelRunner = struct {
             });
             return;
         };
+
+        // Filter by inline disable comments.
+        var disables = InlineDisables.parse(arena, source) catch InlineDisables.empty();
+        const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, source) catch raw_diagnostics;
 
         // Count total diagnostics (parse errors + lint diagnostics).
         const total_count = tree.errors.len + diagnostics.len;

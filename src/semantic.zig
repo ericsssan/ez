@@ -243,7 +243,18 @@ pub const SemanticAnalyzer = struct {
             .import_namespace_specifier => try self.visitImportNamespaceSpecifier(idx),
 
             // ── Exports ────────────────────────────────────
-            .export_named => try self.visitSubRangeFromData(data),
+            .export_named => {
+                // export_named is overloaded:
+                // - export { x, y } → lhs/rhs encode SubRange of specifiers
+                // - export var/let/const/function/class → lhs = declaration node, rhs = .none
+                if (data.rhs == .none) {
+                    // lhs is a declaration node
+                    try self.visitNode(data.lhs);
+                } else {
+                    // lhs/rhs encode SubRange
+                    try self.visitSubRangeFromData(data);
+                }
+            },
             .export_default_expr => try self.visitNode(data.lhs),
             .export_default_fn => try self.visitNode(data.lhs),
             .export_default_class => try self.visitNode(data.lhs),
@@ -412,6 +423,61 @@ pub const SemanticAnalyzer = struct {
                 const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
                 try self.visitSubRange(range);
             },
+
+            // ── TypeScript declarations ──────────────────────
+            .ts_interface_decl => {
+                const iface_data = self.ast.extraData(ast_mod.InterfaceData, @intFromEnum(data.lhs));
+                if (iface_data.extends_start != iface_data.extends_end) {
+                    try self.visitSubRange(.{ .start = iface_data.extends_start, .end = iface_data.extends_end });
+                }
+                if (iface_data.body_start != iface_data.body_end) {
+                    try self.visitSubRange(.{ .start = iface_data.body_start, .end = iface_data.body_end });
+                }
+            },
+            .ts_type_alias_decl => {},
+            .ts_enum_decl => {
+                const enum_data = self.ast.extraData(ast_mod.EnumData, @intFromEnum(data.lhs));
+                try self.visitSubRange(.{ .start = enum_data.members_start, .end = enum_data.members_end });
+            },
+            .ts_enum_member => try self.visitNode(data.rhs),
+            .ts_namespace_decl, .ts_module_decl => try self.visitNode(data.rhs),
+
+            // ── TypeScript types (skip) ──────────────────────
+            .ts_type_annotation, .ts_type_reference, .ts_type_predicate,
+            .ts_union_type, .ts_intersection_type, .ts_tuple_type,
+            .ts_array_type, .ts_function_type, .ts_constructor_type,
+            .ts_type_literal, .ts_mapped_type, .ts_conditional_type,
+            .ts_infer_type, .ts_typeof_type, .ts_keyof_type,
+            .ts_indexed_access_type, .ts_template_literal_type,
+            .ts_type_query, .ts_parenthesized_type,
+            .ts_parameter_property,
+            => {},
+
+            // ── TypeScript expressions ───────────────────────
+            .ts_as_expr, .ts_satisfies_expr => try self.visitNode(data.lhs),
+            .ts_non_null_expr => try self.visitNode(data.lhs),
+            .ts_type_assertion => try self.visitNode(data.rhs),
+
+            // ── JSX ──────────────────────────────────────────
+            .jsx_element => {
+                const jsx_data = self.ast.extraData(ast_mod.JsxElementData, @intFromEnum(data.lhs));
+                try self.visitNode(jsx_data.opening);
+                try self.visitSubRange(.{ .start = jsx_data.children_start, .end = jsx_data.children_end });
+                try self.visitNode(jsx_data.closing);
+            },
+            .jsx_self_closing, .jsx_opening_element => {
+                const jsx_open = self.ast.extraData(ast_mod.JsxOpeningData, @intFromEnum(data.lhs));
+                try self.visitNode(jsx_open.name);
+                try self.visitSubRange(.{ .start = jsx_open.attrs_start, .end = jsx_open.attrs_end });
+            },
+            .jsx_closing_element => try self.visitNode(data.lhs),
+            .jsx_attribute => try self.visitNode(data.rhs),
+            .jsx_spread_attribute => try self.visitNode(data.lhs),
+            .jsx_expression_container => try self.visitNode(data.lhs),
+            .jsx_fragment => {
+                try self.visitSubRange(.{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) });
+            },
+            .jsx_text_node => {},
 
             // ── Leaf nodes / no-ops ────────────────────────
             .empty_stmt, .break_stmt, .break_label, .continue_stmt,

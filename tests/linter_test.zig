@@ -6,22 +6,19 @@ const Parser = sx3lint.Parser;
 const SemanticAnalyzer = sx3lint.semantic.SemanticAnalyzer;
 const linter = sx3lint.linter;
 const LintDiagnostic = sx3lint.lint_context.LintDiagnostic;
+const RuleTester = @import("rule_tester.zig").RuleTester;
 
-// ── Test helpers ────────────────────────────────────────────
+// ── Helpers (kept for fixture/multi-rule tests) ──────────────
 
 fn lintSource(source: []const u8) ![]const LintDiagnostic {
     const allocator = testing.allocator;
-
     var tokens = try Lexer.tokenize(allocator, source);
     defer tokens.deinit(allocator);
-
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
-
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
-
-    return linter.lint(allocator, &tree, &sem);
+    return linter.lint(allocator, &tree, &sem, null);
 }
 
 fn expectRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) !void {
@@ -35,15 +32,6 @@ fn expectRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) !void 
     return error.TestExpectedEqual;
 }
 
-fn expectNoRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) !void {
-    for (diagnostics) |d| {
-        if (std.mem.eql(u8, d.rule_name, rule_name)) {
-            std.debug.print("Expected rule '{s}' NOT to fire, but it did: {s}\n", .{ rule_name, d.message });
-            return error.TestExpectedEqual;
-        }
-    }
-}
-
 fn countRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) usize {
     var n: usize = 0;
     for (diagnostics) |d| {
@@ -52,281 +40,674 @@ fn countRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) usize {
     return n;
 }
 
-// ── no-debugger ─────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// Correctness Rules (40)
+// ══════════════════════════════════════════════════════════════
 
-test "no-debugger: flags debugger statement" {
-    const diags = try lintSource("debugger;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-debugger");
+test "no-debugger" {
+    try RuleTester.run(.{
+        .rule = "no-debugger",
+        .valid = &.{ "var x = 1;", "console.log('hello');" },
+        .invalid = &.{.{ .code = "debugger;" }},
+    });
 }
 
-test "no-debugger: clean code" {
-    const diags = try lintSource("var x = 1;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-debugger");
+test "no-empty" {
+    try RuleTester.run(.{
+        .rule = "no-empty",
+        .valid = &.{"if (true) { var x = 1; }"},
+        .invalid = &.{.{ .code = "if (true) {}" }},
+    });
 }
 
-// ── no-empty ────────────────────────────────────────────────
-
-test "no-empty: flags empty block" {
-    const diags = try lintSource("if (true) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-empty");
+test "no-extra-semi" {
+    try RuleTester.run(.{
+        .rule = "no-extra-semi",
+        .valid = &.{"var x = 1;"},
+        .invalid = &.{.{ .code = ";" }},
+    });
 }
 
-test "no-empty: non-empty block is fine" {
-    const diags = try lintSource("if (true) { var x = 1; }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-empty");
+test "no-dupe-keys" {
+    try RuleTester.run(.{
+        .rule = "no-dupe-keys",
+        .valid = &.{"var obj = { a: 1, b: 2, c: 3 };"},
+        .invalid = &.{.{ .code = "var obj = { a: 1, b: 2, a: 3 };" }},
+    });
 }
 
-// ── no-extra-semi ───────────────────────────────────────────
-
-test "no-extra-semi: flags standalone semicolon" {
-    const diags = try lintSource(";");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-extra-semi");
+test "no-dupe-args" {
+    try RuleTester.run(.{
+        .rule = "no-dupe-args",
+        .valid = &.{"function foo(a, b, c) {}"},
+        .invalid = &.{.{ .code = "function foo(a, b, a) {}" }},
+    });
 }
 
-test "no-extra-semi: normal statement is fine" {
-    const diags = try lintSource("var x = 1;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-extra-semi");
+test "no-sparse-arrays" {
+    try RuleTester.run(.{
+        .rule = "no-sparse-arrays",
+        .valid = &.{"var arr = [1, 2, 3];"},
+        .invalid = &.{.{ .code = "var arr = [1,,3];" }},
+    });
 }
 
-// ── no-dupe-keys ────────────────────────────────────────────
-
-test "no-dupe-keys: flags duplicate object keys" {
-    const diags = try lintSource("var obj = { a: 1, b: 2, a: 3 };");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-dupe-keys");
+test "no-unreachable" {
+    try RuleTester.run(.{
+        .rule = "no-unreachable",
+        .valid = &.{
+            \\function foo() {
+            \\    var x = 2;
+            \\    return x;
+            \\}
+        },
+        .invalid = &.{.{
+            .code =
+            \\function foo() {
+            \\    return 1;
+            \\    var x = 2;
+            \\}
+            ,
+        }},
+    });
 }
 
-test "no-dupe-keys: unique keys are fine" {
-    const diags = try lintSource("var obj = { a: 1, b: 2, c: 3 };");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-dupe-keys");
+test "no-unsafe-negation" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-negation",
+        .valid = &.{"var x = a instanceof Array;"},
+        .invalid = &.{.{ .code = "var x = !a instanceof Array;" }},
+    });
 }
 
-// ── no-dupe-args ────────────────────────────────────────────
-
-test "no-dupe-args: flags duplicate params" {
-    const diags = try lintSource("function foo(a, b, a) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-dupe-args");
+test "use-isnan" {
+    try RuleTester.run(.{
+        .rule = "use-isnan",
+        .valid = &.{"var x = 1; if (x === 0) {}"},
+        .invalid = &.{.{ .code = "var x = 1; if (x === NaN) {}" }},
+    });
 }
 
-test "no-dupe-args: unique params are fine" {
-    const diags = try lintSource("function foo(a, b, c) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-dupe-args");
+test "valid-typeof" {
+    try RuleTester.run(.{
+        .rule = "valid-typeof",
+        .valid = &.{"if (typeof x === \"string\") {}"},
+        .invalid = &.{.{ .code = "if (typeof x === \"strig\") {}" }},
+    });
 }
 
-// ── no-sparse-arrays ────────────────────────────────────────
-
-test "no-sparse-arrays: flags array holes" {
-    const diags = try lintSource("var arr = [1,,3];");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-sparse-arrays");
+test "no-unused-vars" {
+    try RuleTester.run(.{
+        .rule = "no-unused-vars",
+        .valid = &.{
+            "let x = 1; console.log(x);",
+            "let _unused = 1;",
+        },
+        .invalid = &.{.{ .code = "let x = 1;" }},
+    });
 }
 
-test "no-sparse-arrays: dense array is fine" {
-    const diags = try lintSource("var arr = [1, 2, 3];");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-sparse-arrays");
+test "no-undef" {
+    try RuleTester.run(.{
+        .rule = "no-undef",
+        .valid = &.{
+            "let x = 1; console.log(x);",
+            "console.log(undefined);",
+        },
+        .invalid = &.{.{ .code = "console.log(x);" }},
+    });
 }
 
-// ── no-unreachable ──────────────────────────────────────────
-
-test "no-unreachable: flags code after return" {
-    const diags = try lintSource(
-        \\function foo() {
-        \\    return 1;
-        \\    var x = 2;
-        \\}
-    );
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unreachable");
+test "no-constant-condition" {
+    try RuleTester.run(.{
+        .rule = "no-constant-condition",
+        .valid = &.{"var x = 1; if (x) { var y = 2; }"},
+        .invalid = &.{.{ .code = "if (true) { var x = 1; }" }},
+    });
 }
 
-test "no-unreachable: code before return is fine" {
-    const diags = try lintSource(
-        \\function foo() {
-        \\    var x = 2;
-        \\    return x;
-        \\}
-    );
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-unreachable");
+test "no-func-assign" {
+    try RuleTester.run(.{
+        .rule = "no-func-assign",
+        .valid = &.{"function foo() {} foo();"},
+        .invalid = &.{.{ .code = "function foo() {} foo = 1;" }},
+    });
 }
 
-// ── no-unsafe-negation ──────────────────────────────────────
-
-test "no-unsafe-negation: flags !a instanceof b" {
-    const diags = try lintSource("var x = !a instanceof Array;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unsafe-negation");
+test "no-import-assign" {
+    try RuleTester.run(.{
+        .rule = "no-import-assign",
+        .invalid = &.{.{ .code = "import { foo } from 'bar'; foo = 1;" }},
+    });
 }
 
-test "no-unsafe-negation: normal instanceof is fine" {
-    const diags = try lintSource("var x = a instanceof Array;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-unsafe-negation");
+test "no-self-assign" {
+    try RuleTester.run(.{
+        .rule = "no-self-assign",
+        .valid = &.{"var x = 1; var y = 2; x = y;"},
+        .invalid = &.{.{ .code = "var x = 1; x = x;" }},
+    });
 }
 
-// ── use-isnan ───────────────────────────────────────────────
-
-test "use-isnan: flags comparison with NaN" {
-    const diags = try lintSource("var x = 1; if (x === NaN) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "use-isnan");
+test "no-self-compare" {
+    try RuleTester.run(.{
+        .rule = "no-self-compare",
+        .valid = &.{"var x = 1; var y = 2; if (x === y) {}"},
+        .invalid = &.{.{ .code = "var x = 1; if (x === x) {}" }},
+    });
 }
 
-test "use-isnan: Number.isNaN is fine" {
-    const diags = try lintSource("var x = 1; if (x === 0) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "use-isnan");
+test "no-const-assign" {
+    try RuleTester.run(.{
+        .rule = "no-const-assign",
+        .valid = &.{"let x = 1; x = 2;"},
+        .invalid = &.{.{ .code = "const x = 1; x = 2;" }},
+    });
 }
 
-// ── valid-typeof ────────────────────────────────────────────
-
-test "valid-typeof: flags invalid typeof string" {
-    const diags = try lintSource("if (typeof x === \"strig\") {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "valid-typeof");
+test "no-loss-of-precision" {
+    try RuleTester.run(.{
+        .rule = "no-loss-of-precision",
+        .valid = &.{"var x = 42;"},
+        .invalid = &.{.{ .code = "var x = 9007199254740993;" }},
+    });
 }
 
-test "valid-typeof: valid typeof string is fine" {
-    const diags = try lintSource("if (typeof x === \"string\") {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "valid-typeof");
+test "for-direction" {
+    try RuleTester.run(.{
+        .rule = "for-direction",
+        .valid = &.{"for (let i = 0; i < 10; i++) {}"},
+        .invalid = &.{.{ .code = "for (let i = 0; i < 10; i--) {}" }},
+    });
 }
 
-// ── no-unused-vars ──────────────────────────────────────────
-
-test "no-unused-vars: flags unused variable" {
-    const diags = try lintSource("let x = 1;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unused-vars");
+test "getter-return" {
+    try RuleTester.run(.{
+        .rule = "getter-return",
+        .valid = &.{"let obj = { get x() { return 1; } };"},
+        .invalid = &.{.{ .code = "let obj = { get x() {} };" }},
+    });
 }
 
-test "no-unused-vars: used variable is fine" {
-    const diags = try lintSource("let x = 1; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-unused-vars");
+test "no-async-promise-executor" {
+    try RuleTester.run(.{
+        .rule = "no-async-promise-executor",
+        .valid = &.{"let p = new Promise(function(resolve) { resolve(1); });"},
+        .invalid = &.{.{ .code = "let p = new Promise(async function(resolve) { resolve(1); });" }},
+    });
 }
 
-test "no-unused-vars: underscore prefix is fine" {
-    const diags = try lintSource("let _unused = 1;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-unused-vars");
+test "no-compare-neg-zero" {
+    try RuleTester.run(.{
+        .rule = "no-compare-neg-zero",
+        .valid = &.{"let x = 1; if (x === 0) {}"},
+        .invalid = &.{.{ .code = "let x = 1; if (x === -0) {}" }},
+    });
 }
 
-// ── no-undef ────────────────────────────────────────────────
-
-test "no-undef: flags undefined variable" {
-    const diags = try lintSource("console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-undef");
+test "no-dupe-class-members" {
+    try RuleTester.run(.{
+        .rule = "no-dupe-class-members",
+        .valid = &.{"class Foo { bar() {} baz() {} }"},
+        .invalid = &.{.{ .code = "class Foo { bar() {} bar() {} }" }},
+    });
 }
 
-test "no-undef: declared variable is fine" {
-    const diags = try lintSource("let x = 1; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-undef");
+test "no-dupe-else-if" {
+    try RuleTester.run(.{
+        .rule = "no-dupe-else-if",
+        .valid = &.{"let x = 1; let y = 2; if (x) {} else if (y) {}"},
+        .invalid = &.{.{ .code = "let x = 1; if (x === 1) {} else if (x === 1) {}" }},
+    });
 }
 
-test "no-undef: known globals are fine" {
-    const diags = try lintSource("console.log(undefined);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-undef");
+test "no-duplicate-case" {
+    try RuleTester.run(.{
+        .rule = "no-duplicate-case",
+        .valid = &.{"let x = 1; switch(x) { case 1: break; case 2: break; }"},
+        .invalid = &.{.{ .code = "let x = 1; switch(x) { case 1: break; case 1: break; }" }},
+    });
 }
 
-// ── no-constant-condition ───────────────────────────────────
-
-test "no-constant-condition: flags if(true)" {
-    const diags = try lintSource("if (true) { var x = 1; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-constant-condition");
+test "no-empty-pattern" {
+    try RuleTester.run(.{
+        .rule = "no-empty-pattern",
+        .valid = &.{"let {a} = foo; console.log(a);"},
+        .invalid = &.{.{ .code = "let {} = foo;" }},
+    });
 }
 
-test "no-constant-condition: variable condition is fine" {
-    const diags = try lintSource("var x = 1; if (x) { var y = 2; }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-constant-condition");
+test "no-ex-assign" {
+    try RuleTester.run(.{
+        .rule = "no-ex-assign",
+        .valid = &.{"try { foo(); } catch(e) { console.log(e); }"},
+        .invalid = &.{.{ .code = "try { foo(); } catch(e) { e = 1; }" }},
+    });
 }
 
-// ── no-func-assign ──────────────────────────────────────────
-
-test "no-func-assign: flags function reassignment" {
-    const diags = try lintSource("function foo() {} foo = 1;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-func-assign");
+test "no-fallthrough" {
+    try RuleTester.run(.{
+        .rule = "no-fallthrough",
+        .valid = &.{"let x = 1; switch(x) { case 1: foo(); break; case 2: bar(); break; }"},
+        .invalid = &.{.{ .code = "let x = 1; switch(x) { case 1: foo(); case 2: bar(); break; }" }},
+    });
 }
 
-test "no-func-assign: calling function is fine" {
-    const diags = try lintSource("function foo() {} foo();");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-func-assign");
+test "no-global-assign" {
+    try RuleTester.run(.{
+        .rule = "no-global-assign",
+        .valid = &.{"let x = 1; x = 2;"},
+        .invalid = &.{
+            .{ .code = "Object = null;" },
+            .{ .code = "undefined = 1;" },
+        },
+    });
 }
 
-// ── no-self-assign ──────────────────────────────────────────
-
-test "no-self-assign: flags x = x" {
-    const diags = try lintSource("var x = 1; x = x;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-self-assign");
+test "no-inner-declarations" {
+    try RuleTester.run(.{
+        .rule = "no-inner-declarations",
+        .valid = &.{"function foo() {} foo();"},
+        .invalid = &.{.{ .code = "if (true) { function foo() {} foo(); }" }},
+    });
 }
 
-test "no-self-assign: normal assignment is fine" {
-    const diags = try lintSource("var x = 1; var y = 2; x = y;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-self-assign");
+test "no-new-symbol" {
+    try RuleTester.run(.{
+        .rule = "no-new-symbol",
+        .valid = &.{"let s = Symbol('foo'); console.log(s);"},
+        .invalid = &.{.{ .code = "let s = new Symbol();" }},
+    });
 }
 
-// ── no-self-compare ─────────────────────────────────────────
-
-test "no-self-compare: flags x === x" {
-    const diags = try lintSource("var x = 1; if (x === x) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-self-compare");
+test "no-obj-calls" {
+    try RuleTester.run(.{
+        .rule = "no-obj-calls",
+        .valid = &.{"let x = Math.random(); console.log(x);"},
+        .invalid = &.{.{ .code = "let x = Math(); console.log(x);" }},
+    });
 }
 
-test "no-self-compare: different vars is fine" {
-    const diags = try lintSource("var x = 1; var y = 2; if (x === y) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-self-compare");
+test "no-prototype-builtins" {
+    try RuleTester.run(.{
+        .rule = "no-prototype-builtins",
+        .valid = &.{"Object.prototype.hasOwnProperty.call(foo, 'bar');"},
+        .invalid = &.{.{ .code = "foo.hasOwnProperty('bar');" }},
+    });
 }
 
-// ── no-const-assign ─────────────────────────────────────────
-
-test "no-const-assign: flags const reassignment" {
-    const diags = try lintSource("const x = 1; x = 2;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-const-assign");
+test "no-setter-return" {
+    try RuleTester.run(.{
+        .rule = "no-setter-return",
+        .valid = &.{"let obj = { set x(val) { this._x = val; } };"},
+        .invalid = &.{.{ .code = "let obj = { set x(val) { return val; } };" }},
+    });
 }
 
-test "no-const-assign: let reassignment is fine" {
-    const diags = try lintSource("let x = 1; x = 2;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-const-assign");
+test "no-template-curly-in-string" {
+    try RuleTester.run(.{
+        .rule = "no-template-curly-in-string",
+        .valid = &.{"let x = \"hello\"; console.log(x);"},
+        .invalid = &.{.{
+            .code =
+            \\let name = "world";
+            \\let x = "Hello ${name}";
+            \\console.log(x);
+            ,
+        }},
+    });
 }
 
-// ── no-loss-of-precision ────────────────────────────────────
-
-test "no-loss-of-precision: flags unsafe integer" {
-    const diags = try lintSource("var x = 9007199254740993;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-loss-of-precision");
+test "no-this-before-super" {
+    try RuleTester.run(.{
+        .rule = "no-this-before-super",
+        .invalid = &.{.{ .code = "class B {} class A extends B { constructor() { this.x = 1; super(); } }" }},
+    });
 }
 
-test "no-loss-of-precision: safe integer is fine" {
-    const diags = try lintSource("var x = 42;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-loss-of-precision");
+test "no-useless-catch" {
+    try RuleTester.run(.{
+        .rule = "no-useless-catch",
+        .valid = &.{"try { foo(); } catch(e) { throw new Error(e); }"},
+        .invalid = &.{.{ .code = "try { foo(); } catch(e) { throw e; }" }},
+    });
 }
 
-// ── Clean code ──────────────────────────────────────────────
+test "no-unsafe-optional-chaining" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-optional-chaining",
+        .invalid = &.{.{ .code = "let x = (obj?.foo)();" }},
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// Suspicious Rules (28)
+// ══════════════════════════════════════════════════════════════
+
+test "eqeqeq" {
+    try RuleTester.run(.{
+        .rule = "eqeqeq",
+        .valid = &.{"let x = 1; if (x === 1) {}"},
+        .invalid = &.{.{ .code = "let x = 1; if (x == 1) {}" }},
+    });
+}
+
+test "no-cond-assign" {
+    try RuleTester.run(.{
+        .rule = "no-cond-assign",
+        .valid = &.{"let x = 1; if (x === 1) { console.log(x); }"},
+        .invalid = &.{.{ .code = "let x = 0; if (x = 1) { console.log(x); }" }},
+    });
+}
+
+test "no-delete-var" {
+    try RuleTester.run(.{
+        .rule = "no-delete-var",
+        .valid = &.{"let obj = {}; delete obj.x; console.log(obj);"},
+        .invalid = &.{.{ .code = "let x = 1; delete x;" }},
+    });
+}
+
+test "no-eval" {
+    try RuleTester.run(.{
+        .rule = "no-eval",
+        .valid = &.{"foo('code');"},
+        .invalid = &.{.{ .code = "eval('code');" }},
+    });
+}
+
+test "no-implied-eval" {
+    try RuleTester.run(.{
+        .rule = "no-implied-eval",
+        .valid = &.{"setTimeout(function() { foo(); }, 100);"},
+        .invalid = &.{.{ .code = "setTimeout(\"alert('hi')\", 100);" }},
+    });
+}
+
+test "no-new-wrappers" {
+    try RuleTester.run(.{
+        .rule = "no-new-wrappers",
+        .valid = &.{"let s = String('hello'); console.log(s);"},
+        .invalid = &.{.{ .code = "let s = new String('hello'); console.log(s);" }},
+    });
+}
+
+test "no-redeclare" {
+    try RuleTester.run(.{
+        .rule = "no-redeclare",
+        .valid = &.{"let x = 1; let y = 2; console.log(x, y);"},
+        .invalid = &.{.{ .code = "let x = 1; let x = 2; console.log(x);" }},
+    });
+}
+
+test "no-shadow-restricted-names" {
+    try RuleTester.run(.{
+        .rule = "no-shadow-restricted-names",
+        .valid = &.{"let x = 1; console.log(x);"},
+        .invalid = &.{.{ .code = "let undefined = 1; console.log(undefined);" }},
+    });
+}
+
+test "no-unsafe-finally" {
+    try RuleTester.run(.{
+        .rule = "no-unsafe-finally",
+        .valid = &.{"try { foo(); } finally { bar(); }"},
+        .invalid = &.{.{ .code = "try { foo(); } finally { return; }" }},
+    });
+}
+
+test "no-unused-labels" {
+    try RuleTester.run(.{
+        .rule = "no-unused-labels",
+        .invalid = &.{.{ .code = "label: var x = 1;" }},
+    });
+}
+
+test "no-void" {
+    try RuleTester.run(.{
+        .rule = "no-void",
+        .valid = &.{"let x = 0; console.log(x);"},
+        .invalid = &.{.{ .code = "void 0;" }},
+    });
+}
+
+test "no-with" {
+    try RuleTester.run(.{
+        .rule = "no-with",
+        .valid = &.{"let x = obj.foo; console.log(x);"},
+        .invalid = &.{.{ .code = "with (obj) { foo(); }" }},
+    });
+}
+
+test "require-yield" {
+    try RuleTester.run(.{
+        .rule = "require-yield",
+        .valid = &.{"function* gen() { yield 1; }"},
+        .invalid = &.{.{ .code = "function* gen() {}" }},
+    });
+}
+
+test "no-case-declarations" {
+    try RuleTester.run(.{
+        .rule = "no-case-declarations",
+        .valid = &.{"let x = 1; switch(x) { case 1: { let y = 1; console.log(y); } break; }"},
+        .invalid = &.{.{ .code = "let x = 1; switch(x) { case 1: let y = 1; console.log(y); break; }" }},
+    });
+}
+
+test "no-sequences" {
+    try RuleTester.run(.{
+        .rule = "no-sequences",
+        .valid = &.{
+            "let x = 1; console.log(x);",
+            "let x = (1, 2); console.log(x);", // parenthesized is allowed (ESLint compat)
+        },
+        .invalid = &.{.{ .code = "var x = 1; x = 1, 2;" }},
+    });
+}
+
+test "no-throw-literal" {
+    try RuleTester.run(.{
+        .rule = "no-throw-literal",
+        .valid = &.{"throw new Error('error');"},
+        .invalid = &.{.{ .code = "throw 'error';" }},
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// Style Rules (30)
+// ══════════════════════════════════════════════════════════════
+
+test "no-var" {
+    try RuleTester.run(.{
+        .rule = "no-var",
+        .valid = &.{"let x = 1; x = 2;"},
+        .invalid = &.{.{ .code = "var x = 1;" }},
+    });
+}
+
+test "prefer-const" {
+    try RuleTester.run(.{
+        .rule = "prefer-const",
+        .valid = &.{"let x = 1; x = 2;"},
+        .invalid = &.{.{ .code = "let x = 1; console.log(x);" }},
+    });
+}
+
+test "no-array-constructor" {
+    try RuleTester.run(.{
+        .rule = "no-array-constructor",
+        .valid = &.{"let arr = []; console.log(arr);"},
+        .invalid = &.{.{ .code = "let arr = new Array(); console.log(arr);" }},
+    });
+}
+
+test "no-bitwise" {
+    try RuleTester.run(.{
+        .rule = "no-bitwise",
+        .valid = &.{"let x = 1 || 2; console.log(x);"},
+        .invalid = &.{.{ .code = "let x = 1 | 2; console.log(x);" }},
+    });
+}
+
+test "no-continue" {
+    try RuleTester.run(.{
+        .rule = "no-continue",
+        .valid = &.{"for (let i = 0; i < 10; i++) { foo(); }"},
+        .invalid = &.{.{ .code = "for (let i = 0; i < 10; i++) { continue; }" }},
+    });
+}
+
+test "no-else-return" {
+    try RuleTester.run(.{
+        .rule = "no-else-return",
+        .valid = &.{
+            \\function foo(x) {
+            \\    if (x) {
+            \\        return 1;
+            \\    }
+            \\    return 2;
+            \\}
+            \\foo(true);
+        },
+        .invalid = &.{.{
+            .code =
+            \\function foo(x) {
+            \\    if (x) {
+            \\        return 1;
+            \\    } else {
+            \\        return 2;
+            \\    }
+            \\}
+            \\foo(true);
+            ,
+        }},
+    });
+}
+
+test "no-eq-null" {
+    try RuleTester.run(.{
+        .rule = "no-eq-null",
+        .valid = &.{"let x = 1; if (x === null) {}"},
+        .invalid = &.{.{ .code = "let x = 1; if (x == null) {}" }},
+    });
+}
+
+test "no-extra-boolean-cast" {
+    try RuleTester.run(.{
+        .rule = "no-extra-boolean-cast",
+        .valid = &.{"let x = 1; if (x) {}"},
+        .invalid = &.{.{ .code = "let x = 1; if (!!x) {}" }},
+    });
+}
+
+test "no-floating-decimal" {
+    try RuleTester.run(.{
+        .rule = "no-floating-decimal",
+        .valid = &.{"let x = 0.5;"},
+        .invalid = &.{.{ .code = "let x = .5;" }},
+    });
+}
+
+test "no-labels" {
+    try RuleTester.run(.{
+        .rule = "no-labels",
+        .valid = &.{"for (let i = 0; i < 10; i++) {}"},
+        .invalid = &.{.{ .code = "label: for (let i = 0; i < 10; i++) {}" }},
+    });
+}
+
+test "no-multi-assign" {
+    try RuleTester.run(.{
+        .rule = "no-multi-assign",
+        .valid = &.{"let a = 1; let b = 2; console.log(a, b);"},
+        .invalid = &.{.{ .code = "var a = 1; var b = 1; a = b = 2; console.log(a, b);" }},
+    });
+}
+
+test "no-negated-condition" {
+    try RuleTester.run(.{
+        .rule = "no-negated-condition",
+        .valid = &.{"let x = true; if (x) { foo(); } else { bar(); }"},
+        .invalid = &.{.{ .code = "let x = true; if (!x) { foo(); } else { bar(); }" }},
+    });
+}
+
+test "no-nested-ternary" {
+    try RuleTester.run(.{
+        .rule = "no-nested-ternary",
+        .valid = &.{"let a = true; let x = a ? 1 : 2; console.log(x);"},
+        .invalid = &.{.{ .code = "let a = true; let b = true; let x = a ? b ? 1 : 2 : 3; console.log(x);" }},
+    });
+}
+
+test "no-new" {
+    try RuleTester.run(.{
+        .rule = "no-new",
+        .valid = &.{"let x = new Foo(); console.log(x);"},
+        .invalid = &.{.{ .code = "new Foo();" }},
+    });
+}
+
+test "no-new-func" {
+    try RuleTester.run(.{
+        .rule = "no-new-func",
+        .valid = &.{"let f = function() {}; f();"},
+        .invalid = &.{.{ .code = "let f = new Function('a', 'return a'); console.log(f);" }},
+    });
+}
+
+test "no-new-object" {
+    try RuleTester.run(.{
+        .rule = "no-new-object",
+        .valid = &.{"let obj = {}; console.log(obj);"},
+        .invalid = &.{.{ .code = "let obj = new Object(); console.log(obj);" }},
+    });
+}
+
+test "no-param-reassign" {
+    try RuleTester.run(.{
+        .rule = "no-param-reassign",
+        .valid = &.{"function foo(x) { console.log(x); } foo(1);"},
+        .invalid = &.{.{ .code = "function foo(x) { x = 1; } foo(1);" }},
+    });
+}
+
+test "no-plusplus" {
+    try RuleTester.run(.{
+        .rule = "no-plusplus",
+        .valid = &.{"let x = 1; x += 1; console.log(x);"},
+        .invalid = &.{.{ .code = "let x = 1; x++; console.log(x);" }},
+    });
+}
+
+test "no-return-assign" {
+    try RuleTester.run(.{
+        .rule = "no-return-assign",
+        .valid = &.{"function f() { return 1; } f();"},
+        .invalid = &.{.{ .code = "let x = 0; function f() { return x = 1; } f();" }},
+    });
+}
+
+test "no-unneeded-ternary" {
+    try RuleTester.run(.{
+        .rule = "no-unneeded-ternary",
+        .valid = &.{"let a = 1; let x = a ? b : c; console.log(x);"},
+        .invalid = &.{.{ .code = "let a = 1; let x = a ? true : false; console.log(x);" }},
+    });
+}
+
+test "prefer-template" {
+    try RuleTester.run(.{
+        .rule = "prefer-template",
+        .valid = &.{"let x = 'hello'; console.log(x);"},
+        .invalid = &.{.{ .code = "let name = 'world'; let x = 'hello' + name; console.log(x);" }},
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// Clean Code
+// ══════════════════════════════════════════════════════════════
 
 test "clean code produces no diagnostics" {
     const diags = try lintSource(
@@ -339,80 +720,9 @@ test "clean code produces no diagnostics" {
     try testing.expectEqual(@as(usize, 0), diags.len);
 }
 
-// ── Fixture files ───────────────────────────────────────────
-
-test "fixture: no_debugger" {
-    const source = @embedFile("fixtures/lint/no_debugger.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-debugger");
-}
-
-test "fixture: no_empty" {
-    const source = @embedFile("fixtures/lint/no_empty.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-empty");
-    try testing.expect(countRule(diags, "no-empty") >= 2);
-}
-
-test "fixture: no_dupe_keys" {
-    const source = @embedFile("fixtures/lint/no_dupe_keys.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-dupe-keys");
-}
-
-test "fixture: no_sparse_arrays" {
-    const source = @embedFile("fixtures/lint/no_sparse_arrays.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-sparse-arrays");
-}
-
-test "fixture: no_unreachable" {
-    const source = @embedFile("fixtures/lint/no_unreachable.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unreachable");
-}
-
-test "fixture: no_unused_vars" {
-    const source = @embedFile("fixtures/lint/no_unused_vars.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unused-vars");
-}
-
-test "fixture: no_const_assign" {
-    const source = @embedFile("fixtures/lint/no_const_assign.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-const-assign");
-}
-
-test "fixture: no_constant_condition" {
-    const source = @embedFile("fixtures/lint/no_constant_condition.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-constant-condition");
-}
-
-test "fixture: no_loss_of_precision" {
-    const source = @embedFile("fixtures/lint/no_loss_of_precision.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-loss-of-precision");
-}
-
-test "fixture: clean code" {
-    const source = @embedFile("fixtures/lint/clean.js");
-    const diags = try lintSource(source);
-    defer testing.allocator.free(diags);
-    try testing.expectEqual(@as(usize, 0), diags.len);
-}
-
-// ── Multiple rules on same source ───────────────────────────
+// ══════════════════════════════════════════════════════════════
+// Multiple Rules
+// ══════════════════════════════════════════════════════════════
 
 test "multiple rules fire on combined source" {
     const diags = try lintSource(
@@ -426,752 +736,67 @@ test "multiple rules fire on combined source" {
     try expectRule(diags, "no-unused-vars");
 }
 
-test "no-import-assign: flags import reassignment" {
-    // Note: import declarations are only valid in modules, but the parser
-    // accepts them anyway. The semantic analysis will still produce the
-    // correct symbol bindings.
-    const diags = try lintSource("import { foo } from 'bar'; foo = 1;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-import-assign");
-}
-
-// ── v0.4 Correctness Rules ──────────────────────────────────
-
-// ── for-direction ───────────────────────────────────────────
-
-test "for-direction: flags wrong update direction" {
-    const diags = try lintSource("for (let i = 0; i < 10; i--) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "for-direction");
-}
-
-test "for-direction: correct update direction is fine" {
-    const diags = try lintSource("for (let i = 0; i < 10; i++) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "for-direction");
-}
-
-// ── getter-return ───────────────────────────────────────────
-
-test "getter-return: flags getter without return" {
-    const diags = try lintSource("let obj = { get x() {} };");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "getter-return");
-}
-
-test "getter-return: getter with return is fine" {
-    const diags = try lintSource("let obj = { get x() { return 1; } };");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "getter-return");
-}
-
-// ── no-async-promise-executor ───────────────────────────────
-
-test "no-async-promise-executor: flags async executor" {
-    const diags = try lintSource("let p = new Promise(async function(resolve) { resolve(1); });");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-async-promise-executor");
-}
-
-test "no-async-promise-executor: sync executor is fine" {
-    const diags = try lintSource("let p = new Promise(function(resolve) { resolve(1); });");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-async-promise-executor");
-}
-
-// ── no-compare-neg-zero ─────────────────────────────────────
-
-test "no-compare-neg-zero: flags comparison with -0" {
-    const diags = try lintSource("let x = 1; if (x === -0) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-compare-neg-zero");
-}
-
-test "no-compare-neg-zero: comparison with 0 is fine" {
-    const diags = try lintSource("let x = 1; if (x === 0) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-compare-neg-zero");
-}
-
-// ── no-dupe-class-members ───────────────────────────────────
-
-test "no-dupe-class-members: flags duplicate methods" {
-    const diags = try lintSource("class Foo { bar() {} bar() {} }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-dupe-class-members");
-}
-
-test "no-dupe-class-members: unique methods are fine" {
-    const diags = try lintSource("class Foo { bar() {} baz() {} }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-dupe-class-members");
-}
-
-// ── no-duplicate-case ───────────────────────────────────────
-
-test "no-duplicate-case: flags duplicate case values" {
-    const diags = try lintSource("let x = 1; switch(x) { case 1: break; case 1: break; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-duplicate-case");
-}
-
-test "no-duplicate-case: unique case values are fine" {
-    const diags = try lintSource("let x = 1; switch(x) { case 1: break; case 2: break; }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-duplicate-case");
-}
-
-// ── no-empty-pattern ────────────────────────────────────────
-
-test "no-empty-pattern: flags empty destructuring" {
-    const diags = try lintSource("let {} = foo;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-empty-pattern");
-}
-
-test "no-empty-pattern: non-empty destructuring is fine" {
-    const diags = try lintSource("let {a} = foo; console.log(a);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-empty-pattern");
-}
-
-// ── no-ex-assign ────────────────────────────────────────────
-
-test "no-ex-assign: flags catch parameter reassignment" {
-    const diags = try lintSource("try { foo(); } catch(e) { e = 1; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-ex-assign");
-}
-
-test "no-ex-assign: using catch parameter is fine" {
-    const diags = try lintSource("try { foo(); } catch(e) { console.log(e); }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-ex-assign");
-}
-
-// ── no-fallthrough ──────────────────────────────────────────
-
-test "no-fallthrough: flags case without break" {
-    const diags = try lintSource("let x = 1; switch(x) { case 1: foo(); case 2: bar(); break; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-fallthrough");
-}
-
-test "no-fallthrough: case with break is fine" {
-    const diags = try lintSource("let x = 1; switch(x) { case 1: foo(); break; case 2: bar(); break; }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-fallthrough");
-}
-
-// ── no-new-symbol ───────────────────────────────────────────
-
-test "no-new-symbol: flags new Symbol()" {
-    const diags = try lintSource("let s = new Symbol();");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-new-symbol");
-}
-
-test "no-new-symbol: Symbol() call is fine" {
-    const diags = try lintSource("let s = Symbol('foo'); console.log(s);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-new-symbol");
-}
-
-// ── no-obj-calls ────────────────────────────────────────────
-
-test "no-obj-calls: flags calling Math as function" {
-    const diags = try lintSource("let x = Math(); console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-obj-calls");
-}
-
-test "no-obj-calls: Math.random() is fine" {
-    const diags = try lintSource("let x = Math.random(); console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-obj-calls");
-}
-
-// ── no-prototype-builtins ───────────────────────────────────
-
-test "no-prototype-builtins: flags direct hasOwnProperty call" {
-    const diags = try lintSource("foo.hasOwnProperty('bar');");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-prototype-builtins");
-}
-
-test "no-prototype-builtins: Object.prototype.hasOwnProperty.call is fine" {
-    const diags = try lintSource("Object.prototype.hasOwnProperty.call(foo, 'bar');");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-prototype-builtins");
-}
-
-// ── no-setter-return ────────────────────────────────────────
-
-test "no-setter-return: flags return in setter" {
-    const diags = try lintSource("let obj = { set x(val) { return val; } };");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-setter-return");
-}
-
-test "no-setter-return: setter without return is fine" {
-    const diags = try lintSource("let obj = { set x(val) { this._x = val; } };");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-setter-return");
-}
-
-// ── no-template-curly-in-string ─────────────────────────────
-
-test "no-template-curly-in-string: flags template syntax in regular string" {
-    const diags = try lintSource(
-        \\let name = "world";
-        \\let x = "Hello ${name}";
-        \\console.log(x);
-    );
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-template-curly-in-string");
-}
-
-test "no-template-curly-in-string: plain string is fine" {
-    const diags = try lintSource("let x = \"hello\"; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-template-curly-in-string");
-}
-
-// ── no-useless-catch ────────────────────────────────────────
-
-test "no-useless-catch: flags catch that only rethrows" {
-    const diags = try lintSource("try { foo(); } catch(e) { throw e; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-useless-catch");
-}
-
-test "no-useless-catch: catch that wraps error is fine" {
-    const diags = try lintSource("try { foo(); } catch(e) { throw new Error(e); }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-useless-catch");
-}
-
-// ── v0.4 Suspicious Rules ───────────────────────────────────
-
-// ── eqeqeq ─────────────────────────────────────────────────
-
-test "eqeqeq: flags loose equality" {
-    const diags = try lintSource("let x = 1; if (x == 1) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "eqeqeq");
-}
-
-test "eqeqeq: strict equality is fine" {
-    const diags = try lintSource("let x = 1; if (x === 1) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "eqeqeq");
-}
-
-// ── no-cond-assign ──────────────────────────────────────────
-
-test "no-cond-assign: flags assignment in condition" {
-    const diags = try lintSource("let x = 0; if (x = 1) { console.log(x); }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-cond-assign");
-}
-
-test "no-cond-assign: comparison in condition is fine" {
-    const diags = try lintSource("let x = 1; if (x === 1) { console.log(x); }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-cond-assign");
-}
-
-// ── no-delete-var ───────────────────────────────────────────
-
-test "no-delete-var: flags deleting a variable" {
-    const diags = try lintSource("let x = 1; delete x;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-delete-var");
-}
-
-test "no-delete-var: deleting object property is fine" {
-    const diags = try lintSource("let obj = {}; delete obj.x; console.log(obj);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-delete-var");
-}
-
-// ── no-eval ─────────────────────────────────────────────────
-
-test "no-eval: flags eval call" {
-    const diags = try lintSource("eval('code');");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-eval");
-}
-
-test "no-eval: non-eval function call is fine" {
-    const diags = try lintSource("foo('code');");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-eval");
-}
-
-// ── no-implied-eval ─────────────────────────────────────────
-
-test "no-implied-eval: flags setTimeout with string" {
-    const diags = try lintSource("setTimeout(\"alert('hi')\", 100);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-implied-eval");
-}
-
-test "no-implied-eval: setTimeout with function is fine" {
-    const diags = try lintSource("setTimeout(function() { foo(); }, 100);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-implied-eval");
-}
-
-// ── no-new-wrappers ─────────────────────────────────────────
-
-test "no-new-wrappers: flags new String()" {
-    const diags = try lintSource("let s = new String('hello'); console.log(s);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-new-wrappers");
-}
-
-test "no-new-wrappers: String() without new is fine" {
-    const diags = try lintSource("let s = String('hello'); console.log(s);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-new-wrappers");
-}
-
-// ── no-redeclare ────────────────────────────────────────────
-
-test "no-redeclare: flags duplicate let declaration" {
-    const diags = try lintSource("let x = 1; let x = 2; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-redeclare");
-}
-
-test "no-redeclare: different names are fine" {
-    const diags = try lintSource("let x = 1; let y = 2; console.log(x, y);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-redeclare");
-}
-
-// ── no-shadow-restricted-names ──────────────────────────────
-
-test "no-shadow-restricted-names: flags shadowing undefined" {
-    const diags = try lintSource("let undefined = 1; console.log(undefined);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-shadow-restricted-names");
-}
-
-test "no-shadow-restricted-names: normal variable name is fine" {
-    const diags = try lintSource("let x = 1; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-shadow-restricted-names");
-}
-
-// ── no-unsafe-finally ───────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+// Fixture Files
+// ══════════════════════════════════════════════════════════════
 
-test "no-unsafe-finally: flags return in finally" {
-    const diags = try lintSource("try { foo(); } finally { return; }");
+test "fixture: no_debugger" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_debugger.js"));
     defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unsafe-finally");
+    try expectRule(diags, "no-debugger");
 }
 
-test "no-unsafe-finally: normal finally is fine" {
-    const diags = try lintSource("try { foo(); } finally { bar(); }");
+test "fixture: no_empty" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_empty.js"));
     defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-unsafe-finally");
+    try expectRule(diags, "no-empty");
+    try testing.expect(countRule(diags, "no-empty") >= 2);
 }
 
-// ── no-void ─────────────────────────────────────────────────
-
-test "no-void: flags void operator" {
-    const diags = try lintSource("void 0;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-void");
-}
-
-test "no-void: normal expression is fine" {
-    const diags = try lintSource("let x = 0; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-void");
-}
-
-// ── no-with ─────────────────────────────────────────────────
-
-test "no-with: flags with statement" {
-    const diags = try lintSource("with (obj) { foo(); }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-with");
-}
-
-test "no-with: property access is fine" {
-    const diags = try lintSource("let x = obj.foo; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-with");
-}
-
-// ── require-yield ───────────────────────────────────────────
-
-test "require-yield: flags generator without yield" {
-    const diags = try lintSource("function* gen() {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "require-yield");
-}
-
-test "require-yield: generator with yield is fine" {
-    const diags = try lintSource("function* gen() { yield 1; }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "require-yield");
-}
-
-// ── no-case-declarations ────────────────────────────────────
-
-test "no-case-declarations: flags declaration in case without block" {
-    const diags = try lintSource("let x = 1; switch(x) { case 1: let y = 1; console.log(y); break; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-case-declarations");
-}
-
-test "no-case-declarations: declaration in block within case is fine" {
-    const diags = try lintSource("let x = 1; switch(x) { case 1: { let y = 1; console.log(y); } break; }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-case-declarations");
-}
-
-// ── no-sequences ────────────────────────────────────────────
-
-test "no-sequences: flags comma operator" {
-    const diags = try lintSource("let x = (1, 2); console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-sequences");
-}
-
-test "no-sequences: normal expression is fine" {
-    const diags = try lintSource("let x = 1; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-sequences");
-}
-
-// ── no-throw-literal ────────────────────────────────────────
-
-test "no-throw-literal: flags throwing a string literal" {
-    const diags = try lintSource("throw 'error';");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-throw-literal");
-}
-
-test "no-throw-literal: throwing Error object is fine" {
-    const diags = try lintSource("throw new Error('error');");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-throw-literal");
-}
-
-// ── v0.4 Style Rules ────────────────────────────────────────
-
-// ── no-var ──────────────────────────────────────────────────
-
-test "no-var: flags var declaration" {
-    const diags = try lintSource("var x = 1;");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-var");
-}
-
-test "no-var: let declaration is fine" {
-    const diags = try lintSource("let x = 1; x = 2;");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-var");
-}
-
-// ── prefer-const ────────────────────────────────────────────
-
-test "prefer-const: flags let that is never reassigned" {
-    const diags = try lintSource("let x = 1; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "prefer-const");
-}
-
-test "prefer-const: let that is reassigned is fine" {
-    const diags = try lintSource("let x = 1; x = 2; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "prefer-const");
-}
-
-// ── no-array-constructor ────────────────────────────────────
-
-test "no-array-constructor: flags new Array()" {
-    const diags = try lintSource("let arr = new Array(1, 2, 3); console.log(arr);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-array-constructor");
-}
-
-test "no-array-constructor: array literal is fine" {
-    const diags = try lintSource("let arr = [1, 2, 3]; console.log(arr);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-array-constructor");
-}
-
-// ── no-bitwise ──────────────────────────────────────────────
-
-test "no-bitwise: flags bitwise OR operator" {
-    const diags = try lintSource("let a = 1; let b = 2; let x = a | b; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-bitwise");
-}
-
-test "no-bitwise: logical OR is fine" {
-    const diags = try lintSource("let a = 1; let b = 2; let x = a || b; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-bitwise");
-}
-
-// ── no-continue ─────────────────────────────────────────────
-
-test "no-continue: flags continue statement" {
-    const diags = try lintSource("for (let i = 0; i < 10; i++) { continue; }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-continue");
-}
-
-test "no-continue: loop without continue is fine" {
-    const diags = try lintSource("for (let i = 0; i < 10; i++) { console.log(i); }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-continue");
-}
-
-// ── no-else-return ──────────────────────────────────────────
-
-test "no-else-return: flags else after return" {
-    const diags = try lintSource(
-        \\function f(x) {
-        \\    if (x) {
-        \\        return 1;
-        \\    } else {
-        \\        return 2;
-        \\    }
-        \\}
-        \\f(true);
-    );
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-else-return");
-}
-
-test "no-else-return: return without else is fine" {
-    const diags = try lintSource(
-        \\function f(x) {
-        \\    if (x) {
-        \\        return 1;
-        \\    }
-        \\    return 2;
-        \\}
-        \\f(true);
-    );
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-else-return");
-}
-
-// ── no-eq-null ──────────────────────────────────────────────
-
-test "no-eq-null: flags loose null comparison" {
-    const diags = try lintSource("let x = 1; if (x == null) {}");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-eq-null");
-}
-
-test "no-eq-null: strict null comparison is fine" {
-    const diags = try lintSource("let x = 1; if (x === null) {}");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-eq-null");
-}
-
-// ── no-extra-boolean-cast ───────────────────────────────────
-
-test "no-extra-boolean-cast: flags double negation in boolean context" {
-    const diags = try lintSource("let x = 1; if (!!x) { console.log(x); }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-extra-boolean-cast");
-}
-
-test "no-extra-boolean-cast: simple condition is fine" {
-    const diags = try lintSource("let x = 1; if (x) { console.log(x); }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-extra-boolean-cast");
-}
-
-// ── no-floating-decimal ─────────────────────────────────────
-
-test "no-floating-decimal: flags floating decimal" {
-    const diags = try lintSource("let x = .5; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-floating-decimal");
-}
-
-test "no-floating-decimal: full decimal is fine" {
-    const diags = try lintSource("let x = 0.5; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-floating-decimal");
-}
-
-// ── no-labels ───────────────────────────────────────────────
-
-test "no-labels: flags labeled statement" {
-    const diags = try lintSource("label: for (let i = 0; i < 10; i++) { console.log(i); }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-labels");
-}
-
-test "no-labels: unlabeled loop is fine" {
-    const diags = try lintSource("for (let i = 0; i < 10; i++) { console.log(i); }");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-labels");
-}
-
-// ── no-multi-assign ─────────────────────────────────────────
-
-test "no-multi-assign: flags chained assignment" {
-    const diags = try lintSource("let a = 1; let b = 1; a = b = 2; console.log(a, b);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-multi-assign");
-}
-
-test "no-multi-assign: single assignment is fine" {
-    const diags = try lintSource("let a = 1; console.log(a);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-multi-assign");
-}
-
-// ── no-negated-condition ────────────────────────────────────
-
-test "no-negated-condition: flags negated if with else" {
-    const diags = try lintSource("let x = 1; if (!x) { a(); } else { b(); }");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-negated-condition");
-}
-
-test "no-negated-condition: non-negated condition is fine" {
-    const diags = try lintSource("let x = 1; if (x) { a(); }");
+test "fixture: no_dupe_keys" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_dupe_keys.js"));
     defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-negated-condition");
+    try expectRule(diags, "no-dupe-keys");
 }
 
-// ── no-nested-ternary ───────────────────────────────────────
-
-test "no-nested-ternary: flags nested ternary" {
-    const diags = try lintSource("let a = true; a = !a; let x = a ? a ? 1 : 2 : 3; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-nested-ternary");
-}
-
-test "no-nested-ternary: simple ternary is fine" {
-    const diags = try lintSource("let a = true; let x = a ? 1 : 2; console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-nested-ternary");
-}
-
-// ── no-new ──────────────────────────────────────────────────
-
-test "no-new: flags new for side effects" {
-    const diags = try lintSource("new Foo();");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-new");
-}
-
-test "no-new: new with assignment is fine" {
-    const diags = try lintSource("let x = new Foo(); console.log(x);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-new");
-}
-
-// ── no-new-func ─────────────────────────────────────────────
-
-test "no-new-func: flags new Function()" {
-    const diags = try lintSource("let fn = new Function('a', 'return a'); console.log(fn);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-new-func");
-}
-
-test "no-new-func: function expression is fine" {
-    const diags = try lintSource("let fn = function(a) { return a; }; console.log(fn);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-new-func");
-}
-
-// ── no-new-object ───────────────────────────────────────────
-
-test "no-new-object: flags new Object()" {
-    const diags = try lintSource("let obj = new Object(); console.log(obj);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-new-object");
-}
-
-test "no-new-object: object literal is fine" {
-    const diags = try lintSource("let obj = {}; console.log(obj);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-new-object");
-}
-
-// ── no-param-reassign ───────────────────────────────────────
-
-test "no-param-reassign: flags parameter reassignment" {
-    const diags = try lintSource("function f(x) { x = 1; console.log(x); } f(0);");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-param-reassign");
-}
-
-test "no-param-reassign: using parameter without reassignment is fine" {
-    const diags = try lintSource("function f(x) { let y = x; console.log(y); } f(0);");
-    defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-param-reassign");
-}
-
-// ── no-plusplus ──────────────────────────────────────────────
-
-test "no-plusplus: flags increment operator" {
-    const diags = try lintSource("let x = 0; x++; console.log(x);");
+test "fixture: no_sparse_arrays" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_sparse_arrays.js"));
     defer testing.allocator.free(diags);
-    try expectRule(diags, "no-plusplus");
+    try expectRule(diags, "no-sparse-arrays");
 }
 
-test "no-plusplus: compound assignment is fine" {
-    const diags = try lintSource("let x = 0; x += 1; console.log(x);");
+test "fixture: no_unreachable" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_unreachable.js"));
     defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-plusplus");
+    try expectRule(diags, "no-unreachable");
 }
 
-// ── no-return-assign ────────────────────────────────────────
-
-test "no-return-assign: flags assignment in return" {
-    const diags = try lintSource("let x = 0; function f() { return x = 1; } f();");
-    defer testing.allocator.free(diags);
-    try expectRule(diags, "no-return-assign");
-}
-
-test "no-return-assign: returning value is fine" {
-    const diags = try lintSource("function f() { return 1; } f();");
+test "fixture: no_unused_vars" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_unused_vars.js"));
     defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-return-assign");
+    try expectRule(diags, "no-unused-vars");
 }
 
-// ── no-unneeded-ternary ─────────────────────────────────────
-
-test "no-unneeded-ternary: flags ternary returning true/false" {
-    const diags = try lintSource("let a = 1; let x = a ? true : false; console.log(x);");
+test "fixture: no_const_assign" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_const_assign.js"));
     defer testing.allocator.free(diags);
-    try expectRule(diags, "no-unneeded-ternary");
+    try expectRule(diags, "no-const-assign");
 }
 
-test "no-unneeded-ternary: ternary with different values is fine" {
-    const diags = try lintSource("let a = 1; let x = a ? b : c; console.log(x);");
+test "fixture: no_constant_condition" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_constant_condition.js"));
     defer testing.allocator.free(diags);
-    try expectNoRule(diags, "no-unneeded-ternary");
+    try expectRule(diags, "no-constant-condition");
 }
-
-// ── prefer-template ─────────────────────────────────────────
 
-test "prefer-template: flags string concatenation" {
-    const diags = try lintSource("let name = 'world'; let x = 'hello' + name; console.log(x);");
+test "fixture: no_loss_of_precision" {
+    const diags = try lintSource(@embedFile("fixtures/lint/no_loss_of_precision.js"));
     defer testing.allocator.free(diags);
-    try expectRule(diags, "prefer-template");
+    try expectRule(diags, "no-loss-of-precision");
 }
 
-test "prefer-template: no concatenation is fine" {
-    const diags = try lintSource("let x = 'hello'; console.log(x);");
+test "fixture: clean code" {
+    const diags = try lintSource(@embedFile("fixtures/lint/clean.js"));
     defer testing.allocator.free(diags);
-    try expectNoRule(diags, "prefer-template");
+    try testing.expectEqual(@as(usize, 0), diags.len);
 }

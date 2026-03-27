@@ -14,5 +14,10 @@ pub const meta = RuleMeta{
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    // ESLint allows comma operator when explicitly wrapped in parentheses.
+    // When parsed inside parens, the sequence_expr's main_token IS the '('.
+    const main_tok = ctx.ast.nodeMainToken(node);
+    if (ctx.ast.tokenTag(main_tok) == .l_paren) return;
+
     ctx.report(node, meta.name, "Unexpected use of comma operator", meta.default_severity);
 }

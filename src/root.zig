@@ -21,6 +21,13 @@ pub const file_discovery = @import("file_discovery.zig");
 pub const gitignore = @import("gitignore.zig");
 pub const parallel = @import("parallel.zig");
 pub const diagnostic_formatter = @import("diagnostic_formatter.zig");
+pub const config = @import("config.zig");
+pub const config_resolver = @import("config_resolver.zig");
+pub const inline_disable = @import("inline_disable.zig");
+pub const eslint_compat = @import("eslint_compat.zig");
+pub const js_buffer = @import("js_buffer.zig");
+pub const layout = @import("layout.zig");
+pub const napi = @import("napi.zig");
 
 test {
     _ = @import("ast.zig");
@@ -41,4 +48,11 @@ test {
     _ = @import("gitignore.zig");
     _ = @import("parallel.zig");
     _ = @import("diagnostic_formatter.zig");
+    _ = @import("config.zig");
+    _ = @import("config_resolver.zig");
+    _ = @import("inline_disable.zig");
+    _ = @import("eslint_compat.zig");
+    _ = @import("js_buffer.zig");
+    _ = @import("layout.zig");
+    // napi.zig excluded from tests — NAPI extern symbols resolve at Node.js load time
 }

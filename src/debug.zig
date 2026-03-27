@@ -32,6 +32,10 @@ const ArrowData = @import("ast.zig").ArrowData;
 const Conditional = @import("ast.zig").Conditional;
 const ImportData = @import("ast.zig").ImportData;
 const MethodData = @import("ast.zig").MethodData;
+const InterfaceData = @import("ast.zig").InterfaceData;
+const EnumData = @import("ast.zig").EnumData;
+const JsxElementData = @import("ast.zig").JsxElementData;
+const JsxOpeningData = @import("ast.zig").JsxOpeningData;
 const TokenIndex = @import("ast.zig").TokenIndex;
 
 /// Dump the full AST to `writer` starting from the root node.
@@ -548,6 +552,80 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
         // ── Parameters ───────────────────────────────────────
         .formal_parameters => {
             // lhs = range.start, rhs = range.end (direct SubRange encoding)
+            const range = dataToSubRange(data);
+            try dumpSubRange(tree, range, child_indent, writer);
+        },
+
+        // ── TypeScript declarations ──────────────────────────
+        .ts_interface_decl => {
+            const iface = tree.extraData(InterfaceData, @intFromEnum(data.lhs));
+            if (iface.body_start != iface.body_end) {
+                try dumpSubRange(tree, .{ .start = iface.body_start, .end = iface.body_end }, child_indent, writer);
+            }
+        },
+        .ts_type_alias_decl => {},
+        .ts_enum_decl => {
+            const enum_data = tree.extraData(EnumData, @intFromEnum(data.lhs));
+            const range = SubRange{ .start = enum_data.members_start, .end = enum_data.members_end };
+            try dumpSubRange(tree, range, child_indent, writer);
+        },
+        .ts_enum_member => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+        .ts_namespace_decl, .ts_module_decl => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+
+        // ── TypeScript types (leaf-like in dump) ────────────
+        .ts_type_annotation, .ts_typeof_type, .ts_keyof_type,
+        .ts_infer_type, .ts_array_type, .ts_parenthesized_type,
+        .ts_non_null_expr,
+        => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+        },
+        .ts_type_reference, .ts_as_expr, .ts_satisfies_expr,
+        .ts_type_assertion, .ts_indexed_access_type,
+        .ts_type_predicate,
+        => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+        .ts_union_type, .ts_intersection_type, .ts_tuple_type,
+        .ts_type_literal, .ts_template_literal_type,
+        => {
+            const range = dataToSubRange(data);
+            try dumpSubRange(tree, range, child_indent, writer);
+        },
+        .ts_function_type, .ts_constructor_type, .ts_mapped_type,
+        .ts_conditional_type, .ts_type_query, .ts_parameter_property,
+        => {},
+
+        // ── JSX ─────────────────────────────────────────────
+        .jsx_element => {
+            const jsx_data = tree.extraData(JsxElementData, @intFromEnum(data.lhs));
+            try dumpNode(tree, jsx_data.opening, child_indent, writer);
+            const children = SubRange{ .start = jsx_data.children_start, .end = jsx_data.children_end };
+            try dumpSubRange(tree, children, child_indent, writer);
+            try dumpNode(tree, jsx_data.closing, child_indent, writer);
+        },
+        .jsx_self_closing, .jsx_opening_element => {
+            const jsx_open = tree.extraData(JsxOpeningData, @intFromEnum(data.lhs));
+            try dumpNode(tree, jsx_open.name, child_indent, writer);
+            const attrs = SubRange{ .start = jsx_open.attrs_start, .end = jsx_open.attrs_end };
+            try dumpSubRange(tree, attrs, child_indent, writer);
+        },
+        .jsx_closing_element => try dumpNode(tree, data.lhs, child_indent, writer),
+        .jsx_attribute => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+        .jsx_spread_attribute, .jsx_expression_container => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+        },
+        .jsx_text_node => {},
+        .jsx_fragment => {
             const range = dataToSubRange(data);
             try dumpSubRange(tree, range, child_indent, writer);
         },

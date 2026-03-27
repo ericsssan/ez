@@ -13,8 +13,19 @@ pub const meta = RuleMeta{
     .description = "Disallow assignments to native objects or read-only global variables",
 };
 
-pub const relevant_tags = [_]Node.Tag{};
-pub fn run(_: NodeIndex, _: *const LintContext) void {}
+pub const relevant_tags = [_]Node.Tag{.assign};
+
+pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    // Check: identifier = ... where identifier is a readonly global
+    const data = ctx.nodeData(node);
+    if (data.lhs == .none) return;
+    if (ctx.nodeTag(data.lhs) != .identifier) return;
+
+    const name = ctx.ast.tokenText(ctx.ast.nodeMainToken(data.lhs));
+    if (isReadonlyGlobal(name)) {
+        ctx.report(node, meta.name, "Read-only global should not be modified", meta.default_severity);
+    }
+}
 
 const readonly_globals = [_][]const u8{
     "undefined",

@@ -52,6 +52,7 @@ pub const LintContext = struct {
     semantic: *const SemanticResult,
     diagnostics: *std.ArrayList(LintDiagnostic),
     allocator: std.mem.Allocator,
+    severity_override: ?Severity = null,
 
     // ── AST accessors ─────────────────────────────────────
 
@@ -127,11 +128,12 @@ pub const LintContext = struct {
         message: []const u8,
         severity: Severity,
     ) void {
+        const effective_sev = self.severity_override orelse severity;
         self.diagnostics.append(self.allocator, .{
             .rule_name = rule_name,
             .message = message,
             .span = self.nodeSpan(node_idx),
-            .severity = severity,
+            .severity = effective_sev,
         }) catch {};
     }
 };

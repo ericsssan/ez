@@ -65,6 +65,23 @@ pub const Tag = enum(u8) {
     kw_target,
     kw_meta,
 
+    // ── TypeScript contextual keywords ───────────────────────
+    kw_interface,
+    kw_type,
+    kw_namespace,
+    kw_declare,
+    kw_abstract,
+    kw_implements,
+    kw_readonly,
+    kw_keyof,
+    kw_infer,
+    kw_is,
+    kw_asserts,
+    kw_override,
+    kw_satisfies,
+    kw_module,
+    kw_unique,
+
     // ── Punctuation ───────────────────────────────────────────
     l_paren, // (
     r_paren, // )
@@ -136,9 +153,14 @@ pub const Tag = enum(u8) {
     plus_plus, // ++
     minus_minus, // --
 
+    // ── JSX ──────────────────────────────────────────────────
+    jsx_text, // raw text content between JSX tags
+
     // ── Special ───────────────────────────────────────────────
     eof,
     invalid,
+    escaped_keyword, // identifier with \u escapes that resolves to a reserved word
+    at_sign, // @ (decorator prefix)
     hashbang, // #!...
 
     /// Returns the keyword text for keyword tags, null otherwise.
@@ -192,6 +214,22 @@ pub const Tag = enum(u8) {
             .kw_false => "false",
             .kw_target => "target",
             .kw_meta => "meta",
+
+            .kw_interface => "interface",
+            .kw_type => "type",
+            .kw_namespace => "namespace",
+            .kw_declare => "declare",
+            .kw_abstract => "abstract",
+            .kw_implements => "implements",
+            .kw_readonly => "readonly",
+            .kw_keyof => "keyof",
+            .kw_infer => "infer",
+            .kw_is => "is",
+            .kw_asserts => "asserts",
+            .kw_override => "override",
+            .kw_satisfies => "satisfies",
+            .kw_module => "module",
+            .kw_unique => "unique",
 
             .l_paren => "(",
             .r_paren => ")",
@@ -268,7 +306,10 @@ pub const Tag = enum(u8) {
             .template_no_sub,
             .regex_literal,
             .identifier,
+            .escaped_keyword,
+            .at_sign,
             .hashbang,
+            .jsx_text,
             => null,
         };
     }
@@ -292,6 +333,30 @@ pub const Tag = enum(u8) {
             .ampersand_ampersand_equal,
             .pipe_pipe_equal,
             .question_question_equal,
+            => true,
+            else => false,
+        };
+    }
+
+    /// Returns true if this tag is a TypeScript contextual keyword
+    /// (valid as identifier in JS, keyword only in TS type/declaration context).
+    pub fn isTsContextualKeyword(self: Tag) bool {
+        return switch (self) {
+            .kw_interface,
+            .kw_type,
+            .kw_namespace,
+            .kw_declare,
+            .kw_abstract,
+            .kw_implements,
+            .kw_readonly,
+            .kw_keyof,
+            .kw_infer,
+            .kw_is,
+            .kw_asserts,
+            .kw_override,
+            .kw_satisfies,
+            .kw_module,
+            .kw_unique,
             => true,
             else => false,
         };
@@ -348,10 +413,26 @@ pub const Tag = enum(u8) {
             .kw_false,
             .kw_target,
             .kw_meta,
+            .kw_interface,
+            .kw_type,
+            .kw_namespace,
+            .kw_declare,
+            .kw_abstract,
+            .kw_implements,
+            .kw_readonly,
+            .kw_keyof,
+            .kw_infer,
+            .kw_is,
+            .kw_asserts,
+            .kw_override,
+            .kw_satisfies,
+            .kw_module,
+            .kw_unique,
             => true,
             else => false,
         };
     }
+
 };
 
 /// Token with its tag and start position in source.
@@ -409,6 +490,57 @@ pub const keywords = std.StaticStringMap(Tag).initComptime(.{
     .{ "true", .kw_true },
     .{ "false", .kw_false },
 });
+
+/// TypeScript contextual keyword lookup map.
+/// These are only recognized as keywords in TS/TSX mode.
+pub const ts_keywords = std.StaticStringMap(Tag).initComptime(.{
+    .{ "interface", .kw_interface },
+    .{ "type", .kw_type },
+    .{ "namespace", .kw_namespace },
+    .{ "declare", .kw_declare },
+    .{ "abstract", .kw_abstract },
+    .{ "implements", .kw_implements },
+    .{ "readonly", .kw_readonly },
+    .{ "keyof", .kw_keyof },
+    .{ "infer", .kw_infer },
+    .{ "is", .kw_is },
+    .{ "asserts", .kw_asserts },
+    .{ "override", .kw_override },
+    .{ "satisfies", .kw_satisfies },
+    .{ "module", .kw_module },
+    .{ "unique", .kw_unique },
+});
+
+/// Language mode for the parser/lexer pipeline.
+pub const Language = enum {
+    js,
+    ts,
+    jsx,
+    tsx,
+
+    /// Returns true for TypeScript languages (ts, tsx).
+    pub fn isTs(self: Language) bool {
+        return self == .ts or self == .tsx;
+    }
+
+    /// Returns true for JSX languages (jsx, tsx).
+    pub fn isJsx(self: Language) bool {
+        return self == .jsx or self == .tsx;
+    }
+
+    /// Detect language from file extension.
+    pub fn fromExtension(name: []const u8) ?Language {
+        if (std.mem.endsWith(u8, name, ".tsx")) return .tsx;
+        if (std.mem.endsWith(u8, name, ".ts")) return .ts;
+        if (std.mem.endsWith(u8, name, ".mts")) return .ts;
+        if (std.mem.endsWith(u8, name, ".cts")) return .ts;
+        if (std.mem.endsWith(u8, name, ".jsx")) return .jsx;
+        if (std.mem.endsWith(u8, name, ".js")) return .js;
+        if (std.mem.endsWith(u8, name, ".mjs")) return .js;
+        if (std.mem.endsWith(u8, name, ".cjs")) return .js;
+        return null;
+    }
+};
 
 /// Index into token array.
 pub const Index = u32;

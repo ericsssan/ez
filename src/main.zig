@@ -28,6 +28,9 @@ pub fn main(init: std.process.Init) !void {
     var dump_ast = true;
     var json_format = false;
     var lint_mode = false;
+    var config_path: ?[]const u8 = null;
+    var no_config = false;
+    var eslint_compat_mode = false;
 
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -40,6 +43,17 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.eql(u8, arg, "--lint")) {
             lint_mode = true;
             dump_ast = false;
+        } else if (std.mem.eql(u8, arg, "--no-config")) {
+            no_config = true;
+        } else if (std.mem.eql(u8, arg, "--eslint-compat")) {
+            eslint_compat_mode = true;
+        } else if (std.mem.startsWith(u8, arg, "--config=")) {
+            config_path = arg["--config=".len..];
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            // Next arg is the path — but we don't have lookahead here.
+            // Accept --config=path form only for simplicity.
+            try stdout.print("Use --config=<path> (with =)\n", .{});
+            std.process.exit(1);
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.print(usage_text, .{});
             try stdout.flush();
@@ -62,12 +76,37 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Lint mode: multi-file support ────────────────────────
     if (lint_mode) {
+        // Resolve config once at startup.
+        var resolved_config: ?*const Config = null;
+        var config_resolver = ConfigResolver.init(allocator);
+        defer config_resolver.deinit();
+
+        if (!no_config) {
+            if (config_path) |cp| {
+                resolved_config = config_resolver.resolveFromPath(io, cp) catch null;
+            } else if (eslint_compat_mode) {
+                if (Io.Dir.cwd().readFileAlloc(io, ".eslintrc.json", allocator, Io.Limit.limited(1 * 1024 * 1024))) |content| {
+                    defer allocator.free(content);
+                    if (eslint_compat.parseEslintConfig(allocator, content)) |cfg| {
+                        const heap_cfg = try allocator.create(Config);
+                        heap_cfg.* = cfg;
+                        resolved_config = heap_cfg;
+                    } else |_| {}
+                } else |_| {}
+            } else {
+                // Auto-detect sx3lint.config.json from first file path
+                const paths_for_resolve = file_paths.items;
+                if (paths_for_resolve.len > 0) {
+                    resolved_config = config_resolver.resolveForFile(io, paths_for_resolve[0]);
+                }
+            }
+        }
+
         const paths = file_paths.items;
 
-        // For a single explicit file, use the fast path (no file discovery
-        // overhead, direct single-file pipeline).
+        // For a single explicit file, use the fast path.
         if (paths.len == 1 and hasJsExtension(paths[0])) {
-            try lintSingleFile(allocator, io, paths[0], stdout);
+            try lintSingleFile(allocator, io, paths[0], resolved_config, stdout);
             return;
         }
 
@@ -90,11 +129,16 @@ pub fn main(init: std.process.Init) !void {
             try discovery.addPath(io, path);
         }
 
+        // Apply config include/exclude filtering.
+        if (resolved_config) |cfg| {
+            discovery.filterByConfig(cfg);
+        }
+
         discovery.sortFiles();
         const files = discovery.getFiles();
 
         if (files.len == 0) {
-            try stdout.print("sx3lint: no JavaScript files found\n", .{});
+            try stdout.print("sx3lint: no source files found\n", .{});
             try stdout.flush();
             return;
         }
@@ -102,6 +146,7 @@ pub fn main(init: std.process.Init) !void {
         // Lint all files in parallel.
         var runner = ParallelRunner.init(allocator);
         defer runner.deinit();
+        runner.config = resolved_config;
         try runner.lintFiles(io, files);
         runner.sortResults();
 
@@ -141,9 +186,12 @@ pub fn main(init: std.process.Init) !void {
     };
     defer allocator.free(source);
 
+    // Detect language for all modes
+    const lang = Language.fromExtension(file_path) orelse .js;
+
     // ── Dump tokens mode ─────────────────────────────────────
     if (dump_tokens) {
-        var lexer = Lexer.init(allocator, source);
+        var lexer = Lexer.initWithLanguage(allocator, source, lang);
         while (true) {
             const tok = lexer.next();
             const text = tok.tag.lexeme() orelse blk: {
@@ -164,10 +212,11 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Dump AST mode (default) ──────────────────────────────
     if (dump_ast) {
-        var tokens = try Lexer.tokenize(allocator, source);
+        var tokens = try Lexer.tokenizeWithLanguage(allocator, source, lang);
         defer tokens.deinit(allocator);
 
-        var tree = try parser.Parser.parse(allocator, source, tokens.slice());
+        const is_module = isModuleFile(file_path);
+        var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, is_module);
         defer tree.deinit(allocator);
 
         if (tree.errors.len > 0) {
@@ -192,6 +241,7 @@ fn lintSingleFile(
     allocator: std.mem.Allocator,
     io: Io,
     file_path: []const u8,
+    config: ?*const Config,
     stdout: anytype,
 ) !void {
     const source = Io.Dir.cwd().readFileAlloc(
@@ -205,10 +255,13 @@ fn lintSingleFile(
     };
     defer allocator.free(source);
 
-    var tokens = try Lexer.tokenize(allocator, source);
+    // Detect language from file extension
+    const lang = Language.fromExtension(file_path) orelse .js;
+
+    var tokens = try Lexer.tokenizeWithLanguage(allocator, source, lang);
     defer tokens.deinit(allocator);
 
-    var tree = try parser.Parser.parse(allocator, source, tokens.slice());
+    var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, isModuleFile(file_path));
     defer tree.deinit(allocator);
 
     if (tree.errors.len > 0) {
@@ -220,7 +273,13 @@ fn lintSingleFile(
     var sem_result = try semantic.SemanticAnalyzer.analyze(allocator, &tree);
     defer sem_result.deinit(allocator);
 
-    const lint_diagnostics = try linter.lint(allocator, &tree, &sem_result);
+    const raw_diagnostics = try linter.lint(allocator, &tree, &sem_result, config);
+    defer allocator.free(raw_diagnostics);
+
+    // Apply inline disable filtering.
+    var disables = InlineDisables.parse(allocator, source) catch InlineDisables.empty();
+    defer disables.deinit();
+    const lint_diagnostics = try linter.filterByInlineDisables(allocator, raw_diagnostics, &disables, source);
     defer allocator.free(lint_diagnostics);
 
     for (lint_diagnostics) |*diag| {
@@ -236,19 +295,41 @@ fn lintSingleFile(
 // ── Helpers ──────────────────────────────────────────────────────
 
 const hasJsExtension = @import("file_discovery.zig").hasJsExtension;
+
+/// Detect if a file should be parsed in module mode based on extension.
+/// .mjs, .mts, and *.module.js/ts/jsx/tsx are module files.
+fn isModuleFile(path: []const u8) bool {
+    if (std.mem.endsWith(u8, path, ".mjs") or std.mem.endsWith(u8, path, ".mts")) return true;
+    // test262-parser-tests convention: *.module.js
+    if (std.mem.endsWith(u8, path, ".module.js") or std.mem.endsWith(u8, path, ".module.ts") or
+        std.mem.endsWith(u8, path, ".module.jsx") or std.mem.endsWith(u8, path, ".module.tsx"))
+        return true;
+    return false;
+}
+const Language = Token.Language;
 const isTokenChar = Token.isIdentChar;
+const Config = @import("config.zig").Config;
+const ConfigResolver = @import("config_resolver.zig").ConfigResolver;
+const InlineDisables = @import("inline_disable.zig").InlineDisables;
+const eslint_compat = @import("eslint_compat.zig");
 
 const usage_text =
     \\Usage: sx3lint [options] <file|directory>...
     \\
     \\Options:
-    \\  --dump-tokens    Tokenize and print tokens
-    \\  --dump-ast       Parse and print AST (default)
-    \\  --lint           Run lint rules
-    \\  --format=json    Output diagnostics as JSON
-    \\  --help, -h       Show this help
+    \\  --lint             Run lint rules
+    \\  --config=<path>    Path to sx3lint.config.json
+    \\  --no-config        Disable config file loading (all rules on)
+    \\  --eslint-compat    Read .eslintrc.json and map rules
+    \\  --dump-tokens      Tokenize and print tokens
+    \\  --dump-ast         Parse and print AST (default)
+    \\  --format=json      Output diagnostics as JSON
+    \\  --help, -h         Show this help
     \\
-    \\When --lint is used with directories, all .js/.mjs/.cjs files are
-    \\discovered recursively and linted in parallel.
+    \\When --lint is used with directories, all .js/.mjs/.cjs/.ts/.mts/.cts/.tsx/.jsx
+    \\files are discovered recursively and linted in parallel.
+    \\
+    \\Configuration: Place sx3lint.config.json in your project root.
+    \\Inline disable: // sx3lint-disable-next-line [rule-name]
     \\
 ;

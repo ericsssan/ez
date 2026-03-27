@@ -22,12 +22,18 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
     const syms = ctx.symbols();
     const count = syms.count();
 
-    // Build a map of (scope_id) -> set of names seen so far.
-    // Use StringHashMap keyed on "scope_id:name" to detect duplicates in O(n).
+    // Detect duplicates by comparing each let/const symbol against others in the same scope.
+    // Use a hash map keyed on owned strings (allocated from ctx.allocator).
     var seen = std.StringHashMap(void).init(ctx.allocator);
-    defer seen.deinit();
+    defer {
+        // Free all owned keys
+        var it = seen.keyIterator();
+        while (it.next()) |key_ptr| {
+            ctx.allocator.free(key_ptr.*);
+        }
+        seen.deinit();
+    }
 
-    // Buffer for building composite keys.
     var key_buf: [256]u8 = undefined;
 
     var i: u32 = 0;
@@ -51,6 +57,9 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const result = seen.getOrPut(key) catch continue;
         if (result.found_existing) {
             ctx.report(syms.getDeclNode(id), meta.name, "Variable is already declared in this scope", meta.default_severity);
+        } else {
+            // Store an owned copy so the key survives key_buf overwrites
+            result.key_ptr.* = ctx.allocator.dupe(u8, key) catch continue;
         }
     }
 }

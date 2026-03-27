@@ -1,0 +1,17 @@
+{
+  "name": "@sx3lint/node",
+  "version": "0.7.0",
+  "description": "Sx3lint native bindings for Node.js and Bun",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./bun-ffi": "./bun-ffi.js"
+  },
+  "files": [
+    "index.js",
+    "bun-ffi.js",
+    "node-view.js",
+    "plugin-runner.js"
+  ],
+  "license": "MIT"
+}

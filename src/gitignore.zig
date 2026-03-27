@@ -144,7 +144,7 @@ pub const GitIgnore = struct {
 ///
 /// This is intentionally a minimal implementation sufficient for common
 /// .gitignore patterns.
-fn globMatch(pattern: []const u8, text: []const u8) bool {
+pub fn globMatch(pattern: []const u8, text: []const u8) bool {
     return globMatchInner(pattern, text, 0);
 }
 

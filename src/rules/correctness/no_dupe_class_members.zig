@@ -26,6 +26,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     var seen = std.StringHashMap(void).init(ctx.allocator);
     defer seen.deinit();
+    // Note: some keys are owned (getter/setter prefixed keys) and some are borrowed
+    // (slices into source). The arena allocator frees everything at once, so no
+    // individual key freeing needed when using per-file arenas.
 
     for (members) |member_idx| {
         const member_node: NodeIndex = @enumFromInt(member_idx);
@@ -50,10 +53,14 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             else => name,
         };
 
-        if (seen.contains(key)) {
+        const result = seen.getOrPut(key) catch continue;
+        if (result.found_existing) {
             ctx.report(member_node, meta.name, "Duplicate class member", meta.default_severity);
         } else {
-            seen.put(key, {}) catch {};
+            // For getter/setter keys that use key_buf, store an owned copy
+            if (member_tag == .getter_def or member_tag == .setter_def) {
+                result.key_ptr.* = ctx.allocator.dupe(u8, key) catch continue;
+            }
         }
     }
 }
