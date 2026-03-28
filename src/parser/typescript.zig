@@ -217,7 +217,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         .kw_void, .kw_null, .kw_this,
         .string_literal, .number_literal,
         .kw_true, .kw_false,
-        .kw_type, .kw_namespace, .kw_declare, .kw_abstract, .kw_module,
+        .kw_type, .kw_namespace, .kw_declare, .kw_module,
         .kw_interface, .kw_implements, .kw_enum, .kw_as, .kw_satisfies,
         .kw_is, .kw_override, .kw_const,
         => {
@@ -291,8 +291,21 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         // ── Type literal (object type) ───────────────────────────
         .l_brace => try parseTypeLiteral(p),
 
-        // ── Constructor type: new (...) => T ─────────────────────
+        // ── Constructor type: new (...) => T  or  abstract new (...) => T
         .kw_new => try parseConstructorType(p),
+        .kw_abstract => {
+            if (p.peekAt(1) == .kw_new) {
+                _ = p.advance(); // eat 'abstract'
+                return try parseConstructorType(p);
+            }
+            // `abstract` as a type reference
+            const tok = p.advance();
+            return p.addNode(.{
+                .tag = .ts_type_reference,
+                .main_token = tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        },
 
         .minus => {
             // Negative numeric literal type: -1
