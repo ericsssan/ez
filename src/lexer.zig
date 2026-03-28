@@ -1287,6 +1287,8 @@ pub const Lexer = struct {
         group_def_count: u8 = 0,
         group_ref_count: u8 = 0,
         has_named_group: bool = false,
+        capturing_group_count: u16 = 0,
+        max_numeric_backref: u16 = 0,
 
         const Kind = enum { atom, assertion, lookbehind_assertion, invalid, empty };
 
@@ -1325,6 +1327,8 @@ pub const Lexer = struct {
             }
             // In /u mode, \k<x> without ANY named group is also an error
             if (v.unicode and !v.has_named_group and v.group_ref_count > 0) return false;
+            // In /u mode, backreferences to non-existent groups are errors
+            if (v.unicode and v.max_numeric_backref > v.capturing_group_count) return false;
             return true;
         }
 
@@ -1477,13 +1481,15 @@ pub const Lexer = struct {
                             break :blk .invalid; // \0N is octal, invalid in /u
                         break :blk .atom;
                     },
-                    // \1-\9 back-references — valid in /u mode (verified post-parse)
-                    // The spec requires the referenced group to exist, but we validate
-                    // that separately; here we just accept them as atoms.
+                    // \1-\9 back-references — in /u mode, the referenced group must exist
                     '1'...'9' => blk: {
-                        // Consume any following digits (multi-digit back-ref like \12)
-                        while (self.pos < self.body.len and self.body[self.pos] >= '0' and self.body[self.pos] <= '9')
+                        // Parse the full number (multi-digit back-ref like \12)
+                        var ref_num: u16 = c - '0';
+                        while (self.pos < self.body.len and self.body[self.pos] >= '0' and self.body[self.pos] <= '9') {
+                            ref_num = ref_num *| 10 +| (self.body[self.pos] - '0');
                             self.pos += 1;
+                        }
+                        if (ref_num > self.max_numeric_backref) self.max_numeric_backref = ref_num;
                         break :blk .atom;
                     },
                     // \u{HHHH} or \uHHHH
@@ -1767,22 +1773,23 @@ pub const Lexer = struct {
         fn group(self: *RegexValidator) Kind {
             self.pos += 1; // skip (
             var kind: Kind = .atom; // default: capturing group → atom
+            var is_capturing = true;
 
             if (self.pos < self.body.len and self.body[self.pos] == '?') {
                 self.pos += 1;
                 if (self.pos >= self.body.len) return .invalid;
                 const c = self.body[self.pos];
                 switch (c) {
-                    ':' => { self.pos += 1; kind = .atom; }, // non-capturing
-                    '=' => { self.pos += 1; kind = .assertion; }, // (?=...) lookahead
-                    '!' => { self.pos += 1; kind = .assertion; }, // (?!...) neg lookahead
+                    ':' => { self.pos += 1; kind = .atom; is_capturing = false; }, // non-capturing
+                    '=' => { self.pos += 1; kind = .assertion; is_capturing = false; }, // (?=...) lookahead
+                    '!' => { self.pos += 1; kind = .assertion; is_capturing = false; }, // (?!...) neg lookahead
                     '<' => {
                         self.pos += 1;
                         if (self.pos < self.body.len) {
                             if (self.body[self.pos] == '=') {
-                                self.pos += 1; kind = .lookbehind_assertion; // (?<=...) lookbehind
+                                self.pos += 1; kind = .lookbehind_assertion; is_capturing = false; // (?<=...) lookbehind
                             } else if (self.body[self.pos] == '!') {
-                                self.pos += 1; kind = .lookbehind_assertion; // (?<!...) neg lookbehind
+                                self.pos += 1; kind = .lookbehind_assertion; is_capturing = false; // (?<!...) neg lookbehind
                             } else {
                                 // (?<name>...) named group
                                 // Validate the name
@@ -1843,9 +1850,13 @@ pub const Lexer = struct {
                         // Invalid: any uppercase, u, v, d, g, y, non-letter, etc.
                         if (!self.parseModifiers()) return .invalid;
                         kind = .atom;
+                        is_capturing = false;
                     },
                 }
             }
+
+            // Track capturing groups for backref validation
+            if (is_capturing) self.capturing_group_count += 1;
 
             // Parse group body as disjunction
             const inner = self.disjunction();

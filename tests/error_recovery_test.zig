@@ -401,6 +401,14 @@ test "conformance: template tail escape validation" {
     try mustError("\"use strict\"; `${test}\\02`;");
 }
 
+test "conformance: regex backref to non-existent group in unicode mode" {
+    try mustError("/\\1/u");
+}
+
+test "conformance: regex backref to existing group in unicode mode is valid" {
+    try mustParse("/(a)\\1/u;");
+}
+
 test "conformance: valid destructuring still works" {
     try mustParse("var {a, b} = {a: 1, b: 2};");
     try mustParse("var [x, y] = [1, 2];");
