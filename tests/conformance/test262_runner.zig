@@ -21,18 +21,40 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
 
     if (args.len < 2) {
-        try stdout.print("Usage: test262_runner <filelist.txt>\n", .{});
+        try stdout.print("Usage: test262_runner <dir-or-filelist>\n", .{});
         try stdout.flush();
         std.process.exit(1);
     }
 
-    const list_path = args[1];
-    const list_data = Io.Dir.cwd().readFileAlloc(io, list_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch {
-        try stdout.print("Cannot read {s}\n", .{list_path});
-        try stdout.flush();
-        std.process.exit(1);
-    };
-    defer allocator.free(list_data);
+    const input_path = args[1];
+
+    // Build file list: either read from a file list or walk a directory
+    var file_list: std.ArrayList([]const u8) = .{};
+    defer {
+        for (file_list.items) |p| allocator.free(p);
+        file_list.deinit(allocator);
+    }
+
+    // Check if input is a directory by trying to open it
+    if (Io.Dir.cwd().openDir(io, input_path, .{}) catch null) |base_dir| {
+        // Walk directory recursively collecting .js files
+        try walkDir(io, allocator, base_dir, input_path, &file_list);
+    } else {
+        // Read as file list (one path per line)
+        const list_data = Io.Dir.cwd().readFileAlloc(io, input_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch {
+            try stdout.print("Cannot read {s}\n", .{input_path});
+            try stdout.flush();
+            std.process.exit(1);
+        };
+        defer allocator.free(list_data);
+        var lines = std.mem.splitScalar(u8, list_data, '\n');
+        while (lines.next()) |line| {
+            const path = std.mem.trim(u8, line, " \t\r");
+            if (path.len == 0 or !std.mem.endsWith(u8, path, ".js")) continue;
+            const duped = try allocator.dupe(u8, path);
+            try file_list.append(allocator, duped);
+        }
+    }
 
     try stdout.print("tc39/test262 Parser Conformance\n", .{});
     try stdout.print("===============================\n\n", .{});
@@ -49,12 +71,7 @@ pub fn main(init: std.process.Init) !void {
     var fail_count: usize = 0;
     var false_reject_buf: [500][]const u8 = undefined;
     var false_reject_count: usize = 0;
-
-    var lines = std.mem.splitScalar(u8, list_data, '\n');
-    while (lines.next()) |line| {
-        const path = std.mem.trim(u8, line, " \t\r");
-        if (path.len == 0) continue;
-        if (!std.mem.endsWith(u8, path, ".js")) continue;
+    for (file_list.items) |path| {
 
         total += 1;
 
@@ -232,4 +249,34 @@ fn isModuleTest(source: []const u8) bool {
     const flags_line_end = std.mem.indexOfPos(u8, fm, flags_start, "\n") orelse fm.len;
     const flags_line = fm[flags_start..flags_line_end];
     return std.mem.indexOf(u8, flags_line, "module") != null;
+}
+
+/// Recursively walk a directory collecting .js file paths.
+const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };
+
+fn walkDir(io: std.Io, allocator: std.mem.Allocator, base_dir: std.Io.Dir, base_path: []const u8, list: *std.ArrayList([]const u8)) !void {
+    var stack: std.ArrayList(StackEntry) = .{};
+    defer {
+        for (stack.items) |item| allocator.free(item.path);
+        stack.deinit(allocator);
+    }
+    try stack.append(allocator, .{ .dir = base_dir, .path = try allocator.dupe(u8, base_path) });
+
+    while (stack.items.len > 0) {
+        const item = stack.pop().?;
+        defer allocator.free(item.path);
+
+        var iter = item.dir.iterate();
+        while (iter.next(io) catch null) |entry| {
+            var path_buf: [4096]u8 = undefined;
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ item.path, entry.name }) catch continue;
+
+            if (entry.kind == .directory) {
+                const sub_dir = item.dir.openDir(io, entry.name, .{}) catch continue;
+                try stack.append(allocator, .{ .dir = sub_dir, .path = try allocator.dupe(u8, full_path) });
+            } else if (std.mem.endsWith(u8, entry.name, ".js")) {
+                try list.append(allocator, try allocator.dupe(u8, full_path));
+            }
+        }
+    }
 }

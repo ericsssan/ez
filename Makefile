@@ -2,7 +2,7 @@ ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.2637+6a9510c0e/files/zig
 SYSROOT := /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
 LINK_FLAGS := --sysroot $(SYSROOT) -fno-lld
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-test262 test-test262 run napi submodules
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi submodules
 
 test: test-unit test-linter test-recovery test-config
 
@@ -27,18 +27,13 @@ test-js: napi
 
 build-conformance:
 	@mkdir -p zig-out/bin
-	$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/parser_tests_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/parser_tests_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/test262_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
 
 test-conformance: build-conformance
-	./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests
-
-build-test262:
-	@mkdir -p zig-out/bin
-	$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/test262_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
-
-test-test262: build-test262
-	@find tests/conformance/test262/test/language -name "*.js" -type f > /tmp/sx3lint-test262-filelist.txt
-	./zig-out/bin/test262_runner /tmp/sx3lint-test262-filelist.txt
+	@./zig-out/bin/test262_runner tests/conformance/test262/test/language
+	@echo ""
+	@./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests
 
 test-differential: build napi
 	node tests/differential/run.js
@@ -46,7 +41,7 @@ test-differential: build napi
 test-e2e: build
 	bash tests/e2e/run.sh
 
-test-all: test test-fuzz test-js test-e2e test-differential test-conformance test-test262
+test-all: test test-fuzz test-js test-e2e test-differential test-conformance
 
 build:
 	@mkdir -p zig-out/bin
