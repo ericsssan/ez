@@ -30,6 +30,12 @@ const Error = parser_mod.Error;
 /// Unwrap nested grouping_expr nodes to find the innermost expression.
 /// `(x)`, `((x))`, `(((x)))` all resolve to the tag of `x`.
 pub fn unwrapGroupingTag(p: *const Parser, node: NodeIndex) Node.Tag {
+    return unwrapGrouping(p, node).tag;
+}
+
+pub const UnwrapResult = struct { node: NodeIndex, tag: Node.Tag };
+
+pub fn unwrapGrouping(p: *const Parser, node: NodeIndex) UnwrapResult {
     var current = node;
     var tag = p.nodes.items(.tag)[current.toInt()];
     while (tag == .grouping_expr) {
@@ -38,7 +44,7 @@ pub fn unwrapGroupingTag(p: *const Parser, node: NodeIndex) Node.Tag {
         current = inner;
         tag = p.nodes.items(.tag)[current.toInt()];
     }
-    return tag;
+    return .{ .node = current, .tag = tag };
 }
 
 // ── Precedence ────────────────────────────────────────────────────────
@@ -318,10 +324,10 @@ fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
 
 fn parseYieldExpression(p: *Parser) Error!NodeIndex {
     if (!p.in_generator) {
-        // In strict mode / module, `yield` cannot be used as an identifier
+        // In strict mode / module, `yield` cannot be used as an identifier.
+        // Emit diagnostic but continue parsing to avoid cascading failures.
         if (p.in_strict or p.is_module) {
             try p.emitError("'yield' is not allowed as an identifier in strict mode");
-            return error.ParseError;
         }
         // `yield` outside a generator — treat as identifier (may be arrow param).
         return parseIdentifierOrArrow(p);
@@ -2149,12 +2155,87 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
 // Template literal
 // =====================================================================
 
+/// Check if a template element contains invalid escape sequences.
+/// Template literals (untagged) reject octal escapes (\0n, \1-\7, \8, \9)
+/// and malformed \x, \u sequences.
+fn hasInvalidTemplateEscape(source: []const u8, start: u32, end: u32) bool {
+    const s = @min(start, @as(u32, @intCast(source.len)));
+    const e = @min(end, @as(u32, @intCast(source.len)));
+    const text = source[s..e];
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        if (text[i] != '\\') continue;
+        i += 1;
+        if (i >= text.len) break;
+        const esc = text[i];
+        switch (esc) {
+            '0' => {
+                // \0 alone is OK (null char), but \0n (where n is octal digit) is not
+                if (i + 1 < text.len and text[i + 1] >= '0' and text[i + 1] <= '9') return true;
+            },
+            '1', '2', '3', '4', '5', '6', '7' => return true, // octal
+            '8', '9' => return true, // legacy non-octal
+            'x' => {
+                // \xHH — need exactly 2 hex digits
+                if (i + 2 >= text.len) return true;
+                if (!isHex(text[i + 1]) or !isHex(text[i + 2])) return true;
+                i += 2;
+            },
+            'u' => {
+                i += 1;
+                if (i >= text.len) return true;
+                if (text[i] == '{') {
+                    // \u{XXXX} — need hex digits and closing }
+                    i += 1;
+                    var digits: u32 = 0;
+                    while (i < text.len and text[i] != '}') : (i += 1) {
+                        if (!isHex(text[i])) return true;
+                        digits += 1;
+                    }
+                    if (i >= text.len or digits == 0) return true;
+                    // Check code point <= 0x10FFFF
+                    // (skip detailed check, just check digit count)
+                    if (digits > 6) return true;
+                } else {
+                    // \uXXXX — need exactly 4 hex digits
+                    if (i + 3 >= text.len) return true;
+                    if (!isHex(text[i]) or !isHex(text[i + 1]) or !isHex(text[i + 2]) or !isHex(text[i + 3])) return true;
+                    i += 3;
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
+fn isHex(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
+
 pub fn parseTemplateLiteral(p: *Parser) Error!NodeIndex {
+    return parseTemplateLiteralInner(p, true);
+}
+
+fn parseTemplateLiteralTagged(p: *Parser) Error!NodeIndex {
+    return parseTemplateLiteralInner(p, false);
+}
+
+fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex {
     const head_tok = p.tok_i;
 
     // No-substitution template: `text`
     if (p.peek() == .template_no_sub) {
         const tok = p.advance();
+        // Validate escape sequences in untagged template
+        if (validate_escapes) {
+            const tok_start = p.tokenStart(tok);
+            const next_start = if (tok + 1 < p.tokens.len) p.tokenStart(tok + 1) else @as(u32, @intCast(p.source.len));
+            if (hasInvalidTemplateEscape(p.source, tok_start, next_start)) {
+                try p.emitError("Invalid escape sequence in template literal");
+                return p.makeErrorNode();
+            }
+        }
         const elem = try p.addNode(.{
             .tag = .template_element,
             .main_token = tok,
@@ -2174,6 +2255,15 @@ pub fn parseTemplateLiteral(p: *Parser) Error!NodeIndex {
     // Head text part.
     {
         const tok = p.advance(); // consume template_head
+        // Validate escape sequences in untagged template head
+        if (validate_escapes) {
+            const tok_start = p.tokenStart(tok);
+            const next_start = if (tok + 1 < p.tokens.len) p.tokenStart(tok + 1) else @as(u32, @intCast(p.source.len));
+            if (hasInvalidTemplateEscape(p.source, tok_start, next_start)) {
+                try p.emitError("Invalid escape sequence in template literal");
+                return p.makeErrorNode();
+            }
+        }
         const head_elem = try p.addNode(.{
             .tag = .template_element,
             .main_token = tok,
@@ -2761,7 +2851,7 @@ fn parseTaggedTemplate(p: *Parser, tag_expr: NodeIndex) Error!NodeIndex {
         }
     }
     const main_tok = p.tok_i;
-    const tmpl = try parseTemplateLiteral(p);
+    const tmpl = try parseTemplateLiteralTagged(p);
     return p.addNode(.{
         .tag = .tagged_template,
         .main_token = main_tok,

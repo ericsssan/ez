@@ -787,10 +787,14 @@ pub const Parser = struct {
                 return error.ParseError;
             },
             .kw_let => {
-                // In non-strict mode, `let` not followed by `[` can be an identifier
-                // expression (e.g. `for (; false; ) let\n{}` — ASI makes `let` an expression)
-                if (!self.in_strict and self.peekAt(1) != .l_bracket) {
-                    return self.parseStatement();
+                // `let` as a declaration is not allowed in single-statement context.
+                // In non-strict, `let` followed by newline or non-binding token is an identifier.
+                if (!self.in_strict) {
+                    const next = self.peekAt(1);
+                    const could_be_binding = (next == .identifier or next == .l_bracket or next == .l_brace or next.isKeyword());
+                    if (!could_be_binding or self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                        return self.parseStatement();
+                    }
                 }
                 try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed in single-statement context", .{});
                 return error.ParseError;
@@ -828,8 +832,12 @@ pub const Parser = struct {
                 return error.ParseError;
             },
             .kw_let => {
-                if (!self.in_strict and self.peekAt(1) != .l_bracket) {
-                    return self.parseStatement();
+                if (!self.in_strict) {
+                    const next = self.peekAt(1);
+                    const could_be_binding = (next == .identifier or next == .l_bracket or next == .l_brace or next.isKeyword());
+                    if (!could_be_binding or self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                        return self.parseStatement();
+                    }
                 }
                 try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed in single-statement context", .{});
                 return error.ParseError;
@@ -1186,16 +1194,16 @@ pub const Parser = struct {
     fn validateForInOfBinding(self: *Parser, init: NodeIndex) Error!void {
         if (init == .none) return;
         // Unwrap parenthesized expressions: (x), ((x))
-        const init_tag = expressions.unwrapGroupingTag(self, init);
-        switch (init_tag) {
+        const unwrapped = expressions.unwrapGrouping(self, init);
+        switch (unwrapped.tag) {
             .identifier, .member_expr, .computed_member_expr,
             .array_pattern, .object_pattern,
             => {},
             .array_literal => {
-                try self.validateAssignmentTargetArray(init);
+                try self.validateAssignmentTargetArray(unwrapped.node);
             },
             .object_literal => {
-                try self.validateAssignmentTargetObject(init);
+                try self.validateAssignmentTargetObject(unwrapped.node);
             },
             .var_decl, .let_decl, .const_decl => {
                 // Must have exactly one declarator
@@ -1597,12 +1605,17 @@ pub const Parser = struct {
                 return error.ParseError;
             },
             .kw_let => {
-                if (!self.in_strict and self.peekAt(1) != .l_bracket) {
-                    // In non-strict, `let` is identifier — allow after label
-                } else {
+                const is_decl = blk: {
+                    if (self.in_strict) break :blk true;
+                    const next = self.peekAt(1);
+                    const could_be_binding = (next == .identifier or next == .l_bracket or next == .l_brace or next.isKeyword());
+                    break :blk could_be_binding and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1);
+                };
+                if (is_decl) {
                     try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed after label", .{});
                     return error.ParseError;
                 }
+                // `let` is an identifier expression — fall through to parseStatement
             },
             .kw_function => {
                 if (self.peekAt(1) == .asterisk) {
@@ -1693,7 +1706,7 @@ pub const Parser = struct {
     pub fn parseWithStatement(self: *Parser) Error!NodeIndex {
         if (self.in_strict) {
             try self.emitDiagnostic(self.currentSpan(), "'with' statements are not allowed in strict mode", .{});
-            return error.ParseError;
+            // Continue parsing to avoid cascading failures
         }
         const with_tok = self.advance(); // eat 'with'
         _ = try self.expect(.l_paren);
