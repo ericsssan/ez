@@ -45,6 +45,11 @@ pub const Lexer = struct {
     /// Set to true when whitespace skipping encounters a line terminator.
     /// Used for ASI-aware brace context decisions.
     saw_newline: bool = false,
+    /// Track whether each `(` opens a control-flow condition (if/while/for/switch/with/catch).
+    paren_is_control: [64]bool = [_]bool{false} ** 64,
+    /// Set when a control-flow `)` is emitted. The IMMEDIATE next `/` is regex.
+    /// Cleared after the next token is scanned (whether it's `/` or not).
+    control_paren_closed: bool = false,
     language: Language,
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
@@ -2111,6 +2116,9 @@ pub const Lexer = struct {
     ///   - ++ -- (postfix context — ambiguous, but we treat as division since
     ///     postfix is more common after an expression)
     fn isRegexContext(self: *Lexer) bool {
+        // Control-flow `)` followed directly by `/` → regex
+        // e.g., `if(x) /regex/` or `while(y) /regex/`
+        if (self.control_paren_closed and self.prev_token_tag == .r_paren) return true;
         return switch (self.prev_token_tag) {
             // Tokens after which `/` is definitely division
             .identifier,
@@ -2194,6 +2202,13 @@ pub const Lexer = struct {
         switch (c) {
             '(' => {
                 self.index += 1;
+                // Track control-flow parens: if/while/for/switch/with/catch (...)
+                if (self.paren_depth < self.paren_is_control.len) {
+                    self.paren_is_control[self.paren_depth] = switch (self.prev_token_tag) {
+                        .kw_if, .kw_while, .kw_for, .kw_switch, .kw_with, .kw_catch => true,
+                        else => false,
+                    };
+                }
                 self.paren_depth += 1;
                 return self.makeToken(.l_paren, start);
             },
@@ -2206,6 +2221,10 @@ pub const Lexer = struct {
                 {
                     self.fn_expr_depth_count -= 1;
                     self.fn_expr_next_brace = true;
+                }
+                // Track control-flow close: if()/while()/for() → regex follows
+                if (self.paren_depth < self.paren_is_control.len and self.paren_is_control[self.paren_depth]) {
+                    self.control_paren_closed = true;
                 }
                 return self.makeToken(.r_paren, start);
             },
@@ -2583,6 +2602,9 @@ pub const Lexer = struct {
 
     /// Create a token and update prev_token_tag for regex disambiguation.
     fn makeToken(self: *Lexer, tag: TokenTag, start: u32) Token.Token {
+        // Clear control_paren_closed when any token is emitted
+        // (it only applies to the immediate next `/` after `)`)
+        if (tag != .r_paren) self.control_paren_closed = false;
         // Track function expression context for division disambiguation.
         // `function` in expression position means the next `{` after `)`
         // closes a function expression (value), so `}` → division.

@@ -483,6 +483,16 @@ test "conformance: --> after block comment" {
     try mustParse(" \t /* block comment */  --> comment\n");
 }
 
+test "conformance: regex after control-flow paren" {
+    try mustParse("if(1)/  foo/");
+    try mustParse("while (1) /foo/");
+}
+
+test "conformance: division after expression paren" {
+    try mustParse("(1) / 2");
+    try mustParse("foo() / 2");
+}
+
 test "conformance: regex after do" {
     try mustParse("do /x/; while (false);");
 }
