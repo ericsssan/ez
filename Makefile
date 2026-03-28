@@ -29,10 +29,14 @@ build-conformance:
 	@mkdir -p zig-out/bin
 	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/parser_tests_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
 	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/test262_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/babel_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/babel_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/typescript_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
 
 test-conformance: build-conformance
 	@./zig-out/bin/test262_runner tests/conformance/test262/test/language
 	@./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests
+	@./zig-out/bin/babel_runner tests/conformance/babel-parser/fixtures
+	@./zig-out/bin/typescript_runner tests/conformance/typescript/cases
 
 test-differential: build napi
 	node tests/differential/run.js
