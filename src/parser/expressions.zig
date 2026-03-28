@@ -901,7 +901,20 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     defer p.in_async = saved_async;
     defer p.in_generator = saved_gen;
 
+    _ = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
+    _ = try p.parseOptionalTypeAnnotation();
+
+    // TS ambient async function expressions can be bodyless
+    if (p.language.isTs() and p.peek() != .l_brace) {
+        _ = p.eat(.semicolon);
+        return p.addNode(.{
+            .tag = .ts_type_annotation,
+            .main_token = async_tok,
+            .data = .{ .lhs = name_node, .rhs = .none },
+        });
+    }
+
     const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
 
     const fn_tag: Node.Tag = if (is_generator) .async_generator_fn_expr else .async_fn_expr;
@@ -1562,7 +1575,9 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     defer p.in_generator = saved_gen;
     defer p.in_method = saved_method;
 
+    _ = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
+    _ = try p.parseOptionalTypeAnnotation();
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
@@ -1684,6 +1699,11 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
     const key_tok = p.tok_i;
     const key = try parsePropertyName(p);
 
+    // TS generic method: name<T>() { }
+    if (p.language.isTs() and p.peek() == .less_than) {
+        _ = try p.parseOptionalTypeParameters();
+    }
+
     // Method shorthand: name() { }
     if (p.peek() == .l_paren) {
         // Set method flags BEFORE parsing params so super.prop works in defaults
@@ -1694,6 +1714,7 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method;
         const params_range = try parseFormalParameters(p);
+        _ = try p.parseOptionalTypeAnnotation();
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
