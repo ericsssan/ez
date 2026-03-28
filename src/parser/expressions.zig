@@ -2290,6 +2290,14 @@ fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex
         if (part_tag == .template_tail) {
             // Tail — last text part.
             const tok = p.advance();
+            if (validate_escapes) {
+                const tok_start = p.tokenStart(tok);
+                const next_start = if (tok + 1 < p.tokens.len) p.tokenStart(tok + 1) else @as(u32, @intCast(p.source.len));
+                if (hasInvalidTemplateEscape(p.source, tok_start, next_start)) {
+                    try p.emitError("Invalid escape sequence in template literal");
+                    return p.makeErrorNode();
+                }
+            }
             const tail_elem = try p.addNode(.{
                 .tag = .template_element,
                 .main_token = tok,
@@ -2300,6 +2308,14 @@ fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex
         } else if (part_tag == .template_middle) {
             // Middle — more expressions follow.
             const tok = p.advance();
+            if (validate_escapes) {
+                const tok_start = p.tokenStart(tok);
+                const next_start = if (tok + 1 < p.tokens.len) p.tokenStart(tok + 1) else @as(u32, @intCast(p.source.len));
+                if (hasInvalidTemplateEscape(p.source, tok_start, next_start)) {
+                    try p.emitError("Invalid escape sequence in template literal");
+                    return p.makeErrorNode();
+                }
+            }
             const mid_elem = try p.addNode(.{
                 .tag = .template_element,
                 .main_token = tok,

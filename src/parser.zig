@@ -1250,6 +1250,11 @@ pub const Parser = struct {
             .call_expr, .new_expr, .unary_plus, .unary_minus,
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
             .logical_not, .bitwise_not, .typeof_expr, .void_expr, .delete_expr,
+            .conditional, .assign,
+            .fn_expr, .class_expr, .template_literal, .tagged_template,
+            .logical_or, .logical_and, .bitwise_or, .bitwise_xor, .bitwise_and,
+            .strict_equal, .strict_not_equal,
+            .regex_literal,
             => {
                 try self.emitDiagnostic(self.currentSpan(), "Invalid left-hand side in for-in/of", .{});
                 return error.ParseError;

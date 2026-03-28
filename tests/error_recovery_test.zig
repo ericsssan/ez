@@ -392,6 +392,15 @@ test "conformance: parenthesized destructuring pattern is error" {
     try mustError("(({a})=0);");
 }
 
+test "conformance: ternary result as for-in LHS is error" {
+    try mustError("for(let ? b : c in 0);");
+}
+
+test "conformance: template tail escape validation" {
+    // Template `${expr}\02` — octal in tail section
+    try mustError("\"use strict\"; `${test}\\02`;");
+}
+
 test "conformance: valid destructuring still works" {
     try mustParse("var {a, b} = {a: 1, b: 2};");
     try mustParse("var [x, y] = [1, 2];");
