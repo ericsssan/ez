@@ -491,6 +491,12 @@ test "conformance: --> not at line start is decrement + greater-than" {
     try mustParse("a = b-->1;");
 }
 
+// ── Unicode identifiers ─────────────────────────────────────
+
+test "conformance: undertie U+203F in identifier" {
+    try mustParse("T\xe2\x80\xbf = []");
+}
+
 test "conformance: cascading errors do not OOM" {
     // Large file with many errors should not crash
     const allocator = testing.allocator;

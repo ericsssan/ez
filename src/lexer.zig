@@ -706,6 +706,9 @@ pub const Lexer = struct {
         if (cp == 0x180E) return false; // Mongolian Vowel Separator
 
         // BMP general punctuation and symbols (not valid as identifiers)
+        // Exception: U+203F UNDERTIE, U+2040 CHARACTER TIE, U+2054 INVERTED UNDERTIE
+        // are Pc (Connector Punctuation), valid as ID_Continue.
+        if (cp == 0x203F or cp == 0x2040 or cp == 0x2054) return true;
         if (cp >= 0x2000 and cp <= 0x206F) return false; // General Punctuation
         if (cp >= 0x2190 and cp <= 0x23FF) return false; // Arrows, Math Operators, Misc Technical
         if (cp >= 0x2500 and cp <= 0x27BF) return false; // Box Drawing, Geometric, Dingbats
@@ -748,8 +751,8 @@ pub const Lexer = struct {
         if (cp >= 0x1FBFA and cp <= 0x1FFFF) return false;
         // Tags (deprecated, format chars)
         if (cp >= 0xE0000 and cp <= 0xE007F) return false;
-        // Variation Selectors Supplement
-        if (cp >= 0xE0100 and cp <= 0xE01EF) return false;
+        // Variation Selectors Supplement — Mn category, valid ID_Continue
+        // (cp >= 0xE0100 and cp <= 0xE01EF) — accepted
         // Reject specific known-unassigned codepoints that appear in test fixtures
         if (cp == 0x2B81E or cp == 0x2B81F) return false; // Unassigned at end of CJK Ext D
         // Accept: most SMP codepoints are script letters (Lo) or marks (Mn/Mc)
