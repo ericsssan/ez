@@ -159,3 +159,193 @@ test "recovery: single token" {
     const result = try parseAndLint(";");
     try testing.expect(result.nodes > 0);
 }
+
+// ══════════════════════════════════════════════════════════════
+// Parser Conformance Tests
+// ══════════════════════════════════════════════════════════════
+// Regression tests for specific parser fixes. Each test verifies
+// that valid JS parses without errors and invalid JS produces errors.
+
+fn mustParse(source: []const u8) !void {
+    const allocator = testing.allocator;
+    var tokens = try Lexer.tokenize(allocator, source);
+    defer tokens.deinit(allocator);
+    var tree = try Parser.parse(allocator, source, tokens.slice());
+    defer tree.deinit(allocator);
+    if (tree.errors.len > 0) {
+        std.debug.print("Expected no parse errors, got {d}:\n", .{tree.errors.len});
+        for (tree.errors) |e| {
+            std.debug.print("  {s}\n", .{e.message});
+        }
+        return error.TestUnexpectedResult;
+    }
+}
+
+fn mustError(source: []const u8) !void {
+    const allocator = testing.allocator;
+    var tokens = try Lexer.tokenize(allocator, source);
+    defer tokens.deinit(allocator);
+    var tree = try Parser.parse(allocator, source, tokens.slice());
+    defer tree.deinit(allocator);
+    if (tree.errors.len == 0) {
+        std.debug.print("Expected parse errors but got none for: {s}\n", .{source});
+        return error.TestUnexpectedResult;
+    }
+}
+
+// ── Division vs Regex disambiguation ────────────────────────
+
+test "conformance: division after object literal" {
+    // {valueOf: function() {return 1}} / 1 — division, not regex
+    try mustParse("if ({valueOf: function() {return 1}} / 1 !== 1) {}");
+}
+
+test "conformance: division after function expression" {
+    // function(){} / x — division after function expression body
+    try mustParse("if (isNaN(function(){return 1} / {}) !== true) {}");
+    try mustParse("if (isNaN(function(){return 1} / function(){return 1}) !== true) {}");
+}
+
+test "conformance: regex after block statement" {
+    // {label: expr} /regex/ — regex after block
+    try mustParse("{length: 3000}/1/;");
+}
+
+test "conformance: division after various expressions" {
+    try mustParse("var x = {a: 1} / 2;");
+    try mustParse("var x = (1 + 2) / 3;");
+    try mustParse("var x = [1][0] / 2;");
+}
+
+// ── Private identifiers with keyword names ──────────────────
+
+test "conformance: private field with keyword name" {
+    try mustParse(
+        \\class C {
+        \\  static #await() {}
+        \\  static #yield() {}
+        \\  static #let() {}
+        \\}
+    );
+}
+
+test "conformance: private member access with keyword name" {
+    try mustParse(
+        \\class C {
+        \\  #await = 1;
+        \\  method() { return this.#await; }
+        \\}
+    );
+}
+
+test "conformance: optional chaining with private keyword name" {
+    try mustParse(
+        \\class C {
+        \\  #m = 'test';
+        \\  static access(obj) { return obj?.#m; }
+        \\}
+    );
+}
+
+test "conformance: decorator with private identifier" {
+    try mustParse(
+        \\class C {
+        \\  static #foo() {}
+        \\  static { @C.#foo class D {} }
+        \\}
+    );
+}
+
+// ── await using in for-of ───────────────────────────────────
+
+test "conformance: for await using of" {
+    try mustParse("async function f() { for (await using of of []) {} }");
+}
+
+test "conformance: using in for statement" {
+    try mustParse("for (using x = null;;) break;");
+    try mustParse("for (using of = null;;) break;");
+}
+
+// ── let in restricted positions ─────────────────────────────
+
+test "conformance: let in sub-statement is error" {
+    try mustError("if(true) let a = 1;");
+    try mustError("if (1) let x = 10;");
+    try mustError("while(true) let a");
+    try mustError("with(true) let a");
+}
+
+test "conformance: let after label is error" {
+    try mustError("a: let a");
+}
+
+test "conformance: let with newline is identifier (valid)" {
+    // ASI makes `let` an identifier expression
+    try mustParse("for (; false; ) let\n{}");
+}
+
+// ── Template literal escape validation ──────────────────────
+
+test "conformance: octal escape in template is error" {
+    try mustError("`\\07`");
+    try mustError("`\\1`");
+    try mustError("`\\37`");
+    try mustError("`\\00`");
+}
+
+test "conformance: legacy escape in template is error" {
+    try mustError("`\\8`");
+    try mustError("`\\9`");
+}
+
+test "conformance: valid template escapes" {
+    try mustParse("`hello world`");
+    try mustParse("`\\n\\t\\r`");
+    try mustParse("`\\0`"); // null char (not followed by digit)
+    try mustParse("`\\u0041`");
+    try mustParse("`\\u{41}`");
+    try mustParse("`\\x41`");
+}
+
+test "conformance: tagged template allows invalid escapes" {
+    try mustParse("String.raw`\\01`");
+    try mustParse("String.raw`\\8`");
+    try mustParse("tag`\\unicode`");
+}
+
+// ── for-in/of with parenthesized patterns (no crash) ────────
+
+test "conformance: parenthesized pattern in for-in does not crash" {
+    // These should error but not crash/abort
+    try mustError("for(([0]) in 0);");
+    try mustError("for(({a: 0}) in 0);");
+}
+
+test "conformance: parenthesized pattern in for-of does not crash" {
+    try mustError("for(([0]) of 0);");
+    try mustError("for(({a: 0}) of 0);");
+}
+
+// ── yield and with in strict mode (no OOM) ──────────────────
+
+test "conformance: yield in strict function does not OOM" {
+    // Should parse without crashing (may have errors in output)
+    const allocator = testing.allocator;
+    const source = "function a() { \"use strict\"; yield = 1; }";
+    var tokens = try Lexer.tokenize(allocator, source);
+    defer tokens.deinit(allocator);
+    var tree = try Parser.parse(allocator, source, tokens.slice());
+    defer tree.deinit(allocator);
+    try testing.expect(tree.nodes.len > 0);
+}
+
+test "conformance: with in strict mode does not OOM" {
+    const allocator = testing.allocator;
+    const source = "(function () { 'use strict'; with (a); }())";
+    var tokens = try Lexer.tokenize(allocator, source);
+    defer tokens.deinit(allocator);
+    var tree = try Parser.parse(allocator, source, tokens.slice());
+    defer tree.deinit(allocator);
+    try testing.expect(tree.nodes.len > 0);
+}
