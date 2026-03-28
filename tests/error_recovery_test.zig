@@ -421,6 +421,23 @@ test "conformance: unassigned unicode codepoint rejected as identifier" {
     try mustError("var \xf0\xab\xa0\x9e_ = 12;"); // U+2B81E (Cn, unassigned)
 }
 
+// ── HTML comments (Annex B) ─────────────────────────────────
+
+test "conformance: HTML open comment <!-- is treated as line comment" {
+    try mustParse("<!-- this is a comment\nvar x = 1;");
+    try mustParse("<!--");
+    try mustParse("<!-- foo");
+}
+
+test "conformance: HTML close comment --> at line start" {
+    try mustParse("--> comment\nvar x = 1;");
+    try mustParse("\n  --> comment\nvar x = 1;");
+}
+
+test "conformance: --> not at line start is decrement + greater-than" {
+    try mustParse("a = b-->1;");
+}
+
 test "conformance: cascading errors do not OOM" {
     // Large file with many errors should not crash
     const allocator = testing.allocator;

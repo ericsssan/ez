@@ -110,6 +110,26 @@ pub const Lexer = struct {
                 }
             }
 
+            // HTML open comment: <!-- (Annex B, B.1.3)
+            // Treated as single-line comment in script mode.
+            if (self.peek(0) == '<' and self.peek(1) == '!' and
+                self.peek(2) == '-' and self.peek(3) == '-')
+            {
+                self.index += 4;
+                self.skipToEndOfLine();
+                continue;
+            }
+
+            // HTML close comment: --> at start of line (Annex B, B.1.3)
+            // Only valid after a line terminator (or at start of file after whitespace/comments).
+            if (self.peek(0) == '-' and self.peek(1) == '-' and self.peek(2) == '>') {
+                if (self.isAtLineStart()) {
+                    self.index += 3;
+                    self.skipToEndOfLine();
+                    continue;
+                }
+            }
+
             break;
         }
 
@@ -273,6 +293,32 @@ pub const Lexer = struct {
                 else => return,
             }
         }
+    }
+
+    /// Skip to end of current line (for HTML comment handling).
+    fn skipToEndOfLine(self: *Lexer) void {
+        while (self.index < self.source.len) {
+            const c = self.source[self.index];
+            if (c == '\n' or c == '\r') return;
+            if (c == 0xE2 and self.index + 2 < self.source.len and
+                self.source[self.index + 1] == 0x80 and
+                (self.source[self.index + 2] == 0xA8 or self.source[self.index + 2] == 0xA9)) return;
+            self.index += 1;
+        }
+    }
+
+    /// Check if current position is at the start of a line
+    /// (only whitespace/comments between the last line terminator and here).
+    fn isAtLineStart(self: *const Lexer) bool {
+        if (self.index == 0) return true;
+        var i = self.index;
+        while (i > 0) {
+            i -= 1;
+            const c = self.source[i];
+            if (c == '\n' or c == '\r') return true;
+            if (c != ' ' and c != '\t' and c != 0x0B and c != 0x0C) return false;
+        }
+        return true; // start of file
     }
 
     // ══════════════════════════════════════════════════════════
