@@ -26,7 +26,7 @@ test-js: napi
 	node js/test/plugin-contract.js
 
 test-conformance:
-	bash tests/conformance/run.sh
+	bash tests/conformance/test262-parser-tests.sh
 
 build-test262:
 	@mkdir -p zig-out/bin
