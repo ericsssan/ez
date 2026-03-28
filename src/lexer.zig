@@ -41,6 +41,7 @@ pub const Lexer = struct {
     fn_expr_paren_depths: [32]u32 = [_]u32{0} ** 32,
     fn_expr_depth_count: u32 = 0,
     paren_depth: u32 = 0,
+    is_module: bool = false,
     language: Language,
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
@@ -64,12 +65,18 @@ pub const Lexer = struct {
     /// Tokenize the entire source, returning a MultiArrayList of tokens.
     /// The final token is always `.eof`.
     pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenList {
-        return tokenizeWithLanguage(allocator, source, .js);
+        return tokenizeWithOptions(allocator, source, .js, false);
     }
 
     /// Tokenize with a specific language mode.
     pub fn tokenizeWithLanguage(allocator: std.mem.Allocator, source: []const u8, language: Language) !TokenList {
+        return tokenizeWithOptions(allocator, source, language, false);
+    }
+
+    /// Tokenize with language and module mode.
+    pub fn tokenizeWithOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, is_module: bool) !TokenList {
         var self = initWithLanguage(allocator, source, language);
+        self.is_module = is_module;
 
         // Pre-allocate a reasonable estimate: ~1 token per 8 bytes of source.
         const estimate = @max(source.len / 8, 64);
@@ -111,8 +118,8 @@ pub const Lexer = struct {
             }
 
             // HTML open comment: <!-- (Annex B, B.1.3)
-            // Treated as single-line comment in script mode.
-            if (self.peek(0) == '<' and self.peek(1) == '!' and
+            // Only valid in script mode (not module).
+            if (!self.is_module and self.peek(0) == '<' and self.peek(1) == '!' and
                 self.peek(2) == '-' and self.peek(3) == '-')
             {
                 self.index += 4;
@@ -121,8 +128,8 @@ pub const Lexer = struct {
             }
 
             // HTML close comment: --> at start of line (Annex B, B.1.3)
-            // Only valid after a line terminator (or at start of file after whitespace/comments).
-            if (self.peek(0) == '-' and self.peek(1) == '-' and self.peek(2) == '>') {
+            // Only valid in script mode after a line terminator.
+            if (!self.is_module and self.peek(0) == '-' and self.peek(1) == '-' and self.peek(2) == '>') {
                 if (self.isAtLineStart()) {
                     self.index += 3;
                     self.skipToEndOfLine();
@@ -674,6 +681,8 @@ pub const Lexer = struct {
         }
         // ZWNJ/ZWJ are ID_Continue only, not ID_Start
         if (cp == 0x200C or cp == 0x200D) return false;
+        // Connector punctuation (Pc) is ID_Continue only, not ID_Start
+        if (cp == 0x203F or cp == 0x2040 or cp == 0x2054) return false;
         // Replacement char
         if (cp == 0xFFFD) return false;
         // Delegate to the general check for other exclusions

@@ -212,7 +212,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Dump AST mode (default) ──────────────────────────────
     if (dump_ast) {
-        var tokens = try Lexer.tokenizeWithLanguage(allocator, source, lang);
+        var tokens = try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path));
         defer tokens.deinit(allocator);
 
         const is_module = isModuleFile(file_path);
@@ -258,7 +258,7 @@ fn lintSingleFile(
     // Detect language from file extension
     const lang = Language.fromExtension(file_path) orelse .js;
 
-    var tokens = try Lexer.tokenizeWithLanguage(allocator, source, lang);
+    var tokens = try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path));
     defer tokens.deinit(allocator);
 
     var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, isModuleFile(file_path));

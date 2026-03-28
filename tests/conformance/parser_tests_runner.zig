@@ -105,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
 
             const Result = enum { ok, has_errors, crashed };
             const result: Result = blk: {
-                var tokens = Lexer.tokenizeWithLanguage(file_alloc, source, .js) catch break :blk .crashed;
+                var tokens = Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk .crashed;
                 defer tokens.deinit(file_alloc);
                 var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk .crashed;
                 defer tree.deinit(file_alloc);
