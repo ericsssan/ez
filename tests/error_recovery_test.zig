@@ -434,6 +434,50 @@ test "conformance: HTML close comment --> at line start" {
     try mustParse("\n  --> comment\nvar x = 1;");
 }
 
+// ── Regex validator (Annex B non-unicode) ───────────────────
+
+test "conformance: quantifier after lookahead valid in non-unicode" {
+    try mustParse("/(?=.)*/;");
+    try mustParse("/(?!.){0,}?/;");
+}
+
+test "conformance: literal brace in non-unicode regex" {
+    try mustParse("/.{.}/;");
+}
+
+// ── Keyword as property name ────────────────────────────────
+
+test "conformance: keyword property followed by division" {
+    try mustParse("a.in / b");
+}
+
+// ── new super.prop ──────────────────────────────────────────
+
+test "conformance: new super.prop is valid" {
+    try mustParse("class a { b() { new super.c; } }");
+    try mustParse("class a { b() { new super.c(); } }");
+}
+
+test "conformance: string-named constructor allows super()" {
+    try mustParse("class a extends b { \"constructor\"() { super() } }");
+}
+
+test "conformance: super() in constructor default param" {
+    try mustParse("class a extends b { constructor(c = super()){} }");
+}
+
+// ── Parenthesized simple targets in destructuring ───────────
+
+test "conformance: parenthesized identifier in destructuring" {
+    try mustParse("[(a)] = 1");
+    try mustParse("({a:(b)} = 1)");
+}
+
+test "conformance: parenthesized member in destructuring" {
+    try mustParse("[(a.b)] = 1");
+    try mustParse("({a:(b.c)} = 1)");
+}
+
 test "conformance: --> not at line start is decrement + greater-than" {
     try mustParse("a = b-->1;");
 }

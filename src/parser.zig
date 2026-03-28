@@ -2249,7 +2249,19 @@ pub const Parser = struct {
 
         // Method
         if (self.peek() == .l_paren) {
+            // Early constructor detection so super() is valid in default params
+            const early_is_ctor = blk: {
+                if (is_static or is_getter or is_setter) break :blk false;
+                const key_tag_e = self.nodes.items(.tag)[key.toInt()];
+                const key_tok_e = self.nodes.items(.main_token)[key.toInt()];
+                if (key_tag_e == .identifier) break :blk std.mem.eql(u8, self.tokenText(key_tok_e), "constructor");
+                if (key_tag_e == .string_literal) break :blk std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok_e)), "constructor");
+                break :blk false;
+            };
+            const prev_in_constructor_early = self.in_constructor;
+            if (early_is_ctor) self.in_constructor = true;
             const params = try self.parseFormalParameters();
+            self.in_constructor = prev_in_constructor_early;
 
             // Validate getter/setter parameter counts
             const param_count = params.end - params.start;
@@ -2270,14 +2282,18 @@ pub const Parser = struct {
                 }
             }
 
-            // Detect constructor: non-static method named "constructor"
+            // Detect constructor: non-static method named "constructor" or "constructor"
             const is_ctor = blk: {
                 if (is_static or is_getter or is_setter) break :blk false;
                 const key_tag = self.nodes.items(.tag)[key.toInt()];
+                const key_tok = self.nodes.items(.main_token)[key.toInt()];
                 if (key_tag == .identifier) {
-                    const key_tok = self.nodes.items(.main_token)[key.toInt()];
-                    const key_text = self.tokenText(key_tok);
-                    break :blk std.mem.eql(u8, key_text, "constructor");
+                    break :blk std.mem.eql(u8, self.tokenText(key_tok), "constructor");
+                }
+                // String literal key: "constructor" or 'constructor'
+                if (key_tag == .string_literal) {
+                    const content = self.getStringContent(self.tokenStart(key_tok));
+                    break :blk std.mem.eql(u8, content, "constructor");
                 }
                 break :blk false;
             };

@@ -455,10 +455,18 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         try validatePattern(p, rest_data.lhs);
                     }
                 }
-                // Literals, compound assignments, parenthesized as targets are invalid
+                // Parenthesized simple targets are valid: [(a)] = 1, [(a.b)] = 1
+                // But parenthesized patterns are not: [([a])] = 1
+                if (child_tag == .grouping_expr) {
+                    const inner_tag = unwrapGroupingTag(p, NodeIndex.fromInt(p.extra_data.items[i]));
+                    if (inner_tag != .identifier and inner_tag != .member_expr and inner_tag != .computed_member_expr) {
+                        try p.emitError("Invalid destructuring target");
+                        return error.ParseError;
+                    }
+                }
+                // Literals, compound assignments are invalid targets
                 if (child_tag == .number_literal or child_tag == .string_literal or
                     child_tag == .boolean_literal or child_tag == .null_literal or
-                    child_tag == .grouping_expr or
                     child_tag == .add_assign or child_tag == .sub_assign or
                     child_tag == .mul_assign or child_tag == .div_assign or
                     child_tag == .mod_assign or child_tag == .exp_assign or
@@ -509,7 +517,14 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                 const prop_data = p.nodes.items(.data)[prop.toInt()];
                 if (prop_data.rhs != .none) {
                     const val_tag = p.nodes.items(.tag)[prop_data.rhs.toInt()];
-                    if (val_tag == .this_expr or val_tag == .grouping_expr or
+                    // Parenthesized simple targets valid: ({a:(b)} = 1)
+                    if (val_tag == .grouping_expr) {
+                        const inner_val_tag = unwrapGroupingTag(p, prop_data.rhs);
+                        if (inner_val_tag != .identifier and inner_val_tag != .member_expr and inner_val_tag != .computed_member_expr) {
+                            try p.emitError("Invalid destructuring target");
+                            return error.ParseError;
+                        }
+                    } else if (val_tag == .this_expr or
                         val_tag == .number_literal or val_tag == .string_literal or
                         val_tag == .boolean_literal or val_tag == .null_literal or
                         val_tag == .add_assign or val_tag == .sub_assign or
@@ -2087,17 +2102,14 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         callee = try parsePrimaryExpression(p);
     }
 
-    // `new super()` is invalid — use `super()` instead
     // `new import(...)` is invalid — import() is a CallExpression, not a valid new target
     if (callee != .none) {
         const callee_tag = p.nodes.items(.tag)[callee.toInt()];
-        if (callee_tag == .super_expr) {
-            try p.emitError("'super' is not valid as a new expression target");
-        }
         if (callee_tag == .import_expr) {
             try p.emitError("Cannot use 'new' with 'import()'");
         }
     }
+    const is_bare_super = callee != .none and p.nodes.items(.tag)[callee.toInt()] == .super_expr;
 
     // Consume member accesses that bind tighter than new (`.prop`, `[expr]`).
     while (true) {
@@ -2135,6 +2147,11 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
             },
             else => break,
         }
+    }
+
+    // `new super()` is invalid but `new super.prop()` is valid
+    if (is_bare_super and p.nodes.items(.tag)[callee.toInt()] == .super_expr) {
+        try p.emitError("'super' is not valid as a new expression target");
     }
 
     // Optional argument list.

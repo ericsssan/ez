@@ -1413,12 +1413,13 @@ pub const Lexer = struct {
 
             // Check for quantifier
             if (self.pos < self.body.len and self.isQuantifierStart()) {
-                if (kind == .assertion) return .invalid; // quantifier on lookahead assertion
-                if (kind == .lookbehind_assertion) {
-                    // In both modes: lookbehind assertions cannot be quantified
-                    return .invalid;
+                if (kind == .assertion and self.unicode) return .invalid; // quantifier on assertion invalid in /u
+                if (kind == .lookbehind_assertion) return .invalid; // lookbehind never quantifiable
+                if (!self.skipQuantifier()) {
+                    if (self.unicode) return .invalid;
+                    // In non-/u mode, invalid `{` is a literal — already consumed
+                    // by atomOrAssertion, so just continue
                 }
-                if (!self.skipQuantifier()) return .invalid;
             }
             return kind;
         }
@@ -2081,9 +2082,10 @@ pub const Lexer = struct {
             .plus_plus,
             .minus_minus,
             .escaped_keyword,
-            // Contextual keywords that can appear as identifiers in expression position.
-            // Note: kw_yield and kw_await are excluded because they are operators in
-            // generators/async, where `/` after them starts a regex (e.g. `yield /re/`).
+            // Keywords that can appear as property names after `.` where
+            // `/` after them is division (e.g. `a.in / b`, `a.class / b`).
+            // Excludes: return, throw, new, delete, typeof, void, case, yield, await
+            // (these are operators/statements where `/` starts regex).
             .kw_of,
             .kw_from,
             .kw_as,
@@ -2093,6 +2095,28 @@ pub const Lexer = struct {
             .kw_set,
             .kw_target,
             .kw_meta,
+            .kw_in,
+            .kw_instanceof,
+            .kw_class,
+            .kw_extends,
+            .kw_break,
+            .kw_catch,
+            .kw_continue,
+            .kw_debugger,
+            .kw_default,
+            .kw_do,
+            .kw_else,
+            .kw_export,
+            .kw_finally,
+            .kw_for,
+            .kw_function,
+            .kw_if,
+            .kw_import,
+            .kw_switch,
+            .kw_try,
+            .kw_var,
+            .kw_while,
+            .kw_with,
             => false,
 
             // `}` can close either an expression (object literal → division) or
