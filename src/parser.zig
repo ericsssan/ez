@@ -311,8 +311,9 @@ pub const Parser = struct {
 
     /// Append a node to the nodes list and return its index.
     pub fn addNode(self: *Parser, node: Node) !NodeIndex {
-        // Bound error recovery: no valid program needs more than 4x nodes per token.
-        if (self.nodes.len > @as(usize, self.tokens.len) * 8) return error.OutOfMemory;
+        // Bound error recovery: prevent runaway node creation.
+        // Use 16x limit to accommodate TS files with heavy error recovery.
+        if (self.nodes.len > @as(usize, self.tokens.len) * 16) return error.OutOfMemory;
         const result: u32 = @intCast(self.nodes.len);
         try self.nodes.append(self.gpa, node);
         return NodeIndex.fromInt(result);
@@ -479,10 +480,17 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+        var consecutive_errors: u32 = 0;
         while (!self.isAtEnd()) {
             const before = self.tok_i;
             const stmt = self.parseStatement() catch |err| switch (err) {
                 error.ParseError => {
+                    consecutive_errors += 1;
+                    // Bail out after too many consecutive errors to avoid OOM
+                    if (consecutive_errors > 100) {
+                        while (!self.isAtEnd()) _ = self.advance();
+                        break;
+                    }
                     self.synchronize();
                     // Guarantee forward progress — if synchronize didn't advance,
                     // skip one token to avoid infinite loop on unrecoverable input.
@@ -493,6 +501,7 @@ pub const Parser = struct {
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
+            consecutive_errors = 0; // reset on successful parse
             try self.scratch.append(self.gpa, @intFromEnum(stmt));
         }
 
@@ -681,16 +690,26 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+        var consecutive_errors: u32 = 0;
         while (self.peek() != end_tag and !self.isAtEnd()) {
+            const before = self.tok_i;
             const stmt = self.parseStatement() catch |err| switch (err) {
                 error.ParseError => {
+                    consecutive_errors += 1;
+                    if (consecutive_errors > 100) {
+                        // Skip remaining tokens in this block to avoid OOM
+                        while (self.peek() != end_tag and !self.isAtEnd()) _ = self.advance();
+                        break;
+                    }
                     self.synchronize();
+                    if (self.tok_i == before) _ = self.advance();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
                     try self.scratch.append(self.gpa, @intFromEnum(err_node));
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
+            consecutive_errors = 0;
             try self.scratch.append(self.gpa, @intFromEnum(stmt));
         }
 

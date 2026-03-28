@@ -415,6 +415,26 @@ test "conformance: valid destructuring still works" {
     try mustParse("({a, b} = {a: 1, b: 2});");
 }
 
+// ── Error recovery limits ───────────────────────────────────
+
+test "conformance: cascading errors do not OOM" {
+    // Large file with many errors should not crash
+    const allocator = testing.allocator;
+    // Generate a source with many invalid statements
+    var buf: [4096]u8 = undefined;
+    var len: usize = 0;
+    for (0..100) |_| {
+        const stmt = "var : = ;\n";
+        @memcpy(buf[len..][0..stmt.len], stmt);
+        len += stmt.len;
+    }
+    var tokens = try Lexer.tokenize(allocator, buf[0..len]);
+    defer tokens.deinit(allocator);
+    var tree = try Parser.parse(allocator, buf[0..len], tokens.slice());
+    defer tree.deinit(allocator);
+    try testing.expect(tree.nodes.len > 0);
+}
+
 test "conformance: with in strict mode does not OOM" {
     const allocator = testing.allocator;
     const source = "(function () { 'use strict'; with (a); }())";
