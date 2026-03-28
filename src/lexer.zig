@@ -42,6 +42,9 @@ pub const Lexer = struct {
     fn_expr_depth_count: u32 = 0,
     paren_depth: u32 = 0,
     is_module: bool = false,
+    /// Set to true when whitespace skipping encounters a line terminator.
+    /// Used for ASI-aware brace context decisions.
+    saw_newline: bool = false,
     language: Language,
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
@@ -98,8 +101,19 @@ pub const Lexer = struct {
     pub fn next(self: *Lexer) Token.Token {
         // Skip whitespace and comments in a loop (comments may be followed by
         // more whitespace or more comments).
+        self.saw_newline = false;
         while (true) {
+            const before_ws = self.index;
             self.skipWhitespace();
+            // Check if whitespace contained a newline (for ASI-aware brace context)
+            if (!self.saw_newline and self.index > before_ws) {
+                for (self.source[before_ws..self.index]) |c| {
+                    if (c == '\n' or c == '\r') {
+                        self.saw_newline = true;
+                        break;
+                    }
+                }
+            }
 
             if (self.index >= self.source.len) {
                 return self.makeToken(.eof, self.index);
@@ -109,6 +123,7 @@ pub const Lexer = struct {
             if (self.peek(0) == '/') {
                 if (self.peek(1) == '/') {
                     self.skipLineComment();
+                    self.saw_newline = true; // line comment ends at newline
                     continue;
                 }
                 if (self.peek(1) == '*') {
@@ -2209,7 +2224,22 @@ pub const Lexer = struct {
                 const is_fn_expr_body = self.fn_expr_next_brace;
                 self.fn_expr_next_brace = false;
                 if (self.brace_depth < self.brace_is_expr.len) {
-                    self.brace_is_expr[self.brace_depth] = is_fn_expr_body or switch (self.prev_token_tag) {
+                    // ASI override: if there's a newline before `{` and the previous token
+                    // could trigger ASI (identifiers, keywords-as-values, `)`, `]`),
+                    // then `{` starts a new statement (block), not expression (object literal).
+                    // e.g., `return\n{}` → return; {} (block), not return {} (object)
+                    const asi_override = self.saw_newline and switch (self.prev_token_tag) {
+                        .identifier, .kw_in, .kw_instanceof, .kw_let, .kw_static,
+                        .kw_get, .kw_set, .kw_of, .kw_from, .kw_as, .kw_target, .kw_meta,
+                        .r_paren, .r_bracket,
+                        .kw_return, .kw_throw, .kw_yield, .kw_await,
+                        .kw_this, .kw_super, .kw_true, .kw_false, .kw_null,
+                        .number_literal, .string_literal, .bigint_literal,
+                        .plus_plus, .minus_minus,
+                        => true,
+                        else => false,
+                    };
+                    self.brace_is_expr[self.brace_depth] = !asi_override and (is_fn_expr_body or switch (self.prev_token_tag) {
                         .l_paren,
                         .l_bracket,
                         .comma,
@@ -2263,7 +2293,7 @@ pub const Lexer = struct {
                         .ellipsis,
                         => true,
                         else => false,
-                    };
+                    });
                     self.brace_depth += 1;
                 }
                 return self.makeToken(.l_brace, start);

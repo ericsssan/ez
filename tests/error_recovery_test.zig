@@ -521,6 +521,16 @@ test "conformance: legacy octal followed by member access" {
     try mustParse("01.a");
 }
 
+// ── ASI-aware brace context ─────────────────────────────────
+
+test "conformance: return + newline + block + regex" {
+    try mustParse("function a(){return\n{}\n/foo/}");
+}
+
+test "conformance: keyword-property + newline + block + regex" {
+    try mustParse("a.in\n{}\n/foo/");
+}
+
 test "conformance: cascading errors do not OOM" {
     // Large file with many errors should not crash
     const allocator = testing.allocator;
