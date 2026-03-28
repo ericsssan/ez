@@ -3049,6 +3049,10 @@ pub const Parser = struct {
             .l_bracket => {
                 // Array destructuring pattern: [ ... ]
                 const lbracket = self.advance();
+                // `in` is always allowed inside `[...]` (even in for-in init)
+                const saved_allow_in_bp = self.allow_in;
+                self.allow_in = true;
+                defer self.allow_in = saved_allow_in_bp;
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 

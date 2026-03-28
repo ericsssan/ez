@@ -497,6 +497,30 @@ test "conformance: undertie U+203F in identifier" {
     try mustParse("T\xe2\x80\xbf = []");
 }
 
+// ── in operator inside brackets/parens in for-in ────────────
+
+test "conformance: in allowed inside [] in for-in init" {
+    try mustParse("for (a[b in c] in d);");
+    try mustParse("for(let [a=b in c] in null);");
+}
+
+test "conformance: in allowed inside () in for-in init" {
+    try mustParse("for (a(b in c)[1] in d);");
+    try mustParse("for (var a = (\"b\" in c), d = 1; d < 2; ++d);");
+}
+
+// ── yield as setter param in generator ──────────────────────
+
+test "conformance: yield as setter param in generator context" {
+    try mustParse("function *a(){({set b(yield){}})}");
+}
+
+// ── Legacy octal property access ────────────────────────────
+
+test "conformance: legacy octal followed by member access" {
+    try mustParse("01.a");
+}
+
 test "conformance: cascading errors do not OOM" {
     // Large file with many errors should not crash
     const allocator = testing.allocator;

@@ -834,9 +834,15 @@ pub const Lexer = struct {
         // Decimal literal (may start with . from caller)
         const dec_ok = self.scanDecimalDigits();
 
-        // Fractional part
+        // Fractional part — not allowed for legacy octal (01.a is 01 + .a, not 01.)
+        // Only true octals (0-7 digits after leading 0): 01, 07, 0123. NOT 08, 09.
+        const is_legacy_octal_num = blk: {
+            if (self.index - start < 2 or self.source[start] != '0') break :blk false;
+            const d = self.source[start + 1];
+            break :blk d >= '0' and d <= '7';
+        };
         var frac_ok = true;
-        if (self.index < self.source.len and self.source[self.index] == '.') {
+        if (!is_legacy_octal_num and self.index < self.source.len and self.source[self.index] == '.') {
             self.index += 1;
             // Underscore right after `.` is invalid: `1._2`
             if (self.index < self.source.len and self.source[self.index] == '_') {

@@ -1013,6 +1013,10 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
 
 fn parseParenthesized(p: *Parser) Error!NodeIndex {
     const open_paren = p.advance(); // consume `(`
+    // `in` is always allowed inside `(...)` (even in for-in init)
+    const saved_allow_in_paren = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in_paren;
 
     // Empty parens → must be arrow params `() => ...`
     if (p.peek() == .r_paren) {
@@ -1417,13 +1421,20 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
 
     const key = try parsePropertyName(p);
 
-    // Set method flags BEFORE parsing params so super works in setter param defaults
+    // Set method flags BEFORE parsing params so super works in setter param defaults.
+    // Reset in_generator — getters/setters are never generators, so `yield` is a valid binding.
     const saved_fn = p.in_function;
     const saved_method = p.in_method;
+    const saved_gen_gs = p.in_generator;
+    const saved_async_gs = p.in_async;
     p.in_function = true;
     p.in_method = true;
+    p.in_generator = false;
+    p.in_async = false;
     defer p.in_function = saved_fn;
     defer p.in_method = saved_method;
+    defer p.in_generator = saved_gen_gs;
+    defer p.in_async = saved_async_gs;
 
     // Parse function part
     _ = try p.expect(.l_paren);
@@ -2129,7 +2140,10 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
             },
             .l_bracket => {
                 const bracket = p.advance();
+                const saved_allow_in_new = p.allow_in;
+                p.allow_in = true;
                 const index_expr = try parseExpression(p);
+                p.allow_in = saved_allow_in_new;
                 _ = try p.expect(.r_bracket);
                 callee = try p.addNode(.{
                     .tag = .computed_member_expr,
@@ -2754,6 +2768,10 @@ fn parseCallExpression(p: *Parser, callee: NodeIndex) Error!NodeIndex {
 
 fn parseArgumentList(p: *Parser) Error!SubRange {
     _ = p.advance(); // consume `(`
+    // `in` is always allowed inside `(...)` (even in for-in init)
+    const saved_allow_in_args = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in_args;
     const scratch_top = p.scratchLen();
 
     while (p.peek() != .r_paren and p.peek() != .eof) {
@@ -2808,7 +2826,11 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
 
 fn parseComputedMember(p: *Parser, object: NodeIndex) Error!NodeIndex {
     const bracket = p.advance(); // consume `[`
+    // `in` is always allowed inside `[...]` (even in for-in init)
+    const saved_allow_in = p.allow_in;
+    p.allow_in = true;
     const index_expr = try parseExpression(p);
+    p.allow_in = saved_allow_in;
     _ = try p.expect(.r_bracket);
     return p.addNode(.{
         .tag = .computed_member_expr,
