@@ -292,7 +292,9 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
             try p.emitError("Invalid left-hand side in postfix operation: optional chain");
             return error.ParseError;
         },
-        else => try p.emitError("Invalid left-hand side in postfix operation"),
+        else => {
+            if (!p.language.isTs()) try p.emitError("Invalid left-hand side in postfix operation");
+        },
     }
     // Strict mode: cannot update eval/arguments
     if (op_tag == .identifier and p.in_strict) {

@@ -163,13 +163,22 @@ pub fn main(init: std.process.Init) !void {
 
 fn detectModuleMode(source: []const u8) bool {
     if (std.mem.indexOf(u8, source, "// @module:") != null) return true;
-    if (std.mem.indexOf(u8, source, "\nexport ") != null or
-        std.mem.indexOf(u8, source, "\nimport ") != null or
-        std.mem.indexOf(u8, source, "\nexport{") != null)
-        return true;
-    if (source.len >= 7 and (std.mem.eql(u8, source[0..7], "export ") or
-        std.mem.eql(u8, source[0..7], "import ")))
-        return true;
+    // Scan for export/import at start of any line (after optional whitespace)
+    var i: usize = 0;
+    while (i < source.len) {
+        // Skip whitespace at start of line
+        while (i < source.len and (source[i] == ' ' or source[i] == '\t')) i += 1;
+        // Check for export/import keyword
+        if (i + 7 <= source.len) {
+            if (std.mem.eql(u8, source[i..][0..7], "export ") or
+                std.mem.eql(u8, source[i..][0..7], "import "))
+                return true;
+        }
+        if (i + 7 <= source.len and std.mem.eql(u8, source[i..][0..7], "export{")) return true;
+        // Skip to next line
+        while (i < source.len and source[i] != '\n') i += 1;
+        if (i < source.len) i += 1;
+    }
     return false;
 }
 

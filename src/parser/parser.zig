@@ -2160,9 +2160,33 @@ pub const Parser = struct {
     /// Parse a single class member.
     pub fn parseClassMember(self: *Parser) Error!NodeIndex {
         // Skip decorators: @expr or @expr(args)
+        // Parse decorator as: identifier (.identifier)* (args)?
+        // Don't use parseAssignmentExpression — it's too greedy and consumes
+        // computed member `[` which starts the next class member.
         while (self.peek() == .at_sign) {
             _ = self.advance(); // eat @
-            _ = try self.parseAssignmentExpression(); // decorator expression
+            if (self.peek() == .l_paren) {
+                // @(expr) — parenthesized decorator expression
+                _ = self.advance(); // eat (
+                _ = try self.parseAssignmentExpression();
+                _ = try self.expect(.r_paren);
+            } else {
+                _ = try self.parseIdentifier(); // decorator name
+                // dotted: @foo.bar.baz
+                while (self.peek() == .dot) {
+                    _ = self.advance();
+                    _ = try self.parseIdentifier();
+                }
+                // call: @dec() or @dec(args)
+                if (self.peek() == .l_paren) {
+                    _ = self.advance(); // eat (
+                    while (self.peek() != .r_paren and !self.isAtEnd()) {
+                        _ = try self.parseAssignmentExpression();
+                        if (self.peek() == .comma) _ = self.advance() else break;
+                    }
+                    _ = try self.expect(.r_paren);
+                }
+            }
         }
 
         // Handle `static { ... }` (static block)
