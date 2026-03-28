@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const parser = @import("../src/parser.zig");
-const ast = @import("../src/ast.zig");
+const parser = @import("../src/parser/parser.zig");
+const ast = @import("../src/parser/ast.zig");
 const Node = ast.Node;
 const NodeIndex = ast.NodeIndex;
 

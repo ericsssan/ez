@@ -33,10 +33,14 @@ build-conformance:
 	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/typescript_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
 
 test-conformance: build-conformance
-	@./zig-out/bin/test262_runner tests/conformance/test262/test/language
-	@./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests
-	@./zig-out/bin/babel_runner tests/conformance/babel-parser/fixtures
-	@./zig-out/bin/typescript_runner tests/conformance/typescript/cases
+	@echo ""
+	@echo "Parser Conformance"
+	@echo "────────────────────────────────────────────────────────────"
+	@./zig-out/bin/test262_runner tests/conformance/test262/test/language --compact
+	@./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests --compact
+	@./zig-out/bin/babel_runner tests/conformance/babel/packages/babel-parser/test/fixtures --compact
+	@./zig-out/bin/typescript_runner tests/conformance/typescript/tests/cases/conformance --compact
+	@echo ""
 
 test-differential: build napi
 	node tests/differential/run.js
@@ -52,7 +56,7 @@ build:
 
 napi:
 	@mkdir -p zig-out/lib
-	$(ZIG) build-lib src/napi.zig -dynamic -femit-bin=zig-out/lib/libsx3lint.dylib -fallow-shlib-undefined $(LINK_FLAGS)
+	$(ZIG) build-lib src/cli/napi.zig -dynamic -femit-bin=zig-out/lib/libsx3lint.dylib -fallow-shlib-undefined $(LINK_FLAGS)
 	cp zig-out/lib/libsx3lint.dylib zig-out/lib/sx3lint.node
 
 submodules:

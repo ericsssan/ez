@@ -9,11 +9,11 @@
 // Follows the same structural conventions as expressions.zig.
 // ────────────────────────────────────────────────────────────────────
 
-const ast = @import("../ast.zig");
+const ast = @import("ast.zig");
 const NodeIndex = ast.NodeIndex;
 const SubRange = ast.SubRange;
 
-const parser_mod = @import("../parser.zig");
+const parser_mod = @import("parser.zig");
 pub const Parser = parser_mod.Parser;
 const Error = parser_mod.Error;
 

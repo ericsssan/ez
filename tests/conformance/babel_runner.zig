@@ -87,7 +87,8 @@ pub fn main(init: std.process.Init) !void {
     const invalid_total = invalid_pass + invalid_fail;
 
     if (compact) {
-        try stdout.print("  valid: {d}/{d}  invalid: {d}/{d} rejected  skipped: {d}\n", .{
+        try stdout.print("babel:                 {d}/{d} (valid: {d}/{d}, reject: {d}/{d}, skipped: {d})\n", .{
+            valid_pass + invalid_pass, valid_total + invalid_total,
             valid_pass, valid_total, invalid_pass, invalid_total, skipped,
         });
     } else {

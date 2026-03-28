@@ -9,9 +9,6 @@ test_json
 test_json2
 test_json3
 
-# Downloaded test suites (not submodules)
-tests/conformance/babel-parser/
-tests/conformance/typescript/
 
 # Benchmark baselines (local)
 bench/baseline.json

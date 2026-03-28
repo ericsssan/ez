@@ -1,11 +1,11 @@
 const std = @import("std");
 const testing = std.testing;
-const Lexer = @import("../src/lexer.zig").Lexer;
-const parser = @import("../src/parser.zig");
-const semantic = @import("../src/semantic.zig");
-const ast_mod = @import("../src/ast.zig");
-const scope_mod = @import("../src/scope.zig");
-const symbol_mod = @import("../src/symbol.zig");
+const Lexer = @import("../src/parser/lexer.zig").Lexer;
+const parser = @import("../src/parser/parser.zig");
+const semantic = @import("../src/parser/semantic.zig");
+const ast_mod = @import("../src/parser/ast.zig");
+const scope_mod = @import("../src/parser/scope.zig");
+const symbol_mod = @import("../src/parser/symbol.zig");
 
 fn analyzeSource(source: []const u8) !semantic.SemanticResult {
     const allocator = testing.allocator;

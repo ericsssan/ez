@@ -4,19 +4,19 @@
 // Implements parsing of TypeScript-specific syntax: type annotations,
 // interfaces, type aliases, enums, namespaces, and type expressions.
 //
-// All public functions take a `*Parser` (defined in ../parser.zig) and
+// All public functions take a `*Parser` (defined in parser.zig) and
 // return a `NodeIndex` wrapped in an error union.  During integration,
-// parser.zig will `@import("parser/typescript.zig")` and wire these
+// parser.zig will `@import("typescript.zig")` and wire these
 // functions into its own API.
 // ─────────────────────────────────────────────────────────────────────
 
 const std = @import("std");
-const ast = @import("../ast.zig");
+const ast = @import("ast.zig");
 const Node = ast.Node;
 const NodeIndex = ast.NodeIndex;
 const SubRange = ast.SubRange;
 const TokenIndex = ast.TokenIndex;
-const parser_mod = @import("../parser.zig");
+const parser_mod = @import("parser.zig");
 pub const Parser = parser_mod.Parser;
 const Error = parser_mod.Error;
 
@@ -28,6 +28,41 @@ const Error = parser_mod.Error;
 ///
 /// Grammar: `NonConditionalType [extends Type ? Type : Type]`
 pub fn parseType(p: *Parser) Error!NodeIndex {
+    // Type predicate: `x is Type` or `asserts x is Type`
+    if (p.peek() == .identifier) {
+        const text = p.tokenText(p.tok_i);
+        if (std.mem.eql(u8, text, "asserts")) {
+            // `asserts x` or `asserts x is Type`
+            _ = p.advance(); // eat 'asserts'
+            if (p.peek() == .identifier or p.peek() == .kw_this) {
+                _ = p.advance(); // eat param name
+                if (p.peek() == .kw_is) {
+                    _ = p.advance(); // eat 'is'
+                    const type_node = try parseType(p);
+                    return type_node;
+                }
+            }
+            // `asserts x` without `is` — just a void assertion
+            return p.addNode(.{
+                .tag = .ts_type_annotation,
+                .main_token = p.tok_i,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        }
+        // Check for `x is Type` — only if next token after identifier is `is`
+        if (p.peekAt(1) == .kw_is) {
+            _ = p.advance(); // eat param name
+            _ = p.advance(); // eat 'is'
+            return try parseType(p);
+        }
+    }
+    // `this is Type` predicate
+    if (p.peek() == .kw_this and p.peekAt(1) == .kw_is) {
+        _ = p.advance(); // eat 'this'
+        _ = p.advance(); // eat 'is'
+        return try parseType(p);
+    }
+
     var result = try parseNonConditionalType(p);
 
     // Check for conditional type: `T extends U ? X : Y`
@@ -183,7 +218,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         .kw_true, .kw_false,
         .kw_type, .kw_namespace, .kw_declare, .kw_abstract, .kw_module,
         .kw_interface, .kw_implements, .kw_enum, .kw_as, .kw_satisfies,
-        .kw_is, .kw_override,
+        .kw_is, .kw_override, .kw_const,
         => {
             const tok = p.advance();
             return p.addNode(.{
@@ -274,23 +309,15 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         // ── Template literal type ────────────────────────────────
         .template_head, .template_no_sub => try parseTemplateLiteralType(p),
 
-        // ── readonly before tuple ────────────────────────────────
+        // ── readonly before type: `readonly T[]`, `readonly [T, U]` ─
         .kw_readonly => {
             const tok = p.advance(); // consume `readonly`
-            if (p.peek() == .l_bracket) {
-                const tuple = try parseTupleType(p);
-                // Wrap in a type reference to indicate readonly tuple
-                return p.addNode(.{
-                    .tag = .ts_type_reference,
-                    .main_token = tok,
-                    .data = .{ .lhs = tuple, .rhs = .none },
-                });
-            }
-            // `readonly` used as an identifier-like type reference
+            // Parse the type that follows — readonly applies to it
+            const inner = try parsePrimaryType(p);
             return p.addNode(.{
                 .tag = .ts_type_reference,
                 .main_token = tok,
-                .data = .{ .lhs = .none, .rhs = .none },
+                .data = .{ .lhs = inner, .rhs = .none },
             });
         },
 
@@ -317,6 +344,12 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
                 .main_token = tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
+        },
+
+        // ── Generic function type: <T>(x: T) => T ─────────────
+        .less_than => {
+            _ = try parseTypeParameterList(p);
+            return try parseParenthesizedOrFunctionType(p);
         },
 
         // ── Fallback ─────────────────────────────────────────────
@@ -586,6 +619,9 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
 /// Parse a single function type parameter: `name: Type` or `name?: Type`.
 fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
     const param_tok = p.tok_i;
+
+    // Rest parameter: `...args: Type`
+    _ = p.eat(.ellipsis);
 
     // Consume parameter name (identifier or keyword like `this`)
     if (p.peek() == .identifier or p.peek() == .kw_this or p.peek().isKeyword()) {
@@ -914,7 +950,19 @@ pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
 
     const scratch_top = p.scratchLen();
 
-    while (p.peek() != .greater_than and !p.isAtEnd()) {
+    while (!isClosingAngleBracket(p.peek()) and !p.isAtEnd()) {
+        // TS 5.0: `const` modifier on type parameter — `<const T>`
+        if (p.peek() == .kw_const and p.peekAt(1) == .identifier) {
+            _ = p.advance(); // skip 'const'
+        }
+        // `in` and `out` variance modifiers — `<in T>`, `<out T>`, `<in out T>`
+        while ((p.peek() == .kw_in or (p.peek() == .identifier and
+            std.mem.eql(u8, p.tokenText(p.tok_i), "out"))) and
+            p.peekAt(1) == .identifier)
+        {
+            _ = p.advance();
+        }
+
         const param_tok = p.advance(); // consume type parameter name
 
         // Optional constraint: `extends Type`
@@ -948,7 +996,7 @@ pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
         }
     }
 
-    _ = try p.expect(.greater_than);
+    try expectClosingAngleBracket(p);
 
     const params = p.scratchSlice(scratch_top);
     const range = try p.addSlice(params);
@@ -968,7 +1016,7 @@ pub fn parseTypeArguments(p: *Parser) Error!SubRange {
 
     const scratch_top = p.scratchLen();
 
-    while (p.peek() != .greater_than and !p.isAtEnd()) {
+    while (!isClosingAngleBracket(p.peek()) and !p.isAtEnd()) {
         const type_node = try parseType(p);
         try p.scratchPush(type_node);
 
@@ -979,7 +1027,7 @@ pub fn parseTypeArguments(p: *Parser) Error!SubRange {
         }
     }
 
-    _ = try p.expect(.greater_than);
+    try expectClosingAngleBracket(p);
 
     const types = p.scratchSlice(scratch_top);
     const range = try p.addSlice(types);
@@ -996,8 +1044,11 @@ pub fn parseTypeArguments(p: *Parser) Error!SubRange {
 pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
     const iface_tok = p.advance(); // consume `interface`
 
-    // Interface name
-    const name_tok = try p.expect(.identifier);
+    // Interface name (keywords like void/never/unknown are valid interface names)
+    const name_tok = if (p.peek() == .identifier or p.peek().isKeyword())
+        p.advance()
+    else
+        try p.expect(.identifier);
 
     // Optional type parameters: `<T, U>`
     var type_params_range = SubRange{ .start = 0, .end = 0 };
@@ -1224,7 +1275,27 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
         }
     }
 
+    // Ambient module with no body: `declare module "foo";`
+    if (p.peek() == .semicolon) {
+        _ = p.advance();
+        return p.addNode(.{
+            .tag = node_tag,
+            .main_token = main_tok,
+            .data = .{ .lhs = name_node, .rhs = .none },
+        });
+    }
+
+    // Module/namespace body allows export/import (module scope) at its top level.
+    const prev_is_module = p.is_module;
+    const prev_in_block = p.in_block;
+    const prev_in_function = p.in_function;
+    p.is_module = true;
+    p.in_block = false;
+    p.in_function = false;
     const body = try p.parseBlockStatement();
+    p.is_module = prev_is_module;
+    p.in_block = prev_in_block;
+    p.in_function = prev_in_function;
 
     return p.addNode(.{
         .tag = node_tag,
@@ -1250,19 +1321,24 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     const member_tok = p.tok_i;
 
-    // ── Call signature: `(params): ReturnType;` ──────────────
-    if (p.peek() == .l_paren) {
+    // ── Call signature: `(params): ReturnType;` or `<T>(params): ReturnType;`
+    if (p.peek() == .l_paren or p.peek() == .less_than) {
         return parseCallOrConstructSignature(p, member_tok);
     }
 
-    // ── Construct signature: `new (params): ReturnType;` ─────
-    if (p.peek() == .kw_new and p.peekAt(1) == .l_paren) {
+    // ── Construct signature: `new (params): ReturnType;` or `new <T>(params): ReturnType;`
+    if (p.peek() == .kw_new and (p.peekAt(1) == .l_paren or p.peekAt(1) == .less_than)) {
         _ = p.advance(); // consume `new`
         return parseCallOrConstructSignature(p, member_tok);
     }
 
     // ── Index signature: `[key: Type]: Type;` ────────────────
-    if (p.peek() == .l_bracket) {
+    // Only treat as index signature if `[identifier :` pattern (colon inside brackets).
+    // Otherwise it's a computed property `[expr]: Type;` handled below.
+    if (p.peek() == .l_bracket and
+        ((p.peekAt(1) == .identifier and p.peekAt(2) == .colon) or
+        (p.peekAt(1) == .kw_readonly and p.peekAt(2) == .identifier and p.peekAt(3) == .colon)))
+    {
         return parseIndexSignature(p);
     }
 
@@ -1296,6 +1372,8 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
         _ = try p.expect(.r_bracket);
     } else {
         try p.emitError("Expected interface member name");
+        // Advance past the unrecognized token to avoid infinite loops.
+        if (!p.isAtEnd()) _ = p.advance();
         return p.makeErrorNode();
     }
 
@@ -1400,7 +1478,7 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex) Error!NodeI
 }
 
 /// Parse an index signature: `[key: Type]: ValueType`.
-fn parseIndexSignature(p: *Parser) Error!NodeIndex {
+pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
     const bracket_tok = p.advance(); // consume `[`
 
     // Parameter name
@@ -1436,6 +1514,49 @@ fn consumeMemberSeparator(p: *Parser) void {
 // =====================================================================
 // Tests
 // =====================================================================
+
+fn isClosingAngleBracket(tag: @import("token.zig").Tag) bool {
+    return tag == .greater_than or tag == .greater_greater or
+        tag == .greater_greater_greater or tag == .greater_equal or
+        tag == .greater_greater_equal or tag == .greater_greater_greater_equal;
+}
+
+/// Expect a closing `>` in type context.  Handles `>>`, `>>>`, `>=` etc.
+/// by mutating the token in-place to consume only the first `>`.
+fn expectClosingAngleBracket(p: *Parser) Error!void {
+    switch (p.peek()) {
+        .greater_than => _ = p.advance(),
+        .greater_greater => {
+            // `>>` → consume first `>`, leave second as `>`
+            p.tokens.items(.tag)[p.tok_i] = .greater_than;
+            // Advance the start position by 1 byte so the remaining `>` is correct
+            p.tokens.items(.start)[p.tok_i] += 1;
+        },
+        .greater_greater_greater => {
+            // `>>>` → consume first `>`, leave `>>`
+            p.tokens.items(.tag)[p.tok_i] = .greater_greater;
+            p.tokens.items(.start)[p.tok_i] += 1;
+        },
+        .greater_equal => {
+            // `>=` → consume first `>`, leave `=`
+            p.tokens.items(.tag)[p.tok_i] = .equal;
+            p.tokens.items(.start)[p.tok_i] += 1;
+        },
+        .greater_greater_equal => {
+            // `>>=` → consume first `>`, leave `>=`
+            p.tokens.items(.tag)[p.tok_i] = .greater_equal;
+            p.tokens.items(.start)[p.tok_i] += 1;
+        },
+        .greater_greater_greater_equal => {
+            // `>>>=` → consume first `>`, leave `>>=`
+            p.tokens.items(.tag)[p.tok_i] = .greater_greater_equal;
+            p.tokens.items(.start)[p.tok_i] += 1;
+        },
+        else => {
+            _ = try p.expect(.greater_than);
+        },
+    }
+}
 
 test "consumeMemberSeparator does not panic on eof" {
     // Smoke test — we can't easily construct a full Parser in unit tests,

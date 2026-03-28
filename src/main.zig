@@ -1,16 +1,18 @@
 const std = @import("std");
 const Io = std.Io;
-const Lexer = @import("lexer.zig").Lexer;
-const parser = @import("parser.zig");
-const debug = @import("debug.zig");
-const diagnostic = @import("diagnostic.zig");
-const Token = @import("token.zig");
-const semantic = @import("semantic.zig");
-const linter = @import("linter.zig");
-const FileDiscovery = @import("file_discovery.zig").FileDiscovery;
-const GitIgnore = @import("gitignore.zig").GitIgnore;
-const ParallelRunner = @import("parallel.zig").ParallelRunner;
-const DiagnosticFormatter = @import("diagnostic_formatter.zig").DiagnosticFormatter;
+const parser_root = @import("parser/root.zig");
+const Lexer = parser_root.Lexer;
+const parser = @import("parser/parser.zig");
+const debug = parser_root.debug;
+const diagnostic = parser_root.diagnostic;
+const Token = parser_root.token;
+const semantic = parser_root.semantic;
+const linter_root = @import("linter/root.zig");
+const linter = linter_root.linter;
+const FileDiscovery = @import("cli/file_discovery.zig").FileDiscovery;
+const GitIgnore = linter_root.gitignore.GitIgnore;
+const ParallelRunner = @import("cli/parallel.zig").ParallelRunner;
+const DiagnosticFormatter = @import("cli/diagnostic_formatter.zig").DiagnosticFormatter;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -294,7 +296,7 @@ fn lintSingleFile(
 
 // ── Helpers ──────────────────────────────────────────────────────
 
-const hasJsExtension = @import("file_discovery.zig").hasJsExtension;
+const hasJsExtension = @import("cli/file_discovery.zig").hasJsExtension;
 
 /// Detect if a file should be parsed in module mode based on extension.
 /// .mjs, .mts, and *.module.js/ts/jsx/tsx are module files.
@@ -308,10 +310,10 @@ fn isModuleFile(path: []const u8) bool {
 }
 const Language = Token.Language;
 const isTokenChar = Token.isIdentChar;
-const Config = @import("config.zig").Config;
-const ConfigResolver = @import("config_resolver.zig").ConfigResolver;
-const InlineDisables = @import("inline_disable.zig").InlineDisables;
-const eslint_compat = @import("eslint_compat.zig");
+const Config = linter_root.config.Config;
+const ConfigResolver = linter_root.config_resolver.ConfigResolver;
+const InlineDisables = linter_root.inline_disable.InlineDisables;
+const eslint_compat = linter_root.eslint_compat;
 
 const usage_text =
     \\Usage: sx3lint [options] <file|directory>...

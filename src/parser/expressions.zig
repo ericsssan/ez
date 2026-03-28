@@ -1,19 +1,19 @@
 // ── src/parser/expressions.zig ─────────────────────────────────────────
 // Pratt (precedence-climbing) expression parser for ES2024 JavaScript.
 //
-// All public functions take a `*Parser` (defined in ../parser.zig) and
+// All public functions take a `*Parser` (defined in parser.zig) and
 // return a `NodeIndex` wrapped in an error union.  During integration,
-// parser.zig will `@import("parser/expressions.zig")` and wire these
+// parser.zig will `@import("expressions.zig")` and wire these
 // functions into its own API.
 // ───────────────────────────────────────────────────────────────────────
 
 const std = @import("std");
-const ast = @import("../ast.zig");
+const ast = @import("ast.zig");
 const Node = ast.Node;
 const NodeIndex = ast.NodeIndex;
 const SubRange = ast.SubRange;
 const TokenIndex = ast.TokenIndex;
-const Token = @import("../token.zig");
+const Token = @import("token.zig");
 const TokenTag = Token.Tag;
 
 // ── Forward reference to the main parser ──────────────────────────────
@@ -21,7 +21,7 @@ const TokenTag = Token.Tag;
 // During integration, if circular import issues arise, we can switch
 // to an opaque-pointer design with function pointers.  For now we
 // import directly.
-const parser_mod = @import("../parser.zig");
+const parser_mod = @import("parser.zig");
 pub const Parser = parser_mod.Parser;
 const Error = parser_mod.Error;
 
@@ -164,6 +164,13 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             continue;
         }
 
+        // TS: `expr<Type>()` — generic call expression.
+        // If `<` is followed by what looks like type arguments and then `(`, `)`, etc.,
+        // parse as type arguments (skip them) and continue to the call.
+        if (tag == .less_than and p.language.isTs()) {
+            if (tryParseTsTypeArguments(p)) continue;
+        }
+
         const infix_prec = getInfixPrecedence(p, tag);
         if (infix_prec == .none) break;
         if (@intFromEnum(infix_prec) < @intFromEnum(min_prec)) break;
@@ -248,7 +255,10 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
                 try p.emitError("Invalid left-hand side in prefix operation: optional chain");
                 return error.ParseError;
             },
-            else => try p.emitError("Invalid left-hand side in prefix operation"),
+            else => {
+                // TS parser accepts invalid LHS (type checker handles it later)
+                if (!p.language.isTs()) try p.emitError("Invalid left-hand side in prefix operation");
+            },
         }
         // Strict mode: cannot update eval/arguments
         if (op_tag == .identifier and p.in_strict) {
@@ -1018,9 +1028,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     p.allow_in = true;
     defer p.allow_in = saved_allow_in_paren;
 
-    // Empty parens → must be arrow params `() => ...`
+    // Empty parens → must be arrow params `() => ...` or `(): Type => ...`
     if (p.peek() == .r_paren) {
         _ = p.advance(); // consume `)`
+        // TS return type annotation: `(): Type =>`
+        _ = try p.parseOptionalTypeAnnotation();
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
             const saved_fn2 = p.in_function;
@@ -1041,6 +1053,37 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         }
         // Empty parens not followed by `=>` — error.
         try p.emitError("Unexpected token ')'");
+        return p.makeErrorNode();
+    }
+
+    // TS arrow function fast path: if `(identifier :` or `(this :` or `(...` or `({` or `([`
+    // followed by `:`, parse as typed arrow parameters.
+    if (p.language.isTs() and looksLikeTsArrowParams(p)) {
+        const params_range = try parseFormalParameters_inner(p, open_paren);
+        _ = try p.parseOptionalTypeAnnotation(); // return type
+        if (p.peek() == .arrow and !p.isOnNewLine()) {
+            _ = p.advance(); // consume `=>`
+            const saved_fn = p.in_function;
+            p.in_function = true;
+            defer p.in_function = saved_fn;
+            const body = try parseArrowBody(p);
+            const extra = try p.addExtra(ast.ArrowData, .{
+                .params_start = params_range.start,
+                .params_end = params_range.end,
+                .body = body,
+            });
+            return p.addNode(.{
+                .tag = .arrow_fn,
+                .main_token = open_paren,
+                .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+            });
+        }
+        // Not an arrow — parsed params but no `=>`.  This is an error or a parenthesized expr.
+        // Fall through to error or return first param as expression.
+        if (params_range.end > params_range.start) {
+            const first_param = NodeIndex.fromInt(p.extra_data.items[params_range.start]);
+            return first_param;
+        }
         return p.makeErrorNode();
     }
 
@@ -1480,6 +1523,7 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     };
 
     _ = try p.expect(.r_paren);
+    _ = try p.parseOptionalTypeAnnotation(); // TS return type
 
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
@@ -1595,8 +1639,9 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
     }
 
     // Computed property: [expr]: value (only valid in object literals, not class bodies)
+    // In TS class bodies, [expr]: Type is valid (computed field with type annotation)
     if (p.peek() == .colon) {
-        if (p.in_class) {
+        if (p.in_class and !p.language.isTs()) {
             try p.emitError("Unexpected ':' in class body (use '=' for field initializers)");
             return error.ParseError;
         }
@@ -1849,7 +1894,20 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
 
+    _ = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
+    _ = try p.parseOptionalTypeAnnotation();
+
+    // TS ambient function expressions can be bodyless in certain contexts
+    if (p.language.isTs() and p.peek() != .l_brace) {
+        _ = p.eat(.semicolon);
+        return p.addNode(.{
+            .tag = .ts_type_annotation,
+            .main_token = fn_tok,
+            .data = .{ .lhs = name_node, .rhs = .none },
+        });
+    }
+
     const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
 
     const fn_tag: Node.Tag = if (is_generator) .generator_fn_expr else .fn_expr;
@@ -2060,11 +2118,13 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Colon in class body is invalid (not an object literal)
-    if (p.peek() == .colon) {
+    // Colon in class body is invalid (not an object literal) — except TS type annotations
+    if (p.peek() == .colon and !p.language.isTs()) {
         try p.emitError("Unexpected ':' in class body (use '=' for field initializers)");
         return error.ParseError;
     }
+    // TS: skip type annotation on property
+    _ = try p.parseOptionalTypeAnnotation();
 
     // Field without initializer — require ; or ASI
     if (p.eat(.semicolon) == null and p.peek() != .r_brace and !p.isOnNewLine()) {
@@ -2984,6 +3044,7 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
     if (p.peek() == .ellipsis) {
         const tok = p.advance();
         const arg = try parseBindingPattern(p);
+        _ = try p.parseOptionalTypeAnnotation();
         return p.addNode(.{
             .tag = .rest_element,
             .main_token = tok,
@@ -2991,7 +3052,44 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         });
     }
 
+    // TS parameter modifiers: public, private, protected, readonly, override
+    if (p.language.isTs()) {
+        while (p.peek() == .identifier or p.peek() == .kw_readonly or
+            p.peek() == .kw_override or p.peek() == .kw_declare)
+        {
+            const text = p.tokenText(p.tok_i);
+            const is_mod = std.mem.eql(u8, text, "public") or
+                std.mem.eql(u8, text, "private") or
+                std.mem.eql(u8, text, "protected") or
+                std.mem.eql(u8, text, "readonly") or
+                std.mem.eql(u8, text, "override");
+            if (!is_mod) break;
+            const next = p.peekAt(1);
+            if (next == .colon or next == .comma or next == .r_paren or
+                next == .equal or next == .question)
+                break;
+            _ = p.advance(); // skip modifier
+        }
+    }
+
+    // TS `this` parameter
+    if (p.language.isTs() and p.peek() == .kw_this and p.peekAt(1) == .colon) {
+        const this_tok = p.advance();
+        _ = try p.parseOptionalTypeAnnotation();
+        return p.addNode(.{
+            .tag = .identifier,
+            .main_token = this_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
+    }
+
     var node = try parseBindingPattern(p);
+
+    // TS optional parameter marker and type annotation
+    if (p.language.isTs()) {
+        _ = p.eat(.question);
+        _ = try p.parseOptionalTypeAnnotation();
+    }
 
     // Default initializer
     if (p.peek() == .equal) {
@@ -3525,4 +3623,95 @@ test "isYieldTerminator" {
     try std_testing.expect(isYieldTerminator(.eof));
     try std_testing.expect(!isYieldTerminator(.plus));
     try std_testing.expect(!isYieldTerminator(.identifier));
+}
+
+// ── TS arrow function helpers ─────────────────────────────────────
+
+/// Try to parse `<Type, Type>` as type arguments in expression position.
+/// Returns true if successfully parsed, false if it's actually a comparison.
+/// Uses token position save/restore for backtracking.
+fn tryParseTsTypeArguments(p: *Parser) bool {
+    const saved_tok = p.tok_i;
+    const saved_diag_len = p.diagnostics.items.len;
+    const saved_nodes_len = p.nodes.len;
+    const saved_extra_len = p.extra_data.items.len;
+
+    // Try parsing type arguments
+    const typescript = @import("typescript.zig");
+    _ = typescript.parseTypeArguments(p) catch {
+        // Failed — backtrack
+        p.tok_i = saved_tok;
+        p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
+        p.nodes.len = @intCast(saved_nodes_len);
+        p.extra_data.shrinkRetainingCapacity(saved_extra_len);
+        return false;
+    };
+
+    // Check what follows — if it's a valid continuation for type arguments, accept
+    const next = p.peek();
+    if (next == .l_paren or next == .r_paren or next == .r_bracket or
+        next == .dot or next == .comma or next == .semicolon or
+        next == .question or next == .colon or next == .arrow or
+        next == .equal_equal or next == .equal_equal_equal or
+        next == .bang_equal or next == .bang_equal_equal or
+        next == .ampersand_ampersand or next == .pipe_pipe or
+        next == .question_question or next == .template_head or
+        next == .template_no_sub or next == .eof or next == .r_brace or
+        next == .bang)
+    {
+        return true;
+    }
+
+    // Not a valid type argument context — backtrack
+    p.tok_i = saved_tok;
+    p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
+    p.nodes.len = @intCast(saved_nodes_len);
+    p.extra_data.shrinkRetainingCapacity(saved_extra_len);
+    return false;
+}
+
+/// Check if content after `(` looks like TS typed arrow parameters.
+/// Heuristic: first token is `identifier` followed by `:` or `?:`,
+/// or first token is `this` followed by `:`, or `...`, `{`, `[`.
+fn looksLikeTsArrowParams(p: *Parser) bool {
+    const tag = p.peek();
+    // (identifier : or (identifier ?: — typed param
+    if (tag == .identifier) {
+        const next = p.peekAt(1);
+        if (next == .colon or next == .question) return true;
+        // Check for TS modifier followed by another identifier
+        const text = p.tokenText(p.tok_i);
+        if ((std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "private") or
+            std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "readonly")) and
+            (next == .identifier or next == .l_brace or next == .l_bracket))
+            return true;
+    }
+    // (this : — this parameter
+    if (tag == .kw_this and p.peekAt(1) == .colon) return true;
+    // (... — rest param (could be arrow or expression, but more likely arrow with types)
+    // ({ or ([ — destructuring params — ambiguous, skip for now
+    return false;
+}
+
+/// Parse formal parameters after `(` was already consumed.
+fn parseFormalParameters_inner(p: *Parser, _: u32) Error!SubRange {
+    const scratch_top = p.scratchLen();
+
+    while (p.peek() != .r_paren and p.peek() != .eof) {
+        const param = try parseBindingElement(p);
+        try p.scratchPush(param);
+
+        if (p.peek() == .comma) {
+            _ = p.advance();
+        } else {
+            break;
+        }
+    }
+
+    _ = try p.expect(.r_paren);
+
+    const params = p.scratchSlice(scratch_top);
+    const range = try p.addSlice(params);
+    p.scratchPop(scratch_top);
+    return range;
 }

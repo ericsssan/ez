@@ -1,7 +1,7 @@
 const std = @import("std");
 const testing = std.testing;
-const Lexer = @import("../src/lexer.zig");
-const Token = @import("../src/token.zig");
+const Lexer = @import("../src/parser/lexer.zig");
+const Token = @import("../src/parser/token.zig");
 const Tag = Token.Tag;
 
 fn expectTokens(source: []const u8, expected: []const Tag) !void {

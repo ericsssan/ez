@@ -5,8 +5,13 @@ const Parser = sx3lint.Parser;
 const Io = std.Io;
 const Token = sx3lint.token;
 
-/// Fast in-process runner for TypeScript parser conformance tests.
-/// Usage: typescript_runner <cases-dir>
+/// TypeScript parser conformance runner.
+///
+/// Uses error baselines from the TypeScript repo to classify tests:
+/// - If a baseline has syntax errors (TS1xxx), the test is must-reject
+/// - Otherwise, the test is must-parse
+///
+/// Usage: typescript_runner <conformance-dir>
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -18,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
 
     if (args.len < 2) {
-        try stdout.print("Usage: typescript_runner <cases-dir>\n", .{});
+        try stdout.print("Usage: typescript_runner <conformance-dir>\n", .{});
         try stdout.flush();
         std.process.exit(1);
     }
@@ -26,9 +31,23 @@ pub fn main(init: std.process.Init) !void {
     const cases_dir = args[1];
     const compact = args.len >= 3 and std.mem.eql(u8, args[2], "--compact");
 
-    var pass: u32 = 0;
-    var fail: u32 = 0;
-    const crash: u32 = 0;
+    // Derive baselines path from cases dir:
+    // cases_dir = .../typescript/tests/cases/conformance
+    // baselines = .../typescript/tests/baselines/reference
+    var baselines_buf: [4096]u8 = undefined;
+    const baselines_dir = blk: {
+        // Walk up from conformance dir to find tests/baselines/reference
+        if (std.mem.indexOf(u8, cases_dir, "/tests/cases/")) |idx| {
+            const prefix = cases_dir[0..idx];
+            break :blk std.fmt.bufPrint(&baselines_buf, "{s}/tests/baselines/reference", .{prefix}) catch "";
+        }
+        break :blk "";
+    };
+
+    var must_parse_pass: u32 = 0;
+    var must_parse_fail: u32 = 0;
+    var must_reject_pass: u32 = 0;
+    var must_reject_fail: u32 = 0;
     var skipped: u32 = 0;
 
     // Collect all .ts files
@@ -47,11 +66,7 @@ pub fn main(init: std.process.Init) !void {
 
     for (files.items) |path| {
         // Skip .d.ts and .tsx
-        if (std.mem.endsWith(u8, path, ".d.ts")) {
-            skipped += 1;
-            continue;
-        }
-        if (std.mem.endsWith(u8, path, ".tsx")) {
+        if (std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".tsx")) {
             skipped += 1;
             continue;
         }
@@ -59,40 +74,172 @@ pub fn main(init: std.process.Init) !void {
         const source = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(2 * 1024 * 1024)) catch continue;
         defer allocator.free(source);
 
-        // Detect language from extension
+        // Skip multi-file tests
+        if (std.mem.indexOf(u8, source, "// @filename:") != null or
+            std.mem.indexOf(u8, source, "// @Filename:") != null)
+        {
+            skipped += 1;
+            continue;
+        }
+
+        // Classify using error baselines
+        const kind = classifyTest(io, allocator, path, source, baselines_dir);
+        if (kind == .skip) {
+            skipped += 1;
+            continue;
+        }
+
         const lang: Token.Language = if (std.mem.endsWith(u8, path, ".ts")) .ts else .js;
+        const is_module = detectModuleMode(source);
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const file_alloc = arena.allocator();
 
-        const parsed_ok = blk: {
-            var tokens = Lexer.tokenizeWithLanguage(file_alloc, source, lang) catch break :blk false;
+        var first_error: []const u8 = "";
+        const has_error = blk: {
+            var tokens = Lexer.tokenizeWithOptions(file_alloc, source, lang, is_module) catch {
+                first_error = "tokenize failed";
+                break :blk true;
+            };
             defer tokens.deinit(file_alloc);
-            _ = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), lang, false) catch break :blk false;
-            break :blk true;
+            var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), lang, is_module) catch {
+                first_error = "parse OOM";
+                break :blk true;
+            };
+            if (tree.errors.len > 0) {
+                first_error = tree.errors[0].message;
+                break :blk true;
+            }
+            break :blk false;
         };
 
-        if (parsed_ok) {
-            pass += 1;
-        } else {
-            // Distinguish crash (OOM) from parse errors
-            fail += 1;
+        switch (kind) {
+            .must_parse => {
+                if (!has_error) {
+                    must_parse_pass += 1;
+                } else {
+                    must_parse_fail += 1;
+                    if (!compact) {
+                        try stdout.print("  FAIL (should parse): {s} | {s}\n", .{ path, first_error });
+                    }
+                }
+            },
+            .must_reject => {
+                if (has_error) {
+                    must_reject_pass += 1;
+                } else {
+                    must_reject_fail += 1;
+                    if (!compact) {
+                        try stdout.print("  FAIL (should reject): {s}\n", .{path});
+                    }
+                }
+            },
+            .skip => unreachable,
         }
     }
 
-    const total = pass + fail + crash;
+    const parse_total = must_parse_pass + must_parse_fail;
+    const reject_total = must_reject_pass + must_reject_fail;
+    const overall_total = parse_total + reject_total;
+    const overall_pass = must_parse_pass + must_reject_pass;
 
     if (compact) {
-        try stdout.print("  parsed: {d}/{d}  errors: {d}  skipped: {d}\n", .{ pass, total, fail, skipped });
+        try stdout.print("typescript:            {d}/{d} (parse: {d}/{d}, reject: {d}/{d}, skipped: {d})\n", .{
+            overall_pass, overall_total,
+            must_parse_pass, parse_total, must_reject_pass, reject_total, skipped,
+        });
     } else {
         try stdout.print("TypeScript parser conformance tests\n\n", .{});
-        try stdout.print("Results: {d}/{d} parsed ({d} with errors, {d} timeouts, {d} skipped)\n", .{
-            pass, total, fail, crash, skipped,
-        });
+        try stdout.print("  Must-parse:   {d} / {d}\n", .{ must_parse_pass, parse_total });
+        try stdout.print("  Must-reject:  {d} / {d}\n", .{ must_reject_pass, reject_total });
+        try stdout.print("  Skipped:      {d}\n", .{skipped});
+        try stdout.print("  Overall:      {d} / {d}\n", .{ overall_pass, overall_total });
     }
     try stdout.flush();
 }
+
+// ── Module mode detection ────────────────────────────────────────
+
+fn detectModuleMode(source: []const u8) bool {
+    if (std.mem.indexOf(u8, source, "// @module:") != null) return true;
+    if (std.mem.indexOf(u8, source, "\nexport ") != null or
+        std.mem.indexOf(u8, source, "\nimport ") != null or
+        std.mem.indexOf(u8, source, "\nexport{") != null)
+        return true;
+    if (source.len >= 7 and (std.mem.eql(u8, source[0..7], "export ") or
+        std.mem.eql(u8, source[0..7], "import ")))
+        return true;
+    return false;
+}
+
+// ── Test classification ──────────────────────────────────────────
+
+const TestKind = enum { must_parse, must_reject, skip };
+
+fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: []const u8, baselines_dir: []const u8) TestKind {
+    // Skip pure JSON files
+    if (source.len > 0 and (source[0] == '{' or (source[0] == 0xEF and source.len > 3 and source[3] == '{'))) {
+        return .skip;
+    }
+
+    // Use error baselines if available: check if <testname>.errors.txt exists
+    // and contains syntax errors (TS1xxx codes = parse errors)
+    if (baselines_dir.len > 0) {
+        if (hasSyntaxErrorBaseline(io, allocator, path, baselines_dir))
+            return .must_reject;
+    }
+
+    // Fallback heuristics for files without baselines
+    if (std.mem.indexOf(u8, path, "ErrorRecovery") != null or
+        std.mem.indexOf(u8, path, "errorRecovery") != null)
+        return .must_reject;
+
+    return .must_parse;
+}
+
+/// Check if a test file has a corresponding .errors.txt baseline with syntax errors.
+/// Syntax errors in TypeScript are TS1xxx codes (1000-1999 range).
+fn hasSyntaxErrorBaseline(io: Io, allocator: std.mem.Allocator, test_path: []const u8, baselines_dir: []const u8) bool {
+    // Extract test name from path: .../cases/conformance/foo/bar.ts -> bar
+    const basename = getBasename(test_path);
+    const stem = if (std.mem.endsWith(u8, basename, ".ts"))
+        basename[0 .. basename.len - 3]
+    else if (std.mem.endsWith(u8, basename, ".tsx"))
+        basename[0 .. basename.len - 4]
+    else
+        basename;
+
+    // Build baseline path: <baselines_dir>/<stem>.errors.txt
+    var buf: [4096]u8 = undefined;
+    const baseline_path = std.fmt.bufPrint(&buf, "{s}/{s}.errors.txt", .{ baselines_dir, stem }) catch return false;
+
+    const content = Io.Dir.cwd().readFileAlloc(io, baseline_path, allocator, Io.Limit.limited(256 * 1024)) catch return false;
+    defer allocator.free(content);
+
+    // Check for syntax error codes: TS1xxx (1000-1999)
+    // These indicate parse errors vs type errors (TS2xxx+)
+    var i: usize = 0;
+    while (i + 6 < content.len) : (i += 1) {
+        if (content[i] == 'T' and content[i + 1] == 'S' and content[i + 2] == '1' and
+            isDigit(content[i + 3]) and isDigit(content[i + 4]) and isDigit(content[i + 5]))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn isDigit(c: u8) bool {
+    return c >= '0' and c <= '9';
+}
+
+fn getBasename(path: []const u8) []const u8 {
+    if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| return path[i + 1 ..];
+    return path;
+}
+
+// ── Directory walker ─────────────────────────────────────────────
 
 const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };
 

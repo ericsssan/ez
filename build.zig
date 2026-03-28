@@ -84,7 +84,7 @@ pub fn build(b: *std.Build) void {
 
     // ── NAPI shared library (JS plugin support) ────────────
     const napi_mod = b.createModule(.{
-        .root_source_file = b.path("src/napi.zig"),
+        .root_source_file = b.path("src/cli/napi.zig"),
         .target = target,
         .optimize = .ReleaseFast,
     });
