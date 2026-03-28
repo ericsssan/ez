@@ -42,7 +42,7 @@ test-differential: build napi
 test-e2e: build
 	bash tests/e2e/run.sh
 
-test-all: test test-fuzz test-js test-e2e test-differential
+test-all: test test-fuzz test-js test-e2e test-differential test-conformance test-test262
 
 build:
 	@mkdir -p zig-out/bin
