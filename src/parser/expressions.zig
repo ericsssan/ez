@@ -940,6 +940,40 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     // Save position so we can reinterpret if needed.
     const open_paren = p.advance(); // consume `(`
 
+    // TS: if params look typed, parse as formal parameters directly
+    if (p.language.isTs() and (p.peek() == .r_paren or looksLikeTsArrowParams(p))) {
+        const params_range = try parseFormalParameters_inner(p, open_paren);
+        _ = try p.parseOptionalTypeAnnotation();
+
+        if (p.peek() == .arrow and !p.isOnNewLine()) {
+            _ = p.advance(); // consume `=>`
+            const saved_fn = p.in_function;
+            const saved_async = p.in_async;
+            p.in_function = true;
+            p.in_async = true;
+            defer p.in_function = saved_fn;
+            defer p.in_async = saved_async;
+            const body = try parseArrowBody(p);
+            const extra = try p.addExtra(ast.ArrowData, .{
+                .params_start = params_range.start,
+                .params_end = params_range.end,
+                .body = body,
+            });
+            return p.addNode(.{
+                .tag = .async_arrow_fn,
+                .main_token = async_tok,
+                .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+            });
+        }
+        // Not an arrow — fallback to call
+        if (params_range.end > params_range.start) {
+            const callee = try p.addNode(.{ .tag = .identifier, .main_token = async_tok, .data = .{ .lhs = .none, .rhs = .none } });
+            const range_extra = try p.addExtra(SubRange, .{ .start = params_range.start, .end = params_range.end });
+            return p.addNode(.{ .tag = .call_expr, .main_token = open_paren, .data = .{ .lhs = callee, .rhs = NodeIndex.fromInt(range_extra) } });
+        }
+        return p.addNode(.{ .tag = .identifier, .main_token = async_tok, .data = .{ .lhs = .none, .rhs = .none } });
+    }
+
     // Collect inner expressions into scratch space.
     const scratch_top = p.scratchLen();
 
@@ -956,6 +990,9 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     }
 
     _ = try p.expect(.r_paren);
+
+    // TS return type annotation: `async (): Type =>`
+    _ = try p.parseOptionalTypeAnnotation();
 
     // If `=>` follows on the same line, this is an async arrow.
     if (p.peek() == .arrow and !p.isOnNewLine()) {
