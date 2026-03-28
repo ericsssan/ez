@@ -985,7 +985,7 @@ pub const Lexer = struct {
                             self.index += 1;
                         }
                     } else if (escaped == '8' or escaped == '9') {
-                        // NonOctalDecimalEscapeSequence — valid in non-strict mode.
+                        // NonOctalDecimalEscapeSequence — valid in sloppy mode (Annex B).
                         // Strict mode checks happen at parser level, not lexer.
                         self.index += 1;
                     } else if (escaped == 'u') {
