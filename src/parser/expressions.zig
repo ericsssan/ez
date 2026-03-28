@@ -2719,8 +2719,10 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
             return error.ParseError;
         },
         else => {
-            try p.emitError("Invalid left-hand side in assignment");
-            return error.ParseError;
+            if (!p.language.isTs()) {
+                try p.emitError("Invalid left-hand side in assignment");
+                return error.ParseError;
+            }
         },
     }
 

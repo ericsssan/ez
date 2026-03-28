@@ -3124,6 +3124,12 @@ pub const Parser = struct {
             return self.addNode(.{ .tag = .export_named, .main_token = export_tok, .data = .{ .lhs = decl, .rhs = .none } });
         }
 
+        // `export import X = Y` — re-export alias
+        if (self.peek() == .kw_import) {
+            const decl = try self.parseImportDeclaration();
+            return self.addNode(.{ .tag = .export_named, .main_token = export_tok, .data = .{ .lhs = decl, .rhs = .none } });
+        }
+
         try self.emitDiagnostic(self.currentSpan(), "unexpected token after 'export'", .{});
         return error.ParseError;
     }
