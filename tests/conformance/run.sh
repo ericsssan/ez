@@ -11,9 +11,9 @@ BIN="$SCRIPT_DIR/../../zig-out/bin/sx3lint"
 T262="$SCRIPT_DIR/test262-parser-tests"
 
 if [ ! -f "$BIN" ]; then echo "ERROR: Run 'make build' first."; exit 1; fi
-if [ ! -d "$T262" ]; then
-  echo "Downloading test262-parser-tests..."
-  git clone --depth 1 https://github.com/tc39/test262-parser-tests.git "$T262"
+if [ ! -d "$T262/pass" ]; then
+  echo "Initializing test262-parser-tests submodule..."
+  (cd "$SCRIPT_DIR/../.." && git submodule update --init --depth 1 tests/conformance/test262-parser-tests)
 fi
 
 echo "Parser conformance tests (Test262)"

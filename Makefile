@@ -2,7 +2,7 @@ ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.2637+6a9510c0e/files/zig
 SYSROOT := /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
 LINK_FLAGS := --sysroot $(SYSROOT) -fno-lld
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-test262 test-test262 run napi
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-test262 test-test262 run napi submodules
 
 test: test-unit test-linter test-recovery test-config
 
@@ -52,6 +52,9 @@ napi:
 	@mkdir -p zig-out/lib
 	$(ZIG) build-lib src/napi.zig -dynamic -femit-bin=zig-out/lib/libsx3lint.dylib -fallow-shlib-undefined $(LINK_FLAGS)
 	cp zig-out/lib/libsx3lint.dylib zig-out/lib/sx3lint.node
+
+submodules:
+	git submodule update --init --depth 1
 
 run: build
 	./zig-out/bin/sx3lint $(ARGS)

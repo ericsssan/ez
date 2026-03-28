@@ -21,7 +21,10 @@ T262="$SCRIPT_DIR/test262/test/language"
 TMPDIR="${TMPDIR:-/tmp}/sx3lint-test262-$$"
 
 if [ ! -f "$BIN" ]; then echo "ERROR: Build first (make build)"; exit 1; fi
-if [ ! -d "$T262" ]; then echo "ERROR: Clone test262 first"; exit 1; fi
+if [ ! -d "$T262" ]; then
+  echo "Initializing test262 submodule..."
+  (cd "$ROOT" && git submodule update --init --depth 1 tests/conformance/test262)
+fi
 
 QUICK=0
 if [ "${1:-}" = "--quick" ]; then QUICK=1; fi

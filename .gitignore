@@ -9,9 +9,7 @@ test_json
 test_json2
 test_json3
 
-# Downloaded test suites (large, external)
-tests/conformance/test262/
-tests/conformance/test262-parser-tests/
+# Downloaded test suites (not submodules)
 tests/conformance/babel-parser/
 tests/conformance/typescript/
 
