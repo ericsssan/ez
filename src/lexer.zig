@@ -50,6 +50,9 @@ pub const Lexer = struct {
     /// Set when a control-flow `)` is emitted. The IMMEDIATE next `/` is regex.
     /// Cleared after the next token is scanned (whether it's `/` or not).
     control_paren_closed: bool = false,
+    /// Tracks `case`/`default` for colon disambiguation.
+    /// 0 = not in case, 1 = saw `case` keyword, 2 = saw `case X:` colon
+    case_colon_state: u2 = 0,
     language: Language,
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
@@ -2258,7 +2261,10 @@ pub const Lexer = struct {
                         => true,
                         else => false,
                     };
-                    self.brace_is_expr[self.brace_depth] = !asi_override and (is_fn_expr_body or switch (self.prev_token_tag) {
+                    self.brace_is_expr[self.brace_depth] = !asi_override and (is_fn_expr_body or blk: {
+                        // `case X:` colon → block context, not expression
+                        if (self.prev_token_tag == .colon and self.case_colon_state == 2) break :blk false;
+                        break :blk switch (self.prev_token_tag) {
                         .l_paren,
                         .l_bracket,
                         .comma,
@@ -2312,7 +2318,7 @@ pub const Lexer = struct {
                         .ellipsis,
                         => true,
                         else => false,
-                    });
+                    };});
                     self.brace_depth += 1;
                 }
                 return self.makeToken(.l_brace, start);
@@ -2603,8 +2609,17 @@ pub const Lexer = struct {
     /// Create a token and update prev_token_tag for regex disambiguation.
     fn makeToken(self: *Lexer, tag: TokenTag, start: u32) Token.Token {
         // Clear control_paren_closed when any token is emitted
-        // (it only applies to the immediate next `/` after `)`)
         if (tag != .r_paren) self.control_paren_closed = false;
+        // Track case/default colon: `case X:` or `default:` → next `{` is block
+        // State machine: 0 → kw_case/kw_default → 1 → (any tokens) → colon → 2 → (consume) → 0
+        if (tag == .kw_case or tag == .kw_default) {
+            self.case_colon_state = 1;
+        } else if (tag == .colon and self.case_colon_state == 1) {
+            self.case_colon_state = 2; // confirmed case colon
+        } else if (self.case_colon_state == 2 and tag != .colon) {
+            self.case_colon_state = 0; // consumed, reset
+        }
+        // State 1 persists through the case expression: `case expr1 + expr2 :`
         // Track function expression context for division disambiguation.
         // `function` in expression position means the next `{` after `)`
         // closes a function expression (value), so `}` → division.

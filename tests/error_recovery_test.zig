@@ -493,6 +493,10 @@ test "conformance: division after expression paren" {
     try mustParse("foo() / 2");
 }
 
+test "conformance: regex after case clause block" {
+    try mustParse("switch(a) { case 1: {}\n/foo/ }");
+}
+
 test "conformance: regex after do" {
     try mustParse("do /x/; while (false);");
 }
