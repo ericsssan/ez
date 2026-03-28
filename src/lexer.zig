@@ -316,7 +316,22 @@ pub const Lexer = struct {
             i -= 1;
             const c = self.source[i];
             if (c == '\n' or c == '\r') return true;
-            if (c != ' ' and c != '\t' and c != 0x0B and c != 0x0C) return false;
+            if (c == ' ' or c == '\t' or c == 0x0B or c == 0x0C) continue;
+            // Check for block comment ending: */
+            if (c == '/' and i > 0 and self.source[i - 1] == '*') {
+                // Walk back past the block comment
+                if (i < 2) return false;
+                i -= 2;
+                while (i > 0) {
+                    if (self.source[i] == '*' and i > 0 and self.source[i - 1] == '/') {
+                        i -= 1; // skip past /*
+                        break;
+                    }
+                    i -= 1;
+                }
+                continue;
+            }
+            return false;
         }
         return true; // start of file
     }
@@ -2082,10 +2097,11 @@ pub const Lexer = struct {
             .plus_plus,
             .minus_minus,
             .escaped_keyword,
-            // Keywords that can appear as property names after `.` where
-            // `/` after them is division (e.g. `a.in / b`, `a.class / b`).
-            // Excludes: return, throw, new, delete, typeof, void, case, yield, await
-            // (these are operators/statements where `/` starts regex).
+            // Keywords used as property names where `/` is division.
+            // Only includes keywords that NEVER appear before an expression
+            // in statement position (where `/` would start regex).
+            // Excludes: return, throw, new, delete, typeof, void, case,
+            // yield, await, default, else, do (these precede expressions).
             .kw_of,
             .kw_from,
             .kw_as,
@@ -2103,9 +2119,6 @@ pub const Lexer = struct {
             .kw_catch,
             .kw_continue,
             .kw_debugger,
-            .kw_default,
-            .kw_do,
-            .kw_else,
             .kw_export,
             .kw_finally,
             .kw_for,

@@ -478,6 +478,15 @@ test "conformance: parenthesized member in destructuring" {
     try mustParse("({a:(b.c)} = 1)");
 }
 
+test "conformance: --> after block comment" {
+    try mustParse("/* comment */-->  comment\n");
+    try mustParse(" \t /* block comment */  --> comment\n");
+}
+
+test "conformance: regex after do" {
+    try mustParse("do /x/; while (false);");
+}
+
 test "conformance: --> not at line start is decrement + greater-than" {
     try mustParse("a = b-->1;");
 }
