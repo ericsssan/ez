@@ -382,6 +382,16 @@ test "conformance: getter in destructuring is error" {
     try mustError("( { get x() {} } ) = 0");
 }
 
+test "conformance: strict eval/arguments in destructuring is error" {
+    try mustError("\"use strict\"; ({ v: eval }) = obj");
+    try mustError("\"use strict\"; ({ v: arguments }) = obj");
+}
+
+test "conformance: parenthesized destructuring pattern is error" {
+    try mustError("(([a])=0);");
+    try mustError("(({a})=0);");
+}
+
 test "conformance: valid destructuring still works" {
     try mustParse("var {a, b} = {a: 1, b: 2};");
     try mustParse("var [x, y] = [1, 2];");

@@ -528,6 +528,11 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         try p.emitError("Invalid destructuring target");
                         return error.ParseError;
                     }
+                    // Strict mode: eval/arguments cannot be destructuring targets
+                    if (val_tag == .identifier and p.in_strict) {
+                        const val_tok = p.nodes.items(.main_token)[prop_data.rhs.toInt()];
+                        try p.checkStrictAssignTarget(val_tok);
+                    }
                     // Recursively validate nested patterns
                     try validatePattern(p, prop_data.rhs);
                 }
@@ -2564,7 +2569,16 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
 
     // Validate assignment target — reject literals, binary exprs, calls, optional chains, etc.
     // Parenthesized simple targets: (x) = 1, ((x)) = 1, (a.b) = 1 are valid
+    // But parenthesized destructuring patterns: ([a]) = 1, ({a}) = 1 are NOT valid
     const effective_left_tag = if (left_tag == .grouping_expr) unwrapGroupingTag(p, left) else left_tag;
+    if (left_tag == .grouping_expr and op_tag == .equal) {
+        if (effective_left_tag == .array_literal or effective_left_tag == .array_pattern or
+            effective_left_tag == .object_literal or effective_left_tag == .object_pattern)
+        {
+            try p.emitError("Invalid destructuring assignment target: parenthesized pattern");
+            return error.ParseError;
+        }
+    }
     switch (effective_left_tag) {
         .identifier, .member_expr, .computed_member_expr,
         .array_literal, .array_pattern, .object_literal, .object_pattern,
