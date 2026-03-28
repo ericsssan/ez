@@ -179,7 +179,8 @@ pub fn parsePrimaryType(p: *Parser) Error!NodeIndex {
     var result = try parsePrimaryTypeInner(p);
 
     // Apply postfix: `[]` (array type) and `[K]` (indexed access type).
-    while (p.peek() == .l_bracket) {
+    // Don't consume `[` on a new line — it likely starts a new member (ASI-like).
+    while (p.peek() == .l_bracket and !p.isOnNewLine()) {
         const bracket_tok = p.advance(); // consume `[`
 
         if (p.peek() == .r_bracket) {
