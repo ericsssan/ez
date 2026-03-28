@@ -57,6 +57,9 @@ pub fn main(init: std.process.Init) !void {
         // Check if this is an error test (options.json with "throws" in same dir)
         const is_error_test = isErrorTest(io, allocator, path);
 
+        // Detect module mode from options.json in test dir or parent dirs
+        const is_module = isModuleTest(io, allocator, path);
+
         // Read and parse
         const source = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(2 * 1024 * 1024)) catch continue;
         defer allocator.free(source);
@@ -66,9 +69,9 @@ pub fn main(init: std.process.Init) !void {
         const file_alloc = arena.allocator();
 
         const has_error = blk: {
-            var tokens = Lexer.tokenize(file_alloc, source) catch break :blk true;
+            var tokens = Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk true;
             defer tokens.deinit(file_alloc);
-            var tree = Parser.parse(file_alloc, source, tokens.slice()) catch break :blk true;
+            var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk true;
             defer tree.deinit(file_alloc);
             break :blk tree.errors.len > 0;
         };
@@ -105,7 +108,12 @@ fn shouldSkip(path: []const u8) bool {
     const skip_patterns = [_][]const u8{
         "typescript", "flow", "jsx/", "decorators", "pipeline",
         "record-and-tuple", "v8intrinsic", "hack-pipes", "module-blocks",
-        "defer", "source-phase",
+        "defer", "source-phase", "import-attributes", "import-assertions",
+        "placeholders", "discard-binding", "explicit-resource-management",
+        "do-expression", "partial-application", "throw-expression",
+        "function-sent", "async-do-expression", "module-string-names",
+        "export-extensions", "decimal", "module-attributes",
+        "destructuring-private", "regex-modifiers",
     };
     for (skip_patterns) |pat| {
         if (std.mem.indexOf(u8, path, pat) != null) return true;
@@ -113,19 +121,58 @@ fn shouldSkip(path: []const u8) bool {
     return false;
 }
 
+fn isModuleTest(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8) bool {
+    // Walk up the directory tree checking each options.json for sourceType: "module"
+    if (!std.mem.endsWith(u8, input_path, "/input.js")) return false;
+    var end = input_path.len - "/input.js".len; // point to dir before input.js
+
+    while (end > 0) {
+        // Build <dir>/options.json
+        var buf: [4096]u8 = undefined;
+        if (end + "/options.json".len > buf.len) break;
+        @memcpy(buf[0..end], input_path[0..end]);
+        @memcpy(buf[end..][0.."/options.json".len], "/options.json");
+        const opts_path = buf[0 .. end + "/options.json".len];
+
+        if (Io.Dir.cwd().readFileAlloc(io, opts_path, allocator, Io.Limit.limited(4096))) |content| {
+            defer allocator.free(content);
+            if (std.mem.indexOf(u8, content, "\"sourceType\": \"module\"") != null or
+                std.mem.indexOf(u8, content, "\"sourceType\":\"module\"") != null)
+            {
+                return true;
+            }
+        } else |_| {}
+
+        // Move to parent directory
+        while (end > 0 and input_path[end - 1] != '/') end -= 1;
+        if (end > 0) end -= 1; // skip the /
+    }
+    return false;
+}
+
 fn isErrorTest(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8) bool {
-    // Replace "input.js" with "options.json" in the path
     if (!std.mem.endsWith(u8, input_path, "input.js")) return false;
     var buf: [4096]u8 = undefined;
     const dir_len = input_path.len - "input.js".len;
     @memcpy(buf[0..dir_len], input_path[0..dir_len]);
+
+    // Check options.json with "throws"
     const opts = "options.json";
     @memcpy(buf[dir_len..][0..opts.len], opts);
-    const opts_path = buf[0 .. dir_len + opts.len];
+    if (Io.Dir.cwd().readFileAlloc(io, buf[0 .. dir_len + opts.len], allocator, Io.Limit.limited(64 * 1024))) |content| {
+        defer allocator.free(content);
+        if (std.mem.indexOf(u8, content, "\"throws\"") != null) return true;
+    } else |_| {}
 
-    const content = Io.Dir.cwd().readFileAlloc(io, opts_path, allocator, Io.Limit.limited(64 * 1024)) catch return false;
-    defer allocator.free(content);
-    return std.mem.indexOf(u8, content, "\"throws\"") != null;
+    // Check output.json with "errors" array
+    const out = "output.json";
+    @memcpy(buf[dir_len..][0..out.len], out);
+    if (Io.Dir.cwd().readFileAlloc(io, buf[0 .. dir_len + out.len], allocator, Io.Limit.limited(256 * 1024))) |content| {
+        defer allocator.free(content);
+        if (std.mem.indexOf(u8, content, "\"errors\"") != null) return true;
+    } else |_| {}
+
+    return false;
 }
 
 const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };
