@@ -25,8 +25,12 @@ test-js: napi
 	node js/test/test.js
 	node js/test/plugin-contract.js
 
-test-conformance:
-	bash tests/conformance/test262-parser-tests.sh
+build-conformance:
+	@mkdir -p zig-out/bin
+	$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/parser_tests_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
+
+test-conformance: build-conformance
+	./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests
 
 build-test262:
 	@mkdir -p zig-out/bin
