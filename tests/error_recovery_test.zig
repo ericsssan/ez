@@ -340,6 +340,54 @@ test "conformance: yield in strict function does not OOM" {
     try testing.expect(tree.nodes.len > 0);
 }
 
+// ── for-of let prohibition ──────────────────────────────────
+
+test "conformance: for-of with let LHS is error" {
+    try mustError("for(let of 0);");
+    try mustError("for(let.a of 0);");
+}
+
+test "conformance: for-in with let LHS is valid" {
+    try mustParse("for (let in {}) ;");
+}
+
+// ── Parenthesized destructuring in for-in/of ────────────────
+
+test "conformance: parenthesized array pattern in for-of is error" {
+    try mustError("for(([a]) of 0);");
+    try mustError("for(([a]) in 0);");
+}
+
+test "conformance: parenthesized object pattern in for-of is error" {
+    try mustError("for(({a}) of 0);");
+    try mustError("for(({a}) in 0);");
+}
+
+// ── Destructuring assignment validation ─────────────────────
+
+test "conformance: literal value in destructuring is error" {
+    try mustError("({ obj:20 }) = 42");
+}
+
+test "conformance: shorthand with string key in destructuring is error" {
+    try mustError("({ \"chance\" }) = obj");
+}
+
+test "conformance: shorthand with number key in destructuring is error" {
+    try mustError("({ 42 }) = obj");
+}
+
+test "conformance: getter in destructuring is error" {
+    try mustError("({get a(){}})=0");
+    try mustError("( { get x() {} } ) = 0");
+}
+
+test "conformance: valid destructuring still works" {
+    try mustParse("var {a, b} = {a: 1, b: 2};");
+    try mustParse("var [x, y] = [1, 2];");
+    try mustParse("({a, b} = {a: 1, b: 2});");
+}
+
 test "conformance: with in strict mode does not OOM" {
     const allocator = testing.allocator;
     const source = "(function () { 'use strict'; with (a); }())";

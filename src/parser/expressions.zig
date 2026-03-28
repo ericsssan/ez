@@ -412,10 +412,13 @@ fn isIdentChar(c: u8) bool {
 
 fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
     if (node == .none) return;
-    const tag = p.nodes.items(.tag)[node.toInt()];
+    // Unwrap parenthesized expressions for validation
+    const unwrapped = unwrapGrouping(p, node);
+    const tag = unwrapped.tag;
+    const effective_node = unwrapped.node;
 
     if (tag == .array_pattern) {
-        const data = p.nodes.items(.data)[node.toInt()];
+        const data = p.nodes.items(.data)[effective_node.toInt()];
         const start = data.lhs.toInt();
         const end = data.rhs.toInt();
         if (end > start) {
@@ -478,7 +481,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
     }
 
     if (tag == .object_pattern) {
-        const data = p.nodes.items(.data)[node.toInt()];
+        const data = p.nodes.items(.data)[effective_node.toInt()];
         const start = data.lhs.toInt();
         const end = data.rhs.toInt();
         var i = start;

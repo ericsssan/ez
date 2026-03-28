@@ -1037,7 +1037,7 @@ pub const Parser = struct {
         // Check for `in` or `of`
         if (self.eat(.kw_in)) |_| {
             try self.rejectForInOfInitializer(init);
-            try self.validateForInOfBinding(init);
+            try self.validateForInOfBinding(init, false);
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
             const body = try self.parseNonDeclStatement();
@@ -1059,7 +1059,7 @@ pub const Parser = struct {
 
         if (self.eat(.kw_of)) |_| {
             try self.rejectForInOfInitializer(init);
-            try self.validateForInOfBinding(init);
+            try self.validateForInOfBinding(init, true);
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
             const body = try self.parseNonDeclStatement();
@@ -1191,12 +1191,44 @@ pub const Parser = struct {
     }
 
     /// Validate for-in/of binding: must be assignable (not this, literals, binary exprs).
-    fn validateForInOfBinding(self: *Parser, init: NodeIndex) Error!void {
+    fn validateForInOfBinding(self: *Parser, init: NodeIndex, is_for_of: bool) Error!void {
         if (init == .none) return;
+        const init_tag = self.nodes.items(.tag)[init.toInt()];
+        // Parenthesized destructuring patterns are invalid in for-in/of:
+        // `for(([a]) of x)` and `for(({a}) of x)` are syntax errors.
+        if (init_tag == .grouping_expr) {
+            const unwrapped = expressions.unwrapGrouping(self, init);
+            if (unwrapped.tag == .array_literal or unwrapped.tag == .object_literal or
+                unwrapped.tag == .array_pattern or unwrapped.tag == .object_pattern)
+            {
+                try self.emitDiagnostic(self.currentSpan(), "Invalid destructuring assignment target", .{});
+                return error.ParseError;
+            }
+        }
         // Unwrap parenthesized expressions: (x), ((x))
         const unwrapped = expressions.unwrapGrouping(self, init);
         switch (unwrapped.tag) {
-            .identifier, .member_expr, .computed_member_expr,
+            .identifier, .member_expr, .computed_member_expr => {
+                // `for(let of ...)` and `for(let.a of ...)` are prohibited in for-of:
+                // "It is a Syntax Error if the first token of LHS is `let`" (13.7.5.1)
+                // Note: `for(let in ...)` IS valid — `let` as identifier in for-in.
+                if (is_for_of) {
+                    var check_node = unwrapped.node;
+                    var check_tag = unwrapped.tag;
+                    while (check_tag == .member_expr or check_tag == .computed_member_expr) {
+                        check_node = self.nodes.items(.data)[check_node.toInt()].lhs;
+                        if (check_node == .none) break;
+                        check_tag = self.nodes.items(.tag)[check_node.toInt()];
+                    }
+                    if (check_tag == .identifier) {
+                        const tok = self.nodes.items(.main_token)[check_node.toInt()];
+                        if (self.tokenTagAt(tok) == .kw_let) {
+                            try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a for-of binding identifier", .{});
+                            return error.ParseError;
+                        }
+                    }
+                }
+            },
             .array_pattern, .object_pattern,
             => {},
             .array_literal => {
