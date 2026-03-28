@@ -32,7 +32,6 @@ build-conformance:
 
 test-conformance: build-conformance
 	@./zig-out/bin/test262_runner tests/conformance/test262/test/language
-	@echo ""
 	@./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests
 
 test-differential: build napi

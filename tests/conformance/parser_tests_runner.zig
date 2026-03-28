@@ -42,10 +42,14 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const base_dir = args[1];
+    var compact_mode = false;
+    if (args.len >= 3 and std.mem.eql(u8, args[2], "--compact")) compact_mode = true;
 
-    try stdout.print("test262-parser-tests (in-process)\n", .{});
-    try stdout.print("=================================\n\n", .{});
-    try stdout.flush();
+    if (!compact_mode) {
+        try stdout.print("test262-parser-tests (in-process)\n", .{});
+        try stdout.print("=================================\n\n", .{});
+        try stdout.flush();
+    }
 
     const Mode = enum { must_pass, must_error, must_not_crash };
     const categories = [_]struct { dir: []const u8, name: []const u8, mode: Mode }{
@@ -122,23 +126,29 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        const label = switch (cat.mode) {
-            .must_error => "rejected",
-            .must_pass => "passed",
-            .must_not_crash => "parsed",
-        };
-        if (skip > 0) {
-            try stdout.print("  {s:<16}{d}/{d} {s} ({d} known-stale skipped)\n", .{ cat.name, pass, total, label, skip });
-        } else {
-            try stdout.print("  {s:<16}{d}/{d} {s}\n", .{ cat.name, pass, total, label });
+        if (!compact_mode) {
+            const label = switch (cat.mode) {
+                .must_error => "rejected",
+                .must_pass => "passed",
+                .must_not_crash => "parsed",
+            };
+            if (skip > 0) {
+                try stdout.print("  {s:<16}{d}/{d} {s} ({d} known-stale skipped)\n", .{ cat.name, pass, total, label, skip });
+            } else {
+                try stdout.print("  {s:<16}{d}/{d} {s}\n", .{ cat.name, pass, total, label });
+            }
+            try stdout.flush();
         }
-        try stdout.flush();
 
         overall_pass += pass;
         overall_total += total;
         overall_skip += skip;
     }
 
-    try stdout.print("\n  Overall: {d}/{d}\n", .{ overall_pass, overall_total });
+    if (compact_mode) {
+        try stdout.print("test262-parser-tests:  {d}/{d} ({d} known-stale skipped)\n", .{ overall_pass, overall_total, overall_skip });
+    } else {
+        try stdout.print("\n  Overall: {d}/{d}\n", .{ overall_pass, overall_total });
+    }
     try stdout.flush();
 }

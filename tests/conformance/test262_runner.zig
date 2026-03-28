@@ -27,6 +27,8 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const input_path = args[1];
+    var compact = false;
+    if (args.len >= 3 and std.mem.eql(u8, args[2], "--compact")) compact = true;
 
     // Build file list: either read from a file list or walk a directory
     var file_list: std.ArrayList([]const u8) = .{};
@@ -56,9 +58,11 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    try stdout.print("tc39/test262 Parser Conformance\n", .{});
-    try stdout.print("===============================\n\n", .{});
-    try stdout.flush();
+    if (!compact) {
+        try stdout.print("tc39/test262 Parser Conformance\n", .{});
+        try stdout.print("===============================\n\n", .{});
+        try stdout.flush();
+    }
 
     var reject_pass: u32 = 0;
     var reject_fail: u32 = 0;
@@ -147,7 +151,7 @@ pub fn main(init: std.process.Init) !void {
             .skip => {},
         }
 
-        if (total % 5000 == 0) {
+        if (!compact and total % 5000 == 0) {
             try stdout.print("  ... {d}\n", .{total});
             try stdout.flush();
         }
@@ -158,12 +162,16 @@ pub fn main(init: std.process.Init) !void {
     const overall_total = reject_total + parse_total;
     const overall_pass = reject_pass + parse_pass;
 
-    try stdout.print("\nResults\n", .{});
-    try stdout.print("-------\n", .{});
-    try stdout.print("  Must-reject:  {d} / {d}\n", .{ reject_pass, reject_total });
-    try stdout.print("  Must-parse:   {d} / {d}\n", .{ parse_pass, parse_total });
-    try stdout.print("  Skipped:      {d}\n", .{skipped});
-    try stdout.print("  Overall:      {d} / {d}\n\n", .{ overall_pass, overall_total });
+    if (compact) {
+        try stdout.print("tc39/test262:          {d}/{d} (reject: {d}/{d}, parse: {d}/{d})\n", .{ overall_pass, overall_total, reject_pass, reject_total, parse_pass, parse_total });
+    } else {
+        try stdout.print("\nResults\n", .{});
+        try stdout.print("-------\n", .{});
+        try stdout.print("  Must-reject:  {d} / {d}\n", .{ reject_pass, reject_total });
+        try stdout.print("  Must-parse:   {d} / {d}\n", .{ parse_pass, parse_total });
+        try stdout.print("  Skipped:      {d}\n", .{skipped});
+        try stdout.print("  Overall:      {d} / {d}\n\n", .{ overall_pass, overall_total });
+    }
     try stdout.flush();
 
     if (fail_count > 0) {
