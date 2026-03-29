@@ -57,12 +57,12 @@ pub const FileDiscovery = struct {
     pub fn addDirectory(self: *FileDiscovery, io: Io, base_path: []const u8) !void {
         const cwd = Io.Dir.cwd();
         const dir = cwd.openDir(io, base_path, .{ .iterate = true }) catch |err| {
-            std.debug.print("sx3lint: cannot open directory '{s}': {}\n", .{ base_path, err });
+            std.debug.print("sanz: cannot open directory '{s}': {}\n", .{ base_path, err });
             return;
         };
 
         var walker = dir.walk(self.allocator) catch |err| {
-            std.debug.print("sx3lint: cannot walk directory '{s}': {}\n", .{ base_path, err });
+            std.debug.print("sanz: cannot walk directory '{s}': {}\n", .{ base_path, err });
             return;
         };
         defer walker.deinit();
@@ -118,7 +118,7 @@ pub const FileDiscovery = struct {
         } else |_| {}
 
         // Not a recognized file and not a directory — skip.
-        std.debug.print("sx3lint: skipping '{s}' (not a recognized source file or directory)\n", .{path});
+        std.debug.print("sanz: skipping '{s}' (not a recognized source file or directory)\n", .{path});
     }
 
     /// Return the collected file paths as a slice.

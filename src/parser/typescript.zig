@@ -1,5 +1,5 @@
 // ── src/parser/typescript.zig ────────────────────────────────────────
-// TypeScript type parser module for Sx3lint.
+// TypeScript type parser module for Sanz.
 //
 // Implements parsing of TypeScript-specific syntax: type annotations,
 // interfaces, type aliases, enums, namespaces, and type expressions.

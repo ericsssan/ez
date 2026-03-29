@@ -8,9 +8,9 @@ pub const DisableDirective = struct {
     line: u32, // 0-indexed line number where directive appears
 
     pub const Kind = enum {
-        disable, // sx3lint-disable — disable from this line onward
-        disable_next_line, // sx3lint-disable-next-line — disable for next line only
-        enable, // sx3lint-enable — re-enable from this line onward
+        disable, // sanz-disable — disable from this line onward
+        disable_next_line, // sanz-disable-next-line — disable for next line only
+        enable, // sanz-enable — re-enable from this line onward
     };
 };
 
@@ -184,9 +184,9 @@ pub const InlineDisables = struct {
     fn tryParseDirective(comment_body: []const u8, line: u32) ?DisableDirective {
         const trimmed = std.mem.trimStart(u8, comment_body, " \t");
 
-        const next_line_prefix = "sx3lint-disable-next-line";
-        const disable_prefix = "sx3lint-disable";
-        const enable_prefix = "sx3lint-enable";
+        const next_line_prefix = "sanz-disable-next-line";
+        const disable_prefix = "sanz-disable";
+        const enable_prefix = "sanz-enable";
 
         var kind: DisableDirective.Kind = undefined;
         var rest: []const u8 = undefined;
@@ -206,7 +206,7 @@ pub const InlineDisables = struct {
 
         // After the keyword, must be end-of-string, whitespace, or '*' (for block comment end)
         if (rest.len > 0 and rest[0] != ' ' and rest[0] != '\t' and rest[0] != '*' and rest[0] != '\n') {
-            return null; // e.g. "sx3lint-disablefoo" is not a valid directive
+            return null; // e.g. "sanz-disablefoo" is not a valid directive
         }
 
         const rule_text = std.mem.trimStart(u8, rest, " \t");
@@ -236,7 +236,7 @@ pub const InlineDisables = struct {
 // ── Tests ────────────────────────────────────────────────────
 
 test "parse disable-next-line" {
-    const source = "const x = 1;\n// sx3lint-disable-next-line no-unused-vars\nconst y = 2;\n";
+    const source = "const x = 1;\n// sanz-disable-next-line no-unused-vars\nconst y = 2;\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 
@@ -247,7 +247,7 @@ test "parse disable-next-line" {
 }
 
 test "parse disable/enable range" {
-    const source = "// sx3lint-disable no-console\nconsole.log('a');\nconsole.log('b');\n// sx3lint-enable no-console\nconsole.log('c');\n";
+    const source = "// sanz-disable no-console\nconsole.log('a');\nconsole.log('b');\n// sanz-enable no-console\nconsole.log('c');\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 
@@ -261,7 +261,7 @@ test "parse disable/enable range" {
 }
 
 test "parse all-rules disable" {
-    const source = "// sx3lint-disable\nconst x = 1;\n";
+    const source = "// sanz-disable\nconst x = 1;\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 
@@ -271,7 +271,7 @@ test "parse all-rules disable" {
 }
 
 test "parse block comment" {
-    const source = "const a = 1;\n/* sx3lint-disable */\nconst b = 2;\n";
+    const source = "const a = 1;\n/* sanz-disable */\nconst b = 2;\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 
@@ -282,7 +282,7 @@ test "parse block comment" {
 }
 
 test "isSuppressed next line" {
-    const source = "// sx3lint-disable-next-line no-unused-vars\nconst x = 1;\nconst y = 2;\n";
+    const source = "// sanz-disable-next-line no-unused-vars\nconst x = 1;\nconst y = 2;\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 
@@ -293,7 +293,7 @@ test "isSuppressed next line" {
 
 test "isSuppressed range" {
     // Lines 0-4: normal, line 5: disable, lines 6-9: suppressed, line 10: enable, lines 11+: not suppressed
-    const source = "line0\nline1\nline2\nline3\nline4\n// sx3lint-disable no-console\nline6\nline7\nline8\nline9\n// sx3lint-enable no-console\nline11\nline12\n";
+    const source = "line0\nline1\nline2\nline3\nline4\n// sanz-disable no-console\nline6\nline7\nline8\nline9\n// sanz-enable no-console\nline11\nline12\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 
@@ -304,7 +304,7 @@ test "isSuppressed range" {
 }
 
 test "not suppressed in string" {
-    const source = "const x = \"// sx3lint-disable no-console\";\nconsole.log('hi');\n";
+    const source = "const x = \"// sanz-disable no-console\";\nconsole.log('hi');\n";
     var disables = try InlineDisables.parse(std.testing.allocator, source);
     defer disables.deinit();
 

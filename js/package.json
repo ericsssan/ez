@@ -1,7 +1,7 @@
 {
-  "name": "@sx3lint/node",
+  "name": "@sanz/node",
   "version": "0.7.0",
-  "description": "Sx3lint native bindings for Node.js and Bun",
+  "description": "Sanz native bindings for Node.js and Bun",
   "main": "index.js",
   "exports": {
     ".": "./index.js",

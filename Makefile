@@ -9,16 +9,16 @@ test-unit:
 	$(ZIG) test src/root.zig $(LINK_FLAGS)
 
 test-linter:
-	$(ZIG) test --dep sx3lint -Mroot=tests/linter_test.zig -Msx3lint=src/root.zig $(LINK_FLAGS)
+	$(ZIG) test --dep sanz -Mroot=tests/linter_test.zig -Msanz=src/root.zig $(LINK_FLAGS)
 
 test-recovery:
-	$(ZIG) test --dep sx3lint -Mroot=tests/error_recovery_test.zig -Msx3lint=src/root.zig $(LINK_FLAGS)
+	$(ZIG) test --dep sanz -Mroot=tests/error_recovery_test.zig -Msanz=src/root.zig $(LINK_FLAGS)
 
 test-config:
-	$(ZIG) test --dep sx3lint -Mroot=tests/config_integration_test.zig -Msx3lint=src/root.zig $(LINK_FLAGS)
+	$(ZIG) test --dep sanz -Mroot=tests/config_integration_test.zig -Msanz=src/root.zig $(LINK_FLAGS)
 
 test-fuzz:
-	$(ZIG) test --dep sx3lint -Mroot=tests/fuzz_test.zig -Msx3lint=src/root.zig $(LINK_FLAGS) -ffuzz
+	$(ZIG) test --dep sanz -Mroot=tests/fuzz_test.zig -Msanz=src/root.zig $(LINK_FLAGS) -ffuzz
 
 test-js: napi
 	node js/test/test.js
@@ -26,10 +26,10 @@ test-js: napi
 
 build-conformance:
 	@mkdir -p zig-out/bin
-	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/parser_tests_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
-	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/test262_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
-	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/babel_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/babel_runner $(LINK_FLAGS)
-	@$(ZIG) build-exe --dep sx3lint -Mroot=tests/conformance/typescript_runner.zig -Msx3lint=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/parser_tests_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/test262_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/babel_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/babel_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/typescript_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
 
 test-conformance: build-conformance
 	@echo ""
@@ -51,15 +51,15 @@ test-all: test test-fuzz test-js test-e2e test-differential test-conformance
 
 build:
 	@mkdir -p zig-out/bin
-	$(ZIG) build-exe src/main.zig -femit-bin=zig-out/bin/sx3lint $(LINK_FLAGS)
+	$(ZIG) build-exe src/main.zig -femit-bin=zig-out/bin/sanz $(LINK_FLAGS)
 
 napi:
 	@mkdir -p zig-out/lib
-	$(ZIG) build-lib src/cli/napi.zig -dynamic -femit-bin=zig-out/lib/libsx3lint.dylib -fallow-shlib-undefined $(LINK_FLAGS)
-	cp zig-out/lib/libsx3lint.dylib zig-out/lib/sx3lint.node
+	$(ZIG) build-lib src/cli/napi.zig -dynamic -femit-bin=zig-out/lib/libsanz.dylib -fallow-shlib-undefined $(LINK_FLAGS)
+	cp zig-out/lib/libsanz.dylib zig-out/lib/sanz.node
 
 submodules:
 	git submodule update --init --depth 1
 
 run: build
-	./zig-out/bin/sx3lint $(ARGS)
+	./zig-out/bin/sanz $(ARGS)

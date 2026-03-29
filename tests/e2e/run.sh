@@ -1,19 +1,19 @@
 #!/bin/bash
 # ── End-to-end CLI tests ──────────────────────────────────────
-# Tests the actual `sx3lint` binary with real files.
+# Tests the actual `sanz` binary with real files.
 # Run: ./tests/e2e/run.sh (after `zig build`)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BIN="$PROJECT_DIR/zig-out/bin/sx3lint"
+BIN="$PROJECT_DIR/zig-out/bin/sanz"
 FIXTURES="$SCRIPT_DIR/fixtures"
 PASS=0
 FAIL=0
 
 if [ ! -f "$BIN" ]; then
-  echo "ERROR: sx3lint binary not found at $BIN"
+  echo "ERROR: sanz binary not found at $BIN"
   echo "Run 'zig build' first."
   exit 1
 fi

@@ -10,12 +10,12 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-BIN="$PROJECT_DIR/zig-out/bin/sx3lint"
+BIN="$PROJECT_DIR/zig-out/bin/sanz"
 BASELINE="$SCRIPT_DIR/baseline.json"
 ITERATIONS=50
 
 if [ ! -f "$BIN" ]; then
-  echo "ERROR: sx3lint binary not found. Run 'zig build' first."
+  echo "ERROR: sanz binary not found. Run 'zig build' first."
   exit 1
 fi
 
@@ -23,7 +23,7 @@ fi
 if [ -n "$1" ] && [ -f "$1" ]; then
   TEST_FILE="$1"
 else
-  TEST_FILE=$(mktemp /tmp/sx3lint_bench_XXXXXX.js)
+  TEST_FILE=$(mktemp /tmp/sanz_bench_XXXXXX.js)
   trap "rm -f $TEST_FILE" EXIT
 
   # Generate a ~50KB synthetic JS file

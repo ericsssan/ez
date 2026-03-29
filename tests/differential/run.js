@@ -1,11 +1,11 @@
 "use strict";
 
 /**
- * Differential test harness — compares Sx3lint vs ESLint output.
+ * Differential test harness — compares Sanz vs ESLint output.
  *
  * For each test file, runs both linters and reports mismatches:
- * - Rules that ESLint flags but Sx3lint doesn't (false negatives)
- * - Rules that Sx3lint flags but ESLint doesn't (false positives)
+ * - Rules that ESLint flags but Sanz doesn't (false negatives)
+ * - Rules that Sanz flags but ESLint doesn't (false positives)
  *
  * Requires: npm install eslint
  * Run: node tests/differential/run.js [dir|file]
@@ -17,7 +17,7 @@ const path = require("path");
 
 // ── Config ───────────────────────────────────────────────────
 
-const SX3LINT_BIN = path.resolve(__dirname, "../../zig-out/bin/sx3lint");
+const SANZ_BIN = path.resolve(__dirname, "../../zig-out/bin/sanz");
 const DEFAULT_DIR = path.resolve(__dirname, "fixtures");
 
 // All rules with direct ESLint equivalents (same name, same semantics).
@@ -94,21 +94,21 @@ function parseEslintOutput(json) {
   }
 }
 
-function runSx3lint(filePath) {
+function runSanz(filePath) {
   try {
     const result = execSync(
-      `"${SX3LINT_BIN}" --lint "${filePath}"`,
+      `"${SANZ_BIN}" --lint "${filePath}"`,
       { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
     );
-    return parseSx3lintOutput(result);
+    return parseSanzOutput(result);
   } catch (e) {
-    if (e.stdout) return parseSx3lintOutput(e.stdout);
-    if (e.stderr) return parseSx3lintOutput(e.stderr);
+    if (e.stdout) return parseSanzOutput(e.stdout);
+    if (e.stderr) return parseSanzOutput(e.stderr);
     return [];
   }
 }
 
-function parseSx3lintOutput(output) {
+function parseSanzOutput(output) {
   const results = [];
   for (const line of output.split("\n")) {
     // Format: file:line:col: severity(rule-name): message
@@ -120,21 +120,21 @@ function parseSx3lintOutput(output) {
   return results;
 }
 
-function compareResults(file, eslintResults, sx3lintResults) {
+function compareResults(file, eslintResults, sanzResults) {
   const eslintRules = new Set(eslintResults.map(r => `${r.rule}:${r.line}`));
-  const sx3lintRules = new Set(sx3lintResults.map(r => `${r.rule}:${r.line}`));
+  const sanzRules = new Set(sanzResults.map(r => `${r.rule}:${r.line}`));
 
-  const falseNegatives = []; // ESLint flags, Sx3lint doesn't
-  const falsePositives = []; // Sx3lint flags, ESLint doesn't
+  const falseNegatives = []; // ESLint flags, Sanz doesn't
+  const falsePositives = []; // Sanz flags, ESLint doesn't
 
   for (const key of eslintRules) {
-    if (!sx3lintRules.has(key)) {
+    if (!sanzRules.has(key)) {
       const [rule, line] = key.split(":");
       falseNegatives.push({ rule, line: parseInt(line) });
     }
   }
 
-  for (const key of sx3lintRules) {
+  for (const key of sanzRules) {
     if (!eslintRules.has(key)) {
       const [rule, line] = key.split(":");
       falsePositives.push({ rule, line: parseInt(line) });
@@ -164,21 +164,21 @@ const files = fs.statSync(target).isDirectory()
   ? discoverFiles(target)
   : [target];
 
-if (!fs.existsSync(SX3LINT_BIN)) {
-  console.error(`sx3lint binary not found at ${SX3LINT_BIN}`);
+if (!fs.existsSync(SANZ_BIN)) {
+  console.error(`sanz binary not found at ${SANZ_BIN}`);
   console.error("Run 'zig build' first.");
   process.exit(1);
 }
 
-console.log(`Differential test: Sx3lint vs ESLint`);
+console.log(`Differential test: Sanz vs ESLint`);
 console.log(`Files: ${files.length}\n`);
 
 let totalFN = 0, totalFP = 0, totalMatch = 0;
 
 for (const file of files) {
   const eslint = runEslint(file);
-  const sx3lint = runSx3lint(file);
-  const { falseNegatives, falsePositives } = compareResults(file, eslint, sx3lint);
+  const sanz = runSanz(file);
+  const { falseNegatives, falsePositives } = compareResults(file, eslint, sanz);
 
   const rel = path.relative(process.cwd(), file);
   const matched = eslint.length - falseNegatives.length;
@@ -188,10 +188,10 @@ for (const file of files) {
   } else {
     console.log(`  ✗ ${rel}`);
     for (const fn of falseNegatives) {
-      console.log(`    MISS: ${fn.rule} at line ${fn.line} (ESLint flags, Sx3lint doesn't)`);
+      console.log(`    MISS: ${fn.rule} at line ${fn.line} (ESLint flags, Sanz doesn't)`);
     }
     for (const fp of falsePositives) {
-      console.log(`    EXTRA: ${fp.rule} at line ${fp.line} (Sx3lint flags, ESLint doesn't)`);
+      console.log(`    EXTRA: ${fp.rule} at line ${fp.line} (Sanz flags, ESLint doesn't)`);
     }
   }
 

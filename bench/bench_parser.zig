@@ -1,6 +1,6 @@
 const std = @import("std");
-const sx3lint = @import("sx3lint");
-const Lexer = sx3lint.Lexer;
+const sanz = @import("sanz");
+const Lexer = sanz.Lexer;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -37,7 +37,7 @@ pub fn main(init: std.process.Init) !void {
         while (i < iterations) : (i += 1) {
             var tokens = Lexer.tokenize(allocator, source) catch continue;
             defer tokens.deinit(allocator);
-            var tree = sx3lint.Parser.parse(allocator, source, tokens.slice()) catch continue;
+            var tree = sanz.Parser.parse(allocator, source, tokens.slice()) catch continue;
             tree.deinit(allocator);
         }
         const end = std.Io.Timestamp.now(io, .boot);

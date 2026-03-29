@@ -43,6 +43,11 @@ pub const Lexer = struct {
     /// Paren depth at which function expression params were opened.
     fn_expr_paren_depths: [32]u32 = [_]u32{0} ** 32,
     fn_expr_depth_count: u32 = 0,
+    /// Track class expression context for `}` → division disambiguation.
+    /// When `class` appears in expression position, the class body `{` at the
+    /// same paren depth should be marked as expression context.
+    class_expr_pending: bool = false,
+    class_expr_paren_depth: u32 = 0,
     paren_depth: u32 = 0,
     is_module: bool = false,
     /// Set to true when whitespace skipping encounters a line terminator.
@@ -1222,7 +1227,8 @@ pub const Lexer = struct {
                             self.index += 1;
                             // Skip until closing } or template boundary
                             while (self.index < self.source.len and self.source[self.index] != '}' and
-                                self.source[self.index] != '`' and self.source[self.index] != '$')
+                                self.source[self.index] != '`' and self.source[self.index] != '$' and
+                                self.source[self.index] != '\\')
                             {
                                 self.index += 1;
                             }
@@ -2250,6 +2256,9 @@ pub const Lexer = struct {
                 // Function expression body: `function(){` → expression context
                 const is_fn_expr_body = self.fn_expr_next_brace;
                 self.fn_expr_next_brace = false;
+                // Check for class expression body: `class` in expr position → body `{` at same paren depth
+                const is_class_expr_body = self.class_expr_pending and self.paren_depth == self.class_expr_paren_depth;
+                if (is_class_expr_body) self.class_expr_pending = false;
                 if (self.brace_depth < self.brace_is_expr.len) {
                     // ASI override: if there's a newline before `{` and the previous token
                     // could trigger ASI (identifiers, keywords-as-values, `)`, `]`),
@@ -2266,7 +2275,7 @@ pub const Lexer = struct {
                         => true,
                         else => false,
                     };
-                    self.brace_is_expr[self.brace_depth] = !asi_override and (is_fn_expr_body or blk: {
+                    self.brace_is_expr[self.brace_depth] = !asi_override and (is_fn_expr_body or is_class_expr_body or blk: {
                         // `case X:` colon → block context, not expression
                         if (self.prev_token_tag == .colon and self.case_colon_state == 2) break :blk false;
                         break :blk switch (self.prev_token_tag) {
@@ -2628,7 +2637,7 @@ pub const Lexer = struct {
         // Track function expression context for division disambiguation.
         // `function` in expression position means the next `{` after `)`
         // closes a function expression (value), so `}` → division.
-        if (tag == .kw_function) {
+        if (tag == .kw_function or tag == .kw_class) {
             const is_expr_pos = switch (self.prev_token_tag) {
                 .l_paren, .l_bracket, .comma, .colon, .equal,
                 .plus_equal, .minus_equal, .asterisk_equal, .slash_equal,
@@ -2642,14 +2651,21 @@ pub const Lexer = struct {
                 .kw_typeof, .kw_void, .kw_delete, .kw_return, .kw_throw,
                 .kw_new, .kw_case, .kw_yield, .kw_await,
                 .template_head, .template_middle, .ellipsis,
-                .semicolon, .r_brace,
                 => true,
                 else => false,
             };
-            if (is_expr_pos and self.fn_expr_depth_count < self.fn_expr_paren_depths.len) {
-                // Record paren depth — when we see `)` at this depth, set fn_expr_next_brace
-                self.fn_expr_paren_depths[self.fn_expr_depth_count] = self.paren_depth;
-                self.fn_expr_depth_count += 1;
+            if (tag == .kw_function) {
+                if (is_expr_pos and self.fn_expr_depth_count < self.fn_expr_paren_depths.len) {
+                    // Record paren depth — when we see `)` at this depth, set fn_expr_next_brace
+                    self.fn_expr_paren_depths[self.fn_expr_depth_count] = self.paren_depth;
+                    self.fn_expr_depth_count += 1;
+                }
+            } else {
+                // class in expression position → mark the class body `{` at this paren depth
+                if (is_expr_pos) {
+                    self.class_expr_pending = true;
+                    self.class_expr_paren_depth = self.paren_depth;
+                }
             }
         }
         self.prev_after_dot = (self.prev_token_tag == .dot);

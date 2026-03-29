@@ -1071,8 +1071,10 @@ pub const Parser = struct {
                     break :init_blk try self.parseVariableDeclarationNoSemicolon();
                 }
                 const next = self.peekAt(1);
-                // In for-loop, `let in` and `let of` mean `let` is an identifier LHS
-                if (next != .kw_in and next != .kw_of and
+                // In for-loop, `let in` and `let of` usually mean `let` is an identifier LHS.
+                // Exception: `for (let of of ...)` — `let of` is a declaration, second `of` is for-of.
+                if (next != .kw_in and
+                    (next != .kw_of or self.peekAt(2) == .kw_of) and
                     (next == .l_bracket or next == .l_brace or
                     next == .identifier or next.isKeyword()))
                 {
@@ -1171,6 +1173,16 @@ pub const Parser = struct {
         while (pos < self.tokens.len) {
             const tag = self.tokens.items(.tag)[pos];
             if (tag != .string_literal) break;
+
+            // A string literal is only a directive if it's a complete expression statement.
+            // `"use strict".foo`, `"use strict"[x]`, `"use strict"(x)`, `"use strict"`tpl``
+            // are NOT directives — they're member/call/tagged-template expressions.
+            if (pos + 1 < self.tokens.len) {
+                const next_tag = self.tokens.items(.tag)[pos + 1];
+                if (next_tag == .dot or next_tag == .l_bracket or next_tag == .l_paren or
+                    next_tag == .template_head or next_tag == .template_no_sub)
+                    break; // expression continuation → not a directive prologue
+            }
 
             const start = self.tokens.items(.start)[pos];
             const text = self.getStringContent(start);
@@ -1968,7 +1980,8 @@ pub const Parser = struct {
         } else if (self.peek() == .kw_await and !self.in_async and !self.is_module) blk: {
             break :blk try self.parseIdentifier();
         } else if ((self.peek() == .kw_let or self.peek() == .kw_static or
-            self.peek() == .kw_implements or self.peek() == .kw_interface) and !self.in_strict)
+            self.peek() == .kw_implements or self.peek() == .kw_interface or
+            self.peek() == .kw_async) and !self.in_strict)
         blk: {
             break :blk try self.parseIdentifier();
         } else if (self.language.isTs() and (self.peek().isTsContextualKeyword() or self.peek() == .kw_is or
@@ -2343,10 +2356,13 @@ pub const Parser = struct {
         var is_setter = false;
 
         // Parse modifiers: static, get, set
+        // A newline between modifier and the next token means ASI applies:
+        // the modifier is a field name, not a modifier.
         if (self.peek() == .kw_static) {
             const next = self.peekAt(1);
             if (next != .l_paren and next != .equal and next != .semicolon and
-                next != .colon and next != .r_brace)
+                next != .colon and next != .r_brace and
+                !self.hasNewLineBetween(self.tok_i, self.tok_i + 1))
             {
                 is_static = true;
                 _ = self.advance(); // eat 'static'
@@ -2379,14 +2395,17 @@ pub const Parser = struct {
 
         // getter/setter detection
         // In TS, `get<T>()` is a generic method, not a getter — exclude `<`
+        // Getters/setters can't be generators, so `get *` means `get` is a field name
         if (self.peek() == .kw_get and self.peekAt(1) != .l_paren and
             self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
+            self.peekAt(1) != .r_brace and self.peekAt(1) != .asterisk and
             !(self.language.isTs() and self.peekAt(1) == .less_than))
         {
             is_getter = true;
             _ = self.advance(); // eat 'get'
         } else if (self.peek() == .kw_set and self.peekAt(1) != .l_paren and
             self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
+            self.peekAt(1) != .r_brace and self.peekAt(1) != .asterisk and
             !(self.language.isTs() and self.peekAt(1) == .less_than))
         {
             is_setter = true;
@@ -2405,6 +2424,7 @@ pub const Parser = struct {
         var is_async_method = false;
         if (self.peek() == .kw_async and self.peekAt(1) != .l_paren and
             self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
+            self.peekAt(1) != .r_brace and
             !self.hasNewLineBetween(self.tok_i, self.tok_i + 1))
         {
             is_async_method = true;

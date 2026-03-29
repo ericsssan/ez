@@ -17,7 +17,7 @@ const Language = parser.token.Language;
 ///
 /// Returns total bytes used (header + bump region), or 0 on error.
 /// On success, the BufferHeader at offset 0 contains all SoA array offsets.
-pub export fn sx3_parse(
+pub export fn sanz_parse(
     buf_ptr: [*]u8,
     buf_len: u32,
     source_start: u32,
@@ -69,7 +69,7 @@ fn parseImpl(
     return backing.bytesUsed();
 }
 
-// sx3_tag_count and sx3_tag_name are exported from layout.zig.
+// sanz_tag_count and sanz_tag_name are exported from layout.zig.
 
 // ── Layer 2: NAPI Wrappers ───────────────────────────────────────
 // Thin JS value marshalling around the core C ABI functions.
@@ -142,7 +142,7 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     _ = n.napi_get_value_uint32(env, argv[2], &source_len);
     _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
 
-    const result = sx3_parse(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val));
+    const result = sanz_parse(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val));
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
@@ -172,7 +172,7 @@ fn napiTagName(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     var index: u32 = 0;
     _ = n.napi_get_value_uint32(env, argv[0], &index);
 
-    const name: [*:0]const u8 = layout.sx3_tag_name(@intCast(index));
+    const name: [*:0]const u8 = layout.sanz_tag_name(@intCast(index));
 
     var result: n.Value = undefined;
     if (n.napi_create_string_utf8(env, name, n.AUTO_LENGTH, &result) != n.OK) return null;

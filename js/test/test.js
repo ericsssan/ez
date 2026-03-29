@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Integration tests for the sx3lint JS bindings.
+ * Integration tests for the sanz JS bindings.
  * Run with: node js/test/test.js (after `zig build napi`)
  * Or:       bun js/test/test.js
  */
@@ -43,7 +43,7 @@ function test(name, fn) {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-console.log("sx3lint JS integration tests\n");
+console.log("sanz JS integration tests\n");
 
 // Tag names
 console.log("Tag names:");

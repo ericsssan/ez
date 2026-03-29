@@ -7,7 +7,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN="$SCRIPT_DIR/../../zig-out/bin/sx3lint"
+BIN="$SCRIPT_DIR/../../zig-out/bin/sanz"
 T262="$SCRIPT_DIR/test262-parser-tests"
 
 if [ ! -f "$BIN" ]; then echo "ERROR: Run 'make build' first."; exit 1; fi

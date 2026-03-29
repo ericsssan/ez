@@ -1,4 +1,4 @@
-// Differential test fixture — triggers many rules in both ESLint and Sx3lint.
+// Differential test fixture — triggers many rules in both ESLint and Sanz.
 
 // no-debugger
 debugger;

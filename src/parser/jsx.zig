@@ -1,5 +1,5 @@
 // ── src/parser/jsx.zig ──────────────────────────────────────────────
-// JSX parser module for Sx3lint.
+// JSX parser module for Sanz.
 //
 // Parses JSX elements, fragments, attributes, and expression containers
 // according to the JSX specification.  All public functions take a

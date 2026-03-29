@@ -11,18 +11,18 @@ const { dlopen, FFIType, ptr, toArrayBuffer } = require("bun:ffi");
 const { resolve } = require("path");
 
 // Find the shared library
-const libPath = resolve(__dirname, "../zig-out/lib/libsx3lint.dylib");
+const libPath = resolve(__dirname, "../zig-out/lib/libsanz.dylib");
 
 const lib = dlopen(libPath, {
-  sx3_parse: {
+  sanz_parse: {
     args: [FFIType.ptr, FFIType.u32, FFIType.u32, FFIType.u32, FFIType.u8],
     returns: FFIType.u32,
   },
-  sx3_tag_count: {
+  sanz_tag_count: {
     args: [],
     returns: FFIType.u32,
   },
-  sx3_tag_name: {
+  sanz_tag_name: {
     args: [FFIType.u8],
     returns: FFIType.ptr,
   },
@@ -30,17 +30,17 @@ const lib = dlopen(libPath, {
 
 function parse(buffer, sourceStart, sourceLen, lang) {
   const bufPtr = ptr(buffer);
-  return lib.symbols.sx3_parse(bufPtr, buffer.byteLength, sourceStart, sourceLen, lang);
+  return lib.symbols.sanz_parse(bufPtr, buffer.byteLength, sourceStart, sourceLen, lang);
 }
 
 function tagCount() {
-  return lib.symbols.sx3_tag_count();
+  return lib.symbols.sanz_tag_count();
 }
 
 const _decoder = new TextDecoder();
 
 function tagName(index) {
-  const namePtr = lib.symbols.sx3_tag_name(index);
+  const namePtr = lib.symbols.sanz_tag_name(index);
   // Read null-terminated C string from pointer
   const buf = toArrayBuffer(namePtr, 0, 64);
   const bytes = new Uint8Array(buf);

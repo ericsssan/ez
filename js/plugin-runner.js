@@ -99,7 +99,7 @@ function walkNodes(ast, visitorMap, context, tagNames) {
 /**
  * Run ESLint-compatible plugins against a parsed AST.
  *
- * @param {AstView} ast - Parsed AST from sx3lint.parse()
+ * @param {AstView} ast - Parsed AST from sanz.parse()
  * @param {Array} plugins - Array of { meta?: { name }, create(context) => visitors }
  * @param {object} [options] - { filename?: string, tagNames?: string[] }
  * @returns {Array} - Array of { ruleId, message, node?, loc? }

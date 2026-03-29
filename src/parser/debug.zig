@@ -1,4 +1,4 @@
-//! AST pretty-printer for Sx3lint.
+//! AST pretty-printer for Sanz.
 //!
 //! Usage:
 //!     try debug.dumpAst(&tree, writer);

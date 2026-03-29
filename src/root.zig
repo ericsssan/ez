@@ -1,4 +1,4 @@
-//! Sx3lint library root — re-exports all modules.
+//! Sanz library root — re-exports all modules.
 
 // ── Parser module ─────────────────────────────────────────
 pub const ast = @import("parser/root.zig").ast;

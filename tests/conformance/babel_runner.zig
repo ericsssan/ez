@@ -1,7 +1,7 @@
 const std = @import("std");
-const sx3lint = @import("sx3lint");
-const Lexer = sx3lint.Lexer;
-const Parser = sx3lint.Parser;
+const sanz = @import("sanz");
+const Lexer = sanz.Lexer;
+const Parser = sanz.Parser;
 const Io = std.Io;
 
 /// Fast in-process runner for Babel parser test fixtures.

@@ -174,7 +174,7 @@ pub fn applyPreset(config: *Config, name: []const u8) void {
 
 // ── JSON Config Parsing ───────────────────────────────────────────
 
-/// Parse a `sx3lint.config.json` file from raw JSON source.
+/// Parse a `sanz.config.json` file from raw JSON source.
 pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !Config {
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_source, .{});
     errdefer parsed.deinit();

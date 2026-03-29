@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Benchmark for sx3lint NAPI / Bun FFI parse performance.
+ * Benchmark for sanz NAPI / Bun FFI parse performance.
  * Run with: node bench/bench_napi.js [file.js]
  * Or:       bun bench/bench_napi.js [file.js]
  */
@@ -82,7 +82,7 @@ const source = inputFile
   : sampleSource;
 const filename = inputFile || "sample.jsx";
 
-console.log(`sx3lint NAPI benchmark`);
+console.log(`sanz NAPI benchmark`);
 console.log(`  Runtime: ${typeof Bun !== "undefined" ? "Bun" : "Node.js"}`);
 console.log(`  Source: ${inputFile || "(built-in sample)"} (${source.length} bytes)`);
 console.log(`  Iterations: ${ITERATIONS}\n`);

@@ -26,16 +26,16 @@ function loadBinding() {
 
   // NAPI path (works in Node.js and Bun)
   try {
-    binding = require("../zig-out/lib/sx3lint.node");
+    binding = require("../zig-out/lib/sanz.node");
   } catch {
     try {
-      binding = require("../zig-out/lib/libsx3lint.dylib");
+      binding = require("../zig-out/lib/libsanz.dylib");
     } catch {
       try {
-        binding = require("../zig-out/lib/libsx3lint.so");
+        binding = require("../zig-out/lib/libsanz.so");
       } catch {
         throw new Error(
-          "sx3lint: could not load native binding. Run `make napi` first."
+          "sanz: could not load native binding. Run `make napi` first."
         );
       }
     }
@@ -47,7 +47,7 @@ function loadBinding() {
 
 const DEFAULT_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
 const HEADER_SIZE = 64;
-const MAGIC = 0x41335853; // "SX3A" little-endian
+const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 
 let sharedBuffer = null;
 
@@ -105,14 +105,14 @@ function parse(source, options = {}) {
   // Call native parse
   const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
   if (bytesUsed === 0) {
-    throw new Error("sx3lint: parse failed (buffer too small or invalid source)");
+    throw new Error("sanz: parse failed (buffer too small or invalid source)");
   }
 
   // Verify magic
   const dv = new DataView(buf);
   const magic = dv.getUint32(0, true);
   if (magic !== MAGIC) {
-    throw new Error("sx3lint: invalid buffer header (magic mismatch)");
+    throw new Error("sanz: invalid buffer header (magic mismatch)");
   }
 
   // Ensure tag names are loaded for NodeProto.type

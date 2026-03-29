@@ -781,6 +781,9 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             try p.emitError("Expected expression");
             return p.makeErrorNode();
         },
+        // The lexer tokenized `/` as division, but we're in expression position.
+        // Re-scan the source as a regex literal.
+        .slash, .slash_equal => return try rescanSlashAsRegex(p),
         else => {
             if (tag.isTsContextualKeyword()) {
                 return try parseIdentifier(p);
@@ -790,6 +793,71 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             return p.makeErrorNode();
         },
     };
+}
+
+// ── Slash rescan as regex ────────────────────────────────────────
+//
+// When the lexer tokenized `/` as division (wrong context), but the parser
+// is in expression position, re-scan the source from that position as a
+// regex literal.  Advance past all pre-tokenized tokens that fall within
+// the regex span.
+
+fn rescanSlashAsRegex(p: *Parser) Error!NodeIndex {
+    const slash_tok = p.tok_i;
+    const start = p.tokenStart(slash_tok);
+    const source = p.source;
+
+    // Body starts after the opening `/`
+    var idx: u32 = start + 1;
+    var in_char_class = false;
+
+    while (idx < source.len) {
+        const c = source[idx];
+        if (c == '\\') {
+            idx += 1;
+            if (idx < source.len and source[idx] != '\n' and source[idx] != '\r') {
+                idx += 1;
+            } else break; // invalid regex
+            continue;
+        }
+        if (c == '\n' or c == '\r') break;
+        if (c == '[') {
+            in_char_class = true;
+            idx += 1;
+            continue;
+        }
+        if (c == ']') {
+            in_char_class = false;
+            idx += 1;
+            continue;
+        }
+        if (c == '/' and !in_char_class) {
+            idx += 1; // skip closing /
+            // Scan flags (lowercase ASCII letters)
+            while (idx < source.len) {
+                const fc = source[idx];
+                if ((fc >= 'a' and fc <= 'z') or (fc >= 'A' and fc <= 'Z') or
+                    (fc >= '0' and fc <= '9') or fc == '_' or fc == '$')
+                {
+                    idx += 1;
+                } else break;
+            }
+            // Advance tok_i past all tokens within the regex span
+            while (p.tok_i < p.tokens.len - 1 and p.tokenStart(p.tok_i) < idx) {
+                p.tok_i += 1;
+            }
+            return p.addNode(.{
+                .tag = .regex_literal,
+                .main_token = slash_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        }
+        idx += 1;
+    }
+    // Failed to re-scan as regex
+    try p.emitError("Expected expression");
+    _ = p.advance();
+    return p.makeErrorNode();
 }
 
 // ── Simple literals ──────────────────────────────────────────────

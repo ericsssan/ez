@@ -3,8 +3,8 @@ const Ast = @import("ast.zig").Ast;
 
 // ── Constants ────────────────────────────────────────────────────
 
-/// Magic number: "SX3A" in little-endian.
-pub const MAGIC: u32 = 0x4133_5853;
+/// Magic number: "SANZ" in little-endian.
+pub const MAGIC: u32 = 0x5A4E_4153;
 pub const VERSION: u32 = 1;
 pub const HEADER_SIZE: u32 = @sizeOf(BufferHeader);
 

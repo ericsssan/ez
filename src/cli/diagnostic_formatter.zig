@@ -40,7 +40,7 @@ pub const DiagnosticFormatter = struct {
         const total = total_errors + total_warnings;
         if (total == 0) {
             try writer.print(
-                "\nsx3lint: no issues found in {d} file{s}\n",
+                "\nsanz: no issues found in {d} file{s}\n",
                 .{ total_files, if (total_files != 1) @as([]const u8, "s") else "" },
             );
             return;

@@ -1,4 +1,4 @@
-// This file should produce zero diagnostics from both ESLint and Sx3lint.
+// This file should produce zero diagnostics from both ESLint and Sanz.
 
 "use strict";
 

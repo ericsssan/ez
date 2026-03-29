@@ -1,11 +1,11 @@
 const std = @import("std");
 const testing = std.testing;
-const sx3lint = @import("sx3lint");
-const Lexer = sx3lint.Lexer;
-const Parser = sx3lint.Parser;
-const SemanticAnalyzer = sx3lint.semantic.SemanticAnalyzer;
-const linter = sx3lint.linter;
-const LintDiagnostic = sx3lint.lint_context.LintDiagnostic;
+const sanz = @import("sanz");
+const Lexer = sanz.Lexer;
+const Parser = sanz.Parser;
+const SemanticAnalyzer = sanz.semantic.SemanticAnalyzer;
+const linter = sanz.linter;
+const LintDiagnostic = sanz.lint_context.LintDiagnostic;
 const RuleTester = @import("rule_tester.zig").RuleTester;
 
 // ── Helpers (kept for fixture/multi-rule tests) ──────────────

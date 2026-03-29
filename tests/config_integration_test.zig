@@ -1,14 +1,14 @@
 const std = @import("std");
 const testing = std.testing;
-const sx3lint = @import("sx3lint");
-const Lexer = sx3lint.Lexer;
-const Parser = sx3lint.Parser;
-const SemanticAnalyzer = sx3lint.semantic.SemanticAnalyzer;
-const linter = sx3lint.linter;
-const LintDiagnostic = sx3lint.lint_context.LintDiagnostic;
-const Config = sx3lint.config.Config;
-const RuleSeverity = sx3lint.config.RuleSeverity;
-const InlineDisables = sx3lint.inline_disable.InlineDisables;
+const sanz = @import("sanz");
+const Lexer = sanz.Lexer;
+const Parser = sanz.Parser;
+const SemanticAnalyzer = sanz.semantic.SemanticAnalyzer;
+const linter = sanz.linter;
+const LintDiagnostic = sanz.lint_context.LintDiagnostic;
+const Config = sanz.config.Config;
+const RuleSeverity = sanz.config.RuleSeverity;
+const InlineDisables = sanz.inline_disable.InlineDisables;
 
 // ── Config Integration Tests ─────────────────────────────────
 // Tests the full config chain: config → severity overrides →
@@ -97,7 +97,7 @@ test "config: null config enables all rules with defaults" {
 
 test "inline disable: next-line suppresses diagnostic" {
     const diags = try lintWithInlineDisables(
-        \\// sx3lint-disable-next-line no-debugger
+        \\// sanz-disable-next-line no-debugger
         \\debugger;
     );
     defer testing.allocator.free(diags);
@@ -106,7 +106,7 @@ test "inline disable: next-line suppresses diagnostic" {
 
 test "inline disable: wrong rule name does not suppress" {
     const diags = try lintWithInlineDisables(
-        \\// sx3lint-disable-next-line no-eval
+        \\// sanz-disable-next-line no-eval
         \\debugger;
     );
     defer testing.allocator.free(diags);
@@ -115,10 +115,10 @@ test "inline disable: wrong rule name does not suppress" {
 
 test "inline disable: block disable/enable range" {
     const diags = try lintWithInlineDisables(
-        \\// sx3lint-disable no-debugger
+        \\// sanz-disable no-debugger
         \\debugger;
         \\debugger;
-        \\// sx3lint-enable no-debugger
+        \\// sanz-enable no-debugger
         \\debugger;
     );
     defer testing.allocator.free(diags);
@@ -132,7 +132,7 @@ test "inline disable: block disable/enable range" {
 
 test "inline disable: disable all rules" {
     const diags = try lintWithInlineDisables(
-        \\// sx3lint-disable
+        \\// sanz-disable
         \\debugger;
         \\eval('x');
     );
@@ -143,7 +143,7 @@ test "inline disable: disable all rules" {
 
 test "inline disable: in block comment" {
     const diags = try lintWithInlineDisables(
-        \\/* sx3lint-disable-next-line no-debugger */
+        \\/* sanz-disable-next-line no-debugger */
         \\debugger;
     );
     defer testing.allocator.free(diags);
@@ -152,7 +152,7 @@ test "inline disable: in block comment" {
 
 test "inline disable: inside string is not a directive" {
     const diags = try lintWithInlineDisables(
-        \\let x = "// sx3lint-disable-next-line no-debugger";
+        \\let x = "// sanz-disable-next-line no-debugger";
         \\debugger;
     );
     defer testing.allocator.free(diags);
