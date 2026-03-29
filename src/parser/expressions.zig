@@ -845,6 +845,27 @@ fn parseAsyncExpressionOrIdentifier(p: *Parser) Error!NodeIndex {
         return parseAsyncFunctionExpression(p, async_tok);
     }
 
+    // async <TypeParams>(params) => body (TS generic async arrow)
+    if (p.language.isTs() and next_tag == .less_than) {
+        const ts_mod = @import("typescript.zig");
+        const saved_tok = p.tok_i;
+        const saved_diag = p.diagnostics.items.len;
+        const saved_nodes = p.nodes.len;
+        const saved_extra = p.extra_data.items.len;
+        const type_params_ok = blk: {
+            _ = ts_mod.parseTypeParameterList(p) catch break :blk false;
+            break :blk true;
+        };
+        if (type_params_ok and p.peek() == .l_paren) {
+            return parseAsyncParenArrowOrCall(p, async_tok);
+        }
+        // Backtrack — not a generic arrow
+        p.tok_i = saved_tok;
+        p.diagnostics.shrinkRetainingCapacity(saved_diag);
+        p.nodes.len = @intCast(saved_nodes);
+        p.extra_data.shrinkRetainingCapacity(saved_extra);
+    }
+
     // async (params) => body
     if (next_tag == .l_paren) {
         return parseAsyncParenArrowOrCall(p, async_tok);

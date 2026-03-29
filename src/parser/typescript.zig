@@ -954,7 +954,11 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
 
     _ = try p.expect(.kw_in);
 
-    // Parse the constraint type
+    // Parse the constraint type (reset conditional extends context — fresh type scope)
+    const prev_in_cond_mapped = p.in_conditional_extends;
+    p.in_conditional_extends = false;
+    defer p.in_conditional_extends = prev_in_cond_mapped;
+
     const constraint = try parseType(p);
     try p.scratchPush(constraint);
 
