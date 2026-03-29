@@ -118,6 +118,7 @@ pub const Parser = struct {
     in_class_field: bool,
     in_constructor: bool,
     in_method: bool,
+    in_conditional_extends: bool,
     language: Language,
 
     // ────────────────────────────────────────────────────────────
@@ -155,6 +156,7 @@ pub const Parser = struct {
             .in_class_field = false,
             .in_constructor = false,
             .in_method = false,
+            .in_conditional_extends = false,
             .language = language,
         };
         defer p.nodes.deinit(allocator);
@@ -840,6 +842,7 @@ pub const Parser = struct {
                 return error.ParseError;
             },
             .kw_const => {
+                if (self.language.isTs() and self.peekAt(1) == .kw_enum) return self.parseStatement();
                 try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed in single-statement context", .{});
                 return error.ParseError;
             },
@@ -885,6 +888,7 @@ pub const Parser = struct {
     fn parseIfBody(self: *Parser) Error!NodeIndex {
         switch (self.peek()) {
             .kw_const => {
+                if (self.language.isTs() and self.peekAt(1) == .kw_enum) return self.parseStatement();
                 try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed in single-statement context", .{});
                 return error.ParseError;
             },
@@ -1902,7 +1906,7 @@ pub const Parser = struct {
         // where the value comes from the iterable (e.g., `for (const [a, b] of iter)`)
         if (init == .none and self.peek() != .kw_in and self.peek() != .kw_of) {
             const binding_tag = self.nodes.items(.tag)[binding.toInt()];
-            if (binding_tag == .array_pattern or binding_tag == .object_pattern) {
+            if (!self.language.isTs() and (binding_tag == .array_pattern or binding_tag == .object_pattern)) {
                 try self.emitDiagnostic(self.currentSpan(), "Missing initializer in destructuring declaration", .{});
             }
             // const declarations always require an initializer (except in TS ambient contexts)
@@ -1954,7 +1958,8 @@ pub const Parser = struct {
         blk: {
             break :blk try self.parseIdentifier();
         } else if (self.language.isTs() and (self.peek().isTsContextualKeyword() or self.peek() == .kw_is or
-            self.peek() == .kw_as or self.peek() == .kw_from or self.peek() == .kw_of))
+            self.peek() == .kw_as or self.peek() == .kw_from or self.peek() == .kw_of or
+            self.peek() == .kw_get or self.peek() == .kw_set))
         blk: {
             // TS contextual keywords can be used as function names
             break :blk try self.parseIdentifier();
@@ -2055,6 +2060,8 @@ pub const Parser = struct {
             try self.parseIdentifier()
         else if (self.peek() == .kw_yield and !self.in_generator and !self.in_strict)
             try self.parseIdentifier()
+        else if (self.language.isTs() and self.peek() == .kw_abstract and self.peekAt(1) == .l_brace)
+            try self.parseIdentifier()
         else
             .none;
 
@@ -2072,8 +2079,10 @@ pub const Parser = struct {
         // Optional: extends superClass (must be LeftHandSideExpression)
         const super_class: NodeIndex = if (self.eat(.kw_extends) != null) blk: {
             if (self.language.isTs()) {
-                // Handle parenthesized expressions in extends: (await p), (foo()).B
-                if (self.peek() == .l_paren) {
+                // Handle expression-start tokens in extends: (expr), class expr, function expr
+                if (self.peek() == .l_paren or self.peek() == .kw_class or
+                    self.peek() == .kw_function or self.peek() == .kw_new)
+                {
                     _ = try self.parseAssignmentExpression();
                 } else {
                     // Parse extends as a type (handles generics like A<T>)
@@ -2087,6 +2096,19 @@ pub const Parser = struct {
                         if (self.peek() == .comma) _ = self.advance() else break;
                     }
                     _ = try self.expect(.r_paren);
+                }
+                // Handle type args after call: `extends getBase() <number>`
+                if (self.peek() == .less_than) {
+                    const saved_tok = self.tok_i;
+                    const saved_diag = self.diagnostics.items.len;
+                    const saved_nodes = self.nodes.len;
+                    const saved_extra = self.extra_data.items.len;
+                    _ = typescript.parseTypeArguments(self) catch {
+                        self.tok_i = saved_tok;
+                        self.diagnostics.shrinkRetainingCapacity(saved_diag);
+                        self.nodes.len = @intCast(saved_nodes);
+                        self.extra_data.shrinkRetainingCapacity(saved_extra);
+                    };
                 }
                 // Handle member access after call/paren: `extends (foo()).B`
                 while (self.peek() == .dot) {
@@ -2213,10 +2235,27 @@ pub const Parser = struct {
                 _ = try self.expect(.r_paren);
             } else {
                 _ = try self.parseIdentifier(); // decorator name
-                // dotted: @foo.bar.baz
-                while (self.peek() == .dot) {
-                    _ = self.advance();
-                    _ = try self.parseIdentifier();
+                // TS non-null assertion: @x! or dotted: @foo.bar.baz
+                while (true) {
+                    if (self.peek() == .dot) {
+                        _ = self.advance();
+                        _ = try self.parseIdentifier();
+                    } else if (self.language.isTs() and self.peek() == .bang) {
+                        _ = self.advance(); // eat `!`
+                    } else break;
+                }
+                // TS type args + call: @g<number>()
+                if (self.language.isTs() and self.peek() == .less_than) {
+                    const saved_tok = self.tok_i;
+                    const saved_diag = self.diagnostics.items.len;
+                    const saved_nodes = self.nodes.len;
+                    const saved_extra = self.extra_data.items.len;
+                    _ = typescript.parseTypeArguments(self) catch {
+                        self.tok_i = saved_tok;
+                        self.diagnostics.shrinkRetainingCapacity(saved_diag);
+                        self.nodes.len = @intCast(saved_nodes);
+                        self.extra_data.shrinkRetainingCapacity(saved_extra);
+                    };
                 }
                 // call: @dec() or @dec(args)
                 if (self.peek() == .l_paren) {
@@ -2325,13 +2364,16 @@ pub const Parser = struct {
         }
 
         // getter/setter detection
+        // In TS, `get<T>()` is a generic method, not a getter — exclude `<`
         if (self.peek() == .kw_get and self.peekAt(1) != .l_paren and
-            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon)
+            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
+            !(self.language.isTs() and self.peekAt(1) == .less_than))
         {
             is_getter = true;
             _ = self.advance(); // eat 'get'
         } else if (self.peek() == .kw_set and self.peekAt(1) != .l_paren and
-            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon)
+            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
+            !(self.language.isTs() and self.peekAt(1) == .less_than))
         {
             is_setter = true;
             _ = self.advance(); // eat 'set'
@@ -2718,8 +2760,8 @@ pub const Parser = struct {
 
         const params = self.scratch.items[scratch_top..];
 
-        // Rest parameter must be last
-        if (params.len > 1) {
+        // Rest parameter must be last (skip in TS — semantic error)
+        if (!self.language.isTs() and params.len > 1) {
             for (params[0 .. params.len - 1]) |param_raw| {
                 const ptag = self.nodes.items(.tag)[@intCast(param_raw)];
                 if (ptag == .rest_element) {
@@ -2785,15 +2827,20 @@ pub const Parser = struct {
             }
         }
 
-        // TS `this` parameter: `this: Type` — skip it as a pseudo-param
-        if (self.language.isTs() and self.peek() == .kw_this and self.peekAt(1) == .colon) {
-            const this_tok = self.advance(); // eat 'this'
-            _ = try self.parseOptionalTypeAnnotation();
-            return self.addNode(.{
-                .tag = .identifier,
-                .main_token = this_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
+        // TS `this` parameter: `this: Type` or `this` (contextual typing)
+        if (self.language.isTs() and self.peek() == .kw_this) {
+            const next = self.peekAt(1);
+            if (next == .colon or next == .comma or next == .r_paren) {
+                const this_tok = self.advance(); // eat 'this'
+                if (self.peek() == .colon) {
+                    _ = try self.parseOptionalTypeAnnotation();
+                }
+                return self.addNode(.{
+                    .tag = .identifier,
+                    .main_token = this_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+            }
         }
 
         const main_tok = self.tok_i;
@@ -2832,10 +2879,10 @@ pub const Parser = struct {
         if (self.language.isTs()) {
             // Skip `type` keyword if present
             const start_tok = self.tok_i;
-            if (self.peek() == .kw_type and self.peekAt(1) == .identifier and self.peekAt(2) == .equal) {
+            if (self.peek() == .kw_type and (self.peekAt(1) == .identifier or self.peekAt(1).isKeyword()) and self.peekAt(2) == .equal) {
                 _ = self.advance(); // eat 'type'
             }
-            if (self.peek() == .identifier and self.peekAt(1) == .equal) {
+            if ((self.peek() == .identifier or self.peek().isKeyword()) and self.peekAt(1) == .equal) {
                 _ = self.advance(); // eat name
                 _ = self.advance(); // eat '='
                 // `require('...')` or qualified name `A.B.C`
@@ -3140,6 +3187,23 @@ pub const Parser = struct {
                 .main_token = export_tok,
                 .data = .{ .lhs = decl, .rhs = .none },
             });
+        }
+
+        // export @dec class — decorator before class
+        if (self.peek() == .at_sign) {
+            while (self.peek() == .at_sign) {
+                _ = self.advance();
+                _ = try self.parseAssignmentExpression();
+            }
+            if (self.peek() == .kw_abstract) _ = self.advance();
+            if (self.peek() == .kw_class) {
+                const decl = try self.parseClassDeclaration();
+                return self.addNode(.{
+                    .tag = .export_named,
+                    .main_token = export_tok,
+                    .data = .{ .lhs = decl, .rhs = .none },
+                });
+            }
         }
 
         // export abstract class
@@ -3532,7 +3596,11 @@ pub const Parser = struct {
                             .data = .{ .lhs = rest_binding, .rhs = .none },
                         });
                         try self.scratch.append(self.gpa, @intFromEnum(rest));
-                        break;
+                        if (!self.language.isTs()) break;
+                        if (self.peek() == .comma) {
+                            _ = self.advance();
+                        } else break;
+                        continue;
                     }
                     const elem = try self.parseBindingElement();
                     try self.scratch.append(self.gpa, @intFromEnum(elem));
@@ -3560,6 +3628,11 @@ pub const Parser = struct {
                 const scratch_top = self.scratch.items.len;
                 defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+                // Allow `in` inside object binding patterns
+                const saved_allow_in_ob = self.allow_in;
+                self.allow_in = true;
+                defer self.allow_in = saved_allow_in_ob;
+
                 while (self.peek() != .r_brace and !self.isAtEnd()) {
                     if (self.eat(.ellipsis)) |rest_tok| {
                         const rest_binding = try self.parseBindingPattern();
@@ -3569,7 +3642,11 @@ pub const Parser = struct {
                             .data = .{ .lhs = rest_binding, .rhs = .none },
                         });
                         try self.scratch.append(self.gpa, @intFromEnum(rest));
-                        break;
+                        if (!self.language.isTs()) break;
+                        if (self.peek() == .comma) {
+                            _ = self.advance();
+                        } else break;
+                        continue;
                     }
 
                     const key_tok = self.tok_i;
@@ -3655,6 +3732,16 @@ pub const Parser = struct {
             .kw_async, .kw_from, .kw_as, .kw_of, .kw_get, .kw_set,
             .kw_target, .kw_meta,
             => return self.parseIdentifier(),
+            // TS contextual keywords that can be used as binding names
+            .kw_type, .kw_declare, .kw_namespace, .kw_module,
+            .kw_abstract, .kw_readonly, .kw_override,
+            .kw_keyof, .kw_infer, .kw_is, .kw_asserts, .kw_satisfies,
+            .kw_unique,
+            => {
+                if (self.language.isTs()) return self.parseIdentifier();
+                try self.emitDiagnostic(self.currentSpan(), "expected binding name or pattern", .{});
+                return error.ParseError;
+            },
             .kw_static => {
                 if (self.in_strict) {
                     try self.emitDiagnostic(self.currentSpan(), "'static' is not allowed as a binding name in strict mode", .{});

@@ -75,6 +75,9 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
         const saved_extra = p.extra_data.items.len;
 
         const extends_tok = p.advance(); // consume `extends`
+        const prev_in_cond = p.in_conditional_extends;
+        p.in_conditional_extends = true;
+        defer p.in_conditional_extends = prev_in_cond;
         const check_type_result = parseNonConditionalType(p);
         const check_type = check_type_result catch {
             // Backtrack if extends clause fails to parse
@@ -240,7 +243,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
 
         // ── Keyword/literal types that map directly to ts_type_reference ─
         .kw_void, .kw_null, .kw_this,
-        .string_literal, .number_literal,
+        .string_literal, .number_literal, .bigint_literal,
         .kw_true, .kw_false,
         .kw_type, .kw_namespace, .kw_declare, .kw_module,
         .kw_interface, .kw_implements, .kw_enum, .kw_as, .kw_satisfies,
@@ -258,6 +261,23 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         // ── typeof T ─────────────────────────────────────────────
         .kw_typeof => {
             const tok = p.advance(); // consume `typeof`
+            // `typeof import("foo")` — dynamic import type
+            if (p.peek() == .kw_import and p.peekAt(1) == .l_paren) {
+                _ = p.advance(); // eat `import`
+                _ = p.advance(); // eat `(`
+                if (p.peek() == .string_literal) _ = p.advance();
+                _ = try p.expect(.r_paren);
+                // Optional `.member` access
+                while (p.peek() == .dot) {
+                    _ = p.advance();
+                    if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+                }
+                return p.addNode(.{
+                    .tag = .ts_typeof_type,
+                    .main_token = tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+            }
             const operand = try parseTypeReference(p);
             return p.addNode(.{
                 .tag = .ts_typeof_type,
@@ -282,10 +302,28 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
             const tok = p.advance(); // consume `infer`
             const type_param = try p.parseIdentifier();
             // Optional constraint: `infer T extends U`
+            // Disambiguation: if `extends U` is followed by `?`, it's a
+            // conditional type, not an infer constraint. Backtrack in that case.
             var constraint: NodeIndex = .none;
             if (p.peek() == .kw_extends) {
+                const saved_tok = p.tok_i;
+                const saved_diag = p.diagnostics.items.len;
+                const saved_nodes = p.nodes.len;
+                const saved_extra = p.extra_data.items.len;
                 _ = p.advance(); // consume `extends`
-                constraint = try parsePrimaryType(p);
+                const type_ok = blk: {
+                    constraint = parsePrimaryType(p) catch break :blk false;
+                    break :blk true;
+                };
+                if (!type_ok or (p.peek() == .question and !p.in_conditional_extends)) {
+                    // Backtrack: either parse failed or `?` follows in a context
+                    // where conditional types are allowed (not in extends check type)
+                    p.tok_i = saved_tok;
+                    p.diagnostics.shrinkRetainingCapacity(saved_diag);
+                    p.nodes.len = @intCast(saved_nodes);
+                    p.extra_data.shrinkRetainingCapacity(saved_extra);
+                    constraint = .none;
+                }
             }
             return p.addNode(.{
                 .tag = .ts_infer_type,
@@ -334,9 +372,9 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         },
 
         .minus => {
-            // Negative numeric literal type: -1
+            // Negative numeric literal type: -1, -1n
             const tok = p.advance(); // consume `-`
-            if (p.peek() == .number_literal) {
+            if (p.peek() == .number_literal or p.peek() == .bigint_literal) {
                 _ = p.advance(); // consume the number
             }
             return p.addNode(.{
@@ -607,6 +645,10 @@ fn looksLikeFunctionTypeParams(p: *Parser) bool {
 /// Parse a simple parenthesized type: `(Type)`.
 fn parseParenthesizedTypeSimple(p: *Parser) Error!NodeIndex {
     const open_tok = p.advance(); // consume `(`
+    // Re-enable conditional types inside parens
+    const prev_in_cond = p.in_conditional_extends;
+    p.in_conditional_extends = false;
+    defer p.in_conditional_extends = prev_in_cond;
     const inner = try parseType(p);
     _ = try p.expect(.r_paren);
     return p.addNode(.{
@@ -714,11 +756,22 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
     if (p.peek() == .colon) {
         _ = p.advance(); // consume `:`
         const type_node = try parseType(p);
+        // Skip default value: `param: Type = value` (semantic error in TS, but parseable)
+        if (p.peek() == .equal) {
+            _ = p.advance();
+            _ = try p.parseAssignmentExpression();
+        }
         return p.addNode(.{
             .tag = .ts_type_annotation,
             .main_token = param_tok,
             .data = .{ .lhs = type_node, .rhs = .none },
         });
+    }
+
+    // Skip default value without type: `param = value` (semantic error in TS, but parseable)
+    if (p.peek() == .equal) {
+        _ = p.advance();
+        _ = try p.parseAssignmentExpression();
     }
 
     // No colon — the "parameter" might actually just be a type.
@@ -1288,6 +1341,14 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
             _ = p.advance();
             member_name = try p.parseExpression();
             _ = try p.expect(.r_bracket);
+        } else if (p.peek() == .number_literal) {
+            // Numeric member name (semantic error, but parseable)
+            const num_tok = p.advance();
+            member_name = try p.addNode(.{
+                .tag = .number_literal,
+                .main_token = num_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
         } else {
             try p.emitError("Expected enum member name");
             return p.makeErrorNode();

@@ -454,7 +454,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         if (next != .none) has_after = true;
                     }
                     // Even if only .none after (trailing comma), rest can't have trailing comma
-                    if (i < end - 1 or has_after) {
+                    if (!p.language.isTs() and (i < end - 1 or has_after)) {
                         try p.emitError("Rest element must be last in destructuring pattern");
                         return error.ParseError;
                     }
@@ -522,9 +522,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                 try p.emitError("Invalid destructuring target: method definition in pattern");
                 return error.ParseError;
             }
-            // Rest must be last in object pattern
+            // Rest must be last in object pattern (skip in TS — semantic error)
             if (prop_tag == .rest_element) {
-                if (i < end - 1) {
+                if (!p.language.isTs() and i < end - 1) {
                     try p.emitError("Rest element must be last in destructuring pattern");
                     return error.ParseError;
                 }
@@ -1222,10 +1222,12 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             const param_tag = p.nodes.items(.tag)[param_node.toInt()];
             switch (param_tag) {
                 .identifier => {
-                    const tok = p.nodes.items(.main_token)[param_node.toInt()];
-                    if (hasDuplicateParam(p, params, idx, tok)) {
-                        try p.emitError("Duplicate parameter name in arrow function");
-                        return p.makeErrorNode();
+                    if (!p.language.isTs()) {
+                        const tok = p.nodes.items(.main_token)[param_node.toInt()];
+                        if (hasDuplicateParam(p, params, idx, tok)) {
+                            try p.emitError("Duplicate parameter name in arrow function");
+                            return p.makeErrorNode();
+                        }
                     }
                 },
                 .assign, .assignment_pattern => {},
@@ -1244,24 +1246,26 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                     return p.makeErrorNode();
                 },
                 .rest_element, .spread_element => {
-                    if (idx < params.len - 1) {
+                    if (!p.language.isTs() and idx < params.len - 1) {
                         try p.emitError("Rest parameter must be last");
                         return p.makeErrorNode();
                     }
                     // Validate rest target contents (reject literals in patterns)
-                    const rest_data = p.nodes.items(.data)[param_node.toInt()];
-                    if (rest_data.lhs != .none) {
-                        const rest_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
-                        if (rest_tag == .identifier) {
-                            const rest_tok = p.nodes.items(.main_token)[rest_data.lhs.toInt()];
-                            if (hasDuplicateParam(p, params, idx, rest_tok)) {
-                                try p.emitError("Duplicate parameter name in arrow function");
-                                return p.makeErrorNode();
+                    if (!p.language.isTs()) {
+                        const rest_data = p.nodes.items(.data)[param_node.toInt()];
+                        if (rest_data.lhs != .none) {
+                            const rest_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
+                            if (rest_tag == .identifier) {
+                                const rest_tok = p.nodes.items(.main_token)[rest_data.lhs.toInt()];
+                                if (hasDuplicateParam(p, params, idx, rest_tok)) {
+                                    try p.emitError("Duplicate parameter name in arrow function");
+                                    return p.makeErrorNode();
+                                }
+                            } else {
+                                validateArrowParam(p, rest_data.lhs) catch {
+                                    return p.makeErrorNode();
+                                };
                             }
-                        } else {
-                            validateArrowParam(p, rest_data.lhs) catch {
-                                return p.makeErrorNode();
-                            };
                         }
                     }
                 },
@@ -1610,6 +1614,23 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
 
     const params_range = if (accessor_tag == .kw_set) blk: {
         const scratch_top = p.scratchLen();
+
+        // TS: skip `this` parameter in setter: `set x(this: Type, value)`
+        if (p.language.isTs() and p.peek() == .kw_this) {
+            const this_tok = p.advance();
+            if (p.peek() == .colon) {
+                _ = try p.parseOptionalTypeAnnotation();
+            }
+            if (p.peek() == .comma) _ = p.advance();
+            // Add `this` as a pseudo-param node
+            const this_node = try p.addNode(.{
+                .tag = .identifier,
+                .main_token = this_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+            try p.scratchPush(this_node);
+        }
+
         const param = try parseBindingElement(p);
         const param_tag = p.nodes.items(.tag)[param.toInt()];
         // Setter param must not be rest
@@ -1627,14 +1648,40 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
         }
         try p.scratchPush(param);
         if (p.peek() == .comma) {
-            try p.emitError("Setter must have exactly one parameter");
-            return error.ParseError;
+            if (!p.language.isTs()) {
+                try p.emitError("Setter must have exactly one parameter");
+                return error.ParseError;
+            }
+            // TS: skip extra params (semantic error, not syntax)
+            while (p.peek() == .comma) {
+                _ = p.advance();
+                if (p.peek() == .r_paren) break;
+                _ = try parseBindingElement(p);
+            }
         }
         const params = p.scratchSlice(scratch_top);
         const range = try p.addSlice(params);
         p.scratchPop(scratch_top);
         break :blk range;
     } else blk: {
+        // TS: getter can have a `this` parameter: `get x(this: Type)`
+        if (p.language.isTs() and p.peek() == .kw_this) {
+            const scratch_top = p.scratchLen();
+            const this_tok = p.advance();
+            if (p.peek() == .colon) {
+                _ = try p.parseOptionalTypeAnnotation();
+            }
+            const this_node = try p.addNode(.{
+                .tag = .identifier,
+                .main_token = this_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+            try p.scratchPush(this_node);
+            const params = p.scratchSlice(scratch_top);
+            const range = try p.addSlice(params);
+            p.scratchPop(scratch_top);
+            break :blk range;
+        }
         break :blk try p.addSlice(&[_]u32{});
     };
 
@@ -1710,7 +1757,9 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     defer p.in_generator = saved_gen;
     defer p.in_method = saved_method;
 
+    _ = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
+    _ = try p.parseOptionalTypeAnnotation(); // TS return type
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
@@ -1734,6 +1783,12 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
     const key_expr = try parseAssignmentExpression(p);
     _ = try p.expect(.r_bracket);
 
+    // TS type parameters on computed method: [expr]<T>()
+    if (p.language.isTs() and p.peek() == .less_than) {
+        const ts_mod = @import("typescript.zig");
+        _ = try ts_mod.parseTypeParameterList(p);
+    }
+
     // Computed method: [expr]() { }
     if (p.peek() == .l_paren) {
         const saved_fn = p.in_function;
@@ -1743,6 +1798,7 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method;
         const params_range = try parseFormalParameters(p);
+        _ = try p.parseOptionalTypeAnnotation(); // TS return type
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
@@ -2079,7 +2135,10 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     const super_node: NodeIndex = if (p.eat(.kw_extends)) |_| blk: {
         if (p.language.isTs()) {
             const ts_mod = @import("typescript.zig");
-            if (p.peek() == .l_paren) {
+            // Use expression parsing for tokens that are expressions but not types
+            if (p.peek() == .l_paren or p.peek() == .kw_class or
+                p.peek() == .kw_function or p.peek() == .kw_new)
+            {
                 _ = try p.parseAssignmentExpression();
             } else {
                 _ = try ts_mod.parseType(p);
@@ -2092,6 +2151,16 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
                     if (p.peek() == .comma) _ = p.advance() else break;
                 }
                 _ = try p.expect(.r_paren);
+            }
+            // Handle member access chain: extends Base<T>.Inner
+            while (p.peek() == .dot) {
+                _ = p.advance();
+                if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+            }
+            // Handle multiple extends (TS interfaces): extends A, B
+            while (p.peek() == .comma) {
+                _ = p.advance();
+                _ = try ts_mod.parseType(p);
             }
             break :blk .none;
         }
@@ -2237,6 +2306,15 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         return parseGeneratorMethod(p);
     }
 
+    // TS index signature in class body: `[key: Type]: ValueType;`
+    if (p.language.isTs() and tag == .l_bracket and
+        (p.peekAt(1) == .identifier or p.peekAt(1) == .kw_readonly) and
+        p.peekAt(2) == .colon)
+    {
+        const ts_mod = @import("typescript.zig");
+        return ts_mod.parseIndexSignature(p);
+    }
+
     // Computed member
     if (tag == .l_bracket) {
         return parseComputedProperty(p);
@@ -2245,6 +2323,12 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     // Regular member (method, field, or constructor)
     main_tok = p.tok_i;
     const key = try parsePropertyName(p);
+
+    // TS type parameters on method: method<T>()
+    if (p.language.isTs() and p.peek() == .less_than) {
+        const ts_mod = @import("typescript.zig");
+        _ = try ts_mod.parseTypeParameterList(p);
+    }
 
     // Method (regular — not async/generator, those have their own paths above)
     if (p.peek() == .l_paren) {
@@ -2259,6 +2343,7 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         defer p.in_method = saved_method_m;
         defer p.in_constructor = saved_ctor;
         const params_range = try parseFormalParameters(p);
+        _ = try p.parseOptionalTypeAnnotation(); // TS return type
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
@@ -3204,8 +3289,8 @@ fn parseFormalParameters(p: *Parser) Error!SubRange {
 
     const params = p.scratchSlice(scratch_top);
 
-    // Rest parameter must be last
-    if (params.len > 1) {
+    // Rest parameter must be last (skip in TS — semantic error)
+    if (!p.language.isTs() and params.len > 1) {
         for (params[0 .. params.len - 1]) |param_raw| {
             const ptag = p.nodes.items(.tag)[@intCast(param_raw)];
             if (ptag == .rest_element) {
@@ -3275,15 +3360,20 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         }
     }
 
-    // TS `this` parameter
-    if (p.language.isTs() and p.peek() == .kw_this and p.peekAt(1) == .colon) {
-        const this_tok = p.advance();
-        _ = try p.parseOptionalTypeAnnotation();
-        return p.addNode(.{
-            .tag = .identifier,
-            .main_token = this_tok,
-            .data = .{ .lhs = .none, .rhs = .none },
-        });
+    // TS `this` parameter: `this: Type` or `this` (contextual typing)
+    if (p.language.isTs() and p.peek() == .kw_this) {
+        const next = p.peekAt(1);
+        if (next == .colon or next == .comma or next == .r_paren) {
+            const this_tok = p.advance();
+            if (p.peek() == .colon) {
+                _ = try p.parseOptionalTypeAnnotation();
+            }
+            return p.addNode(.{
+                .tag = .identifier,
+                .main_token = this_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        }
     }
 
     var node = try parseBindingPattern(p);
@@ -3344,6 +3434,16 @@ fn parseBindingPattern(p: *Parser) Error!NodeIndex {
             }
             return parseIdentifier(p);
         },
+        // TS contextual keywords can be binding names
+        .kw_type, .kw_declare, .kw_namespace, .kw_module,
+        .kw_interface, .kw_abstract, .kw_readonly, .kw_override,
+        .kw_keyof, .kw_infer, .kw_is, .kw_asserts, .kw_satisfies,
+        .kw_unique, .kw_async,
+        => {
+            if (p.language.isTs()) return parseIdentifier(p);
+            try p.emitError("Expected binding pattern");
+            return p.makeErrorNode();
+        },
         else => {
             try p.emitError("Expected binding pattern");
             return p.makeErrorNode();
@@ -3353,6 +3453,10 @@ fn parseBindingPattern(p: *Parser) Error!NodeIndex {
 
 fn parseObjectBindingPattern(p: *Parser) Error!NodeIndex {
     const open = p.advance(); // consume `{`
+    // Allow `in` operator inside binding patterns (needed for `for (let {x = 'a' in {}} = ...)`)
+    const saved_allow_in = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in;
     const scratch_top = p.scratchLen();
 
     while (p.peek() != .r_brace and p.peek() != .eof) {
@@ -3365,7 +3469,13 @@ fn parseObjectBindingPattern(p: *Parser) Error!NodeIndex {
                 .data = .{ .lhs = arg, .rhs = .none },
             });
             try p.scratchPush(rest);
-            break; // rest must be last
+            if (!p.language.isTs()) break; // rest must be last (TS: semantic error)
+            if (p.peek() == .comma) {
+                _ = p.advance();
+            } else {
+                break;
+            }
+            continue;
         }
 
         const prop = try parseBindingProperty(p);
@@ -3452,6 +3562,10 @@ fn parseBindingProperty(p: *Parser) Error!NodeIndex {
 
 fn parseArrayBindingPattern(p: *Parser) Error!NodeIndex {
     const open = p.advance(); // consume `[`
+    // Allow `in` operator inside binding patterns (needed for `for (let [x = 'a' in {}] = ...)`)
+    const saved_allow_in = p.allow_in;
+    p.allow_in = true;
+    defer p.allow_in = saved_allow_in;
     const scratch_top = p.scratchLen();
 
     while (p.peek() != .r_bracket and p.peek() != .eof) {
@@ -3471,7 +3585,13 @@ fn parseArrayBindingPattern(p: *Parser) Error!NodeIndex {
                 .data = .{ .lhs = arg, .rhs = .none },
             });
             try p.scratchPush(rest);
-            break; // rest must be last
+            if (!p.language.isTs()) break; // rest must be last (TS: semantic error)
+            if (p.peek() == .comma) {
+                _ = p.advance();
+            } else {
+                break;
+            }
+            continue;
         }
 
         const elem = try parseBindingElement(p);
@@ -3967,7 +4087,10 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
             if (t == .identifier) {
                 const nt = p.peekAt(i + 1);
                 if (nt == .colon) return true;
-                if (nt == .question and i + 2 < p.tokens.len and p.peekAt(i + 2) == .colon) return true;
+                if (nt == .question and i + 2 < p.tokens.len) {
+                    const after_q = p.peekAt(i + 2);
+                    if (after_q == .colon or after_q == .r_paren or after_q == .comma) return true;
+                }
                 // Check for modifier keywords
                 const txt = p.tokenText(p.tok_i + i);
                 if ((std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "private") or
