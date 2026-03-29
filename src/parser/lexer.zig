@@ -20,6 +20,9 @@ pub const Lexer = struct {
     tokens: TokenList,
     allocator: std.mem.Allocator,
     prev_token_tag: TokenTag,
+    /// True when prev_token_tag was emitted immediately after `.` (member access).
+    /// Used to distinguish `a.in / b` (division) from `x in /regex/` (regex).
+    prev_after_dot: bool = false,
     template_depth: u32,
     /// Brace depth per template nesting level. Tracks nested `{}` inside `${}`.
     /// When `${` is entered, slot is zeroed. Each `{` increments, each `}` decrements.
@@ -2155,8 +2158,6 @@ pub const Lexer = struct {
             .kw_set,
             .kw_target,
             .kw_meta,
-            .kw_in,
-            .kw_instanceof,
             .kw_class,
             .kw_extends,
             .kw_break,
@@ -2175,6 +2176,10 @@ pub const Lexer = struct {
             .kw_while,
             .kw_with,
             => false,
+
+            // `in`/`instanceof` as operators precede expressions (→ regex),
+            // but as property names (`a.in / b`) precede division.
+            .kw_in, .kw_instanceof => !self.prev_after_dot,
 
             // `}` can close either an expression (object literal → division) or
             // a block/function body (→ regex). Use the brace context stack.
@@ -2647,6 +2652,7 @@ pub const Lexer = struct {
                 self.fn_expr_depth_count += 1;
             }
         }
+        self.prev_after_dot = (self.prev_token_tag == .dot);
         self.prev_token_tag = tag;
         return .{ .tag = tag, .start = start };
     }
