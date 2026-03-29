@@ -715,10 +715,12 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
         .kw_this => try parseLiteral(p, .this_expr),
         .kw_super => blk: {
             if (!p.in_class and !p.in_method and !p.language.isTs()) try p.emitError("'super' is only valid inside a class or method");
-            // super must be followed by `.`, `[`, or `(` — bare `super` is invalid
+            // super must be followed by `.`, `[`, `(`, or `<` (TS type args) — bare `super` is invalid
             const next = p.peekAt(1);
-            if (next != .dot and next != .l_bracket and next != .l_paren) {
-                try p.emitError("'super' keyword unexpected here");
+            if (next != .dot and next != .l_bracket and next != .l_paren and
+                !(next == .less_than and p.language.isTs()))
+            {
+                if (!p.language.isTs()) try p.emitError("'super' keyword unexpected here");
             }
             break :blk try parseLiteral(p, .super_expr);
         },

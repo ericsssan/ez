@@ -850,8 +850,8 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
 
     _ = try p.expect(.r_bracket);
 
-    // Optional `?` or `-?` modifier
-    if (p.peek() == .minus) {
+    // Optional `?`, `+?`, or `-?` modifier
+    if (p.peek() == .minus or p.peek() == .plus) {
         _ = p.advance();
         _ = p.eat(.question);
     } else {
@@ -1407,6 +1407,10 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     // ── Skip `readonly` modifier ─────────────────────────────
     if (p.peek() == .kw_readonly) {
         _ = p.advance(); // consume `readonly`
+        // Check for index signature after readonly: `readonly [key: Type]: Type;`
+        if (p.peek() == .l_bracket and p.peekAt(1) == .identifier and p.peekAt(2) == .colon) {
+            return parseIndexSignature(p);
+        }
     }
 
     // ── Member name ──────────────────────────────────────────
