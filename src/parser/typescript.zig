@@ -732,8 +732,15 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
 
             if (p.peek() == .identifier or p.peek().isKeyword()) {
                 _ = p.advance();
-                if (p.peek() == .colon or p.peek() == .question) {
+                if (p.peek() == .colon) {
                     is_labeled = true;
+                } else if (p.peek() == .question) {
+                    // Distinguish `name?: Type` (labeled) from `Type?` (optional)
+                    // Only labeled if `?` is followed by `:`
+                    const saved2 = p.checkpoint();
+                    _ = p.advance(); // skip `?`
+                    if (p.peek() == .colon) is_labeled = true;
+                    p.restore(saved2);
                 }
             }
             p.restore(saved);
@@ -747,6 +754,8 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
                 try p.scratchPush(elem_type);
             } else {
                 const elem_type = try parseType(p);
+                // Optional tuple element: `Type?`
+                _ = p.eat(.question);
                 try p.scratchPush(elem_type);
             }
         }
