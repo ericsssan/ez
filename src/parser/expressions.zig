@@ -2069,8 +2069,32 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         });
     } else .none;
 
+    // TS type parameters: class<T> or class Foo<T, U>
+    if (p.language.isTs() and p.peek() == .less_than) {
+        const ts_mod = @import("typescript.zig");
+        _ = try ts_mod.parseTypeParameterList(p);
+    }
+
     // Optional extends.
     const super_node: NodeIndex = if (p.eat(.kw_extends)) |_| blk: {
+        if (p.language.isTs()) {
+            const ts_mod = @import("typescript.zig");
+            if (p.peek() == .l_paren) {
+                _ = try p.parseAssignmentExpression();
+            } else {
+                _ = try ts_mod.parseType(p);
+            }
+            // Handle mixin call after type: extends Base<T>()
+            if (p.peek() == .l_paren) {
+                _ = p.advance();
+                while (p.peek() != .r_paren and !p.isAtEnd()) {
+                    _ = try p.parseAssignmentExpression();
+                    if (p.peek() == .comma) _ = p.advance() else break;
+                }
+                _ = try p.expect(.r_paren);
+            }
+            break :blk .none;
+        }
         const expr = try parseExpressionPrec(p, .call);
         const et = p.nodes.items(.tag)[expr.toInt()];
         switch (et) {
