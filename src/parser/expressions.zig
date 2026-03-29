@@ -153,7 +153,8 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         if (isCallPrec(tag)) {
             if (@intFromEnum(Precedence.call) < @intFromEnum(min_prec)) break;
             // Arrow functions are not valid call/member targets without parens
-            if (tag == .l_paren and left != .none) {
+            // In TS mode, skip this check (TypeScript handles it at type-check level)
+            if (!p.language.isTs() and tag == .l_paren and left != .none) {
                 const left_tag = p.nodes.items(.tag)[left.toInt()];
                 if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
                     try p.emitError("Arrow function is not directly callable (wrap in parens)");
@@ -252,8 +253,10 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
         switch (op_tag) {
             .identifier, .member_expr, .computed_member_expr => {},
             .optional_member_expr, .optional_computed_member_expr => {
-                try p.emitError("Invalid left-hand side in prefix operation: optional chain");
-                return error.ParseError;
+                if (!p.language.isTs()) {
+                    try p.emitError("Invalid left-hand side in prefix operation: optional chain");
+                    return error.ParseError;
+                }
             },
             else => {
                 // TS parser accepts invalid LHS (type checker handles it later)
@@ -1462,16 +1465,20 @@ fn parseArrayLiteral(p: *Parser) Error!NodeIndex {
 
     const elements = p.scratchSlice(scratch_top);
 
-    // Check rest/spread with trailing comma: [...a,] is invalid in all contexts
+    // Check rest/spread with trailing comma: [...a,] is invalid in destructuring/arrow contexts.
+    // We check here because the array may later be reinterpreted as a destructuring pattern.
+    // `[1, ...x,]` as a pure array literal with trailing comma is technically valid in ES2017+,
+    // but the spec says CoverParenthesizedExpressionAndArrowParameterList bans it for arrow params
+    // and destructuring. Since distinguishing is complex, we always reject here except in TS mode.
     if (elements.len > 0) {
         const last_elem = NodeIndex.fromInt(elements[elements.len - 1]);
         if (last_elem != .none and p.nodes.items(.tag)[last_elem.toInt()] == .spread_element) {
-            // Spread is the last element AND there was a trailing comma (peek was comma → advance → break)
-            // The trailing comma was consumed, so if the previous token was `,`, it was trailing
             if (p.tok_i > 0 and p.tokenTagAt(p.tok_i - 1) == .r_bracket and
                 p.tok_i > 1 and p.tokenTagAt(p.tok_i - 2) == .comma)
             {
-                try p.emitError("Rest element may not have a trailing comma");
+                if (!p.language.isTs()) {
+                    try p.emitError("Rest element may not have a trailing comma");
+                }
             }
         }
     }
