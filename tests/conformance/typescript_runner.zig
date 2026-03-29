@@ -51,7 +51,7 @@ pub fn main(init: std.process.Init) !void {
     var skipped: u32 = 0;
 
     // Collect all .ts files
-    var files: std.ArrayList([]const u8) = .{};
+    var files: std.ArrayList([]const u8) = .empty;
     defer {
         for (files.items) |p| allocator.free(p);
         files.deinit(allocator);
@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
                 break :blk true;
             };
             defer tokens.deinit(file_alloc);
-            var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), lang, is_module) catch {
+            const tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), lang, is_module) catch {
                 first_error = "parse OOM";
                 break :blk true;
             };
@@ -271,7 +271,7 @@ fn getBasename(path: []const u8) []const u8 {
 const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };
 
 fn walkTs(io: std.Io, allocator: std.mem.Allocator, base_dir: std.Io.Dir, base_path: []const u8, list: *std.ArrayList([]const u8)) !void {
-    var stack: std.ArrayList(StackEntry) = .{};
+    var stack: std.ArrayList(StackEntry) = .empty;
     defer {
         for (stack.items) |item| allocator.free(item.path);
         stack.deinit(allocator);

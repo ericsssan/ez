@@ -1,6 +1,5 @@
-ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.2637+6a9510c0e/files/zig
-SYSROOT := /Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk
-LINK_FLAGS := --sysroot $(SYSROOT) -fno-lld
+ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.3028+a85495ca2/files/zig
+LINK_FLAGS :=
 
 .PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi submodules
 

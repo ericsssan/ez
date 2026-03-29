@@ -154,17 +154,17 @@ pub const RefRange = struct {
 /// is passed explicitly to each mutating call via the `gpa` field.
 pub const SymbolTable = struct {
     /// Symbol name — slice into the source buffer (zero-copy).
-    names: std.ArrayList([]const u8) = .{},
+    names: std.ArrayList([]const u8) = .empty,
     /// Packed flags describing the symbol's properties.
-    flags: std.ArrayList(SymbolFlags) = .{},
+    flags: std.ArrayList(SymbolFlags) = .empty,
     /// What kind of binding created this symbol.
-    binding_kinds: std.ArrayList(BindingKind) = .{},
+    binding_kinds: std.ArrayList(BindingKind) = .empty,
     /// Scope where the symbol was declared.
-    scope_ids: std.ArrayList(ScopeId) = .{},
+    scope_ids: std.ArrayList(ScopeId) = .empty,
     /// AST node of the declaration site.
-    decl_nodes: std.ArrayList(ast.NodeIndex) = .{},
+    decl_nodes: std.ArrayList(ast.NodeIndex) = .empty,
     /// Range of references to this symbol in an external reference table.
-    references: std.ArrayList(RefRange) = .{},
+    references: std.ArrayList(RefRange) = .empty,
 
     gpa: std.mem.Allocator,
 

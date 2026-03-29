@@ -26,7 +26,7 @@ pub fn lint(
     semantic: *const SemanticResult,
     config: ?*const Config,
 ) ![]const LintDiagnostic {
-    var diagnostics = std.ArrayList(LintDiagnostic){};
+    var diagnostics: std.ArrayList(LintDiagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
     var ctx = LintContext{
@@ -98,7 +98,7 @@ pub fn filterByInlineDisables(
 ) ![]const LintDiagnostic {
     if (disables.directives.len == 0) return try allocator.dupe(LintDiagnostic, diagnostics);
 
-    var filtered = std.ArrayList(LintDiagnostic){};
+    var filtered: std.ArrayList(LintDiagnostic) = .empty;
     errdefer filtered.deinit(allocator);
 
     for (diagnostics) |diag| {

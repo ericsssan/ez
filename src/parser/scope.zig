@@ -96,14 +96,14 @@ pub const ScopeTree = struct {
 
     pub fn init(allocator: std.mem.Allocator) ScopeTree {
         return .{
-            .kinds = .{},
-            .flags = .{},
-            .parents = .{},
-            .first_child = .{},
-            .next_sibling = .{},
-            .node_ids = .{},
-            .bindings_start = .{},
-            .bindings_count = .{},
+            .kinds = .empty,
+            .flags = .empty,
+            .parents = .empty,
+            .first_child = .empty,
+            .next_sibling = .empty,
+            .node_ids = .empty,
+            .bindings_start = .empty,
+            .bindings_count = .empty,
             .gpa = allocator,
         };
     }

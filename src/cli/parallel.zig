@@ -53,7 +53,7 @@ pub const ParallelRunner = struct {
     pub fn init(allocator: std.mem.Allocator) ParallelRunner {
         return .{
             .allocator = allocator,
-            .results = .{},
+            .results = .empty,
             .mutex = .{},
         };
     }
@@ -230,7 +230,7 @@ pub const ParallelRunner = struct {
         var error_count: u32 = 0;
         var warning_count: u32 = 0;
 
-        var output_buf = std.ArrayList(u8){};
+        var output_buf: std.ArrayList(u8) = .empty;
 
         // Parse errors (always severity "error").
         for (tree.errors) |*err| {

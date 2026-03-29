@@ -29,7 +29,7 @@ pub const GitIgnore = struct {
 
     pub fn init(allocator: std.mem.Allocator) GitIgnore {
         return .{
-            .patterns = .{},
+            .patterns = .empty,
             .allocator = allocator,
         };
     }

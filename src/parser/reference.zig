@@ -84,10 +84,10 @@ pub const ReferenceTable = struct {
 
     pub fn init(allocator: std.mem.Allocator) ReferenceTable {
         return .{
-            .symbol_ids = .{},
-            .kinds = .{},
-            .node_ids = .{},
-            .scope_ids = .{},
+            .symbol_ids = .empty,
+            .kinds = .empty,
+            .node_ids = .empty,
+            .scope_ids = .empty,
             .gpa = allocator,
         };
     }

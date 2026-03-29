@@ -31,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     if (args.len >= 3 and std.mem.eql(u8, args[2], "--compact")) compact = true;
 
     // Build file list: either read from a file list or walk a directory
-    var file_list: std.ArrayList([]const u8) = .{};
+    var file_list: std.ArrayList([]const u8) = .empty;
     defer {
         for (file_list.items) |p| allocator.free(p);
         file_list.deinit(allocator);
@@ -263,7 +263,7 @@ fn isModuleTest(source: []const u8) bool {
 const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };
 
 fn walkDir(io: std.Io, allocator: std.mem.Allocator, base_dir: std.Io.Dir, base_path: []const u8, list: *std.ArrayList([]const u8)) !void {
-    var stack: std.ArrayList(StackEntry) = .{};
+    var stack: std.ArrayList(StackEntry) = .empty;
     defer {
         for (stack.items) |item| allocator.free(item.path);
         stack.deinit(allocator);

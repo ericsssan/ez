@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
     var skipped: u32 = 0;
 
     // Walk fixtures directory
-    var files: std.ArrayList([]const u8) = .{};
+    var files: std.ArrayList([]const u8) = .empty;
     defer {
         for (files.items) |p| allocator.free(p);
         files.deinit(allocator);
@@ -179,7 +179,7 @@ fn isErrorTest(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8)
 const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };
 
 fn walkCollect(io: std.Io, allocator: std.mem.Allocator, base_dir: std.Io.Dir, base_path: []const u8, list: *std.ArrayList([]const u8), target_name: []const u8) !void {
-    var stack: std.ArrayList(StackEntry) = .{};
+    var stack: std.ArrayList(StackEntry) = .empty;
     defer {
         for (stack.items) |item| allocator.free(item.path);
         stack.deinit(allocator);

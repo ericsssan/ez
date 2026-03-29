@@ -77,7 +77,7 @@ pub const SemanticAnalyzer = struct {
             .scopes = ScopeTree.init(allocator),
             .symbols = SymbolTable.init(allocator),
             .references = ReferenceTable.init(allocator),
-            .diagnostics = .{},
+            .diagnostics = .empty,
             .allocator = allocator,
             .current_scope = .none,
         };

@@ -24,7 +24,7 @@ pub const FileDiscovery = struct {
     pub fn init(allocator: std.mem.Allocator) FileDiscovery {
         return .{
             .allocator = allocator,
-            .files = .{},
+            .files = .empty,
             .gitignore = null,
         };
     }

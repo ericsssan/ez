@@ -38,7 +38,7 @@ pub const InlineDisables = struct {
 
     /// Scan source for comment directives. Returns the struct.
     pub fn parse(allocator: std.mem.Allocator, source: []const u8) !InlineDisables {
-        var directives: std.ArrayList(DisableDirective) = .{};
+        var directives: std.ArrayList(DisableDirective) = .empty;
         errdefer directives.deinit(allocator);
 
         var state: State = .normal;

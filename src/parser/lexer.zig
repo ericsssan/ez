@@ -68,7 +68,7 @@ pub const Lexer = struct {
         return .{
             .source = source,
             .index = 0,
-            .tokens = .{},
+            .tokens = .empty,
             .allocator = allocator,
             .prev_token_tag = .eof,
             .template_depth = 0,

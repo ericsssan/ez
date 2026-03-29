@@ -16,7 +16,7 @@ pub const meta = RuleMeta{
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Collect all conditions in the if-else-if chain
-    var conditions = std.ArrayList(NodeIndex){};
+    var conditions: std.ArrayList(NodeIndex) = .empty;
     defer conditions.deinit(ctx.allocator);
 
     // Add the first condition

@@ -24,7 +24,7 @@ pub fn main(init: std.process.Init) !void {
     const stdout = &stdout_writer.interface;
 
     // ── Parse CLI flags ──────────────────────────────────────
-    var file_paths = std.ArrayList([]const u8){};
+    var file_paths: std.ArrayList([]const u8) = .empty;
     defer file_paths.deinit(init.arena.allocator());
     var dump_tokens = false;
     var dump_ast = true;
