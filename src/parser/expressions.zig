@@ -460,15 +460,21 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         try p.emitError("Rest element must be last in destructuring pattern");
                         return error.ParseError;
                     }
-                    // Rest target cannot have a default value, be parenthesized, or a literal
+                    // Rest target cannot have a default value or be a literal
                     const rest_data = p.nodes.items(.data)[child.toInt()];
                     if (rest_data.lhs != .none) {
                         const rest_target_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
-                        if (rest_target_tag == .grouping_expr or rest_target_tag == .assign or
-                            rest_target_tag == .assignment_pattern)
-                        {
+                        if (rest_target_tag == .assign or rest_target_tag == .assignment_pattern) {
                             try p.emitError("Invalid rest element target in destructuring");
                             return error.ParseError;
+                        }
+                        // Parenthesized rest: ...(x) is valid if x is a valid target
+                        if (rest_target_tag == .grouping_expr) {
+                            const inner = unwrapGroupingTag(p, rest_data.lhs);
+                            if (inner != .identifier and inner != .member_expr and inner != .computed_member_expr) {
+                                try p.emitError("Invalid rest element target in destructuring");
+                                return error.ParseError;
+                            }
                         }
                         // Recursively validate rest target (e.g. [...{a: 0}] where 0 is invalid)
                         try validatePattern(p, rest_data.lhs);
@@ -1497,25 +1503,26 @@ fn parseArrayLiteral(p: *Parser) Error!NodeIndex {
 
     const elements = p.scratchSlice(scratch_top);
 
-    // Check rest/spread with trailing comma: [...a,] is invalid in destructuring/arrow contexts.
-    // We check here because the array may later be reinterpreted as a destructuring pattern.
-    // `[1, ...x,]` as a pure array literal with trailing comma is technically valid in ES2017+,
-    // but the spec says CoverParenthesizedExpressionAndArrowParameterList bans it for arrow params
-    // and destructuring. Since distinguishing is complex, we always reject here except in TS mode.
+    // Check rest/spread with trailing comma: `[...a,]` is valid as array literal (expression),
+    // but invalid in destructuring `[...a,] = b`. We record the trailing comma presence
+    // by pushing a .none sentinel after the spread, so validatePattern can detect it.
     if (elements.len > 0) {
         const last_elem = NodeIndex.fromInt(elements[elements.len - 1]);
         if (last_elem != .none and p.nodes.items(.tag)[last_elem.toInt()] == .spread_element) {
+            // Check if there was a trailing comma (consumed at line above)
             if (p.tok_i > 0 and p.tokenTagAt(p.tok_i - 1) == .r_bracket and
                 p.tok_i > 1 and p.tokenTagAt(p.tok_i - 2) == .comma)
             {
-                if (!p.language.isTs()) {
-                    try p.emitError("Rest element may not have a trailing comma");
-                }
+                // Push a .none sentinel so validatePattern can detect the trailing comma
+                try p.scratchPush(NodeIndex.none);
             }
         }
     }
+    // Re-read elements after possible sentinel push
+    const final_elements = p.scratchSlice(scratch_top);
+    _ = final_elements;
 
-    const range = try p.addSlice(elements);
+    const range = try p.addSlice(p.scratchSlice(scratch_top));
     p.scratchPop(scratch_top);
 
     return p.addNode(.{
@@ -1670,7 +1677,10 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
             }
         }
         try p.scratchPush(param);
-        if (p.peek() == .comma) {
+        // Trailing comma after setter param is valid: `set x(a,) {}`
+        if (p.peek() == .comma and p.peekAt(1) == .r_paren) {
+            _ = p.advance(); // consume trailing comma
+        } else if (p.peek() == .comma) {
             if (!p.language.isTs()) {
                 try p.emitError("Setter must have exactly one parameter");
                 return error.ParseError;
@@ -2078,7 +2088,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     // NOT when the enclosing function is.
     const can_be_name = p.peek() == .identifier or p.peek() == .escaped_keyword or
         (p.peek() == .kw_yield and !is_generator and !p.in_strict) or
-        (p.peek() == .kw_await and !p.in_async and !p.is_module);
+        (p.peek() == .kw_await and !p.is_module);
     const name_node: NodeIndex = if (can_be_name) blk: {
         try p.checkStrictBinding(p.tok_i);
         const name_tok = p.advance();
@@ -2498,7 +2508,7 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                 });
             },
             .template_head, .template_no_sub => {
-                const tmpl = try parseTemplateLiteral(p);
+                const tmpl = try parseTemplateLiteralTagged(p);
                 callee = try p.addNode(.{
                     .tag = .tagged_template,
                     .main_token = new_tok,
@@ -2992,7 +3002,8 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
         .assignment_pattern, .spread_element, .rest_element,
         => {},
         .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
-            if (!p.language.isTs()) {
+            // Parenthesized optional chain is valid: (a?.b) = c
+            if (left_tag != .grouping_expr and !p.language.isTs()) {
                 try p.emitError("Invalid left-hand side in assignment: optional chain");
                 return error.ParseError;
             }

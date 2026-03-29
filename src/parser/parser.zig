@@ -636,7 +636,16 @@ pub const Parser = struct {
                 const next = self.peekAt(1);
                 // Only check for binding start tokens; skip newline check for non-ambiguous tokens
                 const could_be_binding = next == .l_bracket or next == .l_brace or
-                    next == .identifier or next == .escaped_keyword or next.isKeyword();
+                    next == .identifier or next == .escaped_keyword or
+                    // Contextual keywords that can be binding names, but NOT
+                    // reserved words that follow `let` as operators (instanceof, in, etc.)
+                    next == .kw_yield or next == .kw_await or next == .kw_async or
+                    next == .kw_of or next == .kw_from or next == .kw_as or
+                    next == .kw_get or next == .kw_set or next == .kw_let or
+                    next == .kw_static or next == .kw_type or next == .kw_declare or
+                    next == .kw_namespace or next == .kw_module or next == .kw_interface or
+                    next == .kw_abstract or next == .kw_readonly or next == .kw_override or
+                    next == .kw_implements or next == .kw_target or next == .kw_meta;
                 if (could_be_binding and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
                     return self.parseVariableDeclaration();
                 }
@@ -1097,7 +1106,7 @@ pub const Parser = struct {
 
         // Check for `in` or `of`
         if (self.eat(.kw_in)) |_| {
-            try self.rejectForInOfInitializer(init);
+            try self.rejectForInOfInitializer(init, true);
             try self.validateForInOfBinding(init, false);
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
@@ -1119,7 +1128,7 @@ pub const Parser = struct {
         }
 
         if (self.eat(.kw_of)) |_| {
-            try self.rejectForInOfInitializer(init);
+            try self.rejectForInOfInitializer(init, false);
             try self.validateForInOfBinding(init, true);
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
@@ -1393,11 +1402,14 @@ pub const Parser = struct {
     }
 
     /// Reject initializers in for-in/of: `for (let x = 1 in y)` is invalid.
-    fn rejectForInOfInitializer(self: *Parser, init: NodeIndex) Error!void {
+    /// Exception (Annex B): `for (var x = expr in y)` is allowed in non-strict mode.
+    fn rejectForInOfInitializer(self: *Parser, init: NodeIndex, is_for_in: bool) Error!void {
         if (init == .none) return;
         const init_tag = self.nodes.items(.tag)[init.toInt()];
         // Variable declarations with initializers
         if (init_tag == .var_decl or init_tag == .let_decl or init_tag == .const_decl) {
+            // Annex B: `for (var x = expr in y)` is allowed in non-strict for-in (not for-of)
+            if (is_for_in and init_tag == .var_decl and !self.in_strict) return;
             const init_data = self.nodes.items(.data)[init.toInt()];
             const range = ast.SubRange{
                 .start = @intFromEnum(init_data.lhs),

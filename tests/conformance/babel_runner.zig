@@ -79,7 +79,22 @@ pub fn main(init: std.process.Init) !void {
         if (is_error_test) {
             if (has_error) invalid_pass += 1 else invalid_fail += 1;
         } else {
-            if (!has_error) valid_pass += 1 else valid_fail += 1;
+            if (!has_error) {
+                valid_pass += 1;
+            } else {
+                valid_fail += 1;
+                if (!compact) {
+                    // Get first error message
+                    const first_err = blk2: {
+                        var tokens2 = Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk2 "tokenize failed";
+                        defer tokens2.deinit(file_alloc);
+                        const tree2 = Parser.parseWithLanguage(file_alloc, source, tokens2.slice(), .js, is_module) catch break :blk2 "parse OOM";
+                        if (tree2.errors.len > 0) break :blk2 tree2.errors[0].message;
+                        break :blk2 "unknown";
+                    };
+                    try stdout.print("  FAIL: {s} | {s}\n", .{ path, first_err });
+                }
+            }
         }
     }
 
