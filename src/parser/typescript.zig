@@ -741,6 +741,30 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
         }
     }
 
+    // Destructuring parameter: `[a, b]: Type` or `{p, m}: Type`
+    if (p.peek() == .l_bracket or p.peek() == .l_brace) {
+        _ = try p.parseBindingPattern();
+        _ = p.eat(.question);
+        if (p.peek() == .colon) {
+            _ = p.advance();
+            const type_node = try parseType(p);
+            if (p.peek() == .equal) {
+                _ = p.advance();
+                _ = try p.parseAssignmentExpression();
+            }
+            return p.addNode(.{
+                .tag = .ts_type_annotation,
+                .main_token = param_tok,
+                .data = .{ .lhs = type_node, .rhs = .none },
+            });
+        }
+        return p.addNode(.{
+            .tag = .ts_type_annotation,
+            .main_token = param_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
+    }
+
     // Consume parameter name (identifier or keyword like `this`)
     if (p.peek() == .identifier or p.peek() == .kw_this or p.peek().isKeyword()) {
         _ = p.advance();

@@ -3411,9 +3411,9 @@ fn parseBindingPattern(p: *Parser) Error!NodeIndex {
             }
             return parseIdentifier(p);
         },
-        // await can be binding name outside async/module
+        // await can be binding name outside async/module (relaxed in TS)
         .kw_await => {
-            if (p.in_async or p.is_module) {
+            if (!p.language.isTs() and (p.in_async or p.is_module)) {
                 try p.emitError("'await' cannot be used as binding name in this context");
                 return p.makeErrorNode();
             }

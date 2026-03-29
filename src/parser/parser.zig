@@ -1384,8 +1384,10 @@ pub const Parser = struct {
                 try self.validateAssignmentTarget(data.lhs);
             },
             else => {
-                try self.emitDiagnostic(self.currentSpan(), "Invalid destructuring assignment target", .{});
-                return error.ParseError;
+                if (!self.language.isTs()) {
+                    try self.emitDiagnostic(self.currentSpan(), "Invalid destructuring assignment target", .{});
+                    return error.ParseError;
+                }
             },
         }
     }
@@ -3555,9 +3557,9 @@ pub const Parser = struct {
                 try self.checkStrictBinding(self.tok_i);
                 return self.parseIdentifier();
             },
-            // await can be binding name when not in async/module context
+            // await can be binding name when not in async/module context (relaxed in TS)
             .kw_await => {
-                if (self.in_async or self.is_module) {
+                if (!self.language.isTs() and (self.in_async or self.is_module)) {
                     try self.emitDiagnostic(self.currentSpan(), "'await' cannot be used as binding name in this context", .{});
                     return error.ParseError;
                 }
