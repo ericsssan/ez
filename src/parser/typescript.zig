@@ -49,15 +49,15 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         }
-        // Check for `x is Type` — only if next token after identifier is `is`
-        if (p.peekAt(1) == .kw_is) {
+        // Check for `x is Type` — only if next token after identifier is `is` on same line
+        if (p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
             _ = p.advance(); // eat param name
             _ = p.advance(); // eat 'is'
             return try parseType(p);
         }
     }
-    // `this is Type` predicate
-    if (p.peek() == .kw_this and p.peekAt(1) == .kw_is) {
+    // `this is Type` predicate — only on same line
+    if (p.peek() == .kw_this and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
         _ = p.advance(); // eat 'this'
         _ = p.advance(); // eat 'is'
         return try parseType(p);
@@ -390,6 +390,31 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         .less_than => {
             _ = try parseTypeParameterList(p);
             return try parseParenthesizedOrFunctionType(p);
+        },
+
+        // ── import("module") type ─────────────────────────────────
+        .kw_import => {
+            const tok = p.advance(); // consume `import`
+            if (p.peek() == .l_paren) {
+                _ = p.advance(); // consume `(`
+                // Skip the module specifier (string literal)
+                if (p.peek() == .string_literal) _ = p.advance();
+                _ = try p.expect(.r_paren);
+                // Optional `.member` access
+                while (p.peek() == .dot) {
+                    _ = p.advance();
+                    if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+                }
+                // Optional type arguments
+                if (p.peek() == .less_than) {
+                    _ = try parseTypeArguments(p);
+                }
+            }
+            return p.addNode(.{
+                .tag = .ts_type_reference,
+                .main_token = tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
         },
 
         // ── Fallback ─────────────────────────────────────────────
