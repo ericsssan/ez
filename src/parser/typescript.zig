@@ -412,9 +412,9 @@ fn parseTypeReference(p: *Parser) Error!NodeIndex {
         .data = .{ .lhs = .none, .rhs = .none },
     });
 
-    // Qualified names: `Foo.Bar.Baz`
-    while (p.peek() == .dot) {
-        _ = p.advance(); // consume `.`
+    // Qualified names: `Foo.Bar.Baz` or `Foo?.Bar` (optional chain, TS error but parseable)
+    while (p.peek() == .dot or p.peek() == .question_dot) {
+        _ = p.advance(); // consume `.` or `?.`
         if (p.peek() == .identifier or p.peek().isKeyword()) {
             const prop_tok = p.advance();
             const prop_node = try p.addNode(.{

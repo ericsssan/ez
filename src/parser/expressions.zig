@@ -2149,6 +2149,30 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         }
     }
 
+    // TS modifiers: private, protected, public, abstract, readonly, override, declare
+    if (p.language.isTs()) {
+        while (p.peek() == .identifier or p.peek() == .kw_abstract or
+            p.peek() == .kw_readonly or p.peek() == .kw_override or
+            p.peek() == .kw_declare or p.peek() == .kw_export)
+        {
+            const text = p.tokenText(p.tok_i);
+            const is_mod = std.mem.eql(u8, text, "private") or
+                std.mem.eql(u8, text, "protected") or
+                std.mem.eql(u8, text, "public") or
+                std.mem.eql(u8, text, "abstract") or
+                std.mem.eql(u8, text, "override") or
+                std.mem.eql(u8, text, "readonly") or
+                std.mem.eql(u8, text, "declare") or
+                std.mem.eql(u8, text, "export");
+            if (!is_mod) break;
+            const next = p.peekAt(1);
+            if (next == .l_paren or next == .equal or next == .semicolon or
+                next == .r_brace or next == .colon)
+                break;
+            _ = p.advance();
+        }
+    }
+
     // `accessor` field modifier (ES2024)
     if (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "accessor") and
         isPropertyNameStart(p.peekAt(1)))
