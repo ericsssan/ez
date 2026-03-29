@@ -2842,8 +2842,10 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
         .assignment_pattern, .spread_element, .rest_element,
         => {},
         .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
-            try p.emitError("Invalid left-hand side in assignment: optional chain");
-            return error.ParseError;
+            if (!p.language.isTs()) {
+                try p.emitError("Invalid left-hand side in assignment: optional chain");
+                return error.ParseError;
+            }
         },
         else => {
             if (!p.language.isTs()) {
@@ -3926,17 +3928,25 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
             (next == .identifier or next == .l_brace or next == .l_bracket))
             return true;
     }
-    // (ident, ident: — second param has type annotation
+    // Scan ahead for ident: pattern in later params
+    // Handles (a, b: T), (a, b, c: T), (a, private b), etc.
     if (tag == .identifier and p.peekAt(1) == .comma) {
-        const after_comma = p.peekAt(2);
-        if (after_comma == .identifier and p.peekAt(3) == .colon) return true;
-        // (ident, private/public ident — modifier on later param
-        if (after_comma == .identifier) {
-            const text2 = p.tokenText(p.tok_i + 2);
-            if ((std.mem.eql(u8, text2, "public") or std.mem.eql(u8, text2, "private") or
-                std.mem.eql(u8, text2, "protected") or std.mem.eql(u8, text2, "readonly")) and
-                p.peekAt(3) == .identifier)
-                return true;
+        var i: u32 = 2;
+        while (i + 1 < p.tokens.len) {
+            const t = p.peekAt(i);
+            if (t == .r_paren or t == .eof) break;
+            if (t == .identifier) {
+                const nt = p.peekAt(i + 1);
+                if (nt == .colon) return true;
+                if (nt == .question and i + 2 < p.tokens.len and p.peekAt(i + 2) == .colon) return true;
+                // Check for modifier keywords
+                const txt = p.tokenText(p.tok_i + i);
+                if ((std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "private") or
+                    std.mem.eql(u8, txt, "protected") or std.mem.eql(u8, txt, "readonly")) and
+                    nt == .identifier)
+                    return true;
+            }
+            i += 1;
         }
     }
     // (this : — this parameter
