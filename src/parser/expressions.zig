@@ -289,8 +289,10 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
     switch (op_tag) {
         .identifier, .member_expr, .computed_member_expr => {},
         .optional_member_expr, .optional_computed_member_expr => {
-            try p.emitError("Invalid left-hand side in postfix operation: optional chain");
-            return error.ParseError;
+            if (!p.language.isTs()) {
+                try p.emitError("Invalid left-hand side in postfix operation: optional chain");
+                return error.ParseError;
+            }
         },
         else => {
             if (!p.language.isTs()) try p.emitError("Invalid left-hand side in postfix operation");
@@ -1582,14 +1584,16 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     // Parse function part
     _ = try p.expect(.l_paren);
 
-    // Validate getter/setter parameter count before parsing
-    if (accessor_tag == .kw_get and p.peek() != .r_paren) {
-        try p.emitError("Getter must have zero parameters");
-        return error.ParseError;
-    }
-    if (accessor_tag == .kw_set and p.peek() == .r_paren) {
-        try p.emitError("Setter must have exactly one parameter");
-        return error.ParseError;
+    // Validate getter/setter parameter count before parsing (skip in TS — type error not syntax)
+    if (!p.language.isTs()) {
+        if (accessor_tag == .kw_get and p.peek() != .r_paren) {
+            try p.emitError("Getter must have zero parameters");
+            return error.ParseError;
+        }
+        if (accessor_tag == .kw_set and p.peek() == .r_paren) {
+            try p.emitError("Setter must have exactly one parameter");
+            return error.ParseError;
+        }
     }
 
     const params_range = if (accessor_tag == .kw_set) blk: {
@@ -2721,18 +2725,21 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
     const op_tag = p.tokenTag(op_tok);
 
     // Nullish coalescing cannot be mixed with || or && without parentheses
-    if (op_tag == .question_question and left != .none) {
-        const left_tag = p.nodes.items(.tag)[left.toInt()];
-        if (left_tag == .logical_or or left_tag == .logical_and) {
-            try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
-            return error.ParseError;
+    // In TS mode, this is a type error, not syntax error
+    if (!p.language.isTs()) {
+        if (op_tag == .question_question and left != .none) {
+            const left_tag = p.nodes.items(.tag)[left.toInt()];
+            if (left_tag == .logical_or or left_tag == .logical_and) {
+                try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
+                return error.ParseError;
+            }
         }
-    }
-    if ((op_tag == .pipe_pipe or op_tag == .ampersand_ampersand) and left != .none) {
-        const left_tag = p.nodes.items(.tag)[left.toInt()];
-        if (left_tag == .nullish_coalesce) {
-            try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
-            return error.ParseError;
+        if ((op_tag == .pipe_pipe or op_tag == .ampersand_ampersand) and left != .none) {
+            const left_tag = p.nodes.items(.tag)[left.toInt()];
+            if (left_tag == .nullish_coalesce) {
+                try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
+                return error.ParseError;
+            }
         }
     }
 
@@ -3911,6 +3918,19 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
             std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "readonly")) and
             (next == .identifier or next == .l_brace or next == .l_bracket))
             return true;
+    }
+    // (ident, ident: — second param has type annotation
+    if (tag == .identifier and p.peekAt(1) == .comma) {
+        const after_comma = p.peekAt(2);
+        if (after_comma == .identifier and p.peekAt(3) == .colon) return true;
+        // (ident, private/public ident — modifier on later param
+        if (after_comma == .identifier) {
+            const text2 = p.tokenText(p.tok_i + 2);
+            if ((std.mem.eql(u8, text2, "public") or std.mem.eql(u8, text2, "private") or
+                std.mem.eql(u8, text2, "protected") or std.mem.eql(u8, text2, "readonly")) and
+                p.peekAt(3) == .identifier)
+                return true;
+        }
     }
     // (this : — this parameter
     if (tag == .kw_this and p.peekAt(1) == .colon) return true;

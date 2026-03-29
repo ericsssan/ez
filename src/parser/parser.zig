@@ -2507,15 +2507,17 @@ pub const Parser = struct {
             const params = try self.parseFormalParameters();
             self.in_constructor = prev_in_constructor_early;
 
-            // Validate getter/setter parameter counts
+            // Validate getter/setter parameter counts (skip in TS — type error not syntax)
             const param_count = params.end - params.start;
-            if (is_getter and param_count > 0) {
-                try self.emitDiagnostic(self.currentSpan(), "Getter must have zero parameters", .{});
-                return error.ParseError;
-            }
-            if (is_setter and param_count != 1) {
-                try self.emitDiagnostic(self.currentSpan(), "Setter must have exactly one parameter", .{});
-                return error.ParseError;
+            if (!self.language.isTs()) {
+                if (is_getter and param_count > 0) {
+                    try self.emitDiagnostic(self.currentSpan(), "Getter must have zero parameters", .{});
+                    return error.ParseError;
+                }
+                if (is_setter and param_count != 1) {
+                    try self.emitDiagnostic(self.currentSpan(), "Setter must have exactly one parameter", .{});
+                    return error.ParseError;
+                }
             }
             // Setter param must not be a rest parameter
             if (is_setter and param_count == 1) {
