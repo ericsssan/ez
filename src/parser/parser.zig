@@ -1313,8 +1313,11 @@ pub const Parser = struct {
             .strict_equal, .strict_not_equal,
             .regex_literal,
             => {
-                try self.emitDiagnostic(self.currentSpan(), "Invalid left-hand side in for-in/of", .{});
-                return error.ParseError;
+                // In TS mode, invalid for-in/of LHS is a type error, not syntax error
+                if (!self.language.isTs()) {
+                    try self.emitDiagnostic(self.currentSpan(), "Invalid left-hand side in for-in/of", .{});
+                    return error.ParseError;
+                }
             },
             else => {},
         }
@@ -2069,8 +2072,13 @@ pub const Parser = struct {
         // Optional: extends superClass (must be LeftHandSideExpression)
         const super_class: NodeIndex = if (self.eat(.kw_extends) != null) blk: {
             if (self.language.isTs()) {
-                // In TS, parse extends as a type (handles generics like A<T>)
-                _ = try typescript.parseType(self);
+                // Handle parenthesized expressions in extends: (await p), (foo()).B
+                if (self.peek() == .l_paren) {
+                    _ = try self.parseAssignmentExpression();
+                } else {
+                    // Parse extends as a type (handles generics like A<T>)
+                    _ = try typescript.parseType(self);
+                }
                 // Handle mixin call: `extends Constructor<T>()`
                 if (self.peek() == .l_paren) {
                     _ = self.advance(); // eat '('

@@ -2293,6 +2293,10 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         switch (p.peek()) {
             .dot => {
                 _ = p.advance();
+                // Private name: .#ident
+                if (p.peek() == .hash and p.peekAt(1) == .identifier) {
+                    _ = p.advance(); // skip '#'
+                }
                 // Accept identifier, keyword, or escaped keyword after `.`
                 const prop_tok = if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword)
                     p.advance()
@@ -3629,24 +3633,29 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
         const saved_nodes = p.nodes.len;
         const saved_extra = p.extra_data.items.len;
 
-        const ok = blk: {
+        const type_params_ok = blk: {
             _ = ts_mod.parseTypeParameterList(p) catch break :blk false;
             break :blk true;
         };
-        if (ok and p.peek() == .l_paren) {
-            // It's a generic arrow function
-            const open_paren = p.advance(); // consume `(`
-            const params_range = try parseFormalParameters_inner(p, open_paren);
-            _ = try p.parseOptionalTypeAnnotation(); // return type
-            if (p.peek() == .arrow and !p.isOnNewLine()) {
+
+        if (type_params_ok and p.peek() == .l_paren) {
+            // Speculatively try generic arrow: <T>(params) => body
+            const arrow_ok = blk: {
+                _ = p.advance(); // consume `(`
+                _ = parseFormalParameters_inner(p, saved_tok) catch break :blk false;
+                _ = p.parseOptionalTypeAnnotation() catch break :blk false;
+                if (p.peek() == .arrow and !p.isOnNewLine()) break :blk true;
+                break :blk false;
+            };
+            if (arrow_ok) {
                 _ = p.advance(); // consume `=>`
                 const saved_fn = p.in_function;
                 p.in_function = true;
                 defer p.in_function = saved_fn;
                 const body = try parseArrowBody(p);
                 const extra = try p.addExtra(ast.ArrowData, .{
-                    .params_start = params_range.start,
-                    .params_end = params_range.end,
+                    .params_start = 0,
+                    .params_end = 0,
                     .body = body,
                 });
                 return p.addNode(.{
@@ -3655,8 +3664,9 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                     .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
                 });
             }
-            // Not an arrow — backtrack to type assertion path
+            // Not a generic arrow — backtrack
         }
+
         p.tok_i = saved_tok;
         p.diagnostics.shrinkRetainingCapacity(saved_diag);
         p.nodes.len = @intCast(saved_nodes);
