@@ -219,15 +219,33 @@ fn hasSyntaxErrorBaseline(io: Io, allocator: std.mem.Allocator, test_path: []con
     else
         basename;
 
-    // Build baseline path: <baselines_dir>/<stem>.errors.txt
+    // Check exact baseline: <stem>.errors.txt
     var buf: [4096]u8 = undefined;
     const baseline_path = std.fmt.bufPrint(&buf, "{s}/{s}.errors.txt", .{ baselines_dir, stem }) catch return false;
+    if (checkBaselineForSyntaxErrors(io, allocator, baseline_path)) return true;
 
-    const content = Io.Dir.cwd().readFileAlloc(io, baseline_path, allocator, Io.Limit.limited(256 * 1024)) catch return false;
+    // Also check parametric baselines: <stem>(<params>).errors.txt
+    // TypeScript generates these for tests with multiple @target values
+    const dir = Io.Dir.cwd().openDir(io, baselines_dir, .{}) catch return false;
+    var iter = dir.iterate();
+    while (iter.next(io) catch null) |entry| {
+        if (entry.kind != .file) continue;
+        // Check if filename starts with stem and has pattern: stem(...)*.errors.txt
+        if (!std.mem.startsWith(u8, entry.name, stem)) continue;
+        if (entry.name.len <= stem.len or entry.name[stem.len] != '(') continue;
+        if (!std.mem.endsWith(u8, entry.name, ".errors.txt")) continue;
+
+        const param_path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ baselines_dir, entry.name }) catch continue;
+        if (checkBaselineForSyntaxErrors(io, allocator, param_path)) return true;
+    }
+    return false;
+}
+
+fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []const u8) bool {
+    const content = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(256 * 1024)) catch return false;
     defer allocator.free(content);
 
     // Check for syntax error codes: TS1xxx (1000-1999)
-    // These indicate parse errors vs type errors (TS2xxx+)
     var i: usize = 0;
     while (i + 6 < content.len) : (i += 1) {
         if (content[i] == 'T' and content[i + 1] == 'S' and content[i + 2] == '1' and

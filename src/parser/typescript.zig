@@ -66,10 +66,35 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
     var result = try parseNonConditionalType(p);
 
     // Check for conditional type: `T extends U ? X : Y`
+    // Only parse as conditional if `?` actually follows the extends clause.
+    // `extends` also appears in type parameter constraints where no `?` follows.
     if (p.peek() == .kw_extends) {
+        const saved_tok = p.tok_i;
+        const saved_diag = p.diagnostics.items.len;
+        const saved_nodes = p.nodes.len;
+        const saved_extra = p.extra_data.items.len;
+
         const extends_tok = p.advance(); // consume `extends`
-        const check_type = try parseNonConditionalType(p);
-        _ = try p.expect(.question);
+        const check_type_result = parseNonConditionalType(p);
+        const check_type = check_type_result catch {
+            // Backtrack if extends clause fails to parse
+            p.tok_i = saved_tok;
+            p.diagnostics.shrinkRetainingCapacity(saved_diag);
+            p.nodes.len = @intCast(saved_nodes);
+            p.extra_data.shrinkRetainingCapacity(saved_extra);
+            return result;
+        };
+
+        if (p.peek() != .question) {
+            // Not a conditional type — backtrack
+            p.tok_i = saved_tok;
+            p.diagnostics.shrinkRetainingCapacity(saved_diag);
+            p.nodes.len = @intCast(saved_nodes);
+            p.extra_data.shrinkRetainingCapacity(saved_extra);
+            return result;
+        }
+
+        _ = p.advance(); // consume `?`
         const true_type = try parseType(p);
         _ = try p.expect(.colon);
         const false_type = try parseType(p);
@@ -220,6 +245,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         .kw_type, .kw_namespace, .kw_declare, .kw_module,
         .kw_interface, .kw_implements, .kw_enum, .kw_as, .kw_satisfies,
         .kw_is, .kw_override, .kw_const,
+        .kw_await, .kw_yield, .kw_async,
         => {
             const tok = p.advance();
             return p.addNode(.{
@@ -637,6 +663,17 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
     // Rest parameter: `...args: Type`
     _ = p.eat(.ellipsis);
 
+    // Skip access modifiers: `public`, `private`, `protected`, `readonly`
+    if (p.peek() == .identifier) {
+        const text = p.tokenText(p.tok_i);
+        if ((std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "private") or
+            std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "readonly")) and
+            (p.peekAt(1) == .identifier or p.peekAt(1) == .kw_this or p.peekAt(1) == .l_brace or p.peekAt(1) == .l_bracket))
+        {
+            _ = p.advance(); // skip modifier
+        }
+    }
+
     // Consume parameter name (identifier or keyword like `this`)
     if (p.peek() == .identifier or p.peek() == .kw_this or p.peek().isKeyword()) {
         _ = p.advance();
@@ -743,16 +780,22 @@ fn parseTypeLiteral(p: *Parser) Error!NodeIndex {
     const open_tok = p.advance(); // consume `{`
     const scratch_top = p.scratchLen();
 
-    // Check for mapped type: `{ [K in T]: V }`
-    if (p.peek() == .l_bracket) {
+    // Check for mapped type: `{ [K in T]: V }` or `{ readonly [K in T]: V }`
+    // Also handles `{ +readonly [K in T]: V }` and `{ -readonly [K in T]: V }`
+    {
         const saved = p.checkpoint();
-        _ = p.advance(); // skip `[`
-        if (p.peek() == .identifier or p.peek().isKeyword()) {
-            _ = p.advance(); // skip key name
-            if (p.peek() == .kw_in) {
-                // This is a mapped type.
-                p.restore(saved);
-                return parseMappedType(p, open_tok);
+        // Skip optional +/- readonly modifier
+        if (p.peek() == .plus or p.peek() == .minus) _ = p.advance();
+        if (p.peek() == .kw_readonly) _ = p.advance();
+        if (p.peek() == .l_bracket) {
+            _ = p.advance(); // skip `[`
+            if (p.peek() == .identifier or p.peek().isKeyword()) {
+                _ = p.advance(); // skip key name
+                if (p.peek() == .kw_in) {
+                    // This is a mapped type.
+                    p.restore(saved);
+                    return parseMappedType(p, open_tok);
+                }
             }
         }
         p.restore(saved);
@@ -777,8 +820,13 @@ fn parseTypeLiteral(p: *Parser) Error!NodeIndex {
 }
 
 /// Parse a mapped type: `{ [K in T]: V }` or `{ [K in T as U]: V }`.
+/// Also handles modifiers: `{ readonly [K in T]: V }`, `{ -readonly [K in T]: V }`.
 fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
     const scratch_top = p.scratchLen();
+
+    // Skip optional +/- readonly modifier
+    if (p.peek() == .plus or p.peek() == .minus) _ = p.advance();
+    if (p.peek() == .kw_readonly) _ = p.advance();
 
     _ = p.advance(); // consume `[`
 
@@ -1537,7 +1585,7 @@ fn isClosingAngleBracket(tag: @import("token.zig").Tag) bool {
 
 /// Expect a closing `>` in type context.  Handles `>>`, `>>>`, `>=` etc.
 /// by mutating the token in-place to consume only the first `>`.
-fn expectClosingAngleBracket(p: *Parser) Error!void {
+pub fn expectClosingAngleBracket(p: *Parser) Error!void {
     switch (p.peek()) {
         .greater_than => _ = p.advance(),
         .greater_greater => {

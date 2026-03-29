@@ -208,6 +208,19 @@ pub const Parser = struct {
         return result;
     }
 
+    /// Skip balanced parentheses, consuming from `(` to matching `)`.
+    pub fn skipBalancedParens(self: *Parser) void {
+        if (self.peek() != .l_paren) return;
+        _ = self.advance(); // consume '('
+        var depth: u32 = 1;
+        while (depth > 0 and !self.isAtEnd()) {
+            const tok = self.peek();
+            if (tok == .l_paren) depth += 1;
+            if (tok == .r_paren) depth -= 1;
+            _ = self.advance();
+        }
+    }
+
     /// If the current token matches `tag`, consume it and return its index; otherwise null.
     pub fn eat(self: *Parser, tag: TokenTag) ?TokenIndex {
         if (self.peek() == tag) {
@@ -2067,6 +2080,26 @@ pub const Parser = struct {
                     }
                     _ = try self.expect(.r_paren);
                 }
+                // Handle member access after call/paren: `extends (foo()).B`
+                while (self.peek() == .dot) {
+                    _ = self.advance(); // eat '.'
+                    if (self.peek() == .identifier or self.peek().isKeyword()) {
+                        _ = self.advance();
+                    }
+                    // May have type args on member: extends foo().Bar<T>
+                    if (self.peek() == .less_than) {
+                        const saved_tok = self.tok_i;
+                        const saved_diag = self.diagnostics.items.len;
+                        const saved_nodes = self.nodes.len;
+                        const saved_extra = self.extra_data.items.len;
+                        _ = typescript.parseTypeArguments(self) catch {
+                            self.tok_i = saved_tok;
+                            self.diagnostics.shrinkRetainingCapacity(saved_diag);
+                            self.nodes.len = @intCast(saved_nodes);
+                            self.extra_data.shrinkRetainingCapacity(saved_extra);
+                        };
+                    }
+                }
                 // May have multiple: `extends A, B` (mixins) — consume extras
                 while (self.peek() == .comma) {
                     _ = self.advance();
@@ -2691,6 +2724,23 @@ pub const Parser = struct {
 
     /// Parse a single formal parameter (binding, possibly with type annotation and default or rest).
     pub fn parseFormalParameter(self: *Parser) Error!NodeIndex {
+        // TS parameter decorators: @dec before parameter
+        if (self.language.isTs()) {
+            while (self.peek() == .at_sign) {
+                _ = self.advance(); // skip '@'
+                if (self.peek() == .l_paren) {
+                    self.skipBalancedParens();
+                } else {
+                    if (self.peek() == .identifier or self.peek().isKeyword()) _ = self.advance();
+                    while (self.peek() == .dot) {
+                        _ = self.advance();
+                        if (self.peek() == .identifier or self.peek().isKeyword()) _ = self.advance();
+                    }
+                    if (self.peek() == .l_paren) self.skipBalancedParens();
+                }
+            }
+        }
+
         // Rest parameter: `...binding`
         if (self.eat(.ellipsis)) |ellipsis_tok| {
             const binding = try self.parseBindingPattern();

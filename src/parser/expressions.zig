@@ -714,7 +714,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
         .kw_null => try parseLiteral(p, .null_literal),
         .kw_this => try parseLiteral(p, .this_expr),
         .kw_super => blk: {
-            if (!p.in_class and !p.in_method) try p.emitError("'super' is only valid inside a class or method");
+            if (!p.in_class and !p.in_method and !p.language.isTs()) try p.emitError("'super' is only valid inside a class or method");
             // super must be followed by `.`, `[`, or `(` — bare `super` is invalid
             const next = p.peekAt(1);
             if (next != .dot and next != .l_bracket and next != .l_paren) {
@@ -1153,6 +1153,52 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     }
 
     _ = try p.expect(.r_paren);
+
+    // TS: `(params): ReturnType => body` — return type annotation before arrow
+    if (p.language.isTs() and p.peek() == .colon) {
+        const saved_tok = p.tok_i;
+        const saved_diag_len = p.diagnostics.items.len;
+        const saved_nodes_len = p.nodes.len;
+        const saved_extra_len = p.extra_data.items.len;
+        _ = p.advance(); // eat ':'
+        const typescript = @import("typescript.zig");
+        const type_ok = blk: {
+            _ = typescript.parseType(p) catch break :blk false;
+            break :blk true;
+        };
+        if (type_ok and p.peek() == .arrow and !p.isOnNewLine()) {
+            // It's an arrow with return type — reinterpret params and build arrow
+            const params = p.scratchSlice(scratch_top);
+            for (params) |node_raw| {
+                reinterpretAsPattern(p, NodeIndex.fromInt(node_raw));
+            }
+            const params_range = try p.addSlice(params);
+            p.scratchPop(scratch_top);
+            _ = p.advance(); // consume `=>`
+            const saved_fn5 = p.in_function;
+            p.in_function = true;
+            defer p.in_function = saved_fn5;
+            const body = if (p.peek() == .l_brace)
+                try parseBlockBodyWithStrictChecks(p, params_range, .none)
+            else
+                try parseAssignmentExpression(p);
+            const extra = try p.addExtra(ast.ArrowData, .{
+                .params_start = params_range.start,
+                .params_end = params_range.end,
+                .body = body,
+            });
+            return p.addNode(.{
+                .tag = .arrow_fn,
+                .main_token = open_paren,
+                .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+            });
+        }
+        // Not an arrow — backtrack the type annotation
+        p.tok_i = saved_tok;
+        p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
+        p.nodes.len = @intCast(saved_nodes_len);
+        p.extra_data.shrinkRetainingCapacity(saved_extra_len);
+    }
 
     // If `=>` follows, reinterpret as arrow parameters.
     if (p.peek() == .arrow and !p.isOnNewLine()) {
@@ -2864,8 +2910,8 @@ fn parseSequenceExpression(p: *Parser, first: NodeIndex) Error!NodeIndex {
 // =====================================================================
 
 fn parseCallExpression(p: *Parser, callee: NodeIndex) Error!NodeIndex {
-    // super() is only valid in class constructors
-    if (callee != .none) {
+    // super() is only valid in class constructors (skip check in TS mode — type error not syntax error)
+    if (callee != .none and !p.language.isTs()) {
         const callee_tag = p.nodes.items(.tag)[callee.toInt()];
         if (callee_tag == .super_expr) {
             if (p.in_class_field) {
@@ -3112,6 +3158,26 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
             .main_token = tok,
             .data = .{ .lhs = arg, .rhs = .none },
         });
+    }
+
+    // TS parameter decorators: @dec before parameter
+    if (p.language.isTs()) {
+        while (p.peek() == .at_sign) {
+            _ = p.advance(); // skip '@'
+            // Skip decorator expression: @(expr) or @ident(.ident)*(args)?
+            if (p.peek() == .l_paren) {
+                skipBalancedParens(p);
+            } else {
+                // Skip identifier chain: ident.ident.ident
+                if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+                while (p.peek() == .dot) {
+                    _ = p.advance();
+                    if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+                }
+                // Optional call args
+                if (p.peek() == .l_paren) skipBalancedParens(p);
+            }
+        }
     }
 
     // TS parameter modifiers: public, private, protected, readonly, override
@@ -3552,10 +3618,54 @@ fn parseTsNonNullExpression(p: *Parser, left: NodeIndex) Error!NodeIndex {
 
 /// Parse `<Type>expr` — TS type assertion (angle bracket form).
 fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
-    const lt_tok = p.advance(); // consume `<`
     const ts_mod = @import("typescript.zig");
+
+    // Try to detect generic arrow function: <T extends X>(params) => body
+    // vs type assertion: <Type>expr
+    // Heuristic: speculatively parse as type parameters; if followed by `(`, it's a generic arrow.
+    {
+        const saved_tok = p.tok_i;
+        const saved_diag = p.diagnostics.items.len;
+        const saved_nodes = p.nodes.len;
+        const saved_extra = p.extra_data.items.len;
+
+        const ok = blk: {
+            _ = ts_mod.parseTypeParameterList(p) catch break :blk false;
+            break :blk true;
+        };
+        if (ok and p.peek() == .l_paren) {
+            // It's a generic arrow function
+            const open_paren = p.advance(); // consume `(`
+            const params_range = try parseFormalParameters_inner(p, open_paren);
+            _ = try p.parseOptionalTypeAnnotation(); // return type
+            if (p.peek() == .arrow and !p.isOnNewLine()) {
+                _ = p.advance(); // consume `=>`
+                const saved_fn = p.in_function;
+                p.in_function = true;
+                defer p.in_function = saved_fn;
+                const body = try parseArrowBody(p);
+                const extra = try p.addExtra(ast.ArrowData, .{
+                    .params_start = params_range.start,
+                    .params_end = params_range.end,
+                    .body = body,
+                });
+                return p.addNode(.{
+                    .tag = .arrow_fn,
+                    .main_token = saved_tok,
+                    .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+                });
+            }
+            // Not an arrow — backtrack to type assertion path
+        }
+        p.tok_i = saved_tok;
+        p.diagnostics.shrinkRetainingCapacity(saved_diag);
+        p.nodes.len = @intCast(saved_nodes);
+        p.extra_data.shrinkRetainingCapacity(saved_extra);
+    }
+
+    const lt_tok = p.advance(); // consume `<`
     const type_node = try ts_mod.parseType(p);
-    _ = try p.expect(.greater_than);
+    _ = try ts_mod.expectClosingAngleBracket(p);
     const expr = try parseExpressionPrec(p, .unary);
     return p.addNode(.{
         .tag = .ts_type_assertion,
@@ -3732,15 +3842,33 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
     return false;
 }
 
+/// Skip balanced parentheses, consuming from `(` to matching `)`.
+fn skipBalancedParens(p: *Parser) void {
+    if (p.peek() != .l_paren) return;
+    _ = p.advance(); // consume '('
+    var depth: u32 = 1;
+    while (depth > 0 and !p.isAtEnd()) {
+        const tok = p.peek();
+        if (tok == .l_paren) depth += 1;
+        if (tok == .r_paren) depth -= 1;
+        _ = p.advance();
+    }
+}
+
 /// Check if content after `(` looks like TS typed arrow parameters.
 /// Heuristic: first token is `identifier` followed by `:` or `?:`,
 /// or first token is `this` followed by `:`, or `...`, `{`, `[`.
 fn looksLikeTsArrowParams(p: *Parser) bool {
     const tag = p.peek();
-    // (identifier : or (identifier ?: — typed param
+    // (identifier : — typed param
     if (tag == .identifier) {
         const next = p.peekAt(1);
-        if (next == .colon or next == .question) return true;
+        if (next == .colon) return true;
+        // (identifier ?: — optional typed param (but NOT ternary like `(x ? y : z)`)
+        if (next == .question) {
+            const after_q = p.peekAt(2);
+            if (after_q == .colon or after_q == .r_paren or after_q == .comma) return true;
+        }
         // Check for TS modifier followed by another identifier
         const text = p.tokenText(p.tok_i);
         if ((std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "private") or
@@ -3750,8 +3878,13 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
     }
     // (this : — this parameter
     if (tag == .kw_this and p.peekAt(1) == .colon) return true;
-    // (... — rest param (could be arrow or expression, but more likely arrow with types)
-    // ({ or ([ — destructuring params — ambiguous, skip for now
+    // (...ident: type) — rest param with type annotation
+    if (tag == .ellipsis) {
+        const next = p.peekAt(1);
+        if (next == .identifier and (p.peekAt(2) == .colon or p.peekAt(2) == .question)) return true;
+        // (...{pattern} or ...[pattern] — destructured rest
+        if (next == .l_brace or next == .l_bracket) return true;
+    }
     return false;
 }
 
