@@ -161,7 +161,9 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
                     break;
                 }
             }
+            const before_call = p.tok_i;
             left = try parseCallLevelInfix(p, left);
+            if (p.tok_i == before_call) break; // no progress (e.g. ASI in class field)
             continue;
         }
 
@@ -2481,6 +2483,8 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                 });
             },
             .l_bracket => {
+                // In class field context, `[` on a new line starts a new member (ASI)
+                if (p.in_class_field and p.isOnNewLine()) break;
                 const bracket = p.advance();
                 const saved_allow_in_new = p.allow_in;
                 p.allow_in = true;
@@ -2569,14 +2573,21 @@ fn hasInvalidTemplateEscape(source: []const u8, start: u32, end: u32) bool {
                     // \u{XXXX} — need hex digits and closing }
                     i += 1;
                     var digits: u32 = 0;
+                    var code_point: u32 = 0;
                     while (i < text.len and text[i] != '}') : (i += 1) {
                         if (!isHex(text[i])) return true;
                         digits += 1;
+                        const digit_val: u32 = if (text[i] >= '0' and text[i] <= '9')
+                            text[i] - '0'
+                        else if (text[i] >= 'a' and text[i] <= 'f')
+                            text[i] - 'a' + 10
+                        else
+                            text[i] - 'A' + 10;
+                        code_point = code_point *| 16 +| digit_val;
                     }
                     if (i >= text.len or digits == 0) return true;
                     // Check code point <= 0x10FFFF
-                    // (skip detailed check, just check digit count)
-                    if (digits > 6) return true;
+                    if (code_point > 0x10FFFF) return true;
                 } else {
                     // \uXXXX — need exactly 4 hex digits
                     if (i + 3 >= text.len) return true;
@@ -2853,7 +2864,11 @@ fn parseCallLevelInfix(p: *Parser, left: NodeIndex) Error!NodeIndex {
     return switch (tag) {
         .l_paren => try parseCallExpression(p, left),
         .dot => try parseMemberAccess(p, left),
-        .l_bracket => try parseComputedMember(p, left),
+        .l_bracket => {
+            // In class field context, `[` on a new line starts a new member (ASI)
+            if (p.in_class_field and p.isOnNewLine()) return left;
+            return try parseComputedMember(p, left);
+        },
         .question_dot => try parseOptionalChain(p, left),
         .template_head, .template_no_sub => try parseTaggedTemplate(p, left),
         else => left,

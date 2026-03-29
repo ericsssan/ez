@@ -1807,7 +1807,7 @@ pub const Parser = struct {
 
     /// Parse `with (expr) stmt`.
     pub fn parseWithStatement(self: *Parser) Error!NodeIndex {
-        if (self.in_strict) {
+        if (self.in_strict and !self.language.isTs()) {
             try self.emitDiagnostic(self.currentSpan(), "'with' statements are not allowed in strict mode", .{});
             // Continue parsing to avoid cascading failures
         }
