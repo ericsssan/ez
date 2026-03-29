@@ -715,10 +715,17 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
     const scratch_top = p.scratchLen();
 
     while (p.peek() != .r_bracket and !p.isAtEnd()) {
-        // Spread element in tuple: `...Type`
+        // Spread element in tuple: `...Type` or `...label: Type`
         if (p.peek() == .ellipsis) {
             const spread_tok = p.advance();
+            // Check for labeled spread: `...label: Type`
+            if ((p.peek() == .identifier or p.peek().isKeyword()) and p.peekAt(1) == .colon) {
+                _ = p.advance(); // skip label
+                _ = p.advance(); // skip ':'
+            }
             const elem_type = try parseType(p);
+            // Optional `?` after spread type
+            _ = p.eat(.question);
             const spread_node = try p.addNode(.{
                 .tag = .spread_element,
                 .main_token = spread_tok,

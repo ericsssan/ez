@@ -872,6 +872,11 @@ fn parseAsyncExpressionOrIdentifier(p: *Parser) Error!NodeIndex {
         });
     }
 
+    // `async => expr` — async used as a parameter name in arrow function
+    if (next_tag == .arrow and !p.isOnNewLine()) {
+        return parseArrowFunctionBody(p, async_tok, false);
+    }
+
     // Standalone `async` as identifier.
     return p.addNode(.{
         .tag = .identifier,
