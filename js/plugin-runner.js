@@ -114,6 +114,8 @@ class SourceCode {
     this.text = sourceText;
     this._linesCache = null;
     this._tokensCache = null;
+    this._scopeCache = new Map();
+    this._thinScopeCache = new Map();
   }
 
   /**
@@ -381,24 +383,332 @@ class SourceCode {
   }
 
   /**
-   * Stub for getScope — returns an empty scope with no variables.
-   * Sufficient for rules that use it only for name-collision checks in fixers.
+   * Get the scope containing a node. Uses real semantic data when available.
    */
-  getScope() {
-    const upper = { variables: [], references: [], through: [], set: new Map(),
-                    isStrict: false, type: 'global', upper: null, block: null };
-    return {
-      variables: [],
-      childScopes: [],
-      references: [],
-      through: [],
-      set: new Map(),
+  getScope(node) {
+    const ast = this._ast;
+    if (!ast._nodeScopeIds || !node) return this._stubScope();
+    const nodeIdx = (node._i !== undefined && node._i !== null) ? node._i : -1;
+    const scopeId = nodeIdx >= 0 ? ast._scopeForNode(nodeIdx) : 0;
+    return this._buildScope(scopeId);
+  }
+
+  /**
+   * Build an ESLint-compatible scope object from the semantic data for a given scopeId.
+   * Results are cached per SourceCode instance to avoid O(n²) rebuilds and
+   * to break the parent↔child circular reference during construction.
+   */
+  _buildScope(scopeId) {
+    const cached = this._scopeCache.get(scopeId);
+    if (cached) return cached;
+
+    const ast = this._ast;
+    if (!ast._scopeKinds || scopeId === NONE || scopeId >= ast._semScopeCount) {
+      return this._stubScope();
+    }
+    const NONE32 = 0xFFFFFFFF;
+    const KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
+    const kind = ast._scopeKinds[scopeId];
+    const flags16 = ast._scopeFlags[scopeId];
+    const isStrict = (flags16 & 1) !== 0;
+    const parentId = ast._scopeParents[scopeId];
+
+    // Build variables: all symbols whose scope_id matches this scope.
+    // Merge symbols with the same name (var redeclarations get 2 symbols in sanz
+    // but ESLint expects 1 variable with 2 identifiers, for no-redeclare support).
+    const varMap = new Map();
+    if (ast._symScopeIds) {
+      for (let i = 0; i < ast._semSymbolCount; i++) {
+        if (ast._symScopeIds[i] !== scopeId) continue;
+        const v = this._buildVariable(i);
+        if (varMap.has(v.name)) {
+          const existing = varMap.get(v.name);
+          existing.identifiers.push(...v.identifiers);
+          existing.defs.push(...v.defs);
+          existing.references.push(...v.references);
+        } else {
+          varMap.set(v.name, v);
+        }
+      }
+    }
+    const variables = Array.from(varMap.values());
+
+    // Build references: all references from this scope
+    const references = [];
+    const through = []; // unresolved references (bubble up to global scope)
+    if (ast._refScopeIds) {
+      for (let i = 0; i < ast._semRefCount; i++) {
+        if (ast._refScopeIds[i] === scopeId) {
+          const ref = this._buildReference(i);
+          references.push(ref);
+          if (!ref.resolved) through.push(ref);
+        }
+      }
+    }
+
+    const upper = parentId === NONE32 ? null : this._buildScope(parentId);
+    const set = new Map(varMap);
+
+    // block = the AST node that created this scope (for require-atomic-updates)
+    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
+    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+      ? nodeView(ast, scopeNodeIdx) : null;
+
+    const isVarScope = kind === 0 || kind === 1 || kind === 2; // global, module, function
+    const childScopes = [];
+    const scope = {
+      type: KIND_NAMES[kind] || 'block',
+      isStrict,
+      variables,
+      set,
+      references,
+      through,
+      childScopes,
       implicit: { variables: [] },
-      block: null,
+      block,
       upper,
-      isStrict: false,
-      type: 'module',
+      lookup(name) { return set.get(name) || null; },
     };
+    scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
+
+    // Cache before building children to break the parent←→child cycle.
+    this._scopeCache.set(scopeId, scope);
+
+    // Populate childScopes (needed by no-shadow, no-unused-vars, etc.).
+    for (let c = 0; c < ast._semScopeCount; c++) {
+      if (ast._scopeParents[c] === scopeId) childScopes.push(this._buildScope(c));
+    }
+
+    return scope;
+  }
+
+  /** Build an ESLint Variable object for a symbol. */
+  _buildVariable(symId) {
+    const ast = this._ast;
+    const name = ast._symName(symId);
+    const flags16 = ast._symFlags[symId];
+    const NONE32 = 0xFFFFFFFF;
+
+    // SymbolFlags bits (matches symbol.zig):
+    // 0=is_var, 1=is_let, 2=is_const, 3=is_function, 4=is_class,
+    // 5=is_parameter, 6=is_catch_param, 7=is_import, 8=is_export,
+    // 9=is_hoisted, 10=is_written, 11=is_read, 12=is_type_of, 13=is_implicit_global
+    const is_param  = (flags16 & 0x20) !== 0;
+    const is_const  = (flags16 & 0x04) !== 0;
+    const is_import = (flags16 & 0x80) !== 0;
+    const is_read   = (flags16 & 0x800) !== 0;
+    const is_written= (flags16 & 0x400) !== 0;
+
+    // Build references for this symbol by scanning the reference table.
+    // (RefRange in symbol table is not always populated by the analyzer.)
+    const references = [];
+    if (ast._refSymbolIds) {
+      for (let i = 0; i < ast._semRefCount; i++) {
+        if (ast._refSymbolIds[i] === symId) references.push(this._buildReference(i));
+      }
+    }
+
+    const declNodeIdx = ast._symDeclNodes[symId];
+    const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
+      ? nodeView(ast, declNodeIdx) : null;
+
+    // Determine def type
+    const is_catch = (flags16 & 0x40) !== 0;
+    let defType = 'Variable';
+    if (is_param) defType = 'Parameter';
+    else if (is_catch) defType = 'CatchClause';
+    else if ((flags16 & 0x08) !== 0) defType = 'FunctionName';
+    else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
+    else if (is_import) defType = 'ImportBinding';
+
+    // Map declNode (Identifier) to the ESLint-expected def.node and def.parent:
+    //   Variable:    def.name=Identifier, def.node=VariableDeclarator, def.parent=VariableDeclaration
+    //   CatchClause: def.name=Identifier, def.node=Identifier, def.parent=TryStatement
+    //   Parameter:   def.name=Identifier, def.node=Identifier, def.parent=FunctionDeclaration
+    //   FunctionName:def.name=Identifier, def.node=FunctionDeclaration, def.parent=container
+    //   ClassName:   def.name=Identifier, def.node=ClassDeclaration, def.parent=container
+    //   ImportBinding: def.name=Identifier, def.node=ImportSpecifier, def.parent=ImportDeclaration
+    let defNode = declNode;
+    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
+      // For these types, def.node = parent of Identifier (Declarator/Declaration/Specifier)
+      defNode = declNode && declNode.parent ? declNode.parent : declNode;
+    }
+    const defs = declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
+
+    const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
+    // Use a thin scope (no variables) to avoid infinite recursion.
+    // variable.scope is used primarily for variableScope chain traversal.
+    // Cached via _thinScopeCache so same scopeId always returns the same object,
+    // required for prefer-const's `writer.from === variable.scope` identity check.
+    const scope = (symScopeId !== undefined && symScopeId !== NONE32)
+      ? this._buildThinScope(symScopeId) : this._stubScope();
+
+    // Synthesize an init-write reference for let/const variables that have an initializer.
+    // The Zig semantic analyzer only tracks explicit write references (assignments),
+    // but ESLint's prefer-const also needs the initializer tracked as a write reference.
+    const is_let = (flags16 & 0x02) !== 0;
+    if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && declNodeIdx !== 0xFFFFFFFF && ast._parentData) {
+      const declaratorIdx = ast._parentData[declNodeIdx]; // Identifier → Declarator
+      if (declaratorIdx !== undefined && declaratorIdx !== NONE && declaratorIdx !== 0xFFFFFFFF && declaratorIdx < ast.nodeCount) {
+        const initNodeIdx = ast.nodeRhs(declaratorIdx);
+        if (initNodeIdx !== 0xFFFFFFFF && initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+          // Has initializer — prepend synthetic init write reference.
+          const thin = this._buildThinVariable(symId);
+          references.unshift({
+            identifier: declNode,
+            from: scope, // same object as variable.scope — required for prefer-const
+            resolved: thin,
+            writeExpr: nodeView(ast, initNodeIdx),
+            init: true,
+            isWrite: () => true,
+            isRead: () => false,
+            isWriteOnly: () => true,
+            isReadOnly: () => false,
+            isReadWrite: () => false,
+          });
+        }
+      }
+    }
+
+    return {
+      name,
+      defs,
+      references,
+      scope,
+      identifiers: declNode ? [declNode] : [],
+      eslintUsed: false,
+      writeable: !is_const && !is_import,
+      isRead: () => is_read,
+      isWritten: () => is_written || is_let, // let vars are potentially writable
+    };
+  }
+
+  /** Build an ESLint Reference object for a reference entry. */
+  _buildReference(refIdx) {
+    const ast = this._ast;
+    const NONE32 = 0xFFFFFFFF;
+    const symId = ast._refSymbolIds[refIdx];
+    const kind  = ast._refKinds[refIdx];  // 0=read, 1=write, 2=read_write, 3=type_of
+    const nodeIdx = ast._refNodeIds[refIdx];
+    const refNode = (nodeIdx !== NONE32 && nodeIdx < ast.nodeCount)
+      ? nodeView(ast, nodeIdx) : null;
+
+    // Use thin variable for resolved to avoid recursive buildVariable→buildReference cycles.
+    const resolved = symId !== NONE32 ? this._buildThinVariable(symId) : null;
+
+    const refScopeId = ast._refScopeIds ? ast._refScopeIds[refIdx] : NONE;
+    const from = (refScopeId !== undefined && refScopeId !== NONE32)
+      ? this._buildThinScope(refScopeId) : this._stubScope();
+
+    return {
+      identifier: refNode,
+      from,
+      resolved,
+      writeExpr: null,
+      init: false,
+      isWrite: () => kind === 1 || kind === 2,
+      isRead:  () => kind === 0 || kind === 2 || kind === 3,
+      isWriteOnly: () => kind === 1,
+      isReadOnly:  () => kind === 0 || kind === 3,
+      isReadWrite: () => kind === 2,
+    };
+  }
+
+  /**
+   * Build a thin Variable (no references) for use as reference.resolved.
+   * Avoids cycles: _buildVariable → _buildReference → _buildVariable.
+   */
+  _buildThinVariable(symId) {
+    const ast = this._ast;
+    const NONE32 = 0xFFFFFFFF;
+    if (!ast._symFlags || symId === NONE || symId === NONE32 || symId >= ast._semSymbolCount) return null;
+    const name = ast._symName(symId);
+    const flags16 = ast._symFlags[symId];
+    const is_const  = (flags16 & 0x04) !== 0;
+    const is_param  = (flags16 & 0x20) !== 0;
+    const is_import = (flags16 & 0x80) !== 0;
+    const is_read   = (flags16 & 0x800) !== 0;
+    const is_written= (flags16 & 0x400) !== 0;
+    const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
+    const scope = (symScopeId !== undefined && symScopeId !== NONE32)
+      ? this._buildThinScope(symScopeId) : this._stubScope();
+    const is_catch = (flags16 & 0x40) !== 0;
+    let defType = 'Variable';
+    if (is_param) defType = 'Parameter';
+    else if (is_catch) defType = 'CatchClause';
+    else if ((flags16 & 0x08) !== 0) defType = 'FunctionName';
+    else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
+    else if (is_import) defType = 'ImportBinding';
+    const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
+    const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
+      ? nodeView(ast, declNodeIdx) : null;
+    // Compute def.node and def.parent same as in _buildVariable
+    let defNode = declNode;
+    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
+      defNode = declNode && declNode.parent ? declNode.parent : declNode;
+    }
+    return {
+      name,
+      defs: declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
+      references: [], // thin — no refs to avoid cycle
+      scope,
+      identifiers: declNode ? [declNode] : [],
+      eslintUsed: false,
+      writeable: !is_const && !is_import,
+      isRead: () => is_read,
+      isWritten: () => is_written,
+    };
+  }
+
+  /**
+   * Build a thin scope (no variables/references) for use as variable.scope.
+   * Avoids infinite recursion: _buildScope → _buildVariable → _buildScope.
+   * Thin scopes only provide chain structure: type, isStrict, upper, variableScope.
+   * Results are cached so same scopeId → same object (required for === comparisons
+   * in prefer-const: writer.from === variable.scope).
+   */
+  _buildThinScope(scopeId) {
+    const cached = this._thinScopeCache.get(scopeId);
+    if (cached) return cached;
+
+    const ast = this._ast;
+    const NONE32 = 0xFFFFFFFF;
+    if (!ast._scopeKinds || scopeId === NONE || scopeId === NONE32 || scopeId >= ast._semScopeCount) {
+      return this._stubScope();
+    }
+    const KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
+    const kind = ast._scopeKinds[scopeId];
+    const flags16 = ast._scopeFlags[scopeId];
+    const isStrict = (flags16 & 1) !== 0;
+    const parentId = ast._scopeParents[scopeId];
+    const upper = (parentId !== NONE32) ? this._buildThinScope(parentId) : null;
+    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE32;
+    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+      ? nodeView(ast, scopeNodeIdx) : null;
+    const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const s = {
+      type: KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
+      set: new Map(), through: [], childScopes: [], implicit: { variables: [] },
+      block, upper, lookup: () => null,
+    };
+    s.variableScope = isVarScope ? s : (upper ? upper.variableScope || upper : s);
+    this._thinScopeCache.set(scopeId, s);
+    return s;
+  }
+
+  /** Fallback stub scope (no semantic data). */
+  _stubScope() {
+    const upper = { variables: [], references: [], through: [], set: new Map(),
+                    isStrict: false, type: 'global', upper: null, block: null,
+                    lookup: () => null };
+    upper.variableScope = upper;
+    const s = {
+      variables: [], childScopes: [], references: [], through: [],
+      set: new Map(), implicit: { variables: [] }, block: null,
+      upper, isStrict: false, type: 'module', lookup: () => null,
+    };
+    s.variableScope = s;
+    return s;
   }
 
   /**
@@ -409,13 +719,50 @@ class SourceCode {
   }
 
   /**
-   * Stub for getDeclaredVariables — returns fake variable objects for function params.
-   * Without real scope analysis, returns stub variables with empty reference arrays.
-   * defs[0].type = "Parameter" lets no-func-assign/no-param-reassign discriminate
-   * without crashing (they check defs[0].type before accessing references).
+   * getDeclaredVariables — returns real symbol data for function/variable nodes.
+   * Falls back to parameter stubs if no semantic data available.
    */
   getDeclaredVariables(node) {
     if (!node) return [];
+    const ast = this._ast;
+
+    // Use real semantic data if available
+    if (ast._symDeclNodes && node._i !== undefined && node._i !== null) {
+      const NONE32 = 0xFFFFFFFF;
+      const nodeIdx = node._i;
+      const result = [];
+      // Find symbols whose decl_node is nodeIdx or a direct structural descendant.
+      // ESLint rules (e.g., prefer-const) call getDeclaredVariables(varDeclNode)
+      // while sanz stores the Identifier as decl_node, 2 hops deeper in the tree.
+      // IMPORTANT: Stop at function/class scope boundaries so that parameters of
+      // nested arrow functions don't get returned for the outer VariableDeclarator.
+      const pd = ast._parentData;
+      const tags = ast._nodeTags;
+      for (let i = 0; i < ast._semSymbolCount; i++) {
+        const declNodeIdx = ast._symDeclNodes[i];
+        if (declNodeIdx === NONE32 || declNodeIdx >= ast.nodeCount) continue;
+        if (declNodeIdx === nodeIdx) {
+          result.push(this._buildVariable(i));
+          continue;
+        }
+        // Walk ancestors of declNodeIdx looking for nodeIdx, stopping at scope boundaries.
+        // Scope-creating node tags: fn_decl(30-33), class_decl(34), fn_expr(63-66),
+        // class_expr(67), arrow_fn(68), async_arrow_fn(69).
+        if (pd) {
+          let cur = pd[declNodeIdx];
+          while (cur !== NONE && cur !== NONE32 && cur < ast.nodeCount) {
+            if (cur === nodeIdx) { result.push(this._buildVariable(i)); break; }
+            // Stop if we cross a function or class boundary
+            const curTag = tags[cur];
+            if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69)) break;
+            cur = pd[cur];
+          }
+        }
+      }
+      if (result.length > 0) return result;
+    }
+
+    // Fallback: return param stubs with defs so rules don't crash
     const params = node.params;
     if (!params || !params.length) return [];
     return params.map(p => {
@@ -560,6 +907,7 @@ class RuleContext {
   constructor(ast, filename, sourceText, options = {}) {
     this._ast = ast;
     this._filename = filename;
+    this.filename = filename; // ESLint v8+ flat config uses context.filename directly
     this._source = sourceText;
     this._reports = [];
     this.options = options.ruleOptions || [];

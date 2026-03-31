@@ -23,6 +23,34 @@ const H = {
   FLAGS: 60,
   // v2: parent indices (byte 64)
   PARENT_INDICES_OFFSET: 64,
+  // v3: semantic data offset (byte 68)
+  SEMANTIC_DATA_OFFSET: 68,
+};
+
+// SemanticHeader field offsets (byte offsets from semOff)
+const SH = {
+  SCOPE_COUNT: 0,
+  SYMBOL_COUNT: 4,
+  REF_COUNT: 8,
+  // _pad: 12
+  SCOPE_KINDS: 16,
+  SCOPE_FLAGS: 20,
+  SCOPE_PARENTS: 24,
+  SCOPE_NODE_IDS: 28,
+  SCOPE_BINDINGS_START: 32,
+  SCOPE_BINDINGS_COUNT: 36,
+  SYMBOL_FLAGS: 40,
+  SYMBOL_SCOPE_IDS: 44,
+  SYMBOL_DECL_NODES: 48,
+  SYMBOL_REF_STARTS: 52,
+  SYMBOL_REF_ENDS: 56,
+  SYMBOL_NAME_STARTS: 60,
+  SYMBOL_NAME_LENS: 64,
+  REF_SYMBOL_IDS: 68,
+  REF_KINDS: 72,
+  REF_NODE_IDS: 76,
+  REF_SCOPE_IDS: 80,
+  NODE_SCOPE_IDS: 84,
 };
 
 const FLAG_HAS_BOM = 1;
@@ -83,6 +111,7 @@ class AstView {
 
     // Source text (UTF-8 in buffer, decoded lazily)
     this._sourceBytes = new Uint8Array(buffer, sourceOff, this.sourceLen);
+    this._sourceOff = sourceOff; // byte offset of source in buffer (for symbol name lookup)
     this._sourceText = null;
 
     // Parent indices (v2 — zero array if not present in buffer)
@@ -90,6 +119,44 @@ class AstView {
     this._parentData = parentOff > 0
       ? new Uint32Array(buffer, parentOff, this.nodeCount)
       : null;
+
+    // Semantic data (v3 — scope/symbol/reference tables)
+    const semOff = dv.getUint32(H.SEMANTIC_DATA_OFFSET, true);
+    if (semOff > 0) {
+      this._semScopeCount   = dv.getUint32(semOff + SH.SCOPE_COUNT, true);
+      this._semSymbolCount  = dv.getUint32(semOff + SH.SYMBOL_COUNT, true);
+      this._semRefCount     = dv.getUint32(semOff + SH.REF_COUNT, true);
+
+      this._scopeKinds      = new Uint8Array (buffer, dv.getUint32(semOff + SH.SCOPE_KINDS, true),           this._semScopeCount);
+      this._scopeFlags      = new Uint16Array(buffer, dv.getUint32(semOff + SH.SCOPE_FLAGS, true),           this._semScopeCount);
+      this._scopeParents    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_PARENTS, true),         this._semScopeCount);
+      this._scopeNodeIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_NODE_IDS, true),        this._semScopeCount);
+      this._scopeBindStart  = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_BINDINGS_START, true),  this._semScopeCount);
+      this._scopeBindCount  = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_BINDINGS_COUNT, true),  this._semScopeCount);
+
+      if (this._semSymbolCount > 0) {
+        this._symFlags        = new Uint16Array(buffer, dv.getUint32(semOff + SH.SYMBOL_FLAGS, true),      this._semSymbolCount);
+        this._symScopeIds     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_SCOPE_IDS, true),  this._semSymbolCount);
+        this._symDeclNodes    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_DECL_NODES, true), this._semSymbolCount);
+        this._symRefStarts    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_REF_STARTS, true), this._semSymbolCount);
+        this._symRefEnds      = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_REF_ENDS, true),   this._semSymbolCount);
+        this._symNameStarts   = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_STARTS, true),this._semSymbolCount);
+        this._symNameLens     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_LENS, true),  this._semSymbolCount);
+      }
+
+      if (this._semRefCount > 0) {
+        this._refSymbolIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_SYMBOL_IDS, true), this._semRefCount);
+        this._refKinds        = new Uint8Array (buffer, dv.getUint32(semOff + SH.REF_KINDS, true),       this._semRefCount);
+        this._refNodeIds      = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_NODE_IDS, true),    this._semRefCount);
+        this._refScopeIds     = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_SCOPE_IDS, true),   this._semRefCount);
+      }
+
+      this._nodeScopeIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.NODE_SCOPE_IDS, true),  this.nodeCount);
+    } else {
+      this._semScopeCount = 0;
+      this._semSymbolCount = 0;
+      this._semRefCount = 0;
+    }
 
     // Per-parse node cache — ensures reference equality: nodeView(ast, i) === nodeView(ast, i)
     this._nodeCache = null;
@@ -309,6 +376,35 @@ class AstView {
       end = src.length;
     }
     return src.slice(start, end);
+  }
+
+  // ── Semantic accessors ─────────────────────────────────────────
+
+  /** Get the name of a symbol (zero-copy string from source). */
+  _symName(symId) {
+    if (!this._symNameStarts) return '';
+    const start = this._symNameStarts[symId];
+    const len = this._symNameLens[symId];
+    return this.source.slice(start - this._sourceOff, start - this._sourceOff + len);
+  }
+
+  /**
+   * Get the innermost scope containing a node.
+   * Walks up the parent chain from the node's own scope entry until found.
+   * Returns the scopeId (u32), or NONE if no semantic data.
+   */
+  _scopeForNode(nodeIdx) {
+    if (!this._nodeScopeIds) return NONE;
+    // Walk up the parent chain until we find a node that has a scope entry
+    let cur = nodeIdx;
+    while (cur !== NONE && cur < this.nodeCount) {
+      const scopeId = this._nodeScopeIds[cur];
+      if (scopeId !== NONE) return scopeId;
+      const pd = this._parentData;
+      if (!pd) break;
+      cur = pd[cur];
+    }
+    return 0; // global scope
   }
 
   /**
@@ -670,6 +766,17 @@ const NodeProto = {
     if (t === T.static_block) {
       return ast._nodesFromRange(lhs, rhs);
     }
+    // ClassDeclaration/ClassExpression — returns synthetic ClassBody
+    if (t === T.class_decl || t === T.class_expr) {
+      const d = ast.extraClassData(lhs);
+      const members = ast._nodesFromRange(d.body_start, d.body_end);
+      return {
+        type: 'ClassBody',
+        body: members,
+        start: members.length > 0 ? members[0].start : this.start,
+        mainToken: this.mainToken,
+      };
+    }
     // Program body — lhs=range.start, rhs=range.end (stored directly)
     if (t === T.root) {
       return ast._nodesFromRange(lhs, rhs);
@@ -697,6 +804,9 @@ const NodeProto = {
     if (t === T.assignment_pattern) {
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
+    // VariableDeclarator has no 'left' property in ESLint's AST. Return undefined
+    // so that `node.left !== void 0` correctly distinguishes it from AssignmentExpression.
+    if (t === T.declarator) return undefined;
     return null;
   },
 
