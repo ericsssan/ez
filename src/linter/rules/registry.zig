@@ -1,7 +1,7 @@
 const rule = @import("rule.zig");
 const validateRule = rule.validateRule;
 
-// ── Correctness rules (57) ────────────────────────────────────
+// ── Correctness rules (58) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
 const no_empty = @import("correctness/no_empty.zig");
 const no_extra_semi = @import("correctness/no_extra_semi.zig");
@@ -62,6 +62,7 @@ const no_div_regex = @import("correctness/no_div_regex.zig");
 const array_callback_return = @import("correctness/array_callback_return.zig");
 const no_useless_backreference = @import("correctness/no_useless_backreference.zig");
 const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
+const guard_for_in = @import("correctness/guard_for_in.zig");
 
 // ── Suspicious rules (43) ─────────────────────────────────────
 // (count unchanged)
@@ -112,7 +113,7 @@ const no_return_await = @import("suspicious/no_return_await.zig");
 const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");
 const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");
 
-// ── Style rules (69) ──────────────────────────────────────────
+// ── Style rules (76) ──────────────────────────────────────────
 const no_var = @import("style/no_var.zig");
 const prefer_const = @import("style/prefer_const.zig");
 const no_array_constructor = @import("style/no_array_constructor.zig");
@@ -184,8 +185,16 @@ const no_underscore_dangle = @import("style/no_underscore_dangle.zig");
 const yoda = @import("style/yoda.zig");
 const no_ternary = @import("style/no_ternary.zig");
 const prefer_named_capture_group = @import("style/prefer_named_capture_group.zig");
+const max_depth = @import("style/max_depth.zig");
+const default_case_last = @import("style/default_case_last.zig");
+const max_lines = @import("style/max_lines.zig");
+const no_mixed_operators = @import("style/no_mixed_operators.zig");
+const consistent_this = @import("style/consistent_this.zig");
+// v0.8 style rules
+const no_undef_init = @import("style/no_undef_init.zig");
+const new_cap = @import("style/new_cap.zig");
 
-// ── TypeScript rules (22) ─────────────────────────────────────
+// ── TypeScript rules (26) ─────────────────────────────────────
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
 const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
 const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
@@ -211,6 +220,11 @@ const ts_ban_types = @import("typescript/ban_types.zig");
 const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");
 const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");
 const ts_no_mixed_enums = @import("typescript/no_mixed_enums.zig");
+const ts_no_extra_non_null_assertion = @import("typescript/no_extra_non_null_assertion.zig");
+// v0.8 TypeScript rules
+const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");
+const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");
+const ts_array_type = @import("typescript/array_type.zig");
 
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
@@ -274,6 +288,8 @@ pub const all_rules = .{
     array_callback_return,
     no_useless_backreference,
     no_new_native_nonconstructor,
+    // Correctness v0.8 (1)
+    guard_for_in,
     // Suspicious (28)
     eqeqeq,
     no_cond_assign,
@@ -393,6 +409,14 @@ pub const all_rules = .{
     yoda,
     no_ternary,
     prefer_named_capture_group,
+    max_depth,
+    // Style v0.8 (6)
+    default_case_last,
+    max_lines,
+    no_mixed_operators,
+    consistent_this,
+    no_undef_init,
+    new_cap,
     // TypeScript (8)
     ts_no_explicit_any,
     ts_no_non_null_assertion,
@@ -419,6 +443,11 @@ pub const all_rules = .{
     ts_prefer_literal_enum_member,
     ts_no_duplicate_type_constituents,
     ts_no_mixed_enums,
+    // TypeScript v0.8 (4)
+    ts_no_extra_non_null_assertion,
+    ts_no_empty_object_type,
+    ts_consistent_type_assertions,
+    ts_array_type,
 };
 
 /// Total number of registered lint rules.

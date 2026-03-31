@@ -2015,6 +2015,20 @@ test "sort-keys" {
     });
 }
 
+test "max-depth" {
+    try RuleTester.run(.{
+        .rule = "max-depth",
+        .valid = &.{
+            "function f() { if (a) { if (b) { if (c) { if (d) {} } } } }",
+            "function f() { return 1; }",
+        },
+        .invalid = &.{
+            .{ .code = "function f() { if (a) { if (b) { if (c) { if (d) { if (e) {} } } } } }" },
+            .{ .code = "function f() { for(;;) { while(x) { if (a) { for(;;) { if (b) {} } } } } }" },
+        },
+    });
+}
+
 test "prefer-enum-initializers" {
     try RuleTester.run(.{
         .rule = "prefer-enum-initializers",
@@ -2026,6 +2040,169 @@ test "prefer-enum-initializers" {
         .invalid = &.{
             .{ .code = "enum Foo { A, B, C }", .errors = 3 },
             .{ .code = "enum Foo { A = 1, B }", .errors = 1 },
+        },
+    });
+}
+
+test "default-case-last" {
+    try RuleTester.run(.{
+        .rule = "default-case-last",
+        .valid = &.{
+            "switch (x) { case 1: break; case 2: break; default: break; }",
+            "switch (x) { default: break; }",
+        },
+        .invalid = &.{
+            .{ .code = "switch (x) { default: break; case 1: break; }" },
+            .{ .code = "switch (x) { case 1: break; default: break; case 2: break; }" },
+        },
+    });
+}
+
+test "guard-for-in" {
+    try RuleTester.run(.{
+        .rule = "guard-for-in",
+        .valid = &.{
+            "for (key in obj) { if (obj.hasOwnProperty(key)) {} }",
+            "for (key in obj) if (Object.hasOwn(obj, key)) {}",
+        },
+        .invalid = &.{
+            .{ .code = "for (key in obj) { console.log(key); }" },
+            .{ .code = "for (key in obj) doSomething(key);" },
+        },
+    });
+}
+
+test "max-lines" {
+    // Valid: short file — tested implicitly since all tests are short
+    // Just test the rule exists and fires on a 300+ line source
+    const long_source = "\n" ** 301 ++ "const x = 1;";
+    try RuleTester.run(.{
+        .rule = "max-lines",
+        .valid = &.{
+            "const x = 1;",
+        },
+        .invalid = &.{
+            .{ .code = long_source },
+        },
+    });
+}
+
+test "no-mixed-operators" {
+    try RuleTester.run(.{
+        .rule = "no-mixed-operators",
+        .valid = &.{
+            "const x = a && b && c;",
+            "const x = a || b || c;",
+            "const x = (a && b) || c;",
+            "const x = a && (b || c);",
+        },
+        .invalid = &.{
+            .{ .code = "const x = a && b || c;" },
+            .{ .code = "const x = a || b && c;" },
+        },
+    });
+}
+
+test "consistent-this" {
+    try RuleTester.run(.{
+        .rule = "consistent-this",
+        .valid = &.{
+            "const that = this;",
+            "const x = 1;",
+        },
+        .invalid = &.{
+            .{ .code = "const self = this;" },
+            .{ .code = "const _this = this;" },
+        },
+    });
+}
+
+test "no-extra-non-null-assertion" {
+    try RuleTester.run(.{
+        .rule = "no-extra-non-null-assertion",
+        .lang = .ts,
+        .valid = &.{
+            "const x = foo!;",
+            "const x = foo?.bar;",
+        },
+        .invalid = &.{
+            .{ .code = "const x = foo!!;" },
+            .{ .code = "const x = foo!!.bar;" },
+        },
+    });
+}
+
+test "no-undef-init" {
+    try RuleTester.run(.{
+        .rule = "no-undef-init",
+        .valid = &.{
+            "let x;",
+            "let x = null;",
+            "let x = 0;",
+        },
+        .invalid = &.{
+            .{ .code = "let x = undefined;" },
+            .{ .code = "var foo = undefined;" },
+        },
+    });
+}
+
+test "new-cap" {
+    try RuleTester.run(.{
+        .rule = "new-cap",
+        .valid = &.{
+            "new MyClass();",
+            "new Error('msg');",
+            "new Map();",
+        },
+        .invalid = &.{
+            .{ .code = "new myClass();" },
+            .{ .code = "new foo();" },
+        },
+    });
+}
+
+test "no-empty-object-type" {
+    try RuleTester.run(.{
+        .rule = "no-empty-object-type",
+        .lang = .ts,
+        .valid = &.{
+            "type T = { x: number };",
+            "type T = Record<string, unknown>;",
+        },
+        .invalid = &.{
+            .{ .code = "type T = {};" },
+            .{ .code = "function f(x: {}) {}" },
+        },
+    });
+}
+
+test "consistent-type-assertions" {
+    try RuleTester.run(.{
+        .rule = "consistent-type-assertions",
+        .lang = .ts,
+        .valid = &.{
+            "const x = foo as string;",
+            "const x = foo as unknown;",
+        },
+        .invalid = &.{
+            .{ .code = "const x = <string>foo;" },
+            .{ .code = "const x = <number>bar;" },
+        },
+    });
+}
+
+test "array-type" {
+    try RuleTester.run(.{
+        .rule = "array-type",
+        .lang = .ts,
+        .valid = &.{
+            "type T = string[];",
+            "type T = readonly string[];",
+        },
+        .invalid = &.{
+            .{ .code = "type T = Array<string>;" },
+            .{ .code = "type T = ReadonlyArray<number>;" },
         },
     });
 }
