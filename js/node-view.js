@@ -336,9 +336,11 @@ class AstView {
   }
 
   /**
-   * Build end-position array for all nodes in a single O(n) pass.
-   * In sanz, children have higher node indices than parents (root=0 is lowest).
-   * Iterating high→low propagates each child's max-token up to its parent in one pass.
+   * Build end-position and max-token-index arrays for all nodes.
+   * Uses iterative multi-pass propagation through parent pointers.
+   *
+   * Stores maxTok array as _maxTokCache for use by collectSubtreeTokens,
+   * avoiding the O(n) per-call scan.
    */
   _computeAllEndPos() {
     const n = this.nodeCount;
@@ -353,8 +355,6 @@ class AstView {
 
     if (pd) {
       // Propagate max token up the tree with repeated passes until convergence.
-      // Node index ordering is not strictly parent-before-child in sanz, so a
-      // single pass is insufficient; typically converges in O(depth) passes.
       let changed = true;
       while (changed) {
         changed = false;
@@ -367,6 +367,9 @@ class AstView {
         }
       }
     }
+
+    // Cache maxTok for use by collectSubtreeTokens (O(1) lookup instead of O(n) scan)
+    this._maxTokCache = maxTok;
 
     // Convert token indices to end byte positions (trimmed)
     const endPos = new Int32Array(n);

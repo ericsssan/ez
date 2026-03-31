@@ -67,32 +67,24 @@ const SCAN_CONTINUE_TAGS = new Set([73, 75, 77, 78, 84]);
  * tokens (closing brackets, semicolons) that have no corresponding AST node.
  *
  * Algorithm:
- * 1. Collect mainToken of every node in the subtree → gives all "content" tokens
- * 2. Find maxTok = highest token index in subset
- * 3. Scan forward from maxTok+1, including closing/separator punctuation until
- *    we hit a keyword, identifier, or opener — these start the next sibling
+ * 1. Look up precomputed maxTok for this node (O(1) via _maxTokCache)
+ * 2. Scan forward from maxTok+1, including closing/separator punctuation
+ * 3. Collect all tokens [startTok..endTok]
  *
- * Uses parent pointer data for correct subtree membership.
+ * Requires _maxTokCache to be populated (done lazily via _nodeEndPos).
  */
 function collectSubtreeTokens(ast, nodeIdx, result) {
   if (nodeIdx === NONE || nodeIdx >= ast.nodeCount) return;
-  const pd = ast._parentData;
-  const n = ast.nodeCount;
+
+  // Ensure maxTok cache is populated (triggers _computeAllEndPos if not yet done)
+  if (!ast._maxTokCache) ast._nodeEndPos(nodeIdx);
+
   const mt = ast._mainTokens;
   const tc = ast.tokenCount;
   const tags = ast._tokTags;
 
-  let startTok = mt[nodeIdx];
-  let maxTok = startTok;
-
-  if (pd) {
-    for (let i = 0; i < n; i++) {
-      if (i === nodeIdx || _isDescendant(pd, i, nodeIdx)) {
-        const tok = mt[i];
-        if (tok > maxTok) maxTok = tok;
-      }
-    }
-  }
+  const startTok = mt[nodeIdx];
+  const maxTok = ast._maxTokCache[nodeIdx];
 
   // Scan forward past maxTok to include closing/separator tokens
   let endTok = maxTok;
@@ -198,7 +190,6 @@ class SourceCode {
 
   getFirstToken(node, filterOrOpts) {
     if (!node) return null;
-    // Fast path for synthetic nodes
     if (node._i === undefined || node._i === null) {
       if (node.mainToken !== undefined) {
         const tok = this._makeToken(node.mainToken);
@@ -207,12 +198,28 @@ class SourceCode {
       }
       return null;
     }
-    const tokens = this.getTokens(node);
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
+    const ast = this._ast;
+    const startTok = ast._mainTokens[node._i];
+    // Fast path: no filter, no skip — just return the first token
+    if (!fn && skip === 0) return this._makeToken(startTok);
+    // Slow path: filter/skip required — iterate forward from startTok
+    if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+    const maxTok = ast._maxTokCache[node._i];
+    const tags = ast._tokTags;
+    const tc = ast.tokenCount;
+    let endTok = maxTok;
+    for (let t = maxTok + 1; t < tc; t++) {
+      const tag = tags[t];
+      if (tag === 131) break;
+      if (SCAN_CONTINUE_TAGS.has(tag)) endTok = t;
+      else break;
+    }
     let skipped = 0;
-    for (let i = 0; i < tokens.length; i++) {
-      if (!fn || fn(tokens[i])) {
-        if (skipped >= skip) return tokens[i];
+    for (let t = startTok; t <= endTok; t++) {
+      const tok = this._makeToken(t);
+      if (!fn || fn(tok)) {
+        if (skipped >= skip) return tok;
         skipped++;
       }
     }
@@ -229,12 +236,30 @@ class SourceCode {
       }
       return null;
     }
-    const tokens = this.getTokens(node);
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
+    const ast = this._ast;
+    // Ensure maxTok cache exists
+    if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+    const maxTok = ast._maxTokCache[node._i];
+    const tags = ast._tokTags;
+    const tc = ast.tokenCount;
+    // Compute endTok (maxTok + trailing structural tokens)
+    let endTok = maxTok;
+    for (let t = maxTok + 1; t < tc; t++) {
+      const tag = tags[t];
+      if (tag === 131) break;
+      if (SCAN_CONTINUE_TAGS.has(tag)) endTok = t;
+      else break;
+    }
+    // Fast path: no filter, no skip
+    if (!fn && skip === 0) return this._makeToken(endTok);
+    // Slow path: iterate backwards
+    const startTok = ast._mainTokens[node._i];
     let skipped = 0;
-    for (let i = tokens.length - 1; i >= 0; i--) {
-      if (!fn || fn(tokens[i])) {
-        if (skipped >= skip) return tokens[i];
+    for (let t = endTok; t >= startTok; t--) {
+      const tok = this._makeToken(t);
+      if (!fn || fn(tok)) {
+        if (skipped >= skip) return tok;
         skipped++;
       }
     }
