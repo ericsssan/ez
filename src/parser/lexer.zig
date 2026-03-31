@@ -49,7 +49,21 @@ pub const Lexer = struct {
     class_expr_pending: bool = false,
     class_expr_paren_depth: u32 = 0,
     paren_depth: u32 = 0,
+    /// Track ALL function bodies (declarations + expressions) for generator status.
+    /// Used by isRegexContext to determine if `yield` is a keyword (regex) or
+    /// identifier (division). Stack handles nested functions.
+    fn_all_paren_depths: [32]u32 = [_]u32{0} ** 32,
+    fn_all_is_generator: [32]bool = [_]bool{false} ** 32,
+    fn_all_count: u32 = 0,
+    /// When set, the next `{` opens a function body; the bool indicates generator status.
+    fn_body_next_brace_gen: ?bool = null,
+    /// Per brace depth: true if we are directly inside a generator function body.
+    /// Non-function braces (blocks, objects) inherit from their parent depth.
+    /// Arrow function bodies (`{` after `=>`) are always non-generator.
+    brace_in_generator: [256]bool = [_]bool{false} ** 256,
     is_module: bool = false,
+    /// When false, Annex B HTML-like comments (<!-- and -->) are disabled.
+    annex_b: bool = true,
     /// Set to true when whitespace skipping encounters a line terminator.
     /// Used for ASI-aware brace context decisions.
     saw_newline: bool = false,
@@ -92,10 +106,21 @@ pub const Lexer = struct {
         return tokenizeWithOptions(allocator, source, language, false);
     }
 
+    pub const TokenizeOptions = struct {
+        is_module: bool = false,
+        annex_b: bool = true,
+    };
+
     /// Tokenize with language and module mode.
     pub fn tokenizeWithOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, is_module: bool) !TokenList {
+        return tokenizeWithAllOptions(allocator, source, language, .{ .is_module = is_module });
+    }
+
+    /// Tokenize with full options control.
+    pub fn tokenizeWithAllOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, opts: TokenizeOptions) !TokenList {
         var self = initWithLanguage(allocator, source, language);
-        self.is_module = is_module;
+        self.is_module = opts.is_module;
+        self.annex_b = opts.annex_b;
 
         // Pre-allocate a reasonable estimate: ~1 token per 8 bytes of source.
         const estimate = @max(source.len / 8, 64);
@@ -150,7 +175,7 @@ pub const Lexer = struct {
 
             // HTML open comment: <!-- (Annex B, B.1.3)
             // Only valid in script mode (not module).
-            if (!self.is_module and self.peek(0) == '<' and self.peek(1) == '!' and
+            if (!self.is_module and self.annex_b and self.peek(0) == '<' and self.peek(1) == '!' and
                 self.peek(2) == '-' and self.peek(3) == '-')
             {
                 self.index += 4;
@@ -160,7 +185,7 @@ pub const Lexer = struct {
 
             // HTML close comment: --> at start of line (Annex B, B.1.3)
             // Only valid in script mode after a line terminator.
-            if (!self.is_module and self.peek(0) == '-' and self.peek(1) == '-' and self.peek(2) == '>') {
+            if (!self.is_module and self.annex_b and self.peek(0) == '-' and self.peek(1) == '-' and self.peek(2) == '>') {
                 if (self.isAtLineStart()) {
                     self.index += 3;
                     self.skipToEndOfLine();
@@ -906,6 +931,13 @@ pub const Lexer = struct {
 
         if (!dec_ok or !frac_ok or !exp_ok) return self.makeToken(.invalid, start);
 
+        // Numeric separators are not allowed in legacy octal literals (00_0, 07_7, etc.)
+        if (is_legacy_octal_num) {
+            for (self.source[start..self.index]) |c| {
+                if (c == '_') return self.makeToken(.invalid, start);
+            }
+        }
+
         // BigInt suffix
         if (self.index < self.source.len and self.source[self.index] == 'n') {
             // BigInt is only valid for integer literals (no decimal, no exponent, no legacy octal)
@@ -1274,14 +1306,14 @@ pub const Lexer = struct {
                 if (self.index < self.source.len) {
                     const next_ch = self.source[self.index];
                     if (next_ch == '\n' or next_ch == '\r') {
-                        return self.makeToken(.invalid, start);
+                        return self.regexFallbackSlash(start);
                     }
                     // U+2028/U+2029 after backslash is also invalid
                     if (next_ch == 0xe2 and self.index + 2 < self.source.len and
                         self.source[self.index + 1] == 0x80 and
                         (self.source[self.index + 2] == 0xa8 or self.source[self.index + 2] == 0xa9))
                     {
-                        return self.makeToken(.invalid, start);
+                        return self.regexFallbackSlash(start);
                     }
                     self.index += 1;
                 }
@@ -1336,6 +1368,10 @@ pub const Lexer = struct {
                     flag_seen |= bit;
                     if (fc == 'u' or fc == 'v') has_u = true;
                 }
+                // u and v flags are mutually exclusive
+                if (flag_seen & 0x20 != 0 and flag_seen & 0x40 != 0) {
+                    flags_valid = false;
+                }
                 if (!flags_valid) {
                     return self.makeToken(.invalid, start);
                 }
@@ -1356,20 +1392,29 @@ pub const Lexer = struct {
 
             // Unescaped newline in regex is invalid (includes U+2028 LS, U+2029 PS)
             if (c == '\n' or c == '\r') {
-                return self.makeToken(.invalid, start);
+                return self.regexFallbackSlash(start);
             }
             if (c == 0xe2 and self.index + 2 < self.source.len and
                 self.source[self.index + 1] == 0x80 and
                 (self.source[self.index + 2] == 0xa8 or self.source[self.index + 2] == 0xa9))
             {
-                return self.makeToken(.invalid, start);
+                return self.regexFallbackSlash(start);
             }
 
             self.index += 1;
         }
 
-        // Unterminated regex
-        return self.makeToken(.invalid, start);
+        // Unterminated regex at EOF
+        return self.regexFallbackSlash(start);
+    }
+
+    /// When a regex scan fails (unterminated), fall back to producing a `slash`
+    /// token instead of `invalid`. This allows the parser to re-interpret `/`
+    /// as division in contexts like `yield / expr` where `yield` is an identifier.
+    /// The content after `/` will be re-tokenized naturally since we reset the index.
+    inline fn regexFallbackSlash(self: *Lexer, start: u32) Token.Token {
+        self.index = start + 1; // reset to just after the `/`
+        return self.makeToken(.slash, start);
     }
 
     // ══════════════════════════════════════════════════════════
@@ -2187,6 +2232,19 @@ pub const Lexer = struct {
             // but as property names (`a.in / b`) precede division.
             .kw_in, .kw_instanceof => !self.prev_after_dot,
 
+            // `yield` is context-dependent:
+            //   - After `.` (property name): always identifier → division
+            //   - Inside generator function body: keyword → regex
+            //   - Otherwise (identifier in sloppy mode):
+            //       same line: division (yield / 1 / g)
+            //       new line:  regex   (yield; /regex/)
+            .kw_yield => {
+                if (self.prev_after_dot) return false;
+                if (self.brace_depth > 0 and self.brace_depth - 1 < self.brace_in_generator.len and
+                    self.brace_in_generator[self.brace_depth - 1]) return true;
+                return self.saw_newline;
+            },
+
             // `}` can close either an expression (object literal → division) or
             // a block/function body (→ regex). Use the brace context stack.
             .r_brace => {
@@ -2235,6 +2293,13 @@ pub const Lexer = struct {
                 {
                     self.fn_expr_depth_count -= 1;
                     self.fn_expr_next_brace = true;
+                }
+                // Track function body for generator status
+                if (self.fn_all_count > 0 and
+                    self.fn_all_paren_depths[self.fn_all_count - 1] == self.paren_depth)
+                {
+                    self.fn_body_next_brace_gen = self.fn_all_is_generator[self.fn_all_count - 1];
+                    self.fn_all_count -= 1;
                 }
                 // Track control-flow close: if()/while()/for() → regex follows
                 if (self.paren_depth < self.paren_is_control.len and self.paren_is_control[self.paren_depth]) {
@@ -2333,6 +2398,19 @@ pub const Lexer = struct {
                         => true,
                         else => false,
                     };});
+                    // Track generator function context for yield/regex disambiguation
+                    if (self.fn_body_next_brace_gen) |is_gen| {
+                        self.brace_in_generator[self.brace_depth] = is_gen;
+                        self.fn_body_next_brace_gen = null;
+                    } else if (self.prev_token_tag == .arrow) {
+                        // Arrow function body — arrows are never generators
+                        self.brace_in_generator[self.brace_depth] = false;
+                    } else if (self.brace_depth > 0) {
+                        // Inherit from parent (blocks inside generator stay in generator context)
+                        self.brace_in_generator[self.brace_depth] = self.brace_in_generator[self.brace_depth - 1];
+                    } else {
+                        self.brace_in_generator[self.brace_depth] = false;
+                    }
                     self.brace_depth += 1;
                 }
                 return self.makeToken(.l_brace, start);
@@ -2634,6 +2712,19 @@ pub const Lexer = struct {
             self.case_colon_state = 0; // consumed, reset
         }
         // State 1 persists through the case expression: `case expr1 + expr2 :`
+        // Track ALL function bodies for generator status (yield/regex disambiguation).
+        if (tag == .kw_function) {
+            if (self.fn_all_count < self.fn_all_paren_depths.len) {
+                self.fn_all_paren_depths[self.fn_all_count] = self.paren_depth;
+                self.fn_all_is_generator[self.fn_all_count] = false;
+                self.fn_all_count += 1;
+            }
+        }
+        if (tag == .asterisk and self.prev_token_tag == .kw_function) {
+            if (self.fn_all_count > 0) {
+                self.fn_all_is_generator[self.fn_all_count - 1] = true;
+            }
+        }
         // Track function expression context for division disambiguation.
         // `function` in expression position means the next `{` after `)`
         // closes a function expression (value), so `}` → division.

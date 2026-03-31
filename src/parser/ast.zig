@@ -664,8 +664,24 @@ pub const Ast = struct {
         var end: u32 = start;
         switch (tag) {
             .identifier => {
-                while (end < self.source.len and isIdentChar(self.source[end])) {
-                    end += 1;
+                while (end < self.source.len and (isIdentChar(self.source[end]) or self.source[end] >= 0x80 or self.source[end] == '\\')) {
+                    if (self.source[end] == '\\') {
+                        // Unicode escape: \uXXXX or \u{XXXX}
+                        end += 1;
+                        if (end < self.source.len and self.source[end] == 'u') {
+                            end += 1;
+                            if (end < self.source.len and self.source[end] == '{') {
+                                while (end < self.source.len and self.source[end] != '}') end += 1;
+                                if (end < self.source.len) end += 1; // skip '}'
+                            } else {
+                                // \uXXXX — 4 hex digits
+                                var j: u32 = 0;
+                                while (j < 4 and end < self.source.len) : (j += 1) end += 1;
+                            }
+                        }
+                    } else {
+                        end += 1;
+                    }
                 }
             },
             .number_literal, .bigint_literal => {

@@ -111,6 +111,9 @@ pub const Parser = struct {
     in_loop: bool,
     in_switch: bool,
     allow_in: bool,
+    /// False when parsing at a precedence higher than assignment (binary RHS, unary operand).
+    /// Arrow functions are only valid as AssignmentExpressions, not as binary operands.
+    allow_arrow: bool,
     is_module: bool,
     in_export_default: bool,
     in_strict: bool,
@@ -149,6 +152,7 @@ pub const Parser = struct {
             .in_loop = false,
             .in_switch = false,
             .allow_in = true,
+            .allow_arrow = true,
             .is_module = is_module_file,
             .in_export_default = false,
             .in_strict = is_module_file,
@@ -646,8 +650,15 @@ pub const Parser = struct {
                     next == .kw_namespace or next == .kw_module or next == .kw_interface or
                     next == .kw_abstract or next == .kw_readonly or next == .kw_override or
                     next == .kw_implements or next == .kw_target or next == .kw_meta;
-                if (could_be_binding and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
-                    return self.parseVariableDeclaration();
+                if (could_be_binding) {
+                    if (!self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                        return self.parseVariableDeclaration();
+                    }
+                    // With newline: `let\n{...} =` is still a destructuring declaration
+                    // because `{...} = expr` has no valid parse as block + assignment.
+                    if (next == .l_brace and self.looksLikeLetDestructuring()) {
+                        return self.parseVariableDeclaration();
+                    }
                 }
                 return self.parseExprOrLabeledStatement();
             },
@@ -2247,6 +2258,115 @@ pub const Parser = struct {
         return self.listToSubRange(members);
     }
 
+    const TsModifierFlags = struct {
+        has_public: bool = false,
+        has_private: bool = false,
+        has_protected: bool = false,
+        has_abstract: bool = false,
+        has_override: bool = false,
+        has_readonly: bool = false,
+        has_declare: bool = false,
+        has_export: bool = false,
+        has_accessibility: bool = false, // any of public/private/protected
+
+        fn merge(self: TsModifierFlags, other: TsModifierFlags) TsModifierFlags {
+            return .{
+                .has_public = self.has_public or other.has_public,
+                .has_private = self.has_private or other.has_private,
+                .has_protected = self.has_protected or other.has_protected,
+                .has_abstract = self.has_abstract or other.has_abstract,
+                .has_override = self.has_override or other.has_override,
+                .has_readonly = self.has_readonly or other.has_readonly,
+                .has_declare = self.has_declare or other.has_declare,
+                .has_export = self.has_export or other.has_export,
+                .has_accessibility = self.has_accessibility or other.has_accessibility,
+            };
+        }
+    };
+
+    /// Parse TypeScript class member modifiers with validation.
+    /// Order: declare → access(public/private/protected) → static → abstract → override → readonly
+    fn parseTsModifiers(self: *Parser) Error!TsModifierFlags {
+        var flags = TsModifierFlags{};
+        // Track modifier order phase (higher number = later in order)
+        var last_phase: u8 = 0;
+        while (self.peek() == .identifier or self.peek() == .kw_abstract or
+            self.peek() == .kw_readonly or self.peek() == .kw_override or
+            self.peek() == .kw_declare or self.peek() == .kw_export)
+        {
+            const text = self.tokenText(self.tok_i);
+            const mod_kind: enum { access, abstract, override, readonly, declare, @"export", not_modifier } =
+                if (std.mem.eql(u8, text, "private") or std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "public")) .access
+                else if (std.mem.eql(u8, text, "abstract")) .abstract
+                else if (std.mem.eql(u8, text, "override")) .override
+                else if (std.mem.eql(u8, text, "readonly")) .readonly
+                else if (std.mem.eql(u8, text, "declare")) .declare
+                else if (std.mem.eql(u8, text, "export")) .@"export"
+                else .not_modifier;
+
+            if (mod_kind == .not_modifier) break;
+
+            // Only consume if followed by something that could be a member name
+            const next = self.peekAt(1);
+            if (next == .l_paren or next == .equal or next == .semicolon or
+                next == .r_brace or next == .colon)
+                break;
+
+            // Check for duplicate modifiers
+            switch (mod_kind) {
+                .access => {
+                    if (flags.has_accessibility) {
+                        try self.emitDiagnostic(self.currentSpan(), "Accessibility modifier already seen", .{});
+                    }
+                    flags.has_accessibility = true;
+                    if (std.mem.eql(u8, text, "public")) flags.has_public = true
+                    else if (std.mem.eql(u8, text, "private")) flags.has_private = true
+                    else flags.has_protected = true;
+                },
+                .abstract => {
+                    if (flags.has_abstract) try self.emitDiagnostic(self.currentSpan(), "Duplicate modifier: 'abstract'", .{});
+                    flags.has_abstract = true;
+                },
+                .override => {
+                    if (flags.has_override) try self.emitDiagnostic(self.currentSpan(), "Duplicate modifier: 'override'", .{});
+                    flags.has_override = true;
+                },
+                .readonly => {
+                    if (flags.has_readonly) try self.emitDiagnostic(self.currentSpan(), "Duplicate modifier: 'readonly'", .{});
+                    flags.has_readonly = true;
+                },
+                .declare => {
+                    if (flags.has_declare) try self.emitDiagnostic(self.currentSpan(), "Duplicate modifier: 'declare'", .{});
+                    flags.has_declare = true;
+                },
+                .@"export" => {
+                    if (flags.has_export) try self.emitDiagnostic(self.currentSpan(), "Duplicate modifier: 'export'", .{});
+                    flags.has_export = true;
+                },
+                .not_modifier => unreachable,
+            }
+
+            // Check modifier ordering: access(1) → abstract(2) → override(3) → readonly(4)
+            // Note: 'static' is parsed separately between phases, so we don't track it here.
+            const phase: u8 = switch (mod_kind) {
+                .declare => 0,
+                .access => 1,
+                .abstract => 2,
+                .override => 3,
+                .readonly => 4,
+                .@"export" => 0,
+                .not_modifier => unreachable,
+            };
+            if (phase > 0 and phase < last_phase) {
+                try self.emitDiagnostic(self.currentSpan(), "Modifier order is incorrect", .{});
+            }
+            if (phase > 0) last_phase = phase;
+
+            _ = self.advance();
+        }
+        return flags;
+    }
+
     /// Parse a single class member.
     pub fn parseClassMember(self: *Parser) Error!NodeIndex {
         // Skip decorators: @expr or @expr(args)
@@ -2322,33 +2442,13 @@ pub const Parser = struct {
             });
         }
 
-        // Skip TypeScript access modifiers: private, protected, public,
+        // Parse and validate TypeScript access modifiers: private, protected, public,
         // abstract, override, readonly, declare.  These are identifiers in the
         // lexer so we match by text.  We loop because they can stack
         // (e.g. `public readonly abstract`).
+        var ts_mod_flags: TsModifierFlags = .{};
         if (self.language.isTs()) {
-            while (self.peek() == .identifier or self.peek() == .kw_abstract or
-                self.peek() == .kw_readonly or self.peek() == .kw_override or
-                self.peek() == .kw_declare)
-            {
-                const text = self.tokenText(self.tok_i);
-                const is_modifier = std.mem.eql(u8, text, "private") or
-                    std.mem.eql(u8, text, "protected") or
-                    std.mem.eql(u8, text, "public") or
-                    std.mem.eql(u8, text, "abstract") or
-                    std.mem.eql(u8, text, "override") or
-                    std.mem.eql(u8, text, "readonly") or
-                    std.mem.eql(u8, text, "declare");
-                if (!is_modifier) break;
-                // Only consume if followed by something that could be a member name
-                // or another modifier — not `(`, `=`, `;`, `}` which would mean
-                // the modifier IS the member name.
-                const next = self.peekAt(1);
-                if (next == .l_paren or next == .equal or next == .semicolon or
-                    next == .r_brace or next == .colon)
-                    break;
-                _ = self.advance();
-            }
+            ts_mod_flags = try self.parseTsModifiers();
         }
 
         var is_static = false;
@@ -2369,28 +2469,19 @@ pub const Parser = struct {
             }
         }
 
-        // TS modifiers that may appear after static: protected, abstract, etc.
+        // TS modifiers that may appear after static
         if (self.language.isTs()) {
-            while (self.peek() == .identifier or self.peek() == .kw_abstract or
-                self.peek() == .kw_readonly or self.peek() == .kw_override or
-                self.peek() == .kw_declare or self.peek() == .kw_export)
-            {
-                const text = self.tokenText(self.tok_i);
-                const is_mod = std.mem.eql(u8, text, "private") or
-                    std.mem.eql(u8, text, "protected") or
-                    std.mem.eql(u8, text, "public") or
-                    std.mem.eql(u8, text, "abstract") or
-                    std.mem.eql(u8, text, "override") or
-                    std.mem.eql(u8, text, "readonly") or
-                    std.mem.eql(u8, text, "declare") or
-                    std.mem.eql(u8, text, "export");
-                if (!is_mod) break;
-                const next = self.peekAt(1);
-                if (next == .l_paren or next == .equal or next == .semicolon or
-                    next == .r_brace or next == .colon)
-                    break;
-                _ = self.advance();
+            const extra_mods = try self.parseTsModifiers();
+            // Access modifiers after 'static' is wrong order
+            if (is_static and extra_mods.has_accessibility) {
+                try self.emitDiagnostic(self.currentSpan(), "Accessibility modifier must precede 'static' modifier", .{});
             }
+            ts_mod_flags = ts_mod_flags.merge(extra_mods);
+        }
+
+        // Validate modifiers on class elements
+        if (self.language.isTs() and ts_mod_flags.has_export) {
+            try self.emitDiagnostic(self.currentSpan(), "'export' modifier cannot appear on class elements", .{});
         }
 
         // getter/setter detection
@@ -2443,6 +2534,10 @@ pub const Parser = struct {
             (self.peekAt(1) == .identifier or self.peekAt(1) == .kw_readonly) and
             self.peekAt(2) == .colon)
         {
+            // Modifiers like public/private/protected/export are not allowed on index signatures
+            if (ts_mod_flags.has_accessibility or ts_mod_flags.has_export) {
+                try self.emitDiagnostic(self.currentSpan(), "Modifier cannot appear on an index signature", .{});
+            }
             return typescript.parseIndexSignature(self);
         }
 
@@ -2604,6 +2699,21 @@ pub const Parser = struct {
                 }
             }
 
+            // Check for static constructor (invalid in TypeScript only)
+            if (self.language.isTs() and is_static and !is_getter and !is_setter) {
+                const key_tag = self.nodes.items(.tag)[key.toInt()];
+                const key_tok = self.nodes.items(.main_token)[key.toInt()];
+                const is_ctor_name = if (key_tag == .identifier)
+                    std.mem.eql(u8, self.tokenText(key_tok), "constructor")
+                else if (key_tag == .string_literal)
+                    std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok)), "constructor")
+                else
+                    false;
+                if (is_ctor_name) {
+                    try self.emitDiagnostic(self.currentSpan(), "'static' modifier cannot appear on a constructor declaration", .{});
+                }
+            }
+
             // Detect constructor: non-static method named "constructor" or "constructor"
             const is_ctor = blk: {
                 if (is_static or is_getter or is_setter) break :blk false;
@@ -2619,6 +2729,19 @@ pub const Parser = struct {
                 }
                 break :blk false;
             };
+
+            // Validate constructor restrictions
+            if (is_ctor) {
+                if (is_async_method) {
+                    try self.emitDiagnostic(self.currentSpan(), "'async' modifier cannot appear on a constructor declaration", .{});
+                }
+                if (is_generator_method) {
+                    try self.emitDiagnostic(self.currentSpan(), "A constructor cannot be a generator", .{});
+                }
+                if (self.language.isTs() and ts_mod_flags.has_abstract) {
+                    try self.emitDiagnostic(self.currentSpan(), "'abstract' modifier cannot appear on a constructor declaration", .{});
+                }
+            }
 
             const prev_in_function = self.in_function;
             const prev_in_constructor = self.in_constructor;
@@ -3928,15 +4051,12 @@ pub const Parser = struct {
     /// and no future reserved words as binding names.
     pub fn checkStrictBinding(self: *Parser, tok: TokenIndex) !void {
         if (!self.in_strict) return;
-        // In TS mode, strict-mode reserved words like public/private/protected
-        // are valid as identifiers (they're used as parameter modifiers etc.)
-        if (self.language.isTs()) return;
-        // Future reserved words
-        if (self.isStrictReservedWord(tok)) {
+        // Future reserved words (skip in TS — public/private/protected are valid identifiers)
+        if (!self.language.isTs() and self.isStrictReservedWord(tok)) {
             try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(tok)});
             return error.ParseError;
         }
-        // eval and arguments
+        // eval and arguments — invalid in strict mode even in TS
         const tag = self.tokenTagAt(tok);
         if (tag == .identifier) {
             const text = self.tokenText(tok);
@@ -3987,6 +4107,22 @@ pub const Parser = struct {
                 (slice[i + 2] == 0xA8 or slice[i + 2] == 0xA9)) return true;
         }
         return false;
+    }
+
+    /// Check if `let\n{...}` is followed by `=` (destructuring declaration, not block).
+    /// Scans from tok_i+1 (`{`) forward, counting braces to find the matching `}`,
+    /// then checks if `=` follows.
+    fn looksLikeLetDestructuring(self: *const Parser) bool {
+        var i = self.tok_i + 1; // should be `{`
+        if (i >= self.tokens.len or self.tokenTagAt(i) != .l_brace) return false;
+        i += 1;
+        var depth: u32 = 1;
+        while (i < self.tokens.len and depth > 0) : (i += 1) {
+            const tag = self.tokenTagAt(i);
+            if (tag == .l_brace) depth += 1 else if (tag == .r_brace) depth -= 1;
+        }
+        // i now points to the token after the matching `}`
+        return i < self.tokens.len and self.tokenTagAt(i) == .equal;
     }
 
     // ────────────────────────────────────────────────────────────

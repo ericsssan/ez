@@ -98,6 +98,9 @@ pub fn parseExpression(p: *Parser) Error!NodeIndex {
 
 /// Parse an assignment expression (no comma).
 pub fn parseAssignmentExpression(p: *Parser) Error!NodeIndex {
+    const saved_arrow = p.allow_arrow;
+    p.allow_arrow = true;
+    defer p.allow_arrow = saved_arrow;
     return parseExpressionPrec(p, .assignment);
 }
 
@@ -261,8 +264,13 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
                 }
             },
             else => {
-                // TS parser accepts invalid LHS (type checker handles it later)
-                if (!p.language.isTs()) try p.emitError("Invalid left-hand side in prefix operation");
+                // TS type checker handles most invalid LHS cases, but clearly invalid
+                // operands like await/yield expressions are still syntax errors
+                if (!p.language.isTs() or op_tag == .await_expr or op_tag == .yield_expr or
+                    op_tag == .yield_delegate)
+                {
+                    try p.emitError("Invalid left-hand side in prefix operation");
+                }
             },
         }
         // Strict mode: cannot update eval/arguments
@@ -885,7 +893,7 @@ fn parseIdentifier(p: *Parser) Error!NodeIndex {
 fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
     const tok = p.advance(); // consume identifier
     // identifier => body  (single-parameter arrow without parens)
-    if (p.peek() == .arrow and !p.isOnNewLine()) {
+    if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
         return parseArrowFunctionBody(p, tok, false);
     }
     return p.addNode(.{
@@ -952,7 +960,7 @@ fn parseAsyncExpressionOrIdentifier(p: *Parser) Error!NodeIndex {
         next_tag == .kw_get or next_tag == .kw_set or next_tag == .kw_from or
         next_tag == .kw_as or next_tag == .kw_static) {
         const ident_tok = p.advance();
-        if (p.peek() == .arrow and !p.isOnNewLine()) {
+        if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
             return parseArrowFunctionBody(p, ident_tok, true);
         }
         // Not an arrow — the `async` was an identifier and the ident
@@ -1054,7 +1062,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         const params_range = try parseFormalParameters_inner(p, open_paren);
         _ = try p.parseOptionalTypeAnnotation();
 
-        if (p.peek() == .arrow and !p.isOnNewLine()) {
+        if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
             _ = p.advance(); // consume `=>`
             const saved_fn = p.in_function;
             const saved_async = p.in_async;
@@ -1104,7 +1112,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     _ = try p.parseOptionalTypeAnnotation();
 
     // If `=>` follows on the same line, this is an async arrow.
-    if (p.peek() == .arrow and !p.isOnNewLine()) {
+    if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
         const params = p.scratchSlice(scratch_top);
         // Reinterpret expressions as patterns.
         for (params) |node_raw| {
@@ -1136,10 +1144,13 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         _ = p.advance(); // consume `=>`
         const saved_async = p.in_async;
         const saved_fn4 = p.in_function;
+        const saved_gen4 = p.in_generator;
         p.in_async = true;
         p.in_function = true;
+        p.in_generator = false;
         defer p.in_async = saved_async;
         defer p.in_function = saved_fn4;
+        defer p.in_generator = saved_gen4;
         const body = if (p.peek() == .l_brace)
             try parseBlockBodyWithStrictChecks(p, params_range, .none)
         else
@@ -1197,8 +1208,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
             const saved_fn2 = p.in_function;
+            const saved_async2 = p.in_async;
             p.in_function = true;
+            p.in_async = false;
             defer p.in_function = saved_fn2;
+            defer p.in_async = saved_async2;
             const body = try parseArrowBody(p);
             const params_range = try p.addSlice(&[_]u32{});
             const extra = try p.addExtra(ast.ArrowData, .{
@@ -1225,8 +1239,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
             const saved_fn = p.in_function;
+            const saved_async_ts = p.in_async;
             p.in_function = true;
+            p.in_async = false;
             defer p.in_function = saved_fn;
+            defer p.in_async = saved_async_ts;
             const body = try parseArrowBody(p);
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
@@ -1254,9 +1271,13 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     try p.scratchPush(first);
 
     // Sequence: `(a, b, c)`
+    var has_trailing_comma = false;
     while (p.peek() == .comma) {
         _ = p.advance(); // consume `,`
-        if (p.peek() == .r_paren) break; // trailing comma
+        if (p.peek() == .r_paren) {
+            has_trailing_comma = true;
+            break; // trailing comma — only valid if this becomes arrow params
+        }
         const elem = try parseAssignmentOrSpread(p);
         try p.scratchPush(elem);
     }
@@ -1285,8 +1306,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.scratchPop(scratch_top);
             _ = p.advance(); // consume `=>`
             const saved_fn5 = p.in_function;
+            const saved_gen5 = p.in_generator;
             p.in_function = true;
+            p.in_generator = false;
             defer p.in_function = saved_fn5;
+            defer p.in_generator = saved_gen5;
             const body = if (p.peek() == .l_brace)
                 try parseBlockBodyWithStrictChecks(p, params_range, .none)
             else
@@ -1310,7 +1334,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     }
 
     // If `=>` follows, reinterpret as arrow parameters.
-    if (p.peek() == .arrow and !p.isOnNewLine()) {
+    if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
         const params = p.scratchSlice(scratch_top);
 
         // Validate arrow parameters
@@ -1366,9 +1390,20 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                         }
                     }
                 },
+                .yield_expr => {
+                    // Bare `yield` (no operand) can be a parameter name in sloppy mode:
+                    // arrows are never generators, so `yield` is an identifier inside them.
+                    const d = p.nodes.items(.data)[param_node.toInt()];
+                    if (!p.in_strict and d.lhs == .none) {
+                        p.setNodeTag(param_node.toInt(), .identifier);
+                    } else {
+                        try p.emitError("Invalid arrow function parameter");
+                        return p.makeErrorNode();
+                    }
+                },
                 .number_literal, .string_literal, .boolean_literal,
                 .null_literal, .this_expr, .grouping_expr,
-                .yield_expr, .yield_delegate, .await_expr,
+                .yield_delegate, .await_expr,
                 => {
                     try p.emitError("Invalid arrow function parameter");
                     return p.makeErrorNode();
@@ -1400,8 +1435,14 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         _ = p.advance(); // consume `=>`
 
         const saved_fn3 = p.in_function;
+        const saved_gen3 = p.in_generator;
+        const saved_async3 = p.in_async;
         p.in_function = true;
+        p.in_generator = false;
+        p.in_async = false;
         defer p.in_function = saved_fn3;
+        defer p.in_generator = saved_gen3;
+        defer p.in_async = saved_async3;
 
         // Arrow body: block { } with strict checks, or concise expression
         const body = if (p.peek() == .l_brace)
@@ -1422,6 +1463,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     }
 
     // Not an arrow — validate no spread elements (spread is only valid in arrows, arrays, calls)
+    // If we had trailing comma but no arrow, it's invalid
+    if (has_trailing_comma) {
+        try p.emitError("Unexpected trailing comma in parenthesized expression");
+    }
+
     const elems = p.scratchSlice(scratch_top);
     for (elems) |elem_raw| {
         const elem_node = NodeIndex.fromInt(elem_raw);
@@ -1476,6 +1522,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
 // ── Arrow function body (expression or block) ────────────────────
 
 fn parseArrowBody(p: *Parser) Error!NodeIndex {
+    // Arrow functions are never generators — reset in_generator so that
+    // `yield` is treated as an identifier inside the arrow body.
+    const saved_gen = p.in_generator;
+    p.in_generator = false;
+    defer p.in_generator = saved_gen;
     if (p.peek() == .l_brace) {
         return parseBlockBody(p);
     }
@@ -1503,7 +1554,7 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     const saved_fn = p.in_function;
     const saved_async = p.in_async;
     p.in_function = true;
-    if (is_async) p.in_async = true;
+    p.in_async = is_async;
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
     const body = try parseArrowBody(p);
@@ -2809,18 +2860,36 @@ fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex
 fn parseImportExpression(p: *Parser) Error!NodeIndex {
     const import_tok = p.advance(); // consume `import`
 
-    // import.meta / import.defer / import.<future>
+    // import.meta / import.source(...) / import.defer(...)
     if (p.peek() == .dot) {
         _ = p.advance(); // consume `.`
-        if (p.peek() == .identifier or p.peek() == .kw_meta or p.peek().isKeyword()) {
-            _ = p.advance(); // consume property name
+        if (p.peek() == .kw_meta or
+            (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "meta")))
+        {
+            _ = p.advance(); // consume `meta`
             return p.addNode(.{
                 .tag = .import_meta,
                 .main_token = import_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         }
-        try p.emitError("Expected property name after 'import.'");
+        // import.source(...) and import.defer(...) are valid dynamic import variants
+        if (p.peek() == .identifier) {
+            const prop_text = p.tokenText(p.tok_i);
+            if (std.mem.eql(u8, prop_text, "source") or std.mem.eql(u8, prop_text, "defer")) {
+                _ = p.advance(); // consume property name
+                // These require a call expression: import.source(specifier)
+                _ = try p.expect(.l_paren);
+                const arg = try p.parseAssignmentExpression();
+                _ = try p.expect(.r_paren);
+                return p.addNode(.{
+                    .tag = .import_expr,
+                    .main_token = import_tok,
+                    .data = .{ .lhs = arg, .rhs = .none },
+                });
+            }
+        }
+        try p.emitError("The only valid meta property for import is 'import.meta'");
         return p.makeErrorNode();
     }
 
@@ -2994,6 +3063,10 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
         }
     }
 
+    // Arrow functions are not valid in binary RHS — they're only AssignmentExpressions
+    const saved_arrow = p.allow_arrow;
+    p.allow_arrow = false;
+    defer p.allow_arrow = saved_arrow;
     const rhs = try parseExpressionPrec(p, prec.next());
 
     const node_tag: Node.Tag = tokenToBinaryTag(op_tag);
@@ -3772,6 +3845,14 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
     }
     defer p.in_strict = prev_strict;
 
+    // Function bodies isolate break/continue context — can't break out of a function
+    const prev_in_loop = p.in_loop;
+    const prev_in_switch = p.in_switch;
+    p.in_loop = false;
+    p.in_switch = false;
+    defer p.in_loop = prev_in_loop;
+    defer p.in_switch = prev_in_switch;
+
     // "use strict" with non-simple parameters is ALWAYS a SyntaxError (even if already strict)
     if (has_use_strict) {
         if (params) |pr| {
@@ -3956,8 +4037,11 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
             if (arrow_ok) {
                 _ = p.advance(); // consume `=>`
                 const saved_fn = p.in_function;
+                const saved_async_ts2 = p.in_async;
                 p.in_function = true;
+                p.in_async = false;
                 defer p.in_function = saved_fn;
+                defer p.in_async = saved_async_ts2;
                 const body = try parseArrowBody(p);
                 const extra = try p.addExtra(ast.ArrowData, .{
                     .params_start = 0,

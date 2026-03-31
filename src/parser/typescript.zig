@@ -1513,6 +1513,28 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     const member_tok = p.tok_i;
 
+    // ── Reject access/invalid modifiers on interface members ─────
+    if (p.peek() == .identifier and !p.isOnNewLineAt(1)) {
+        const mod_text = p.tokenText(p.tok_i);
+        const is_invalid_mod = std.mem.eql(u8, mod_text, "public") or
+            std.mem.eql(u8, mod_text, "private") or
+            std.mem.eql(u8, mod_text, "protected") or
+            std.mem.eql(u8, mod_text, "static") or
+            std.mem.eql(u8, mod_text, "override");
+        if (is_invalid_mod) {
+            const next = p.peekAt(1);
+            // Only reject if followed on the same line by something that looks like
+            // a member name — not if it IS the member name (followed by : or ( or ;)
+            if (next != .l_paren and next != .colon and next != .semicolon and
+                next != .r_brace and next != .question and next != .comma and
+                next != .eof)
+            {
+                try p.emitDiagnostic(p.currentSpan(), "Modifier cannot appear on a type member", .{});
+                _ = p.advance(); // skip the modifier
+            }
+        }
+    }
+
     // ── Call signature: `(params): ReturnType;` or `<T>(params): ReturnType;`
     if (p.peek() == .l_paren or p.peek() == .less_than) {
         return parseCallOrConstructSignature(p, member_tok);

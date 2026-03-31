@@ -161,6 +161,7 @@ pub const ScopeTree = struct {
             .static_block => {
                 scope_flags.strict_mode = true; // inherits class strict mode
                 scope_flags.has_this_binding = true;
+                scope_flags.is_var_scope = true; // var declarations hoist to static block, not beyond
             },
             .block, .catch_clause, .switch_stmt, .with_stmt => {},
         }
