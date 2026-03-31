@@ -54,8 +54,7 @@ build:
 	$(ZIG) build-exe src/main.zig -femit-bin=zig-out/bin/sanz $(LINK_FLAGS)
 
 napi:
-	@mkdir -p zig-out/lib
-	$(ZIG) build-lib src/cli/napi.zig -dynamic -femit-bin=zig-out/lib/libsanz.dylib -fallow-shlib-undefined $(LINK_FLAGS)
+	zig build napi
 	cp zig-out/lib/libsanz.dylib zig-out/lib/sanz.node
 
 submodules:

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Ast = @import("ast.zig").Ast;
+const semantic_mod = @import("semantic.zig");
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -15,7 +16,7 @@ pub const FLAG_HAS_BOM: u32 = 1;
 
 /// Written at offset 0 of the shared buffer after parsing.
 /// All offsets are byte offsets from the start of the buffer.
-/// 16 fields × 4 bytes = 64 bytes.
+/// 20 fields × 4 bytes = 80 bytes.
 pub const BufferHeader = extern struct {
     magic: u32,
     version: u32,
@@ -33,10 +34,191 @@ pub const BufferHeader = extern struct {
     source_offset: u32,
     total_used: u32,
     flags: u32,
+    // Added in v2: parent pointer array for ESTree-compatible traversal.
+    parent_indices_offset: u32,
+    // Added in v3: semantic data (scope/symbol/reference tables).
+    // Non-zero = byte offset of SemanticHeader in this buffer; 0 = not present.
+    semantic_data_offset: u32 = 0,
+    _reserved2: u32 = 0,
+    _reserved3: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 64);
+    std.debug.assert(@sizeOf(BufferHeader) == 80);
+}
+
+// ── Semantic Data Header ─────────────────────────────────────────
+
+/// Secondary header written into the bump region when semantic analysis is run.
+/// All offsets are byte offsets from the start of the buffer (same origin as BufferHeader).
+/// 22 u32 fields = 88 bytes.
+pub const SemanticHeader = extern struct {
+    scope_count: u32,
+    symbol_count: u32,
+    ref_count: u32,
+    _pad: u32 = 0,
+
+    // Scope arrays (indexed by ScopeId)
+    scope_kinds_offset: u32,           // u8[]  — ScopeKind enum
+    scope_flags_offset: u32,           // u16[] — ScopeFlags packed struct
+    scope_parents_offset: u32,         // u32[] — parent ScopeId (NONE = root)
+    scope_node_ids_offset: u32,        // u32[] — AST node that created this scope
+    scope_bindings_start_offset: u32,  // u32[] — index into symbol table
+    scope_bindings_count_offset: u32,  // u32[] — number of symbols in scope
+
+    // Symbol arrays (indexed by SymbolId)
+    symbol_flags_offset: u32,          // u16[] — SymbolFlags packed struct
+    symbol_scope_ids_offset: u32,      // u32[] — ScopeId where declared
+    symbol_decl_nodes_offset: u32,     // u32[] — declaration AST node
+    symbol_ref_starts_offset: u32,     // u32[] — RefRange.start
+    symbol_ref_ends_offset: u32,       // u32[] — RefRange.end
+    symbol_name_starts_offset: u32,    // u32[] — byte offset of name in source
+    symbol_name_lens_offset: u32,      // u32[] — byte length of name
+
+    // Reference arrays (indexed by ReferenceId)
+    ref_symbol_ids_offset: u32,        // u32[] — resolved SymbolId (NONE = unresolved)
+    ref_kinds_offset: u32,             // u8[]  — ReferenceKind enum
+    ref_node_ids_offset: u32,          // u32[] — AST node of reference
+    ref_scope_ids_offset: u32,         // u32[] — scope of reference
+
+    // Node → containing scope mapping (one entry per AST node)
+    node_scope_ids_offset: u32,        // u32[] — for each node, its containing ScopeId
+};
+
+comptime {
+    std.debug.assert(@sizeOf(SemanticHeader) == 88);
+}
+
+// ── Semantic Data Serializer ─────────────────────────────────────
+
+/// Serialize scope/symbol/reference tables into the bump region.
+/// Returns the byte offset of the written SemanticHeader (for BufferHeader.semantic_data_offset).
+/// Returns error if there is not enough space in the buffer.
+pub fn writeSemanticData(
+    buf: [*]u8,
+    backing: *JsBufferAllocator,
+    sem: *const semantic_mod.SemanticResult,
+    node_count: u32,
+) !u32 {
+    const alloc = backing.allocator();
+    const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
+    const symbol_count: u32 = @intCast(sem.symbols.names.items.len);
+    const ref_count: u32 = @intCast(sem.references.symbol_ids.items.len);
+    const none32: u32 = std.math.maxInt(u32);
+
+    // ── Scope arrays ────────────────────────────────────────────
+    const scope_kinds = try alloc.alloc(u8, scope_count);
+    const scope_flags = try alloc.alloc(u16, scope_count);
+    const scope_parents = try alloc.alloc(u32, scope_count);
+    const scope_node_ids = try alloc.alloc(u32, scope_count);
+    const scope_bindings_start = try alloc.alloc(u32, scope_count);
+    const scope_bindings_count = try alloc.alloc(u32, scope_count);
+
+    for (0..scope_count) |i| {
+        scope_kinds[i] = @intFromEnum(sem.scopes.kinds.items[i]);
+        scope_flags[i] = @bitCast(sem.scopes.flags.items[i]);
+        const p = sem.scopes.parents.items[i];
+        scope_parents[i] = if (p == .none) none32 else @intFromEnum(p);
+        const nid = sem.scopes.node_ids.items[i];
+        scope_node_ids[i] = if (nid == .none) none32 else @intFromEnum(nid);
+        scope_bindings_start[i] = sem.scopes.bindings_start.items[i];
+        scope_bindings_count[i] = sem.scopes.bindings_count.items[i];
+    }
+
+    // ── Symbol arrays ────────────────────────────────────────────
+    const symbol_flags = try alloc.alloc(u16, symbol_count);
+    const symbol_scope_ids = try alloc.alloc(u32, symbol_count);
+    const symbol_decl_nodes = try alloc.alloc(u32, symbol_count);
+    const symbol_ref_starts = try alloc.alloc(u32, symbol_count);
+    const symbol_ref_ends = try alloc.alloc(u32, symbol_count);
+    const symbol_name_starts = try alloc.alloc(u32, symbol_count);
+    const symbol_name_lens = try alloc.alloc(u32, symbol_count);
+
+    for (0..symbol_count) |i| {
+        symbol_flags[i] = @bitCast(sem.symbols.flags.items[i]);
+        const sid = sem.symbols.scope_ids.items[i];
+        symbol_scope_ids[i] = if (sid == .none) none32 else @intFromEnum(sid);
+        const dn = sem.symbols.decl_nodes.items[i];
+        symbol_decl_nodes[i] = if (dn == .none) none32 else @intFromEnum(dn);
+        const rr = sem.symbols.references.items[i];
+        symbol_ref_starts[i] = rr.start;
+        symbol_ref_ends[i] = rr.end;
+        // Names are zero-copy slices into the source text, which is written
+        // into the buffer by JS at source_offset. Compute offset from buf base.
+        const name = sem.symbols.names.items[i];
+        symbol_name_starts[i] = @intCast(@intFromPtr(name.ptr) - @intFromPtr(buf));
+        symbol_name_lens[i] = @intCast(name.len);
+    }
+
+    // ── Reference arrays ─────────────────────────────────────────
+    const ref_symbol_ids = try alloc.alloc(u32, ref_count);
+    const ref_kinds = try alloc.alloc(u8, ref_count);
+    const ref_node_ids = try alloc.alloc(u32, ref_count);
+    const ref_scope_ids = try alloc.alloc(u32, ref_count);
+
+    for (0..ref_count) |i| {
+        const rsym = sem.references.symbol_ids.items[i];
+        ref_symbol_ids[i] = if (rsym == .none) none32 else @intFromEnum(rsym);
+        ref_kinds[i] = @intFromEnum(sem.references.kinds.items[i]);
+        const rn = sem.references.node_ids.items[i];
+        ref_node_ids[i] = if (rn == .none) none32 else @intFromEnum(rn);
+        const rsc = sem.references.scope_ids.items[i];
+        ref_scope_ids[i] = if (rsc == .none) none32 else @intFromEnum(rsc);
+    }
+
+    // ── Node → scope mapping ──────────────────────────────────────
+    const node_scope_ids = try alloc.alloc(u32, node_count);
+    @memset(node_scope_ids, none32);
+    // For each scope, mark its node as belonging to that scope's parent
+    // (the node that CREATED the scope is in the PARENT scope's context).
+    // Separately, fill in each node's scope by walking the scopes.
+    // Simple approach: for each scope, its node_id maps to that scope.
+    // Then propagate downward to child nodes using the parent scope data.
+    // Since this is complex, use a simpler O(n) approach: for each scope,
+    // record which scope ID each node "opens". Nodes without a scope entry
+    // inherit from their parent node (via parent pointer data, done outside).
+    for (0..scope_count) |i| {
+        const nid = sem.scopes.node_ids.items[i];
+        if (nid != .none) {
+            const idx: u32 = @intFromEnum(nid);
+            if (idx < node_count) {
+                node_scope_ids[idx] = @intCast(i);
+            }
+        }
+    }
+
+    // ── SemanticHeader ────────────────────────────────────────────
+    const header_mem = try alloc.alloc(u8, @sizeOf(SemanticHeader));
+    const sem_header: *SemanticHeader = @ptrCast(@alignCast(header_mem.ptr));
+    sem_header.* = .{
+        .scope_count = scope_count,
+        .symbol_count = symbol_count,
+        .ref_count = ref_count,
+
+        .scope_kinds_offset = ptrOffsetPub(buf, scope_kinds.ptr),
+        .scope_flags_offset = ptrOffsetPub(buf, scope_flags.ptr),
+        .scope_parents_offset = ptrOffsetPub(buf, scope_parents.ptr),
+        .scope_node_ids_offset = ptrOffsetPub(buf, scope_node_ids.ptr),
+        .scope_bindings_start_offset = ptrOffsetPub(buf, scope_bindings_start.ptr),
+        .scope_bindings_count_offset = ptrOffsetPub(buf, scope_bindings_count.ptr),
+
+        .symbol_flags_offset = ptrOffsetPub(buf, symbol_flags.ptr),
+        .symbol_scope_ids_offset = ptrOffsetPub(buf, symbol_scope_ids.ptr),
+        .symbol_decl_nodes_offset = ptrOffsetPub(buf, symbol_decl_nodes.ptr),
+        .symbol_ref_starts_offset = ptrOffsetPub(buf, symbol_ref_starts.ptr),
+        .symbol_ref_ends_offset = ptrOffsetPub(buf, symbol_ref_ends.ptr),
+        .symbol_name_starts_offset = ptrOffsetPub(buf, symbol_name_starts.ptr),
+        .symbol_name_lens_offset = ptrOffsetPub(buf, symbol_name_lens.ptr),
+
+        .ref_symbol_ids_offset = ptrOffsetPub(buf, ref_symbol_ids.ptr),
+        .ref_kinds_offset = ptrOffsetPub(buf, ref_kinds.ptr),
+        .ref_node_ids_offset = ptrOffsetPub(buf, ref_node_ids.ptr),
+        .ref_scope_ids_offset = ptrOffsetPub(buf, ref_scope_ids.ptr),
+
+        .node_scope_ids_offset = ptrOffsetPub(buf, node_scope_ids.ptr),
+    };
+
+    return ptrOffsetPub(buf, header_mem.ptr);
 }
 
 // ── Bump Allocator ───────────────────────────────────────────────
@@ -82,6 +264,8 @@ pub const HeaderInfo = struct {
     source_utf16_len: u32,
     total_used: u32,
     flags: u32,
+    parent_indices_offset: u32 = 0,
+    semantic_data_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -108,11 +292,18 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .source_offset = info.source_start,
         .total_used = info.total_used,
         .flags = info.flags,
+        .parent_indices_offset = info.parent_indices_offset,
+        .semantic_data_offset = info.semantic_data_offset,
     };
 }
 
 fn ptrOffset(base: [*]const u8, ptr: anytype) u32 {
     return @intCast(@intFromPtr(ptr) - @intFromPtr(base));
+}
+
+/// Public wrapper for use by external callers (e.g., napi.zig).
+pub fn ptrOffsetPub(base: [*]const u8, ptr: anytype) u32 {
+    return ptrOffset(base, ptr);
 }
 
 // ── UTF-16 Span Conversion ───────────────────────────────────────
@@ -174,8 +365,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 64 bytes" {
-    try std.testing.expectEqual(@as(usize, 64), @sizeOf(BufferHeader));
+test "BufferHeader is 80 bytes" {
+    try std.testing.expectEqual(@as(usize, 80), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

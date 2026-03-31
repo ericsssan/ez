@@ -4,6 +4,8 @@ const js_buffer = parser.js_buffer;
 const layout = parser.layout;
 const Lexer = parser.Lexer;
 const parser_mod = @import("../parser/parser.zig");
+const parent_builder = @import("../parser/parent_builder.zig");
+const semantic_mod = @import("../parser/semantic.zig");
 const Language = parser.token.Language;
 
 // ── Layer 1: Core C ABI ──────────────────────────────────────────
@@ -57,6 +59,23 @@ fn parseImpl(
     const tok_starts = tokens.slice().items(.start);
     const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
 
+    // Compute parent indices for ESTree-compatible traversal.
+    // Allocated into the bump region immediately after the AST data.
+    const parents = try parent_builder.computeParents(&tree, alloc);
+    const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, parents.ptr);
+
+    // Run semantic analysis and serialize scope/symbol/reference tables.
+    // Falls back gracefully (semantic_data_offset = 0) if analysis fails or
+    // the buffer doesn't have enough remaining space.
+    var semantic_data_offset: u32 = 0;
+    if (semantic_mod.SemanticAnalyzer.analyze(alloc, &tree)) |sem_result| {
+        var sem = sem_result;
+        defer sem.deinit(alloc);
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len))) |off| {
+            semantic_data_offset = off;
+        } else |_| {}
+    } else |_| {}
+
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start = if (bom.has_bom) source_start + 3 else source_start,
@@ -64,6 +83,8 @@ fn parseImpl(
         .source_utf16_len = utf16_len,
         .total_used = backing.bytesUsed(),
         .flags = if (bom.has_bom) js_buffer.FLAG_HAS_BOM else 0,
+        .parent_indices_offset = parent_indices_offset,
+        .semantic_data_offset = semantic_data_offset,
     });
 
     return backing.bytesUsed();

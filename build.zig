@@ -83,8 +83,10 @@ pub fn build(b: *std.Build) void {
     fuzz_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
 
     // ── NAPI shared library (JS plugin support) ────────────
+    // Root is src/napi_entry.zig (in src/) so that cli/napi.zig's relative
+    // imports (../parser/root.zig) stay within the module path (src/).
     const napi_mod = b.createModule(.{
-        .root_source_file = b.path("src/cli/napi.zig"),
+        .root_source_file = b.path("src/napi_entry.zig"),
         .target = target,
         .optimize = .ReleaseFast,
     });

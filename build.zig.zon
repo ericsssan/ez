@@ -2,7 +2,7 @@
     .name = .sanz,
     .version = "0.0.1",
     .minimum_zig_version = "0.16.0-dev.2637+6a9510c0e",
-    .fingerprint = 0xdbfc132a50fc4363,
+    .fingerprint = 0x5a75af72cec19230,
     .paths = .{
         "build.zig",
         "build.zig.zon",
