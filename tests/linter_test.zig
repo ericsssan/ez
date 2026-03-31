@@ -1518,6 +1518,348 @@ test "no-warning-comments" {
 }
 
 // ══════════════════════════════════════════════════════════════
+// v0.7 Rules
+// ══════════════════════════════════════════════════════════════
+
+test "no-constant-binary-expression" {
+    try RuleTester.run(.{
+        .rule = "no-constant-binary-expression",
+        .valid = &.{
+            "const x = null == y;",
+            "if (a || b) {}",
+            "if (a && b) {}",
+        },
+        .invalid = &.{
+            .{ .code = "const x = new Foo() == null;" },
+            .{ .code = "const x = [] == null;" },
+            .{ .code = "const y = true || x;" },
+            .{ .code = "const z = false && x;" },
+        },
+    });
+}
+
+test "no-div-regex" {
+    try RuleTester.run(.{
+        .rule = "no-div-regex",
+        .valid = &.{
+            "const re = / =foo/;",
+            "const re = /abc/;",
+        },
+        .invalid = &.{
+            .{ .code = "const re = /=foo/;" },
+            .{ .code = "const re = /=bar/gi;" },
+        },
+    });
+}
+
+test "array-callback-return" {
+    try RuleTester.run(.{
+        .rule = "array-callback-return",
+        .valid = &.{
+            "arr.map(x => x * 2);",
+            "arr.filter(x => x > 0);",
+            "arr.map(function(x) { return x + 1; });",
+            "arr.forEach(function(x) { console.log(x); });",
+        },
+        .invalid = &.{
+            .{ .code = "arr.map(function(x) { if (x) return x; return; });" },
+            .{ .code = "arr.filter(function(x) { return; });" },
+        },
+    });
+}
+
+test "no-return-await" {
+    try RuleTester.run(.{
+        .rule = "no-return-await",
+        .valid = &.{
+            "async function f() { return fetch(); }",
+            "async function f() { const x = await fetch(); return x; }",
+        },
+        .invalid = &.{
+            .{ .code = "async function f() { return await fetch(); }" },
+            .{ .code = "const f = async () => { return await Promise.resolve(1); };" },
+        },
+    });
+}
+
+test "no-new-array" {
+    try RuleTester.run(.{
+        .rule = "no-new-array",
+        .valid = &.{
+            "const a = new Array(1, 2, 3);",
+            "const b = [];",
+            "const c = Array.from({ length: 3 });",
+        },
+        .invalid = &.{
+            .{ .code = "const a = new Array(100);" },
+            .{ .code = "const b = new Array(0);" },
+        },
+    });
+}
+
+test "require-unicode-regexp" {
+    try RuleTester.run(.{
+        .rule = "require-unicode-regexp",
+        .valid = &.{
+            "const re = /foo/u;",
+            "const re = /foo/v;",
+            "const re = /foo/giu;",
+        },
+        .invalid = &.{
+            .{ .code = "const re = /foo/;" },
+            .{ .code = "const re = /foo/gi;" },
+            .{ .code = "const re = new RegExp('foo');" },
+        },
+    });
+}
+
+test "camelcase" {
+    try RuleTester.run(.{
+        .rule = "camelcase",
+        .valid = &.{
+            "const myVariable = 1;",
+            "const MY_CONSTANT = 1;",
+            "const _private = 1;",
+            "const __dunder__ = 1;",
+        },
+        .invalid = &.{
+            .{ .code = "const my_variable = 1;" },
+            .{ .code = "const some_long_name = 1;" },
+        },
+    });
+}
+
+test "prefer-numeric-literals" {
+    try RuleTester.run(.{
+        .rule = "prefer-numeric-literals",
+        .valid = &.{
+            "parseInt('10', 10);",
+            "parseInt('10');",
+            "const x = 0b1010;",
+        },
+        .invalid = &.{
+            .{ .code = "parseInt('1010', 2);" },
+            .{ .code = "parseInt('ff', 16);" },
+            .{ .code = "Number.parseInt('1234', 8);" },
+        },
+    });
+}
+
+test "prefer-regex-literals" {
+    try RuleTester.run(.{
+        .rule = "prefer-regex-literals",
+        .valid = &.{
+            "const re = /foo/;",
+            "const re = new RegExp(pattern);",
+            "const re = new RegExp(pattern, 'g');",
+        },
+        .invalid = &.{
+            .{ .code = "const re = new RegExp('foo');" },
+            .{ .code = "const re = new RegExp('foo', 'g');" },
+        },
+    });
+}
+
+test "no-useless-return" {
+    try RuleTester.run(.{
+        .rule = "no-useless-return",
+        .valid = &.{
+            "function f() { return 1; }",
+            "function f() { if (x) return; doWork(); }",
+        },
+        .invalid = &.{
+            .{ .code = "function f() { doWork(); return; }" },
+            .{ .code = "const f = () => { doWork(); return; };" },
+        },
+    });
+}
+
+test "func-style" {
+    try RuleTester.run(.{
+        .rule = "func-style",
+        .valid = &.{
+            "function foo() {}",
+            "const f = () => {};",
+            "const f = function() {};",
+        },
+        .invalid = &.{
+            .{ .code = "const foo = function bar() {};" },
+        },
+    });
+}
+
+test "id-length" {
+    try RuleTester.run(.{
+        .rule = "id-length",
+        .valid = &.{
+            "const foo = 1;",
+            "const i = 0;",
+            "const _ = null;",
+        },
+        .invalid = &.{
+            .{ .code = "const q = 1;" },
+            .{ .code = "const r = 1;" },
+        },
+    });
+}
+
+test "operator-assignment" {
+    try RuleTester.run(.{
+        .rule = "operator-assignment",
+        .valid = &.{
+            "x += 1;",
+            "x -= y;",
+            "x = y + z;",
+        },
+        .invalid = &.{
+            .{ .code = "x = x + 1;" },
+            .{ .code = "x = x - y;" },
+            .{ .code = "x = x * 2;" },
+        },
+    });
+}
+
+test "prefer-object-has-own" {
+    try RuleTester.run(.{
+        .rule = "prefer-object-has-own",
+        .valid = &.{
+            "Object.hasOwn(obj, key);",
+            "obj.hasOwnProperty(key);",
+        },
+        .invalid = &.{
+            .{ .code = "Object.prototype.hasOwnProperty.call(obj, key);" },
+            .{ .code = "({}).hasOwnProperty.call(obj, 'foo');" },
+        },
+    });
+}
+
+test "no-underscore-dangle" {
+    try RuleTester.run(.{
+        .rule = "no-underscore-dangle",
+        .valid = &.{
+            "const foo = 1;",
+            "const _ = null;",
+            "const __ = null;",
+        },
+        .invalid = &.{
+            .{ .code = "const _foo = 1;" },
+            .{ .code = "const foo_ = 1;" },
+        },
+    });
+}
+
+test "yoda" {
+    try RuleTester.run(.{
+        .rule = "yoda",
+        .valid = &.{
+            "if (x === 5) {}",
+            "if (foo == null) {}",
+            "if (5 === 5) {}",
+        },
+        .invalid = &.{
+            .{ .code = "if (5 === x) {}" },
+            .{ .code = "if ('foo' == bar) {}" },
+            .{ .code = "if (null != x) {}" },
+        },
+    });
+}
+
+test "no-ternary" {
+    try RuleTester.run(.{
+        .rule = "no-ternary",
+        .valid = &.{
+            "if (x) { y = 1; } else { y = 2; }",
+        },
+        .invalid = &.{
+            .{ .code = "const x = a ? b : c;" },
+            .{ .code = "return condition ? 1 : 0;" },
+        },
+    });
+}
+
+test "prefer-named-capture-group" {
+    try RuleTester.run(.{
+        .rule = "prefer-named-capture-group",
+        .valid = &.{
+            "const re = /(?<year>\\d{4})/;",
+            "const re = /(?:foo)/;",
+            "const re = /(?<=foo)bar/;",
+            "const re = /abc/;",
+        },
+        .invalid = &.{
+            .{ .code = "const re = /(\\d+)/;" },
+            .{ .code = "const re = /(foo)(bar)/;" },
+        },
+    });
+}
+
+test "ban-types" {
+    try RuleTester.run(.{
+        .rule = "ban-types",
+        .lang = .ts,
+        .valid = &.{
+            "const x: string = 'hi';",
+            "const x: number = 1;",
+            "const x: Record<string, unknown> = {};",
+        },
+        .invalid = &.{
+            .{ .code = "const x: String = 'hi';" },
+            .{ .code = "const x: Number = 1;" },
+            .{ .code = "const x: Object = {};" },
+            .{ .code = "const x: Function = () => {};" },
+        },
+    });
+}
+
+test "prefer-literal-enum-member" {
+    try RuleTester.run(.{
+        .rule = "prefer-literal-enum-member",
+        .lang = .ts,
+        .valid = &.{
+            "enum Foo { A = 1, B = 2 }",
+            "enum Foo { A = 'a', B = 'b' }",
+            "enum Foo { A, B, C }",
+            "enum Foo { A = -1, B = -2 }",
+        },
+        .invalid = &.{
+            .{ .code = "const x = 1; enum Foo { A = x }" },
+            .{ .code = "enum Foo { A = 1 + 2 }" },
+        },
+    });
+}
+
+test "no-duplicate-type-constituents" {
+    try RuleTester.run(.{
+        .rule = "no-duplicate-type-constituents",
+        .lang = .ts,
+        .valid = &.{
+            "type T = string | number;",
+            "type T = A & B & C;",
+        },
+        .invalid = &.{
+            .{ .code = "type T = string | string;" },
+            .{ .code = "type T = A & A;" },
+        },
+    });
+}
+
+test "no-mixed-enums" {
+    try RuleTester.run(.{
+        .rule = "no-mixed-enums",
+        .lang = .ts,
+        .valid = &.{
+            "enum Foo { A = 1, B = 2 }",
+            "enum Foo { A = 'a', B = 'b' }",
+            "enum Foo { A, B, C }",
+        },
+        .invalid = &.{
+            .{ .code = "enum Foo { A = 1, B = 'b' }" },
+            .{ .code = "enum Foo { A, B = 'string' }" },
+        },
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
 // Clean Code
 // ══════════════════════════════════════════════════════════════
 

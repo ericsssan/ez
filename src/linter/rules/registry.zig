@@ -1,7 +1,7 @@
 const rule = @import("rule.zig");
 const validateRule = rule.validateRule;
 
-// ── Correctness rules (52) ────────────────────────────────────
+// ── Correctness rules (55) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
 const no_empty = @import("correctness/no_empty.zig");
 const no_extra_semi = @import("correctness/no_extra_semi.zig");
@@ -56,8 +56,12 @@ const no_unreachable_loop = @import("correctness/no_unreachable_loop.zig");
 const no_empty_static_block = @import("correctness/no_empty_static_block.zig");
 const no_constructor_new = @import("correctness/no_constructor_new.zig");
 const accessor_pairs = @import("correctness/no_setter_without_getter.zig");
+// v0.7 correctness rules
+const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");
+const no_div_regex = @import("correctness/no_div_regex.zig");
+const array_callback_return = @import("correctness/array_callback_return.zig");
 
-// ── Suspicious rules (40) ─────────────────────────────────────
+// ── Suspicious rules (43) ─────────────────────────────────────
 const eqeqeq = @import("suspicious/eqeqeq.zig");
 const no_cond_assign = @import("suspicious/no_cond_assign.zig");
 const no_control_regex = @import("suspicious/no_control_regex.zig");
@@ -100,8 +104,12 @@ const no_process_exit = @import("suspicious/no_process_exit.zig");
 const consistent_return = @import("suspicious/consistent_return.zig");
 const no_object_constructor = @import("suspicious/no_object_constructor.zig");
 const prefer_promise_reject_errors = @import("suspicious/no_async_with_error.zig");
+// v0.7 suspicious rules
+const no_return_await = @import("suspicious/no_return_await.zig");
+const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");
+const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");
 
-// ── Style rules (49) ──────────────────────────────────────────
+// ── Style rules (61) ──────────────────────────────────────────
 const no_var = @import("style/no_var.zig");
 const prefer_const = @import("style/prefer_const.zig");
 const no_array_constructor = @import("style/no_array_constructor.zig");
@@ -151,8 +159,21 @@ const default_param_last = @import("style/default_param_last.zig");
 const logical_assignment_operators = @import("style/logical_assignment_operators.zig");
 const prefer_object_spread = @import("style/prefer_object_spread.zig");
 const no_warning_comments = @import("style/no_warning_comments.zig");
+// v0.7 style rules
+const camelcase = @import("style/camelcase.zig");
+const prefer_numeric_literals = @import("style/prefer_numeric_literals.zig");
+const prefer_regex_literals = @import("style/prefer_regex_literals.zig");
+const no_useless_return = @import("style/no_useless_return.zig");
+const func_style = @import("style/func_style.zig");
+const id_length = @import("style/id_length.zig");
+const operator_assignment = @import("style/operator_assignment.zig");
+const prefer_object_has_own = @import("style/prefer_object_has_own.zig");
+const no_underscore_dangle = @import("style/no_underscore_dangle.zig");
+const yoda = @import("style/yoda.zig");
+const no_ternary = @import("style/no_ternary.zig");
+const prefer_named_capture_group = @import("style/prefer_named_capture_group.zig");
 
-// ── TypeScript rules (18) ─────────────────────────────────────
+// ── TypeScript rules (21) ─────────────────────────────────────
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
 const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
 const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
@@ -172,6 +193,11 @@ const ts_prefer_optional_chain = @import("typescript/prefer_optional_chain.zig")
 const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_asserted_optional_chain.zig");
 const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");
 const ts_no_non_null_asserted_nullish_coalescing = @import("typescript/no_unnecessary_type_constraint.zig");
+// v0.7 TypeScript rules
+const ts_ban_types = @import("typescript/ban_types.zig");
+const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");
+const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");
+const ts_no_mixed_enums = @import("typescript/no_mixed_enums.zig");
 
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
@@ -229,6 +255,10 @@ pub const all_rules = .{
     no_empty_static_block,
     no_constructor_new,
     accessor_pairs,
+    // Correctness v0.7 (3)
+    no_constant_binary_expression,
+    no_div_regex,
+    array_callback_return,
     // Suspicious (28)
     eqeqeq,
     no_cond_assign,
@@ -272,6 +302,10 @@ pub const all_rules = .{
     consistent_return,
     no_object_constructor,
     prefer_promise_reject_errors,
+    // Suspicious v0.7 (3)
+    no_return_await,
+    no_new_array,
+    require_unicode_regexp,
     // Style (30)
     no_var,
     prefer_const,
@@ -322,6 +356,19 @@ pub const all_rules = .{
     logical_assignment_operators,
     prefer_object_spread,
     no_warning_comments,
+    // Style v0.7 (12)
+    camelcase,
+    prefer_numeric_literals,
+    prefer_regex_literals,
+    no_useless_return,
+    func_style,
+    id_length,
+    operator_assignment,
+    prefer_object_has_own,
+    no_underscore_dangle,
+    yoda,
+    no_ternary,
+    prefer_named_capture_group,
     // TypeScript (8)
     ts_no_explicit_any,
     ts_no_non_null_assertion,
@@ -342,6 +389,11 @@ pub const all_rules = .{
     ts_no_non_null_asserted_optional_chain,
     ts_no_confusing_non_null_assertion,
     ts_no_non_null_asserted_nullish_coalescing,
+    // TypeScript v0.7 (4)
+    ts_ban_types,
+    ts_prefer_literal_enum_member,
+    ts_no_duplicate_type_constituents,
+    ts_no_mixed_enums,
 };
 
 /// Total number of registered lint rules.
