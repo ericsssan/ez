@@ -1859,6 +1859,107 @@ test "no-mixed-enums" {
     });
 }
 
+test "no-useless-backreference" {
+    try RuleTester.run(.{
+        .rule = "no-useless-backreference",
+        .valid = &.{
+            "const re = /(\\w+) \\1/;",
+            "const re = /abc/;",
+        },
+        .invalid = &.{
+            .{ .code = "const re = /\\1/;" },
+            .{ .code = "const re = /\\2(a)/;" },
+        },
+    });
+}
+
+test "dot-notation" {
+    try RuleTester.run(.{
+        .rule = "dot-notation",
+        .valid = &.{
+            "obj.prop;",
+            "obj['some-prop'];",
+            "obj[variable];",
+            "obj[0];",
+        },
+        .invalid = &.{
+            .{ .code = "obj['prop'];" },
+            .{ .code = "obj['myMethod']();" },
+        },
+    });
+}
+
+test "no-confusing-arrow" {
+    try RuleTester.run(.{
+        .rule = "no-confusing-arrow",
+        .valid = &.{
+            "const f = (x) => { return x > 0 ? 1 : -1; };",
+            "const f = x => x * 2;",
+        },
+        .invalid = &.{
+            .{ .code = "const f = x => x > 0 ? 1 : -1;" },
+            .{ .code = "const g = a => a === b ? c : d;" },
+        },
+    });
+}
+
+test "no-extra-label" {
+    try RuleTester.run(.{
+        .rule = "no-extra-label",
+        .valid = &.{
+            "outer: for (let i = 0; i < 10; i++) { for (let j = 0; j < 10; j++) { if (j === 5) break outer; } }",
+        },
+        .invalid = &.{
+            .{ .code = "loop: for (let i = 0; i < 10; i++) { if (i > 5) break loop; }" },
+            .{ .code = "outer: while (true) { break outer; }" },
+        },
+    });
+}
+
+test "vars-on-top" {
+    try RuleTester.run(.{
+        .rule = "vars-on-top",
+        .valid = &.{
+            "function f() { var x = 1; console.log(x); }",
+            "function f() { 'use strict'; var x = 1; }",
+        },
+        .invalid = &.{
+            .{ .code = "function f() { console.log(1); var x = 1; }" },
+            .{ .code = "function f() { if (true) {} var x = 1; }" },
+        },
+    });
+}
+
+test "prefer-destructuring" {
+    try RuleTester.run(.{
+        .rule = "prefer-destructuring",
+        .valid = &.{
+            "const { foo } = obj;",
+            "const bar = obj.foo;",
+            "const baz = obj.other;",
+        },
+        .invalid = &.{
+            .{ .code = "const foo = obj.foo;" },
+            .{ .code = "const name = person.name;" },
+        },
+    });
+}
+
+test "prefer-enum-initializers" {
+    try RuleTester.run(.{
+        .rule = "prefer-enum-initializers",
+        .lang = .ts,
+        .valid = &.{
+            "enum Foo { A = 0, B = 1, C = 2 }",
+            "enum Foo { A = 'a', B = 'b' }",
+        },
+        .invalid = &.{
+            .{ .code = "enum Foo { A, B, C }", .errors = 3 },
+            .{ .code = "enum Foo { A = 1, B }", .errors = 1 },
+        },
+    });
+}
+
 // ══════════════════════════════════════════════════════════════
 // Clean Code
 // ══════════════════════════════════════════════════════════════

@@ -1,7 +1,7 @@
 const rule = @import("rule.zig");
 const validateRule = rule.validateRule;
 
-// ── Correctness rules (55) ────────────────────────────────────
+// ── Correctness rules (56) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
 const no_empty = @import("correctness/no_empty.zig");
 const no_extra_semi = @import("correctness/no_extra_semi.zig");
@@ -60,8 +60,10 @@ const accessor_pairs = @import("correctness/no_setter_without_getter.zig");
 const no_constant_binary_expression = @import("correctness/no_constant_binary_expression.zig");
 const no_div_regex = @import("correctness/no_div_regex.zig");
 const array_callback_return = @import("correctness/array_callback_return.zig");
+const no_useless_backreference = @import("correctness/no_useless_backreference.zig");
 
 // ── Suspicious rules (43) ─────────────────────────────────────
+// (count unchanged)
 const eqeqeq = @import("suspicious/eqeqeq.zig");
 const no_cond_assign = @import("suspicious/no_cond_assign.zig");
 const no_control_regex = @import("suspicious/no_control_regex.zig");
@@ -109,7 +111,7 @@ const no_return_await = @import("suspicious/no_return_await.zig");
 const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");
 const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");
 
-// ── Style rules (61) ──────────────────────────────────────────
+// ── Style rules (66) ──────────────────────────────────────────
 const no_var = @import("style/no_var.zig");
 const prefer_const = @import("style/prefer_const.zig");
 const no_array_constructor = @import("style/no_array_constructor.zig");
@@ -159,6 +161,12 @@ const default_param_last = @import("style/default_param_last.zig");
 const logical_assignment_operators = @import("style/logical_assignment_operators.zig");
 const prefer_object_spread = @import("style/prefer_object_spread.zig");
 const no_warning_comments = @import("style/no_warning_comments.zig");
+// v0.7 style rules (continued)
+const dot_notation = @import("style/dot_notation.zig");
+const no_confusing_arrow = @import("style/no_confusing_arrow.zig");
+const no_extra_label = @import("style/no_extra_label.zig");
+const vars_on_top = @import("style/no_implicit_globals_style.zig");
+const prefer_destructuring = @import("style/prefer_destructuring.zig");
 // v0.7 style rules
 const camelcase = @import("style/camelcase.zig");
 const prefer_numeric_literals = @import("style/prefer_numeric_literals.zig");
@@ -173,7 +181,7 @@ const yoda = @import("style/yoda.zig");
 const no_ternary = @import("style/no_ternary.zig");
 const prefer_named_capture_group = @import("style/prefer_named_capture_group.zig");
 
-// ── TypeScript rules (21) ─────────────────────────────────────
+// ── TypeScript rules (22) ─────────────────────────────────────
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
 const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
 const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
@@ -194,6 +202,7 @@ const ts_no_non_null_asserted_optional_chain = @import("typescript/no_non_null_a
 const ts_no_confusing_non_null_assertion = @import("typescript/no_confusing_non_null_assertion.zig");
 const ts_no_non_null_asserted_nullish_coalescing = @import("typescript/no_unnecessary_type_constraint.zig");
 // v0.7 TypeScript rules
+const ts_prefer_enum_initializers = @import("typescript/prefer_enum_initializers.zig");
 const ts_ban_types = @import("typescript/ban_types.zig");
 const ts_prefer_literal_enum_member = @import("typescript/prefer_literal_enum_member.zig");
 const ts_no_duplicate_type_constituents = @import("typescript/no_duplicate_type_constituents.zig");
@@ -255,10 +264,11 @@ pub const all_rules = .{
     no_empty_static_block,
     no_constructor_new,
     accessor_pairs,
-    // Correctness v0.7 (3)
+    // Correctness v0.7 (4)
     no_constant_binary_expression,
     no_div_regex,
     array_callback_return,
+    no_useless_backreference,
     // Suspicious (28)
     eqeqeq,
     no_cond_assign,
@@ -356,6 +366,12 @@ pub const all_rules = .{
     logical_assignment_operators,
     prefer_object_spread,
     no_warning_comments,
+    // Style v0.7 extra (5)
+    dot_notation,
+    no_confusing_arrow,
+    no_extra_label,
+    vars_on_top,
+    prefer_destructuring,
     // Style v0.7 (12)
     camelcase,
     prefer_numeric_literals,
@@ -389,7 +405,8 @@ pub const all_rules = .{
     ts_no_non_null_asserted_optional_chain,
     ts_no_confusing_non_null_assertion,
     ts_no_non_null_asserted_nullish_coalescing,
-    // TypeScript v0.7 (4)
+    // TypeScript v0.7 (5)
+    ts_prefer_enum_initializers,
     ts_ban_types,
     ts_prefer_literal_enum_member,
     ts_no_duplicate_type_constituents,
