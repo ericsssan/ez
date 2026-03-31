@@ -113,7 +113,7 @@ const no_return_await = @import("suspicious/no_return_await.zig");
 const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");
 const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");
 
-// ── Style rules (76) ──────────────────────────────────────────
+// ── Style rules (79) ──────────────────────────────────────────
 const no_var = @import("style/no_var.zig");
 const prefer_const = @import("style/prefer_const.zig");
 const no_array_constructor = @import("style/no_array_constructor.zig");
@@ -193,8 +193,11 @@ const consistent_this = @import("style/consistent_this.zig");
 // v0.8 style rules
 const no_undef_init = @import("style/no_undef_init.zig");
 const new_cap = @import("style/new_cap.zig");
+const max_classes_per_file = @import("style/max_classes_per_file.zig");
+const prefer_while = @import("style/prefer_while.zig");
+const no_useless_switch_case = @import("style/no_useless_switch_case.zig");
 
-// ── TypeScript rules (26) ─────────────────────────────────────
+// ── TypeScript rules (32) ─────────────────────────────────────
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
 const ts_no_non_null_assertion = @import("typescript/no_non_null_assertion.zig");
 const ts_prefer_as_const = @import("typescript/prefer_as_const.zig");
@@ -225,6 +228,11 @@ const ts_no_extra_non_null_assertion = @import("typescript/no_extra_non_null_ass
 const ts_no_empty_object_type = @import("typescript/no_empty_object_type.zig");
 const ts_consistent_type_assertions = @import("typescript/consistent_type_assertions.zig");
 const ts_array_type = @import("typescript/array_type.zig");
+const ts_prefer_namespace_keyword = @import("typescript/prefer_namespace_keyword.zig");
+const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig");
+const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");
+const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");
+const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");
 
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
@@ -410,13 +418,16 @@ pub const all_rules = .{
     no_ternary,
     prefer_named_capture_group,
     max_depth,
-    // Style v0.8 (6)
+    // Style v0.8 (9)
     default_case_last,
     max_lines,
     no_mixed_operators,
     consistent_this,
     no_undef_init,
     new_cap,
+    max_classes_per_file,
+    prefer_while,
+    no_useless_switch_case,
     // TypeScript (8)
     ts_no_explicit_any,
     ts_no_non_null_assertion,
@@ -443,11 +454,16 @@ pub const all_rules = .{
     ts_prefer_literal_enum_member,
     ts_no_duplicate_type_constituents,
     ts_no_mixed_enums,
-    // TypeScript v0.8 (4)
+    // TypeScript v0.8 (9)
     ts_no_extra_non_null_assertion,
     ts_no_empty_object_type,
     ts_consistent_type_assertions,
     ts_array_type,
+    ts_prefer_namespace_keyword,
+    ts_triple_slash_reference,
+    ts_no_unnecessary_boolean_literal_compare,
+    ts_no_dynamic_delete,
+    ts_prefer_ts_expect_error,
 };
 
 /// Total number of registered lint rules.

@@ -2207,6 +2207,122 @@ test "array-type" {
     });
 }
 
+test "max-classes-per-file" {
+    try RuleTester.run(.{
+        .rule = "max-classes-per-file",
+        .valid = &.{
+            "class Foo {}",
+            "const x = 1;",
+        },
+        .invalid = &.{
+            .{ .code = "class Foo {} class Bar {}" },
+            .{ .code = "class A {} class B {} class C {}" },
+        },
+    });
+}
+
+test "prefer-namespace-keyword" {
+    try RuleTester.run(.{
+        .rule = "prefer-namespace-keyword",
+        .lang = .ts,
+        .valid = &.{
+            "namespace Foo {}",
+        },
+        .invalid = &.{
+            .{ .code = "module Foo {}" },
+        },
+    });
+}
+
+test "triple-slash-reference" {
+    try RuleTester.run(.{
+        .rule = "triple-slash-reference",
+        .lang = .ts,
+        .valid = &.{
+            "// regular comment\nconst x = 1;",
+            "import type { Foo } from './foo';",
+        },
+        .invalid = &.{
+            .{ .code = "/// <reference path='./foo' />\nconst x = 1;" },
+            .{ .code = "/// <reference types='node' />\nconst x = 1;" },
+        },
+    });
+}
+
+test "no-unnecessary-boolean-literal-compare" {
+    try RuleTester.run(.{
+        .rule = "no-unnecessary-boolean-literal-compare",
+        .lang = .ts,
+        .valid = &.{
+            "if (x) {}",
+            "if (x === y) {}",
+            "if (x == null) {}",
+        },
+        .invalid = &.{
+            .{ .code = "if (x === true) {}" },
+            .{ .code = "if (x !== false) {}" },
+            .{ .code = "if (true === x) {}" },
+        },
+    });
+}
+
+test "prefer-while" {
+    try RuleTester.run(.{
+        .rule = "prefer-while",
+        .valid = &.{
+            "while (true) {}",
+            "for (let i = 0; i < 10; i++) {}",
+            "for (let i = 0; ; i++) {}",
+        },
+        .invalid = &.{
+            .{ .code = "for (;;) {}" },
+            .{ .code = "for (;;) { if (x) break; }" },
+        },
+    });
+}
+
+test "no-useless-switch-case" {
+    try RuleTester.run(.{
+        .rule = "no-useless-switch-case",
+        .valid = &.{
+            "switch (x) { case 1: foo(); break; default: bar(); }",
+            "switch (x) { case 1: case 2: foo(); break; }",
+        },
+        .invalid = &.{
+            .{ .code = "switch (x) { case 1: default: foo(); }" },
+        },
+    });
+}
+
+test "no-dynamic-delete" {
+    try RuleTester.run(.{
+        .rule = "no-dynamic-delete",
+        .lang = .ts,
+        .valid = &.{
+            "delete obj.prop;",
+        },
+        .invalid = &.{
+            .{ .code = "delete obj[key];" },
+            .{ .code = "delete obj[computed + key];" },
+            .{ .code = "delete obj['literal-key'];" },
+        },
+    });
+}
+
+test "prefer-ts-expect-error" {
+    try RuleTester.run(.{
+        .rule = "prefer-ts-expect-error",
+        .lang = .ts,
+        .valid = &.{
+            "// @ts-expect-error\nconst x: number = 'str';",
+            "// regular comment",
+        },
+        .invalid = &.{
+            .{ .code = "// @ts-ignore\nconst x: number = 'str';" },
+        },
+    });
+}
+
 // ══════════════════════════════════════════════════════════════
 // Clean Code
 // ══════════════════════════════════════════════════════════════
