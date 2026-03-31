@@ -1945,6 +1945,76 @@ test "prefer-destructuring" {
     });
 }
 
+test "no-new-native-nonconstructor" {
+    try RuleTester.run(.{
+        .rule = "no-new-native-nonconstructor",
+        .valid = &.{
+            "const s = Symbol('foo');",
+            "const b = BigInt(42);",
+            "const e = new Error('msg');",
+        },
+        .invalid = &.{
+            .{ .code = "const s = new Symbol('foo');" },
+            .{ .code = "const b = new BigInt(42);" },
+        },
+    });
+}
+
+test "complexity" {
+    try RuleTester.run(.{
+        .rule = "complexity",
+        .valid = &.{
+            "function simple() { return 1; }",
+            "function small() { if (a) { return 1; } return 2; }",
+        },
+        .invalid = &.{
+            // 21 branches = complexity > 20
+            .{ .code =
+                \\function complex(a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q,r,s,t,u) {
+                \\  if(a){}if(b){}if(c){}if(d){}if(e){}if(f){}if(g){}if(h){}
+                \\  if(i){}if(j){}if(k){}if(l){}if(m){}if(n){}if(o){}if(p){}
+                \\  if(q){}if(r){}if(s){}if(t){}if(u){}
+                \\}
+            },
+        },
+    });
+}
+
+test "max-statements" {
+    try RuleTester.run(.{
+        .rule = "max-statements",
+        .valid = &.{
+            "function f() { const x = 1; return x; }",
+        },
+        .invalid = &.{
+            .{ .code =
+                \\function tooMany() {
+                \\  const a=1;const b=2;const c=3;const d=4;const e=5;
+                \\  const f=6;const g=7;const h=8;const i=9;const j=10;
+                \\  const k=11;const l=12;const m=13;const n=14;const o=15;
+                \\  const p=16;const q=17;const r=18;const s=19;const t=20;
+                \\  const u=21;
+                \\}
+            },
+        },
+    });
+}
+
+test "sort-keys" {
+    try RuleTester.run(.{
+        .rule = "sort-keys",
+        .valid = &.{
+            "const x = { a: 1, b: 2, c: 3 };",
+            "const x = {};",
+            "const x = { x: 1 };",
+        },
+        .invalid = &.{
+            .{ .code = "const x = { b: 2, a: 1 };" },
+            .{ .code = "const x = { z: 3, a: 1, m: 2 };" },
+        },
+    });
+}
+
 test "prefer-enum-initializers" {
     try RuleTester.run(.{
         .rule = "prefer-enum-initializers",

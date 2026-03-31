@@ -483,8 +483,8 @@ test "parseConfigJson with categories" {
     try std.testing.expect(config.rule_severity_table[0] == .@"error");
 
     // Style rules should be off. no-var is the first style rule.
-    // Count: 56 correctness + 43 suspicious = 99
-    try std.testing.expect(config.rule_severity_table[99] == .off);
+    // Count: 57 correctness + 43 suspicious = 100
+    try std.testing.expect(config.rule_severity_table[100] == .off);
 }
 
 test "Config.shouldLintFile" {

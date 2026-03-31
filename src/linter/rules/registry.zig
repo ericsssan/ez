@@ -1,7 +1,7 @@
 const rule = @import("rule.zig");
 const validateRule = rule.validateRule;
 
-// ── Correctness rules (56) ────────────────────────────────────
+// ── Correctness rules (57) ────────────────────────────────────
 const no_debugger = @import("correctness/no_debugger.zig");
 const no_empty = @import("correctness/no_empty.zig");
 const no_extra_semi = @import("correctness/no_extra_semi.zig");
@@ -61,6 +61,7 @@ const no_constant_binary_expression = @import("correctness/no_constant_binary_ex
 const no_div_regex = @import("correctness/no_div_regex.zig");
 const array_callback_return = @import("correctness/array_callback_return.zig");
 const no_useless_backreference = @import("correctness/no_useless_backreference.zig");
+const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
 
 // ── Suspicious rules (43) ─────────────────────────────────────
 // (count unchanged)
@@ -111,7 +112,7 @@ const no_return_await = @import("suspicious/no_return_await.zig");
 const no_new_array = @import("suspicious/no_array_constructor_with_holes.zig");
 const require_unicode_regexp = @import("suspicious/require_await_top_level.zig");
 
-// ── Style rules (66) ──────────────────────────────────────────
+// ── Style rules (69) ──────────────────────────────────────────
 const no_var = @import("style/no_var.zig");
 const prefer_const = @import("style/prefer_const.zig");
 const no_array_constructor = @import("style/no_array_constructor.zig");
@@ -162,6 +163,9 @@ const logical_assignment_operators = @import("style/logical_assignment_operators
 const prefer_object_spread = @import("style/prefer_object_spread.zig");
 const no_warning_comments = @import("style/no_warning_comments.zig");
 // v0.7 style rules (continued)
+const sort_keys = @import("style/sort_imports.zig");
+const complexity = @import("style/complexity.zig");
+const max_statements = @import("style/max_statements.zig");
 const dot_notation = @import("style/dot_notation.zig");
 const no_confusing_arrow = @import("style/no_confusing_arrow.zig");
 const no_extra_label = @import("style/no_extra_label.zig");
@@ -264,11 +268,12 @@ pub const all_rules = .{
     no_empty_static_block,
     no_constructor_new,
     accessor_pairs,
-    // Correctness v0.7 (4)
+    // Correctness v0.7 (5)
     no_constant_binary_expression,
     no_div_regex,
     array_callback_return,
     no_useless_backreference,
+    no_new_native_nonconstructor,
     // Suspicious (28)
     eqeqeq,
     no_cond_assign,
@@ -366,7 +371,10 @@ pub const all_rules = .{
     logical_assignment_operators,
     prefer_object_spread,
     no_warning_comments,
-    // Style v0.7 extra (5)
+    // Style v0.7 extra (8)
+    sort_keys,
+    complexity,
+    max_statements,
     dot_notation,
     no_confusing_arrow,
     no_extra_label,
