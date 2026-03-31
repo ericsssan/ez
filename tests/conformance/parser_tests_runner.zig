@@ -62,6 +62,10 @@ pub fn main(init: std.process.Init) !void {
     var overall_pass: u32 = 0;
     var overall_total: u32 = 0;
     var overall_skip: u32 = 0;
+    var must_pass_pass: u32 = 0;
+    var must_pass_total: u32 = 0;
+    var must_error_pass: u32 = 0;
+    var must_error_total: u32 = 0;
 
     for (categories) |cat| {
         var pass: u32 = 0;
@@ -114,10 +118,16 @@ pub fn main(init: std.process.Init) !void {
 
             switch (cat.mode) {
                 .must_pass => {
-                    if (result == .ok) pass += 1 else fail += 1;
+                    if (result == .ok) pass += 1 else {
+                        fail += 1;
+                        if (!compact_mode) try stdout.print("  FAIL (should pass): {s}/{s}\n", .{ dir_path, name });
+                    }
                 },
                 .must_error => {
-                    if (result != .ok) pass += 1 else fail += 1;
+                    if (result != .ok) pass += 1 else {
+                        fail += 1;
+                        if (!compact_mode) try stdout.print("  FAIL (should reject): {s}/{s}\n", .{ dir_path, name });
+                    }
                 },
                 .must_not_crash => {
                     // early/ tests may have errors, just must not crash (OOM)
@@ -143,10 +153,20 @@ pub fn main(init: std.process.Init) !void {
         overall_pass += pass;
         overall_total += total;
         overall_skip += skip;
+        switch (cat.mode) {
+            .must_pass => {
+                must_pass_pass += pass;
+                must_pass_total += total;
+            },
+            .must_error, .must_not_crash => {
+                must_error_pass += pass;
+                must_error_total += total;
+            },
+        }
     }
 
     if (compact_mode) {
-        try stdout.print("test262-parser-tests:  {d}/{d} ({d} known-stale skipped)\n", .{ overall_pass, overall_total, overall_skip });
+        try stdout.print("test262-parser-tests:  must-parse: {d}/{d}  must-reject: {d}/{d}  skipped: {d}\n", .{ must_pass_pass, must_pass_total, must_error_pass, must_error_total, overall_skip });
     } else {
         try stdout.print("\n  Overall: {d}/{d}\n", .{ overall_pass, overall_total });
     }

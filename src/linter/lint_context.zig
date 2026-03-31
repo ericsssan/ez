@@ -137,4 +137,20 @@ pub const LintContext = struct {
             .severity = effective_sev,
         }) catch {};
     }
+
+    pub fn reportSpan(
+        self: *const LintContext,
+        span: Span,
+        rule_name: []const u8,
+        message: []const u8,
+        severity: Severity,
+    ) void {
+        const effective_sev = self.severity_override orelse severity;
+        self.diagnostics.append(self.allocator, .{
+            .rule_name = rule_name,
+            .message = message,
+            .span = span,
+            .severity = effective_sev,
+        }) catch {};
+    }
 };

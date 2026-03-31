@@ -1,0 +1,36 @@
+const std = @import("std");
+const ast = @import("../../../parser/ast.zig");
+const NodeIndex = ast.NodeIndex;
+const Node = ast.Node;
+const LintContext = @import("../../lint_context.zig").LintContext;
+const RuleMeta = @import("../rule.zig").RuleMeta;
+
+pub const meta = RuleMeta{
+    .name = "no-object-constructor",
+    .category = .suspicious,
+    .default_severity = .warning,
+    .description = "Disallow `Object` constructor",
+};
+
+pub const relevant_tags = [_]Node.Tag{.new_expr};
+
+pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    const data = ctx.nodeData(node);
+    const callee = data.lhs;
+    if (callee == .none) return;
+    if (ctx.nodeTag(callee) != .identifier) return;
+
+    const name = ctx.tokenText(ctx.nodeMainToken(callee));
+    if (!std.mem.eql(u8, name, "Object")) return;
+
+    // `new Object()` with no arguments
+    if (data.rhs == .none) {
+        ctx.report(node, meta.name, "Use `{}` instead of `new Object()`", meta.default_severity);
+        return;
+    }
+
+    const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+    if (range.start == range.end) {
+        ctx.report(node, meta.name, "Use `{}` instead of `new Object()`", meta.default_severity);
+    }
+}

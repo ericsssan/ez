@@ -69,6 +69,16 @@ pub const SemanticAnalyzer = struct {
     /// The scope that is currently being visited.
     current_scope: ScopeId,
 
+    /// Track exported names for duplicate detection and undeclared export validation.
+    exported_names: std.ArrayList(ExportEntry) = .empty,
+
+    const ExportEntry = struct {
+        exported_name: []const u8, // the exported name (for duplicate detection)
+        local_name: []const u8, // the local binding name (for undeclared detection)
+        node: NodeIndex, // for error reporting
+        is_re_export: bool, // export { x } from '...' doesn't need local binding
+    };
+
     // ── Lifecycle ──────────────────────────────────────────
 
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
@@ -88,14 +98,19 @@ pub const SemanticAnalyzer = struct {
         self.symbols.deinit();
         self.references.deinit();
         self.diagnostics.deinit(self.allocator);
+        self.exported_names.deinit(self.allocator);
     }
 
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
     pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
         var self = SemanticAnalyzer.init(allocator, ast);
         errdefer self.deinit();
+        // exported_names is a temporary used only during analysis; always free it.
+        defer self.exported_names.deinit(allocator);
 
-        try self.visitNode(.root);
+        const root_data = self.ast.nodeData(.root);
+        try self.visitRoot(.root, root_data);
+        try self.validateExports();
 
         return .{
             .scopes = self.scopes,
@@ -196,14 +211,14 @@ pub const SemanticAnalyzer = struct {
     // ── Visitor dispatch ───────────────────────────────────
 
     fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) std.mem.Allocator.Error!void {
-        if (idx == .none) return;
+        if (idx == .none or idx == .root) return;
 
         const tag = self.ast.nodeTag(idx);
         const data = self.ast.nodeData(idx);
 
         switch (tag) {
-            // ── Program ────────────────────────────────────
-            .root => try self.visitRoot(idx, data),
+            // ── Program (only entered from analyze(), never recursively) ──
+            .root => {},
 
             // ── Scope-creating statements ──────────────────
             .block_stmt => try self.visitBlockStmt(idx, data),
@@ -251,8 +266,10 @@ pub const SemanticAnalyzer = struct {
                     // lhs is a declaration node
                     try self.visitNode(data.lhs);
                 } else {
-                    // lhs/rhs encode SubRange
+                    // lhs/rhs encode SubRange of specifiers
                     try self.visitSubRangeFromData(data);
+                    // Track exported names for validation
+                    try self.trackExportSpecifiers(idx, data);
                 }
             },
             .export_default_expr => try self.visitNode(data.lhs),
@@ -356,7 +373,12 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(data.lhs);
                 try self.visitNode(data.rhs);
             },
-            .property, .computed_property => {
+            .property => {
+                // Only visit value (rhs) — key (lhs) is not a reference
+                try self.visitNode(data.rhs);
+            },
+            .computed_property => {
+                // Computed key IS an expression — visit both
                 try self.visitNode(data.lhs);
                 try self.visitNode(data.rhs);
             },
@@ -484,10 +506,102 @@ pub const SemanticAnalyzer = struct {
             .continue_label, .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal,
             .null_literal, .regex_literal, .bigint_literal,
-            .template_element, .import_meta, .new_target,
+            .template_element, .import_meta,
             .export_all, .export_specifier,
             .error_node,
             => {},
+
+            .new_target => {
+                // new.target is valid inside functions, class field initializers, and static blocks
+                var scope = self.current_scope;
+                var in_valid_context = false;
+                while (scope.isValid()) {
+                    const k = self.scopes.kind(scope);
+                    if (k == .function or k == .static_block or k == .class) {
+                        in_valid_context = true;
+                        break;
+                    }
+                    scope = self.scopes.parent(scope);
+                }
+                if (!in_valid_context) {
+                    try self.diagnostics.append(self.allocator, .{
+                        .message = "'new.target' is only valid inside functions",
+                        .span = self.ast.nodeSpan(idx),
+                        .severity = .@"error",
+                    });
+                }
+            },
+        }
+    }
+
+    // ── Export tracking ────────────────────────────────────
+
+    fn trackExportSpecifiers(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
+        const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        const token_tags = self.ast.tokens.items(.tag);
+
+        // Determine if this is a re-export by checking if there's a `from` keyword after
+        // the closing brace. Walk tokens from the export keyword to find `}` then `from`.
+        const main_token = self.ast.nodes.items(.main_token)[idx.toInt()];
+        var is_re_export = false;
+        {
+            var ti = main_token;
+            while (ti < token_tags.len) : (ti += 1) {
+                if (token_tags[ti] == .r_brace) {
+                    if (ti + 1 < token_tags.len and token_tags[ti + 1] == .kw_from) {
+                        is_re_export = true;
+                    }
+                    break;
+                }
+            }
+        }
+
+        var i = range.start;
+        while (i < range.end) : (i += 1) {
+            const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data[i]);
+            const spec_data = self.ast.nodes.items(.data)[spec_idx.toInt()];
+            const local_token: TokenIndex = @intFromEnum(spec_data.lhs);
+            const exported_token: TokenIndex = @intFromEnum(spec_data.rhs);
+
+            const exported_name = self.ast.tokenText(exported_token);
+            const local_name = self.ast.tokenText(local_token);
+
+            try self.exported_names.append(self.allocator, .{
+                .exported_name = exported_name,
+                .local_name = local_name,
+                .node = spec_idx,
+                .is_re_export = is_re_export,
+            });
+        }
+    }
+
+    fn validateExports(self: *SemanticAnalyzer) !void {
+        // Check for duplicate exported names
+        for (self.exported_names.items, 0..) |entry, i| {
+            for (self.exported_names.items[0..i]) |prev| {
+                if (std.mem.eql(u8, entry.exported_name, prev.exported_name)) {
+                    try self.diagnostics.append(self.allocator, .{
+                        .message = "Duplicate export name",
+                        .span = self.ast.nodeSpan(entry.node),
+                        .severity = .@"error",
+                    });
+                    break;
+                }
+            }
+        }
+
+        // Check for undeclared export locals (only for non-re-exports)
+        for (self.exported_names.items) |entry| {
+            if (entry.is_re_export) continue;
+            // Check if the local name is declared in module/global scope
+            const root_scope_id: ScopeId = @enumFromInt(0);
+            if (self.findSymbolInScope(entry.local_name, root_scope_id) == null) {
+                try self.diagnostics.append(self.allocator, .{
+                    .message = "Export is not defined",
+                    .span = self.ast.nodeSpan(entry.node),
+                    .severity = .@"error",
+                });
+            }
         }
     }
 
@@ -755,6 +869,7 @@ pub const SemanticAnalyzer = struct {
     // ── Imports ────────────────────────────────────────────
 
     fn visitImportDecl(self: *SemanticAnalyzer, data: Node.Data) !void {
+        if (data.lhs == .none) return;
         const import_data = self.ast.extraData(ImportData, @intFromEnum(data.lhs));
         const specifiers_range = SubRange{
             .start = import_data.specifiers_start,
@@ -879,7 +994,7 @@ pub const SemanticAnalyzer = struct {
         scope: ScopeId,
         binding_kind: BindingKind,
     ) !void {
-        if (node == .none) return;
+        if (node == .none or node == .root) return;
 
         const tag = self.ast.nodeTag(node);
         const data = self.ast.nodeData(node);
@@ -888,6 +1003,10 @@ pub const SemanticAnalyzer = struct {
             .identifier => {
                 const name = self.ast.tokenText(self.ast.nodeMainToken(node));
                 _ = try self.declareBinding(name, node, binding_kind, scope);
+            },
+            // TS type annotation wraps a binding: `x: Type` — extract from lhs
+            .ts_type_annotation => {
+                if (data.lhs != .none) try self.extractBindingNames(data.lhs, scope, binding_kind);
             },
             .array_pattern => {
                 const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
@@ -939,9 +1058,8 @@ pub const SemanticAnalyzer = struct {
                 try self.extractBindingNames(data.lhs, scope, binding_kind);
             },
             else => {
-                // Not a pattern — might be an expression in a parameter position;
-                // just visit it for any references it contains.
-                try self.visitNode(node);
+                // Not a recognized pattern — skip to avoid infinite recursion.
+                // TS-specific node types and other non-pattern nodes are ignored here.
             },
         }
     }

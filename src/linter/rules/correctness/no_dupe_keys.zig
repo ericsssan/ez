@@ -43,7 +43,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         };
 
         if (key_name) |name| {
-            const result = seen.getOrPut(name) catch continue;
+            // Normalize string keys: strip quotes for comparison
+            // so "foo" and 'foo' are considered the same key
+            const normalized = if (name.len >= 2 and (name[0] == '"' or name[0] == '\''))
+                name[1 .. name.len - 1]
+            else
+                name;
+            const result = seen.getOrPut(normalized) catch continue;
             if (result.found_existing) {
                 ctx.report(prop_idx, meta.name, "Duplicate key in object literal", meta.default_severity);
             }

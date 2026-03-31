@@ -64,6 +64,23 @@ pub fn main(init: std.process.Init) !void {
     };
     try walkTs(io, allocator, base_dir, cases_dir, &files);
 
+    // Pre-load baseline filenames once (avoids re-scanning directory per test)
+    var baseline_names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (baseline_names.items) |n| allocator.free(n);
+        baseline_names.deinit(allocator);
+    }
+    if (baselines_dir.len > 0) {
+        if (Io.Dir.cwd().openDir(io, baselines_dir, .{})) |bdir| {
+            var biter = bdir.iterate();
+            while (biter.next(io) catch null) |entry| {
+                if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".errors.txt")) {
+                    try baseline_names.append(allocator, try allocator.dupe(u8, entry.name));
+                }
+            }
+        } else |_| {}
+    }
+
     for (files.items) |path| {
         // Skip .d.ts and .tsx
         if (std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".tsx")) {
@@ -83,7 +100,7 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Classify using error baselines
-        const kind = classifyTest(io, allocator, path, source, baselines_dir);
+        const kind = classifyTest(io, allocator, path, source, baselines_dir, baseline_names.items);
         if (kind == .skip) {
             skipped += 1;
             continue;
@@ -91,28 +108,52 @@ pub fn main(init: std.process.Init) !void {
 
         const lang: Token.Language = if (std.mem.endsWith(u8, path, ".ts")) .ts else .js;
         const is_module = detectModuleMode(source);
+        const is_strict = detectStrictMode(source);
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const file_alloc = arena.allocator();
 
         var first_error: []const u8 = "";
-        const has_error = blk: {
-            var tokens = Lexer.tokenizeWithOptions(file_alloc, source, lang, is_module) catch {
+
+        // Prepend "use strict"; if the test directives enable strict mode
+        const parse_source = if (is_strict and !is_module) blk: {
+            const prefix = "\"use strict\";\n";
+            const buf = file_alloc.alloc(u8, prefix.len + source.len) catch break :blk source;
+            @memcpy(buf[0..prefix.len], prefix);
+            @memcpy(buf[prefix.len..], source);
+            break :blk buf;
+        } else source;
+
+        const parse_ok = parse_blk: {
+            var toks = Lexer.tokenizeWithOptions(file_alloc, parse_source, lang, is_module) catch {
                 first_error = "tokenize failed";
-                break :blk true;
+                break :parse_blk false;
             };
-            defer tokens.deinit(file_alloc);
-            const tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), lang, is_module) catch {
+            defer toks.deinit(file_alloc);
+            var tree = Parser.parseWithLanguage(file_alloc, parse_source, toks.slice(), lang, is_module) catch {
                 first_error = "parse OOM";
-                break :blk true;
+                break :parse_blk false;
             };
             if (tree.errors.len > 0) {
                 first_error = tree.errors[0].message;
-                break :blk true;
+                break :parse_blk false;
             }
-            break :blk false;
+
+            // Run semantic analysis for must-reject tests only.
+            // TS allows redeclarations/patterns that JS doesn't, so skip for must-parse.
+            if (kind == .must_reject) {
+                var sem = sanz.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :parse_blk true;
+                defer sem.deinit(file_alloc);
+                if (sem.diagnostics.len > 0) {
+                    first_error = "semantic error";
+                    break :parse_blk false;
+                }
+            }
+
+            break :parse_blk true;
         };
+        const has_error = !parse_ok;
 
         switch (kind) {
             .must_parse => {
@@ -145,8 +186,7 @@ pub fn main(init: std.process.Init) !void {
     const overall_pass = must_parse_pass + must_reject_pass;
 
     if (compact) {
-        try stdout.print("typescript:            {d}/{d} (parse: {d}/{d}, reject: {d}/{d}, skipped: {d})\n", .{
-            overall_pass, overall_total,
+        try stdout.print("typescript:            must-parse: {d}/{d}  must-reject: {d}/{d}  skipped: {d}\n", .{
             must_parse_pass, parse_total, must_reject_pass, reject_total, skipped,
         });
     } else {
@@ -159,22 +199,45 @@ pub fn main(init: std.process.Init) !void {
     try stdout.flush();
 }
 
+// ── Strict mode detection ───────────────────────────────────────
+
+fn detectStrictMode(source: []const u8) bool {
+    // Detect @strict or @alwaysStrict directives in TS test comments.
+    if (std.mem.indexOf(u8, source, "// @strict: true") != null) return true;
+    if (std.mem.indexOf(u8, source, "// @alwaysStrict: true") != null) return true;
+    // Parametric: "@alwaysStrict: true, false" — tests run in both modes
+    if (std.mem.indexOf(u8, source, "// @alwaysStrict:") != null) {
+        // If "true" appears in the value, the strict variant exists
+        if (std.mem.indexOf(u8, source, "// @alwaysStrict: true,") != null or
+            std.mem.indexOf(u8, source, "// @alwaysStrict:true") != null)
+            return true;
+    }
+    // "@strict" without ": false" means strict is enabled
+    if (std.mem.indexOf(u8, source, "// @strict\n") != null) return true;
+    return false;
+}
+
 // ── Module mode detection ────────────────────────────────────────
 
 fn detectModuleMode(source: []const u8) bool {
-    if (std.mem.indexOf(u8, source, "// @module:") != null) return true;
+    // Any @module directive implies module mode for TS files
+    if (std.mem.indexOf(u8, source, "// @module:") != null or
+        std.mem.indexOf(u8, source, "\xef\xbb\xbf// @module:") != null)
+        return true;
     // Scan for export/import at start of any line (after optional whitespace)
     var i: usize = 0;
     while (i < source.len) {
         // Skip whitespace at start of line
         while (i < source.len and (source[i] == ' ' or source[i] == '\t')) i += 1;
-        // Check for export/import keyword
-        if (i + 7 <= source.len) {
-            if (std.mem.eql(u8, source[i..][0..7], "export ") or
-                std.mem.eql(u8, source[i..][0..7], "import "))
-                return true;
+        // Check for export/import keyword followed by whitespace or '{'
+        if (i + 6 < source.len) {
+            if (std.mem.eql(u8, source[i..][0..6], "export") or
+                std.mem.eql(u8, source[i..][0..6], "import"))
+            {
+                const next = source[i + 6];
+                if (next == ' ' or next == '\t' or next == '{') return true;
+            }
         }
-        if (i + 7 <= source.len and std.mem.eql(u8, source[i..][0..7], "export{")) return true;
         // Skip to next line
         while (i < source.len and source[i] != '\n') i += 1;
         if (i < source.len) i += 1;
@@ -186,7 +249,7 @@ fn detectModuleMode(source: []const u8) bool {
 
 const TestKind = enum { must_parse, must_reject, skip };
 
-fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: []const u8, baselines_dir: []const u8) TestKind {
+fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: []const u8, baselines_dir: []const u8, baseline_names: []const []const u8) TestKind {
     // Skip pure JSON files
     if (source.len > 0 and (source[0] == '{' or (source[0] == 0xEF and source.len > 3 and source[3] == '{'))) {
         return .skip;
@@ -195,7 +258,7 @@ fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: 
     // Use error baselines if available: check if <testname>.errors.txt exists
     // and contains syntax errors (TS1xxx codes = parse errors)
     if (baselines_dir.len > 0) {
-        if (hasSyntaxErrorBaseline(io, allocator, path, baselines_dir))
+        if (hasSyntaxErrorBaseline(io, allocator, path, baselines_dir, baseline_names))
             return .must_reject;
     }
 
@@ -209,7 +272,7 @@ fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: 
 
 /// Check if a test file has a corresponding .errors.txt baseline with syntax errors.
 /// Syntax errors in TypeScript are TS1xxx codes (1000-1999 range).
-fn hasSyntaxErrorBaseline(io: Io, allocator: std.mem.Allocator, test_path: []const u8, baselines_dir: []const u8) bool {
+fn hasSyntaxErrorBaseline(io: Io, allocator: std.mem.Allocator, test_path: []const u8, baselines_dir: []const u8, baseline_names: []const []const u8) bool {
     // Extract test name from path: .../cases/conformance/foo/bar.ts -> bar
     const basename = getBasename(test_path);
     const stem = if (std.mem.endsWith(u8, basename, ".ts"))
@@ -225,17 +288,12 @@ fn hasSyntaxErrorBaseline(io: Io, allocator: std.mem.Allocator, test_path: []con
     if (checkBaselineForSyntaxErrors(io, allocator, baseline_path)) return true;
 
     // Also check parametric baselines: <stem>(<params>).errors.txt
-    // TypeScript generates these for tests with multiple @target values
-    const dir = Io.Dir.cwd().openDir(io, baselines_dir, .{}) catch return false;
-    var iter = dir.iterate();
-    while (iter.next(io) catch null) |entry| {
-        if (entry.kind != .file) continue;
-        // Check if filename starts with stem and has pattern: stem(...)*.errors.txt
-        if (!std.mem.startsWith(u8, entry.name, stem)) continue;
-        if (entry.name.len <= stem.len or entry.name[stem.len] != '(') continue;
-        if (!std.mem.endsWith(u8, entry.name, ".errors.txt")) continue;
-
-        const param_path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ baselines_dir, entry.name }) catch continue;
+    // TypeScript generates these for tests with multiple @target values.
+    // Uses pre-cached baseline_names to avoid re-scanning the directory per test.
+    for (baseline_names) |name| {
+        if (!std.mem.startsWith(u8, name, stem)) continue;
+        if (name.len <= stem.len or name[stem.len] != '(') continue;
+        const param_path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ baselines_dir, name }) catch continue;
         if (checkBaselineForSyntaxErrors(io, allocator, param_path)) return true;
     }
     return false;

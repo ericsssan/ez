@@ -37,6 +37,24 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     };
     const stmts = ctx.extraSlice(sub_range);
 
+    // Only applies to constructors in derived classes (those that call super()).
+    // If no super() call exists in this constructor, it's a base class — skip.
+    var has_super_call = false;
+    for (stmts) |stmt_idx| {
+        const sn: NodeIndex = @enumFromInt(stmt_idx);
+        if (ctx.nodeTag(sn) == .expression_stmt) {
+            const expr = ctx.nodeData(sn).lhs;
+            if (expr != .none and ctx.nodeTag(expr) == .call_expr) {
+                const cd = ctx.nodeData(expr);
+                if (cd.lhs != .none and ctx.nodeTag(cd.lhs) == .super_expr) {
+                    has_super_call = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (!has_super_call) return;
+
     var super_called = false;
 
     for (stmts) |stmt_idx| {

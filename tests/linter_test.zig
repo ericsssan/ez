@@ -47,48 +47,92 @@ fn countRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) usize {
 test "no-debugger" {
     try RuleTester.run(.{
         .rule = "no-debugger",
-        .valid = &.{ "var x = 1;", "console.log('hello');" },
-        .invalid = &.{.{ .code = "debugger;" }},
+        .valid = &.{
+            "var x = 1;",
+            "function foo() { return 1; }",
+            "if (x) { foo(); }",
+        },
+        .invalid = &.{
+            .{ .code = "debugger;" },
+            .{ .code = "function foo() { debugger; }" },
+            .{ .code = "if (x) { debugger; }", .errors = 1 },
+        },
     });
 }
 
 test "no-empty" {
     try RuleTester.run(.{
         .rule = "no-empty",
-        .valid = &.{"if (true) { var x = 1; }"},
-        .invalid = &.{.{ .code = "if (true) {}" }},
+        .valid = &.{
+            "if (true) { var x = 1; }",
+            "while (false) { break; }",
+            "try { foo(); } catch(e) { throw e; }",
+        },
+        .invalid = &.{
+            .{ .code = "if (true) {}" },
+            .{ .code = "while (false) {}" },
+            .{ .code = "try {} catch(e) { throw e; }" },
+        },
     });
 }
 
 test "no-extra-semi" {
     try RuleTester.run(.{
         .rule = "no-extra-semi",
-        .valid = &.{"var x = 1;"},
-        .invalid = &.{.{ .code = ";" }},
+        .valid = &.{
+            "var x = 1;",
+            "function foo() {}",
+        },
+        .invalid = &.{
+            .{ .code = ";" },
+            .{ .code = "var x = 1;;" },
+        },
     });
 }
 
 test "no-dupe-keys" {
     try RuleTester.run(.{
         .rule = "no-dupe-keys",
-        .valid = &.{"var obj = { a: 1, b: 2, c: 3 };"},
-        .invalid = &.{.{ .code = "var obj = { a: 1, b: 2, a: 3 };" }},
+        .valid = &.{
+            "var obj = { a: 1, b: 2, c: 3 };",
+            "var obj = { a: 1, 'b': 2 };",
+            "var obj = {};",
+        },
+        .invalid = &.{
+            .{ .code = "var obj = { a: 1, b: 2, a: 3 };" },
+            .{ .code = "var obj = { 'a': 1, a: 2 };" },
+        },
     });
 }
 
 test "no-dupe-args" {
     try RuleTester.run(.{
         .rule = "no-dupe-args",
-        .valid = &.{"function foo(a, b, c) {}"},
-        .invalid = &.{.{ .code = "function foo(a, b, a) {}" }},
+        .valid = &.{
+            "function foo(a, b, c) {}",
+            "function foo(a) {}",
+            "(a, b) => a + b;",
+        },
+        .invalid = &.{
+            .{ .code = "function foo(a, b, a) {}" },
+            .{ .code = "function foo(x, x) {}" },
+        },
     });
 }
 
 test "no-sparse-arrays" {
     try RuleTester.run(.{
         .rule = "no-sparse-arrays",
-        .valid = &.{"var arr = [1, 2, 3];"},
-        .invalid = &.{.{ .code = "var arr = [1,,3];" }},
+        .valid = &.{
+            "var arr = [1, 2, 3];",
+            "var arr = [];",
+            "var arr = [undefined, undefined];",
+        },
+        .invalid = &.{
+            .{ .code = "var arr = [1,,3];" },
+            .{ .code = "var arr = [,];" },
+            .{ .code = "var arr = [1, 2,,];" },
+        },
     });
 }
 
@@ -140,10 +184,15 @@ test "no-unused-vars" {
     try RuleTester.run(.{
         .rule = "no-unused-vars",
         .valid = &.{
-            "let x = 1; console.log(x);",
+            "let x = 1; if (x > 0) {}",
             "let _unused = 1;",
+            "function foo(x) { return x; } foo(1);",
+            "const arr = [1, 2]; arr.push(3);",
         },
-        .invalid = &.{.{ .code = "let x = 1;" }},
+        .invalid = &.{
+            .{ .code = "let x = 1;" },
+            .{ .code = "const unused = 42;" },
+        },
     });
 }
 
@@ -151,10 +200,16 @@ test "no-undef" {
     try RuleTester.run(.{
         .rule = "no-undef",
         .valid = &.{
-            "let x = 1; console.log(x);",
-            "console.log(undefined);",
+            "let x = 1; if (x > 0) {}",
+            "typeof undeclaredVar;",
+            "const arr = new Array(3);",
+            "const p = new Promise(function(resolve) { resolve(1); });",
+            "const obj = { type: true };",
         },
-        .invalid = &.{.{ .code = "console.log(x);" }},
+        .invalid = &.{
+            .{ .code = "undeclaredVar;" },
+            .{ .code = "let arr = []; arr.push(undeclaredVar);" },
+        },
     });
 }
 
@@ -200,8 +255,15 @@ test "no-self-compare" {
 test "no-const-assign" {
     try RuleTester.run(.{
         .rule = "no-const-assign",
-        .valid = &.{"let x = 1; x = 2;"},
-        .invalid = &.{.{ .code = "const x = 1; x = 2;" }},
+        .valid = &.{
+            "let x = 1; x = 2;",
+            "var y = 1; y += 1;",
+            "const obj = {}; obj.x = 1;",
+        },
+        .invalid = &.{
+            .{ .code = "const x = 1; x = 2;" },
+            .{ .code = "const arr = []; arr = [];" },
+        },
     });
 }
 
@@ -387,8 +449,16 @@ test "no-unsafe-optional-chaining" {
 test "eqeqeq" {
     try RuleTester.run(.{
         .rule = "eqeqeq",
-        .valid = &.{"let x = 1; if (x === 1) {}"},
-        .invalid = &.{.{ .code = "let x = 1; if (x == 1) {}" }},
+        .valid = &.{
+            "let x = 1; if (x === 1) {}",
+            "if (x !== null) {}",
+            "if (a === b) {}",
+        },
+        .invalid = &.{
+            .{ .code = "let x = 1; if (x == 1) {}" },
+            .{ .code = "if (a != b) {}" },
+            .{ .code = "let x = 1; if (x == null) {}" },
+        },
     });
 }
 
@@ -700,8 +770,750 @@ test "no-unneeded-ternary" {
 test "prefer-template" {
     try RuleTester.run(.{
         .rule = "prefer-template",
-        .valid = &.{"let x = 'hello'; console.log(x);"},
-        .invalid = &.{.{ .code = "let name = 'world'; let x = 'hello' + name; console.log(x);" }},
+        .valid = &.{
+            "let x = 'hello'; throw new Error(x);",
+            "let x = `hello ${name}`;",
+            "'use strict';",
+        },
+        .invalid = &.{
+            .{ .code = "let name = 'world'; let x = 'hello' + name; throw new Error(x);" },
+            .{ .code = "const s = 'a' + 'b'; throw new Error(s);" },
+        },
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// Correctness v0.5 Rules
+// ══════════════════════════════════════════════════════════════
+
+test "no-class-assign" {
+    try RuleTester.run(.{
+        .rule = "no-class-assign",
+        .valid = &.{
+            "class Foo {} new Foo();",
+            "let Foo = class {}; Foo = class {}; new Foo();",
+        },
+        .invalid = &.{
+            .{ .code = "class Foo {} Foo = 1;" },
+            .{ .code = "class Bar {} Bar = function() {};" },
+        },
+    });
+}
+
+test "no-unused-expressions" {
+    try RuleTester.run(.{
+        .rule = "no-unused-expressions",
+        .valid = &.{
+            "foo();",
+            "let a = 1; a++;",
+            "delete obj.x;",
+            "let x = (1, 2);",
+        },
+        .invalid = &.{
+            .{ .code = "1;" },
+            .{ .code = "let a = 1; let b = 2; a + b;" },
+            .{ .code = "let x = 1; x > 0;" },
+        },
+    });
+}
+
+test "no-useless-constructor" {
+    try RuleTester.run(.{
+        .rule = "no-useless-constructor",
+        .valid = &.{
+            "class Foo { constructor(x) { this.x = x; } }",
+            "class Foo { constructor() { super(); this.x = 1; } }",
+        },
+        .invalid = &.{
+            .{ .code = "class Foo { constructor() {} }" },
+        },
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// Suspicious v0.5 Rules
+// ══════════════════════════════════════════════════════════════
+
+test "no-console" {
+    try RuleTester.run(.{
+        .rule = "no-console",
+        .valid = &.{
+            "foo();",
+            "logger.log('hello');",
+        },
+        .invalid = &.{
+            .{ .code = "console.log('hello');" },
+            .{ .code = "console.error('oops');" },
+            .{ .code = "console.warn('warn');" },
+        },
+    });
+}
+
+test "no-alert" {
+    try RuleTester.run(.{
+        .rule = "no-alert",
+        .valid = &.{
+            "foo('hello');",
+            "myAlert('x');",
+        },
+        .invalid = &.{
+            .{ .code = "alert('hello');" },
+            .{ .code = "confirm('sure?');" },
+            .{ .code = "prompt('name?');" },
+        },
+    });
+}
+
+test "no-duplicate-imports" {
+    try RuleTester.run(.{
+        .rule = "no-duplicate-imports",
+        .valid = &.{
+            "import { a } from 'foo'; import { b } from 'bar';",
+        },
+        .invalid = &.{
+            .{ .code = "import { a } from 'foo'; import { b } from 'foo';" },
+        },
+    });
+}
+
+test "default-case" {
+    try RuleTester.run(.{
+        .rule = "default-case",
+        .valid = &.{
+            "let x = 1; switch(x) { case 1: break; default: break; }",
+            "let x = 1; switch(x) { default: break; case 1: break; }",
+        },
+        .invalid = &.{
+            .{ .code = "let x = 1; switch(x) { case 1: break; case 2: break; }" },
+            .{ .code = "let x = 1; switch(x) { case 1: break; }" },
+        },
+    });
+}
+
+test "radix" {
+    try RuleTester.run(.{
+        .rule = "radix",
+        .valid = &.{
+            "parseInt('10', 10);",
+            "parseInt('ff', 16);",
+            "parseFloat('3.14');",
+        },
+        .invalid = &.{
+            .{ .code = "parseInt('10');" },
+            .{ .code = "parseInt('ff');" },
+        },
+    });
+}
+
+test "no-shadow" {
+    try RuleTester.run(.{
+        .rule = "no-shadow",
+        .valid = &.{
+            "let a = 1; function foo() { let b = 2; return b; } foo(); a;",
+        },
+        .invalid = &.{
+            .{ .code = "let x = 1; function foo() { let x = 2; return x; } foo();" },
+            .{ .code = "let msg = 'hi'; try { foo(); } catch(msg) { throw msg; }" },
+        },
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// Style v0.5 Rules
+// ══════════════════════════════════════════════════════════════
+
+test "object-shorthand" {
+    try RuleTester.run(.{
+        .rule = "object-shorthand",
+        .valid = &.{
+            "let x = 1; let obj = { x };",
+            "let obj = { a: 1 };",
+            "let x = 1; let obj = { y: x };",
+        },
+        .invalid = &.{
+            .{ .code = "let x = 1; let obj = { x: x };" },
+            .{ .code = "let name = 'foo'; let obj = { name: name };" },
+        },
+    });
+}
+
+test "prefer-exponentiation-operator" {
+    try RuleTester.run(.{
+        .rule = "prefer-exponentiation-operator",
+        .valid = &.{
+            "let x = 2 ** 3;",
+            "Math.sqrt(4);",
+        },
+        .invalid = &.{
+            .{ .code = "let x = Math.pow(2, 3);" },
+            .{ .code = "Math.pow(a, b);" },
+        },
+    });
+}
+
+test "symbol-description" {
+    try RuleTester.run(.{
+        .rule = "symbol-description",
+        .valid = &.{
+            "let s = Symbol('mySymbol');",
+            "let s = Symbol.for('key');",
+        },
+        .invalid = &.{
+            .{ .code = "let s = Symbol();" },
+        },
+    });
+}
+
+test "no-useless-rename" {
+    try RuleTester.run(.{
+        .rule = "no-useless-rename",
+        .valid = &.{
+            "import { a as b } from 'foo';",
+        },
+        .invalid = &.{
+            .{ .code = "import { a as a } from 'foo';" },
+        },
+    });
+}
+
+// ══════════════════════════════════════════════════════════════
+// TypeScript v0.5 Rules
+// ══════════════════════════════════════════════════════════════
+
+test "ban-ts-comment" {
+    try RuleTester.run(.{
+        .rule = "ban-ts-comment",
+        .lang = .ts,
+        .valid = &.{
+            "const x: number = 5;",
+            "// regular comment",
+        },
+        .invalid = &.{
+            .{ .code = "// @ts-ignore\nconst x = foo();" },
+            .{ .code = "// @ts-nocheck\n" },
+            .{ .code = "// @ts-expect-error\nconst x = foo();" },
+        },
+    });
+}
+
+test "no-this-alias" {
+    try RuleTester.run(.{
+        .rule = "no-this-alias",
+        .lang = .ts,
+        .valid = &.{
+            "const obj = { x: 1 };",
+            "const fn = () => this;",
+        },
+        .invalid = &.{
+            .{ .code = "const self = this;" },
+            .{ .code = "const _this = this;" },
+        },
+    });
+}
+
+test "no-duplicate-enum-values" {
+    try RuleTester.run(.{
+        .rule = "no-duplicate-enum-values",
+        .lang = .ts,
+        .valid = &.{
+            "enum Foo { A = 1, B = 2, C = 3 }",
+            "enum Status { Ok = 'ok', Error = 'error' }",
+        },
+        .invalid = &.{
+            .{ .code = "enum Foo { A = 1, B = 2, C = 1 }" },
+            .{ .code = "enum Foo { A = 'x', B = 'x' }" },
+        },
+    });
+}
+
+test "no-array-delete" {
+    try RuleTester.run(.{
+        .rule = "no-array-delete",
+        .valid = &.{
+            "delete obj.x;",
+            "delete obj['key'];",
+        },
+        .invalid = &.{
+            .{ .code = "let arr = [1,2,3]; delete arr[0];" },
+        },
+    });
+}
+
+test "require-await" {
+    try RuleTester.run(.{
+        .rule = "require-await",
+        .valid = &.{
+            "async function f() { await fetch('/api'); }",
+            "const f = async () => { const x = await Promise.resolve(1); return x; };",
+            "async function f() { for await (const x of gen()) {} }",
+            // Non-async functions are not checked
+            "function f() { return 1; }",
+        },
+        .invalid = &.{
+            .{ .code = "async function f() { return 1; }" },
+            .{ .code = "const f = async () => { return 1; };" },
+            .{ .code = "const f = async () => 42;" },
+        },
+    });
+}
+
+test "no-constructor-return" {
+    try RuleTester.run(.{
+        .rule = "no-constructor-return",
+        .valid = &.{
+            "class C { constructor() { this.x = 1; } }",
+            "class C { constructor() { return; } }",
+            "class C { constructor() { return undefined; } }",
+        },
+        .invalid = &.{
+            .{ .code = "class C { constructor() { return 42; } }" },
+            .{ .code = "class C { constructor() { return {}; } }" },
+            .{ .code = "class C { constructor() { if (x) { return this; } } }" },
+        },
+    });
+}
+
+test "no-await-in-loop" {
+    try RuleTester.run(.{
+        .rule = "no-await-in-loop",
+        .valid = &.{
+            // await outside loop is fine
+            "async function f() { await fetchAll(); }",
+            // await inside nested async is fine
+            "async function f() { for (const x of items) { const g = async () => await fetch(x); } }",
+        },
+        .invalid = &.{
+            .{ .code = "async function f() { for (const x of items) { await fetch(x); } }" },
+            .{ .code = "async function f() { while (true) { await sleep(100); } }" },
+            .{ .code = "async function f() { do { await step(); } while (cond); }" },
+        },
+    });
+}
+
+test "no-promise-executor-return" {
+    try RuleTester.run(.{
+        .rule = "no-promise-executor-return",
+        .valid = &.{
+            "new Promise((resolve, reject) => { resolve(1); });",
+            "new Promise(function(resolve) { resolve(1); });",
+        },
+        .invalid = &.{
+            .{ .code = "new Promise((resolve) => resolve(1));" },
+            .{ .code = "new Promise(function(resolve) { return resolve(1); });" },
+        },
+    });
+}
+
+test "no-loop-func" {
+    try RuleTester.run(.{
+        .rule = "no-loop-func",
+        .valid = &.{
+            "for (let i = 0; i < 3; i++) { i++; }",
+            "while (true) { break; }",
+        },
+        .invalid = &.{
+            .{ .code = "for (let i = 0; i < 3; i++) { const f = () => i; }" },
+            .{ .code = "while (cond) { const f = function() {}; }" },
+        },
+    });
+}
+
+test "no-implicit-globals" {
+    try RuleTester.run(.{
+        .rule = "no-implicit-globals",
+        .valid = &.{
+            "const x = 1;",
+            "let y = 2;",
+            // var inside a function is not global scope
+            "(function() { var z = 3; })();",
+        },
+        .invalid = &.{
+            .{ .code = "var x = 1;" },
+            .{ .code = "function globalFn() {}" },
+        },
+    });
+}
+
+test "no-process-exit" {
+    try RuleTester.run(.{
+        .rule = "no-process-exit",
+        .valid = &.{
+            "process.env.NODE_ENV;",
+            "process.stdout.write('hello');",
+        },
+        .invalid = &.{
+            .{ .code = "process.exit(1);" },
+            .{ .code = "process.exit(0);" },
+        },
+    });
+}
+
+test "prefer-rest-params" {
+    try RuleTester.run(.{
+        .rule = "prefer-rest-params",
+        .valid = &.{
+            "function f(...args) { return args; }",
+            "const f = (...args) => args;",
+        },
+        .invalid = &.{
+            .{ .code = "function f() { return arguments; }" },
+            .{ .code = "function f() { return arguments.length; }" },
+        },
+    });
+}
+
+test "prefer-spread" {
+    try RuleTester.run(.{
+        .rule = "prefer-spread",
+        .valid = &.{
+            "Math.max(...args);",
+            "fn(...items);",
+        },
+        .invalid = &.{
+            .{ .code = "fn.apply(null, args);" },
+            .{ .code = "Math.max.apply(null, numbers);" },
+        },
+    });
+}
+
+test "no-useless-call" {
+    try RuleTester.run(.{
+        .rule = "no-useless-call",
+        .valid = &.{
+            "fn.call(obj, arg1);",
+            "fn.apply(obj, [arg1]);",
+        },
+        .invalid = &.{
+            .{ .code = "fn.call(null, arg1);" },
+            .{ .code = "fn.apply(undefined, [arg1]);" },
+        },
+    });
+}
+
+test "no-empty-function" {
+    try RuleTester.run(.{
+        .rule = "no-empty-function",
+        .valid = &.{
+            "function f() { return 1; }",
+            "const f = () => 42;",
+            "const f = () => { return 1; };",
+        },
+        .invalid = &.{
+            .{ .code = "function f() {}" },
+            .{ .code = "const f = function() {};" },
+            .{ .code = "const f = async function() {};" },
+        },
+    });
+}
+
+test "max-params" {
+    try RuleTester.run(.{
+        .rule = "max-params",
+        .valid = &.{
+            "function f(a, b, c) {}",
+            "const f = (a, b, c, d) => {};",
+        },
+        .invalid = &.{
+            .{ .code = "function f(a, b, c, d, e) {}" },
+            .{ .code = "const f = (a, b, c, d, e) => {};" },
+        },
+    });
+}
+
+test "prefer-arrow-callback" {
+    try RuleTester.run(.{
+        .rule = "prefer-arrow-callback",
+        .valid = &.{
+            "arr.map((x) => x * 2);",
+            "arr.filter((x) => x > 0);",
+        },
+        .invalid = &.{
+            .{ .code = "arr.map(function(x) { return x * 2; });" },
+            .{ .code = "setTimeout(function() { doSomething(); }, 100);" },
+        },
+    });
+}
+
+test "no-useless-empty-export" {
+    try RuleTester.run(.{
+        .rule = "no-useless-empty-export",
+        .lang = .ts,
+        .valid = &.{
+            "export { foo };",
+            "export { x as y };",
+        },
+        .invalid = &.{
+            .{ .code = "export {};" },
+        },
+    });
+}
+
+test "prefer-optional-chain" {
+    try RuleTester.run(.{
+        .rule = "prefer-optional-chain",
+        .lang = .ts,
+        .valid = &.{
+            "a?.b;",
+            "a?.b?.c;",
+        },
+        .invalid = &.{
+            .{ .code = "a && a.b;" },
+            .{ .code = "foo && foo.bar;" },
+        },
+    });
+}
+
+test "no-unreachable-loop" {
+    try RuleTester.run(.{
+        .rule = "no-unreachable-loop",
+        .valid = &.{
+            "for (let i = 0; i < 10; i++) { doSomething(); }",
+            "while (cond) { if (done) break; step(); }",
+            "for (const x of items) { process(x); }",
+        },
+        .invalid = &.{
+            .{ .code = "while (true) { return 1; }" },
+            .{ .code = "for (const x of items) { return x; }" },
+            .{ .code = "while (cond) { break; }" },
+        },
+    });
+}
+
+test "consistent-return" {
+    try RuleTester.run(.{
+        .rule = "consistent-return",
+        .valid = &.{
+            "function f() { return 1; }",
+            "function f() { return; }",
+            "const f = (x) => { if (x) return x; };",
+        },
+        .invalid = &.{
+            .{ .code = "function f(x) { if (x) return x; return; }" },
+            .{ .code = "function f(x) { if (x) { return; } return x; }" },
+        },
+    });
+}
+
+test "no-implicit-coercion" {
+    try RuleTester.run(.{
+        .rule = "no-implicit-coercion",
+        .valid = &.{
+            "Boolean(x);",
+            "Number(x);",
+            "String(x);",
+            "!x;",
+        },
+        .invalid = &.{
+            .{ .code = "!!x;" },
+            .{ .code = "const n = +str;" },
+            .{ .code = "const s = '' + val;" },
+        },
+    });
+}
+
+test "no-useless-concat" {
+    try RuleTester.run(.{
+        .rule = "no-useless-concat",
+        .valid = &.{
+            "'hello ' + name;",
+            "a + b;",
+        },
+        .invalid = &.{
+            .{ .code = "'hello' + ' world';" },
+            .{ .code = "const s = 'a' + 'b';" },
+        },
+    });
+}
+
+test "arrow-body-style" {
+    try RuleTester.run(.{
+        .rule = "arrow-body-style",
+        .valid = &.{
+            "const f = (x) => x * 2;",
+            "const f = (x) => { if (x) return x; return 0; };",
+            "const f = () => {};",
+        },
+        .invalid = &.{
+            .{ .code = "const f = (x) => { return x * 2; };" },
+            .{ .code = "const g = () => { return 42; };" },
+        },
+    });
+}
+
+test "no-non-null-asserted-optional-chain" {
+    try RuleTester.run(.{
+        .rule = "no-non-null-asserted-optional-chain",
+        .lang = .ts,
+        .valid = &.{
+            "a!.b;",
+            "a?.b;",
+        },
+        .invalid = &.{
+            .{ .code = "a?.b!;" },
+            .{ .code = "a?.()!;" },
+        },
+    });
+}
+
+test "no-confusing-non-null-assertion" {
+    try RuleTester.run(.{
+        .rule = "no-confusing-non-null-assertion",
+        .lang = .ts,
+        .valid = &.{
+            "a!;",
+            "a?.b!;",
+        },
+        .invalid = &.{
+            .{ .code = "a!!;" },
+        },
+    });
+}
+
+test "no-non-null-asserted-nullish-coalescing" {
+    try RuleTester.run(.{
+        .rule = "no-non-null-asserted-nullish-coalescing",
+        .lang = .ts,
+        .valid = &.{
+            "a ?? b;",
+            "a?.b ?? c;",
+        },
+        .invalid = &.{
+            .{ .code = "a! ?? b;" },
+        },
+    });
+}
+
+test "no-empty-static-block" {
+    try RuleTester.run(.{
+        .rule = "no-empty-static-block",
+        .valid = &.{
+            "class C { static { this.x = 1; } }",
+        },
+        .invalid = &.{
+            .{ .code = "class C { static {} }" },
+        },
+    });
+}
+
+test "default-param-last" {
+    try RuleTester.run(.{
+        .rule = "default-param-last",
+        .valid = &.{
+            "function f(a, b, c = 1) {}",
+            "const f = (x, y = 2) => {};",
+            "function f(a, b = 1, ...rest) {}",
+        },
+        .invalid = &.{
+            .{ .code = "function f(a = 1, b) {}" },
+            .{ .code = "const f = (x = 0, y) => {};" },
+        },
+    });
+}
+
+test "accessor-pairs" {
+    try RuleTester.run(.{
+        .rule = "accessor-pairs",
+        .valid = &.{
+            "const obj = { get x() { return 1; }, set x(v) {} };",
+            "const obj = { x: 1 };",
+        },
+        .invalid = &.{
+            .{ .code = "const obj = { set x(v) {} };" },
+        },
+    });
+}
+
+test "prefer-promise-reject-errors" {
+    try RuleTester.run(.{
+        .rule = "prefer-promise-reject-errors",
+        .valid = &.{
+            "Promise.reject(new Error('msg'));",
+            "Promise.reject(new TypeError('msg'));",
+            "Promise.reject(err);",
+        },
+        .invalid = &.{
+            .{ .code = "Promise.reject('string error');" },
+            .{ .code = "Promise.reject(42);" },
+            .{ .code = "Promise.reject(null);" },
+        },
+    });
+}
+
+test "logical-assignment-operators" {
+    try RuleTester.run(.{
+        .rule = "logical-assignment-operators",
+        .valid = &.{
+            "a ||= b;",
+            "a &&= b;",
+            "a ??= b;",
+        },
+        .invalid = &.{
+            .{ .code = "a = a || b;" },
+            .{ .code = "a = a && b;" },
+            .{ .code = "a = a ?? b;" },
+        },
+    });
+}
+
+test "no-invalid-new" {
+    try RuleTester.run(.{
+        .rule = "no-invalid-new",
+        .valid = &.{
+            "new MyClass();",
+            "new Error('msg');",
+            "new Map();",
+        },
+        .invalid = &.{
+            .{ .code = "new String('hello');" },
+            .{ .code = "new Number(42);" },
+            .{ .code = "new Boolean(true);" },
+            .{ .code = "new Symbol();" },
+        },
+    });
+}
+
+test "no-object-constructor" {
+    try RuleTester.run(.{
+        .rule = "no-object-constructor",
+        .valid = &.{
+            "new Map();",
+            "new MyClass();",
+            "new Object(existingValue);",
+            "new Object({ key: 'val' });",
+        },
+        .invalid = &.{
+            .{ .code = "new Object();" },
+        },
+    });
+}
+
+test "prefer-object-spread" {
+    try RuleTester.run(.{
+        .rule = "prefer-object-spread",
+        .valid = &.{
+            "Object.assign(target, source);",
+            "Object.assign(obj, { x: 1 });",
+            "{ ...obj };",
+        },
+        .invalid = &.{
+            .{ .code = "Object.assign({}, source);" },
+            .{ .code = "Object.assign({}, defaults, overrides);" },
+        },
+    });
+}
+
+test "no-warning-comments" {
+    try RuleTester.run(.{
+        .rule = "no-warning-comments",
+        .valid = &.{
+            "// normal comment\nconst x = 1;",
+            "/* block comment */",
+        },
+        .invalid = &.{
+            .{ .code = "// TODO: fix this\nconst x = 1;" },
+            .{ .code = "// FIXME: broken\nconst x = 1;" },
+            .{ .code = "// HACK: workaround\nconst x = 1;" },
+        },
     });
 }
 
@@ -711,10 +1523,11 @@ test "prefer-template" {
 
 test "clean code produces no diagnostics" {
     const diags = try lintSource(
-        \\function greet(name) {
-        \\    console.log(name);
+        \\const add = (a, b) => a + b;
+        \\const sum = add(1, 2);
+        \\if (sum > 0) {
+        \\    throw new Error("positive");
         \\}
-        \\greet("hello");
     );
     defer testing.allocator.free(diags);
     try testing.expectEqual(@as(usize, 0), diags.len);

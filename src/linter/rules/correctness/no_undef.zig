@@ -15,72 +15,80 @@ pub const meta = RuleMeta{
 
 pub const relevant_tags = [_]Node.Tag{};
 
-const known_globals = [_][]const u8{
-    "undefined",
-    "NaN",
-    "Infinity",
-    "console",
-    "setTimeout",
-    "setInterval",
-    "clearTimeout",
-    "clearInterval",
-    "Promise",
-    "Array",
-    "Object",
-    "String",
-    "Number",
-    "Boolean",
-    "Symbol",
-    "BigInt",
-    "Map",
-    "Set",
-    "WeakMap",
-    "WeakSet",
-    "Error",
-    "TypeError",
-    "RangeError",
-    "SyntaxError",
-    "ReferenceError",
-    "JSON",
-    "Math",
-    "Date",
-    "RegExp",
-    "parseInt",
-    "parseFloat",
-    "isNaN",
-    "isFinite",
-    "encodeURI",
-    "decodeURI",
+// ── ECMAScript built-in globals ────────────────────────────────
+const es_globals = [_][]const u8{
+    "undefined",      "NaN",              "Infinity",           "globalThis",
+    "eval",           "parseInt",         "parseFloat",         "isNaN",
+    "isFinite",       "decodeURI",        "decodeURIComponent", "encodeURI",
     "encodeURIComponent",
-    "decodeURIComponent",
-    "globalThis",
-    "window",
-    "document",
-    "navigator",
-    "fetch",
-    "URL",
-    "URLSearchParams",
-    "AbortController",
-    "Event",
-    "EventTarget",
-    "TextEncoder",
-    "TextDecoder",
-    "atob",
-    "btoa",
-    "queueMicrotask",
-    "structuredClone",
-    "require",
-    "module",
-    "exports",
-    "__dirname",
-    "__filename",
-    "process",
-    "Buffer",
+    "Object",         "Function",         "Boolean",            "Symbol",
+    "Number",         "BigInt",           "Math",               "Date",
+    "String",         "RegExp",           "Array",
+    "Int8Array",      "Uint8Array",       "Uint8ClampedArray",  "Int16Array",
+    "Uint16Array",    "Int32Array",       "Uint32Array",        "Float32Array",
+    "Float64Array",   "BigInt64Array",    "BigUint64Array",
+    "Map",            "Set",              "WeakMap",            "WeakSet",
+    "WeakRef",        "FinalizationRegistry",
+    "ArrayBuffer",    "SharedArrayBuffer", "DataView",          "Atomics",
+    "JSON",           "Promise",          "Proxy",              "Reflect",
+    "Error",          "AggregateError",   "EvalError",          "RangeError",
+    "ReferenceError", "SyntaxError",      "TypeError",          "URIError",
+    "Intl",           "Iterator",         "AsyncIterator",
+};
+
+// ── Browser / Web API globals ──────────────────────────────────
+const browser_globals = [_][]const u8{
+    "window",            "self",              "document",          "navigator",
+    "location",          "history",           "screen",            "localStorage",
+    "sessionStorage",    "indexedDB",         "console",
+    "setTimeout",        "setInterval",       "clearTimeout",      "clearInterval",
+    "requestAnimationFrame", "cancelAnimationFrame",
+    "requestIdleCallback", "cancelIdleCallback",
+    "queueMicrotask",   "reportError",       "structuredClone",
+    "fetch",             "Request",           "Response",          "Headers",
+    "URL",               "URLSearchParams",   "AbortController",   "AbortSignal",
+    "WebSocket",         "EventSource",       "XMLHttpRequest",
+    "FormData",          "Blob",              "File",              "FileReader",
+    "Event",             "CustomEvent",       "EventTarget",
+    "Element",           "HTMLElement",       "Node",              "NodeList",
+    "Document",          "DocumentFragment",
+    "MutationObserver",  "ResizeObserver",    "IntersectionObserver",
+    "PerformanceObserver",
+    "TextEncoder",       "TextDecoder",       "atob",              "btoa",
+    "crypto",            "SubtleCrypto",
+    "Image",             "Audio",             "OffscreenCanvas",
+    "Worker",            "SharedWorker",      "MessageChannel",    "MessagePort",
+    "BroadcastChannel",  "postMessage",
+    "ReadableStream",    "WritableStream",    "TransformStream",
+    "Performance",       "performance",
+    "alert",             "confirm",           "prompt",            "open",
+    "close",             "print",             "getComputedStyle",  "matchMedia",
+    "DOMParser",         "Range",             "Selection",
+    "HTMLDocument",      "HTMLCollection",    "DOMException",
+    "Cache",             "CacheStorage",
+};
+
+// ── Node.js globals ────────────────────────────────────────────
+const node_globals = [_][]const u8{
+    "require",         "module",          "exports",
+    "__dirname",       "__filename",
+    "process",         "Buffer",          "global",
+    "setImmediate",    "clearImmediate",
+};
+
+// ── Test framework globals ─────────────────────────────────────
+const test_globals = [_][]const u8{
+    "describe",      "it",            "test",          "expect",
+    "beforeAll",     "afterAll",      "beforeEach",    "afterEach",
+    "jest",          "vi",            "suite",         "bench",
+    "assert",
 };
 
 fn isKnownGlobal(name: []const u8) bool {
-    for (known_globals) |global| {
-        if (std.mem.eql(u8, name, global)) return true;
+    inline for (.{ es_globals, browser_globals, node_globals, test_globals }) |list| {
+        for (list) |g| {
+            if (std.mem.eql(u8, name, g)) return true;
+        }
     }
     return false;
 }
@@ -96,10 +104,10 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (refs.isResolved(ref_id)) continue;
         if (refs.getKind(ref_id) == .type_of) continue;
 
-        const node = refs.getNode(ref_id);
-        const name = ctx.tokenText(ctx.nodeMainToken(node));
+        const node_idx = refs.getNode(ref_id);
+        const name = ctx.tokenText(ctx.nodeMainToken(node_idx));
         if (isKnownGlobal(name)) continue;
 
-        ctx.report(node, meta.name, "Variable is not defined", meta.default_severity);
+        ctx.report(node_idx, meta.name, "Variable is not defined", meta.default_severity);
     }
 }

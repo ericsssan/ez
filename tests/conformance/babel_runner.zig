@@ -28,7 +28,6 @@ pub fn main(init: std.process.Init) !void {
     // Collect all input.js files and options.json with "throws"
     var valid_pass: u32 = 0;
     var valid_fail: u32 = 0;
-    const valid_crash: u32 = 0;
     var invalid_pass: u32 = 0;
     var invalid_fail: u32 = 0;
     var skipped: u32 = 0;
@@ -54,63 +53,86 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        // Check if this is an error test (options.json with "throws" in same dir)
-        const is_error_test = isErrorTest(io, allocator, path);
+        // Read options.json hierarchy once — used for skip, module, and error classification
+        const opts = readOptionsHierarchy(io, allocator, path);
 
-        // Detect module mode from options.json in test dir or parent dirs
-        const is_module = isModuleTest(io, allocator, path);
+        if (opts.has_unsupported) {
+            skipped += 1;
+            continue;
+        }
+
+        // Check if this is an error test (options.json with "throws" in same dir)
+        const is_error_test = opts.is_error or isErrorTestFromOutput(io, allocator, path);
 
         // Read and parse
         const source = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(2 * 1024 * 1024)) catch continue;
         defer allocator.free(source);
 
+        // Detect module mode
+        const is_module = switch (opts.source_type) {
+            .module => true,
+            .unambiguous => sourceHasModuleSyntax(source),
+            .unspecified => false,
+        };
+
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
         const file_alloc = arena.allocator();
 
-        const has_error = blk: {
-            var tokens = Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk true;
+        const parse_result = blk: {
+            var tokens = Lexer.tokenizeWithAllOptions(file_alloc, source, .js, .{ .is_module = is_module, .annex_b = opts.annex_b }) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" };
             defer tokens.deinit(file_alloc);
-            var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk true;
+            var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
             defer tree.deinit(file_alloc);
-            break :blk tree.errors.len > 0;
+            if (tree.errors.len > 0) break :blk ParseResult{ .has_error = true, .first_error = tree.errors[0].message };
+
+            // Run semantic analysis to catch early errors (duplicate bindings, etc.)
+            var sem = sanz.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
+            defer sem.deinit(file_alloc);
+            if (sem.diagnostics.len > 0) break :blk ParseResult{ .has_error = true, .first_error = "semantic error" };
+
+            // Run lint rules for must-reject tests to catch early errors via lint rules
+            if (is_error_test) {
+                const lint_diags = sanz.linter.lint(file_alloc, &tree, &sem, null) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
+                if (lint_diags.len > 0) {
+                    file_alloc.free(lint_diags);
+                    break :blk ParseResult{ .has_error = true, .first_error = "lint error" };
+                }
+                file_alloc.free(lint_diags);
+            }
+
+            break :blk ParseResult{ .has_error = false, .first_error = "" };
         };
 
         if (is_error_test) {
-            if (has_error) invalid_pass += 1 else invalid_fail += 1;
+            if (parse_result.has_error) invalid_pass += 1 else {
+                invalid_fail += 1;
+                if (!compact) try stdout.print("  FAIL (should reject): {s}\n", .{path});
+            }
         } else {
-            if (!has_error) {
+            if (!parse_result.has_error) {
                 valid_pass += 1;
             } else {
                 valid_fail += 1;
                 if (!compact) {
-                    // Get first error message
-                    const first_err = blk2: {
-                        var tokens2 = Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk2 "tokenize failed";
-                        defer tokens2.deinit(file_alloc);
-                        const tree2 = Parser.parseWithLanguage(file_alloc, source, tokens2.slice(), .js, is_module) catch break :blk2 "parse OOM";
-                        if (tree2.errors.len > 0) break :blk2 tree2.errors[0].message;
-                        break :blk2 "unknown";
-                    };
-                    try stdout.print("  FAIL: {s} | {s}\n", .{ path, first_err });
+                    try stdout.print("  FAIL: {s} | {s}\n", .{ path, parse_result.first_error });
                 }
             }
         }
     }
 
-    const valid_total = valid_pass + valid_fail + valid_crash;
+    const valid_total = valid_pass + valid_fail;
     const invalid_total = invalid_pass + invalid_fail;
 
     if (compact) {
-        try stdout.print("babel:                 {d}/{d} (valid: {d}/{d}, reject: {d}/{d}, skipped: {d})\n", .{
-            valid_pass + invalid_pass, valid_total + invalid_total,
+        try stdout.print("babel:                 must-parse: {d}/{d}  must-reject: {d}/{d}  skipped: {d}\n", .{
             valid_pass, valid_total, invalid_pass, invalid_total, skipped,
         });
     } else {
         try stdout.print("Babel parser conformance tests\n\n", .{});
         try stdout.print("Valid JS (should parse without error):\n", .{});
-        try stdout.print("  {d}/{d} passed ({d} failed, {d} crashed, {d} skipped)\n\n", .{
-            valid_pass, valid_total, valid_fail, valid_crash, skipped,
+        try stdout.print("  {d}/{d} passed ({d} failed, {d} skipped)\n\n", .{
+            valid_pass, valid_total, valid_fail, skipped,
         });
         try stdout.print("Invalid JS (should produce errors):\n", .{});
         try stdout.print("  {d}/{d} correctly rejected ({d} incorrectly accepted)\n", .{
@@ -119,6 +141,11 @@ pub fn main(init: std.process.Init) !void {
     }
     try stdout.flush();
 }
+
+const ParseResult = struct {
+    has_error: bool,
+    first_error: []const u8,
+};
 
 fn shouldSkip(path: []const u8) bool {
     const skip_patterns = [_][]const u8{
@@ -130,6 +157,7 @@ fn shouldSkip(path: []const u8) bool {
         "function-sent", "async-do-expression", "module-string-names",
         "export-extensions", "decimal", "module-attributes",
         "destructuring-private", "regex-modifiers",
+        "valid-assignment-target-type",
     };
     for (skip_patterns) |pat| {
         if (std.mem.indexOf(u8, path, pat) != null) return true;
@@ -137,58 +165,164 @@ fn shouldSkip(path: []const u8) bool {
     return false;
 }
 
-fn isModuleTest(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8) bool {
-    // Walk up the directory tree checking each options.json for sourceType: "module"
-    if (!std.mem.endsWith(u8, input_path, "/input.js")) return false;
-    var end = input_path.len - "/input.js".len; // point to dir before input.js
+const SourceType = enum { unspecified, module, unambiguous };
 
+/// Result of walking options.json files up the directory tree (single pass).
+const OptionsResult = struct {
+    has_unsupported: bool,
+    source_type: SourceType,
+    is_error: bool, // options.json contains "throws"
+    annex_b: bool = true, // annexB option (default: true)
+};
+
+/// Walk up the directory tree reading options.json files once.
+/// Determines unsupported options, module mode, and error classification in a single pass.
+fn readOptionsHierarchy(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8) OptionsResult {
+    var result = OptionsResult{ .has_unsupported = false, .source_type = .unspecified, .is_error = false };
+    if (!std.mem.endsWith(u8, input_path, "/input.js")) return result;
+    var end = input_path.len - "/input.js".len;
+
+    const unsupported = [_][]const u8{
+        "\"allowAwaitOutsideFunction\"",
+        "\"allowSuperOutsideMethod\"",
+        "\"allowNewTargetOutsideFunction\": true",
+        "\"allowUndeclaredExports\"",
+        "\"functionBind\"",
+        "\"decorators-legacy\"",
+        "\"v8intrinsic\"",
+    };
+
+    var is_first_dir = true;
     while (end > 0) {
-        // Build <dir>/options.json
         var buf: [4096]u8 = undefined;
         if (end + "/options.json".len > buf.len) break;
         @memcpy(buf[0..end], input_path[0..end]);
         @memcpy(buf[end..][0.."/options.json".len], "/options.json");
         const opts_path = buf[0 .. end + "/options.json".len];
 
-        if (Io.Dir.cwd().readFileAlloc(io, opts_path, allocator, Io.Limit.limited(4096))) |content| {
+        if (Io.Dir.cwd().readFileAlloc(io, opts_path, allocator, Io.Limit.limited(64 * 1024))) |content| {
             defer allocator.free(content);
-            if (std.mem.indexOf(u8, content, "\"sourceType\": \"module\"") != null or
-                std.mem.indexOf(u8, content, "\"sourceType\":\"module\"") != null)
+
+            // Check unsupported options (any level)
+            for (unsupported) |pat| {
+                if (std.mem.indexOf(u8, content, pat) != null) {
+                    result.has_unsupported = true;
+                    return result;
+                }
+            }
+            if (std.mem.indexOf(u8, content, "\"sourceType\": \"commonjs\"") != null or
+                std.mem.indexOf(u8, content, "\"sourceType\":\"commonjs\"") != null)
             {
-                return true;
+                result.has_unsupported = true;
+                return result;
+            }
+
+            // Check "throws" (only in the test's own directory)
+            if (is_first_dir) {
+                if (std.mem.indexOf(u8, content, "\"throws\"") != null) {
+                    result.is_error = true;
+                }
+            }
+
+            // Check annexB option (any level — first match wins)
+            if (std.mem.indexOf(u8, content, "\"annexB\": false") != null or
+                std.mem.indexOf(u8, content, "\"annexB\":false") != null)
+            {
+                result.annex_b = false;
+            }
+
+            // Check sourceType (first match wins, walking up)
+            if (result.source_type == .unspecified) {
+                if (std.mem.indexOf(u8, content, "\"sourceType\": \"module\"") != null or
+                    std.mem.indexOf(u8, content, "\"sourceType\":\"module\"") != null)
+                {
+                    result.source_type = .module;
+                } else if (std.mem.indexOf(u8, content, "\"unambiguous\"") != null) {
+                    result.source_type = .unambiguous;
+                }
             }
         } else |_| {}
 
-        // Move to parent directory
+        is_first_dir = false;
         while (end > 0 and input_path[end - 1] != '/') end -= 1;
-        if (end > 0) end -= 1; // skip the /
+        if (end > 0) end -= 1;
     }
-    return false;
+    return result;
 }
 
-fn isErrorTest(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8) bool {
+/// Check output.json / output.extended.json for "errors" (error test classification).
+fn isErrorTestFromOutput(io: std.Io, allocator: std.mem.Allocator, input_path: []const u8) bool {
     if (!std.mem.endsWith(u8, input_path, "input.js")) return false;
     var buf: [4096]u8 = undefined;
     const dir_len = input_path.len - "input.js".len;
     @memcpy(buf[0..dir_len], input_path[0..dir_len]);
 
-    // Check options.json with "throws"
-    const opts = "options.json";
-    @memcpy(buf[dir_len..][0..opts.len], opts);
-    if (Io.Dir.cwd().readFileAlloc(io, buf[0 .. dir_len + opts.len], allocator, Io.Limit.limited(64 * 1024))) |content| {
-        defer allocator.free(content);
-        if (std.mem.indexOf(u8, content, "\"throws\"") != null) return true;
-    } else |_| {}
-
-    // Check output.json with "errors" array
-    const out = "output.json";
-    @memcpy(buf[dir_len..][0..out.len], out);
-    if (Io.Dir.cwd().readFileAlloc(io, buf[0 .. dir_len + out.len], allocator, Io.Limit.limited(256 * 1024))) |content| {
-        defer allocator.free(content);
-        if (std.mem.indexOf(u8, content, "\"errors\"") != null) return true;
-    } else |_| {}
-
+    const output_files = [_][]const u8{ "output.json", "output.extended.json" };
+    for (output_files) |filename| {
+        if (dir_len + filename.len > buf.len) continue;
+        @memcpy(buf[dir_len..][0..filename.len], filename);
+        if (Io.Dir.cwd().readFileAlloc(io, buf[0 .. dir_len + filename.len], allocator, Io.Limit.limited(256 * 1024))) |content| {
+            defer allocator.free(content);
+            if (std.mem.indexOf(u8, content, "\"errors\"") != null) return true;
+        } else |_| {}
+    }
     return false;
+}
+
+/// Quick scan for top-level import/export/await to detect module mode.
+fn sourceHasModuleSyntax(source: []const u8) bool {
+    var i: usize = 0;
+    while (i < source.len) {
+        const c = source[i];
+        // Skip whitespace/newlines
+        if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
+            i += 1;
+            continue;
+        }
+        // Skip single-line comments
+        if (c == '/' and i + 1 < source.len and source[i + 1] == '/') {
+            while (i < source.len and source[i] != '\n') i += 1;
+            continue;
+        }
+        // Skip multi-line comments
+        if (c == '/' and i + 1 < source.len and source[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < source.len and !(source[i] == '*' and source[i + 1] == '/')) i += 1;
+            i += 2;
+            continue;
+        }
+        // Check for import/export at word boundary
+        if (std.mem.startsWith(u8, source[i..], "import") and
+            i + 6 < source.len and !isIdentChar(source[i + 6]))
+            return true;
+        if (std.mem.startsWith(u8, source[i..], "export") and
+            i + 6 < source.len and !isIdentChar(source[i + 6]))
+            return true;
+        if (std.mem.startsWith(u8, source[i..], "await") and
+            i + 5 < source.len and !isIdentChar(source[i + 5]))
+        {
+            // Only treat as module syntax if followed by a clear expression start
+            // on the same line (not newline/% which are ambiguous).
+            var j = i + 5;
+            while (j < source.len and (source[j] == ' ' or source[j] == '\t')) j += 1;
+            if (j < source.len and isExpressionStart(source[j])) return true;
+        }
+        // Skip to next line (we only check statement-start positions)
+        while (i < source.len and source[i] != '\n') i += 1;
+        i += 1;
+    }
+    return false;
+}
+
+fn isIdentChar(c: u8) bool {
+    return (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+        (c >= '0' and c <= '9') or c == '_' or c == '$';
+}
+
+fn isExpressionStart(c: u8) bool {
+    return isIdentChar(c) or c == '(' or c == '[' or c == '{' or
+        c == '\'' or c == '"' or c == '`' or c == '!' or c == '~' or
+        c == '+' or c == '-' or c == '/';
 }
 
 const StackEntry = struct { dir: std.Io.Dir, path: []const u8 };

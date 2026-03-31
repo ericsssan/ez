@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
     const overall_pass = reject_pass + parse_pass;
 
     if (compact) {
-        try stdout.print("tc39/test262:          {d}/{d} (reject: {d}/{d}, parse: {d}/{d})\n", .{ overall_pass, overall_total, reject_pass, reject_total, parse_pass, parse_total });
+        try stdout.print("tc39/test262:          must-parse: {d}/{d}  must-reject: {d}/{d}\n", .{ parse_pass, parse_total, reject_pass, reject_total });
     } else {
         try stdout.print("\nResults\n", .{});
         try stdout.print("-------\n", .{});
@@ -223,10 +223,6 @@ fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module:
     return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
 }
 
-fn tryParse(allocator: std.mem.Allocator, source: []const u8, is_module: bool, run_lint: bool) bool {
-    return tryParseDetailed(allocator, source, is_module, run_lint).has_error;
-}
-
 const TestKind = enum { must_reject, must_parse, skip };
 
 fn classifyTest(source: []const u8) TestKind {
@@ -234,7 +230,8 @@ fn classifyTest(source: []const u8) TestKind {
     const fm_end = std.mem.indexOfPos(u8, source, fm_start, "---*/") orelse return .must_parse;
     const fm = source[fm_start..fm_end];
 
-    if (std.mem.indexOf(u8, fm, "phase: parse") != null) return .must_reject;
+    if (std.mem.indexOf(u8, fm, "phase: parse") != null or
+        std.mem.indexOf(u8, fm, "phase: early") != null) return .must_reject;
     if (std.mem.indexOf(u8, fm, "phase: resolution") != null) return .skip;
     return .must_parse;
 }
