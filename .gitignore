@@ -15,3 +15,6 @@ bench/baseline.json
 
 # Node
 node_modules/
+
+# V8 isolate logs
+isolate-*.log
