@@ -1436,13 +1436,14 @@ function buildDFSOrders(ast) {
 }
 
 // Node types that trigger onCodePathStart/onCodePathEnd.
-// ESLint calls these at every function boundary and at Program.
 const CODE_PATH_TYPES = new Set([
   'Program',
   'FunctionDeclaration',
   'FunctionExpression',
   'ArrowFunctionExpression',
 ]);
+
+const CLASS_TYPES = new Set(['ClassDeclaration', 'ClassExpression']);
 
 // A minimal fake code path object. Rules that need real code path analysis
 // (consistent-return, etc.) will still fail, but rules that only use the
@@ -2307,8 +2308,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
       }
     }
   }
-
-  const CLASS_TYPES = new Set(['ClassDeclaration', 'ClassExpression']);
 
   // ── FunctionExpression synthesis for class methods ───────────────
   // sanz has no FunctionExpression node in the AST for class methods.
