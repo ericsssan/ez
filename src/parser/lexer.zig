@@ -122,15 +122,21 @@ pub const Lexer = struct {
         self.is_module = opts.is_module;
         self.annex_b = opts.annex_b;
 
-        // Pre-allocate a reasonable estimate: ~1 token per 8 bytes of source.
-        const estimate = @max(source.len / 8, 64);
+        // Pre-allocate a reasonable estimate: ~1 token per 5 bytes of source.
+        // Empirically measured: acorn.js = 5.8 bytes/token, typical JS ~5-6.
+        // Over-estimating slightly avoids reallocation without wasting much memory.
+        const estimate = @max(source.len / 5, 64);
         try self.tokens.ensureTotalCapacity(allocator, @intCast(estimate));
 
         while (true) {
             const tok = self.next();
+            // saw_newline is set during whitespace/comment skipping inside next();
+            // it correctly reflects whether a line terminator preceded this token.
             try self.tokens.append(allocator, .{
                 .tag = tok.tag,
                 .start = tok.start,
+                .len = tok.len,
+                .has_newline_before = self.saw_newline,
             });
             if (tok.tag == .eof) break;
         }
@@ -144,17 +150,7 @@ pub const Lexer = struct {
         // more whitespace or more comments).
         self.saw_newline = false;
         while (true) {
-            const before_ws = self.index;
             self.skipWhitespace();
-            // Check if whitespace contained a newline (for ASI-aware brace context)
-            if (!self.saw_newline and self.index > before_ws) {
-                for (self.source[before_ws..self.index]) |c| {
-                    if (c == '\n' or c == '\r') {
-                        self.saw_newline = true;
-                        break;
-                    }
-                }
-            }
 
             if (self.index >= self.source.len) {
                 return self.makeToken(.eof, self.index);
@@ -265,15 +261,19 @@ pub const Lexer = struct {
             const vtabs = chunk == @as(@Vector(16, u8), @splat(@as(u8, 0x0B)));
             const ws = spaces | tabs | newlines | returns | form_feeds | vtabs;
 
+            const nl_mask: u16 = @bitCast(newlines | returns);
             const mask: u16 = @bitCast(ws);
             const non_ws = ~mask;
             if (non_ws != 0) {
-                i += @ctz(non_ws);
+                const advance = @ctz(non_ws);
+                if (@ctz(nl_mask) < advance) self.saw_newline = true;
+                i += advance;
                 self.index = i;
                 // Handle multi-byte Unicode whitespace at the scalar level
                 self.skipScalarWhitespace();
                 return;
             }
+            if (nl_mask != 0) self.saw_newline = true;
             i += 16;
         }
 
@@ -286,7 +286,11 @@ pub const Lexer = struct {
         while (self.index < self.source.len) {
             const c = self.source[self.index];
             switch (c) {
-                ' ', '\t', '\n', '\r', 0x0B, 0x0C => {
+                ' ', '\t', 0x0B, 0x0C => {
+                    self.index += 1;
+                },
+                '\n', '\r' => {
+                    self.saw_newline = true;
                     self.index += 1;
                 },
                 // UTF-8 encoded Unicode whitespace: U+FEFF (BOM), U+00A0 (NBSP),
@@ -308,6 +312,7 @@ pub const Lexer = struct {
                             // U+2028 LINE SEPARATOR: E2 80 A8
                             // U+2029 PARAGRAPH SEPARATOR: E2 80 A9
                             if ((b2 >= 0x80 and b2 <= 0x8B) or b2 == 0xA8 or b2 == 0xA9 or b2 == 0xAF) {
+                                if (b2 == 0xA8 or b2 == 0xA9) self.saw_newline = true;
                                 self.index += 3;
                                 continue;
                             }
@@ -406,23 +411,43 @@ pub const Lexer = struct {
     fn skipLineComment(self: *Lexer) void {
         // Skip the leading //
         self.index += 2;
-        while (self.index < self.source.len) {
-            const c = self.source[self.index];
+        const src = self.source;
+        const len: u32 = @intCast(src.len);
+        const V = @Vector(16, u8);
+
+        // SIMD: skip non-line-terminator bytes 16 at a time.
+        // Stop on \n, \r, or 0xE2 (U+2028/U+2029 UTF-8 lead byte).
+        while (self.index + 16 <= len) {
+            const chunk: V = src[self.index..][0..16].*;
+            const m = (chunk == @as(V, @splat(@as(u8, '\n')))) |
+                      (chunk == @as(V, @splat(@as(u8, '\r')))) |
+                      (chunk == @as(V, @splat(@as(u8, 0xE2))));
+            const mask: u16 = @bitCast(m);
+            if (mask != 0) {
+                self.index += @ctz(mask);
+                break;
+            }
+            self.index += 16;
+        }
+
+        // Scalar: handle the found byte and any remaining tail.
+        while (self.index < src.len) {
+            const c = src[self.index];
             if (c == '\n') {
                 self.index += 1;
                 return;
             }
             if (c == '\r') {
                 self.index += 1;
-                if (self.index < self.source.len and self.source[self.index] == '\n') {
+                if (self.index < src.len and src[self.index] == '\n') {
                     self.index += 1;
                 }
                 return;
             }
             // Check for Unicode line terminators: U+2028, U+2029
-            if (c == 0xE2 and self.index + 2 < self.source.len) {
-                if (self.source[self.index + 1] == 0x80) {
-                    const b2 = self.source[self.index + 2];
+            if (c == 0xE2 and self.index + 2 < src.len) {
+                if (src[self.index + 1] == 0x80) {
+                    const b2 = src[self.index + 2];
                     if (b2 == 0xA8 or b2 == 0xA9) {
                         self.index += 3;
                         return;
@@ -437,18 +462,37 @@ pub const Lexer = struct {
         // Skip the leading /*
         const start = self.index;
         self.index += 2;
-        while (self.index + 1 < self.source.len) {
-            if (self.source[self.index] == '*' and self.source[self.index + 1] == '/') {
+        const src = self.source;
+        const len: u32 = @intCast(src.len);
+        const V = @Vector(16, u8);
+
+        // SIMD: scan for '*' — the only byte that can start '*/'
+        while (self.index + 1 < src.len) {
+            // Bulk-skip 16 bytes at a time looking for '*'
+            while (self.index + 16 <= len) {
+                const chunk: V = src[self.index..][0..16].*;
+                const mask: u16 = @bitCast(chunk == @as(V, @splat(@as(u8, '*'))));
+                if (mask != 0) {
+                    self.index += @ctz(mask);
+                    break;
+                }
+                self.index += 16;
+            }
+            if (self.index + 1 >= src.len) break;
+            if (src[self.index] == '*' and src[self.index + 1] == '/') {
                 self.index += 2;
                 return;
             }
+            // Found a '*' not followed by '/' — skip it and keep scanning
             self.index += 1;
         }
         // Unterminated block comment — emit invalid token and advance to end
-        self.index = @intCast(self.source.len);
+        self.index = @intCast(src.len);
         self.tokens.append(self.allocator, .{
             .tag = .invalid,
             .start = start,
+            .len = self.index - start,
+            .has_newline_before = self.saw_newline,
         }) catch {};
     }
 
@@ -580,30 +624,26 @@ pub const Lexer = struct {
     fn scanIdentChunksSIMD(self: *Lexer) void {
         const src = self.source;
         const len: u32 = @intCast(src.len);
+        const V = @Vector(16, u8);
 
         while (self.index + 16 <= len) {
-            const chunk: @Vector(16, u8) = src[self.index..][0..16].*;
+            const chunk: V = src[self.index..][0..16].*;
 
-            // Check: a-z
-            const ge_a = chunk >= @as(@Vector(16, u8), @splat(@as(u8, 'a')));
-            const le_z = chunk <= @as(@Vector(16, u8), @splat(@as(u8, 'z')));
-            const lower = ge_a & le_z;
+            // a-z and A-Z combined: force lowercase via | 0x20, then range check.
+            // (c | 0x20) - 'a' < 26 is true iff c is in [a-z] or [A-Z].
+            const folded = chunk | @as(V, @splat(@as(u8, 0x20)));
+            const alpha = (folded -% @as(V, @splat(@as(u8, 'a')))) < @as(V, @splat(@as(u8, 26)));
 
-            // Check: A-Z
-            const ge_A = chunk >= @as(@Vector(16, u8), @splat(@as(u8, 'A')));
-            const le_Z = chunk <= @as(@Vector(16, u8), @splat(@as(u8, 'Z')));
-            const upper = ge_A & le_Z;
-
-            // Check: 0-9
-            const ge_0 = chunk >= @as(@Vector(16, u8), @splat(@as(u8, '0')));
-            const le_9 = chunk <= @as(@Vector(16, u8), @splat(@as(u8, '9')));
+            // 0-9
+            const ge_0 = chunk >= @as(V, @splat(@as(u8, '0')));
+            const le_9 = chunk <= @as(V, @splat(@as(u8, '9')));
             const digit = ge_0 & le_9;
 
-            // Check: _ and $
-            const underscore = chunk == @as(@Vector(16, u8), @splat(@as(u8, '_')));
-            const dollar = chunk == @as(@Vector(16, u8), @splat(@as(u8, '$')));
+            // _ and $
+            const underscore = chunk == @as(V, @splat(@as(u8, '_')));
+            const dollar     = chunk == @as(V, @splat(@as(u8, '$')));
 
-            const ident = lower | upper | digit | underscore | dollar;
+            const ident = alpha | digit | underscore | dollar;
             const mask: u16 = @bitCast(ident);
             const non_ident = ~mask;
 
@@ -1111,21 +1151,42 @@ pub const Lexer = struct {
         const start = self.index;
         const quote = self.source[self.index];
         self.index += 1; // skip opening quote
+        const src = self.source;
+        const len: u32 = @intCast(src.len);
+        const V = @Vector(16, u8);
+        const q_vec: V = @splat(quote);
 
-        while (self.index < self.source.len) {
-            const c = self.source[self.index];
+        while (self.index < src.len) {
+            // SIMD: bulk-skip bytes that cannot end or break the string.
+            // Stop on: closing quote, backslash, \n, \r.
+            while (self.index + 16 <= len) {
+                const chunk: V = src[self.index..][0..16].*;
+                const m = (chunk == q_vec) |
+                          (chunk == @as(V, @splat(@as(u8, '\\')))) |
+                          (chunk == @as(V, @splat(@as(u8, '\n')))) |
+                          (chunk == @as(V, @splat(@as(u8, '\r'))));
+                const mask: u16 = @bitCast(m);
+                if (mask != 0) {
+                    self.index += @ctz(mask);
+                    break;
+                }
+                self.index += 16;
+            }
+            if (self.index >= src.len) break;
+
+            const c = src[self.index];
             if (c == quote) {
                 self.index += 1; // skip closing quote
                 return self.makeToken(.string_literal, start);
             }
             if (c == '\\') {
                 self.index += 1; // skip backslash
-                if (self.index < self.source.len) {
-                    const escaped = self.source[self.index];
+                if (self.index < src.len) {
+                    const escaped = src[self.index];
                     if (escaped == '\r') {
                         // Line continuation: \<CR> or \<CR><LF>
                         self.index += 1;
-                        if (self.index < self.source.len and self.source[self.index] == '\n') {
+                        if (self.index < src.len and src[self.index] == '\n') {
                             self.index += 1;
                         }
                     } else if (escaped == '8' or escaped == '9') {
@@ -1134,13 +1195,13 @@ pub const Lexer = struct {
                         self.index += 1;
                     } else if (escaped == 'u') {
                         self.index += 1; // skip 'u'
-                        if (self.index < self.source.len and self.source[self.index] == '{') {
+                        if (self.index < src.len and src[self.index] == '{') {
                             // \u{XXXX} — validate hex digits and range
                             self.index += 1;
                             var digits: u32 = 0;
                             var codepoint: u32 = 0;
-                            while (self.index < self.source.len and self.source[self.index] != '}') {
-                                const d = self.source[self.index];
+                            while (self.index < src.len and src[self.index] != '}') {
+                                const d = src[self.index];
                                 const val: u32 = if (d >= '0' and d <= '9') d - '0'
                                     else if (d >= 'a' and d <= 'f') d - 'a' + 10
                                     else if (d >= 'A' and d <= 'F') d - 'A' + 10
@@ -1150,13 +1211,13 @@ pub const Lexer = struct {
                                 self.index += 1;
                             }
                             if (digits == 0 or codepoint > 0x10FFFF) return self.makeToken(.invalid, start);
-                            if (self.index < self.source.len) self.index += 1; // skip }
+                            if (self.index < src.len) self.index += 1; // skip }
                         } else {
                             // \uXXXX — need exactly 4 hex digits
                             var i: u32 = 0;
                             while (i < 4) : (i += 1) {
-                                if (self.index >= self.source.len) return self.makeToken(.invalid, start);
-                                const d = self.source[self.index];
+                                if (self.index >= src.len) return self.makeToken(.invalid, start);
+                                const d = src[self.index];
                                 if (!((d >= '0' and d <= '9') or (d >= 'a' and d <= 'f') or (d >= 'A' and d <= 'F')))
                                     return self.makeToken(.invalid, start);
                                 self.index += 1;
@@ -1167,8 +1228,8 @@ pub const Lexer = struct {
                         // \xXX — need exactly 2 hex digits
                         var i: u32 = 0;
                         while (i < 2) : (i += 1) {
-                            if (self.index >= self.source.len) return self.makeToken(.invalid, start);
-                            const d = self.source[self.index];
+                            if (self.index >= src.len) return self.makeToken(.invalid, start);
+                            const d = src[self.index];
                             if (!((d >= '0' and d <= '9') or (d >= 'a' and d <= 'f') or (d >= 'A' and d <= 'F')))
                                 return self.makeToken(.invalid, start);
                             self.index += 1;
@@ -1205,8 +1266,28 @@ pub const Lexer = struct {
     /// we resume from a `}` that closes a template expression.
     /// `is_head` is true when scanning from `, false when resuming from }.
     fn scanTemplateContent(self: *Lexer, start: u32, is_head: bool) Token.Token {
-        while (self.index < self.source.len) {
-            const c = self.source[self.index];
+        const src = self.source;
+        const len: u32 = @intCast(src.len);
+        const V = @Vector(16, u8);
+
+        while (self.index < src.len) {
+            // SIMD: bulk-skip bytes that are not `, $, or \.
+            // Template literals may span multiple lines, so \n/\r are safe to skip.
+            while (self.index + 16 <= len) {
+                const chunk: V = src[self.index..][0..16].*;
+                const m = (chunk == @as(V, @splat(@as(u8, '`')))) |
+                          (chunk == @as(V, @splat(@as(u8, '$')))) |
+                          (chunk == @as(V, @splat(@as(u8, '\\'))));
+                const mask: u16 = @bitCast(m);
+                if (mask != 0) {
+                    self.index += @ctz(mask);
+                    break;
+                }
+                self.index += 16;
+            }
+            if (self.index >= src.len) break;
+
+            const c = src[self.index];
 
             if (c == '`') {
                 // End of template
@@ -1234,8 +1315,8 @@ pub const Lexer = struct {
 
             if (c == '\\') {
                 self.index += 1;
-                if (self.index < self.source.len) {
-                    const esc = self.source[self.index];
+                if (self.index < src.len) {
+                    const esc = src[self.index];
                     // Per ES2018 "template literal revision", invalid escape sequences
                     // are allowed in tagged templates (cooked value is undefined, raw preserved).
                     // Since the lexer can't distinguish tagged vs untagged, we allow all
@@ -1247,7 +1328,7 @@ pub const Lexer = struct {
                         // \xHH — skip past the x and any hex digits
                         self.index += 1;
                         var count: u32 = 0;
-                        while (count < 2 and self.index < self.source.len and isHexDigit(self.source[self.index])) {
+                        while (count < 2 and self.index < src.len and isHexDigit(src[self.index])) {
                             self.index += 1;
                             count += 1;
                         }
@@ -1255,20 +1336,20 @@ pub const Lexer = struct {
                     } else if (esc == 'u') {
                         // \uXXXX or \u{XXXX} — skip past them (lenient for tagged templates)
                         self.index += 1;
-                        if (self.index < self.source.len and self.source[self.index] == '{') {
+                        if (self.index < src.len and src[self.index] == '{') {
                             self.index += 1;
                             // Skip until closing } or template boundary
-                            while (self.index < self.source.len and self.source[self.index] != '}' and
-                                self.source[self.index] != '`' and self.source[self.index] != '$' and
-                                self.source[self.index] != '\\')
+                            while (self.index < src.len and src[self.index] != '}' and
+                                src[self.index] != '`' and src[self.index] != '$' and
+                                src[self.index] != '\\')
                             {
                                 self.index += 1;
                             }
-                            if (self.index < self.source.len and self.source[self.index] == '}') self.index += 1;
+                            if (self.index < src.len and src[self.index] == '}') self.index += 1;
                         } else {
                             // \uXXXX — skip up to 4 hex digits (don't reject if fewer)
                             var count: u32 = 0;
-                            while (count < 4 and self.index < self.source.len and isHexDigit(self.source[self.index])) {
+                            while (count < 4 and self.index < src.len and isHexDigit(src[self.index])) {
                                 self.index += 1;
                                 count += 1;
                             }
@@ -2761,7 +2842,7 @@ pub const Lexer = struct {
         }
         self.prev_after_dot = (self.prev_token_tag == .dot);
         self.prev_token_tag = tag;
-        return .{ .tag = tag, .start = start };
+        return .{ .tag = tag, .start = start, .len = self.index - start };
     }
 
     /// Peek at the byte at `self.index + offset`, returning 0 if out of bounds.

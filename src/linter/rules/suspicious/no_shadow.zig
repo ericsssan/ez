@@ -22,13 +22,37 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
     const symbols = ctx.symbols();
     const scopes = ctx.scopes();
     const total = symbols.count();
+    const allocator = ctx.allocator;
+
+    // Build scope → StringHashSet in one O(n) pass.
+    // Then ancestor lookups are O(1) instead of O(n) each.
+    var scope_names = std.AutoHashMap(ScopeId, std.StringHashMap(void)).init(allocator);
+    defer {
+        var it = scope_names.valueIterator();
+        while (it.next()) |m| m.deinit();
+        scope_names.deinit();
+    }
 
     var i: u32 = 0;
     while (i < total) : (i += 1) {
         const id = SymbolId.fromInt(i);
         const flags = symbols.getFlags(id);
+        if (!flags.isDeclared()) continue;
+        if (flags.is_implicit_global) continue;
+        const scope_id = symbols.getScope(id);
+        const name = symbols.getName(id);
+        const entry = scope_names.getOrPut(scope_id) catch continue;
+        if (!entry.found_existing) {
+            entry.value_ptr.* = std.StringHashMap(void).init(allocator);
+        }
+        entry.value_ptr.put(name, {}) catch continue;
+    }
 
-        // Only check user-declared bindings in nested scopes
+    // Check each nested-scope symbol against all ancestor scopes — O(n × depth).
+    i = 0;
+    while (i < total) : (i += 1) {
+        const id = SymbolId.fromInt(i);
+        const flags = symbols.getFlags(id);
         if (!flags.isDeclared()) continue;
         if (flags.is_implicit_global) continue;
 
@@ -37,26 +61,14 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
 
         const name = symbols.getName(id);
 
-        // Walk up ancestor scopes looking for a symbol with the same name
         var ancestor = scopes.parent(scope_id);
-        while (ancestor != .none) : (ancestor = scopes.parent(ancestor)) {
-            if (ancestorScopeHasName(ancestor, name, total, ctx)) {
-                ctx.report(symbols.getDeclNode(id), meta.name, "Variable shadows a variable declared in the outer scope", meta.default_severity);
-                break;
+        while (ancestor.isValid()) : (ancestor = scopes.parent(ancestor)) {
+            if (scope_names.get(ancestor)) |name_set| {
+                if (name_set.contains(name)) {
+                    ctx.report(symbols.getDeclNode(id), meta.name, "Variable shadows a variable declared in the outer scope", meta.default_severity);
+                    break;
+                }
             }
         }
     }
-}
-
-fn ancestorScopeHasName(scope_id: ScopeId, name: []const u8, total: u32, ctx: *const LintContext) bool {
-    const symbols = ctx.symbols();
-    var j: u32 = 0;
-    while (j < total) : (j += 1) {
-        const jid = SymbolId.fromInt(j);
-        if (symbols.getScope(jid) != scope_id) continue;
-        const jflags = symbols.getFlags(jid);
-        if (!jflags.isDeclared()) continue;
-        if (std.mem.eql(u8, symbols.getName(jid), name)) return true;
-    }
-    return false;
 }

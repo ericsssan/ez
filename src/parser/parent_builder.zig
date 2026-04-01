@@ -1,34 +1,56 @@
-/// Compute parent indices for every node in the AST.
-///
-/// Returns a []u32 of length `ast.nodes.len` where `parents[i]` is the
-/// u32 index of node i's parent. The root (index 0) has parent = ~0 (none).
-///
-/// Allocated from the provided allocator (caller owns the returned slice).
+/// Compute parent indices and DFS traversal orders for every node in the AST
+/// in a single pass.
 const std = @import("std");
 const ast_mod = @import("ast.zig");
 const Ast = ast_mod.Ast;
 const NodeIndex = ast_mod.NodeIndex;
 const SubRange = ast_mod.SubRange;
 
-const NONE: u32 = std.math.maxInt(u32);
+pub const NONE: u32 = std.math.maxInt(u32);
 
-const WorkItem = struct {
-    node: NodeIndex,
-    parent: u32,
+/// Full traversal result: parent pointers + DFS pre-order + DFS post-order.
+/// All three slices have length `ast.nodes.len`; caller owns them.
+pub const TraversalResult = struct {
+    parents: []u32,
+    pre_order: []u32,
+    post_order: []u32,
 };
 
-pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
+/// Single-pass DFS that simultaneously computes:
+///   • `parents[i]`    — parent node index of node i (NONE for root)
+///   • `pre_order[i]`  — i-th node visited in DFS pre-order (document order)
+///   • `post_order[i]` — i-th node visited in DFS post-order
+///
+/// Post-order is always [1, 2, …, n-1, 0] because the parser builds nodes
+/// bottom-up (addNode called after all children). Filled trivially without
+/// DFS tracking.
+///
+/// Children are pushed in *reverse* semantic order so they are popped
+/// (and visited) in forward document order.
+///
+/// Stack pre-sized to n/4 to avoid reallocs on typical files.
+/// All three output slices are allocated from `alloc`; the caller owns them.
+pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResult {
     const n = tree.nodes.len;
-    const parents = try alloc.alloc(u32, n);
+    const parents   = try alloc.alloc(u32, n);
+    const pre_order = try alloc.alloc(u32, n);
+    const post_order = try alloc.alloc(u32, n);
     @memset(parents, NONE);
 
-    if (n == 0) return parents;
+    if (n == 0) return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order };
+
+    // Post-order: trivial fill. Root (index 0) is pre-allocated first; all
+    // other nodes are appended after their children (bottom-up), so root is
+    // always last in post-order.
+    for (1..n) |i| post_order[i - 1] = @intCast(i);
+    post_order[n - 1] = 0;
 
     var stack: std.ArrayList(WorkItem) = .empty;
     defer stack.deinit(alloc);
 
-    // Push root's children
     try stack.append(alloc, .{ .node = .root, .parent = NONE });
+
+    var pre_idx: u32 = 0;
 
     while (stack.items.len > 0) {
         const item = stack.pop().?;
@@ -38,136 +60,129 @@ pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
         if (idx >= n) continue;
 
         parents[idx] = item.parent;
+        pre_order[pre_idx] = idx;
+        pre_idx += 1;
 
         const tag = tree.nodes.items(.tag)[idx];
-        const data = tree.nodes.items(.data)[idx];
-        const lhs = data.lhs;
-        const rhs = data.rhs;
-        const p = idx; // this node is parent of its children
+        const d = tree.nodes.items(.data)[idx];
+        const lhs = d.lhs;
+        const rhs = d.rhs;
+        const p: u32 = idx;
 
+        // Push children in REVERSE semantic (= document) order so that the first
+        // child is at the top of the stack and processed first.
         switch (tag) {
             // ── Program ──────────────────────────────────────
-            // lhs = range.start, rhs = range.end (direct SubRange in lhs/rhs)
             .root => {
-                try pushSubRange(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p);
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
 
-            // ── Statements with direct lhs/rhs SubRange ──────
-            // lhs = range.start, rhs = range.end (direct SubRange in lhs/rhs)
+            // ── Block ─────────────────────────────────────────
             .block_stmt, .static_block => {
-                try pushSubRange(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p);
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
 
-            // ── If statement ──────────────────────────────────
+            // ── If ────────────────────────────────────────────
             .if_stmt => {
-                try push(&stack, alloc, lhs, p);
-                try push(&stack, alloc, rhs, p);
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .if_else_stmt => {
-                try push(&stack, alloc, lhs, p);
-                const d = tree.extraData(ast_mod.IfData, @intFromEnum(rhs));
-                try push(&stack, alloc, d.consequent, p);
-                try push(&stack, alloc, d.alternate, p);
+                const ed = tree.extraData(ast_mod.IfData, @intFromEnum(rhs));
+                push(&stack, alloc, ed.alternate,  p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.consequent, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs,           p) catch return error.OutOfMemory;
             },
 
             // ── Loops ─────────────────────────────────────────
-            .while_stmt => {
-                try push(&stack, alloc, lhs, p);
-                try push(&stack, alloc, rhs, p);
-            },
-            .do_while_stmt => {
-                try push(&stack, alloc, lhs, p);
-                try push(&stack, alloc, rhs, p);
+            .while_stmt, .do_while_stmt => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .for_stmt => {
-                const d = tree.extraData(ast_mod.ForData, @intFromEnum(lhs));
-                try push(&stack, alloc, d.init, p);
-                try push(&stack, alloc, d.condition, p);
-                try push(&stack, alloc, d.update, p);
-                try push(&stack, alloc, rhs, p);
+                const ed = tree.extraData(ast_mod.ForData, @intFromEnum(lhs));
+                push(&stack, alloc, rhs,          p) catch return error.OutOfMemory; // body
+                push(&stack, alloc, ed.update,    p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.condition, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.init,      p) catch return error.OutOfMemory;
             },
             .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
-                const d = tree.extraData(ast_mod.ForInOfData, @intFromEnum(lhs));
-                try push(&stack, alloc, d.binding, p);
-                try push(&stack, alloc, d.expr, p);
-                try push(&stack, alloc, d.body, p);
+                const ed = tree.extraData(ast_mod.ForInOfData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.body,    p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.expr,    p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.binding, p) catch return error.OutOfMemory;
             },
 
             // ── Switch ────────────────────────────────────────
             .switch_stmt => {
-                try push(&stack, alloc, lhs, p);
                 const sub = tree.extraData(SubRange, @intFromEnum(rhs));
-                try pushSubRange(&stack, alloc, tree, sub, p);
+                pushSubRangeRev(&stack, alloc, tree, sub, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .switch_case => {
-                try push(&stack, alloc, lhs, p); // test (may be .none for default)
                 const sub = tree.extraData(SubRange, @intFromEnum(rhs));
-                try pushSubRange(&stack, alloc, tree, sub, p);
+                pushSubRangeRev(&stack, alloc, tree, sub, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .switch_default => {
                 const sub = tree.extraData(SubRange, @intFromEnum(rhs));
-                try pushSubRange(&stack, alloc, tree, sub, p);
+                pushSubRangeRev(&stack, alloc, tree, sub, p) catch return error.OutOfMemory;
             },
 
             // ── Try ───────────────────────────────────────────
             .try_stmt => {
-                try push(&stack, alloc, lhs, p); // try block
-                const d = tree.extraData(ast_mod.TryData, @intFromEnum(rhs));
-                // The parser stores catch_param and catch_body directly in TryData
-                // (no separate CatchClause wrapper node is created).
-                try push(&stack, alloc, d.catch_param, p); // catch binding identifier
-                try push(&stack, alloc, d.catch_body, p);  // catch body block
-                try push(&stack, alloc, d.finally_body, p);
+                const ed = tree.extraData(ast_mod.TryData, @intFromEnum(rhs));
+                push(&stack, alloc, ed.finally_body, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.catch_body,   p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.catch_param,  p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs,             p) catch return error.OutOfMemory;
             },
             .catch_clause => {
-                try push(&stack, alloc, lhs, p); // param (may be .none)
-                try push(&stack, alloc, rhs, p); // body
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
-            // ── Simple single-child statements ────────────────
-            .expression_stmt, .return_stmt, .throw_stmt => {
-                try push(&stack, alloc, lhs, p);
-            },
-            .labeled_stmt => {
-                // lhs = body (rhs = .none; label is a token)
-                try push(&stack, alloc, lhs, p);
+            // ── Simple statements ─────────────────────────────
+            .expression_stmt, .return_stmt, .throw_stmt, .labeled_stmt => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .with_stmt => {
-                try push(&stack, alloc, lhs, p); // object
-                try push(&stack, alloc, rhs, p); // body
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
             // ── Variable declarations ─────────────────────────
             .var_decl, .let_decl, .const_decl => {
-                const sub = SubRange{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) };
-                try pushSubRange(&stack, alloc, tree, sub, p);
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
             .declarator => {
-                try push(&stack, alloc, lhs, p); // id
-                try push(&stack, alloc, rhs, p); // init (may be .none)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
             // ── Functions ─────────────────────────────────────
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
             => {
-                const d = tree.extraData(ast_mod.FnData, @intFromEnum(lhs));
-                try push(&stack, alloc, d.name, p);
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.params, .end = d.params_end }, p);
-                try push(&stack, alloc, d.body, p);
+                const ed = tree.extraData(ast_mod.FnData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.body, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.return_type, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.params, .end = ed.params_end }, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.name, p) catch return error.OutOfMemory;
             },
             .arrow_fn, .async_arrow_fn => {
-                const d = tree.extraData(ast_mod.ArrowData, @intFromEnum(lhs));
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.params_start, .end = d.params_end }, p);
-                try push(&stack, alloc, d.body, p);
+                const ed = tree.extraData(ast_mod.ArrowData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.body, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.return_type, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.params_start, .end = ed.params_end }, p) catch return error.OutOfMemory;
             },
 
             // ── Classes ───────────────────────────────────────
             .class_decl, .class_expr => {
-                const d = tree.extraData(ast_mod.ClassData, @intFromEnum(lhs));
-                try push(&stack, alloc, d.name, p);
-                try push(&stack, alloc, d.super_class, p);
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.body_start, .end = d.body_end }, p);
+                const ed = tree.extraData(ast_mod.ClassData, @intFromEnum(lhs));
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.body_start, .end = ed.body_end }, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.super_class, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.name,        p) catch return error.OutOfMemory;
             },
 
             // ── Class members ─────────────────────────────────
@@ -176,43 +191,37 @@ pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
             .setter_def, .computed_setter_def,
             .constructor_def,
             => {
-                try push(&stack, alloc, lhs, p); // key
-                const d = tree.extraData(ast_mod.MethodData, @intFromEnum(rhs));
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.params_start, .end = d.params_end }, p);
-                try push(&stack, alloc, d.body, p);
+                const ed = tree.extraData(ast_mod.MethodData, @intFromEnum(rhs));
+                push(&stack, alloc, ed.body, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.return_type, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.params_start, .end = ed.params_end }, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .property_def, .computed_property_def => {
-                try push(&stack, alloc, lhs, p); // key
-                try push(&stack, alloc, rhs, p); // value (may be .none)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .formal_parameters => {
-                try pushSubRange(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p);
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
 
             // ── Imports ───────────────────────────────────────
             .import_decl => {
-                const d = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.specifiers_start, .end = d.specifiers_end }, p);
-                // source is a token, not a node
+                const ed = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.specifiers_start, .end = ed.specifiers_end }, p) catch return error.OutOfMemory;
             },
-            .import_specifier => {
-                // lhs = imported name (token), rhs = local name (token); no node children
-            },
-            .import_default_specifier, .import_namespace_specifier => {
-                // lhs = local name (token)
-            },
+            .import_specifier, .import_default_specifier, .import_namespace_specifier => {},
 
             // ── Exports ───────────────────────────────────────
             .export_named => {
                 if (rhs == .none) {
-                    try push(&stack, alloc, lhs, p); // declaration node
+                    push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
                 } else {
-                    // lhs+rhs = SubRange of specifiers
-                    try pushSubRange(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p);
+                    pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
                 }
             },
             .export_default_expr, .export_default_fn, .export_default_class => {
-                try push(&stack, alloc, lhs, p);
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
             // ── Expressions with SubRange children ────────────
@@ -220,28 +229,28 @@ pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
             .array_pattern, .object_pattern,
             .sequence_expr, .jsx_fragment,
             => {
-                try pushSubRange(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p);
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
 
             // ── Call / New ────────────────────────────────────
             .call_expr, .optional_call_expr, .new_expr => {
-                try push(&stack, alloc, lhs, p); // callee
                 if (rhs != .none) {
                     const sub = tree.extraData(SubRange, @intFromEnum(rhs));
-                    try pushSubRange(&stack, alloc, tree, sub, p);
+                    pushSubRangeRev(&stack, alloc, tree, sub, p) catch return error.OutOfMemory;
                 }
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
             // ── Member access ─────────────────────────────────
             .member_expr, .optional_member_expr => {
-                try push(&stack, alloc, lhs, p); // object; rhs is a token index
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .computed_member_expr, .optional_computed_member_expr => {
-                try push(&stack, alloc, lhs, p); // object
-                try push(&stack, alloc, rhs, p); // property expression
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
-            // ── Binary / assignment expressions ───────────────
+            // ── Binary / assignment ───────────────────────────
             .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
             .equal, .not_equal, .strict_equal, .strict_not_equal,
             .less_than, .greater_than, .less_equal, .greater_equal,
@@ -255,122 +264,175 @@ pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
             .logical_and_assign, .logical_or_assign, .nullish_assign,
             .assignment_pattern, .tagged_template,
             => {
-                try push(&stack, alloc, lhs, p);
-                try push(&stack, alloc, rhs, p);
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
-            // ── Unary expressions ─────────────────────────────
+            // ── Unary ─────────────────────────────────────────
             .unary_plus, .unary_minus, .bitwise_not, .logical_not,
             .typeof_expr, .void_expr, .delete_expr, .await_expr,
             .yield_expr, .yield_delegate,
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
-            .spread_element, .rest_element,
+            .spread_element,
             .grouping_expr, .import_expr,
             .ts_as_expr, .ts_satisfies_expr, .ts_non_null_expr,
             => {
-                try push(&stack, alloc, lhs, p);
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // rest_element: lhs = binding, rhs = type annotation (or .none)
+            .rest_element => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .ts_type_assertion => {
-                try push(&stack, alloc, rhs, p); // rhs = expression
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
             },
 
             // ── Conditional ───────────────────────────────────
             .conditional => {
-                try push(&stack, alloc, lhs, p); // test
-                const d = tree.extraData(ast_mod.Conditional, @intFromEnum(rhs));
-                try push(&stack, alloc, d.consequent, p);
-                try push(&stack, alloc, d.alternate, p);
+                const ed = tree.extraData(ast_mod.Conditional, @intFromEnum(rhs));
+                push(&stack, alloc, ed.alternate,  p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.consequent, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs,           p) catch return error.OutOfMemory;
             },
 
-            // ── Object property ───────────────────────────────
-            .property => {
-                try push(&stack, alloc, lhs, p); // key
-                try push(&stack, alloc, rhs, p); // value
-            },
-            .computed_property => {
-                try push(&stack, alloc, lhs, p); // computed key
-                try push(&stack, alloc, rhs, p); // value
+            // ── Object properties ─────────────────────────────
+            .property, .computed_property => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .shorthand_property => {
-                try push(&stack, alloc, lhs, p); // identifier
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
             // ── TypeScript declarations ────────────────────────
             .ts_interface_decl => {
-                const d = tree.extraData(ast_mod.InterfaceData, @intFromEnum(lhs));
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.extends_start, .end = d.extends_end }, p);
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.body_start, .end = d.body_end }, p);
+                const ed = tree.extraData(ast_mod.InterfaceData, @intFromEnum(lhs));
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.body_start,    .end = ed.body_end    }, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.extends_start, .end = ed.extends_end }, p) catch return error.OutOfMemory;
             },
             .ts_type_alias_decl => {},
             .ts_enum_decl => {
-                const d = tree.extraData(ast_mod.EnumData, @intFromEnum(lhs));
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.members_start, .end = d.members_end }, p);
+                const ed = tree.extraData(ast_mod.EnumData, @intFromEnum(lhs));
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.members_start, .end = ed.members_end }, p) catch return error.OutOfMemory;
             },
             .ts_enum_member => {
-                try push(&stack, alloc, rhs, p); // init (may be .none)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
             },
             .ts_namespace_decl, .ts_module_decl => {
-                try push(&stack, alloc, rhs, p); // body
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
             },
 
             // ── JSX ───────────────────────────────────────────
             .jsx_element => {
-                const d = tree.extraData(ast_mod.JsxElementData, @intFromEnum(lhs));
-                try push(&stack, alloc, d.opening, p);
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.children_start, .end = d.children_end }, p);
-                try push(&stack, alloc, d.closing, p);
+                const ed = tree.extraData(ast_mod.JsxElementData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.closing, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.children_start, .end = ed.children_end }, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.opening, p) catch return error.OutOfMemory;
             },
             .jsx_self_closing, .jsx_opening_element => {
-                const d = tree.extraData(ast_mod.JsxOpeningData, @intFromEnum(lhs));
-                try push(&stack, alloc, d.name, p);
-                try pushSubRange(&stack, alloc, tree, .{ .start = d.attrs_start, .end = d.attrs_end }, p);
+                const ed = tree.extraData(ast_mod.JsxOpeningData, @intFromEnum(lhs));
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.attrs_start, .end = ed.attrs_end }, p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.name, p) catch return error.OutOfMemory;
             },
             .jsx_closing_element => {
-                try push(&stack, alloc, lhs, p); // name
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .jsx_attribute => {
-                try push(&stack, alloc, lhs, p); // name
-                try push(&stack, alloc, rhs, p); // value (may be .none)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .jsx_spread_attribute => {
-                try push(&stack, alloc, lhs, p);
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .jsx_expression_container => {
-                try push(&stack, alloc, lhs, p);
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
-            // ── Leaf nodes ────────────────────────────────────
+            // ── Leaf nodes (no children) ──────────────────────
             .empty_stmt, .break_stmt, .break_label, .continue_stmt, .continue_label,
-            .debugger_stmt, .this_expr, .super_expr, .identifier,
+            .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
             .import_meta, .new_target,
             .export_all, .export_specifier,
             .jsx_text_node, .error_node,
-            // TypeScript types (skip their children for now)
-            .ts_type_annotation, .ts_type_reference, .ts_type_predicate,
-            .ts_union_type, .ts_intersection_type, .ts_tuple_type,
-            .ts_array_type, .ts_function_type, .ts_constructor_type,
-            .ts_type_literal, .ts_mapped_type, .ts_conditional_type,
-            .ts_infer_type, .ts_typeof_type, .ts_keyof_type,
-            .ts_indexed_access_type, .ts_template_literal_type,
-            .ts_type_query, .ts_parenthesized_type, .ts_parameter_property,
+            // TS type nodes that are true leaves (no child types to traverse)
+            .ts_type_reference, .ts_infer_type,
+            .ts_function_type, .ts_constructor_type,
+            .ts_type_literal, .ts_mapped_type, .ts_template_literal_type,
+            .ts_type_query, .ts_parameter_property,
             => {},
+
+            // identifier: rhs holds type annotation for typed bindings (or .none)
+            .identifier => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+            },
+
+            // ── TypeScript type annotation traversal ──────────
+            // ts_type_annotation: lhs = inner type node
+            .ts_type_annotation => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // ts_array_type: lhs = element type
+            .ts_array_type => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // ts_indexed_access_type: lhs = object type, rhs = index type
+            .ts_indexed_access_type => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // ts_keyof_type, ts_typeof_type, ts_parenthesized_type: lhs = operand
+            .ts_keyof_type, .ts_typeof_type, .ts_parenthesized_type => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // ts_type_predicate: lhs = param name, rhs = type (or .none)
+            .ts_type_predicate => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // ts_union_type, ts_intersection_type, ts_tuple_type, ts_conditional_type:
+            // lhs/rhs encode a SubRange of member types
+            .ts_union_type, .ts_intersection_type, .ts_tuple_type, .ts_conditional_type => {
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
+            },
         }
     }
 
-    return parents;
+    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order };
 }
 
+/// Convenience wrapper: compute only parent pointers.
+pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
+    const result = try computeTraversal(tree, alloc);
+    alloc.free(result.pre_order);
+    alloc.free(result.post_order);
+    return result.parents;
+}
+
+// ── Internal helpers ──────────────────────────────────────────────────────────
+
+const WorkItem = struct {
+    node: NodeIndex,
+    parent: u32,
+};
+
+/// Push `node` onto the stack with `parent`. Skips `.none` nodes.
 inline fn push(stack: *std.ArrayList(WorkItem), alloc: std.mem.Allocator, node: NodeIndex, parent: u32) !void {
     if (node == .none) return;
     try stack.append(alloc, .{ .node = node, .parent = parent });
 }
 
-inline fn pushSubRange(stack: *std.ArrayList(WorkItem), alloc: std.mem.Allocator, tree: *const Ast, sub: SubRange, parent: u32) !void {
+/// Push items from extra_data[sub.start..sub.end] in REVERSE order so they are
+/// popped (and visited) in forward (document) order.
+inline fn pushSubRangeRev(stack: *std.ArrayList(WorkItem), alloc: std.mem.Allocator, tree: *const Ast, sub: SubRange, parent: u32) !void {
+    if (sub.start >= sub.end) return;
     const items = tree.extra_data[sub.start..sub.end];
-    for (items) |raw| {
-        const node: NodeIndex = @enumFromInt(raw);
+    var i: usize = items.len;
+    while (i > 0) {
+        i -= 1;
+        const node: NodeIndex = @enumFromInt(items[i]);
         if (node == .none) continue;
         try stack.append(alloc, .{ .node = node, .parent = parent });
     }

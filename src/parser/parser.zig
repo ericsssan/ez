@@ -102,6 +102,7 @@ pub const Parser = struct {
     scratch: std.ArrayList(u32),
     diagnostics: std.ArrayList(Diagnostic),
     gpa: std.mem.Allocator,
+    max_nodes: usize,
 
     // Context flags
     in_function: bool,
@@ -145,6 +146,7 @@ pub const Parser = struct {
             .scratch = .empty,
             .diagnostics = .empty,
             .gpa = allocator,
+            .max_nodes = tokens.len * 16,
             .in_function = false,
             .in_async = is_module_file, // top-level await in modules (ES2022)
             .in_generator = false,
@@ -177,12 +179,13 @@ pub const Parser = struct {
             p.diagnostics.deinit(allocator);
         };
 
-        // Empirically, JS source has roughly 8:1 source bytes to tokens,
-        // and roughly 2:1 tokens to AST nodes.
-        const estimated_node_count: usize = @max((tokens.len + 2) / 2, 1);
+        // Empirically ~0.75 AST nodes per token; extra_data ~0.35; scratch for
+        // largest single statement arg/element list (256 covers the vast majority).
+        const estimated_node_count: usize = @max(tokens.len * 3 / 4, 1);
+        const estimated_extra_count: usize = @max(tokens.len * 3 / 8, 1);
         try p.nodes.ensureTotalCapacity(allocator, estimated_node_count);
-        try p.extra_data.ensureTotalCapacity(allocator, estimated_node_count);
-        try p.scratch.ensureTotalCapacity(allocator, 64);
+        try p.extra_data.ensureTotalCapacity(allocator, estimated_extra_count);
+        try p.scratch.ensureTotalCapacity(allocator, 256);
 
         try p.parseProgram();
 
@@ -263,39 +266,13 @@ pub const Parser = struct {
 
     /// Get the source text for the token at `index`.
     pub fn tokenText(self: *const Parser, index: TokenIndex) []const u8 {
-        const start = self.tokens.items(.start)[index];
         const tag = self.tokens.items(.tag)[index];
-
-        // For tokens with known lexemes, return the lexeme.
+        // Fixed-lexeme tokens (punctuation, keywords) return the canonical string.
         if (tag.lexeme()) |lex| return lex;
-
-        // For variable-length tokens, scan to find the end.
-        var end: u32 = start;
-        switch (tag) {
-            .identifier => {
-                while (end < self.source.len and isIdentChar(self.source[end])) {
-                    end += 1;
-                }
-            },
-            .number_literal, .bigint_literal => {
-                while (end < self.source.len and isNumericChar(self.source[end])) {
-                    end += 1;
-                }
-            },
-            .string_literal => {
-                if (end < self.source.len) {
-                    const quote = self.source[end];
-                    end += 1;
-                    while (end < self.source.len and self.source[end] != quote) {
-                        if (self.source[end] == '\\') end += 1;
-                        end += 1;
-                    }
-                    if (end < self.source.len) end += 1; // closing quote
-                }
-            },
-            else => {},
-        }
-        return self.source[start..end];
+        // Variable-length tokens: use the pre-computed len stored at lex time (O(1)).
+        const start = self.tokens.items(.start)[index];
+        const len = self.tokens.items(.len)[index];
+        return self.source[start .. start + len];
     }
 
     /// Check whether we have reached the end of input.
@@ -332,7 +309,7 @@ pub const Parser = struct {
     pub fn addNode(self: *Parser, node: Node) !NodeIndex {
         // Bound error recovery: prevent runaway node creation.
         // Use 16x limit to accommodate TS files with heavy error recovery.
-        if (self.nodes.len > @as(usize, self.tokens.len) * 16) return error.OutOfMemory;
+        if (self.nodes.len > self.max_nodes) return error.OutOfMemory;
         const result: u32 = @intCast(self.nodes.len);
         try self.nodes.append(self.gpa, node);
         return NodeIndex.fromInt(result);
@@ -1931,7 +1908,15 @@ pub const Parser = struct {
 
         // TS definite assignment: `let x!;` or `let x!: Type;`
         if (self.language.isTs()) _ = self.eat(.bang);
-        _ = try self.parseOptionalTypeAnnotation();
+        const type_annotation = try self.parseOptionalTypeAnnotation();
+
+        // Attach type annotation to identifier binding (so parent_builder can reach it).
+        if (type_annotation != .none) {
+            const binding_tag = self.nodes.items(.tag)[binding.toInt()];
+            if (binding_tag == .identifier) {
+                self.nodes.items(.data)[binding.toInt()].rhs = type_annotation;
+            }
+        }
 
         // Optional initializer
         const init: NodeIndex = if (self.eat(.equal) != null)
@@ -2018,7 +2003,7 @@ pub const Parser = struct {
 
         _ = try self.parseOptionalTypeParameters();
         const params = try self.parseFormalParameters();
-        _ = try self.parseOptionalTypeAnnotation();
+        const fn_return_type = try self.parseOptionalTypeAnnotation();
         defer {
             self.in_function = prev_in_function;
             self.in_async = prev_in_async;
@@ -2075,6 +2060,7 @@ pub const Parser = struct {
             .params = params.start,
             .params_end = params.end,
             .body = body,
+            .return_type = fn_return_type,
         });
 
         return self.addNode(.{
@@ -2577,10 +2563,7 @@ pub const Parser = struct {
                 try self.checkUseStrictNonSimpleParams(params);
 
                 // TS return type annotation
-                if (self.language.isTs() and self.peek() == .colon) {
-                    _ = self.advance();
-                    _ = try typescript.parseType(self);
-                }
+                const computed_method_return_type = try self.parseOptionalTypeAnnotation();
 
                 // TS abstract/declare computed methods may have no body
                 if (self.language.isTs() and self.peek() != .l_brace) {
@@ -2598,6 +2581,7 @@ pub const Parser = struct {
                     .params_start = params.start,
                     .params_end = params.end,
                     .body = body,
+                    .return_type = computed_method_return_type,
                 });
 
                 const node_tag: Node.Tag = if (is_getter)
@@ -2760,11 +2744,8 @@ pub const Parser = struct {
             defer self.in_async = prev_in_async_m;
             try self.checkUseStrictNonSimpleParams(params);
 
-            // Skip TS return type annotation: `): Type {`
-            if (self.language.isTs() and self.peek() == .colon) {
-                _ = self.advance();
-                _ = try typescript.parseType(self);
-            }
+            // TS return type annotation: `): Type {`
+            const method_return_type = try self.parseOptionalTypeAnnotation();
 
             // TS abstract/declare methods may have no body (semicolon instead).
             // Emit as a property_def since there's no MethodData to store.
@@ -2783,6 +2764,7 @@ pub const Parser = struct {
                 .params_start = params.start,
                 .params_end = params.end,
                 .body = body,
+                .return_type = method_return_type,
             });
 
             const node_tag: Node.Tag = if (is_getter)
@@ -2953,13 +2935,13 @@ pub const Parser = struct {
         // Rest parameter: `...binding`
         if (self.eat(.ellipsis)) |ellipsis_tok| {
             const binding = try self.parseBindingPattern();
-            _ = try self.parseOptionalTypeAnnotation();
+            const rest_type_annotation = try self.parseOptionalTypeAnnotation();
             return self.addNode(.{
                 .tag = .rest_element,
                 .main_token = ellipsis_tok,
                 .data = .{
                     .lhs = binding,
-                    .rhs = .none,
+                    .rhs = rest_type_annotation,
                 },
             });
         }
@@ -3004,7 +2986,15 @@ pub const Parser = struct {
         const binding = try self.parseBindingPattern();
 
         if (self.language.isTs()) _ = self.eat(.question);
-        _ = try self.parseOptionalTypeAnnotation();
+        const param_type_annotation = try self.parseOptionalTypeAnnotation();
+
+        // Attach type annotation to identifier binding.
+        if (param_type_annotation != .none) {
+            const binding_tag = self.nodes.items(.tag)[binding.toInt()];
+            if (binding_tag == .identifier) {
+                self.nodes.items(.data)[binding.toInt()].rhs = param_type_annotation;
+            }
+        }
 
         // Default value: `param = defaultExpr`
         if (self.eat(.equal) != null) {
@@ -3609,7 +3599,12 @@ pub const Parser = struct {
         while (true) {
             const decl_tok = self.tok_i;
             const binding = try self.parseBindingPattern();
-            _ = try self.parseOptionalTypeAnnotation();
+            const using_type_annotation = try self.parseOptionalTypeAnnotation();
+            if (using_type_annotation != .none) {
+                if (self.nodes.items(.tag)[binding.toInt()] == .identifier) {
+                    self.nodes.items(.data)[binding.toInt()].rhs = using_type_annotation;
+                }
+            }
 
             const init: NodeIndex = if (self.eat(.equal) != null)
                 try self.parseAssignmentExpression()
@@ -3643,7 +3638,12 @@ pub const Parser = struct {
 
         while (true) {
             const binding = try self.parseBindingPattern();
-            _ = try self.parseOptionalTypeAnnotation();
+            const using_list_type_annotation = try self.parseOptionalTypeAnnotation();
+            if (using_list_type_annotation != .none) {
+                if (self.nodes.items(.tag)[binding.toInt()] == .identifier) {
+                    self.nodes.items(.data)[binding.toInt()].rhs = using_list_type_annotation;
+                }
+            }
             const init: NodeIndex = if (self.eat(.equal) != null) try self.parseAssignmentExpression() else .none;
             const decl = try self.addNode(.{ .tag = .declarator, .main_token = main_tok, .data = .{ .lhs = binding, .rhs = init } });
             try self.scratch.append(self.gpa, @intFromEnum(decl));
@@ -4090,21 +4090,17 @@ pub const Parser = struct {
         return error.ParseError;
     }
 
-    /// Check whether there is a newline between two token positions.
+    /// Check whether there is a line terminator between two token positions.
+    /// Uses the has_newline_before flag stored per token at lex time — O(1) for
+    /// adjacent tokens, O(k) for non-adjacent (k = tokens between a and b).
     pub fn hasNewLineBetween(self: *const Parser, tok_a: u32, tok_b: u32) bool {
         if (tok_a >= self.tokens.len or tok_b >= self.tokens.len) return false;
-        const start_a = self.tokenStart(tok_a);
-        const start_b = self.tokenStart(tok_b);
-        const source_len: u32 = @intCast(self.source.len);
-        const from = @min(start_a + 1, source_len);
-        const to = @min(start_b, source_len);
-        if (from >= to) return false;
-        const slice = self.source[from..to];
-        // Check for \n, \r, U+2028 (E2 80 A8), U+2029 (E2 80 A9)
-        for (slice, 0..) |c, i| {
-            if (c == '\n' or c == '\r') return true;
-            if (c == 0xE2 and i + 2 < slice.len and slice[i + 1] == 0x80 and
-                (slice[i + 2] == 0xA8 or slice[i + 2] == 0xA9)) return true;
+        const nl = self.tokens.items(.has_newline_before);
+        // Common case: adjacent tokens — single array read.
+        if (tok_b == tok_a + 1) return nl[tok_b];
+        // General case: any token in (tok_a, tok_b] has a preceding newline.
+        for (nl[tok_a + 1 .. tok_b + 1]) |f| {
+            if (f) return true;
         }
         return false;
     }
@@ -4436,7 +4432,7 @@ test "parse return statement with ASI" {
     var list = TokenList{};
     defer list.deinit(allocator);
     try list.append(allocator, .{ .tag = .kw_return, .start = 0 });
-    try list.append(allocator, .{ .tag = .number_literal, .start = 7 });
+    try list.append(allocator, .{ .tag = .number_literal, .start = 7, .has_newline_before = true });
     try list.append(allocator, .{ .tag = .eof, .start = 9 });
 
     var result = try Parser.parse(allocator, source, list.slice());

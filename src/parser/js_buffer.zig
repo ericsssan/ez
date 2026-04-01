@@ -39,8 +39,10 @@ pub const BufferHeader = extern struct {
     // Added in v3: semantic data (scope/symbol/reference tables).
     // Non-zero = byte offset of SemanticHeader in this buffer; 0 = not present.
     semantic_data_offset: u32 = 0,
-    _reserved2: u32 = 0,
-    _reserved3: u32 = 0,
+    // Added in v4: DFS traversal order arrays (pre-order and post-order).
+    // Non-zero = byte offset of a u32[] of length node_count.
+    pre_order_offset: u32 = 0,
+    post_order_offset: u32 = 0,
 };
 
 comptime {
@@ -266,6 +268,8 @@ pub const HeaderInfo = struct {
     flags: u32,
     parent_indices_offset: u32 = 0,
     semantic_data_offset: u32 = 0,
+    pre_order_offset: u32 = 0,
+    post_order_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -294,6 +298,8 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .flags = info.flags,
         .parent_indices_offset = info.parent_indices_offset,
         .semantic_data_offset = info.semantic_data_offset,
+        .pre_order_offset = info.pre_order_offset,
+        .post_order_offset = info.post_order_offset,
     };
 }
 
@@ -320,6 +326,16 @@ pub fn convertSpansToUtf16(source: []const u8, tok_starts: []u32) u32 {
     while (tok_idx < tok_starts.len) {
         // Advance source scanner to this token's byte offset.
         const target = tok_starts[tok_idx];
+        // SIMD ASCII fast path: bulk-skip 16 bytes at a time until < 16 remain
+        // before the target. Pure-ASCII bytes map 1:1 to UTF-16 code units.
+        const simd_end = @min(target, @as(u32, @intCast(source.len)));
+        while (byte_pos + 16 <= simd_end) {
+            const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
+            if (!@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) break;
+            utf16_pos += 16;
+            byte_pos += 16;
+        }
+        // Scalar tail: handles final < 16 bytes and any non-ASCII sequences.
         while (byte_pos < target and byte_pos < source.len) {
             utf16_pos += utf16Advance(source, &byte_pos);
         }
@@ -328,7 +344,17 @@ pub fn convertSpansToUtf16(source: []const u8, tok_starts: []u32) u32 {
     }
 
     // Scan remaining source to get total UTF-16 length.
+    // SIMD bulk: process 16 ASCII bytes at a time; scalar fallback per non-ASCII
+    // sequence (rare in JS/TS), then re-enter SIMD.
     while (byte_pos < source.len) {
+        if (byte_pos + 16 <= source.len) {
+            const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
+            if (@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) {
+                utf16_pos += 16;
+                byte_pos += 16;
+                continue;
+            }
+        }
         utf16_pos += utf16Advance(source, &byte_pos);
     }
 

@@ -15,6 +15,7 @@ pub const reference = @import("parser/root.zig").reference;
 pub const semantic = @import("parser/root.zig").semantic;
 pub const js_buffer = @import("parser/root.zig").js_buffer;
 pub const layout = @import("parser/root.zig").layout;
+pub const parent_builder = @import("parser/root.zig").parent_builder;
 
 // ── Linter module ─────────────────────────────────────────
 pub const lint_context = @import("linter/root.zig").lint_context;

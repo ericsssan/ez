@@ -24,10 +24,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     };
     const members = ctx.extraSlice(range);
 
-    // Collect seen values (as token text), report duplicates
-    // Use a fixed-size buffer for simplicity
-    var seen: [256][]const u8 = undefined;
-    var seen_count: usize = 0;
+    var seen = std.StringHashMap(void).init(ctx.allocator);
+    defer seen.deinit();
 
     for (members) |member_idx| {
         const member: NodeIndex = @enumFromInt(member_idx);
@@ -43,16 +41,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         const val_text = ctx.tokenText(ctx.nodeMainToken(value_node));
 
-        for (seen[0..seen_count]) |prev| {
-            if (std.mem.eql(u8, prev, val_text)) {
-                ctx.report(member, meta.name, "Duplicate enum member value", meta.default_severity);
-                break;
-            }
-        } else {
-            if (seen_count < seen.len) {
-                seen[seen_count] = val_text;
-                seen_count += 1;
-            }
+        const result = seen.getOrPut(val_text) catch continue;
+        if (result.found_existing) {
+            ctx.report(member, meta.name, "Duplicate enum member value", meta.default_severity);
         }
     }
 }

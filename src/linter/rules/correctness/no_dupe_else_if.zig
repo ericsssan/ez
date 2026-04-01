@@ -15,16 +15,14 @@ pub const meta = RuleMeta{
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    // Collect all conditions in the if-else-if chain
-    var conditions: std.ArrayList(NodeIndex) = .empty;
-    defer conditions.deinit(ctx.allocator);
+    // Use a HashMap for O(1) duplicate detection instead of O(n) linear scan.
+    var seen = std.StringHashMap(void).init(ctx.allocator);
+    defer seen.deinit();
 
-    // Add the first condition
     const first_cond = ctx.nodeData(node).lhs;
     if (first_cond == .none) return;
-    conditions.append(ctx.allocator, first_cond) catch return;
+    seen.put(ctx.tokenText(ctx.nodeMainToken(first_cond)), {}) catch return;
 
-    // Walk the else-if chain
     var current = node;
     while (true) {
         const cur_data = ctx.nodeData(current);
@@ -43,22 +41,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const alt_cond = ctx.nodeData(alternate).lhs;
         if (alt_cond == .none) break;
 
-        // Check if this condition duplicates any previous one.
-        // Use main token text (since nodeSpan.end is not yet implemented).
-        const alt_token = ctx.nodeMainToken(alt_cond);
-        const alt_text = ctx.tokenText(alt_token);
+        const alt_text = ctx.tokenText(ctx.nodeMainToken(alt_cond));
 
-        for (conditions.items) |prev_cond| {
-            const prev_token = ctx.nodeMainToken(prev_cond);
-            const prev_text = ctx.tokenText(prev_token);
-
-            if (std.mem.eql(u8, alt_text, prev_text)) {
-                ctx.report(alternate, meta.name, "Duplicate condition in if-else-if chain", meta.default_severity);
-                break;
-            }
+        const result = seen.getOrPut(alt_text) catch return;
+        if (result.found_existing) {
+            ctx.report(alternate, meta.name, "Duplicate condition in if-else-if chain", meta.default_severity);
         }
 
-        conditions.append(ctx.allocator, alt_cond) catch return;
         current = alternate;
     }
 }

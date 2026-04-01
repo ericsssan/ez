@@ -523,6 +523,7 @@ pub const FnData = struct {
     params: ExtraIndex, // SubRange start
     params_end: ExtraIndex, // SubRange end
     body: NodeIndex,
+    return_type: NodeIndex = .none, // .none if no return type annotation
 };
 
 /// class name extends super { body }
@@ -538,6 +539,7 @@ pub const ArrowData = struct {
     params_start: ExtraIndex,
     params_end: ExtraIndex,
     body: NodeIndex,
+    return_type: NodeIndex = .none, // .none if no return type annotation
 };
 
 /// cond ? consequent : alternate
@@ -558,6 +560,7 @@ pub const MethodData = struct {
     params_start: ExtraIndex,
     params_end: ExtraIndex,
     body: NodeIndex,
+    return_type: NodeIndex = .none, // .none if no return type annotation
 };
 
 // ── TypeScript ExtraData structs ────────────────────────────
@@ -617,6 +620,12 @@ pub const Ast = struct {
     pub const TokenList = std.MultiArrayList(struct {
         tag: TokenTag,
         start: ByteOffset,
+        /// Byte length of the token in source (end = start + len).
+        len: u32 = 0,
+        /// True if there is a line terminator between the previous token and this one.
+        /// Set by the lexer from saw_newline. Lets the parser replace O(n) source
+        /// scans in hasNewLineBetween with a single array lookup.
+        has_newline_before: bool = false,
     });
 
     pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {

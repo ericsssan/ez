@@ -15,6 +15,7 @@ pub const semantic = @import("semantic.zig");
 
 pub const js_buffer = @import("js_buffer.zig");
 pub const layout = @import("layout.zig");
+pub const parent_builder = @import("parent_builder.zig");
 
 test {
     _ = @import("ast.zig");

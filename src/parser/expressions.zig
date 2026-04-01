@@ -1022,7 +1022,7 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
 
     _ = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
-    _ = try p.parseOptionalTypeAnnotation();
+    const async_fn_expr_return_type = try p.parseOptionalTypeAnnotation();
 
     // TS ambient async function expressions can be bodyless
     if (p.language.isTs() and p.peek() != .l_brace) {
@@ -1043,6 +1043,7 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
         .params = params_range.start,
         .params_end = params_range.end,
         .body = body,
+        .return_type = async_fn_expr_return_type,
     });
     return p.addNode(.{
         .tag = fn_tag,
@@ -1060,7 +1061,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     // TS: if params look typed, parse as formal parameters directly
     if (p.language.isTs() and (p.peek() == .r_paren or looksLikeTsArrowParams(p))) {
         const params_range = try parseFormalParameters_inner(p, open_paren);
-        _ = try p.parseOptionalTypeAnnotation();
+        const async_typed_arrow_return_type = try p.parseOptionalTypeAnnotation();
 
         if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
             _ = p.advance(); // consume `=>`
@@ -1075,6 +1076,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
                 .params_start = params_range.start,
                 .params_end = params_range.end,
                 .body = body,
+                .return_type = async_typed_arrow_return_type,
             });
             return p.addNode(.{
                 .tag = .async_arrow_fn,
@@ -1204,7 +1206,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     if (p.peek() == .r_paren) {
         _ = p.advance(); // consume `)`
         // TS return type annotation: `(): Type =>`
-        _ = try p.parseOptionalTypeAnnotation();
+        const empty_arrow_return_type = try p.parseOptionalTypeAnnotation();
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
             const saved_fn2 = p.in_function;
@@ -1219,6 +1221,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                 .params_start = params_range.start,
                 .params_end = params_range.end,
                 .body = body,
+                .return_type = empty_arrow_return_type,
             });
             return p.addNode(.{
                 .tag = .arrow_fn,
@@ -1235,7 +1238,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     // followed by `:`, parse as typed arrow parameters.
     if (p.language.isTs() and looksLikeTsArrowParams(p)) {
         const params_range = try parseFormalParameters_inner(p, open_paren);
-        _ = try p.parseOptionalTypeAnnotation(); // return type
+        const typed_arrow_return_type = try p.parseOptionalTypeAnnotation(); // return type
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
             const saved_fn = p.in_function;
@@ -1249,6 +1252,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                 .params_start = params_range.start,
                 .params_end = params_range.end,
                 .body = body,
+                .return_type = typed_arrow_return_type,
             });
             return p.addNode(.{
                 .tag = .arrow_fn,
@@ -2228,7 +2232,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
 
     _ = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
-    _ = try p.parseOptionalTypeAnnotation();
+    const fn_expr_return_type = try p.parseOptionalTypeAnnotation();
 
     // TS ambient function expressions can be bodyless in certain contexts
     if (p.language.isTs() and p.peek() != .l_brace) {
@@ -2249,6 +2253,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
         .params = params_range.start,
         .params_end = params_range.end,
         .body = body,
+        .return_type = fn_expr_return_type,
     });
     return p.addNode(.{
         .tag = fn_tag,
@@ -2920,54 +2925,48 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
 // Infix precedence table
 // =====================================================================
 
+// Comptime lookup: single array load replaces a 40-arm switch.
+// kw_in is stored as .relational; the allow_in special case is handled at call time.
+const infix_prec_table: [256]Precedence = blk: {
+    var tbl = [_]Precedence{.none} ** 256;
+    tbl[@intFromEnum(TokenTag.comma)] = .comma;
+    for ([_]TokenTag{
+        .equal,           .plus_equal,                   .minus_equal,
+        .asterisk_equal,  .slash_equal,                  .percent_equal,
+        .asterisk_asterisk_equal, .ampersand_equal,       .pipe_equal,
+        .caret_equal,     .less_less_equal,               .greater_greater_equal,
+        .greater_greater_greater_equal, .ampersand_ampersand_equal,
+        .pipe_pipe_equal, .question_question_equal,
+    }) |t| tbl[@intFromEnum(t)] = .assignment;
+    tbl[@intFromEnum(TokenTag.question)] = .conditional;
+    tbl[@intFromEnum(TokenTag.question_question)] = .nullish_coalesce;
+    tbl[@intFromEnum(TokenTag.pipe_pipe)] = .logical_or;
+    tbl[@intFromEnum(TokenTag.ampersand_ampersand)] = .logical_and;
+    tbl[@intFromEnum(TokenTag.pipe)] = .bitwise_or;
+    tbl[@intFromEnum(TokenTag.caret)] = .bitwise_xor;
+    tbl[@intFromEnum(TokenTag.ampersand)] = .bitwise_and;
+    tbl[@intFromEnum(TokenTag.equal_equal)] = .equality;
+    tbl[@intFromEnum(TokenTag.bang_equal)] = .equality;
+    tbl[@intFromEnum(TokenTag.equal_equal_equal)] = .equality;
+    tbl[@intFromEnum(TokenTag.bang_equal_equal)] = .equality;
+    for ([_]TokenTag{ .less_than, .greater_than, .less_equal, .greater_equal, .kw_instanceof, .kw_in }) |t|
+        tbl[@intFromEnum(t)] = .relational;
+    tbl[@intFromEnum(TokenTag.less_less)] = .shift;
+    tbl[@intFromEnum(TokenTag.greater_greater)] = .shift;
+    tbl[@intFromEnum(TokenTag.greater_greater_greater)] = .shift;
+    tbl[@intFromEnum(TokenTag.plus)] = .additive;
+    tbl[@intFromEnum(TokenTag.minus)] = .additive;
+    tbl[@intFromEnum(TokenTag.asterisk)] = .multiplicative;
+    tbl[@intFromEnum(TokenTag.slash)] = .multiplicative;
+    tbl[@intFromEnum(TokenTag.percent)] = .multiplicative;
+    tbl[@intFromEnum(TokenTag.asterisk_asterisk)] = .exponentiation;
+    break :blk tbl;
+};
+
 fn getInfixPrecedence(p: *Parser, tag: TokenTag) Precedence {
-    return switch (tag) {
-        .comma => .comma,
-
-        // Assignment operators.
-        .equal,
-        .plus_equal,
-        .minus_equal,
-        .asterisk_equal,
-        .slash_equal,
-        .percent_equal,
-        .asterisk_asterisk_equal,
-        .ampersand_equal,
-        .pipe_equal,
-        .caret_equal,
-        .less_less_equal,
-        .greater_greater_equal,
-        .greater_greater_greater_equal,
-        .ampersand_ampersand_equal,
-        .pipe_pipe_equal,
-        .question_question_equal,
-        => .assignment,
-
-        .question => .conditional,
-        .question_question => .nullish_coalesce,
-        .pipe_pipe => .logical_or,
-        .ampersand_ampersand => .logical_and,
-        .pipe => .bitwise_or,
-        .caret => .bitwise_xor,
-        .ampersand => .bitwise_and,
-
-        .equal_equal, .bang_equal, .equal_equal_equal, .bang_equal_equal => .equality,
-
-        .less_than, .greater_than, .less_equal, .greater_equal, .kw_instanceof => .relational,
-
-        // `in` is suppressed when allow_in is false (for-in disambiguation).
-        .kw_in => if (p.allow_in) .relational else .none,
-
-        .less_less, .greater_greater, .greater_greater_greater => .shift,
-
-        .plus, .minus => .additive,
-
-        .asterisk, .slash, .percent => .multiplicative,
-
-        .asterisk_asterisk => .exponentiation,
-
-        else => .none,
-    };
+    const prec = infix_prec_table[@intFromEnum(tag)];
+    if (tag == .kw_in and !p.allow_in) return .none;
+    return prec;
 }
 
 /// Tokens that are parsed at call-level precedence (left-to-right).

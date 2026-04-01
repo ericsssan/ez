@@ -34,6 +34,37 @@ const Span = @import("span.zig").Span;
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const Severity = @import("diagnostic.zig").Severity;
 
+// ── Scoped binding lookup types ────────────────────────────
+// Global (scope_id, name) → SymbolId map, replacing one StringHashMap per scope.
+// Benefits: single allocation, cache-friendly, eliminates ~1000 init/deinit cycles.
+
+const ScopedKey = struct { scope_id: u32, name: []const u8 };
+
+/// Context for the global scope-binding HashMap.
+const ScopedContext = struct {
+    pub fn hash(_: @This(), k: ScopedKey) u64 {
+        const nh = std.hash.Wyhash.hash(0, k.name);
+        return nh ^ (@as(u64, k.scope_id) *% 0x9e3779b97f4a7c15);
+    }
+    pub fn eql(_: @This(), a: ScopedKey, b: ScopedKey) bool {
+        return a.scope_id == b.scope_id and std.mem.eql(u8, a.name, b.name);
+    }
+};
+
+/// Adapted key for resolveReference: name is hashed once, scope_id mixed in per level.
+const PrehashedKey = struct { scope_id: u32, name: []const u8, name_hash: u64 };
+
+const PrehashedCtx = struct {
+    pub fn hash(_: @This(), k: PrehashedKey) u64 {
+        return k.name_hash ^ (@as(u64, k.scope_id) *% 0x9e3779b97f4a7c15);
+    }
+    pub fn eql(_: @This(), a: PrehashedKey, b: ScopedKey) bool {
+        return a.scope_id == b.scope_id and std.mem.eql(u8, a.name, b.name);
+    }
+};
+
+const ScopeBindingMap = std.HashMapUnmanaged(ScopedKey, SymbolId, ScopedContext, 80);
+
 // ── Semantic Result ────────────────────────────────────────
 
 /// The result of semantic analysis: populated scope tree, symbol table,
@@ -69,9 +100,9 @@ pub const SemanticAnalyzer = struct {
     /// The scope that is currently being visited.
     current_scope: ScopeId,
 
-    /// Per-scope symbol lookup table: scope_bindings[scopeId] maps name → SymbolId.
-    /// Replaces the O(total_symbols) linear scan in findSymbolInScope with O(1) lookup.
-    scope_bindings: std.ArrayList(std.StringHashMapUnmanaged(SymbolId)),
+    /// Global (scope_id, name) → SymbolId map for O(1) binding lookup.
+    /// Single allocation replaces one StringHashMapUnmanaged per scope.
+    scope_binding_map: ScopeBindingMap,
 
     /// Track exported names for duplicate detection and undeclared export validation.
     exported_names: std.ArrayList(ExportEntry) = .empty,
@@ -94,7 +125,7 @@ pub const SemanticAnalyzer = struct {
             .diagnostics = .empty,
             .allocator = allocator,
             .current_scope = .none,
-            .scope_bindings = .empty,
+            .scope_binding_map = .empty,
         };
     }
 
@@ -111,12 +142,13 @@ pub const SemanticAnalyzer = struct {
     pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
         var self = SemanticAnalyzer.init(allocator, ast);
         errdefer self.deinit();
-        // exported_names and scope_bindings are temporaries; always free them.
+        // exported_names and scope_binding_map are temporaries; always free them.
         defer self.exported_names.deinit(allocator);
-        defer {
-            for (self.scope_bindings.items) |*m| m.deinit(self.allocator);
-            self.scope_bindings.deinit(self.allocator);
-        }
+        defer self.scope_binding_map.deinit(allocator);
+
+        // Pre-size the binding map to avoid growth rehashes for typical files.
+        // Heuristic: ~1 symbol per 8 nodes is conservative; avoids most rehashes.
+        try self.scope_binding_map.ensureTotalCapacity(allocator, @max(64, @as(u32, @intCast(@min(ast.nodes.len / 8, std.math.maxInt(u32))))));
 
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
@@ -134,7 +166,6 @@ pub const SemanticAnalyzer = struct {
 
     fn enterScope(self: *SemanticAnalyzer, scope_kind: ScopeKind, node: NodeIndex) !ScopeId {
         const id = try self.scopes.addScope(scope_kind, self.current_scope, node);
-        try self.scope_bindings.append(self.allocator, .{});
         self.current_scope = id;
         return id;
     }
@@ -169,11 +200,7 @@ pub const SemanticAnalyzer = struct {
 
         const symbol_flags = symbol_mod.flagsFromBindingKind(binding_kind);
         const sym_id = try self.symbols.addSymbol(name, symbol_flags, binding_kind, scope, node);
-        // Insert into per-scope hash map for O(1) lookups.
-        const scope_idx = scope.toInt();
-        if (scope_idx < self.scope_bindings.items.len) {
-            try self.scope_bindings.items[scope_idx].put(self.allocator, name, sym_id);
-        }
+        try self.scope_binding_map.put(self.allocator, .{ .scope_id = scope.toInt(), .name = name }, sym_id);
         return sym_id;
     }
 
@@ -190,18 +217,19 @@ pub const SemanticAnalyzer = struct {
 
     /// Find a symbol by name in a specific scope (not walking up the chain). O(1).
     fn findSymbolInScope(self: *const SemanticAnalyzer, name: []const u8, scope: ScopeId) ?SymbolId {
-        const idx = scope.toInt();
-        if (idx >= self.scope_bindings.items.len) return null;
-        return self.scope_bindings.items[idx].get(name);
+        return self.scope_binding_map.get(.{ .scope_id = scope.toInt(), .name = name });
     }
 
     // ── Reference resolution ───────────────────────────────
 
     /// Walk up the scope chain looking for a symbol with the given name.
+    /// Pre-hashes the name once and reuses the hash at each scope level.
     fn resolveReference(self: *SemanticAnalyzer, name: []const u8, ref_id: ReferenceId) void {
+        const name_hash = std.hash.Wyhash.hash(0, name);
         var scope = self.current_scope;
         while (scope.isValid()) {
-            if (self.findSymbolInScope(name, scope)) |sym_id| {
+            const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
+            if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
                 self.references.resolve(ref_id, sym_id);
                 // Update symbol usage flags based on reference kind.
                 const kind = self.references.getKind(ref_id);
@@ -583,17 +611,17 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn validateExports(self: *SemanticAnalyzer) !void {
-        // Check for duplicate exported names
-        for (self.exported_names.items, 0..) |entry, i| {
-            for (self.exported_names.items[0..i]) |prev| {
-                if (std.mem.eql(u8, entry.exported_name, prev.exported_name)) {
-                    try self.diagnostics.append(self.allocator, .{
-                        .message = "Duplicate export name",
-                        .span = self.ast.nodeSpan(entry.node),
-                        .severity = .@"error",
-                    });
-                    break;
-                }
+        // Check for duplicate exported names — O(n) with a HashMap.
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        for (self.exported_names.items) |entry| {
+            const result = seen.getOrPut(entry.exported_name) catch continue;
+            if (result.found_existing) {
+                try self.diagnostics.append(self.allocator, .{
+                    .message = "Duplicate export name",
+                    .span = self.ast.nodeSpan(entry.node),
+                    .severity = .@"error",
+                });
             }
         }
 

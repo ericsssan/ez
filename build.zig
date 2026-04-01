@@ -107,6 +107,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseFast,
     });
+    bench_mod.addImport("sanz", test_mod);
     const bench = b.addExecutable(.{
         .name = "bench_parser",
         .root_module = bench_mod,

@@ -59,10 +59,12 @@ fn parseImpl(
     const tok_starts = tokens.slice().items(.start);
     const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
 
-    // Compute parent indices for ESTree-compatible traversal.
-    // Allocated into the bump region immediately after the AST data.
-    const parents = try parent_builder.computeParents(&tree, alloc);
-    const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, parents.ptr);
+    // Compute parent indices and DFS traversal orders in a single pass.
+    // All three arrays are allocated into the bump region.
+    const traversal = try parent_builder.computeTraversal(&tree, alloc);
+    const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
+    const pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
+    const post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
 
     // Run semantic analysis and serialize scope/symbol/reference tables.
     // Falls back gracefully (semantic_data_offset = 0) if analysis fails or
@@ -85,6 +87,8 @@ fn parseImpl(
         .flags = if (bom.has_bom) js_buffer.FLAG_HAS_BOM else 0,
         .parent_indices_offset = parent_indices_offset,
         .semantic_data_offset = semantic_data_offset,
+        .pre_order_offset = pre_order_offset,
+        .post_order_offset = post_order_offset,
     });
 
     return backing.bytesUsed();

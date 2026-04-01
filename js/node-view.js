@@ -25,6 +25,9 @@ const H = {
   PARENT_INDICES_OFFSET: 64,
   // v3: semantic data offset (byte 68)
   SEMANTIC_DATA_OFFSET: 68,
+  // v4: DFS traversal order arrays (byte 72, 76)
+  PRE_ORDER_OFFSET: 72,
+  POST_ORDER_OFFSET: 76,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -61,6 +64,28 @@ let TAG_NAMES = null;
 
 /// NodeIndex.none sentinel (matches Zig's std.math.maxInt(u32))
 const NONE = 0xFFFFFFFF;
+
+// ── TypeScript keyword type remapping ───────────────────────────
+// Sanz emits TSTypeReference for TS built-in keyword types.
+// ESLint/typescript-eslint rules expect TSAnyKeyword etc.
+// When TSTypeReference has no type arguments (rhs === NONE) and its
+// main token text is a TypeScript keyword type, remap to the ESTree name.
+const _TS_KW_TYPES = {
+  any:        'TSAnyKeyword',
+  bigint:     'TSBigIntKeyword',
+  boolean:    'TSBooleanKeyword',
+  intrinsic:  'TSIntrinsicKeyword',
+  never:      'TSNeverKeyword',
+  null:       'TSNullKeyword',
+  number:     'TSNumberKeyword',
+  object:     'TSObjectKeyword',
+  string:     'TSStringKeyword',
+  symbol:     'TSSymbolKeyword',
+  this:       'TSThisType',
+  undefined:  'TSUndefinedKeyword',
+  unknown:    'TSUnknownKeyword',
+  void:       'TSVoidKeyword',
+};
 
 /**
  * Set the tag name table directly (e.g., from cached data).
@@ -119,6 +144,12 @@ class AstView {
     this._parentData = parentOff > 0
       ? new Uint32Array(buffer, parentOff, this.nodeCount)
       : null;
+
+    // DFS traversal orders (v4 — pre-order and post-order, computed in Zig)
+    const preOff  = dv.getUint32(H.PRE_ORDER_OFFSET,  true);
+    const postOff = dv.getUint32(H.POST_ORDER_OFFSET, true);
+    this._preOrder  = preOff  > 0 ? new Int32Array(buffer, preOff,  this.nodeCount) : null;
+    this._postOrder = postOff > 0 ? new Int32Array(buffer, postOff, this.nodeCount) : null;
 
     // Semantic data (v3 — scope/symbol/reference tables)
     const semOff = dv.getUint32(H.SEMANTIC_DATA_OFFSET, true);
@@ -485,18 +516,18 @@ class AstView {
     for (let i = 0; i < n; i++) maxTok[i] = mt[i];
 
     if (pd) {
-      // Propagate max token up the tree with repeated passes until convergence.
-      let changed = true;
-      while (changed) {
-        changed = false;
-        for (let i = 1; i < n; i++) {
-          const p = pd[i];
-          if (p !== NONE && maxTok[i] > maxTok[p]) {
-            maxTok[p] = maxTok[i];
-            changed = true;
-          }
+      // Single-pass propagation: process nodes in reverse order (high → low index).
+      // In sanz's AST, children always have lower indices than parents (except root=0),
+      // so reverse order guarantees children are finalized before their parents.
+      // This replaces the O(n × depth) fixpoint loop with a single O(n) pass.
+      for (let i = 1; i < n; i++) {
+        const p = pd[i];
+        if (p !== NONE && maxTok[i] > maxTok[p]) {
+          maxTok[p] = maxTok[i];
         }
       }
+      // Root (0) is processed separately: propagate up from all direct children.
+      // The above loop handles this since children of root have pd[i] = 0.
     }
 
     // Cache maxTok for use by collectSubtreeTokens (O(1) lookup instead of O(n) scan)
@@ -536,7 +567,25 @@ const NodeProto = {
   // ── Low-level sanz accessors (existing) ──────────────────────
 
   get type() {
-    return TAG_NAMES ? TAG_NAMES[this._ast._nodeTags[this._i]] : String(this._ast._nodeTags[this._i]);
+    // Property memoization: cache the computed type on the instance.
+    // After first access, subsequent reads are O(1) direct property lookups.
+    // Object.defineProperty on the instance shadows the prototype getter.
+    const tagName = TAG_NAMES ? TAG_NAMES[this._ast._nodeTags[this._i]] : String(this._ast._nodeTags[this._i]);
+    let result = tagName;
+    // Remap TSTypeReference to TS*Keyword when it's a built-in keyword type
+    // (no type arguments, and main token text matches a TS keyword type).
+    if (tagName === 'TSTypeReference' && this._ast.nodeRhs(this._i) === NONE) {
+      const ast = this._ast;
+      const tok = ast._mainTokens[this._i];
+      const start = ast._tokStarts[tok];
+      const end = tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length;
+      const text = ast.source.slice(start, end).trim();
+      const kw = _TS_KW_TYPES[text];
+      if (kw) result = kw;
+    }
+    // Memoize: shadow the prototype getter with a direct value property
+    Object.defineProperty(this, 'type', { value: result, configurable: true });
+    return result;
   },
   get tag() {
     return this._ast._nodeTags[this._i];
@@ -594,10 +643,21 @@ const NodeProto = {
    */
   get parent() {
     const pd = this._ast._parentData;
-    if (!pd) return null;
-    const parentIdx = pd[this._i];
-    if (parentIdx === NONE) return null;
-    return nodeView(this._ast, parentIdx);
+    if (!pd) {
+      Object.defineProperty(this, 'parent', { value: null, configurable: true });
+      return null;
+    }
+    // Walk past grouping_expr (ParenthesizedExpression) parents since nodeView
+    // unwraps them — without this skip the parent chain would cycle:
+    //   child → ParenthesizedExpression parent → nodeView unwraps back to child
+    let parentIdx = pd[this._i];
+    while (parentIdx !== NONE && this._ast._nodeTags[parentIdx] === T.grouping_expr) {
+      parentIdx = pd[parentIdx];
+    }
+    const result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
+    // Memoize: shadow the prototype getter with a direct value property
+    Object.defineProperty(this, 'parent', { value: result, configurable: true });
+    return result;
   },
 
   /**
@@ -1029,6 +1089,18 @@ const NodeProto = {
   },
 
   /**
+   * node.static — true for static class members (MethodDefinition, PropertyDefinition).
+   * Returns undefined for non-member nodes.
+   */
+  get static() {
+    const t = this.tag;
+    if (t !== T.method_def && t !== T.getter_def && t !== T.setter_def &&
+        t !== T.constructor_def && t !== T.computed_method_def &&
+        t !== T.computed_getter_def && t !== T.computed_setter_def) return undefined;
+    return _methodFlags(this._ast, this.mainToken).static;
+  },
+
+  /**
    * node.id — name identifier of function/class declaration, or VariableDeclarator pattern.
    */
   get id() {
@@ -1100,7 +1172,21 @@ const NodeProto = {
     if (t === T.getter_def || t === T.computed_getter_def) return 'get';
     if (t === T.setter_def || t === T.computed_setter_def) return 'set';
     if (t === T.constructor_def) return 'constructor';
-    if (t === T.method_def || t === T.computed_method_def) return 'method';
+    if (t === T.method_def || t === T.computed_method_def) {
+      // constructor_def tag should distinguish constructors, but in practice
+      // constructors appear as method_def. Fall back: check key token text.
+      if (t === T.method_def) {
+        const ast = this._ast;
+        const mainTok = this.mainToken;
+        // identifier token (tag 8) with text "constructor", not static
+        if (ast._tokTags[mainTok] === 8 &&
+            ast._rawTokenText(mainTok) === 'constructor' &&
+            !_methodFlags(ast, mainTok).static) {
+          return 'constructor';
+        }
+      }
+      return 'method';
+    }
     if (t === T.property || t === T.shorthand_property || t === T.computed_property) return 'init';
     return null;
   },
@@ -1532,27 +1618,30 @@ function nodeView(ast, index) {
 
 // ── Method flag helpers ──────────────────────────────────────────
 
-const TOK_ASYNC = 44;    // kw_async
-const TOK_STAR  = 89;    // asterisk (generator marker)
+const TOK_ASYNC   = 44;   // kw_async
+const TOK_STATIC  = 46;   // kw_static
+const TOK_STAR    = 89;   // asterisk (generator marker)
 
 /**
- * Scan backwards from the method name token to detect async/generator flags.
+ * Scan backwards from the method name token to detect async/static/generator flags.
  * Method tokens before the name: `static`, `async`, `*`, `get`, `set`
- * Returns { async: bool, generator: bool }.
+ * Returns { async: bool, generator: bool, static: bool }.
  */
 function _methodFlags(ast, mainToken) {
   let isAsync = false;
   let isGenerator = false;
+  let isStatic = false;
   let i = mainToken - 1;
   while (i >= 0) {
     const tag = ast._tokTags[i];
-    if (tag === TOK_STAR) { isGenerator = true; i--; continue; }
-    if (tag === TOK_ASYNC) { isAsync = true; i--; continue; }
-    // static / get / set / other keyword modifiers — skip
+    if (tag === TOK_STAR)   { isGenerator = true; i--; continue; }
+    if (tag === TOK_ASYNC)  { isAsync = true;     i--; continue; }
+    if (tag === TOK_STATIC) { isStatic = true;    i--; continue; }
+    // get / set / other keyword modifiers — skip
     if (tag >= 9 && tag <= 71) { i--; continue; }
     break;
   }
-  return { async: isAsync, generator: isGenerator };
+  return { async: isAsync, generator: isGenerator, static: isStatic };
 }
 
 /**
@@ -1568,4 +1657,23 @@ function reset() {
   _poolIdx = 0;
 }
 
-module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T };
+/**
+ * Given a raw tag name (from the tagNames array) and the node index, return
+ * the effective ESTree type name — remapping TSTypeReference to TS*Keyword
+ * when the node is actually a TypeScript built-in keyword type.
+ *
+ * Used by walkNodes in plugin-runner.js so visitor dispatch uses the same
+ * type names as NodeProto.type.
+ */
+function effectiveTypeName(ast, idx, rawTagName) {
+  if (rawTagName === 'TSTypeReference' && ast.nodeRhs(idx) === NONE) {
+    const tok = ast._mainTokens[idx];
+    const start = ast._tokStarts[tok];
+    const end = tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length;
+    const text = ast.source.slice(start, end).trim();
+    return _TS_KW_TYPES[text] || rawTagName;
+  }
+  return rawTagName;
+}
+
+module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T, effectiveTypeName };

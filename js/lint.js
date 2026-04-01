@@ -15,8 +15,11 @@
 
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
+const { Worker } = require("worker_threads");
 const { parse, getTagNames } = require("./index");
 const { runPlugins } = require("./plugin-runner");
+const { loadPlugin } = require("./load-plugin");
 
 // ── CLI arg parsing ──────────────────────────────────────────────
 
@@ -28,6 +31,7 @@ let formatJson = false;
 let showHelp = false;
 let configPath = null;
 let applyFix = false;
+let numThreads = 1;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -53,6 +57,13 @@ for (let i = 0; i < args.length; i++) {
     formatJson = true;
   } else if (arg === "--fix") {
     applyFix = true;
+  } else if (arg === "--threads") {
+    if (!args[i + 1]) { console.error("--threads: expected number"); process.exit(1); }
+    numThreads = parseInt(args[++i], 10);
+    if (isNaN(numThreads) || numThreads < 1) { console.error("--threads: must be >= 1"); process.exit(1); }
+  } else if (arg.startsWith("--threads=")) {
+    numThreads = parseInt(arg.slice("--threads=".length), 10);
+    if (isNaN(numThreads) || numThreads < 1) { console.error("--threads: must be >= 1"); process.exit(1); }
   } else if (arg === "--help" || arg === "-h") {
     showHelp = true;
   } else if (!arg.startsWith("-")) {
@@ -73,6 +84,7 @@ Options:
                               Auto-detected from cwd if not specified
   --format=json               Output JSON array instead of text
   --fix                       Apply autofixes to files (writes in place)
+  --threads <n>               Worker threads (default: CPU count = ${os.cpus().length})
   --help, -h                  Show this help
 
 Examples:
@@ -93,101 +105,6 @@ if (filePaths.length === 0) {
   process.exit(1);
 }
 
-// ── Plugin loading ───────────────────────────────────────────────
-
-/**
- * Resolve a package name to its directory, searching cwd first.
- */
-function resolvePackageDir(pkgName) {
-  const searchPaths = [
-    path.join(process.cwd(), "node_modules"),
-    path.join(path.dirname(__filename), "node_modules"),
-  ];
-  for (const base of searchPaths) {
-    const p = path.join(base, pkgName);
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
-}
-
-/**
- * Load an ESLint plugin package and return an array of plugin objects
- * compatible with runPlugins: [{ meta: { name }, create }]
- *
- * Handles two shapes:
- *   - Standard plugins: pkg.rules = { 'rule-name': { meta, create } }
- *   - ESLint core:      eslint/lib/rules/<name>.js files (v10 doesn't export rules directly)
- */
-function loadPlugin(pkgName) {
-  const resolveOpts = {
-    paths: [process.cwd(), path.join(path.dirname(__filename), "node_modules"), path.dirname(__filename)],
-  };
-
-  // ── ESLint core: scan lib/rules/*.js ────────────────────────
-  // ESLint v10 added package exports that block subpath requires.
-  // We resolve the package root via its main entry and navigate from there.
-  if (pkgName === "eslint") {
-    let rulesDir;
-    try {
-      const eslintMain = require.resolve("eslint", resolveOpts);
-      rulesDir = path.join(path.dirname(eslintMain), "..", "lib", "rules");
-    } catch (e) {
-      console.error(`error: cannot load "eslint" core: ${e.message}`);
-      process.exit(1);
-    }
-    const plugins = [];
-    for (const file of fs.readdirSync(rulesDir)) {
-      if (!file.endsWith(".js")) continue;
-      const ruleName = file.slice(0, -3);
-      if (ruleFilters.size > 0 && !ruleFilters.has(ruleName) && !ruleFilters.has(`eslint/${ruleName}`)) continue;
-      try {
-        const rule = require(path.join(rulesDir, file));
-        if (typeof rule.create !== "function") continue;
-        plugins.push({
-          meta: { name: ruleName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema },
-          create: rule.create,
-        });
-      } catch { /* skip broken rules */ }
-    }
-    return plugins;
-  }
-
-  // ── Standard ESLint plugin ───────────────────────────────────
-  let pkg;
-  try {
-    const resolved = require.resolve(pkgName, resolveOpts);
-    pkg = require(resolved);
-  } catch {
-    try {
-      pkg = require(pkgName);
-    } catch (e) {
-      console.error(`error: cannot load plugin "${pkgName}": ${e.message}`);
-      console.error(`       Install it with: npm install --save-dev ${pkgName}`);
-      process.exit(1);
-    }
-  }
-
-  const rules = pkg.rules || pkg.default?.rules || {};
-  const plugins = [];
-
-  for (const [ruleName, rule] of Object.entries(rules)) {
-    const create = rule.create || rule;
-    if (typeof create !== "function") continue;
-    const fullName = `${pkgName}/${ruleName}`;
-    if (ruleFilters.size > 0 && !ruleFilters.has(ruleName) && !ruleFilters.has(fullName)) continue;
-    plugins.push({
-      meta: {
-        name: fullName,
-        defaultOptions: rule.meta?.defaultOptions,
-        schema: rule.meta?.schema,
-      },
-      create,
-    });
-  }
-
-  return plugins;
-}
-
 // ── File discovery ───────────────────────────────────────────────
 
 const JS_EXTS = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]);
@@ -202,7 +119,7 @@ function discoverFiles(pathArg) {
         if (entry.startsWith(".") || entry === "node_modules") continue;
         walk(path.join(p, entry));
       }
-    } else if (stat.isFile() && JS_EXTS.has(path.extname(p))) {
+    } else if (stat.isFile() && JS_EXTS.has(path.extname(p)) && !p.endsWith(".d.ts") && !p.endsWith(".d.mts") && !p.endsWith(".d.cts")) {
       results.push(p);
     }
   }
@@ -212,21 +129,11 @@ function discoverFiles(pathArg) {
 
 // ── Config loading ───────────────────────────────────────────────
 
-/**
- * Parse ESLint rule config value → options array (strips severity).
- *   "error"               → []
- *   ["warn", "always"]    → ["always"]
- *   ["error", {code:100}] → [{code:100}]
- */
 function parseRuleOptions(value) {
   if (Array.isArray(value)) return value.slice(1);
   return [];
 }
 
-/**
- * Load rule options from an .eslintrc.json-style config file.
- * Returns { ruleName: optionsArray } map.
- */
 function loadRuleConfig(cfgPath) {
   let raw;
   try {
@@ -245,7 +152,6 @@ function loadRuleConfig(cfgPath) {
   const rules = cfg.rules || {};
   const result = {};
   for (const [name, value] of Object.entries(rules)) {
-    // Skip "off" rules (severity 0 or "off")
     const severity = Array.isArray(value) ? value[0] : value;
     if (severity === 0 || severity === "off") continue;
     result[name] = parseRuleOptions(value);
@@ -268,14 +174,38 @@ if (configPath) {
   }
 }
 
+// ── Apply fixes helper ───────────────────────────────────────────
+
+function applyFixes(src, fixes) {
+  if (!fixes || fixes.length === 0) return src;
+  const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
+  let result = "";
+  let lastIndex = 0;
+  for (const fix of sorted) {
+    const [start, end] = fix.range;
+    if (start < lastIndex) continue;
+    result += src.slice(lastIndex, start) + fix.text;
+    lastIndex = end;
+  }
+  return result + src.slice(lastIndex);
+}
+
 // ── Main ─────────────────────────────────────────────────────────
 
 const tagNames = getTagNames();
+const typeAware = pluginNames.some(n => n.includes("typescript-eslint"));
 
-// Load all plugins
+// Load plugins in main thread (for validation + single-file path)
 const allPlugins = [];
 for (const name of pluginNames) {
-  const loaded = loadPlugin(name);
+  let loaded;
+  try {
+    loaded = loadPlugin(name, ruleFilters);
+  } catch (e) {
+    console.error(`error: cannot load plugin "${name}": ${e.message}`);
+    console.error(`       Install it with: npm install --save-dev ${name}`);
+    process.exit(1);
+  }
   if (loaded.length === 0) {
     const filter = ruleFilters.size > 0 ? ` (filtered to: ${[...ruleFilters].join(", ")})` : "";
     console.error(`warning: plugin "${name}" has no applicable rules${filter}`);
@@ -299,127 +229,329 @@ if (allFiles.length === 0) {
   process.exit(1);
 }
 
-/**
- * Apply a list of fix objects to source text.
- * Fixes are { range: [start, end], text: string }.
- * Overlapping fixes are skipped (first one wins).
- */
-function applyFixes(src, fixes) {
-  if (!fixes || fixes.length === 0) return src;
-  // Sort by start position
-  const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
-  let result = '';
-  let lastIndex = 0;
-  for (const fix of sorted) {
-    const [start, end] = fix.range;
-    if (start < lastIndex) continue; // overlapping, skip
-    result += src.slice(lastIndex, start) + fix.text;
-    lastIndex = end;
+// ── Output helpers ───────────────────────────────────────────────
+
+function printViolations(file, violations) {
+  if (violations.length === 0) return;
+  console.log(`\n${file}`);
+  for (const r of violations) {
+    const line = r.loc?.start?.line ?? "?";
+    const col = r.loc?.start?.column != null ? r.loc.start.column + 1 : "?";
+    const rule = r.ruleId ? `  ${r.ruleId}` : "";
+    const fixable = r.fix ? " [fixable]" : "";
+    console.log(`  ${String(line).padStart(4)}:${String(col).padEnd(4)} error  ${r.message}${rule}${fixable}`);
   }
-  result += src.slice(lastIndex);
-  return result;
 }
 
-// Lint
-const jsonResults = [];
-let totalViolations = 0;
-let totalFiles = 0;
-let errorFiles = 0;
-let totalFixed = 0;
+// ── Lint: parallel (multi-file) or sequential (single-file) ──────
 
-for (const file of allFiles) {
-  let src;
-  try {
-    src = fs.readFileSync(file, "utf8");
-  } catch (e) {
-    console.error(`error reading ${file}: ${e.message}`);
-    errorFiles++;
-    continue;
+/**
+ * Split array into at most N roughly equal chunks.
+ */
+function splitChunks(arr, n) {
+  const chunks = [];
+  const size = Math.ceil(arr.length / n);
+  for (let i = 0; i < arr.length; i += size) {
+    chunks.push(arr.slice(i, i + size));
   }
+  return chunks;
+}
 
-  let ast;
-  try {
-    ast = parse(src, { filename: file });
-  } catch (e) {
-    if (formatJson) {
-      jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
-    } else {
-      console.error(`${file}: parse error: ${e.message}`);
-    }
-    errorFiles++;
-    continue;
+/**
+ * Run workers and collect results in original file order.
+ * Returns array of { file, violations?, fixed?, readError?, parseError?, pluginError? }
+ *
+ * Worker partitioning strategy:
+ * - When files >> rules: split files across workers (file-parallel, default)
+ * - When rules >> files: split rules across workers (rule-parallel)
+ *   Each worker runs a subset of rules on ALL files, results are merged.
+ */
+function runParallel(files, threads) {
+  // Heuristic: use rule-parallel when there are many rules relative to files
+  // and enough workers to benefit from splitting rules.
+  const ruleCount = allPlugins.length;
+  const useRuleParallel = ruleCount >= threads * 2 && files.length <= threads;
+
+  if (useRuleParallel) {
+    return _runRuleParallel(files, threads, ruleCount);
   }
+  return _runFileParallel(files, threads);
+}
 
-  let reports;
-  try {
-    reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig });
-  } catch (e) {
-    if (formatJson) {
-      jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });
-    } else {
-      console.error(`${file}: plugin error: ${e.message}`);
-    }
-    errorFiles++;
-    continue;
-  }
+/**
+ * File-parallel: each worker gets a chunk of files, runs all rules.
+ */
+function _runFileParallel(files, threads) {
+  return new Promise((resolve, reject) => {
+    const chunks = splitChunks(files, threads);
+    const allResults = new Array(chunks.length);
+    let done = 0;
 
-  const violations = reports.filter(r => !r.message.startsWith("Plugin error:"));
-  totalViolations += violations.length;
-  totalFiles++;
-
-  // Apply fixes if requested
-  if (applyFix) {
-    const allFixes = violations.flatMap(r => r.fix || []);
-    if (allFixes.length > 0) {
-      const fixed = applyFixes(src, allFixes);
-      if (fixed !== src) {
-        try {
-          fs.writeFileSync(file, fixed, "utf8");
-          totalFixed++;
-          if (!formatJson) console.log(`${file}: fixed ${allFixes.length} issue(s)`);
-        } catch (e) {
-          console.error(`error writing ${file}: ${e.message}`);
+    for (let i = 0; i < chunks.length; i++) {
+      const idx = i;
+      const worker = new Worker(path.join(__dirname, "lint-worker.js"), {
+        workerData: {
+          files: chunks[idx],
+          pluginNames,
+          ruleFilters: [...ruleFilters],
+          ruleConfig,
+          applyFix,
+          typeAware,
+        },
+      });
+      worker.once("message", (results) => {
+        if (results && results.fatalError) {
+          reject(new Error(results.fatalError));
+          return;
         }
+        allResults[idx] = results;
+        if (++done === chunks.length) {
+          resolve(allResults.flat());
+        }
+      });
+      worker.once("error", reject);
+      worker.once("exit", (code) => {
+        if (code !== 0 && allResults[idx] === undefined) {
+          reject(new Error(`Worker ${idx} exited with code ${code}`));
+        }
+      });
+    }
+  });
+}
+
+/**
+ * Rule-parallel: each worker gets ALL files but a subset of rules.
+ * Results are merged per-file across workers.
+ * Useful when few files but many rules (e.g., linting a single file
+ * with 200+ ESLint rules).
+ */
+function _runRuleParallel(files, threads, ruleCount) {
+  return new Promise((resolve, reject) => {
+    // Split rule names into chunks for each worker
+    const allRuleNames = [...ruleFilters];
+    // If no explicit filters, we need to partition plugin names instead
+    // For simplicity, split the ruleFilters set. If it's empty (all rules),
+    // fall back to file-parallel since we can't easily partition without filters.
+    if (allRuleNames.length === 0) {
+      return _runFileParallel(files, threads).then(resolve, reject);
+    }
+    const ruleChunks = splitChunks(allRuleNames, threads);
+    const allResults = new Array(ruleChunks.length);
+    let done = 0;
+
+    for (let i = 0; i < ruleChunks.length; i++) {
+      const idx = i;
+      const worker = new Worker(path.join(__dirname, "lint-worker.js"), {
+        workerData: {
+          files, // ALL files
+          pluginNames,
+          ruleFilters: ruleChunks[idx], // subset of rules
+          ruleConfig,
+          applyFix: false, // don't apply fixes in rule-parallel (conflicts)
+          typeAware,
+        },
+      });
+      worker.once("message", (results) => {
+        if (results && results.fatalError) {
+          reject(new Error(results.fatalError));
+          return;
+        }
+        allResults[idx] = results;
+        if (++done === ruleChunks.length) {
+          // Merge results: combine violations from all workers per file
+          const merged = new Map();
+          for (const workerResults of allResults) {
+            for (const r of workerResults) {
+              const existing = merged.get(r.file);
+              if (!existing) {
+                merged.set(r.file, r);
+              } else {
+                // Merge violations
+                if (r.violations) {
+                  existing.violations = (existing.violations || []).concat(r.violations);
+                }
+              }
+            }
+          }
+          // Return in original file order
+          resolve(files.map(f => merged.get(f) || { file: f, violations: [] }));
+        }
+      });
+      worker.once("error", reject);
+      worker.once("exit", (code) => {
+        if (code !== 0 && allResults[idx] === undefined) {
+          reject(new Error(`Worker ${idx} exited with code ${code}`));
+        }
+      });
+    }
+  });
+}
+
+async function main() {
+  const jsonResults = [];
+  let totalViolations = 0;
+  let totalFiles = 0;
+  let errorFiles = 0;
+  let totalFixed = 0;
+
+  const useWorkers = numThreads > 1 && allFiles.length > 1;
+
+  if (useWorkers) {
+    // ── Parallel path ──────────────────────────────────────────
+    let workerResults;
+    try {
+      workerResults = await runParallel(allFiles, Math.min(numThreads, allFiles.length));
+    } catch (e) {
+      console.error(`error: ${e.message}`);
+      process.exit(1);
+    }
+
+    for (const result of workerResults) {
+      const { file, violations, fixed, readError, parseError, pluginError, writeError } = result;
+
+      if (readError) {
+        console.error(`error reading ${file}: ${readError}`);
+        errorFiles++;
+        continue;
+      }
+      if (parseError) {
+        if (formatJson) {
+          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${parseError}` }] });
+        } else {
+          console.error(`${file}: parse error: ${parseError}`);
+        }
+        errorFiles++;
+        continue;
+      }
+      if (pluginError) {
+        if (formatJson) {
+          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${pluginError}` }] });
+        } else {
+          console.error(`${file}: plugin error: ${pluginError}`);
+        }
+        errorFiles++;
+        continue;
+      }
+
+      totalViolations += violations.length;
+      totalFiles++;
+      if (fixed) totalFixed++;
+
+      if (applyFix && fixed && !formatJson) {
+        console.log(`${file}: fixed issues`);
+      }
+      if (writeError) {
+        console.error(`error writing ${file}: ${writeError}`);
+      }
+
+      if (formatJson) {
+        jsonResults.push({
+          filePath: file,
+          messages: violations.map(r => ({
+            ruleId: r.ruleId || null,
+            severity: 2,
+            message: r.message,
+            line: r.loc?.start?.line ?? null,
+            column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
+            fix: r.fix ? r.fix : undefined,
+          })),
+        });
+      } else {
+        printViolations(file, violations);
+      }
+    }
+  } else {
+    // ── Sequential path ────────────────────────────────────────
+    for (const file of allFiles) {
+      let src;
+      try {
+        src = fs.readFileSync(file, "utf8");
+      } catch (e) {
+        console.error(`error reading ${file}: ${e.message}`);
+        errorFiles++;
+        continue;
+      }
+
+      let ast;
+      try {
+        ast = parse(src, { filename: file });
+      } catch (e) {
+        if (formatJson) {
+          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
+        } else {
+          console.error(`${file}: parse error: ${e.message}`);
+        }
+        errorFiles++;
+        continue;
+      }
+
+      let reports;
+      try {
+        reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig, typeAware });
+      } catch (e) {
+        if (formatJson) {
+          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });
+        } else {
+          console.error(`${file}: plugin error: ${e.message}`);
+        }
+        errorFiles++;
+        continue;
+      }
+
+      const violations = reports.filter(r => !r.message.startsWith("Plugin error:"));
+      totalViolations += violations.length;
+      totalFiles++;
+
+      if (applyFix) {
+        const fixes = violations.flatMap(r => r.fix || []);
+        if (fixes.length > 0) {
+          const fixed = applyFixes(src, fixes);
+          if (fixed !== src) {
+            try {
+              fs.writeFileSync(file, fixed, "utf8");
+              totalFixed++;
+              if (!formatJson) console.log(`${file}: fixed ${fixes.length} issue(s)`);
+            } catch (e) {
+              console.error(`error writing ${file}: ${e.message}`);
+            }
+          }
+        }
+      }
+
+      if (formatJson) {
+        jsonResults.push({
+          filePath: file,
+          messages: violations.map(r => ({
+            ruleId: r.ruleId || null,
+            severity: 2,
+            message: r.message,
+            line: r.loc?.start?.line ?? null,
+            column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
+            fix: r.fix ? r.fix : undefined,
+          })),
+        });
+      } else {
+        printViolations(file, violations);
       }
     }
   }
 
   if (formatJson) {
-    jsonResults.push({
-      filePath: file,
-      messages: violations.map(r => ({
-        ruleId: r.ruleId || null,
-        severity: 2,
-        message: r.message,
-        line: r.loc?.start?.line ?? null,
-        column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
-        fix: r.fix ? r.fix : undefined,
-      })),
-    });
+    console.log(JSON.stringify(jsonResults, null, 2));
   } else {
-    if (violations.length > 0) {
-      console.log(`\n${file}`);
-      for (const r of violations) {
-        const line = r.loc?.start?.line ?? "?";
-        const col = r.loc?.start?.column != null ? r.loc.start.column + 1 : "?";
-        const rule = r.ruleId ? `  ${r.ruleId}` : "";
-        const fixable = r.fix ? " [fixable]" : "";
-        console.log(`  ${String(line).padStart(4)}:${String(col).padEnd(4)} error  ${r.message}${rule}${fixable}`);
-      }
+    if (totalViolations > 0 || errorFiles > 0) {
+      const fixNote = totalFixed > 0 ? `, ${totalFixed} fixed` : "";
+      console.log(`\n✖ ${totalViolations} problem${totalViolations !== 1 ? "s" : ""} (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);
+    } else {
+      const fixNote = totalFixed > 0 ? ` (${totalFixed} fixed)` : "";
+      console.log(`✓ 0 problems (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);
     }
   }
+
+  process.exit(totalViolations > 0 || errorFiles > 0 ? 1 : 0);
 }
 
-if (formatJson) {
-  console.log(JSON.stringify(jsonResults, null, 2));
-} else {
-    if (totalViolations > 0 || errorFiles > 0) {
-    const fixNote = totalFixed > 0 ? `, ${totalFixed} fixed` : '';
-    console.log(`\n✖ ${totalViolations} problem${totalViolations !== 1 ? "s" : ""} (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);
-  } else {
-    const fixNote = totalFixed > 0 ? ` (${totalFixed} fixed)` : '';
-    console.log(`✓ 0 problems (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);
-  }
-}
-
-process.exit(totalViolations > 0 || errorFiles > 0 ? 1 : 0);
+main().catch(e => {
+  console.error(`fatal: ${e.message}`);
+  process.exit(1);
+});

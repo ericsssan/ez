@@ -435,10 +435,11 @@ pub const Tag = enum(u8) {
 
 };
 
-/// Token with its tag and start position in source.
+/// Token with its tag, start position, and byte length in source.
 pub const Token = struct {
     tag: Tag,
     start: u32,
+    len: u32,
 };
 
 /// Keyword lookup map: text -> TokenTag

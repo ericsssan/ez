@@ -92,15 +92,27 @@ function parse(source, options = {}) {
       ? detectLang(options.filename)
       : LANG.js;
 
-  // Encode source as UTF-8 into the buffer tail
-  const encoded = _encoder.encode(source);
-  const sourceLen = encoded.byteLength;
-
-  const buf = ensureBuffer(sourceLen);
-  const sourceStart = buf.byteLength - sourceLen;
-
-  // Write source at the tail of the buffer
-  new Uint8Array(buf).set(encoded, sourceStart);
+  // Fast path: encode directly into the buffer tail using encodeInto() (zero allocation).
+  // We reserve source.length + 128 bytes — enough for files that are mostly ASCII
+  // (each non-ASCII BMP char adds at most 2 extra bytes; 128 bytes covers ~64 such chars).
+  // For files with more non-ASCII we fall back to encode().
+  let sourceLen, buf, sourceStart;
+  const reservedLen = source.length + 128;
+  buf = ensureBuffer(reservedLen);
+  sourceStart = buf.byteLength - reservedLen;
+  const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
+  if (read === source.length) {
+    // Fast path: all chars encoded in-place — no allocation.
+    sourceLen = written;
+  } else {
+    // Source has too many non-ASCII chars for the reserved space.
+    // Fall back to encode() which allocates but handles all Unicode correctly.
+    const encoded = _encoder.encode(source);
+    sourceLen = encoded.byteLength;
+    buf = ensureBuffer(sourceLen);
+    sourceStart = buf.byteLength - sourceLen;
+    new Uint8Array(buf).set(encoded, sourceStart);
+  }
 
   // Call native parse
   const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
