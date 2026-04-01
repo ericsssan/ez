@@ -26,6 +26,7 @@ const ruleFilters = new Set();
 const filePaths = [];
 let formatJson = false;
 let showHelp = false;
+let configPath = null;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -42,6 +43,11 @@ for (let i = 0; i < args.length; i++) {
     ruleFilters.add(args[++i]);
   } else if (arg.startsWith("--rule=")) {
     ruleFilters.add(arg.slice("--rule=".length));
+  } else if (arg === "--config" || arg === "-c") {
+    if (!args[i + 1]) { console.error("--config: expected path"); process.exit(1); }
+    configPath = args[++i];
+  } else if (arg.startsWith("--config=")) {
+    configPath = arg.slice("--config=".length);
   } else if (arg === "--format=json") {
     formatJson = true;
   } else if (arg === "--help" || arg === "-h") {
@@ -55,16 +61,19 @@ for (let i = 0; i < args.length; i++) {
 }
 
 if (showHelp || (pluginNames.length === 0 && filePaths.length === 0)) {
-  console.log(`Usage: node js/lint.js --eslint-plugin <pkg> [--rule <name>] [--format=json] <paths...>
+  console.log(`Usage: node js/lint.js --eslint-plugin <pkg> [options] <paths...>
 
 Options:
   --eslint-plugin, -p <pkg>   Load ESLint plugin (repeatable)
   --rule, -r <name>           Only run rules matching this name (repeatable)
+  --config, -c <file>         ESLint config file for rule options (.eslintrc.json)
+                              Auto-detected from cwd if not specified
   --format=json               Output JSON array instead of text
   --help, -h                  Show this help
 
 Examples:
-  node js/lint.js --eslint-plugin eslint-plugin-unicorn src/
+  node js/lint.js --eslint-plugin eslint src/
+  node js/lint.js --eslint-plugin eslint --rule eqeqeq --config .eslintrc.json src/
   node js/lint.js --eslint-plugin @typescript-eslint/eslint-plugin --rule no-unused-vars .
 `);
   process.exit(0);
@@ -197,6 +206,64 @@ function discoverFiles(pathArg) {
   return results;
 }
 
+// ── Config loading ───────────────────────────────────────────────
+
+/**
+ * Parse ESLint rule config value → options array (strips severity).
+ *   "error"               → []
+ *   ["warn", "always"]    → ["always"]
+ *   ["error", {code:100}] → [{code:100}]
+ */
+function parseRuleOptions(value) {
+  if (Array.isArray(value)) return value.slice(1);
+  return [];
+}
+
+/**
+ * Load rule options from an .eslintrc.json-style config file.
+ * Returns { ruleName: optionsArray } map.
+ */
+function loadRuleConfig(cfgPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(cfgPath, "utf8");
+  } catch (e) {
+    console.error(`error: cannot read config "${cfgPath}": ${e.message}`);
+    process.exit(1);
+  }
+  let cfg;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error(`error: invalid JSON in "${cfgPath}": ${e.message}`);
+    process.exit(1);
+  }
+  const rules = cfg.rules || {};
+  const result = {};
+  for (const [name, value] of Object.entries(rules)) {
+    // Skip "off" rules (severity 0 or "off")
+    const severity = Array.isArray(value) ? value[0] : value;
+    if (severity === 0 || severity === "off") continue;
+    result[name] = parseRuleOptions(value);
+  }
+  return result;
+}
+
+// Auto-detect config: --config flag, then cwd/.eslintrc.json
+let ruleConfig = {};
+if (configPath) {
+  ruleConfig = loadRuleConfig(configPath);
+} else {
+  const autoDetect = [".eslintrc.json", ".eslintrc", "eslint.config.json"];
+  for (const name of autoDetect) {
+    const p = path.join(process.cwd(), name);
+    if (fs.existsSync(p)) {
+      ruleConfig = loadRuleConfig(p);
+      break;
+    }
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────
 
 const tagNames = getTagNames();
@@ -259,7 +326,7 @@ for (const file of allFiles) {
 
   let reports;
   try {
-    reports = runPlugins(ast, allPlugins, { filename: file, tagNames });
+    reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig });
   } catch (e) {
     if (formatJson) {
       jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });

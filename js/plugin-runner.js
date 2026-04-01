@@ -976,28 +976,35 @@ class RuleContext {
  * Build a reverse mapping from ESTree type name → list of visitor functions.
  * This enables efficient single-pass traversal.
  */
-function buildVisitorMap(plugins, context) {
+function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const map = new Map();
 
   for (const plugin of plugins) {
     const ruleId = plugin.meta?.name || "unknown";
     const ruleMeta = plugin.meta || null;
-    const ruleOptions = plugin.meta?.defaultOptions ?? [];
-    // Apply meta.defaultOptions so rules can safely destructure context.options
+    // Rule config keys can be the full name (e.g. "eslint/eqeqeq") or short name ("eqeqeq").
+    const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
+    const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
+    const ruleOptions = configured !== undefined ? configured : (plugin.meta?.defaultOptions ?? []);
+    // Apply options so rules can safely destructure context.options in create()
     context.options = ruleOptions;
     let visitors;
     try {
       visitors = plugin.create(context);
+    } catch (err) {
+      // Rule failed to initialize — skip it
+      context.options = [];
+      continue;
     } finally {
       context.options = [];
     }
+    if (!visitors || typeof visitors !== 'object') continue;
     for (const [visitorKey, handler] of Object.entries(visitors)) {
+      if (typeof handler !== 'function') continue;
       const isExit = visitorKey.endsWith(':exit');
       const typeName = isExit ? visitorKey.slice(0, -5) : visitorKey;
       const mapKey = isExit ? typeName + ':exit' : typeName;
-      if (!map.has(mapKey)) {
-        map.set(mapKey, []);
-      }
+      if (!map.has(mapKey)) map.set(mapKey, []);
       map.get(mapKey).push({ handler, ruleId, ruleMeta, ruleOptions });
     }
   }
@@ -1186,14 +1193,14 @@ function walkNodes(ast, visitorMap, context, tagNames) {
  *   }
  */
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {} } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
   }
 
   const context = new RuleContext(ast, filename, ast.source);
-  const visitorMap = buildVisitorMap(plugins, context);
+  const visitorMap = buildVisitorMap(plugins, context, ruleConfig);
 
   walkNodes(ast, visitorMap, context, tagNames);
 
