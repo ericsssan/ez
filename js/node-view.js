@@ -272,6 +272,41 @@ class AstView {
     };
   }
 
+  /**
+   * Build a synthetic Literal node from a token index (for string/number literals).
+   * Used by ImportDeclaration.source, ExportDeclaration.source, etc.
+   */
+  _syntheticLiteral(tokIdx) {
+    const start = this._tokStarts[tokIdx];
+    const src = this.source;
+    let end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
+    while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+    const raw = src.slice(start, end);
+    // Decode the value: strip quotes for strings
+    let value = raw;
+    if ((raw.startsWith('"') || raw.startsWith("'") || raw.startsWith('`')) && raw.length >= 2) {
+      value = raw.slice(1, -1).replace(/\\(.)/g, (_, c) => c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '\r' : c);
+    } else if (!isNaN(Number(raw))) {
+      value = Number(raw);
+    }
+    const li = this._findLineIdx(start);
+    const eli = this._findLineIdx(end);
+    const ls = this._lineStarts();
+    return {
+      type: 'Literal',
+      value,
+      raw,
+      start,
+      end,
+      range: [start, end],
+      loc: {
+        start: { line: li + 1, column: start - ls[li] },
+        end: { line: eli + 1, column: end - ls[eli] },
+      },
+      mainToken: tokIdx,
+    };
+  }
+
   // ── ExtraData struct accessors ─────────────────────────────────
   // Each matches the Zig ExtraData struct layout (sequential u32 fields).
 
@@ -1301,11 +1336,11 @@ const NodeProto = {
     const ast = this._ast;
     if (t === T.import_decl) {
       const d = ast.extraImportData(ast.nodeLhs(this._i));
-      return d.source === NONE ? null : ast._syntheticId(d.source);
+      return d.source === NONE ? null : ast._syntheticLiteral(d.source);
     }
     if (t === T.export_all) {
       const tokIdx = ast.nodeLhs(this._i);
-      return tokIdx === NONE ? null : ast._syntheticId(tokIdx);
+      return tokIdx === NONE ? null : ast._syntheticLiteral(tokIdx);
     }
     return null;
   },
@@ -1335,7 +1370,9 @@ const NodeProto = {
    */
   get imported() {
     if (this.tag !== T.import_specifier) return null;
-    return this._ast._syntheticId(this._ast.nodeLhs(this._i));
+    const syn = this._ast._syntheticId(this._ast.nodeLhs(this._i));
+    syn.parent = this;
+    return syn;
   },
 
   /**
@@ -1344,7 +1381,9 @@ const NodeProto = {
    */
   get exported() {
     if (this.tag !== T.export_specifier) return null;
-    return this._ast._syntheticId(this._ast.nodeRhs(this._i));
+    const syn = this._ast._syntheticId(this._ast.nodeRhs(this._i));
+    syn.parent = this;
+    return syn;
   },
 
   /**
@@ -1401,6 +1440,60 @@ const NodeProto = {
       start: { line: startLine, column: startCol },
       end: { line: elo + 1, column: end - ls[elo] },
     };
+  },
+
+  /**
+   * node.tokens — all tokens in the file as ESLint token objects.
+   * Only meaningful on Program nodes, but accessible from any node.
+   * Cached on the AstView to avoid repeated builds.
+   */
+  get tokens() {
+    const ast = this._ast;
+    if (ast._tokensCache) return ast._tokensCache;
+    const src = ast.source;
+    const tags = ast._tokTags;
+    const starts = ast._tokStarts;
+    const count = ast.tokenCount;
+    const ls = ast._lineStarts();
+    const result = [];
+    for (let i = 0; i < count; i++) {
+      const tag = tags[i];
+      if (tag === 131) continue; // skip EOF
+      const start = starts[i];
+      let end = i + 1 < count ? starts[i + 1] : src.length;
+      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+      const value = src.slice(start, end);
+      // Map tag to ESLint token type
+      let type;
+      if (tag <= 1) type = 'Numeric';
+      else if (tag === 2) type = 'String';
+      else if (tag <= 6) type = 'Template';
+      else if (tag === 7) type = 'RegularExpression';
+      else if (tag === 8) type = 'Identifier';
+      else if (tag <= 71) type = 'Keyword';
+      else type = 'Punctuator';
+      // Compute loc
+      let lo = 0, hi = ls.length - 1;
+      while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ls[m] <= start) lo = m; else hi = m - 1; }
+      const startLine = lo + 1, startCol = start - ls[lo];
+      let elo = 0, ehi = ls.length - 1;
+      while (elo < ehi) { const m = (elo + ehi + 1) >> 1; if (ls[m] <= end) elo = m; else ehi = m - 1; }
+      result.push({
+        type, value, range: [start, end],
+        loc: { start: { line: startLine, column: startCol }, end: { line: elo + 1, column: end - ls[elo] } },
+        mainToken: i,
+      });
+    }
+    ast._tokensCache = result;
+    return result;
+  },
+
+  /** node.comments — empty array (sanz doesn't track comments yet). Writable so rules can set it. */
+  get comments() {
+    return this._comments || [];
+  },
+  set comments(v) {
+    this._comments = v;
   },
 };
 

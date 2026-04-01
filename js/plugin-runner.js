@@ -896,6 +896,32 @@ class SourceCode {
     const line = _findLine(ls, idx);
     return { line, column: idx - ls[line - 1] };
   }
+
+  /**
+   * Returns ancestors of node from root to parent (not including node itself).
+   * Compatible with ESLint v8+ sourceCode.getAncestors(node).
+   */
+  getAncestors(node) {
+    const pd = this._ast._parentData;
+    if (!pd || !node || node._i === undefined) return [];
+    const ancestors = [];
+    let parentIdx = pd[node._i];
+    while (parentIdx !== NONE && parentIdx !== undefined && parentIdx < this._ast.nodeCount) {
+      ancestors.unshift(nodeView(this._ast, parentIdx));
+      parentIdx = pd[parentIdx];
+    }
+    return ancestors;
+  }
+
+  /** Alias: same as getTokenBefore (we don't separate comments from tokens). */
+  getTokenOrCommentBefore(node, filterOrOpts) {
+    return this.getTokenBefore(node, filterOrOpts);
+  }
+
+  /** Alias: same as getTokenAfter (we don't separate comments from tokens). */
+  getTokenOrCommentAfter(node, filterOrOpts) {
+    return this.getTokenAfter(node, filterOrOpts);
+  }
 }
 
 // ── Context ─────────────────────────────────────────────────────
@@ -967,6 +993,30 @@ class RuleContext {
 
   getFilename() {
     return this._filename;
+  }
+
+  /**
+   * Returns ancestor nodes of the current node (root → parent, not including current node).
+   * Compatible with ESLint v7 context.getAncestors().
+   */
+  getAncestors() {
+    return this.sourceCode.getAncestors(nodeView(this._ast, this._currentNodeIdx));
+  }
+
+  /**
+   * Mark a variable as used in the current scope (stub — used by some rules).
+   */
+  markVariableAsUsed(name) {
+    // No-op stub; real implementation would mark the variable in scope analysis.
+    return false;
+  }
+
+  getPhysicalFilename() {
+    return this._filename;
+  }
+
+  getCwd() {
+    return process.cwd();
   }
 }
 
@@ -1118,6 +1168,7 @@ function walkNodes(ast, visitorMap, context, tagNames) {
       context._currentRule = handlers[h].ruleId;
       context._currentRuleMeta = handlers[h].ruleMeta;
       context.options = handlers[h].ruleOptions;
+      context._currentNodeIdx = nodeIdx;
       try {
         handlers[h].handler(node);
       } catch (err) {
