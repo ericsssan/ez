@@ -813,70 +813,48 @@ const NodeProto = {
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
-    // BlockStatement — lhs=range.start, rhs=range.end (stored directly)
+    let result = null;
     if (t === T.block_stmt) {
-      return ast._nodesFromRange(lhs, rhs);
-    }
-    // if/while: body is rhs
-    if (t === T.if_stmt || t === T.while_stmt) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
-    }
-    // do-while: body is lhs
-    if (t === T.do_while_stmt) {
-      return lhs === NONE ? null : nodeView(ast, lhs);
-    }
-    // for/for-in/for-of: body in extra
-    if (t === T.for_stmt) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
-    }
-    if (t === T.for_in_stmt || t === T.for_of_stmt || t === T.for_await_of_stmt) {
+      result = ast._nodesFromRange(lhs, rhs);
+    } else if (t === T.if_stmt || t === T.while_stmt) {
+      result = rhs === NONE ? null : nodeView(ast, rhs);
+    } else if (t === T.do_while_stmt) {
+      result = lhs === NONE ? null : nodeView(ast, lhs);
+    } else if (t === T.for_stmt) {
+      result = rhs === NONE ? null : nodeView(ast, rhs);
+    } else if (t === T.for_in_stmt || t === T.for_of_stmt || t === T.for_await_of_stmt) {
       const d = ast.extraForInOfData(lhs);
-      return d.body === NONE ? null : nodeView(ast, d.body);
-    }
-    // labeled statement
-    if (t === T.labeled_stmt) {
-      return lhs === NONE ? null : nodeView(ast, lhs);
-    }
-    // with statement
-    if (t === T.with_stmt) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
-    }
-    // function/arrow bodies via FnData/ArrowData
-    if (t === T.fn_decl || t === T.async_fn_decl ||
+      result = d.body === NONE ? null : nodeView(ast, d.body);
+    } else if (t === T.labeled_stmt) {
+      result = lhs === NONE ? null : nodeView(ast, lhs);
+    } else if (t === T.with_stmt) {
+      result = rhs === NONE ? null : nodeView(ast, rhs);
+    } else if (t === T.fn_decl || t === T.async_fn_decl ||
         t === T.generator_fn_decl || t === T.async_generator_fn_decl ||
         t === T.fn_expr || t === T.async_fn_expr ||
         t === T.generator_fn_expr || t === T.async_generator_fn_expr) {
       const d = ast.extraFnData(lhs);
-      return d.body === NONE ? null : nodeView(ast, d.body);
-    }
-    if (t === T.arrow_fn || t === T.async_arrow_fn) {
+      result = d.body === NONE ? null : nodeView(ast, d.body);
+    } else if (t === T.arrow_fn || t === T.async_arrow_fn) {
       const d = ast.extraArrowData(lhs);
-      return d.body === NONE ? null : nodeView(ast, d.body);
-    }
-    // catch_clause
-    if (t === T.catch_clause) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
-    }
-    // static block — lhs=range.start, rhs=range.end (stored directly)
-    if (t === T.static_block) {
-      return ast._nodesFromRange(lhs, rhs);
-    }
-    // ClassDeclaration/ClassExpression — returns synthetic ClassBody
-    if (t === T.class_decl || t === T.class_expr) {
+      result = d.body === NONE ? null : nodeView(ast, d.body);
+    } else if (t === T.catch_clause) {
+      result = rhs === NONE ? null : nodeView(ast, rhs);
+    } else if (t === T.static_block) {
+      result = ast._nodesFromRange(lhs, rhs);
+    } else if (t === T.class_decl || t === T.class_expr) {
       const d = ast.extraClassData(lhs);
       const members = ast._nodesFromRange(d.body_start, d.body_end);
-      return {
+      result = {
         type: 'ClassBody',
         body: members,
         start: members.length > 0 ? members[0].start : this.start,
         mainToken: this.mainToken,
       };
+    } else if (t === T.root) {
+      result = ast._nodesFromRange(lhs, rhs);
     }
-    // Program body — lhs=range.start, rhs=range.end (stored directly)
-    if (t === T.root) {
-      return ast._nodesFromRange(lhs, rhs);
-    }
-    return null;
+    return result;
   },
 
   /**
@@ -1627,21 +1605,23 @@ const TOK_STAR    = 89;   // asterisk (generator marker)
  * Method tokens before the name: `static`, `async`, `*`, `get`, `set`
  * Returns { async: bool, generator: bool, static: bool }.
  */
+// Reusable result object — avoids allocating {async, generator, static} per call.
+const _methodFlagsResult = { async: false, generator: false, static: false };
+
 function _methodFlags(ast, mainToken) {
-  let isAsync = false;
-  let isGenerator = false;
-  let isStatic = false;
+  _methodFlagsResult.async = false;
+  _methodFlagsResult.generator = false;
+  _methodFlagsResult.static = false;
   let i = mainToken - 1;
   while (i >= 0) {
     const tag = ast._tokTags[i];
-    if (tag === TOK_STAR)   { isGenerator = true; i--; continue; }
-    if (tag === TOK_ASYNC)  { isAsync = true;     i--; continue; }
-    if (tag === TOK_STATIC) { isStatic = true;    i--; continue; }
-    // get / set / other keyword modifiers — skip
+    if (tag === TOK_STAR)   { _methodFlagsResult.generator = true; i--; continue; }
+    if (tag === TOK_ASYNC)  { _methodFlagsResult.async = true;     i--; continue; }
+    if (tag === TOK_STATIC) { _methodFlagsResult.static = true;    i--; continue; }
     if (tag >= 9 && tag <= 71) { i--; continue; }
     break;
   }
-  return { async: isAsync, generator: isGenerator, static: isStatic };
+  return _methodFlagsResult;
 }
 
 /**

@@ -1985,8 +1985,15 @@ function _extractFileLevelRules(visitorMap, tagNames, tagCount, tagEnterHandlers
 
 let _cachedPlanKey = null;
 let _cachedPlan = null;
+let _cachedPlanVisitorMap = null;
 
 function _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip) {
+  // Fast path: same visitorMap object (reused context) — return cached plan directly.
+  // Handler references haven't changed so no remap needed.
+  if (_cachedPlan && _cachedPlanVisitorMap === visitorMap) {
+    return _cachedPlan;
+  }
+
   // Build a cache key from the visitorMap keys + ruleIds (deterministic for same plugins)
   const keyParts = [];
   for (const [k, handlers] of visitorMap) {
@@ -1997,7 +2004,6 @@ function _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBo
   const planKey = keyParts.join('|');
 
   if (_cachedPlanKey === planKey && _cachedPlan) {
-    // Remap handler references from the new visitorMap into the cached plan
     return _remapPlan(_cachedPlan, visitorMap, tagNames, tagCount);
   }
 
@@ -2007,6 +2013,7 @@ function _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBo
   // Cache the structural template for reuse
   _cachedPlanKey = planKey;
   _cachedPlan = plan;
+  _cachedPlanVisitorMap = visitorMap;
   return plan;
 }
 
@@ -2543,6 +2550,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
  *     }
  *   }
  */
+// ── Cached per-process state for runPlugins ─────────────────────
+// When the same plugins array is used across files (the common case in lint.js),
+// reuse the RuleContext and visitorMap. Handler closures capture `context` by
+// reference — resetting its fields between files is sufficient.
+let _cachedRunPlugins = null; // { plugins, context, visitorMapResult, internedTagNames }
+
 function runPlugins(ast, plugins, options = {}) {
   const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget } = options;
 
@@ -2550,43 +2563,58 @@ function runPlugins(ast, plugins, options = {}) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
   }
 
-  // Build TypeScript parserServices only when type-aware rules are loaded.
-  // Calling buildParserServices invokes the full TypeScript compiler (~50ms/file);
-  // skip it for pure-syntax rules (eslint core, etc.).
   let parserServices = null;
   if (typeAware && filename !== "<input>" && /\.[mc]?tsx?$/.test(filename)) {
     const svc = tsServices();
     if (svc) {
-      try {
-        parserServices = svc.buildParserServices(filename);
-      } catch { /* ts unavailable or file not parseable — run syntax-only rules */ }
+      try { parserServices = svc.buildParserServices(filename); } catch {}
     }
   }
 
-  // Intern tag names for O(1) identity comparisons
-  const internedTagNames = tagNames.map(t => t ? _intern(t) : t);
+  let context, visitorMapResult, internedTagNames;
 
-  const context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget });
-  const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
+  if (_cachedRunPlugins && _cachedRunPlugins.plugins === plugins) {
+    // Reuse context + visitorMap from prior file — zero allocation.
+    // Handler closures still work because they captured `context` by reference.
+    context = _cachedRunPlugins.context;
+    visitorMapResult = _cachedRunPlugins.visitorMapResult;
+    internedTagNames = _cachedRunPlugins.internedTagNames;
+    // Reset per-file state on the reused context
+    context._ast = ast;
+    context._filename = filename;
+    context.filename = filename;
+    context._source = ast.source;
+    context._reports = [];
+    context._ruleErrors = Object.create(null);
+    context._errorBudget = errorBudget || DEFAULT_ERROR_BUDGET;
+    // Reset SourceCode for new AST
+    const sc = context.sourceCode;
+    sc._ast = ast;
+    sc.text = ast.source;
+    sc._linesCache = null;
+    sc._tokensCache = null;
+    sc._tokenObjCache = null;
+    sc._scopeCache = new Map();
+    sc._thinScopeCache = new Map();
+    sc._tokenSkipList = null;
+    sc._scopeSymIndex = null;
+    sc._scopeRefIndex = null;
+    sc._scopeChildIndex = null;
+    sc._symRefIndex = null;
+    if (parserServices) sc.parserServices = parserServices;
+    else delete sc.parserServices;
+  } else {
+    // First file or different plugin set — full init
+    internedTagNames = tagNames.map(t => t ? _intern(t) : t);
+    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget });
+    visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
+    _cachedRunPlugins = { plugins, context, visitorMapResult, internedTagNames };
+  }
 
-  // ── Rule Query Optimizer: two-phase scope execution ───────────
-  // Phase 1: Precompute scopes if any scope-aware rule is loaded.
-  // Phase 2: Separate scope-writing rules (markVariableAsUsed) from
-  // scope-reading rules. Writers run in the main DFS; readers in Program:exit.
-  // This is handled by the dependency DAG sort within fused groups.
   const hasScopeRules = visitorMapResult.map.has('Program:exit');
   if (ast._scopeKinds && hasScopeRules) {
     context.sourceCode._precomputeScopes();
   }
-
-  // ── Rule Query Optimizer: build optimization stats ──────────────
-  const optimizerStats = {
-    totalRules: plugins.length,
-    registeredTypes: visitorMapResult.map.size,
-    selectorCount: visitorMapResult.selectorHandlers.length,
-    scopePrecomputed: !!(ast._scopeKinds && hasScopeRules),
-  };
-  context._optimizerStats = optimizerStats;
 
   walkNodes(ast, visitorMapResult, context, internedTagNames);
 
