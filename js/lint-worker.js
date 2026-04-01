@@ -1,8 +1,11 @@
 "use strict";
 /**
  * Worker thread for parallel lint.
- * Receives workerData = { files, pluginNames, ruleFilters, ruleConfig, applyFix }
- * Posts back an array of FileResult objects.
+ *
+ * Two modes:
+ * 1. One-shot (legacy): workerData.files is set → process all files, post results, exit.
+ * 2. Pool mode: workerData.files is absent → load plugins, signal ready, then
+ *    process file batches received via messages. Stays alive until 'exit' message.
  */
 
 const { workerData, parentPort } = require("worker_threads");
@@ -11,13 +14,11 @@ const { parse, getTagNames } = require("./index");
 const { runPlugins } = require("./plugin-runner");
 const { loadPlugin } = require("./load-plugin");
 
-const { files, pluginNames, ruleFilters: ruleFiltersArr, ruleConfig, applyFix, typeAware } = workerData;
-const ruleFilters = new Set(ruleFiltersArr);
+const { pluginNames, ruleFilters: ruleFiltersArr, ruleConfig, applyFix, typeAware } = workerData;
+const ruleFilters = new Set(ruleFiltersArr || []);
 
-// Initialize NAPI binding and tag name table.
 const tagNames = getTagNames();
 
-// Load plugins — same logic as main thread.
 const allPlugins = [];
 for (const name of pluginNames) {
   try {
@@ -28,9 +29,6 @@ for (const name of pluginNames) {
   }
 }
 
-/**
- * Apply non-overlapping fixes to source text in range order.
- */
 function applyFixes(src, fixes) {
   if (!fixes || fixes.length === 0) return src;
   const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
@@ -44,31 +42,26 @@ function applyFixes(src, fixes) {
   return result + src.slice(lastIndex);
 }
 
-const results = [];
-
-for (const file of files) {
+function lintFile(file) {
   let src;
   try {
     src = fs.readFileSync(file, "utf8");
   } catch (e) {
-    results.push({ file, readError: e.message });
-    continue;
+    return { file, readError: e.message };
   }
 
   let ast;
   try {
     ast = parse(src, { filename: file });
   } catch (e) {
-    results.push({ file, parseError: e.message });
-    continue;
+    return { file, parseError: e.message };
   }
 
   let reports;
   try {
     reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig, typeAware });
   } catch (e) {
-    results.push({ file, pluginError: e.message });
-    continue;
+    return { file, pluginError: e.message };
   }
 
   const violations = reports.filter(r => !r.message.startsWith("Plugin error:"));
@@ -83,15 +76,29 @@ for (const file of files) {
           fs.writeFileSync(file, patched, "utf8");
           fixed = true;
         } catch (e) {
-          // non-fatal: report but continue
-          results.push({ file, violations, writeError: e.message });
-          continue;
+          return { file, violations, writeError: e.message };
         }
       }
     }
   }
 
-  results.push({ file, violations, fixed });
+  return { file, violations, fixed };
 }
 
-parentPort.postMessage(results);
+if (workerData.files) {
+  // One-shot mode: process all files and exit
+  const results = workerData.files.map(lintFile);
+  parentPort.postMessage(results);
+} else {
+  // Pool mode: signal ready, then process file batches on demand
+  parentPort.postMessage({ ready: true });
+  parentPort.on("message", (msg) => {
+    if (msg.exit) {
+      process.exit(0);
+    }
+    if (msg.files) {
+      const results = msg.files.map(lintFile);
+      parentPort.postMessage({ batchId: msg.batchId, results });
+    }
+  });
+}

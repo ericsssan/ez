@@ -279,43 +279,94 @@ function runParallel(files, threads) {
 }
 
 /**
- * File-parallel: each worker gets a chunk of files, runs all rules.
+ * File-parallel: pool of workers with staggered startup + JIT warmup.
+ *
+ * V8 worker threads share a platform-level JIT compile queue. Spawning N
+ * workers that all hit runPlugins (292 rules) concurrently for the first
+ * time starves some workers indefinitely — they wait for JIT compilation
+ * that never completes because other workers hold the compile threads.
+ *
+ * Fix: spawn workers one at a time in pool mode. Each worker loads plugins
+ * and signals ready. Then we send it a warmup file (forces JIT compilation
+ * of all rule handlers). Only after the warmup completes do we spawn the
+ * next worker. Once all workers are warmed up, send real file batches.
  */
 function _runFileParallel(files, threads) {
   return new Promise((resolve, reject) => {
     const chunks = splitChunks(files, threads);
+    const workers = [];
     const allResults = new Array(chunks.length);
     let done = 0;
+    let rejected = false;
+    // Use the first real file as warmup input
+    const warmupFile = files[0];
 
-    for (let i = 0; i < chunks.length; i++) {
-      const idx = i;
+    function onReject(err) {
+      if (!rejected) { rejected = true; reject(err); }
+    }
+
+    // Spawn workers in small waves (WAVE_SIZE at a time) to avoid saturating
+    // V8's JIT compile queue. Each wave's workers load plugins + run one
+    // warmup file before the next wave starts.
+    const WAVE_SIZE = 3;
+    let spawned = 0;
+    let warmedUp = 0;
+
+    function spawnWave() {
+      const waveEnd = Math.min(spawned + WAVE_SIZE, chunks.length);
+      while (spawned < waveEnd) {
+        spawnOne(spawned++);
+      }
+    }
+
+    function spawnOne(idx) {
       const worker = new Worker(path.join(__dirname, "lint-worker.js"), {
         workerData: {
-          files: chunks[idx],
           pluginNames,
           ruleFilters: [...ruleFilters],
           ruleConfig,
-          applyFix,
+          applyFix: false,
           typeAware,
         },
       });
-      worker.once("message", (results) => {
-        if (results && results.fatalError) {
-          reject(new Error(results.fatalError));
+      workers[idx] = worker;
+      worker.on("message", (msg) => {
+        if (msg.fatalError) { onReject(new Error(msg.fatalError)); return; }
+        if (msg.ready) {
+          worker.postMessage({ files: [warmupFile], batchId: -1 });
           return;
         }
-        allResults[idx] = results;
-        if (++done === chunks.length) {
-          resolve(allResults.flat());
+        if (msg.batchId === -1) {
+          // Warmup done — check if wave complete
+          if (++warmedUp % WAVE_SIZE === 0 || warmedUp === chunks.length) {
+            if (spawned < chunks.length) {
+              spawnWave();
+            }
+          }
+          if (warmedUp === chunks.length) {
+            // All workers ready — dispatch real work
+            for (let i = 0; i < workers.length; i++) {
+              workers[i].postMessage({ files: chunks[i], batchId: i });
+            }
+          }
+          return;
+        }
+        if (msg.results !== undefined && msg.batchId >= 0) {
+          allResults[msg.batchId] = msg.results;
+          worker.postMessage({ exit: true });
+          if (++done === chunks.length) {
+            resolve(allResults.flat());
+          }
         }
       });
-      worker.once("error", reject);
-      worker.once("exit", (code) => {
-        if (code !== 0 && allResults[idx] === undefined) {
-          reject(new Error(`Worker ${idx} exited with code ${code}`));
+      worker.on("error", onReject);
+      worker.on("exit", (code) => {
+        if (code !== 0 && !rejected && done < chunks.length) {
+          onReject(new Error(`Worker ${idx} exited with code ${code}`));
         }
       });
     }
+    spawnWave();
   });
 }
 

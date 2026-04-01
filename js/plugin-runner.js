@@ -1983,37 +1983,18 @@ function _extractFileLevelRules(visitorMap, tagNames, tagCount, tagEnterHandlers
 // Key: serialized ruleId set (since handler references change per file but
 // ruleIds and visitor keys are stable for the same plugin set).
 
-let _cachedPlanKey = null;
+let _cachedPlanPlugins = null;
 let _cachedPlan = null;
-let _cachedPlanVisitorMap = null;
-
-function _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip) {
-  // Fast path: same visitorMap object (reused context) — return cached plan directly.
-  // Handler references haven't changed so no remap needed.
-  if (_cachedPlan && _cachedPlanVisitorMap === visitorMap) {
-    return _cachedPlan;
-  }
-
-  // Build a cache key from the visitorMap keys + ruleIds (deterministic for same plugins)
-  const keyParts = [];
-  for (const [k, handlers] of visitorMap) {
-    const items = Array.isArray(handlers) ? handlers : (handlers.items || [handlers]);
-    const ruleIds = items.map(h => h.ruleId || '?').join(',');
-    keyParts.push(k + ':' + ruleIds);
-  }
-  const planKey = keyParts.join('|');
-
-  if (_cachedPlanKey === planKey && _cachedPlan) {
+function _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip) {
+  // Cache keyed on plugins array identity — same array = same rule set.
+  // In lint.js, the same plugins array is reused for every file.
+  if (_cachedPlanPlugins === plugins && _cachedPlan) {
     return _remapPlan(_cachedPlan, visitorMap, tagNames, tagCount);
   }
 
-  // Build from scratch
   const plan = _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip);
-
-  // Cache the structural template for reuse
-  _cachedPlanKey = planKey;
+  _cachedPlanPlugins = plugins;
   _cachedPlan = plan;
-  _cachedPlanVisitorMap = visitorMap;
   return plan;
 }
 
@@ -2108,20 +2089,16 @@ function _buildTemplate(tagEnterHandlers, tagExitHandlers, tagCount, fileLevelEn
 
 function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
   const { _template, tagFlags, relevantTag, relevantTagCount } = cachedPlan;
-  // Build ruleId → fresh handler lookup from the new visitorMap
-  const handlerByKey = new Map(); // "ruleId|visitorKey" → handler entry
+  // Build ruleId+key → handler lookup from fresh visitorMap
+  const handlerByKey = new Map();
+  const handlerByRule = new Map();
   for (const [key, handlers] of visitorMap) {
     const items = Array.isArray(handlers) ? handlers : [handlers];
     for (const h of items) {
-      if (h.ruleId) handlerByKey.set(h.ruleId + '|' + key, h);
-    }
-  }
-  // Also index by ruleId alone for simpler lookups
-  const handlerByRule = new Map(); // ruleId → last seen handler entry (for meta/options)
-  for (const [key, handlers] of visitorMap) {
-    const items = Array.isArray(handlers) ? handlers : [handlers];
-    for (const h of items) {
-      if (h.ruleId && !handlerByRule.has(h.ruleId)) handlerByRule.set(h.ruleId, h);
+      if (h.ruleId) {
+        handlerByKey.set(h.ruleId + '|' + key, h);
+        if (!handlerByRule.has(h.ruleId)) handlerByRule.set(h.ruleId, h);
+      }
     }
   }
 
@@ -2129,21 +2106,16 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
     if (!template) return null;
     if (template._fused) {
       const items = [];
-      for (const t of template.items) {
+      for (let i = 0; i < template.items.length; i++) {
+        const t = template.items[i];
         const fresh = handlerByKey.get(t.ruleId + '|' + tagName) || handlerByRule.get(t.ruleId);
-        if (!fresh) continue;
-        items.push({
-          handler: fresh.handler, ruleId: t.ruleId,
-          ruleMeta: fresh.ruleMeta, ruleOptions: fresh.ruleOptions,
-          cost: t.cost, parentGuard: t.parentGuard, _coalescedGuard: t._coalescedGuard,
-        });
+        if (fresh) items.push({ handler: fresh.handler, ruleId: t.ruleId, ruleMeta: fresh.ruleMeta, ruleOptions: fresh.ruleOptions, cost: t.cost, parentGuard: t.parentGuard, _coalescedGuard: t._coalescedGuard });
       }
-      return { items, length: items.length, _fused: true };
+      return items.length > 0 ? { items, length: items.length, _fused: true } : null;
     }
-    // Array format
     const arr = [];
-    for (const t of template) {
-      const fresh = handlerByKey.get(t.ruleId + '|' + tagName) || handlerByRule.get(t.ruleId);
+    for (let i = 0; i < template.length; i++) {
+      const fresh = handlerByKey.get(template[i].ruleId + '|' + tagName) || handlerByRule.get(template[i].ruleId);
       if (fresh) arr.push(fresh);
     }
     return arr.length > 0 ? arr : null;
@@ -2157,31 +2129,25 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
     tagExitHandlers[t] = remapSlot(_template.exitTemplates[t], tn + ':exit');
   }
 
-  // Remap file-level handlers
-  const fileLevelEnter = [];
-  for (const ruleId of _template.fileLevelEnterIds) {
-    const fresh = handlerByKey.get(ruleId + '|Program') || handlerByRule.get(ruleId);
-    if (fresh) fileLevelEnter.push(fresh);
-  }
-  const fileLevelExit = [];
-  for (const ruleId of _template.fileLevelExitIds) {
-    const fresh = handlerByKey.get(ruleId + '|Program:exit') || handlerByRule.get(ruleId);
-    if (fresh) fileLevelExit.push(fresh);
-  }
-
-  // Remap batch scannable
+  const fileLevelEnter = _remapList(_template.fileLevelEnterIds, 'Program', handlerByKey, handlerByRule);
+  const fileLevelExit = _remapList(_template.fileLevelExitIds, 'Program:exit', handlerByKey, handlerByRule);
   const batchScannable = new Map();
   for (const [tn, ruleIds] of _template.batchScannableIds) {
-    const hs = [];
-    for (const ruleId of ruleIds) {
-      const fresh = handlerByKey.get(ruleId + '|' + tn) || handlerByRule.get(ruleId);
-      if (fresh) hs.push(fresh);
-    }
+    const hs = _remapList(ruleIds, tn, handlerByKey, handlerByRule);
     if (hs.length > 0) batchScannable.set(tn, hs);
   }
 
   return { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
            fileLevelEnter, fileLevelExit, batchScannable, _template };
+}
+
+function _remapList(ruleIds, key, handlerByKey, handlerByRule) {
+  const result = [];
+  for (let i = 0; i < ruleIds.length; i++) {
+    const fresh = handlerByKey.get(ruleIds[i] + '|' + key) || handlerByRule.get(ruleIds[i]);
+    if (fresh) result.push(fresh);
+  }
+  return result;
 }
 
 /**
@@ -2190,7 +2156,7 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
  * children before parents on exit — matching real ESLint traversal semantics.
  * Errors are caught per-handler so one failing plugin doesn't abort others.
  */
-function walkNodes(ast, visitorMapResult, context, tagNames) {
+function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const { map: visitorMap, selectorHandlers } = visitorMapResult;
   const nodeTags = ast.nodeTags;
   // Use Zig-precomputed DFS orders if available (v4 buffer), else compute in JS.
@@ -2398,7 +2364,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
   // Cache it keyed by the plugins array identity so the second file
   // skips all .toString()/regex analysis, O(rules×tags) scans, etc.
   // Only per-file state (skipSet, nodesByType, subtreeRelevant) is rebuilt.
-  const plan = _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip);
+  const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip);
   const { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
           fileLevelEnter, fileLevelExit, batchScannable } = plan;
 
@@ -2550,11 +2516,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
  *     }
  *   }
  */
-// ── Cached per-process state for runPlugins ─────────────────────
-// When the same plugins array is used across files (the common case in lint.js),
-// reuse the RuleContext and visitorMap. Handler closures capture `context` by
-// reference — resetting its fields between files is sufficient.
-let _cachedRunPlugins = null; // { plugins, context, visitorMapResult, internedTagNames }
+// Cache interned tag names across calls (tag names don't change between files).
+let _cachedInternedTagNames = null;
+let _cachedTagNamesInput = null;
 
 function runPlugins(ast, plugins, options = {}) {
   const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget } = options;
@@ -2571,52 +2535,21 @@ function runPlugins(ast, plugins, options = {}) {
     }
   }
 
-  let context, visitorMapResult, internedTagNames;
-
-  if (_cachedRunPlugins && _cachedRunPlugins.plugins === plugins) {
-    // Reuse context + visitorMap from prior file — zero allocation.
-    // Handler closures still work because they captured `context` by reference.
-    context = _cachedRunPlugins.context;
-    visitorMapResult = _cachedRunPlugins.visitorMapResult;
-    internedTagNames = _cachedRunPlugins.internedTagNames;
-    // Reset per-file state on the reused context
-    context._ast = ast;
-    context._filename = filename;
-    context.filename = filename;
-    context._source = ast.source;
-    context._reports = [];
-    context._ruleErrors = Object.create(null);
-    context._errorBudget = errorBudget || DEFAULT_ERROR_BUDGET;
-    // Reset SourceCode for new AST
-    const sc = context.sourceCode;
-    sc._ast = ast;
-    sc.text = ast.source;
-    sc._linesCache = null;
-    sc._tokensCache = null;
-    sc._tokenObjCache = null;
-    sc._scopeCache = new Map();
-    sc._thinScopeCache = new Map();
-    sc._tokenSkipList = null;
-    sc._scopeSymIndex = null;
-    sc._scopeRefIndex = null;
-    sc._scopeChildIndex = null;
-    sc._symRefIndex = null;
-    if (parserServices) sc.parserServices = parserServices;
-    else delete sc.parserServices;
-  } else {
-    // First file or different plugin set — full init
-    internedTagNames = tagNames.map(t => t ? _intern(t) : t);
-    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget });
-    visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
-    _cachedRunPlugins = { plugins, context, visitorMapResult, internedTagNames };
+  // Cache interned tag names (same array across all files)
+  if (_cachedTagNamesInput !== tagNames) {
+    _cachedInternedTagNames = tagNames.map(t => t ? _intern(t) : t);
+    _cachedTagNamesInput = tagNames;
   }
+
+  const context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget });
+  const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
 
   const hasScopeRules = visitorMapResult.map.has('Program:exit');
   if (ast._scopeKinds && hasScopeRules) {
     context.sourceCode._precomputeScopes();
   }
 
-  walkNodes(ast, visitorMapResult, context, internedTagNames);
+  walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);
 
   return context._reports;
 }
