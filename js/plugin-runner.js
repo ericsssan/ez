@@ -1,6 +1,13 @@
 "use strict";
 
 const { nodeView, NONE } = require("./node-view");
+let _esquery = null;
+function esquery() {
+  if (!_esquery) {
+    try { _esquery = require("./node_modules/esquery"); } catch { _esquery = null; }
+  }
+  return _esquery;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -120,9 +127,13 @@ class SourceCode {
 
   /**
    * Build a token object with loc for token index i.
-   * The _tokenIndex property allows getTokenBefore/After to work on token objects.
+   * Cached to ensure identity equality: _makeToken(i) === _makeToken(i).
+   * This is required for rules that compare token objects by reference.
    */
   _makeToken(i) {
+    if (!this._tokenObjCache) this._tokenObjCache = new Array(this._ast.tokenCount);
+    const cached = this._tokenObjCache[i];
+    if (cached !== undefined) return cached;
     const ast = this._ast;
     const src = this.text;
     const start = ast._tokStarts[i];
@@ -134,7 +145,7 @@ class SourceCode {
     const startCol = start - ls[startLine - 1];
     const endLine = _findLine(ls, end);
     const endCol = end - ls[endLine - 1];
-    return {
+    const tok = {
       type: _tokType(ast._tokTags[i]),
       value,
       range: [start, end],
@@ -145,6 +156,8 @@ class SourceCode {
       // Allow getTokenBefore/After to use this as a position anchor
       mainToken: i,
     };
+    this._tokenObjCache[i] = tok;
+    return tok;
   }
 
   /**
@@ -1023,11 +1036,43 @@ class RuleContext {
 // ── Visitor Walk ─────────────────────────────────────────────────
 
 /**
+ * Returns true if a visitor key is a CSS-style AST selector rather than
+ * a plain ESTree node type name (optionally with :exit).
+ * Selectors contain [, >, ~, +, spaces, parens, or a : that is not just :exit.
+ * Comma-separated lists of plain type names are NOT selectors — they expand to multiple map entries.
+ */
+function _isSelector(key) {
+  const base = key.endsWith(':exit') ? key.slice(0, -5) : key;
+  // Comma-only union of plain type names like "MethodDefinition, PropertyDefinition"
+  // These should be expanded, not sent to esquery.
+  if (base.includes(',')) {
+    const parts = base.split(',').map(p => p.trim());
+    if (parts.every(p => /^[A-Z][A-Za-z]*$/.test(p))) return false; // simple type union
+  }
+  return /[\s\[>~+.(]/.test(base) || base.includes(':');
+}
+
+/**
+ * Expand a comma-separated union of type names into individual keys.
+ * e.g. "MethodDefinition, PropertyDefinition" → ["MethodDefinition", "PropertyDefinition"]
+ * For non-unions, returns [key].
+ */
+function _expandUnion(key) {
+  const isExit = key.endsWith(':exit');
+  const base = isExit ? key.slice(0, -5) : key;
+  if (!base.includes(',')) return [key];
+  return base.split(',').map(p => isExit ? p.trim() + ':exit' : p.trim());
+}
+
+/**
  * Build a reverse mapping from ESTree type name → list of visitor functions.
  * This enables efficient single-pass traversal.
+ * Also returns a selectorHandlers array for CSS-style AST selectors.
  */
 function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const map = new Map();
+  // Array of { selector, isExit, handler, ruleId, ruleMeta, ruleOptions }
+  const selectorHandlers = [];
 
   for (const plugin of plugins) {
     const ruleId = plugin.meta?.name || "unknown";
@@ -1051,15 +1096,25 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     if (!visitors || typeof visitors !== 'object') continue;
     for (const [visitorKey, handler] of Object.entries(visitors)) {
       if (typeof handler !== 'function') continue;
-      const isExit = visitorKey.endsWith(':exit');
-      const typeName = isExit ? visitorKey.slice(0, -5) : visitorKey;
-      const mapKey = isExit ? typeName + ':exit' : typeName;
-      if (!map.has(mapKey)) map.set(mapKey, []);
-      map.get(mapKey).push({ handler, ruleId, ruleMeta, ruleOptions });
+      if (_isSelector(visitorKey)) {
+        // CSS-style AST selector — pre-parse to avoid repeated parsing on every node
+        const isExit = visitorKey.endsWith(':exit');
+        const selector = isExit ? visitorKey.slice(0, -5) : visitorKey;
+        let parsedSelector;
+        try { parsedSelector = esquery() ? esquery().parse(selector) : null; } catch { parsedSelector = null; }
+        if (!parsedSelector) continue; // skip unparseable selectors
+        selectorHandlers.push({ selector, parsedSelector, isExit, handler, ruleId, ruleMeta, ruleOptions });
+        continue;
+      }
+      // Expand comma-separated type unions ("A, B" → ["A", "B"])
+      for (const mapKey of _expandUnion(visitorKey)) {
+        if (!map.has(mapKey)) map.set(mapKey, []);
+        map.get(mapKey).push({ handler, ruleId, ruleMeta, ruleOptions });
+      }
     }
   }
 
-  return map;
+  return { map, selectorHandlers };
 }
 
 /**
@@ -1156,9 +1211,26 @@ const FAKE_CODE_PATH = Object.freeze({
  * children before parents on exit — matching real ESLint traversal semantics.
  * Errors are caught per-handler so one failing plugin doesn't abort others.
  */
-function walkNodes(ast, visitorMap, context, tagNames) {
+function walkNodes(ast, visitorMapResult, context, tagNames) {
+  const { map: visitorMap, selectorHandlers } = visitorMapResult;
   const nodeTags = ast.nodeTags;
   const { preOrder, postOrder } = buildDFSOrders(ast);
+
+  // For selector matching, we need ancestors. Build the ancestors array lazily per node.
+  const esq = selectorHandlers.length > 0 ? esquery() : null;
+  const pd = ast._parentData;
+
+  function getAncestorsFor(nodeIdx) {
+    if (!pd) return [];
+    // esquery expects ancestors[0] = immediate parent (closest first), not root-first.
+    const ancestors = [];
+    let p = pd[nodeIdx];
+    while (p !== NONE && p !== undefined && p < ast.nodeCount) {
+      ancestors.push(nodeView(ast, p));
+      p = pd[p];
+    }
+    return ancestors;
+  }
 
   function invokeHandlers(mapKey, nodeIdx) {
     const handlers = visitorMap.get(mapKey);
@@ -1174,6 +1246,31 @@ function walkNodes(ast, visitorMap, context, tagNames) {
       } catch (err) {
         context._reports.push({
           ruleId: handlers[h].ruleId,
+          message: `Plugin error: ${err.message}`,
+        });
+      }
+    }
+  }
+
+  function invokeSelectorHandlers(nodeIdx, isExit) {
+    if (!esq || selectorHandlers.length === 0) return;
+    const node = nodeView(ast, nodeIdx);
+    let ancestors = null; // lazy
+    for (let h = 0; h < selectorHandlers.length; h++) {
+      const sh = selectorHandlers[h];
+      if (sh.isExit !== isExit) continue;
+      try {
+        if (ancestors === null) ancestors = getAncestorsFor(nodeIdx);
+        if (esq.matches(node, sh.parsedSelector, ancestors)) {
+          context._currentRule = sh.ruleId;
+          context._currentRuleMeta = sh.ruleMeta;
+          context.options = sh.ruleOptions;
+          context._currentNodeIdx = nodeIdx;
+          sh.handler(node);
+        }
+      } catch (err) {
+        context._reports.push({
+          ruleId: sh.ruleId,
           message: `Plugin error: ${err.message}`,
         });
       }
@@ -1200,6 +1297,44 @@ function walkNodes(ast, visitorMap, context, tagNames) {
     }
   }
 
+  // Synthetic ClassBody node (passed to ClassBody/ClassBody:exit handlers).
+  // We reuse a single object and update the class node reference each time.
+  // _i and _ast are set so getFirstToken/getLastToken work correctly.
+  const syntheticClassBody = { type: 'ClassBody', body: null, parent: null, mainToken: 0, _ast: ast, _i: 0 };
+
+  function invokeClassBodyHandlers(classNodeIdx, isExit) {
+    const classBodyKey = isExit ? 'ClassBody:exit' : 'ClassBody';
+    if (!visitorMap.has(classBodyKey)) return;
+    // Build the synthetic ClassBody node pointing to this class
+    const classNode = nodeView(ast, classNodeIdx);
+    syntheticClassBody.body = classNode.body?.body || [];
+    syntheticClassBody.parent = classNode;
+    syntheticClassBody.mainToken = classNode.mainToken;
+    syntheticClassBody._i = classNodeIdx;
+    // Copy loc/range/start/end from class node so layout rules work
+    syntheticClassBody.start = classNode.start;
+    syntheticClassBody.end = classNode.end;
+    syntheticClassBody.range = classNode.range;
+    syntheticClassBody.loc = classNode.loc;
+    const handlers = visitorMap.get(classBodyKey);
+    for (let h = 0; h < handlers.length; h++) {
+      context._currentRule = handlers[h].ruleId;
+      context._currentRuleMeta = handlers[h].ruleMeta;
+      context.options = handlers[h].ruleOptions;
+      context._currentNodeIdx = classNodeIdx;
+      try {
+        handlers[h].handler(syntheticClassBody);
+      } catch (err) {
+        context._reports.push({
+          ruleId: handlers[h].ruleId,
+          message: `Plugin error: ${err.message}`,
+        });
+      }
+    }
+  }
+
+  const CLASS_TYPES = new Set(['ClassDeclaration', 'ClassExpression']);
+
   // Enter pass: DFS pre-order (parents before children)
   for (let i = 0; i < preOrder.length; i++) {
     const idx = preOrder[i];
@@ -1208,6 +1343,9 @@ function walkNodes(ast, visitorMap, context, tagNames) {
     // Stub: call onCodePathStart at function/program boundaries
     if (CODE_PATH_TYPES.has(typeName)) invokeCodePathHandlers('onCodePathStart', idx);
     invokeHandlers(typeName, idx);
+    // Synthesize ClassBody enter after ClassDeclaration/ClassExpression enter
+    if (CLASS_TYPES.has(typeName)) invokeClassBodyHandlers(idx, false);
+    invokeSelectorHandlers(idx, false);
   }
 
   // Exit pass: DFS post-order (children before parents)
@@ -1215,7 +1353,10 @@ function walkNodes(ast, visitorMap, context, tagNames) {
     const idx = postOrder[i];
     const typeName = tagNames[nodeTags[idx]];
     if (!typeName) continue;
+    // Synthesize ClassBody exit before ClassDeclaration/ClassExpression exit
+    if (CLASS_TYPES.has(typeName)) invokeClassBodyHandlers(idx, true);
     invokeHandlers(typeName + ':exit', idx);
+    invokeSelectorHandlers(idx, true);
     // Stub: call onCodePathEnd at function/program boundaries
     if (CODE_PATH_TYPES.has(typeName)) invokeCodePathHandlers('onCodePathEnd', idx);
   }
@@ -1251,9 +1392,9 @@ function runPlugins(ast, plugins, options = {}) {
   }
 
   const context = new RuleContext(ast, filename, ast.source);
-  const visitorMap = buildVisitorMap(plugins, context, ruleConfig);
+  const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
 
-  walkNodes(ast, visitorMap, context, tagNames);
+  walkNodes(ast, visitorMapResult, context, tagNames);
 
   return context._reports;
 }
