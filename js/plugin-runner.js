@@ -938,11 +938,26 @@ class RuleContext {
       }
     }
     resolvedMsg = resolvedMsg || messageId || 'Lint violation';
+    // Compute loc as {start:{line,column}, end:{line,column}} from node or numeric offset.
+    let resolvedLoc = loc;
+    if (!resolvedLoc && node) {
+      const sc = this.sourceCode;
+      resolvedLoc = {
+        start: sc.getLocFromIndex(node.start),
+        end: sc.getLocFromIndex(node.end != null ? node.end : node.start),
+      };
+    } else if (resolvedLoc && typeof resolvedLoc.start === 'number') {
+      const sc = this.sourceCode;
+      resolvedLoc = {
+        start: sc.getLocFromIndex(resolvedLoc.start),
+        end: resolvedLoc.end != null ? sc.getLocFromIndex(resolvedLoc.end) : sc.getLocFromIndex(resolvedLoc.start),
+      };
+    }
     this._reports.push({
       ruleId: this._currentRule,
       message: resolvedMsg,
       node: node ? { type: node.type, start: node.start } : undefined,
-      loc: loc || (node ? { start: node.start } : undefined),
+      loc: resolvedLoc,
     });
   }
 
