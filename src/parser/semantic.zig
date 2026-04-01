@@ -69,6 +69,10 @@ pub const SemanticAnalyzer = struct {
     /// The scope that is currently being visited.
     current_scope: ScopeId,
 
+    /// Per-scope symbol lookup table: scope_bindings[scopeId] maps name → SymbolId.
+    /// Replaces the O(total_symbols) linear scan in findSymbolInScope with O(1) lookup.
+    scope_bindings: std.ArrayList(std.StringHashMapUnmanaged(SymbolId)),
+
     /// Track exported names for duplicate detection and undeclared export validation.
     exported_names: std.ArrayList(ExportEntry) = .empty,
 
@@ -90,6 +94,7 @@ pub const SemanticAnalyzer = struct {
             .diagnostics = .empty,
             .allocator = allocator,
             .current_scope = .none,
+            .scope_bindings = .empty,
         };
     }
 
@@ -99,6 +104,8 @@ pub const SemanticAnalyzer = struct {
         self.references.deinit();
         self.diagnostics.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
+        for (self.scope_bindings.items) |*m| m.deinit(self.allocator);
+        self.scope_bindings.deinit(self.allocator);
     }
 
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
@@ -124,6 +131,7 @@ pub const SemanticAnalyzer = struct {
 
     fn enterScope(self: *SemanticAnalyzer, scope_kind: ScopeKind, node: NodeIndex) !ScopeId {
         const id = try self.scopes.addScope(scope_kind, self.current_scope, node);
+        try self.scope_bindings.append(self.allocator, .{});
         self.current_scope = id;
         return id;
     }
@@ -157,7 +165,13 @@ pub const SemanticAnalyzer = struct {
         }
 
         const symbol_flags = symbol_mod.flagsFromBindingKind(binding_kind);
-        return self.symbols.addSymbol(name, symbol_flags, binding_kind, scope, node);
+        const sym_id = try self.symbols.addSymbol(name, symbol_flags, binding_kind, scope, node);
+        // Insert into per-scope hash map for O(1) lookups.
+        const scope_idx = scope.toInt();
+        if (scope_idx < self.scope_bindings.items.len) {
+            try self.scope_bindings.items[scope_idx].put(self.allocator, name, sym_id);
+        }
+        return sym_id;
     }
 
     /// Check whether redeclaring `existing` with `new` in the same scope is legal.
@@ -171,21 +185,11 @@ pub const SemanticAnalyzer = struct {
         return existing.canRedeclare() and new.canRedeclare();
     }
 
-    /// Find a symbol by name in a specific scope (not walking up the chain).
+    /// Find a symbol by name in a specific scope (not walking up the chain). O(1).
     fn findSymbolInScope(self: *const SemanticAnalyzer, name: []const u8, scope: ScopeId) ?SymbolId {
-        const count = self.symbols.count();
-        if (count == 0) return null;
-        var i: u32 = count;
-        while (i > 0) {
-            i -= 1;
-            const id = SymbolId.fromInt(i);
-            if (self.symbols.getScope(id).toInt() == scope.toInt()) {
-                if (std.mem.eql(u8, self.symbols.getName(id), name)) {
-                    return id;
-                }
-            }
-        }
-        return null;
+        const idx = scope.toInt();
+        if (idx >= self.scope_bindings.items.len) return null;
+        return self.scope_bindings.items[idx].get(name);
     }
 
     // ── Reference resolution ───────────────────────────────

@@ -85,6 +85,7 @@ pub const ScopeTree = struct {
     flags: std.ArrayList(ScopeFlags),
     parents: std.ArrayList(ScopeId),
     first_child: std.ArrayList(ScopeId),
+    last_child: std.ArrayList(ScopeId),
     next_sibling: std.ArrayList(ScopeId),
     node_ids: std.ArrayList(ast.NodeIndex),
     bindings_start: std.ArrayList(u32),
@@ -100,6 +101,7 @@ pub const ScopeTree = struct {
             .flags = .empty,
             .parents = .empty,
             .first_child = .empty,
+            .last_child = .empty,
             .next_sibling = .empty,
             .node_ids = .empty,
             .bindings_start = .empty,
@@ -113,6 +115,7 @@ pub const ScopeTree = struct {
         self.flags.deinit(self.gpa);
         self.parents.deinit(self.gpa);
         self.first_child.deinit(self.gpa);
+        self.last_child.deinit(self.gpa);
         self.next_sibling.deinit(self.gpa);
         self.node_ids.deinit(self.gpa);
         self.bindings_start.deinit(self.gpa);
@@ -179,6 +182,7 @@ pub const ScopeTree = struct {
         try self.flags.ensureUnusedCapacity(self.gpa, 1);
         try self.parents.ensureUnusedCapacity(self.gpa, 1);
         try self.first_child.ensureUnusedCapacity(self.gpa, 1);
+        try self.last_child.ensureUnusedCapacity(self.gpa, 1);
         try self.next_sibling.ensureUnusedCapacity(self.gpa, 1);
         try self.node_ids.ensureUnusedCapacity(self.gpa, 1);
         try self.bindings_start.ensureUnusedCapacity(self.gpa, 1);
@@ -189,25 +193,21 @@ pub const ScopeTree = struct {
         self.flags.appendAssumeCapacity(scope_flags);
         self.parents.appendAssumeCapacity(parent_id);
         self.first_child.appendAssumeCapacity(.none);
+        self.last_child.appendAssumeCapacity(.none);
         self.next_sibling.appendAssumeCapacity(.none);
         self.node_ids.appendAssumeCapacity(node_id);
         self.bindings_start.appendAssumeCapacity(0);
         self.bindings_count.appendAssumeCapacity(0);
 
-        // Link into the parent's child list (append as last child).
+        // Link into the parent's child list — O(1) via last_child pointer.
         if (parent_id.isValid()) {
-            const first = self.first_child.items[parent_id.toInt()];
-            if (!first.isValid()) {
-                // Parent has no children yet — we are the first.
+            const last = self.last_child.items[parent_id.toInt()];
+            if (!last.isValid()) {
                 self.first_child.items[parent_id.toInt()] = id;
             } else {
-                // Walk to the last sibling and append.
-                var sib = first;
-                while (self.next_sibling.items[sib.toInt()].isValid()) {
-                    sib = self.next_sibling.items[sib.toInt()];
-                }
-                self.next_sibling.items[sib.toInt()] = id;
+                self.next_sibling.items[last.toInt()] = id;
             }
+            self.last_child.items[parent_id.toInt()] = id;
         }
 
         return id;
