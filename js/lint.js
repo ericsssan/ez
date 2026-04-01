@@ -27,6 +27,7 @@ const filePaths = [];
 let formatJson = false;
 let showHelp = false;
 let configPath = null;
+let applyFix = false;
 
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
@@ -50,6 +51,8 @@ for (let i = 0; i < args.length; i++) {
     configPath = arg.slice("--config=".length);
   } else if (arg === "--format=json") {
     formatJson = true;
+  } else if (arg === "--fix") {
+    applyFix = true;
   } else if (arg === "--help" || arg === "-h") {
     showHelp = true;
   } else if (!arg.startsWith("-")) {
@@ -69,6 +72,7 @@ Options:
   --config, -c <file>         ESLint config file for rule options (.eslintrc.json)
                               Auto-detected from cwd if not specified
   --format=json               Output JSON array instead of text
+  --fix                       Apply autofixes to files (writes in place)
   --help, -h                  Show this help
 
 Examples:
@@ -295,11 +299,33 @@ if (allFiles.length === 0) {
   process.exit(1);
 }
 
+/**
+ * Apply a list of fix objects to source text.
+ * Fixes are { range: [start, end], text: string }.
+ * Overlapping fixes are skipped (first one wins).
+ */
+function applyFixes(src, fixes) {
+  if (!fixes || fixes.length === 0) return src;
+  // Sort by start position
+  const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
+  let result = '';
+  let lastIndex = 0;
+  for (const fix of sorted) {
+    const [start, end] = fix.range;
+    if (start < lastIndex) continue; // overlapping, skip
+    result += src.slice(lastIndex, start) + fix.text;
+    lastIndex = end;
+  }
+  result += src.slice(lastIndex);
+  return result;
+}
+
 // Lint
 const jsonResults = [];
 let totalViolations = 0;
 let totalFiles = 0;
 let errorFiles = 0;
+let totalFixed = 0;
 
 for (const file of allFiles) {
   let src;
@@ -341,6 +367,23 @@ for (const file of allFiles) {
   totalViolations += violations.length;
   totalFiles++;
 
+  // Apply fixes if requested
+  if (applyFix) {
+    const allFixes = violations.flatMap(r => r.fix || []);
+    if (allFixes.length > 0) {
+      const fixed = applyFixes(src, allFixes);
+      if (fixed !== src) {
+        try {
+          fs.writeFileSync(file, fixed, "utf8");
+          totalFixed++;
+          if (!formatJson) console.log(`${file}: fixed ${allFixes.length} issue(s)`);
+        } catch (e) {
+          console.error(`error writing ${file}: ${e.message}`);
+        }
+      }
+    }
+  }
+
   if (formatJson) {
     jsonResults.push({
       filePath: file,
@@ -350,6 +393,7 @@ for (const file of allFiles) {
         message: r.message,
         line: r.loc?.start?.line ?? null,
         column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
+        fix: r.fix ? r.fix : undefined,
       })),
     });
   } else {
@@ -359,7 +403,8 @@ for (const file of allFiles) {
         const line = r.loc?.start?.line ?? "?";
         const col = r.loc?.start?.column != null ? r.loc.start.column + 1 : "?";
         const rule = r.ruleId ? `  ${r.ruleId}` : "";
-        console.log(`  ${String(line).padStart(4)}:${String(col).padEnd(4)} error  ${r.message}${rule}`);
+        const fixable = r.fix ? " [fixable]" : "";
+        console.log(`  ${String(line).padStart(4)}:${String(col).padEnd(4)} error  ${r.message}${rule}${fixable}`);
       }
     }
   }
@@ -369,9 +414,11 @@ if (formatJson) {
   console.log(JSON.stringify(jsonResults, null, 2));
 } else {
     if (totalViolations > 0 || errorFiles > 0) {
-    console.log(`\n✖ ${totalViolations} problem${totalViolations !== 1 ? "s" : ""} (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""})`);
+    const fixNote = totalFixed > 0 ? `, ${totalFixed} fixed` : '';
+    console.log(`\n✖ ${totalViolations} problem${totalViolations !== 1 ? "s" : ""} (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);
   } else {
-    console.log(`✓ 0 problems (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""})`);
+    const fixNote = totalFixed > 0 ? ` (${totalFixed} fixed)` : '';
+    console.log(`✓ 0 problems (${allPlugins.length} rule${allPlugins.length !== 1 ? "s" : ""}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);
   }
 }
 

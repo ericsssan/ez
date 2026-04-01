@@ -937,6 +937,62 @@ class SourceCode {
   }
 }
 
+// ── Fixer ────────────────────────────────────────────────────────
+
+/**
+ * ESLint-compatible fixer object passed to rule fix() functions.
+ * Each method returns a { range: [start, end], text: string } fix descriptor.
+ */
+class RuleFixer {
+  constructor(source) {
+    this._source = source;
+  }
+
+  _rangeOf(nodeOrToken) {
+    if (nodeOrToken.range) return nodeOrToken.range;
+    const s = nodeOrToken.start ?? 0;
+    const e = nodeOrToken.end ?? s;
+    return [s, e];
+  }
+
+  /** Remove a node or token from the source. */
+  remove(nodeOrToken) {
+    return { range: this._rangeOf(nodeOrToken), text: '' };
+  }
+
+  /** Replace the source text of a node or token. */
+  replaceText(nodeOrToken, text) {
+    return { range: this._rangeOf(nodeOrToken), text };
+  }
+
+  /** Replace source text in a range [start, end]. */
+  replaceTextRange(range, text) {
+    return { range, text };
+  }
+
+  /** Insert text before a node or token. */
+  insertTextBefore(nodeOrToken, text) {
+    const [start] = this._rangeOf(nodeOrToken);
+    return { range: [start, start], text };
+  }
+
+  /** Insert text after a node or token. */
+  insertTextAfter(nodeOrToken, text) {
+    const [, end] = this._rangeOf(nodeOrToken);
+    return { range: [end, end], text };
+  }
+
+  /** Insert text before a range. */
+  insertTextBeforeRange(range, text) {
+    return { range: [range[0], range[0]], text };
+  }
+
+  /** Insert text after a range. */
+  insertTextAfterRange(range, text) {
+    return { range: [range[1], range[1]], text };
+  }
+}
+
 // ── Context ─────────────────────────────────────────────────────
 
 /**
@@ -992,11 +1048,29 @@ class RuleContext {
         end: resolvedLoc.end != null ? sc.getLocFromIndex(resolvedLoc.end) : sc.getLocFromIndex(resolvedLoc.start),
       };
     }
+    // Collect fix if provided
+    let fix = null;
+    if (typeof descriptor.fix === 'function') {
+      try {
+        const fixer = new RuleFixer(this._ast.source);
+        const fixResult = descriptor.fix(fixer);
+        if (fixResult) {
+          // fix() may return a single fix object or an iterable of fix objects
+          if (typeof fixResult[Symbol.iterator] === 'function' && typeof fixResult.range === 'undefined') {
+            fix = [...fixResult];
+          } else {
+            fix = [fixResult];
+          }
+          fix = fix.filter(Boolean);
+        }
+      } catch { /* ignore fix errors */ }
+    }
     this._reports.push({
       ruleId: this._currentRule,
       message: resolvedMsg,
       node: node ? { type: node.type, start: node.start } : undefined,
       loc: resolvedLoc,
+      fix: fix && fix.length > 0 ? fix : undefined,
     });
   }
 
