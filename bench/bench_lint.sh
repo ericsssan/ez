@@ -1,71 +1,101 @@
 #!/usr/bin/env bash
-# Realistic lint benchmark: sanz JS plugin vs oxlint vs biome
+# Lint benchmark: sanz (all ESLint core rules) vs oxlint vs biome — default settings.
 #
-# Corpus A: test262-parser-tests/pass   —  1983 JS files,    8 MB
-# Corpus B: babel-parser fixtures        —  5872 JS+TS files, 55 MB
-# Corpus C: test262/test                 — 53393 JS files,   229 MB
+# Each tool runs its default ruleset. This is the honest "out of the box" comparison.
+#   sanz:   292 ESLint core rules via `--eslint-plugin eslint` (no --rule filter)
+#   oxlint:  93 default rules (`oxlint` with no flags)
+#   biome:  ~150 default rules (`biome lint`)
 #
-# Benchmark 1: syntax rules (no-debugger, no-empty, no-var, prefer-const)
-# Benchmark 2: scope-aware rules (no-unused-vars, no-undef, no-unreachable, prefer-const)
+# Three corpora, increasing in size:
+#   A: test262-parser-tests/pass  —  ~2K JS files,   ~8 MB
+#   B: babel-parser fixtures      —  ~6K JS/TS files, ~55 MB
+#   C: test262/test               — ~53K JS files,   ~229 MB
 #
-# Usage: bash bench/bench_lint.sh
+# Usage: bash bench/bench_lint.sh [A|B|C|all]
+#        Default: all
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 NCPU=$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-TEST262="tests/conformance/test262-parser-tests/pass"
-BABEL="tests/conformance/babel/packages/babel-parser/test/fixtures"
-TEST262_FULL="tests/conformance/test262/test"
 
-# Syntax-only rules (minimal per-node work)
-SYN_SANZ="--rule no-debugger --rule no-empty --rule no-var --rule prefer-const"
-SYN_OX="-D no-debugger -D no-empty -D no-var -D prefer-const"
-# Scope-aware rules (real per-node work, produce findings)
-SCOPE_SANZ="--rule no-unused-vars --rule no-undef --rule no-unreachable --rule prefer-const"
-SCOPE_OX="-D no-unused-vars -D no-undef -D no-unreachable -D prefer-const"
-# Corpus C: drop no-var (oxlint pathological on no-var × 53K files)
-SYN_C_SANZ="--rule no-debugger --rule no-empty --rule prefer-const"
-SYN_C_OX="-D no-debugger -D no-empty -D prefer-const"
+# ── Corpora ──────────────────────────────────────────────────
+CORPUS_A="tests/conformance/test262-parser-tests/pass"
+CORPUS_B="tests/conformance/babel/packages/babel-parser/test/fixtures"
+CORPUS_C="tests/conformance/test262/test"
 
-SANZ="node js/lint.js --eslint-plugin eslint"
-OX="oxlint --no-ignore -A all"
+# ── Tool commands (default rulesets) ─────────────────────────
+# sanz: all ESLint core rules, single-threaded and multi-threaded
+SANZ_1T="node js/lint.js --eslint-plugin eslint --threads 1"
+SANZ_MT="node js/lint.js --eslint-plugin eslint --threads $NCPU"
+# oxlint: default rules, --no-ignore to not skip test files via gitignore
+OXLINT="oxlint --no-ignore"
+# biome: default rules, disable gitignore to match
+BIOME="biome lint --vcs-use-ignore-file=false"
 
-A_FILES=$(find "$TEST262" -name '*.js' | wc -l | tr -d ' ')
-A_KB=$(du -sk "$TEST262" | cut -f1)
-B_FILES=$(find "$BABEL" \( -name '*.js' -o -name '*.ts' \) ! -name '*.d.ts' | wc -l | tr -d ' ')
-B_KB=$(du -sk "$BABEL" | cut -f1)
-C_FILES=$(find "$TEST262_FULL" -name '*.js' | wc -l | tr -d ' ')
-C_KB=$(du -sk "$TEST262_FULL" | cut -f1)
+# ── Helpers ──────────────────────────────────────────────────
 
-echo "=== sanz lint benchmark ==="
-echo "Corpus A: test262-parser-tests/pass —  $A_FILES JS files,    ${A_KB} KB"
-echo "Corpus B: babel-parser fixtures     —  $B_FILES JS+TS files, ${B_KB} KB"
-echo "Corpus C: test262/test              — $C_FILES JS files,   ${C_KB} KB"
-echo "CPU cores: $NCPU"
-echo ""
+corpus_stats() {
+  local dir="$1"
+  local files kb
+  files=$(find "$dir" \( -name '*.js' -o -name '*.ts' \) ! -name '*.d.ts' 2>/dev/null | wc -l | tr -d ' ')
+  kb=$(du -sk "$dir" 2>/dev/null | cut -f1)
+  echo "${files} files, ${kb} KB"
+}
 
-run() {
-  local label="$1"; shift
-  local sanz_cmd="$1"; shift
-  local ox_cmd="$1"; shift
+# Print what each tool reports as its rule count (sanity check).
+print_rule_counts() {
   local corpus="$1"
-  echo "--- $label ---"
-  hyperfine --warmup 2 --runs 6 --ignore-failure \
-    --command-name "sanz(1t)"        "$sanz_cmd --threads 1  $corpus" \
-    --command-name "sanz(${NCPU}t)"  "$sanz_cmd --threads $NCPU $corpus" \
-    --command-name "oxlint"          "$ox_cmd $corpus" \
-    --command-name "biome"           "biome lint $corpus"
+  echo "  Rule counts (sanity check):"
+  local sanz_out ox_out biome_out
+  sanz_out=$($SANZ_1T "$corpus" 2>&1 | tail -1 || true)
+  ox_out=$($OXLINT "$corpus" 2>&1 | tail -1 || true)
+  biome_out=$($BIOME "$corpus" 2>&1 | grep -E "^Checked" || echo "(no summary)")
+  echo "    sanz:   $sanz_out"
+  echo "    oxlint: $ox_out"
+  echo "    biome:  $biome_out"
   echo ""
 }
 
-echo "======== Benchmark 1: syntax rules (4 rules) ========"
-echo ""
-run "Corpus A: test262-parser-tests (JS)" "$SANZ $SYN_SANZ" "$OX $SYN_OX" "$TEST262"
-run "Corpus B: babel-parser fixtures (JS+TS)" "$SANZ $SYN_SANZ" "$OX $SYN_OX" "$BABEL"
-run "Corpus C: test262/test (JS, 3 rules)" "$SANZ $SYN_C_SANZ" "$OX $SYN_C_OX" "$TEST262_FULL"
+run() {
+  local label="$1"
+  local corpus="$2"
+  local runs="${3:-6}"
 
-echo "======== Benchmark 2: scope-aware rules (4 rules) ========"
+  echo "─── $label ───"
+  echo "  Corpus: $(corpus_stats "$corpus")"
+  print_rule_counts "$corpus"
+
+  hyperfine \
+    --warmup 2 \
+    --runs "$runs" \
+    --ignore-failure \
+    --export-json "bench/results_$(echo "$label" | tr ' /' '_').json" \
+    --command-name "sanz (1 thread, 292 rules)"     "$SANZ_1T $corpus" \
+    --command-name "sanz ($NCPU threads, 292 rules)" "$SANZ_MT $corpus" \
+    --command-name "oxlint (93 rules)"               "$OXLINT $corpus" \
+    --command-name "biome (~150 rules)"              "$BIOME $corpus"
+  echo ""
+}
+
+# ── Main ─────────────────────────────────────────────────────
+
+selection="${1:-all}"
+
+echo "=== Lint Benchmark (default rulesets) ==="
+echo "CPU cores: $NCPU"
 echo ""
-run "Corpus A: test262-parser-tests (JS)" "$SANZ $SCOPE_SANZ" "$OX $SCOPE_OX" "$TEST262"
-run "Corpus B: babel-parser fixtures (JS+TS)" "$SANZ $SCOPE_SANZ" "$OX $SCOPE_OX" "$BABEL"
+
+if [[ "$selection" == "A" || "$selection" == "all" ]]; then
+  run "Corpus A — test262-parser-tests" "$CORPUS_A"
+fi
+
+if [[ "$selection" == "B" || "$selection" == "all" ]]; then
+  run "Corpus B — babel-parser fixtures" "$CORPUS_B"
+fi
+
+if [[ "$selection" == "C" || "$selection" == "all" ]]; then
+  run "Corpus C — test262 full" "$CORPUS_C" 4
+fi
+
+echo "JSON results saved to bench/results_*.json"

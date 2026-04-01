@@ -15,6 +15,7 @@ function esquery() {
   }
   return _esquery;
 }
+const _selectorParseCache = new Map();
 
 // ── Interned String Table ────────────────────────────────────────
 // Pre-intern all ESTree type name strings so identity comparisons (===)
@@ -1335,9 +1336,12 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         // CSS-style AST selector — pre-parse to avoid repeated parsing on every node
         const isExit = visitorKey.endsWith(':exit');
         const selector = isExit ? visitorKey.slice(0, -5) : visitorKey;
-        let parsedSelector;
-        try { parsedSelector = esquery() ? esquery().parse(selector) : null; } catch { parsedSelector = null; }
-        if (!parsedSelector) continue; // skip unparseable selectors
+        let parsedSelector = _selectorParseCache.get(selector);
+        if (parsedSelector === undefined) {
+          try { parsedSelector = esquery() ? esquery().parse(selector) : null; } catch { parsedSelector = null; }
+          _selectorParseCache.set(selector, parsedSelector);
+        }
+        if (!parsedSelector) continue;
         selectorHandlers.push({ selector, parsedSelector, isExit, handler, ruleId, ruleMeta, ruleOptions });
         continue;
       }
@@ -1457,72 +1461,60 @@ const FAKE_CODE_PATH = Object.freeze({
 const DEFAULT_ERROR_BUDGET = 200;
 
 /**
- * Estimate the cost of a rule handler by analyzing its source code.
- * Used for cost-based ordering: cheap handlers run first.
- *
- * Cost tiers:
- *   0 = trivial: only checks node.type or simple property access
- *   1 = cheap: string comparisons, property reads
- *   2 = moderate: parent/ancestor traversal, token access
- *   3 = expensive: scope access, getDeclaredVariables, getAncestors
- *
- * This is predicate pushdown + cost-based ordering combined:
- * we analyze the handler source to understand what it accesses.
+ * Consolidated handler analysis cache.
+ * Keyed by handler.toString() — computed once per unique handler source,
+ * reused across all files in the same process. This eliminates the #1
+ * profiling hotspot: repeated .toString() + regex on every handler per file.
  */
-function _estimateHandlerCost(handler) {
-  let src;
-  try { src = handler.toString(); } catch { return 2; }
-  // Scope access = most expensive
-  if (src.includes('getScope') || src.includes('getDeclaredVariables') ||
-      src.includes('getAncestors') || src.includes('.scope')) return 3;
-  // Token access or parent chain traversal = moderate
-  if (src.includes('getToken') || src.includes('.parent.') ||
-      src.includes('getText') || src.includes('sourceCode')) return 2;
-  // String comparisons / simple property checks = cheap
-  if (src.includes('.type') || src.includes('.name') ||
-      src.includes('.value') || src.includes('.kind')) return 1;
-  return 1; // default: cheap
-}
+const _handlerAnalysisCache = new Map();
 
-/**
- * Predicate pushdown: extract a parent-type guard from a handler's source.
- * If the handler starts with `if (node.parent.type !== "X") return;` or
- * `if (node.parent?.type !== "X") return;`, we can skip calling it entirely
- * when the parent type doesn't match.
- *
- * Returns { parentType: string } or null if no guard detected.
- */
-function _extractParentGuard(handler) {
+function _analyzeHandler(handler) {
   let src;
-  try { src = handler.toString(); } catch { return null; }
-  // Match patterns like:
-  //   if (node.parent.type !== "X") return
-  //   if (node.parent?.type !== "X") return
-  //   if (node.parent.type !== 'X') return
+  try { src = handler.toString(); } catch {
+    return { cost: 2, parentGuard: null, isTrivial: false, ruleAccess: 'independent' };
+  }
+  let cached = _handlerAnalysisCache.get(src);
+  if (cached) return cached;
+
+  // Cost estimation
+  let cost;
+  if (src.includes('getScope') || src.includes('getDeclaredVariables') ||
+      src.includes('getAncestors') || src.includes('.scope')) cost = 3;
+  else if (src.includes('getToken') || src.includes('.parent.') ||
+      src.includes('getText') || src.includes('sourceCode')) cost = 2;
+  else cost = 1;
+
+  // Parent guard extraction
   const m = src.match(
     /if\s*\(\s*node\.parent\??\.type\s*!==?\s*["']([A-Z][A-Za-z]+)["']\s*\)\s*return\b/
   );
-  return m ? { parentType: m[1] } : null;
+  const parentGuard = m ? { parentType: m[1] } : null;
+
+  // Trivial handler detection
+  let isTrivial = false;
+  if (src.length <= 300 && src.includes('report') &&
+      !src.includes('for ') && !src.includes('for(') && !src.includes('while') &&
+      !src.includes('getScope') && !src.includes('getDeclaredVariables') &&
+      !src.includes('getToken') && !src.includes('getText')) {
+    isTrivial = true;
+  }
+
+  // Rule access classification
+  let ruleAccess;
+  if (src.includes('markVariableAsUsed') || src.includes('.eslintUsed')) ruleAccess = 'writer';
+  else if (src.includes('getScope') || src.includes('getDeclaredVariables') ||
+      src.includes('.references') || src.includes('.variables')) ruleAccess = 'reader';
+  else ruleAccess = 'independent';
+
+  cached = { cost, parentGuard, isTrivial, ruleAccess };
+  _handlerAnalysisCache.set(src, cached);
+  return cached;
 }
 
-/**
- * Handler inlining: detect trivial handlers that only do a simple check + report.
- * Returns true if the handler can be considered "trivial" (very cheap to execute).
- * Trivial handlers are given cost 0 so they run first in fused dispatch.
- */
-function _isTrivialHandler(handler) {
-  let src;
-  try { src = handler.toString(); } catch { return false; }
-  // Trivial = short body, only context.report, no loops/branches/scope access
-  if (src.length > 300) return false;
-  // Must contain report (that's the point)
-  if (!src.includes('report')) return false;
-  // Must NOT contain complex control flow or expensive operations
-  if (src.includes('for ') || src.includes('for(') || src.includes('while')) return false;
-  if (src.includes('getScope') || src.includes('getDeclaredVariables')) return false;
-  if (src.includes('getToken') || src.includes('getText')) return false;
-  return true;
-}
+// Thin wrappers for backward compatibility / tests
+function _estimateHandlerCost(handler) { return _analyzeHandler(handler).cost; }
+function _extractParentGuard(handler) { return _analyzeHandler(handler).parentGuard; }
+function _isTrivialHandler(handler) { return _analyzeHandler(handler).isTrivial; }
 
 /**
  * Dead handler elimination: check if a handler's visitor type can actually
@@ -1571,20 +1563,17 @@ function _fuseHandlers(handlers, typeName) {
   const items = [];
   for (let i = 0; i < handlers.length; i++) {
     const h = handlers[i];
-    const parentGuard = _extractParentGuard(h.handler);
-    // Dead handler elimination: skip impossible parent type combinations
-    if (_isDeadHandler(typeName, parentGuard)) continue;
-    const isTrivial = _isTrivialHandler(h.handler);
+    const analysis = _analyzeHandler(h.handler);
+    if (_isDeadHandler(typeName, analysis.parentGuard)) continue;
     items.push({
       handler: h.handler,
       ruleId: h.ruleId,
       ruleMeta: h.ruleMeta,
       ruleOptions: h.ruleOptions,
-      cost: isTrivial ? 0 : _estimateHandlerCost(h.handler),
-      parentGuard,
+      cost: analysis.isTrivial ? 0 : analysis.cost,
+      parentGuard: analysis.parentGuard,
     });
   }
-  // Cost-based ordering: trivial/cheap handlers first, expensive last
   items.sort((a, b) => a.cost - b.cost);
   return { items, length: items.length, _fused: true };
 }
@@ -1803,21 +1792,8 @@ function _replanFused(desc) {
 // (e.g., mark variables as used) must run before rules that read it.
 // We detect this by analyzing handler source for common patterns.
 
-/**
- * Classify a rule's data access pattern.
- * Returns 'reader' | 'writer' | 'independent'.
- * Writers must run before readers for correct results.
- */
-function _classifyRuleAccess(handler) {
-  let src;
-  try { src = handler.toString(); } catch { return 'independent'; }
-  // Writers: rules that modify scope/variable state
-  if (src.includes('markVariableAsUsed') || src.includes('.eslintUsed')) return 'writer';
-  // Readers: rules that query scope state for decisions
-  if (src.includes('getScope') || src.includes('getDeclaredVariables') ||
-      src.includes('.references') || src.includes('.variables')) return 'reader';
-  return 'independent';
-}
+// Thin wrapper for backward compatibility / tests
+function _classifyRuleAccess(handler) { return _analyzeHandler(handler).ruleAccess; }
 
 /**
  * Sort handlers within a fused group respecting the dependency DAG:
@@ -1826,9 +1802,7 @@ function _classifyRuleAccess(handler) {
 function _sortByDependency(items) {
   const ORDER = { writer: 0, independent: 1, reader: 2 };
   items.sort((a, b) => {
-    const accessA = _classifyRuleAccess(a.handler);
-    const accessB = _classifyRuleAccess(b.handler);
-    const orderDiff = ORDER[accessA] - ORDER[accessB];
+    const orderDiff = ORDER[_analyzeHandler(a.handler).ruleAccess] - ORDER[_analyzeHandler(b.handler).ruleAccess];
     if (orderDiff !== 0) return orderDiff;
     return a.cost - b.cost;
   });
@@ -1999,6 +1973,207 @@ function _extractFileLevelRules(visitorMap, tagNames, tagCount, tagEnterHandlers
   }
 
   return { fileLevelEnter, fileLevelExit, extractedRules };
+}
+
+// ── Execution Plan Cache ─────────────────────────────────────────
+// The structural plan (tag handler arrays, flags, fusion order, file-level
+// extraction, batch scan eligibility) is deterministic for a given visitorMap
+// structure. Cache it so the second+ file skips all handler analysis.
+// Key: serialized ruleId set (since handler references change per file but
+// ruleIds and visitor keys are stable for the same plugin set).
+
+let _cachedPlanKey = null;
+let _cachedPlan = null;
+
+function _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip) {
+  // Build a cache key from the visitorMap keys + ruleIds (deterministic for same plugins)
+  const keyParts = [];
+  for (const [k, handlers] of visitorMap) {
+    const items = Array.isArray(handlers) ? handlers : (handlers.items || [handlers]);
+    const ruleIds = items.map(h => h.ruleId || '?').join(',');
+    keyParts.push(k + ':' + ruleIds);
+  }
+  const planKey = keyParts.join('|');
+
+  if (_cachedPlanKey === planKey && _cachedPlan) {
+    // Remap handler references from the new visitorMap into the cached plan
+    return _remapPlan(_cachedPlan, visitorMap, tagNames, tagCount);
+  }
+
+  // Build from scratch
+  const plan = _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip);
+
+  // Cache the structural template for reuse
+  _cachedPlanKey = planKey;
+  _cachedPlan = plan;
+  return plan;
+}
+
+function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip) {
+  const FLAG_CODEPATH_ENTER = 1, FLAG_CLASS_BODY = 2, FLAG_METHOD_FN = 4, FLAG_CODEPATH_EXIT = 8;
+  const tagEnterHandlers = new Array(tagCount);
+  const tagExitHandlers  = new Array(tagCount);
+  const tagFlags = new Uint8Array(tagCount);
+
+  for (let t = 0; t < tagCount; t++) {
+    const tn = tagNames[t];
+    if (!tn) continue;
+    tagEnterHandlers[t] = visitorMap.get(tn) || null;
+    tagExitHandlers[t]  = visitorMap.get(tn + ':exit') || null;
+    if (hasCodePath && CODE_PATH_TYPES.has(tn)) tagFlags[t] |= FLAG_CODEPATH_ENTER | FLAG_CODEPATH_EXIT;
+    if (hasClassBody && CLASS_TYPES.has(tn))    tagFlags[t] |= FLAG_CLASS_BODY;
+    if (hasMethodFn && tn === 'MethodDefinition') tagFlags[t] |= FLAG_METHOD_FN;
+  }
+
+  // Relevant tag set
+  const relevantTag = new Uint8Array(tagCount);
+  let relevantTagCount = 0;
+  for (let t = 0; t < tagCount; t++) {
+    if (tagEnterHandlers[t] || tagExitHandlers[t] || tagFlags[t]) {
+      relevantTag[t] = 1;
+      relevantTagCount++;
+    }
+  }
+
+  // Rule fusion
+  for (let t = 0; t < tagCount; t++) {
+    const tn = tagNames[t] || '';
+    const enter = tagEnterHandlers[t];
+    if (enter && enter.length > 1) {
+      const fused = _fuseHandlers(enter, tn);
+      _sortByDependency(fused.items);
+      fused.items = _coalesceByParentGuard(fused.items);
+      tagEnterHandlers[t] = fused;
+    }
+    const exit = tagExitHandlers[t];
+    if (exit && exit.length > 1) {
+      const fused = _fuseHandlers(exit, tn + ':exit');
+      _sortByDependency(fused.items);
+      fused.items = _coalesceByParentGuard(fused.items);
+      tagExitHandlers[t] = fused;
+    }
+  }
+
+  // File-level rule extraction
+  const { fileLevelEnter, fileLevelExit } = _extractFileLevelRules(
+    visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers
+  );
+
+  // Columnar batch scan
+  const batchScannable = canSkip ? _extractBatchScannable(
+    visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers, tagFlags
+  ) : new Map();
+
+  // Record the structural template: for each slot, store the ruleId ordering
+  // so _remapPlan can reconstruct with fresh handler references.
+  const _template = _buildTemplate(tagEnterHandlers, tagExitHandlers, tagCount, fileLevelEnter, fileLevelExit, batchScannable);
+
+  return { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
+           fileLevelEnter, fileLevelExit, batchScannable, _template };
+}
+
+function _buildTemplate(tagEnterHandlers, tagExitHandlers, tagCount, fileLevelEnter, fileLevelExit, batchScannable) {
+  // For each tag slot, record the ruleId+visitorKey ordering.
+  // This lets _remapPlan reconstruct the plan with new handler refs.
+  function slotTemplate(desc) {
+    if (!desc) return null;
+    if (desc._fused) {
+      return { _fused: true, items: desc.items.map(it => ({
+        ruleId: it.ruleId, cost: it.cost, parentGuard: it.parentGuard, _coalescedGuard: it._coalescedGuard
+      }))};
+    }
+    return desc.map(it => ({ ruleId: it.ruleId }));
+  }
+  const enterTemplates = new Array(tagCount);
+  const exitTemplates = new Array(tagCount);
+  for (let t = 0; t < tagCount; t++) {
+    enterTemplates[t] = slotTemplate(tagEnterHandlers[t]);
+    exitTemplates[t] = slotTemplate(tagExitHandlers[t]);
+  }
+  return {
+    enterTemplates, exitTemplates,
+    fileLevelEnterIds: fileLevelEnter.map(h => h.ruleId),
+    fileLevelExitIds: fileLevelExit.map(h => h.ruleId),
+    batchScannableIds: new Map([...batchScannable].map(([tn, hs]) => [tn, hs.map(h => h.ruleId)])),
+  };
+}
+
+function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
+  const { _template, tagFlags, relevantTag, relevantTagCount } = cachedPlan;
+  // Build ruleId → fresh handler lookup from the new visitorMap
+  const handlerByKey = new Map(); // "ruleId|visitorKey" → handler entry
+  for (const [key, handlers] of visitorMap) {
+    const items = Array.isArray(handlers) ? handlers : [handlers];
+    for (const h of items) {
+      if (h.ruleId) handlerByKey.set(h.ruleId + '|' + key, h);
+    }
+  }
+  // Also index by ruleId alone for simpler lookups
+  const handlerByRule = new Map(); // ruleId → last seen handler entry (for meta/options)
+  for (const [key, handlers] of visitorMap) {
+    const items = Array.isArray(handlers) ? handlers : [handlers];
+    for (const h of items) {
+      if (h.ruleId && !handlerByRule.has(h.ruleId)) handlerByRule.set(h.ruleId, h);
+    }
+  }
+
+  function remapSlot(template, tagName) {
+    if (!template) return null;
+    if (template._fused) {
+      const items = [];
+      for (const t of template.items) {
+        const fresh = handlerByKey.get(t.ruleId + '|' + tagName) || handlerByRule.get(t.ruleId);
+        if (!fresh) continue;
+        items.push({
+          handler: fresh.handler, ruleId: t.ruleId,
+          ruleMeta: fresh.ruleMeta, ruleOptions: fresh.ruleOptions,
+          cost: t.cost, parentGuard: t.parentGuard, _coalescedGuard: t._coalescedGuard,
+        });
+      }
+      return { items, length: items.length, _fused: true };
+    }
+    // Array format
+    const arr = [];
+    for (const t of template) {
+      const fresh = handlerByKey.get(t.ruleId + '|' + tagName) || handlerByRule.get(t.ruleId);
+      if (fresh) arr.push(fresh);
+    }
+    return arr.length > 0 ? arr : null;
+  }
+
+  const tagEnterHandlers = new Array(tagCount);
+  const tagExitHandlers = new Array(tagCount);
+  for (let t = 0; t < tagCount; t++) {
+    const tn = tagNames[t] || '';
+    tagEnterHandlers[t] = remapSlot(_template.enterTemplates[t], tn);
+    tagExitHandlers[t] = remapSlot(_template.exitTemplates[t], tn + ':exit');
+  }
+
+  // Remap file-level handlers
+  const fileLevelEnter = [];
+  for (const ruleId of _template.fileLevelEnterIds) {
+    const fresh = handlerByKey.get(ruleId + '|Program') || handlerByRule.get(ruleId);
+    if (fresh) fileLevelEnter.push(fresh);
+  }
+  const fileLevelExit = [];
+  for (const ruleId of _template.fileLevelExitIds) {
+    const fresh = handlerByKey.get(ruleId + '|Program:exit') || handlerByRule.get(ruleId);
+    if (fresh) fileLevelExit.push(fresh);
+  }
+
+  // Remap batch scannable
+  const batchScannable = new Map();
+  for (const [tn, ruleIds] of _template.batchScannableIds) {
+    const hs = [];
+    for (const ruleId of ruleIds) {
+      const fresh = handlerByKey.get(ruleId + '|' + tn) || handlerByRule.get(ruleId);
+      if (fresh) hs.push(fresh);
+    }
+    if (hs.length > 0) batchScannable.set(tn, hs);
+  }
+
+  return { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
+           fileLevelEnter, fileLevelExit, batchScannable, _template };
 }
 
 /**
@@ -2203,116 +2378,49 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
   const hasClassBody = visitorMap.has('ClassBody') || visitorMap.has('ClassBody:exit');
   const hasMethodFn  = visitorMap.has('FunctionExpression') || visitorMap.has('FunctionExpression:exit') ||
                        visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
+  const canSkip = !hasSelectors;
 
-  // ── Rule Query Optimizer: tag-indexed execution plan ───────────
-  // Instead of: tag → tagName string → effectiveTypeName() → Map.get(string) → handlers
-  // We build:  tag → handlers[]  (direct array lookup, zero string ops in hot loop)
-  //
-  // This is the core of the "query optimizer" — we know every rule's visitor keys
-  // and every tag's ESTree type at plan time. Pre-resolve everything into arrays
-  // indexed by tag number. The hot loop becomes a single array dereference per node.
   const tagCount = tagNames.length;
-  // tag → handler[] for enter and exit passes (null = no handlers = skip)
-  const tagEnterHandlers = new Array(tagCount);
-  const tagExitHandlers  = new Array(tagCount);
-  // tag → flags byte: bit 0 = codepath enter, bit 1 = class body, bit 2 = method fn,
-  //                   bit 3 = codepath exit
-  const tagFlags = new Uint8Array(tagCount);
   const FLAG_CODEPATH_ENTER = 1;
   const FLAG_CLASS_BODY     = 2;
   const FLAG_METHOD_FN      = 4;
   const FLAG_CODEPATH_EXIT  = 8;
 
-  for (let t = 0; t < tagCount; t++) {
-    const tn = tagNames[t];
-    if (!tn) continue;
-    tagEnterHandlers[t] = visitorMap.get(tn) || null;
-    tagExitHandlers[t]  = visitorMap.get(tn + ':exit') || null;
-    if (hasCodePath && CODE_PATH_TYPES.has(tn)) tagFlags[t] |= FLAG_CODEPATH_ENTER | FLAG_CODEPATH_EXIT;
-    if (hasClassBody && CLASS_TYPES.has(tn))    tagFlags[t] |= FLAG_CLASS_BODY;
-    if (hasMethodFn && tn === 'MethodDefinition') tagFlags[t] |= FLAG_METHOD_FN;
-  }
-  // If selectors are present, we can't skip any node (selector could match anything).
-  const canSkip = !hasSelectors;
+  // ── Execution plan: build once, reuse across files ─────────────
+  // The plan template (tag arrays, flags, fusion order, file-level/batch
+  // extraction) is deterministic for a given plugin set + tagNames.
+  // Cache it keyed by the plugins array identity so the second file
+  // skips all .toString()/regex analysis, O(rules×tags) scans, etc.
+  // Only per-file state (skipSet, nodesByType, subtreeRelevant) is rebuilt.
+  const plan = _getOrBuildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip);
+  const { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
+          fileLevelEnter, fileLevelExit, batchScannable } = plan;
 
-  // ── Rule Query Optimizer: relevant tag set ─────────────────────
-  // Build a bitset of tags that have ANY handler (enter, exit, or special flag).
-  // Used by subtree pruning to skip entire subtrees with no relevant tags.
-  const relevantTag = new Uint8Array(tagCount); // 1 = relevant, 0 = skip
-  let relevantTagCount = 0;
-  for (let t = 0; t < tagCount; t++) {
-    if (tagEnterHandlers[t] || tagExitHandlers[t] || tagFlags[t]) {
-      relevantTag[t] = 1;
-      relevantTagCount++;
-    }
-  }
+  // ── Per-file state ─────────────────────────────────────────────
 
-  // ── Rule Query Optimizer: subtree pruning ──────────────────────
-  // For each node, compute whether its subtree contains any relevant tags.
-  // If not, the entire subtree can be skipped during traversal.
-  // Walk post-order: leaf nodes check themselves, parents OR children's results.
-  // subtreeRelevant[i] = 1 means node i or some descendant has a relevant tag.
+  // Subtree pruning (per-file: depends on AST structure)
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
-  // Only build if it's worth pruning (< 50% of tags are relevant and we can skip)
   const usePruning = canSkip && relevantTagCount < tagCount * 0.5 && pd;
   if (usePruning) {
-    // Walk post-order so children are computed before parents
     for (let i = 0; i < postOrder.length; i++) {
       const idx = postOrder[i];
       if (relevantTag[nodeTags[idx]]) {
-        // This node itself is relevant — mark it and propagate to parent
         subtreeRelevant[idx] = 1;
         const p = pd[idx];
         if (p !== NONE) subtreeRelevant[p] = 1;
       } else if (subtreeRelevant[idx]) {
-        // A child marked us relevant — propagate to parent
         const p = pd[idx];
         if (p !== NONE) subtreeRelevant[p] = 1;
       }
     }
   }
 
-  // ── Rule Query Optimizer: rule fusion ──────────────────────────
-  // For tags with multiple handlers, fuse them into a single function that
-  // calls all handlers in sequence. This eliminates per-handler overhead
-  // (context switching, property assignment) in the hot loop.
-  // Also applies: cost-based ordering, handler inlining, dead handler
-  // elimination, rule dependency DAG sorting, and visitor coalescing.
-  for (let t = 0; t < tagCount; t++) {
-    const tn = tagNames[t] || '';
-    const enter = tagEnterHandlers[t];
-    if (enter && enter.length > 1) {
-      const fused = _fuseHandlers(enter, tn);
-      _sortByDependency(fused.items);
-      fused.items = _coalesceByParentGuard(fused.items);
-      tagEnterHandlers[t] = fused;
-    }
-    const exit = tagExitHandlers[t];
-    if (exit && exit.length > 1) {
-      const fused = _fuseHandlers(exit, tn + ':exit');
-      _sortByDependency(fused.items);
-      fused.items = _coalesceByParentGuard(fused.items);
-      tagExitHandlers[t] = fused;
-    }
-  }
-
-  // ── Rule Query Optimizer: early exit for file-level rules ─────
-  // Extract Program-only rules and run them outside the DFS loop.
-  const { fileLevelEnter, fileLevelExit, extractedRules } = _extractFileLevelRules(
-    visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers
-  );
-
   // Initialize rule skip bitmap
   const skipSet = new RuleSkipSet();
-  skipSet.init(visitorMap.size); // approximate total unique rules
+  skipSet.init(visitorMap.size);
   context._skipSet = skipSet;
 
-  // ── Rule Query Optimizer: materialized views ───────────────────
-  // Pre-collect node indices by tag during a single scan so rules can query
-  // "all ReturnStatement nodes" or "all AwaitExpression nodes" in O(1).
-  // Exposed via context.sourceCode._nodesByType (Map<string, number[]>).
-  // Builds index for ALL node types in a single O(n) pass — any rule can
-  // query any type without re-scanning the entire AST.
+  // Materialized views (per-file: depends on AST content)
   const nodesByType = new Map();
   for (let i = 0; i < ast.nodeCount; i++) {
     const tag = nodeTags[i];
@@ -2324,19 +2432,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
     }
   }
   context.sourceCode._nodesByType = nodesByType;
-  // Helper: get all nodes of a type as NodeView objects
   context.sourceCode.getNodesByType = function(typeName) {
     const indices = this._nodesByType.get(typeName);
     if (!indices) return [];
     return indices.map(idx => nodeView(this._ast, idx));
   };
-
-  // ── Rule Query Optimizer: columnar batch scan ─────────────────
-  // For single-type enter-only rules, bypass DFS and scan the materialized
-  // view directly. This avoids touching irrelevant nodes entirely.
-  const batchScannable = canSkip ? _extractBatchScannable(
-    visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers, tagFlags
-  ) : new Map();
 
   // Execute batch-scannable rules before the DFS walk
   for (const [typeName, handlers] of batchScannable) {
@@ -2371,89 +2471,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames) {
     }
   }
 
-  // ── Profile-guided replan: warmup + reorder ───────────────────
-  // During first PROFILE_WARMUP_NODES nodes, measure handler times.
-  // After warmup, re-sort fused handlers by actual profiled cost.
-  let profileNodesVisited = 0;
-  let profileReplanned = false;
-  const useProfile = _profileData.size > 0; // reuse data from prior files
-
-  // If we have profile data from a prior file, replan immediately
-  if (useProfile) {
-    for (let t = 0; t < tagCount; t++) {
-      _replanFused(tagEnterHandlers[t]);
-      _replanFused(tagExitHandlers[t]);
-    }
-    profileReplanned = true;
-  }
-
-  // ── AST fingerprinting: detect duplicate top-level subtrees ───
-  // Build fingerprints for top-level declarations (children of Program).
-  // If two subtrees have the same fingerprint, run rules on the first
-  // and clone its results for the duplicate.
-  const fingerprints = new Map(); // hash → first nodeIdx
-  const duplicateOf = new Map();  // nodeIdx → first nodeIdx (for result cloning)
-  if (pd && ast.nodeCount > 100) { // only worth it for non-trivial files
-    for (let i = 0; i < ast.nodeCount; i++) {
-      if (pd[i] === 0) { // direct child of Program (root)
-        const fp = _fingerprintSubtree(nodeTags, pd, ast.nodeCount, i);
-        if (fingerprints.has(fp)) {
-          duplicateOf.set(i, fingerprints.get(fp));
-        } else {
-          fingerprints.set(fp, i);
-        }
-      }
-    }
-  }
-
   // Enter pass: DFS pre-order (parents before children)
   for (let i = 0; i < preOrder.length; i++) {
     const idx = preOrder[i];
-    // All-skip early termination: if every rule hit its budget, stop
     if (skipSet.allSkipped) break;
-    // Subtree pruning: skip nodes whose subtree has no relevant tags
     if (usePruning && !subtreeRelevant[idx]) continue;
     const tag = nodeTags[idx];
     const handlers = tagEnterHandlers[tag];
     const flags = tagFlags[tag];
-    // Fast-skip: no handlers and no special flags for this tag
     if (canSkip && !handlers && !flags) continue;
     if (flags & FLAG_CODEPATH_ENTER) invokeCodePathHandlers('onCodePathStart', idx);
     if (handlers) {
-      const node = nodeView(ast, idx);
-      // Profile warmup: measure handler cost on first N nodes
-      if (!profileReplanned && handlers._fused) {
-        const items = handlers.items;
-        for (let h = 0; h < items.length; h++) {
-          const item = items[h];
-          if (skipSet.has(item.ruleId)) continue;
-          if (context._ruleErrors[item.ruleId] >= context._errorBudget) {
-            skipSet.mark(item.ruleId); continue;
-          }
-          if (item.parentGuard) {
-            const pt = node.parent ? node.parent.type : null;
-            if (pt !== item.parentGuard.parentType) continue;
-          }
-          context._currentRule = item.ruleId;
-          context._currentRuleMeta = item.ruleMeta;
-          context.options = item.ruleOptions;
-          context._currentNodeIdx = idx;
-          const t0 = performance.now();
-          try { _callHandler(item.handler, node); }
-          catch (err) { _handleError(err, item.ruleId, context); }
-          _profileRecord(item.ruleId, (performance.now() - t0) * 1e6);
-        }
-        profileNodesVisited++;
-        if (profileNodesVisited >= PROFILE_WARMUP_NODES) {
-          profileReplanned = true;
-          for (let t2 = 0; t2 < tagCount; t2++) {
-            _replanFused(tagEnterHandlers[t2]);
-            _replanFused(tagExitHandlers[t2]);
-          }
-        }
-      } else {
-        _invokeFused(handlers, node, idx, context);
-      }
+      _invokeFused(handlers, nodeView(ast, idx), idx, context);
     }
     if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, false);
     if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
