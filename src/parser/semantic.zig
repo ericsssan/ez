@@ -104,16 +104,19 @@ pub const SemanticAnalyzer = struct {
         self.references.deinit();
         self.diagnostics.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
-        for (self.scope_bindings.items) |*m| m.deinit(self.allocator);
-        self.scope_bindings.deinit(self.allocator);
+        // scope_bindings is freed explicitly in analyze() via defer; skip here to avoid double-free.
     }
 
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
     pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
         var self = SemanticAnalyzer.init(allocator, ast);
         errdefer self.deinit();
-        // exported_names is a temporary used only during analysis; always free it.
+        // exported_names and scope_bindings are temporaries; always free them.
         defer self.exported_names.deinit(allocator);
+        defer {
+            for (self.scope_bindings.items) |*m| m.deinit(self.allocator);
+            self.scope_bindings.deinit(self.allocator);
+        }
 
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
