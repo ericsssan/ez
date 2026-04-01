@@ -32,7 +32,7 @@ const RULE_NAMES = [
   "indent",           // Every node type — heaviest rule
 ];
 
-const FIXTURES = ["jquery.js", "lodash.js", "three.js"];
+const FIXTURES = ["jquery.js", "lodash.js", "three.js", "typescript.js"];
 const ITERATIONS = 5;
 
 function median(arr) {
