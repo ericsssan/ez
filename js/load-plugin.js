@@ -22,6 +22,16 @@ function resolvePackageDir(pkgName) {
   return null;
 }
 
+// Rules that depend on code path analysis (onCodePathStart/End, segment tracking).
+// sanz doesn't implement real code path analysis yet — these rules produce false
+// positives with the stub FAKE_CODE_PATH. Skipped by default; --rule forces them.
+const _NEEDS_CODE_PATH = new Set([
+  "array-callback-return", "complexity", "consistent-return", "constructor-super",
+  "getter-return", "no-constructor-return", "no-fallthrough", "no-invalid-this",
+  "no-promise-executor-return", "no-this-before-super", "no-unreachable-loop",
+  "no-unreachable", "no-useless-assignment", "no-useless-return", "require-atomic-updates",
+]);
+
 /**
  * Load an ESLint plugin package and return an array of plugin objects
  * compatible with runPlugins: [{ meta: { name }, create }]
@@ -50,9 +60,12 @@ function loadPlugin(pkgName, ruleFilters) {
       try {
         const rule = require(path.join(rulesDir, file));
         if (typeof rule.create !== "function") continue;
-        // Skip deprecated rules (formatting rules removed in eslint v9+)
-        // unless explicitly requested via --rule filter.
+        // Skip deprecated rules unless explicitly requested.
         if (rule.meta?.deprecated && ruleFilters.size === 0) continue;
+        // Skip rules that require code path analysis (not yet implemented).
+        // These produce false positives with FAKE_CODE_PATH and should not
+        // run until real code path analysis is added.
+        if (_NEEDS_CODE_PATH.has(ruleName) && ruleFilters.size === 0) continue;
         plugins.push({
           meta: { name: ruleName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema },
           create: rule.create,
