@@ -223,14 +223,24 @@ pub fn loadRuleFileWithBase(source: []const u8, base_dir: []const u8) ?[]const u
 /// Module cache — stored as a global in the QuickJS context.
 const RequireState = struct {
     base_dir: []const u8,
-    engine: *QjsEngine,
+    engine: ?*QjsEngine,
 };
 
-var g_require_state: RequireState = undefined;
+var g_require_state: RequireState = .{ .base_dir = "", .engine = null };
 
 fn installRequire(engine: *QjsEngine, base_dir: []const u8) void {
     g_require_state = .{ .base_dir = base_dir, .engine = engine };
     engine.setGlobalFunction("require", requireNative, 1);
+}
+
+/// Install require() on a raw JSContext (for use by qjs_engine.zig).
+pub fn installRequireForCtx(ctx_ptr: *anyopaque, base_dir: []const u8) void {
+    const ctx: *c.JSContext = @ptrCast(@alignCast(ctx_ptr));
+    g_require_state = .{ .base_dir = base_dir, .engine = null };
+    const global = c.JS_GetGlobalObject(ctx);
+    const fn_val = c.JS_NewCFunction(ctx, requireNative, "require", 1);
+    _ = c.JS_SetPropertyStr(ctx, global, "require", fn_val);
+    c.JS_FreeValue(ctx, global);
 }
 
 /// Native require() — reads the module file from disk, evals it in QuickJS.

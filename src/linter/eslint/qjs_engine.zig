@@ -37,6 +37,10 @@ pub const QjsLintEngine = struct {
             c.JS_FreeRuntime(rt);
             return null;
         };
+        // Install native require() function
+        const bridge = @import("../interp/quickjs_bridge.zig");
+        bridge.installRequireForCtx(@ptrCast(ctx), "js/node_modules/eslint/lib/rules");
+
         return .{
             .rt = rt,
             .ctx = ctx,
@@ -261,20 +265,25 @@ pub const QjsLintEngine = struct {
             defer c.JS_FreeValue(self.ctx, visitors);
             if (c.JS_IsObject(visitors) == 0) continue;
 
-            // DFS walk — for each enter event, check if this rule handles the tag
+            // DFS walk — dispatch enter and exit events
             for (traversal.dfs_events) |ev| {
-                if (ev < 0) continue; // TODO: handle exit events
-                const idx: u32 = @intCast(ev);
+                const is_exit = ev < 0;
+                const idx: u32 = if (is_exit) @intCast(~ev) else @intCast(ev);
                 if (idx >= tree.nodes.len) continue;
                 const tag = @intFromEnum(node_tags_enum[idx]);
                 if (tag >= 256) continue;
                 const type_name = tag_names[tag];
 
-                // Check if visitors has a handler for this type
+                // Build handler key: "TypeName" for enter, "TypeName:exit" for exit
                 var name_buf: [128]u8 = undefined;
-                if (type_name.len >= name_buf.len) continue;
+                if (type_name.len + 5 >= name_buf.len) continue;
                 @memcpy(name_buf[0..type_name.len], type_name);
-                name_buf[type_name.len] = 0;
+                if (is_exit) {
+                    @memcpy(name_buf[type_name.len..][0..5], ":exit");
+                    name_buf[type_name.len + 5] = 0;
+                } else {
+                    name_buf[type_name.len] = 0;
+                }
 
                 const handler = c.JS_GetPropertyStr(self.ctx, visitors, &name_buf);
                 if (c.JS_IsFunction(self.ctx, handler) == 0) {

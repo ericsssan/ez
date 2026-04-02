@@ -102,20 +102,21 @@ pub fn build(b: *std.Build) void {
     napi_step.dependOn(&napi_install.step);
 
     // ── QuickJS C library ─────────────────────────────────────
-    const qjs_c_flags: []const []const u8 = &.{
-        "-D_GNU_SOURCE",
-        "-DCONFIG_VERSION=\"0.8.0\"",
-        "-DCONFIG_BIGNUM",
-        "-funsigned-char",
-        "-fno-sanitize=undefined",
-    };
     const qjs_include = b.path("vendor/quickjs");
 
     // Add QuickJS C sources to main executable (standalone, no Node.js needed)
+    // Always compile QuickJS in debug mode to avoid optimization-related issues
     exe_mod.addCSourceFiles(.{
         .root = b.path("vendor/quickjs"),
         .files = &.{ "quickjs.c", "cutils.c", "libregexp.c", "libunicode.c", "libbf.c", "quickjs-libc.c" },
-        .flags = qjs_c_flags,
+        .flags = &.{
+            "-D_GNU_SOURCE",
+            "-DCONFIG_VERSION=\"0.8.0\"",
+            "-DCONFIG_BIGNUM",
+            "-funsigned-char",
+            "-fno-sanitize=undefined",
+            "-O0", // Keep QuickJS unoptimized to avoid C UB issues
+        },
     });
     exe_mod.addIncludePath(qjs_include);
     exe_mod.link_libc = true;

@@ -223,7 +223,7 @@ pub fn main(init: std.process.Init) !void {
             const entry = (corpus_walker.next(io) catch break) orelse break;
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
-            if (file_count >= 100) break;
+            if (file_count >= 500) break;
 
             const src = corpus_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
             defer allocator.free(src);
