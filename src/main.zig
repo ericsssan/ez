@@ -138,20 +138,35 @@ pub fn main(init: std.process.Init) !void {
         };
         defer lint_engine.deinit();
 
-        // Load a simple rule
-        const no_debugger_src = Io.Dir.cwd().readFileAlloc(io, "js/node_modules/eslint/lib/rules/no-debugger.js", allocator, Io.Limit.limited(1024 * 1024)) catch {
-            try stdout.print("Could not read no-debugger.js\n", .{});
-            try stdout.flush();
-            return;
-        };
-        defer allocator.free(no_debugger_src);
+        // Load all rules from disk
 
-        lint_engine.loadRule("no-debugger", no_debugger_src) catch {
-            try stdout.print("Failed to load no-debugger rule\n", .{});
-            try stdout.flush();
-            return;
-        };
-        lint_engine.discoverVisitors(0) catch {};
+        // Load ALL rules from the ESLint rules directory
+        {
+            var rule_dir = rules_dir;
+            var walker = rule_dir.walk(allocator) catch {
+                try stdout.print("Failed to walk rules dir\n", .{});
+                try stdout.flush();
+                return;
+            };
+            defer walker.deinit();
+            var rule_count: u32 = 0;
+            while (true) {
+                const entry = (walker.next(io) catch break) orelse break;
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
+                if (std.mem.eql(u8, entry.basename, "index.js")) continue;
+
+                const rule_src = rules_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+                defer allocator.free(rule_src);
+
+                const name = entry.basename[0 .. entry.basename.len - 3];
+                lint_engine.loadRule(name, rule_src) catch continue;
+                const ridx = lint_engine.ruleCount() - 1;
+                lint_engine.discoverVisitors(ridx) catch {};
+                rule_count += 1;
+            }
+            try stdout.print("Rules loaded: {d}\n", .{rule_count});
+        }
 
         try stdout.print("Lint engine: {d} rules loaded\n", .{lint_engine.ruleCount()});
 
@@ -182,9 +197,10 @@ pub fn main(init: std.process.Init) !void {
         try stdout.print("Parse: {d} nodes, {d} DFS events\n", .{ tree.nodes.len, traversal.dfs_events.len });
 
         // Quick DFS lint test — manually dispatch DebuggerStatement nodes
-        // End-to-end lint test: call create(), DFS walk, dispatch handlers
-        const diag_count = lint_engine.lintSource(test_src, allocator);
-        try stdout.print("Diagnostics from QuickJS: {d}\n", .{diag_count});
+        // Lint a broader test
+        const test_src2 = "var x = 1; debugger; if (x == 2) {} for (var i = 0; i < 10; i--) { continue; } if (true) {}";
+        const diag_count = lint_engine.lintSource(test_src2, allocator);
+        try stdout.print("Diagnostics on test: {d}\n", .{diag_count});
         try stdout.flush();
         return;
     }

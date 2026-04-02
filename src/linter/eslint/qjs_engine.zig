@@ -282,10 +282,8 @@ pub const QjsLintEngine = struct {
                     continue;
                 }
 
-                // Build node object with type property
-                const node_obj = c.JS_NewObject(self.ctx);
-                const type_str = c.JS_NewStringLen(self.ctx, type_name.ptr, type_name.len);
-                _ = c.JS_SetPropertyStr(self.ctx, node_obj, "type", type_str);
+                // Build full ESTree node object from Zig AST data
+                const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
 
                 // Call handler(node)
                 var hargs = [_]c.JSValue{node_obj};
@@ -312,347 +310,377 @@ pub const QjsLintEngine = struct {
 
         return diag_count;
     }
+
+    /// Build an ESTree-compatible node object from the Zig AST.
+    /// depth limits recursion to prevent infinite parent→child→parent chains.
+    fn buildNode(self: *QjsLintEngine, tree: *const ast_mod.Ast, tag_names: *const [256][]const u8, parents: []const u32, idx: u32, depth: u8) c.JSValue {
+        if (depth > 3 or idx >= tree.nodes.len or idx == 0xFFFFFFFF) return jsNull();
+
+        const obj = c.JS_NewObject(self.ctx);
+        const tags = tree.nodes.items(.tag);
+        const data_slice = tree.nodes.items(.data);
+        const main_tokens = tree.nodes.items(.main_token);
+        const tag = tags[idx];
+        const data = data_slice[idx];
+        const lhs = @intFromEnum(data.lhs);
+        const rhs = @intFromEnum(data.rhs);
+        const NONE: u32 = 0xFFFFFFFF;
+
+        // type
+        const type_name = tag_names[@intFromEnum(tag)];
+        setStr(self.ctx, obj, "type", type_name);
+
+        // parent (only at depth 0 to avoid explosion)
+        if (depth == 0 and idx < parents.len) {
+            const pidx = parents[idx];
+            if (pidx != NONE) {
+                const p = self.buildNode(tree, tag_names, parents, pidx, depth + 2); // depth+2 to limit parent's children
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "parent", p);
+            } else {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "parent", jsNull());
+            }
+        }
+
+        // operator (for binary/unary/assignment/update expressions)
+        const op = getOperator(tag);
+        if (op) |operator| {
+            setStr(self.ctx, obj, "operator", operator);
+        }
+
+        // kind (VariableDeclaration)
+        switch (tag) {
+            .var_decl => setStr(self.ctx, obj, "kind", "var"),
+            .let_decl => setStr(self.ctx, obj, "kind", "let"),
+            .const_decl => setStr(self.ctx, obj, "kind", "const"),
+            else => {},
+        }
+
+        // computed
+        switch (tag) {
+            .computed_member_expr, .optional_computed_member_expr,
+            .computed_property, .computed_method_def,
+            => _ = c.JS_SetPropertyStr(self.ctx, obj, "computed", jsTrue()),
+            .member_expr, .optional_member_expr,
+            .property, .shorthand_property, .method_def,
+            => _ = c.JS_SetPropertyStr(self.ctx, obj, "computed", jsFalse()),
+            else => {},
+        }
+
+        // prefix (UpdateExpression)
+        switch (tag) {
+            .prefix_inc, .prefix_dec => _ = c.JS_SetPropertyStr(self.ctx, obj, "prefix", jsTrue()),
+            .postfix_inc, .postfix_dec => _ = c.JS_SetPropertyStr(self.ctx, obj, "prefix", jsFalse()),
+            else => {},
+        }
+
+        // shorthand (Property)
+        if (tag == .shorthand_property) {
+            _ = c.JS_SetPropertyStr(self.ctx, obj, "shorthand", jsTrue());
+        }
+
+        // name (Identifier)
+        if (tag == .identifier) {
+            setStr(self.ctx, obj, "name", tree.tokenText(main_tokens[idx]));
+        }
+
+        // value / raw (Literal)
+        switch (tag) {
+            .string_literal, .number_literal, .boolean_literal, .null_literal, .regex_literal => {
+                const raw = tree.tokenText(main_tokens[idx]);
+                setStr(self.ctx, obj, "raw", raw);
+                switch (tag) {
+                    .number_literal => {
+                        const n = std.fmt.parseFloat(f64, raw) catch 0;
+                        _ = c.JS_SetPropertyStr(self.ctx, obj, "value", c.JS_NewFloat64(self.ctx, n));
+                    },
+                    .boolean_literal => _ = c.JS_SetPropertyStr(self.ctx, obj, "value",
+                        if (std.mem.eql(u8, raw, "true")) jsTrue() else jsFalse()),
+                    .null_literal => _ = c.JS_SetPropertyStr(self.ctx, obj, "value", jsNull()),
+                    .string_literal => {
+                        if (raw.len >= 2) setStr(self.ctx, obj, "value", raw[1 .. raw.len - 1]);
+                    },
+                    else => {},
+                }
+            },
+            else => {},
+        }
+
+        // Child nodes based on tag category
+        switch (tag) {
+            // Binary/logical/assignment: left, right
+            .add, .subtract, .multiply, .divide, .modulo,
+            .equal, .not_equal, .strict_equal, .strict_not_equal,
+            .less_than, .greater_than, .less_equal, .greater_equal,
+            .logical_and, .logical_or, .nullish_coalesce,
+            .bitwise_and, .bitwise_or, .bitwise_xor,
+            .shift_left, .shift_right, .instanceof_expr, .in_expr,
+            .assign, .add_assign, .sub_assign, .mul_assign, .div_assign,
+            => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "left", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "right", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // Unary/update: argument
+            .unary_minus, .unary_plus, .logical_not, .bitwise_not,
+            .typeof_expr, .void_expr, .delete_expr,
+            .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
+            .spread_element,
+            => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "argument", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+            },
+
+            // Variable declarations: declarations array
+            .var_decl, .let_decl, .const_decl => {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "declarations", self.buildNodeArray(tree, tag_names, parents, lhs, rhs, depth + 1));
+            },
+
+            // Declarator: id + init
+            .declarator => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "id", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "init", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // Expression statement
+            .expression_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "expression", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+            },
+
+            // Block statement: body array
+            .block_stmt, .static_block => {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNodeArray(tree, tag_names, parents, lhs, rhs, depth + 1));
+            },
+
+            // Program (root): body array + sourceType
+            .root => {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNodeArray(tree, tag_names, parents, lhs, rhs, depth + 1));
+                setStr(self.ctx, obj, "sourceType", "module");
+            },
+
+            // If statement: test + consequent
+            .if_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "consequent", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // If-else: test + consequent + alternate from IfData
+            .if_else_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                const if_data = tree.extraData(ast_mod.IfData, rhs);
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "consequent", self.buildNode(tree, tag_names, parents, @intFromEnum(if_data.consequent), depth + 1));
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "alternate", self.buildNode(tree, tag_names, parents, @intFromEnum(if_data.alternate), depth + 1));
+            },
+
+            // Conditional (ternary): condition + consequent + alternate
+            .conditional => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                const cond_data = tree.extraData(ast_mod.IfData, rhs);
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "consequent", self.buildNode(tree, tag_names, parents, @intFromEnum(cond_data.consequent), depth + 1));
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "alternate", self.buildNode(tree, tag_names, parents, @intFromEnum(cond_data.alternate), depth + 1));
+            },
+
+            // Member expression: object + property
+            .member_expr, .optional_member_expr => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "object", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                setStr(self.ctx, obj, "property", tree.tokenText(rhs));
+            },
+            .computed_member_expr, .optional_computed_member_expr => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "object", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "property", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // Call expression: callee + arguments
+            .call_expr, .optional_call_expr, .new_expr => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "callee", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) {
+                    const sr = tree.extraData(ast_mod.SubRange, rhs);
+                    _ = c.JS_SetPropertyStr(self.ctx, obj, "arguments", self.buildNodeArray(tree, tag_names, parents, sr.start, sr.end, depth + 1));
+                } else {
+                    _ = c.JS_SetPropertyStr(self.ctx, obj, "arguments", c.JS_NewArray(self.ctx));
+                }
+            },
+
+            // Return/throw: argument
+            .return_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "argument", self.buildNode(tree, tag_names, parents, lhs, depth + 1))
+                else _ = c.JS_SetPropertyStr(self.ctx, obj, "argument", jsNull());
+            },
+            .throw_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "argument", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+            },
+
+            // Object literal: properties
+            .object_literal => {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "properties", self.buildNodeArray(tree, tag_names, parents, lhs, rhs, depth + 1));
+            },
+
+            // Array literal: elements
+            .array_literal => {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "elements", self.buildNodeArrayWithHoles(tree, tag_names, parents, lhs, rhs, depth + 1));
+            },
+
+            // Property: key + value
+            .property => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "key", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "value", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+            .shorthand_property => {
+                if (lhs != NONE) {
+                    const kn = self.buildNode(tree, tag_names, parents, lhs, depth + 1);
+                    _ = c.JS_SetPropertyStr(self.ctx, obj, "key", kn);
+                    // Shorthand: value === key (same node)
+                    _ = c.JS_SetPropertyStr(self.ctx, obj, "value", c.JS_DupValue(self.ctx, kn));
+                }
+            },
+
+            // For statement: init/test/update from ForData + body
+            .for_stmt => {
+                const fd = tree.extraData(ast_mod.ForData, lhs);
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "init", self.buildNode(tree, tag_names, parents, @intFromEnum(fd.init), depth + 1));
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, @intFromEnum(fd.condition), depth + 1));
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "update", self.buildNode(tree, tag_names, parents, @intFromEnum(fd.update), depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // Switch: discriminant + cases
+            .switch_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "discriminant", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                const sr = tree.extraData(ast_mod.SubRange, rhs);
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "cases", self.buildNodeArray(tree, tag_names, parents, sr.start, sr.end, depth + 1));
+            },
+
+            // Switch case: test + consequent
+            .switch_case => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                const sr = tree.extraData(ast_mod.SubRange, rhs);
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "consequent", self.buildNodeArray(tree, tag_names, parents, sr.start, sr.end, depth + 1));
+            },
+            .switch_default => {
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "test", jsNull());
+                const sr = tree.extraData(ast_mod.SubRange, rhs);
+                _ = c.JS_SetPropertyStr(self.ctx, obj, "consequent", self.buildNodeArray(tree, tag_names, parents, sr.start, sr.end, depth + 1));
+            },
+
+            // While/do-while
+            .while_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+            .do_while_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "test", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // Debugger, empty, break, continue — no children
+            .debugger_stmt, .empty_stmt, .break_stmt, .continue_stmt, .break_label, .continue_label => {},
+
+            // With statement
+            .with_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "object", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                if (rhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNode(tree, tag_names, parents, rhs, depth + 1));
+            },
+
+            // Labeled statement
+            .labeled_stmt => {
+                if (lhs != NONE) _ = c.JS_SetPropertyStr(self.ctx, obj, "body", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+            },
+
+            else => {
+                // For unhandled tags, set lhs/rhs as generic children
+                if (lhs != NONE and lhs < tree.nodes.len) {
+                    _ = c.JS_SetPropertyStr(self.ctx, obj, "left", self.buildNode(tree, tag_names, parents, lhs, depth + 1));
+                }
+            },
+        }
+
+        return obj;
+    }
+
+    fn buildNodeArray(self: *QjsLintEngine, tree: *const ast_mod.Ast, tag_names: *const [256][]const u8, parents: []const u32, start: u32, end: u32, depth: u8) c.JSValue {
+        const arr = c.JS_NewArray(self.ctx);
+        if (start >= tree.extra_data.len or end > tree.extra_data.len or end <= start) return arr;
+        const slice = tree.extra_data[start..end];
+        var i: u32 = 0;
+        for (slice) |raw| {
+            if (raw == 0xFFFFFFFF) continue;
+            const node = self.buildNode(tree, tag_names, parents, raw, depth);
+            _ = c.JS_SetPropertyUint32(self.ctx, arr, i, node);
+            i += 1;
+        }
+        return arr;
+    }
+
+    fn buildNodeArrayWithHoles(self: *QjsLintEngine, tree: *const ast_mod.Ast, tag_names: *const [256][]const u8, parents: []const u32, start: u32, end: u32, depth: u8) c.JSValue {
+        const arr = c.JS_NewArray(self.ctx);
+        if (start >= tree.extra_data.len or end > tree.extra_data.len or end <= start) return arr;
+        const slice = tree.extra_data[start..end];
+        for (slice, 0..) |raw, i| {
+            if (raw == 0xFFFFFFFF) {
+                _ = c.JS_SetPropertyUint32(self.ctx, arr, @intCast(i), jsNull());
+            } else {
+                _ = c.JS_SetPropertyUint32(self.ctx, arr, @intCast(i), self.buildNode(tree, tag_names, parents, raw, depth));
+            }
+        }
+        return arr;
+    }
 };
 
 fn jsUndefined() c.JSValue {
     return .{ .u = .{ .int32 = 0 }, .tag = c.JS_TAG_UNDEFINED };
 }
 
-// ── Per-file linting ────────────────────────────────────────────
+fn jsNull() c.JSValue {
+    return .{ .u = .{ .int32 = 0 }, .tag = c.JS_TAG_NULL };
+}
 
-/// File-level lint state — passed to native callbacks via JS_SetOpaque.
-const FileLintState = struct {
-    bast: *const BufferAstType.BufferAst,
-    tag_names: [256][]const u8,
-    diagnostics: *std.ArrayList(Diagnostic),
-    allocator: std.mem.Allocator,
-    ctx: *c.JSContext,
-    current_rule_name: []const u8,
-    current_rule_severity: Severity,
-};
+fn jsTrue() c.JSValue {
+    return .{ .u = .{ .int32 = 1 }, .tag = c.JS_TAG_BOOL };
+}
 
-/// Lint a parsed file buffer using all loaded rules.
-/// Returns the number of diagnostics found.
-pub fn lintBuffer(
-    engine: *QjsLintEngine,
-    bast: *const BufferAstType.BufferAst,
-    diagnostics: *std.ArrayList(Diagnostic),
-    allocator: std.mem.Allocator,
-) u32 {
-    // Build tag names table
-    var tag_names: [256][]const u8 = undefined;
-    for (0..256) |i| tag_names[i] = std.mem.span(layout.sanz_tag_name(@intCast(i)));
+fn jsFalse() c.JSValue {
+    return .{ .u = .{ .int32 = 0 }, .tag = c.JS_TAG_BOOL };
+}
 
-    var state = FileLintState{
-        .bast = bast,
-        .tag_names = tag_names,
-        .diagnostics = diagnostics,
-        .allocator = allocator,
-        .ctx = engine.ctx,
-        .current_rule_name = "",
-        .current_rule_severity = .@"error",
+fn getOperator(tag: ast_mod.Node.Tag) ?[]const u8 {
+    return switch (tag) {
+        .add, .add_assign => "+",
+        .subtract, .sub_assign => "-",
+        .multiply, .mul_assign => "*",
+        .divide, .div_assign => "/",
+        .modulo => "%",
+        .equal => "==",
+        .not_equal => "!=",
+        .strict_equal => "===",
+        .strict_not_equal => "!==",
+        .less_than => "<",
+        .greater_than => ">",
+        .less_equal => "<=",
+        .greater_equal => ">=",
+        .logical_and => "&&",
+        .logical_or => "||",
+        .nullish_coalesce => "??",
+        .bitwise_and => "&",
+        .bitwise_or => "|",
+        .bitwise_xor => "^",
+        .shift_left => "<<",
+        .shift_right => ">>",
+        .instanceof_expr => "instanceof",
+        .in_expr => "in",
+        .assign => "=",
+        .prefix_inc, .postfix_inc => "++",
+        .prefix_dec, .postfix_dec => "--",
+        .unary_minus => "-",
+        .unary_plus => "+",
+        .logical_not => "!",
+        .typeof_expr => "typeof",
+        .void_expr => "void",
+        .delete_expr => "delete",
+        else => null,
     };
-
-    // Store state pointer as a global for native callbacks
-    setGlobalOpaque(engine.ctx, &state);
-
-    // Build dispatch tables: tag → list of (rule_idx, visitor_key)
-    var enter_dispatch: [256]std.ArrayList(DispatchEntry) = undefined;
-    var exit_dispatch: [256]std.ArrayList(DispatchEntry) = undefined;
-    for (0..256) |i| {
-        enter_dispatch[i] = .empty;
-        exit_dispatch[i] = .empty;
-    }
-    defer for (0..256) |i| {
-        enter_dispatch[i].deinit(allocator);
-        exit_dispatch[i].deinit(allocator);
-    };
-
-    // For each rule, call create() with real-ish context and register dispatch
-    var visitor_objects = allocator.alloc(c.JSValue, engine.rules.items.len) catch return 0;
-    defer {
-        for (visitor_objects) |vo| {
-            if (c.JS_IsObject(vo) != 0) c.JS_FreeValue(engine.ctx, vo);
-        }
-        allocator.free(visitor_objects);
-    }
-
-    for (engine.rules.items, 0..) |*rule, rule_idx| {
-        // Call create(context) with native context object
-        const context_obj = buildContextObject(engine, &state);
-        const create_fn = c.JS_GetPropertyStr(engine.ctx, rule.exports, "create");
-        if (c.JS_IsFunction(engine.ctx, create_fn) == 0) {
-            c.JS_FreeValue(engine.ctx, create_fn);
-            c.JS_FreeValue(engine.ctx, context_obj);
-            visitor_objects[rule_idx] = jsUndefined();
-            continue;
-        }
-
-        state.current_rule_name = rule.name;
-        state.current_rule_severity = rule.severity;
-
-        var cargs = [_]c.JSValue{context_obj};
-        const visitors = c.JS_Call(engine.ctx, create_fn, rule.exports, 1, @ptrCast(&cargs));
-        c.JS_FreeValue(engine.ctx, create_fn);
-        c.JS_FreeValue(engine.ctx, context_obj);
-
-        if (c.JS_IsException(visitors) != 0) {
-            const exc = c.JS_GetException(engine.ctx);
-            c.JS_FreeValue(engine.ctx, exc);
-            visitor_objects[rule_idx] = jsUndefined();
-            continue;
-        }
-
-        visitor_objects[rule_idx] = visitors;
-
-        // Register dispatch entries for each visitor key
-        var vt_iter = rule.visitor_tags.iterator();
-        while (vt_iter.next()) |entry| {
-            for (entry.value_ptr.*) |tag| {
-                if (tag < 256) {
-                    enter_dispatch[tag].append(allocator, .{
-                        .rule_idx = @intCast(rule_idx),
-                        .key = entry.key_ptr.*,
-                    }) catch {};
-                }
-            }
-        }
-        var et_iter = rule.exit_tags.iterator();
-        while (et_iter.next()) |entry| {
-            for (entry.value_ptr.*) |tag| {
-                if (tag < 256) {
-                    exit_dispatch[tag].append(allocator, .{
-                        .rule_idx = @intCast(rule_idx),
-                        .key = entry.key_ptr.*,
-                    }) catch {};
-                }
-            }
-        }
-    }
-
-    // DFS walk
-    for (bast.dfs_events) |ev| {
-        if (ev >= 0) {
-            const idx: u32 = @intCast(ev);
-            if (idx >= bast.node_count) continue;
-            const tag = bast.node_tags[idx];
-            if (tag >= 255) continue;
-            for (enter_dispatch[tag].items) |de| {
-                callVisitorHandler(engine, visitor_objects[de.rule_idx], de.key, idx, &state);
-            }
-        } else {
-            const idx: u32 = @intCast(~ev);
-            if (idx >= bast.node_count) continue;
-            const tag = bast.node_tags[idx];
-            if (tag >= 255) continue;
-            for (exit_dispatch[tag].items) |de| {
-                callVisitorHandler(engine, visitor_objects[de.rule_idx], de.key, idx, &state);
-            }
-        }
-    }
-
-    return @intCast(diagnostics.items.len);
 }
 
-const DispatchEntry = struct {
-    rule_idx: u16,
-    key: []const u8,
-};
-
-/// Call a visitor handler: visitors[key](nodeProxy)
-fn callVisitorHandler(
-    engine: *QjsLintEngine,
-    visitors: c.JSValue,
-    key: []const u8,
-    node_idx: u32,
-    state: *FileLintState,
-) void {
-    if (c.JS_IsObject(visitors) == 0) return;
-
-    // Get the handler function
-    var key_buf: [128]u8 = undefined;
-    if (key.len >= key_buf.len) return;
-    @memcpy(key_buf[0..key.len], key);
-    key_buf[key.len] = 0;
-    const handler = c.JS_GetPropertyStr(engine.ctx, visitors, &key_buf);
-    defer c.JS_FreeValue(engine.ctx, handler);
-
-    if (c.JS_IsFunction(engine.ctx, handler) == 0) return;
-
-    // Create node proxy object
-    const node_obj = buildNodeObject(engine, node_idx, state);
-    defer c.JS_FreeValue(engine.ctx, node_obj);
-
-    // Call handler(node)
-    var hargs = [_]c.JSValue{node_obj};
-    const result = c.JS_Call(engine.ctx, handler, visitors, 1, @ptrCast(&hargs));
-    if (c.JS_IsException(result) != 0) {
-        const exc = c.JS_GetException(engine.ctx);
-        c.JS_FreeValue(engine.ctx, exc);
-        return;
-    }
-    c.JS_FreeValue(engine.ctx, result);
+fn setStr(ctx: *c.JSContext, obj: c.JSValue, prop: [*:0]const u8, val: []const u8) void {
+    _ = c.JS_SetPropertyStr(ctx, obj, prop, c.JS_NewStringLen(ctx, val.ptr, val.len));
 }
 
-/// Build a JS node object with native getters backed by Zig AST data.
-fn buildNodeObject(engine: *QjsLintEngine, node_idx: u32, state: *FileLintState) c.JSValue {
-    const obj = c.JS_NewObject(engine.ctx);
-    const bast = state.bast;
+// Old per-file linting code removed — replaced by lintSource in QjsLintEngine
 
-    if (node_idx >= bast.node_count) return obj;
-
-    // Set basic properties directly (faster than getters for common ones)
-    const tag = bast.node_tags[node_idx];
-    const type_name = state.tag_names[tag];
-    setJsStr(engine.ctx, obj, "type", type_name);
-
-    // node.parent
-    if (bast.parents.len > node_idx) {
-        const parent_idx = bast.parents[node_idx];
-        if (parent_idx != 0xFFFFFFFF) {
-            const parent_obj = buildNodeObject(engine, parent_idx, state);
-            _ = c.JS_SetPropertyStr(engine.ctx, obj, "parent", parent_obj);
-        } else {
-            _ = c.JS_SetPropertyStr(engine.ctx, obj, "parent", c.JS_NULL);
-        }
-    }
-
-    // Set property getters based on node type
-    const data = bast.nodeData(node_idx);
-    const lhs = @intFromEnum(data.lhs);
-    const rhs = @intFromEnum(data.rhs);
-
-    // TODO: build child node objects lazily via getters for perf
-    // For now, set the commonly accessed properties directly
-    setNodeProperties(engine, obj, @enumFromInt(tag), lhs, rhs, node_idx, state);
-
-    return obj;
-}
-
-fn setNodeProperties(
-    engine: *QjsLintEngine,
-    obj: c.JSValue,
-    tag: ast_mod.Node.Tag,
-    lhs: u32,
-    rhs: u32,
-    node_idx: u32,
-    state: *FileLintState,
-) void {
-    const bast = state.bast;
-    const NONE: u32 = 0xFFFFFFFF;
-    const ctx = engine.ctx;
-
-    // operator / kind / name / value — from token text
-    switch (tag) {
-        .var_decl => setJsStr(ctx, obj, "kind", "var"),
-        .let_decl => setJsStr(ctx, obj, "kind", "let"),
-        .const_decl => setJsStr(ctx, obj, "kind", "const"),
-        else => {},
-    }
-
-    // operator
-    switch (tag) {
-        .add, .subtract, .multiply, .divide, .modulo,
-        .equal, .not_equal, .strict_equal, .strict_not_equal,
-        .less_than, .greater_than, .less_equal, .greater_equal,
-        .logical_and, .logical_or, .nullish_coalesce,
-        .bitwise_and, .bitwise_or, .bitwise_xor,
-        .shift_left, .shift_right,
-        .assign, .add_assign, .sub_assign,
-        .instanceof_expr, .in_expr,
-        => setJsStr(ctx, obj, "operator", bast.tokenText(bast.nodeMainToken(node_idx))),
-        else => {},
-    }
-
-    // left/right for binary expressions
-    switch (tag) {
-        .add, .subtract, .multiply, .divide, .modulo,
-        .equal, .not_equal, .strict_equal, .strict_not_equal,
-        .less_than, .greater_than, .less_equal, .greater_equal,
-        .logical_and, .logical_or, .nullish_coalesce,
-        .bitwise_and, .bitwise_or, .bitwise_xor,
-        .shift_left, .shift_right, .instanceof_expr, .in_expr,
-        .assign,
-        => {
-            if (lhs != NONE) _ = c.JS_SetPropertyStr(ctx, obj, "left", buildNodeObject(engine, lhs, state));
-            if (rhs != NONE) _ = c.JS_SetPropertyStr(ctx, obj, "right", buildNodeObject(engine, rhs, state));
-        },
-        else => {},
-    }
-
-    // TODO: add more properties (callee, arguments, body, declarations, etc.)
-}
-
-/// Build the ESLint context object with native report() function.
-fn buildContextObject(engine: *QjsLintEngine, _: *FileLintState) c.JSValue {
-    const ctx = engine.ctx;
-    const obj = c.JS_NewObject(ctx);
-
-    // context.report = native function
-    const report_fn = c.JS_NewCFunction(ctx, reportNative, "report", 1);
-    _ = c.JS_SetPropertyStr(ctx, obj, "report", report_fn);
-
-    // context.options = [] (will be populated per-rule)
-    _ = c.JS_SetPropertyStr(ctx, obj, "options", c.JS_NewArray(ctx));
-
-    // context.sourceCode (TODO: build with native getters)
-    _ = c.JS_SetPropertyStr(ctx, obj, "sourceCode", c.JS_NewObject(ctx));
-
-    // context.settings = {}
-    _ = c.JS_SetPropertyStr(ctx, obj, "settings", c.JS_NewObject(ctx));
-
-    // context.filename
-    setJsStr(ctx, obj, "filename", "");
-
-    return obj;
-}
-
-/// Native context.report() — collects diagnostics
-fn reportNative(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSValue) callconv(.c) c.JSValue {
-    if (argc < 1) return jsUndefined();
-    const js_ctx = ctx orelse return jsUndefined();
-    const state = getGlobalOpaque(js_ctx) orelse return jsUndefined();
-
-    const desc = argv[0];
-
-    // Extract messageId
-    var message: []const u8 = "lint error";
-    const msg_id = c.JS_GetPropertyStr(js_ctx, desc, "messageId");
-    if (c.JS_IsString(msg_id) != 0) {
-        const s = c.JS_ToCString(js_ctx, msg_id);
-        if (s) |cs| {
-            message = std.mem.span(cs);
-            // TODO: look up template from rule.messages and substitute data
-            // For now just use messageId as the message
-        }
-    }
-    c.JS_FreeValue(js_ctx, msg_id);
-
-    // Collect diagnostic
-    state.diagnostics.append(state.allocator, .{
-        .message = state.allocator.dupe(u8, message) catch "error",
-        .span = Span{ .start = 0, .end = 0 },
-        .severity = state.current_rule_severity,
-    }) catch {};
-
-    return jsUndefined();
-}
-
-// ── Helpers ─────────────────────────────────────────────────────
-
-fn setJsStr(ctx: *c.JSContext, obj: c.JSValue, prop: [*:0]const u8, val: []const u8) void {
-    const js_str = c.JS_NewStringLen(ctx, val.ptr, val.len);
-    _ = c.JS_SetPropertyStr(ctx, obj, prop, js_str);
-}
-
-var g_file_state: ?*FileLintState = null;
-
-fn setGlobalOpaque(ctx: *c.JSContext, state: *FileLintState) void {
-    _ = ctx;
-    g_file_state = state;
-}
-
-fn getGlobalOpaque(ctx: *c.JSContext) ?*FileLintState {
-    _ = ctx;
-    return g_file_state;
-}
