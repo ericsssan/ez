@@ -53,7 +53,8 @@ function canExtract(handlerSource, closureFnNames, closureFns) {
   // Blocklist: rules whose handlers are too complex for the interpreter
   if (handlerSource.includes("Checker[") || handlerSource.includes("Checker.")) return false;
 
-  if (!handlerSource.includes("context.report")) return false;
+  // Note: context.report check is done at the rule level, not per handler.
+  // Some handlers collect data (no report), paired with handlers that report.
 
   // ── Unsupported APIs ──
   if (handlerSource.includes("getScope")) return false;
@@ -70,9 +71,7 @@ function canExtract(handlerSource, closureFnNames, closureFns) {
   if (handlerSource.includes("require(")) return false;
 
   // ── Unsupported control flow ──
-  if (handlerSource.includes("for ") || handlerSource.includes("for(")) return false;
-  if (handlerSource.includes("while")) return false;
-  if (handlerSource.includes("switch")) return false;
+  // for/while/switch are implemented in the interpreter — allow them
   if (handlerSource.includes(".forEach")) return false;
   if (handlerSource.includes(".filter")) return false;
   if (handlerSource.includes(".map(")) return false;
@@ -223,6 +222,19 @@ function extractRules(plugins, tagNames) {
     }
 
     if (!visitors || typeof visitors !== "object") {
+      remainingPlugins.push(plugin);
+      continue;
+    }
+
+    // Check if at least one handler calls context.report (rule-level check)
+    let hasReport = false;
+    for (const fn of Object.values(visitors)) {
+      if (typeof fn === "function" && fn.toString().includes("context.report")) {
+        hasReport = true;
+        break;
+      }
+    }
+    if (!hasReport) {
       remainingPlugins.push(plugin);
       continue;
     }
