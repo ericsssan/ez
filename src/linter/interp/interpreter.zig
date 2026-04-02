@@ -1333,15 +1333,52 @@ pub const Interpreter = struct {
     }
 
     fn evalCompoundAssign(self: *Interpreter, tag: Node.Tag, data: Node.Data) Signal!Value {
-        _ = tag;
-        // Simplified: just evaluate rhs
-        return self.eval(@enumFromInt(@intFromEnum(data.rhs)));
+        const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+        const cur = try self.eval(lhs_idx);
+        const rhs_val = try self.eval(@enumFromInt(@intFromEnum(data.rhs)));
+        const result: Value = switch (tag) {
+            .add_assign => blk: {
+                if (cur == .string or rhs_val == .string) {
+                    const l = cur.toStringAlloc(self.arena) catch "";
+                    const r = rhs_val.toStringAlloc(self.arena) catch "";
+                    var buf: std.ArrayList(u8) = .empty;
+                    buf.appendSlice(self.arena, l) catch {};
+                    buf.appendSlice(self.arena, r) catch {};
+                    break :blk .{ .string = buf.items };
+                }
+                break :blk .{ .number = cur.toNumber() + rhs_val.toNumber() };
+            },
+            .sub_assign => .{ .number = cur.toNumber() - rhs_val.toNumber() },
+            .mul_assign => .{ .number = cur.toNumber() * rhs_val.toNumber() },
+            .div_assign => .{ .number = if (rhs_val.toNumber() == 0) std.math.inf(f64) else cur.toNumber() / rhs_val.toNumber() },
+            else => rhs_val,
+        };
+        // Write back to the variable
+        if (lhs_idx != .none and self.rule_ast.nodeTag(lhs_idx) == .identifier) {
+            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+            self.env.set(name, result);
+        }
+        return result;
     }
 
     fn evalUpdate(self: *Interpreter, tag: Node.Tag, data: Node.Data) Signal!Value {
-        _ = tag;
-        const val = try self.eval(@enumFromInt(@intFromEnum(data.lhs)));
-        return .{ .number = val.toNumber() + 1.0 };
+        const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+        const val = try self.eval(lhs_idx);
+        const old = val.toNumber();
+        const new_val: Value = switch (tag) {
+            .prefix_inc, .postfix_inc => .{ .number = old + 1.0 },
+            .prefix_dec, .postfix_dec => .{ .number = old - 1.0 },
+            else => .{ .number = old },
+        };
+        // Write back to variable
+        if (lhs_idx != .none and self.rule_ast.nodeTag(lhs_idx) == .identifier) {
+            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+            self.env.set(name, new_val);
+        }
+        return switch (tag) {
+            .prefix_inc, .prefix_dec => new_val,
+            else => .{ .number = old }, // postfix returns old value
+        };
     }
 
     // ── Loops ──
