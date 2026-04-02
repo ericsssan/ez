@@ -297,6 +297,14 @@ pub const Interpreter = struct {
             return .undefined;
         }
         if (std.mem.eql(u8, prop, "length")) return .{ .number = @floatFromInt(s.len) };
+        // Regex .test method: if the string looks like /pattern/flags
+        if (std.mem.eql(u8, prop, "test") and s.len > 1 and s[0] == '/') {
+            // Return a marker that callStringBuiltin will recognize
+            return .{ .string = s }; // the regex source itself acts as the callable
+        }
+        if (std.mem.eql(u8, prop, "includes")) return .{ .string = s };
+        if (std.mem.eql(u8, prop, "startsWith")) return .{ .string = s };
+        if (std.mem.eql(u8, prop, "endsWith")) return .{ .string = s };
         return .undefined;
     }
 
@@ -456,7 +464,103 @@ pub const Interpreter = struct {
         if (self.closure_fns.contains(marker)) {
             return self.callClosureFunction(marker, args);
         }
+        // Check if it's a regex .test() call: marker looks like /pattern/flags
+        if (marker.len > 1 and marker[0] == '/' and args.len > 0) {
+            return self.evalRegexTest(marker, args[0]);
+        }
+        // String .includes/.startsWith/.endsWith call
+        if (args.len > 0 and args[0] == .string) {
+            if (std.mem.indexOf(u8, marker, args[0].string) != null) return .{ .boolean = true };
+            return .{ .boolean = false };
+        }
         return .undefined;
+    }
+
+    /// Evaluate regex.test(string) with a minimal regex engine.
+    /// Handles common ESLint patterns: /^prefix/, /literal/, /\d/, /\\n/, etc.
+    fn evalRegexTest(self: *Interpreter, regex_src: []const u8, arg: Value) Signal!Value {
+        _ = self;
+        const str = if (arg == .string) arg.string else return .{ .boolean = false };
+
+        // Parse regex: /pattern/flags
+        const last_slash = std.mem.lastIndexOfScalar(u8, regex_src, '/') orelse return .{ .boolean = false };
+        if (last_slash == 0) return .{ .boolean = false };
+        const pattern = regex_src[1..last_slash];
+
+        if (pattern.len == 0) return .{ .boolean = true }; // empty regex matches everything
+
+        // Simple pattern matching for common ESLint regex patterns
+        // ^literal — starts with
+        if (pattern[0] == '^') {
+            const prefix = pattern[1..];
+            // Handle \d (any digit)
+            if (std.mem.eql(u8, prefix, "0\\d")) {
+                return .{ .boolean = str.len >= 2 and str[0] == '0' and str[1] >= '0' and str[1] <= '9' };
+            }
+            // Simple prefix check (no special chars)
+            if (!hasRegexSpecial(prefix)) {
+                return .{ .boolean = std.mem.startsWith(u8, str, prefix) };
+            }
+        }
+
+        // literal$ — ends with
+        if (pattern.len > 1 and pattern[pattern.len - 1] == '$') {
+            const suffix = pattern[0 .. pattern.len - 1];
+            if (!hasRegexSpecial(suffix)) {
+                return .{ .boolean = std.mem.endsWith(u8, str, suffix) };
+            }
+        }
+
+        // Simple literal search (no anchors, no special chars)
+        if (!hasRegexSpecial(pattern)) {
+            return .{ .boolean = std.mem.indexOf(u8, str, pattern) != null };
+        }
+
+        // Pattern with \$ (escaped $) — common: /\$\{/ matches "${"
+        // Unescape and do literal search
+        var unescaped_buf: [256]u8 = undefined;
+        var ui: usize = 0;
+        var pi: usize = 0;
+        while (pi < pattern.len and ui < 256) {
+            if (pattern[pi] == '\\' and pi + 1 < pattern.len) {
+                const next = pattern[pi + 1];
+                switch (next) {
+                    'n' => { unescaped_buf[ui] = '\n'; ui += 1; },
+                    'r' => { unescaped_buf[ui] = '\r'; ui += 1; },
+                    't' => { unescaped_buf[ui] = '\t'; ui += 1; },
+                    'd' => {
+                        // \d — any digit. Check if str has any digit at this position.
+                        // Simplified: just check if str contains any digit
+                        for (str) |c| {
+                            if (c >= '0' and c <= '9') return .{ .boolean = true };
+                        }
+                        return .{ .boolean = false };
+                    },
+                    else => { unescaped_buf[ui] = next; ui += 1; },
+                }
+                pi += 2;
+            } else {
+                unescaped_buf[ui] = pattern[pi];
+                ui += 1;
+                pi += 1;
+            }
+        }
+        if (ui > 0) {
+            return .{ .boolean = std.mem.indexOf(u8, str, unescaped_buf[0..ui]) != null };
+        }
+
+        // Can't evaluate — return false (safe: under-report, no false positives)
+        return .{ .boolean = false };
+    }
+
+    fn hasRegexSpecial(s: []const u8) bool {
+        for (s) |c| {
+            if (c == '\\' or c == '.' or c == '*' or c == '+' or c == '?' or
+                c == '[' or c == ']' or c == '(' or c == ')' or c == '{' or
+                c == '}' or c == '|' or c == '^' or c == '$')
+                return true;
+        }
+        return false;
     }
 
     /// Handle context.report({ node, message, messageId, data, loc })

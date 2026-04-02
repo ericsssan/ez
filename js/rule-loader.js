@@ -52,7 +52,6 @@ function canExtract(handlerSource, closureFnNames, closureFns) {
 
   // Blocklist: rules whose handlers are too complex for the interpreter
   if (handlerSource.includes("Checker[") || handlerSource.includes("Checker.")) return false;
-  if (handlerSource.includes("regex.test") || handlerSource.includes(".test(")) return false;
 
   if (!handlerSource.includes("context.report")) return false;
 
