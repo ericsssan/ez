@@ -598,11 +598,14 @@ fn bufferGetNodeProperty(ctx_ptr: *anyopaque, node_idx: u32, prop: []const u8) I
     // ── consequent / alternate (IfStatement, SwitchCase) ──
     if (eql(u8, prop, "consequent")) {
         return switch (@as(ast_mod.Node.Tag, @enumFromInt(tag))) {
-            .if_else_stmt => blk: {
+            .if_else_stmt, .conditional => blk: {
                 const if_data = bast.extraData(ast_mod.IfData, rhs);
                 break :blk if (@intFromEnum(if_data.consequent) != NONE) .{ .node = @intFromEnum(if_data.consequent) } else InterpValue.null_val;
             },
-            .switch_case, .switch_default => buildNodeArray(bast, lhs, rhs, ctx),
+            .switch_case, .switch_default => blk: {
+                const sr = bast.extraData(ast_mod.SubRange, rhs);
+                break :blk buildNodeArray(bast, sr.start, sr.end, ctx);
+            },
             else => if (rhs != NONE) .{ .node = rhs } else InterpValue.null_val,
         };
     }
