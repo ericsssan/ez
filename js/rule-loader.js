@@ -34,7 +34,7 @@ function buildTagMap(tagNames) {
  * Check if a handler function can be interpreted by Zig.
  * Phase 1: only accept simple handlers (no complex closures, no external calls).
  */
-function canExtract(handlerSource) {
+function canExtract(handlerSource, closureFnNames) {
   // Extract handlers that use only:
   //   - node property access (node.type, node.kind, node.operator, etc.)
   //   - string/number comparisons (===, !==)
@@ -87,6 +87,8 @@ function canExtract(handlerSource) {
          "typeof", "instanceof", "delete", "void", "new",
          "if", "else", "return", "throw", "function",
          "options"].includes(name)) continue;
+    // TODO: allow closure-defined functions once the interpreter can call them
+    // if (closureFnNames && closureFnNames.has(name)) continue;
     return false;
   }
 
@@ -134,9 +136,55 @@ function extractRules(plugins, tagNames) {
   const extractedNames = new Set();
   const remainingPlugins = [];
 
+  /**
+   * Extract helper function names and sources from a create() body.
+   * Finds: function foo(...) { ... } and const foo = (...) => ...
+   */
+  function extractClosureFunctions(createSrc) {
+    const fns = {};
+    // Match: function name(...) { ... } — extract name and full source
+    const funcDecls = createSrc.matchAll(/\bfunction\s+([a-zA-Z_]\w*)\s*\([^)]*\)\s*\{/g);
+    for (const m of funcDecls) {
+      const name = m[1];
+      // Find the matching closing brace
+      let depth = 0, i = m.index + m[0].length - 1;
+      for (; i < createSrc.length; i++) {
+        if (createSrc[i] === "{") depth++;
+        else if (createSrc[i] === "}") { depth--; if (depth === 0) break; }
+      }
+      fns[name] = createSrc.slice(m.index, i + 1);
+    }
+    // Match: const name = (...) => { ... } or const name = function(...) { ... }
+    const constFuncs = createSrc.matchAll(/(?:const|let|var)\s+([a-zA-Z_]\w*)\s*=\s*(?:function\s*\(|(?:\([^)]*\)|[a-zA-Z_]\w*)\s*=>)/g);
+    for (const m of constFuncs) {
+      const name = m[1];
+      // Approximate: grab everything until matching end
+      let depth = 0, i = m.index, started = false;
+      for (; i < createSrc.length; i++) {
+        if (createSrc[i] === "{") { depth++; started = true; }
+        else if (createSrc[i] === "}") { depth--; if (started && depth === 0) break; }
+        else if (createSrc[i] === ";" && !started) break; // expression arrow
+      }
+      // Wrap as function for the interpreter
+      const bodyStr = createSrc.slice(m.index, i + 1);
+      const arrowMatch = bodyStr.match(/=\s*((?:\([^)]*\)|[a-zA-Z_]\w*)\s*=>\s*[\s\S]*)$/);
+      if (arrowMatch) {
+        fns[name] = "function " + name + arrowMatch[1].replace(/^(?:\([^)]*\)|[a-zA-Z_]\w*)\s*=>\s*/, "(x) ");
+      }
+    }
+    return fns;
+  }
+
   for (const plugin of plugins) {
     const ruleName = plugin.meta?.name || "unknown";
     const messages = plugin.meta?.messages || (plugin.create.length > 0 ? {} : {});
+
+    // Extract closure function definitions from create() body
+    let closureFns = {};
+    try {
+      closureFns = extractClosureFunctions(plugin.create.toString());
+    } catch {}
+    const closureFnNames = new Set(Object.keys(closureFns));
 
     // Create a mock context that captures visitor registrations
     let visitors = null;
@@ -184,7 +232,7 @@ function extractRules(plugins, tagNames) {
 
       // Get handler source
       const src = handler.toString();
-      if (!canExtract(src, null)) {
+      if (!canExtract(src, closureFnNames)) {
         allExtractable = false;
         break;
       }
