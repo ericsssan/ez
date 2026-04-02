@@ -8,6 +8,7 @@ const Environment = @import("env.zig").Environment;
 const ClosureState = @import("env.zig").ClosureState;
 const Diagnostic = @import("../../parser/diagnostic.zig").Diagnostic;
 const Severity = @import("../../parser/diagnostic.zig").Severity;
+const builtins = @import("builtins.zig");
 
 /// Signals for non-local control flow in the interpreter.
 pub const Signal = error{
@@ -227,8 +228,21 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, name, "false")) return .{ .boolean = false };
         if (std.mem.eql(u8, name, "NaN")) return .{ .number = std.math.nan(f64) };
         if (std.mem.eql(u8, name, "Infinity")) return .{ .number = std.math.inf(f64) };
-        // Check for closure function names — return a string marker
-        // so callStringBuiltin can dispatch the call
+        // Built-in global functions
+        if (std.mem.eql(u8, name, "require")) return .{ .string = "__require__" };
+        if (std.mem.eql(u8, name, "Array")) return .{ .string = "__Array__" };
+        if (std.mem.eql(u8, name, "Object")) return .{ .string = "__Object__" };
+        if (std.mem.eql(u8, name, "Set")) return .{ .string = "__Set__" };
+        if (std.mem.eql(u8, name, "Map")) return .{ .string = "__Map__" };
+        if (std.mem.eql(u8, name, "Math")) return .{ .string = "__Math__" };
+        if (std.mem.eql(u8, name, "JSON")) return .{ .string = "__JSON__" };
+        if (std.mem.eql(u8, name, "RegExp")) return .{ .string = "__RegExp__" };
+        if (std.mem.eql(u8, name, "Number")) return .{ .string = "__Number__" };
+        if (std.mem.eql(u8, name, "parseInt")) return .{ .string = "__parseInt__" };
+        if (std.mem.eql(u8, name, "parseFloat")) return .{ .string = "__parseFloat__" };
+        if (std.mem.eql(u8, name, "isNaN")) return .{ .string = "__isNaN__" };
+        if (std.mem.eql(u8, name, "isFinite")) return .{ .string = "__isFinite__" };
+        // Check for closure function names
         if (self.closure_fns.contains(name)) return .{ .string = name };
         return self.env.lookup(name);
     }
@@ -329,6 +343,47 @@ pub const Interpreter = struct {
             if (std.mem.eql(u8, prop, "ast")) return .{ .node = 0 }; // root node
             return .undefined;
         }
+        // ── Global object property access ──
+        if (std.mem.eql(u8, s, "__Array__")) {
+            if (std.mem.eql(u8, prop, "isArray")) return .{ .string = "__Array_isArray__" };
+            if (std.mem.eql(u8, prop, "from")) return .{ .string = "__Array_from__" };
+            return .undefined;
+        }
+        if (std.mem.eql(u8, s, "__Object__")) {
+            if (std.mem.eql(u8, prop, "keys")) return .{ .string = "__Object_keys__" };
+            if (std.mem.eql(u8, prop, "values")) return .{ .string = "__Object_values__" };
+            if (std.mem.eql(u8, prop, "entries")) return .{ .string = "__Object_entries__" };
+            if (std.mem.eql(u8, prop, "assign")) return .{ .string = "__Object_assign__" };
+            if (std.mem.eql(u8, prop, "hasOwn")) return .{ .string = "__Object_hasOwn__" };
+            if (std.mem.eql(u8, prop, "freeze")) return .{ .string = "__Object_freeze__" };
+            if (std.mem.eql(u8, prop, "create")) return .{ .string = "__Object_create__" };
+            return .undefined;
+        }
+        if (std.mem.eql(u8, s, "__Math__")) {
+            if (std.mem.eql(u8, prop, "sign")) return .{ .string = "__Math_sign__" };
+            if (std.mem.eql(u8, prop, "abs")) return .{ .string = "__Math_abs__" };
+            if (std.mem.eql(u8, prop, "max")) return .{ .string = "__Math_max__" };
+            if (std.mem.eql(u8, prop, "min")) return .{ .string = "__Math_min__" };
+            if (std.mem.eql(u8, prop, "floor")) return .{ .string = "__Math_floor__" };
+            if (std.mem.eql(u8, prop, "ceil")) return .{ .string = "__Math_ceil__" };
+            if (std.mem.eql(u8, prop, "round")) return .{ .string = "__Math_round__" };
+            if (std.mem.eql(u8, prop, "PI")) return .{ .number = std.math.pi };
+            return .undefined;
+        }
+        if (std.mem.eql(u8, s, "__Number__")) {
+            if (std.mem.eql(u8, prop, "isInteger")) return .{ .string = "__Number_isInteger__" };
+            if (std.mem.eql(u8, prop, "isFinite")) return .{ .string = "__isFinite__" };
+            if (std.mem.eql(u8, prop, "isNaN")) return .{ .string = "__isNaN__" };
+            if (std.mem.eql(u8, prop, "MAX_SAFE_INTEGER")) return .{ .number = 9007199254740991.0 };
+            if (std.mem.eql(u8, prop, "MIN_SAFE_INTEGER")) return .{ .number = -9007199254740991.0 };
+            return .undefined;
+        }
+        if (std.mem.eql(u8, s, "__JSON__")) {
+            if (std.mem.eql(u8, prop, "stringify")) return .{ .string = "__JSON_stringify__" };
+            if (std.mem.eql(u8, prop, "parse")) return .{ .string = "__JSON_parse__" };
+            return .undefined;
+        }
+
         if (std.mem.eql(u8, prop, "length")) return .{ .number = @floatFromInt(s.len) };
         // Regex .test method: if the string looks like /pattern/flags
         if (std.mem.eql(u8, prop, "test") and s.len > 1 and s[0] == '/') {
@@ -600,6 +655,132 @@ pub const Interpreter = struct {
 
     /// Handle calls to string-marker builtins (__context_report__, __source_getScope__, etc.)
     pub fn callStringBuiltin(self: *Interpreter, marker: []const u8, args: []const Value) Signal!Value {
+        // ── require() — native module resolution ──
+        if (std.mem.eql(u8, marker, "__require__")) {
+            return self.handleRequire(args);
+        }
+
+        // ── Global constructors ──
+        if (std.mem.eql(u8, marker, "__Set__") or std.mem.eql(u8, marker, "__Map__")) {
+            // new Set() / new Map() → return empty object (simplified)
+            const ptr = self.arena.create(Value.Object) catch return .undefined;
+            ptr.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            // Add basic Set/Map methods
+            ptr.entries.put("has", .{ .string = "__set_has__" }) catch {};
+            ptr.entries.put("add", .{ .string = "__set_add__" }) catch {};
+            ptr.entries.put("delete", .{ .string = "__set_delete__" }) catch {};
+            ptr.entries.put("size", .{ .number = 0 }) catch {};
+            ptr.entries.put("forEach", .{ .string = "__set_forEach__" }) catch {};
+            return .{ .object = ptr };
+        }
+
+        // ── Array.isArray() ──
+        if (std.mem.eql(u8, marker, "__Array_isArray__")) {
+            if (args.len > 0) return .{ .boolean = args[0] == .array };
+            return .{ .boolean = false };
+        }
+
+        // ── Object.keys/values/entries/assign/hasOwn ──
+        if (std.mem.eql(u8, marker, "__Object_keys__")) {
+            if (args.len > 0 and args[0] == .object) {
+                var result: std.ArrayList(Value) = .empty;
+                var iter = args[0].object.entries.iterator();
+                while (iter.next()) |entry| {
+                    result.append(self.arena, .{ .string = entry.key_ptr.* }) catch {};
+                }
+                return .{ .array = result.items };
+            }
+            return .{ .array = &.{} };
+        }
+        if (std.mem.eql(u8, marker, "__Object_values__")) {
+            if (args.len > 0 and args[0] == .object) {
+                var result: std.ArrayList(Value) = .empty;
+                var iter = args[0].object.entries.iterator();
+                while (iter.next()) |entry| {
+                    result.append(self.arena, entry.value_ptr.*) catch {};
+                }
+                return .{ .array = result.items };
+            }
+            return .{ .array = &.{} };
+        }
+        if (std.mem.eql(u8, marker, "__Object_assign__")) {
+            if (args.len >= 2 and args[0] == .object) {
+                for (args[1..]) |src| {
+                    if (src == .object) {
+                        var iter = src.object.entries.iterator();
+                        while (iter.next()) |entry| {
+                            args[0].object.entries.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
+                        }
+                    }
+                }
+                return args[0];
+            }
+            return .undefined;
+        }
+
+        // ── Math methods ──
+        if (std.mem.eql(u8, marker, "__Math_sign__")) {
+            if (args.len > 0) {
+                const n = args[0].toNumber();
+                if (std.math.isNan(n)) return .{ .number = std.math.nan(f64) };
+                return .{ .number = if (n > 0) 1.0 else if (n < 0) -1.0 else 0.0 };
+            }
+            return .{ .number = std.math.nan(f64) };
+        }
+        if (std.mem.eql(u8, marker, "__Math_abs__")) {
+            if (args.len > 0) return .{ .number = @abs(args[0].toNumber()) };
+            return .{ .number = std.math.nan(f64) };
+        }
+        if (std.mem.eql(u8, marker, "__Math_max__")) {
+            var max: f64 = -std.math.inf(f64);
+            for (args) |a| { const v = a.toNumber(); if (v > max) max = v; }
+            return .{ .number = max };
+        }
+        if (std.mem.eql(u8, marker, "__Math_min__")) {
+            var min: f64 = std.math.inf(f64);
+            for (args) |a| { const v = a.toNumber(); if (v < min) min = v; }
+            return .{ .number = min };
+        }
+
+        // ── parseInt/parseFloat/isNaN/isFinite ──
+        if (std.mem.eql(u8, marker, "__parseInt__")) {
+            if (args.len > 0 and args[0] == .string) {
+                return .{ .number = @floatFromInt(std.fmt.parseInt(i64, args[0].string, 10) catch return .{ .number = std.math.nan(f64) }) };
+            }
+            if (args.len > 0 and args[0] == .number) return args[0];
+            return .{ .number = std.math.nan(f64) };
+        }
+        if (std.mem.eql(u8, marker, "__parseFloat__")) {
+            if (args.len > 0 and args[0] == .string) {
+                return .{ .number = std.fmt.parseFloat(f64, args[0].string) catch std.math.nan(f64) };
+            }
+            if (args.len > 0 and args[0] == .number) return args[0];
+            return .{ .number = std.math.nan(f64) };
+        }
+        if (std.mem.eql(u8, marker, "__isNaN__")) {
+            if (args.len > 0) return .{ .boolean = std.math.isNan(args[0].toNumber()) };
+            return .{ .boolean = true };
+        }
+        if (std.mem.eql(u8, marker, "__isFinite__")) {
+            if (args.len > 0) return .{ .boolean = std.math.isFinite(args[0].toNumber()) };
+            return .{ .boolean = false };
+        }
+
+        // ── Number.isInteger / Number.isFinite / Number.isNaN ──
+        if (std.mem.eql(u8, marker, "__Number_isInteger__")) {
+            if (args.len > 0 and args[0] == .number) {
+                const n = args[0].number;
+                return .{ .boolean = @floor(n) == n and std.math.isFinite(n) };
+            }
+            return .{ .boolean = false };
+        }
+
+        // ── astUtils function calls ──
+        if (marker.len > 14 and std.mem.startsWith(u8, marker, "__astUtils_") and std.mem.endsWith(u8, marker, "__")) {
+            const fn_name = marker[11 .. marker.len - 2];
+            return builtins.callAstUtilsFunction(fn_name, args, self.runtime, self.arena);
+        }
+
         // ── ESLint API markers ──
         if (std.mem.eql(u8, marker, "__context_report__"))
             return self.handleContextReport(args);
@@ -1042,6 +1223,59 @@ pub const Interpreter = struct {
             }
         }
         return result.items;
+    }
+
+    /// Handle require() calls — return native module objects for known ESLint modules.
+    fn handleRequire(self: *Interpreter, args: []const Value) Signal!Value {
+        if (args.len == 0 or args[0] != .string) return .undefined;
+        const path = args[0].string;
+
+        // ast-utils — the most critical module (used by 177/199 rules)
+        if (std.mem.endsWith(u8, path, "ast-utils") or std.mem.endsWith(u8, path, "ast-utils.js")) {
+            return .{ .object = builtins.buildAstUtils(self.arena) };
+        }
+
+        // @eslint-community/eslint-utils — getStaticValue, findVariable, etc.
+        if (std.mem.indexOf(u8, path, "eslint-utils") != null) {
+            const obj = self.arena.create(Value.Object) catch return .undefined;
+            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            obj.entries.put("getStaticValue", .{ .string = "__eslintUtils_getStaticValue__" }) catch {};
+            obj.entries.put("getStringIfConstant", .{ .string = "__eslintUtils_getStringIfConstant__" }) catch {};
+            obj.entries.put("findVariable", .{ .string = "__eslintUtils_findVariable__" }) catch {};
+            obj.entries.put("ReferenceTracker", .{ .string = "__eslintUtils_ReferenceTracker__" }) catch {};
+            obj.entries.put("CALL", .{ .string = "CALL" }) catch {};
+            obj.entries.put("READ", .{ .string = "READ" }) catch {};
+            obj.entries.put("CONSTRUCT", .{ .string = "CONSTRUCT" }) catch {};
+            return .{ .object = obj };
+        }
+
+        // @eslint-community/regexpp
+        if (std.mem.indexOf(u8, path, "regexpp") != null) {
+            const obj = self.arena.create(Value.Object) catch return .undefined;
+            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            obj.entries.put("RegExpParser", .{ .string = "__regexpp_RegExpParser__" }) catch {};
+            obj.entries.put("visitRegExpAST", .{ .string = "__regexpp_visitRegExpAST__" }) catch {};
+            return .{ .object = obj };
+        }
+
+        // shared/string-utils
+        if (std.mem.indexOf(u8, path, "string-utils") != null) {
+            const obj = self.arena.create(Value.Object) catch return .undefined;
+            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            obj.entries.put("upperCaseFirst", .{ .string = "__stringUtils_upperCaseFirst__" }) catch {};
+            return .{ .object = obj };
+        }
+
+        // fix-tracker
+        if (std.mem.indexOf(u8, path, "fix-tracker") != null) {
+            // Return a constructor stub
+            return .{ .string = "__FixTracker__" };
+        }
+
+        // Unknown module — return empty object (graceful degradation)
+        const obj = self.arena.create(Value.Object) catch return .undefined;
+        obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+        return .{ .object = obj };
     }
 
     // ── Operators ──

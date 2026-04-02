@@ -33,10 +33,10 @@ function canExtract(createSource) {
   // Must have context.report somewhere (directly or in helper functions)
   if (!createSource.includes("context.report") && !createSource.includes(".report(")) return false;
 
-  // Reject rules that use APIs the interpreter can't handle
-  if (createSource.includes("require(")) return false;
+  // Reject only truly unsupported patterns
   if (createSource.includes("markVariableAsUsed")) return false;
-  // Note: fix/suggest are ignored by the interpreter — rules still produce diagnostics fine.
+  // Note: require() is handled natively by the Zig interpreter
+  // Note: fix/suggest are ignored — rules still produce diagnostics
 
   return true;
 }
@@ -74,6 +74,33 @@ function extractRules(plugins, tagNames) {
       remainingPlugins.push(plugin);
       continue;
     }
+
+    // Read full rule file to extract module-level requires
+    // These are closure variables that create() references
+    let moduleRequires = [];
+    try {
+      const fs = require("fs");
+      const path = require("path");
+      const rulePath = path.join(__dirname, "node_modules/eslint/lib/rules", ruleName + ".js");
+      const fullSource = fs.readFileSync(rulePath, "utf8");
+      // Extract: const X = require("path") and destructured requires
+      const reqRegex = /(?:const|let|var)\s+(?:(\w+)|(\{[^}]+\}))\s*=\s*require\(["']([^"']+)["']\)/g;
+      let m;
+      while ((m = reqRegex.exec(fullSource)) !== null) {
+        const varName = m[1] || null;
+        const destructured = m[2] || null;
+        const modPath = m[3];
+        if (varName) {
+          moduleRequires.push({ name: varName, path: modPath });
+        } else if (destructured) {
+          // { a, b, c } → individual names
+          const names = destructured.replace(/[{}]/g, "").split(",").map(s => s.trim().split(/\s+as\s+/).pop().trim()).filter(Boolean);
+          for (const n of names) {
+            moduleRequires.push({ name: n, path: modPath, destructured: true });
+          }
+        }
+      }
+    } catch { /* ignore — not all rules are in eslint core */ }
 
     // Call create() in JS to get the visitor keys (we need to know
     // which ESTree types map to which sanz tags for the dispatch table).
@@ -129,7 +156,7 @@ function extractRules(plugins, tagNames) {
       if (plugin.meta?.messages) msgObj = plugin.meta.messages;
     }
 
-    // Serialize: create source + tag mapping + messages + options
+    // Serialize: create source + tag mapping + messages + options + requires
     extracted.push({
       name: ruleName,
       severity: 2,
@@ -141,6 +168,7 @@ function extractRules(plugins, tagNames) {
       })),
       messages: msgObj,
       options: plugin.meta?.defaultOptions || [],
+      requires: moduleRequires,
     });
     extractedNames.add(ruleName);
   }

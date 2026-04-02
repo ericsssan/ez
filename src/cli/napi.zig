@@ -841,6 +841,27 @@ fn parseRulesJSON(
             }
         }
 
+        // Parse requires (module-level imports)
+        var requires: std.ArrayList(eslint_rules.ModuleRequire) = .empty;
+        if (obj.get("requires")) |reqs_val| {
+            if (reqs_val == .array) {
+                for (reqs_val.array.items) |req_item| {
+                    if (req_item != .object) continue;
+                    const req_obj = req_item.object;
+                    const req_name = if (req_obj.get("name")) |v| (if (v == .string) v.string else "") else "";
+                    const req_path = if (req_obj.get("path")) |v| (if (v == .string) v.string else "") else "";
+                    const req_destr = if (req_obj.get("destructured")) |v| (if (v == .bool) v.bool else false) else false;
+                    if (req_name.len > 0 and req_path.len > 0) {
+                        try requires.append(allocator, .{
+                            .name = try allocator.dupe(u8, req_name),
+                            .path = try allocator.dupe(u8, req_path),
+                            .destructured = req_destr,
+                        });
+                    }
+                }
+            }
+        }
+
         descriptors[i] = .{
             .name = try allocator.dupe(u8, name),
             .severity = severity,
@@ -848,6 +869,7 @@ fn parseRulesJSON(
             .visitor_keys = try visitor_keys.toOwnedSlice(allocator),
             .messages = try messages.toOwnedSlice(allocator),
             .options = try options.toOwnedSlice(allocator),
+            .requires = try requires.toOwnedSlice(allocator),
         };
     }
 

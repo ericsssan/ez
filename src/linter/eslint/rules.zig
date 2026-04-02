@@ -26,6 +26,8 @@ pub const Rule = struct {
     create_ast: ?*const Ast,
     closure_fns: std.StringArrayHashMap(*const Ast),
     allocator: std.mem.Allocator,
+    /// Module-level requires to pre-populate in the environment.
+    requires: []const ModuleRequire = &.{},
 };
 
 pub const Visitor = struct {
@@ -165,6 +167,7 @@ pub fn loadRules(
             .create_ast = create_ast_ptr,
             .closure_fns = std.StringArrayHashMap(*const Ast).init(allocator),
             .allocator = allocator,
+            .requires = desc.requires,
         };
     }
 
@@ -201,6 +204,49 @@ pub fn initRuleForFile(
     env_ptr.* = Environment.init(allocator, null);
     env_ptr.set("context", .{ .string = "__eslint_context__" });
     env_ptr.set("sourceCode", .{ .string = "__source_code__" });
+
+    // Pre-populate module-level requires in the environment
+    // These are closure variables that create() references.
+    for (rule.requires) |req| {
+        // Call require() to get the module object
+        const builtins_mod = @import("../interp/builtins.zig");
+        const eql = std.mem.eql;
+        if (eql(u8, req.path, "./utils/ast-utils") or eql(u8, req.path, "./utils/ast-utils.js") or
+            std.mem.endsWith(u8, req.path, "ast-utils"))
+        {
+            if (req.destructured) {
+                // Destructured: const { isFunction } = require("./utils/ast-utils")
+                // Set individual function as a string marker
+                const marker = std.fmt.allocPrint(allocator, "__astUtils_{s}__", .{req.name}) catch continue;
+                env_ptr.set(req.name, .{ .string = marker });
+            } else {
+                // Full import: const astUtils = require("./utils/ast-utils")
+                env_ptr.set(req.name, .{ .object = builtins_mod.buildAstUtils(allocator) });
+            }
+        } else if (std.mem.indexOf(u8, req.path, "eslint-utils") != null) {
+            if (req.destructured) {
+                const marker = std.fmt.allocPrint(allocator, "__eslintUtils_{s}__", .{req.name}) catch continue;
+                env_ptr.set(req.name, .{ .string = marker });
+            } else {
+                const obj = allocator.create(Value.Object) catch continue;
+                obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+                obj.entries.put("getStaticValue", .{ .string = "__eslintUtils_getStaticValue__" }) catch {};
+                obj.entries.put("findVariable", .{ .string = "__eslintUtils_findVariable__" }) catch {};
+                obj.entries.put("getStringIfConstant", .{ .string = "__eslintUtils_getStringIfConstant__" }) catch {};
+                env_ptr.set(req.name, .{ .object = obj });
+            }
+        } else if (std.mem.indexOf(u8, req.path, "regexpp") != null) {
+            if (req.destructured) {
+                const marker = std.fmt.allocPrint(allocator, "__regexpp_{s}__", .{req.name}) catch continue;
+                env_ptr.set(req.name, .{ .string = marker });
+            }
+        } else {
+            // Unknown module — set as empty object
+            const obj = allocator.create(Value.Object) catch continue;
+            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+            env_ptr.set(req.name, .{ .object = obj });
+        }
+    }
 
     var interp = Interpreter{
         .rule_ast = create_ast,
@@ -455,6 +501,18 @@ pub const RuleDescriptor = struct {
     visitor_keys: []const VisitorKeyMapping,
     messages: []const MessageEntry,
     options: []const Value,
+    /// Module-level requires from the rule file (e.g., astUtils, regexpp).
+    /// Pre-populated in the environment before interpreting create().
+    requires: []const ModuleRequire = &.{},
+};
+
+pub const ModuleRequire = struct {
+    /// Variable name in the rule (e.g., "astUtils")
+    name: []const u8,
+    /// Module path (e.g., "./utils/ast-utils")
+    path: []const u8,
+    /// Whether this was a destructured import
+    destructured: bool = false,
 };
 
 pub const VisitorKeyMapping = struct {
