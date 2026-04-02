@@ -120,10 +120,10 @@ pub fn loadRuleFileWithBase(source: []const u8, base_dir: []const u8) ?[]const u
         \\if (__create) {
         \\  try {
         \\    var __meta = module.exports.meta || {};
-        \\    var __defOpts = __meta.defaultOptions || [];
+        \\    var __defOpts = __meta.defaultOptions ? JSON.parse(JSON.stringify(__meta.defaultOptions)) : [];
         \\    var __schema = __meta.schema;
         \\    // Build default options from schema if defaultOptions not provided
-        \\    if (__defOpts.length === 0 && __schema) {
+        \\    if ((!__defOpts || __defOpts.length === 0) && __schema) {
         \\      var s = Array.isArray(__schema) ? __schema : (__schema.anyOf ? __schema.anyOf[0] : null);
         \\      if (s && Array.isArray(s) && s.length > 0 && s[0] && s[0].type === 'object') {
         \\        __defOpts = [{}];
