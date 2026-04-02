@@ -33,6 +33,7 @@ pub fn main(init: std.process.Init) !void {
     var config_path: ?[]const u8 = null;
     var no_config = false;
     var eslint_compat_mode = false;
+    var test_quickjs = false;
 
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -49,6 +50,8 @@ pub fn main(init: std.process.Init) !void {
             no_config = true;
         } else if (std.mem.eql(u8, arg, "--eslint-compat")) {
             eslint_compat_mode = true;
+        } else if (std.mem.eql(u8, arg, "--test-quickjs")) {
+            test_quickjs = true;
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
             config_path = arg["--config=".len..];
         } else if (std.mem.eql(u8, arg, "--config")) {
@@ -70,13 +73,25 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // ── QuickJS test ──────────────────────────────────────────
+    if (test_quickjs) {
+        const qjs_bridge = @import("linter/interp/quickjs_bridge.zig");
+        if (qjs_bridge.testQuickJS()) {
+            try stdout.print("QuickJS OK: 1 + 2 = 3\n", .{});
+        } else {
+            try stdout.print("QuickJS FAILED\n", .{});
+        }
+        try stdout.flush();
+        return;
+    }
+
+    // ── Lint mode: multi-file support ────────────────────────
     if (file_paths.items.len == 0) {
         try stdout.print(usage_text, .{});
         try stdout.flush();
         return;
     }
 
-    // ── Lint mode: multi-file support ────────────────────────
     if (lint_mode) {
         // Resolve config once at startup.
         var resolved_config: ?*const Config = null;
