@@ -77,9 +77,26 @@ pub fn main(init: std.process.Init) !void {
     if (test_quickjs) {
         const qjs_bridge = @import("linter/interp/quickjs_bridge.zig");
         if (qjs_bridge.testQuickJS()) {
-            try stdout.print("QuickJS OK: 1 + 2 = 3\n", .{});
+            try stdout.print("QuickJS OK: eval + rule loading works\n", .{});
         } else {
             try stdout.print("QuickJS FAILED\n", .{});
+            try stdout.flush();
+            return;
+        }
+
+        // Test loading real ESLint rules from disk
+        const rule_names = [_][]const u8{ "no-debugger", "no-alert", "eqeqeq", "no-var", "no-self-compare", "default-case-last", "no-constant-binary-expression" };
+        for (rule_names) |rname| {
+            var path_buf: [256]u8 = undefined;
+            const rule_path = std.fmt.bufPrint(&path_buf, "js/node_modules/eslint/lib/rules/{s}.js", .{rname}) catch continue;
+            const rule_src = Io.Dir.cwd().readFileAlloc(io, rule_path, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+            defer allocator.free(rule_src);
+            if (qjs_bridge.loadRuleFile(rule_src)) |keys| {
+                defer std.heap.page_allocator.free(keys);
+                try stdout.print("{s}: {s}\n", .{ rname, keys });
+            } else {
+                try stdout.print("{s}: FAILED\n", .{rname});
+            }
         }
         try stdout.flush();
         return;

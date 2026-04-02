@@ -97,6 +97,49 @@ pub const QjsEngine = struct {
     }
 };
 
+/// Load an ESLint rule file and extract visitor keys.
+/// Returns the visitor key names as a JSON string, or null on error.
+pub fn loadRuleFile(source: []const u8) ?[]const u8 {
+    var engine = QjsEngine.init() orelse return null;
+    defer engine.deinit();
+
+    // Wrap the rule file in CommonJS module setup + visitor key extraction
+    const prefix = "var module = { exports: {} }; var exports = module.exports; function require(p) { return {}; }\n";
+    const suffix = "\nvar __create = module.exports.create || (typeof create === 'function' ? create : null);\n" ++
+        "var __result = 'no create';\n" ++
+        "if (__create) {\n" ++
+        "  var __diags = [];\n" ++
+        "  var __visitors = __create({ report: function(d) { __diags.push(d); }, options: [], sourceCode: {}, getScope: function(){return {};}, filename: '', settings: {}, id: 'test', parserOptions: {ecmaVersion:2022}, languageOptions: {ecmaVersion:2022,sourceType:'module'} });\n" ++
+        "  __result = JSON.stringify(Object.keys(__visitors || {}));\n" ++
+        "}\n__result;";
+
+    // Allocate combined source
+    const total_len = prefix.len + source.len + suffix.len;
+    var combined = std.heap.page_allocator.alloc(u8, total_len) catch return null;
+    defer std.heap.page_allocator.free(combined);
+    @memcpy(combined[0..prefix.len], prefix);
+    @memcpy(combined[prefix.len..][0..source.len], source);
+    @memcpy(combined[prefix.len + source.len ..], suffix);
+
+    const result = engine.eval(combined, "<rule>");
+    if (engine.isException(result)) {
+        // Get exception details
+        const exc = c.JS_GetException(engine.ctx);
+        defer c.JS_FreeValue(engine.ctx, exc);
+        return null;
+    }
+    defer engine.freeValue(result);
+
+    const str = engine.toCString(result) orelse return null;
+    defer engine.freeCString(str);
+
+    // Copy the string to return (caller doesn't know about QuickJS memory)
+    const len = std.mem.len(str);
+    const copy = std.heap.page_allocator.alloc(u8, len) catch return null;
+    @memcpy(copy, str[0..len]);
+    return copy;
+}
+
 /// Test that QuickJS works.
 pub fn testQuickJS() bool {
     var engine = QjsEngine.init() orelse return false;
@@ -108,5 +151,13 @@ pub fn testQuickJS() bool {
 
     var d: f64 = 0;
     if (c.JS_ToFloat64(engine.ctx, &d, result) != 0) return false;
-    return d == 3.0;
+
+    // Also test rule loading
+    const rule_src = "module.exports = { create: function(ctx) { return { Identifier: function(n) { ctx.report({node:n, messageId:'x'}); } }; } };";
+    const keys = loadRuleFile(rule_src);
+    if (keys == null) return false;
+    defer std.heap.page_allocator.free(keys.?);
+
+    // keys should be '["Identifier"]'
+    return d == 3.0 and std.mem.indexOf(u8, keys.?, "Identifier") != null;
 }
