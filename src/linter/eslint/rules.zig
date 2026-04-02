@@ -366,32 +366,56 @@ pub fn execVisitor(
         const handler_val = visitor_obj.get(visitor.key);
 
         if (handler_val == .function) {
-            // The handler is a method definition in the return object.
-            // ast_idx points to the MethodDefinition node in create_ast.
-            // Execute its body with 'node' bound.
-            const method_idx: NodeIndex = @enumFromInt(handler_val.function.ast_idx);
-            const method_data = create_ast.nodeData(method_idx);
-            const method_extra = create_ast.extraData(
-                @import("../../parser/ast.zig").MethodData,
-                @intFromEnum(method_data.rhs),
-            );
+            const fn_idx: NodeIndex = @enumFromInt(handler_val.function.ast_idx);
+            const fn_tag = create_ast.nodeTag(fn_idx);
+            const fn_node_data = create_ast.nodeData(fn_idx);
 
-            // Bind the 'node' parameter
-            const param_items = create_ast.extraSlice(.{
-                .start = method_extra.params_start,
-                .end = method_extra.params_end,
-            });
-            if (param_items.len > 0) {
-                const param_idx: NodeIndex = @enumFromInt(param_items[0]);
-                if (param_idx != .none and create_ast.nodeTag(param_idx) == .identifier) {
-                    const param_name = create_ast.tokenText(create_ast.nodeMainToken(param_idx));
-                    interp.env.set(param_name, .{ .node = node_idx });
+            // Method shorthand: MethodDefinition → uses MethodData
+            if (fn_tag == .method_def or fn_tag == .computed_method_def or
+                fn_tag == .getter_def or fn_tag == .setter_def)
+            {
+                const md = create_ast.extraData(
+                    @import("../../parser/ast.zig").MethodData,
+                    @intFromEnum(fn_node_data.rhs),
+                );
+                const params = create_ast.extraSlice(.{ .start = md.params_start, .end = md.params_end });
+                if (params.len > 0) {
+                    const p: NodeIndex = @enumFromInt(params[0]);
+                    if (p != .none and create_ast.nodeTag(p) == .identifier)
+                        interp.env.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .node = node_idx });
                 }
+                if (md.body != .none) _ = interp.eval(md.body) catch {};
             }
-
-            // Execute the method body
-            if (method_extra.body != .none) {
-                _ = interp.eval(method_extra.body) catch {};
+            // Function expression: fn_expr → uses FnData
+            else if (fn_tag == .fn_expr or fn_tag == .async_fn_expr or
+                fn_tag == .generator_fn_expr or fn_tag == .async_generator_fn_expr)
+            {
+                const fd = create_ast.extraData(
+                    @import("../../parser/ast.zig").FnData,
+                    @intFromEnum(fn_node_data.lhs),
+                );
+                const params = create_ast.extraSlice(.{ .start = fd.params, .end = fd.params_end });
+                if (params.len > 0) {
+                    const p: NodeIndex = @enumFromInt(params[0]);
+                    if (p != .none and create_ast.nodeTag(p) == .identifier)
+                        interp.env.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .node = node_idx });
+                }
+                if (fd.body != .none) _ = interp.eval(fd.body) catch {};
+            }
+            // Arrow function: arrow_fn → uses ArrowData
+            else if (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn)
+            {
+                const ad = create_ast.extraData(
+                    @import("../../parser/ast.zig").ArrowData,
+                    @intFromEnum(fn_node_data.lhs),
+                );
+                const params = create_ast.extraSlice(.{ .start = ad.params_start, .end = ad.params_end });
+                if (params.len > 0) {
+                    const p: NodeIndex = @enumFromInt(params[0]);
+                    if (p != .none and create_ast.nodeTag(p) == .identifier)
+                        interp.env.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .node = node_idx });
+                }
+                if (ad.body != .none) _ = interp.eval(ad.body) catch {};
             }
         } else if (handler_val == .string) {
             const args = [_]Value{.{ .node = node_idx }};

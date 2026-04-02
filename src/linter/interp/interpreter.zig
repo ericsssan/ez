@@ -175,6 +175,19 @@ pub const Interpreter = struct {
             .try_stmt => self.evalTryCatch(data),
 
             // ── Functions ──
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => {
+                // Function declaration: store as a callable Value.function in the env.
+                const fd = self.rule_ast.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
+                if (fd.name != .none) {
+                    const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(fd.name));
+                    self.env.set(name, .{ .function = .{
+                        .ast_idx = @intFromEnum(node),
+                        .closure = null,
+                        .param_count = 0,
+                    } });
+                }
+                return .undefined;
+            },
             .arrow_fn, .async_arrow_fn => self.evalArrowFn(node, data),
             .fn_expr, .async_fn_expr => self.evalFnExpr(node),
 
@@ -351,10 +364,44 @@ pub const Interpreter = struct {
     }
 
     fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
-        
-        // Shouldn't reach here — closure functions are called via callClosureFunction
-        _ = self; _ = func;
-        _ = args;
+        // The function is a FunctionDeclaration in the current rule_ast.
+        // Extract its params and body, create a child env, and execute.
+        const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
+        const fn_tag = self.rule_ast.nodeTag(fn_idx);
+
+        if (fn_tag == .fn_decl or fn_tag == .async_fn_decl or
+            fn_tag == .generator_fn_decl or fn_tag == .async_generator_fn_decl)
+        {
+            const fd = self.rule_ast.extraData(ast_mod.FnData, @intFromEnum(self.rule_ast.nodeData(fn_idx).lhs));
+
+            // Create child env and bind params
+            var fn_env = Environment.init(self.arena, self.env);
+            const params = self.rule_ast.extraSlice(.{ .start = fd.params, .end = fd.params_end });
+            for (params, 0..) |param_raw, pi| {
+                const param_idx: NodeIndex = @enumFromInt(param_raw);
+                if (param_idx == .none) continue;
+                if (self.rule_ast.nodeTag(param_idx) == .identifier) {
+                    const pname = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(param_idx));
+                    if (pi < args.len) fn_env.set(pname, args[pi]) else fn_env.set(pname, .undefined);
+                }
+            }
+
+            // Execute body
+            const saved_env = self.env;
+            self.env = &fn_env;
+            if (fd.body != .none) {
+                _ = self.eval(fd.body) catch |err| switch (err) {
+                    Signal.ReturnSignal => {
+                        self.env = saved_env;
+                        return self.return_value;
+                    },
+                    else => {},
+                };
+            }
+            self.env = saved_env;
+            return self.return_value;
+        }
+
         return .undefined;
     }
 
@@ -792,12 +839,99 @@ pub const Interpreter = struct {
     fn evalDeclarator(self: *Interpreter, data: Node.Data) Signal!Value {
         // lhs = binding (identifier or pattern), rhs = initializer
         const init_val = if (data.rhs != .none) try self.eval(@enumFromInt(@intFromEnum(data.rhs))) else .undefined;
-        // Simple identifier binding
-        if (data.lhs != .none and self.rule_ast.nodeTag(@enumFromInt(@intFromEnum(data.lhs))) == .identifier) {
-            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(@enumFromInt(@intFromEnum(data.lhs))));
+        if (data.lhs == .none) return .undefined;
+
+        const binding_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+        const binding_tag = self.rule_ast.nodeTag(binding_idx);
+
+        // Simple identifier: const x = value
+        if (binding_tag == .identifier) {
+            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(binding_idx));
             self.env.set(name, init_val);
+            return .undefined;
         }
-        // TODO: destructuring patterns
+
+        // Array destructuring: const [a, b] = array
+        if (binding_tag == .array_pattern) {
+            const binding_data = self.rule_ast.nodeData(binding_idx);
+            const elems = self.rule_ast.extraSlice(.{
+                .start = @intFromEnum(binding_data.lhs),
+                .end = @intFromEnum(binding_data.rhs),
+            });
+            for (elems, 0..) |elem_raw, ei| {
+                const elem_idx: NodeIndex = @enumFromInt(elem_raw);
+                if (elem_idx == .none) continue;
+                const elem_tag = self.rule_ast.nodeTag(elem_idx);
+
+                // Get the array element value
+                const arr_val = if (init_val == .array and ei < init_val.array.len)
+                    init_val.array[ei]
+                else
+                    Value.undefined;
+
+                if (elem_tag == .identifier) {
+                    const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(elem_idx));
+                    self.env.set(name, arr_val);
+                } else if (elem_tag == .assign) {
+                    // Default value: [x = "default"] — assign tag has lhs=binding, rhs=default
+                    const assign_data = self.rule_ast.nodeData(elem_idx);
+                    const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(assign_data.lhs));
+                    if (self.rule_ast.nodeTag(lhs_idx) == .identifier) {
+                        const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+                        if (arr_val == .undefined) {
+                            // Use default value
+                            const default_val = self.eval(@enumFromInt(@intFromEnum(assign_data.rhs))) catch .undefined;
+                            self.env.set(name, default_val);
+                        } else {
+                            self.env.set(name, arr_val);
+                        }
+                    }
+                }
+            }
+            return .undefined;
+        }
+
+        // Object destructuring: const { a, b } = obj
+        if (binding_tag == .object_pattern) {
+            const binding_data = self.rule_ast.nodeData(binding_idx);
+            const props = self.rule_ast.extraSlice(.{
+                .start = @intFromEnum(binding_data.lhs),
+                .end = @intFromEnum(binding_data.rhs),
+            });
+            for (props) |prop_raw| {
+                const prop_idx: NodeIndex = @enumFromInt(prop_raw);
+                if (prop_idx == .none) continue;
+                const prop_tag = self.rule_ast.nodeTag(prop_idx);
+                // Shorthand: { name } → get name from object
+                if (prop_tag == .shorthand_property) {
+                    const key_idx: NodeIndex = @enumFromInt(@intFromEnum(self.rule_ast.nodeData(prop_idx).lhs));
+                    const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+                    const val = if (init_val == .object) init_val.object.get(key) else .undefined;
+                    self.env.set(key, val);
+                }
+                // Full property: { key: binding } or { key = default }
+                if (prop_tag == .property) {
+                    const prop_data = self.rule_ast.nodeData(prop_idx);
+                    const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
+                    const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+                    const val = if (init_val == .object) init_val.object.get(key) else .undefined;
+                    // The value binding might be a different identifier
+                    if (prop_data.rhs != .none) {
+                        const val_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.rhs));
+                        if (self.rule_ast.nodeTag(val_idx) == .identifier) {
+                            const binding_name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(val_idx));
+                            self.env.set(binding_name, val);
+                        } else {
+                            self.env.set(key, val);
+                        }
+                    } else {
+                        self.env.set(key, val);
+                    }
+                }
+            }
+            return .undefined;
+        }
+
         return .undefined;
     }
 
