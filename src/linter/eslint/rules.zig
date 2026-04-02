@@ -238,8 +238,49 @@ pub fn initRuleForFile(
     var module_loader = ModuleLoader.init(allocator);
     interp.module_loader = &module_loader;
 
-    // First try: evaluate create() directly from create_ast.
-    // This works for all rules where create() is self-contained.
+    // Pre-populate env with module-level code (helper functions, requires, constants)
+    // from the full file AST. This must happen BEFORE evaluating create() so that
+    // closure variables referenced by create() are available.
+    if (rule.full_ast) |full_ast| {
+        const saved_ast = interp.rule_ast;
+        interp.rule_ast = full_ast;
+
+        const mod_obj = allocator.create(Value.Object) catch return null;
+        mod_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+        const exp_obj = allocator.create(Value.Object) catch return null;
+        exp_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+        mod_obj.entries.put("exports", .{ .object = exp_obj }) catch {};
+        env_ptr.set("module", .{ .object = mod_obj });
+
+        const mod_root = full_ast.nodeData(.root);
+        const stmts = full_ast.extraSlice(.{
+            .start = @intFromEnum(mod_root.lhs),
+            .end = @intFromEnum(mod_root.rhs),
+        });
+        for (stmts) |raw| {
+            const si: NodeIndex = @enumFromInt(raw);
+            if (si == .none) continue;
+            const tag = full_ast.nodeTag(si);
+            // Skip string literals ("use strict")
+            if (tag == .expression_stmt) {
+                const ed = full_ast.nodeData(si);
+                const ei: NodeIndex = @enumFromInt(@intFromEnum(ed.lhs));
+                if (ei != .none and full_ast.nodeTag(ei) == .string_literal) continue;
+            }
+            const saved_depth = interp.depth;
+            _ = interp.eval(si) catch {
+                interp.depth = saved_depth;
+                continue;
+            };
+            interp.depth = saved_depth;
+        }
+
+        // Restore to create_ast for the actual create() body eval
+        interp.rule_ast = saved_ast;
+        interp.return_value = .undefined;
+    }
+
+    // Evaluate create() from create_ast. The env now has module-level helpers.
     {
         const root_data = create_ast.nodeData(.root);
         const root_stmts = create_ast.extraSlice(.{
