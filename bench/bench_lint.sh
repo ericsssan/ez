@@ -2,7 +2,7 @@
 # Lint benchmark: sanz vs eslint vs oxlint vs biome — default rulesets, matched thread counts.
 #
 #   sanz:    292 ESLint core rules (--eslint-plugin eslint)
-#   eslint:  292 rules (js.configs.all)
+#   eslint:  199 rules (js.configs.all)
 #   oxlint:   93 default rules
 #   biome:  ~187 default rules
 #
@@ -27,9 +27,9 @@ run() {
   echo ""
 
   hyperfine --warmup 1 --runs "$runs" --ignore-failure \
-    --command-name "sanz 1t (292 rules)"   "node js/lint.js --eslint-plugin eslint --threads 1 $corpus" \
-    --command-name "sanz 4t (292 rules)"   "node js/lint.js --eslint-plugin eslint --threads 4 $corpus" \
-    --command-name "eslint (292 rules)"    "node bench/bench_eslint.js $corpus" \
+    --command-name "sanz 1t (199 rules)"   "node js/lint.js --eslint-plugin eslint --threads 1 $corpus" \
+    --command-name "sanz 4t (199 rules)"   "node js/lint.js --eslint-plugin eslint --threads 4 $corpus" \
+    --command-name "eslint (199 rules)"    "node bench/bench_eslint.js $corpus" \
     --command-name "oxlint 1t (93 rules)"  "oxlint --threads 1 --no-ignore $corpus" \
     --command-name "oxlint 4t (93 rules)"  "oxlint --threads 4 --no-ignore $corpus" \
     --command-name "biome (~187 rules)"    "biome lint --vcs-use-ignore-file=false $corpus"
