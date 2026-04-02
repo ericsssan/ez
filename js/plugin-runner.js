@@ -2345,32 +2345,98 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
   }
 
-  // Hoist feature flags — avoid per-node Set/Map lookups when no handlers registered.
   const hasCodePath  = visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
   const hasClassBody = visitorMap.has('ClassBody') || visitorMap.has('ClassBody:exit');
   const hasMethodFn  = visitorMap.has('FunctionExpression') || visitorMap.has('FunctionExpression:exit') ||
                        visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
   const canSkip = !hasSelectors;
-
   const tagCount = tagNames.length;
   const FLAG_CODEPATH_ENTER = 1;
   const FLAG_CLASS_BODY     = 2;
   const FLAG_METHOD_FN      = 4;
   const FLAG_CODEPATH_EXIT  = 8;
 
-  // ── Execution plan: build once, reuse across files ─────────────
-  // The plan template (tag arrays, flags, fusion order, file-level/batch
-  // extraction) is deterministic for a given plugin set + tagNames.
-  // Cache it keyed by the plugins array identity so the second file
-  // skips all .toString()/regex analysis, O(rules×tags) scans, etc.
-  // Only per-file state (skipSet, nodesByType, subtreeRelevant) is rebuilt.
+  // ── Small file fast path ──────────────────────────────────────
+  // For files with < 100 nodes, skip the full optimizer (plan remap,
+  // subtree pruning, materialized views, batch scan, etc.) and use
+  // a simple DFS with direct visitorMap lookups. The optimizer overhead
+  // (0.5ms) exceeds the DFS cost on these tiny files.
+  if (ast.nodeCount < 100) {
+    context._skipSet = null;
+    // Lazy nodesByType for rules that need it
+    context.sourceCode._nodesByType = null;
+    context.sourceCode.getNodesByType = function(typeName) {
+      if (!this._nodesByType) {
+        this._nodesByType = new Map();
+        for (let i = 0; i < ast.nodeCount; i++) {
+          const tn2 = tagNames[nodeTags[i]];
+          if (tn2) {
+            let a = this._nodesByType.get(tn2);
+            if (!a) { a = []; this._nodesByType.set(tn2, a); }
+            a.push(i);
+          }
+        }
+      }
+      const indices = this._nodesByType.get(typeName);
+      if (!indices) return [];
+      return indices.map(idx2 => nodeView(this._ast, idx2));
+    };
+    for (let i = 0; i < preOrder.length; i++) {
+      const idx = preOrder[i];
+      const tn = tagNames[nodeTags[idx]];
+      if (!tn) continue;
+      if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathStart', idx);
+      const enter = visitorMap.get(tn);
+      if (enter) {
+        const node = nodeView(ast, idx);
+        for (let h = 0; h < enter.length; h++) {
+          const hd = enter[h];
+          if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
+          context._currentRule = hd.ruleId;
+          context._currentRuleMeta = hd.ruleMeta;
+          context.options = hd.ruleOptions;
+          context._currentNodeIdx = idx;
+          try { hd.handler(node); } catch (err) {
+            context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+          }
+        }
+      }
+      if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, false);
+      if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, false);
+      if (hasSelectors) invokeSelectorHandlers(idx, false);
+    }
+    for (let i = 0; i < postOrder.length; i++) {
+      const idx = postOrder[i];
+      const tn = tagNames[nodeTags[idx]];
+      if (!tn) continue;
+      if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
+      const exit = visitorMap.get(tn + ':exit');
+      if (exit) {
+        const node = nodeView(ast, idx);
+        for (let h = 0; h < exit.length; h++) {
+          const hd = exit[h];
+          if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
+          context._currentRule = hd.ruleId;
+          context._currentRuleMeta = hd.ruleMeta;
+          context.options = hd.ruleOptions;
+          context._currentNodeIdx = idx;
+          try { hd.handler(node); } catch (err) {
+            context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+          }
+        }
+      }
+      if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, true);
+      if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathEnd', idx);
+      if (hasSelectors) invokeSelectorHandlers(idx, true);
+    }
+    return;
+  }
+
+  // ── Full optimizer path (files with >= 100 nodes) ──────────────
   const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip);
   const { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
           fileLevelEnter, fileLevelExit, batchScannable } = plan;
 
-  // ── Per-file state ─────────────────────────────────────────────
-
-  // Subtree pruning (per-file: depends on AST structure)
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   const usePruning = canSkip && relevantTagCount < tagCount * 0.5 && pd;
   if (usePruning) {
@@ -2378,21 +2444,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = postOrder[i];
       if (relevantTag[nodeTags[idx]]) {
         subtreeRelevant[idx] = 1;
-        const p = pd[idx];
-        if (p !== NONE) subtreeRelevant[p] = 1;
+        const p = pd[idx]; if (p !== NONE) subtreeRelevant[p] = 1;
       } else if (subtreeRelevant[idx]) {
-        const p = pd[idx];
-        if (p !== NONE) subtreeRelevant[p] = 1;
+        const p = pd[idx]; if (p !== NONE) subtreeRelevant[p] = 1;
       }
     }
   }
 
-  // Initialize rule skip bitmap
   const skipSet = new RuleSkipSet();
   skipSet.init(visitorMap.size);
   context._skipSet = skipSet;
 
-  // Materialized views (per-file: depends on AST content)
   const nodesByType = new Map();
   for (let i = 0; i < ast.nodeCount; i++) {
     const tag = nodeTags[i];
