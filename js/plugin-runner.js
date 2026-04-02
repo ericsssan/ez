@@ -1322,6 +1322,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     selectorHandlers.length = 0;
 
     let slotIdx = 0, selIdx = 0;
+    let mismatch = false;
     for (let pi = 0; pi < plugins.length; pi++) {
       const plugin = plugins[pi];
       context.options = pluginOptions[pi];
@@ -1332,22 +1333,31 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       for (const [visitorKey, handler] of Object.entries(visitors)) {
         if (typeof handler !== 'function') continue;
         if (_isSelector(visitorKey)) {
-          // Reuse cached selector slot
           if (selIdx < selectorSlots.length) {
             const slot = selectorSlots[selIdx++];
             slot.handler = handler;
             selectorHandlers.push(slot);
-          }
+          } else { mismatch = true; }
           continue;
         }
         for (const mapKey of _expandUnion(visitorKey)) {
           if (slotIdx < handlerSlots.length) {
-            const slot = handlerSlots[slotIdx++];
-            slot.handler = handler;
-            map.get(mapKey).push(slot);
-          }
+            const slot = handlerSlots[slotIdx];
+            // Verify slot identity: same ruleId and same mapKey
+            if (slot.ruleId === (plugin.meta?.name || "unknown")) {
+              slot.handler = handler;
+              map.get(mapKey).push(slot);
+              slotIdx++;
+            } else { mismatch = true; }
+          } else { mismatch = true; }
         }
       }
+    }
+    if (mismatch) {
+      // Visitor keys changed — invalidate cache and rebuild from scratch
+      _cachedVMPlugins = null;
+      _cachedVM = null;
+      return buildVisitorMap(plugins, context, ruleConfig);
     }
     return { map, selectorHandlers };
   }
