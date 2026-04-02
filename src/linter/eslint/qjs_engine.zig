@@ -23,8 +23,12 @@ pub const QjsLintEngine = struct {
     /// Last error message buffer
     err_buf: [256]u8 = undefined,
     last_error_len: usize = 0,
-    /// Total handler dispatches (for profiling)
+    /// Profiling counters
     total_dispatches: u64 = 0,
+    parse_ns: u64 = 0,
+    dispatch_ns: u64 = 0,
+    eval_ns: u64 = 0,
+    create_ns: u64 = 0,
 
     pub const LoadedRule = struct {
         name: []const u8,
@@ -73,24 +77,21 @@ pub const QjsLintEngine = struct {
 
     /// Load a rule from source. Evals the module, stores exports.
     pub fn loadRule(self: *QjsLintEngine, name: []const u8, source: []const u8) !void {
+        const t0 = clockNs();
+
         // Wrap in CommonJS with function scope to prevent global variable collisions
         const prefix = "(function() { var module = { exports: {} }; var exports = module.exports;\n";
         const suffix = "\nreturn module.exports; })()";
 
         const total = prefix.len + source.len + suffix.len;
-        const combined = try self.allocator.alloc(u8, total);
+        const combined = try self.allocator.alloc(u8, total + 1);
         defer self.allocator.free(combined);
         @memcpy(combined[0..prefix.len], prefix);
         @memcpy(combined[prefix.len..][0..source.len], source);
-        @memcpy(combined[prefix.len + source.len ..], suffix);
+        @memcpy(combined[prefix.len + source.len ..][0..suffix.len], suffix);
+        combined[total] = 0;
 
-        // Null-terminate for QuickJS safety
-        const combined_z = try self.allocator.alloc(u8, total + 1);
-        defer self.allocator.free(combined_z);
-        @memcpy(combined_z[0..total], combined);
-        combined_z[total] = 0;
-
-        const result = c.JS_Eval(self.ctx, combined_z.ptr, total, "<rule>", c.JS_EVAL_TYPE_GLOBAL);
+        const result = c.JS_Eval(self.ctx, combined.ptr, total, "<rule>", c.JS_EVAL_TYPE_GLOBAL);
         if (c.JS_IsException(result) != 0) {
             const exc = c.JS_GetException(self.ctx);
             const msg = c.JS_ToCString(self.ctx, exc);
@@ -106,6 +107,9 @@ pub const QjsLintEngine = struct {
             c.JS_FreeValue(self.ctx, exc);
             return error.EvalFailed;
         }
+
+        self.eval_ns += clockNs() - t0;
+        const t1 = clockNs();
 
         // Skip deprecated rules
         const meta = c.JS_GetPropertyStr(self.ctx, result, "meta");
@@ -190,6 +194,8 @@ pub const QjsLintEngine = struct {
             c.JS_FreeValue(self.ctx, result);
             return error.CreateFailed;
         }
+
+        self.create_ns += clockNs() - t1;
 
         try self.rules.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
@@ -308,6 +314,14 @@ pub const QjsLintEngine = struct {
         return self.err_buf[0..self.last_error_len];
     }
 
+    pub fn countHandlers(self: *const QjsLintEngine) u32 {
+        var total: u32 = 0;
+        for (0..256) |t| {
+            total += @intCast(self.enter_dispatch[t].items.len + self.exit_dispatch[t].items.len);
+        }
+        return total;
+    }
+
     const HandlerRef = struct {
         handler: c.JSValue, // cached JS function (DupValue'd)
         visitors: c.JSValue, // this_val for the call
@@ -367,10 +381,19 @@ pub const QjsLintEngine = struct {
 
     /// Parse a source string and lint it with all loaded rules.
     /// Uses pre-built dispatch tables — O(nodes), not O(nodes × rules).
+    fn clockNs() u64 {
+        const posix = @cImport(@cInclude("time.h"));
+        var ts: posix.struct_timespec = undefined;
+        _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &ts);
+        return @intCast(@as(i64, ts.tv_sec) * 1_000_000_000 + ts.tv_nsec);
+    }
+
     pub fn lintSource(self: *QjsLintEngine, source: []const u8, allocator: std.mem.Allocator) u32 {
         const Lexer = @import("../../parser/lexer.zig").Lexer;
         const Parser_mod = @import("../../parser/parser.zig").Parser;
         const parent_builder = @import("../../parser/parent_builder.zig");
+
+        const t0 = clockNs();
 
         var tokens = Lexer.tokenize(allocator, source) catch return 0;
         var tree = Parser_mod.parse(allocator, source, tokens.slice()) catch return 0;
@@ -379,6 +402,8 @@ pub const QjsLintEngine = struct {
         defer allocator.free(traversal.pre_order);
         defer allocator.free(traversal.post_order);
         defer allocator.free(traversal.dfs_events);
+
+        self.parse_ns += clockNs() - t0;
 
         var tag_names: [256][]const u8 = undefined;
         for (0..256) |i| tag_names[i] = std.mem.span(layout.sanz_tag_name(@intCast(i)));
@@ -391,6 +416,8 @@ pub const QjsLintEngine = struct {
                 _ = c.JS_SetPropertyStr(self.ctx, rule.diags, "length", c.JS_NewInt32(self.ctx, 0));
             }
         }
+
+        const t1 = clockNs();
 
         // DFS walk — direct tag→handler dispatch, no per-rule iteration
         var dispatch_count: u32 = 0;
@@ -422,6 +449,7 @@ pub const QjsLintEngine = struct {
             c.JS_FreeValue(self.ctx, node_obj);
         }
 
+        self.dispatch_ns += clockNs() - t1;
         self.total_dispatches += dispatch_count;
 
         // Count total diagnostics

@@ -122,6 +122,8 @@ pub fn main(init: std.process.Init) !void {
         lint_engine.buildDispatch();
         try stdout.print("Lint engine: {d} rules, dispatch built\n", .{lint_engine.ruleCount()});
 
+        try stdout.print("Dispatch: {d} handlers (startup: eval {d}ms, create {d}ms)\n", .{ lint_engine.countHandlers(), lint_engine.eval_ns / 1_000_000, lint_engine.create_ns / 1_000_000 });
+
         // Parse a test file and lint it
         const parser_mod = @import("parser/parser.zig");
         const Lexer_mod = @import("parser/lexer.zig").Lexer;
@@ -185,7 +187,7 @@ pub fn main(init: std.process.Init) !void {
             total_diags += lint_engine.lintSource(src, allocator);
             file_count += 1;
         }
-        try stdout.print("Corpus: {d} files, {d} diags, {d} dispatches\n", .{ file_count, total_diags, lint_engine.total_dispatches });
+        try stdout.print("Corpus: {d} files, {d} diags ({d} dispatches, parse {d}ms, dispatch {d}ms)\n", .{ file_count, total_diags, lint_engine.total_dispatches, lint_engine.parse_ns / 1_000_000, lint_engine.dispatch_ns / 1_000_000 });
         try stdout.flush();
         return;
     }
