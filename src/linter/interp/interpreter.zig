@@ -186,14 +186,12 @@ pub const Interpreter = struct {
 
             // ── Functions ──
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => {
-                // Function declaration: store as a callable Value.function in the env.
                 const fd = self.rule_ast.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
                 if (fd.name != .none) {
                     const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(fd.name));
                     self.env.set(name, .{ .function = .{
                         .ast_idx = @intFromEnum(node),
-                        .closure = null,
-                        .param_count = 0,
+                        .source_ast = self.rule_ast,
                     } });
                 }
                 return .undefined;
@@ -484,6 +482,12 @@ pub const Interpreter = struct {
     }
 
     pub fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
+        // If this function belongs to a different AST, swap temporarily
+        const use_ast = func.source_ast orelse self.rule_ast;
+        const saved_ast = self.rule_ast;
+        self.rule_ast = use_ast;
+        defer self.rule_ast = saved_ast;
+
         const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
         const fn_tag = self.rule_ast.nodeTag(fn_idx);
         const fn_node_data = self.rule_ast.nodeData(fn_idx);
@@ -1777,20 +1781,16 @@ pub const Interpreter = struct {
     // ── Functions ──
 
     fn evalArrowFn(self: *Interpreter, node: NodeIndex, _: Node.Data) Signal!Value {
-        _ = self;
         return .{ .function = .{
             .ast_idx = @intFromEnum(node),
-            .closure = null,
-            .param_count = 0,
+            .source_ast = self.rule_ast,
         } };
     }
 
     fn evalFnExpr(self: *Interpreter, node: NodeIndex) Signal!Value {
-        _ = self;
         return .{ .function = .{
             .ast_idx = @intFromEnum(node),
-            .closure = null,
-            .param_count = 0,
+            .source_ast = self.rule_ast,
         } };
     }
 
@@ -1838,7 +1838,7 @@ pub const Interpreter = struct {
                 const key = self.objKeyText(key_idx);
                 obj.entries.put(key, .{ .function = .{
                     .ast_idx = @intFromEnum(prop),
-                    .closure = null,
+                    .source_ast = self.rule_ast,
                     .param_count = 1,
                 } }) catch {};
             }

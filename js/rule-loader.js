@@ -75,15 +75,16 @@ function extractRules(plugins, tagNames) {
       continue;
     }
 
-    // Read full rule file to extract module-level requires
-    // These are closure variables that create() references
+    // Read the FULL rule file — Zig interprets the entire module
+    let fullFileSource = null;
     let moduleRequires = [];
     try {
       const fs = require("fs");
       const path = require("path");
-      const rulePath = path.join(__dirname, "node_modules/eslint/lib/rules", ruleName + ".js");
-      const fullSource = fs.readFileSync(rulePath, "utf8");
-      // Extract: const X = require("path") and destructured requires
+      const eslintPkg = path.dirname(require.resolve("eslint/package.json"));
+      const rulePath = path.join(eslintPkg, "lib/rules", ruleName + ".js");
+      fullFileSource = fs.readFileSync(rulePath, "utf8");
+      const fullSource = fullFileSource;
       const reqRegex = /(?:const|let|var)\s+(?:(\w+)|(\{[^}]+\}))\s*=\s*require\(["']([^"']+)["']\)/g;
       let m;
       while ((m = reqRegex.exec(fullSource)) !== null) {
@@ -156,11 +157,13 @@ function extractRules(plugins, tagNames) {
       if (plugin.meta?.messages) msgObj = plugin.meta.messages;
     }
 
-    // Serialize: create source + tag mapping + messages + options + requires
+    // createSource = always the create() function (for Zig to parse/interpret)
+    // fullSource = the complete file (for module-level code extraction)
     extracted.push({
       name: ruleName,
       severity: 2,
       createSource,
+      fullSource: fullFileSource || "",
       visitorKeys: Object.entries(tagMap).map(([key, { tags, isExit }]) => ({
         key,
         tags,

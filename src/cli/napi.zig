@@ -862,10 +862,14 @@ fn parseRulesJSON(
             }
         }
 
+        // Parse fullSource field
+        const full_source = if (obj.get("fullSource")) |v| (if (v == .string) v.string else "") else "";
+
         descriptors[i] = .{
             .name = try allocator.dupe(u8, name),
             .severity = severity,
             .create_source = try allocator.dupe(u8, create_source),
+            .full_source = try allocator.dupe(u8, full_source),
             .visitor_keys = try visitor_keys.toOwnedSlice(allocator),
             .messages = try messages.toOwnedSlice(allocator),
             .options = try options.toOwnedSlice(allocator),

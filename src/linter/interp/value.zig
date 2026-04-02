@@ -46,12 +46,14 @@ pub const Value = union(enum) {
     };
 
     pub const Function = struct {
-        /// Index into the RuleSet's function table (parsed JS ASTs).
+        /// Node index in the AST.
         ast_idx: u32,
+        /// Which AST this function belongs to (null = current rule_ast).
+        source_ast: ?*const @import("../../parser/ast.zig").Ast = null,
         /// Closure environment captured at definition time.
-        closure: ?*anyopaque,
+        closure: ?*anyopaque = null,
         /// Number of parameters.
-        param_count: u8,
+        param_count: u8 = 0,
     };
 
     pub const Builtin = struct {

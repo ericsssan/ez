@@ -111,7 +111,6 @@ pub const ModuleLoader = struct {
     ) ?*Value.Object {
         _ = self;
 
-        // Set up CommonJS environment
         const alloc = env.allocator;
         const module_obj = alloc.create(Value.Object) catch return null;
         module_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(alloc) };
@@ -122,33 +121,47 @@ pub const ModuleLoader = struct {
         env.set("module", .{ .object = module_obj });
         env.set("exports", .{ .object = exports_obj });
 
-        // The interpreter already has rule_ast set to this AST.
-        // Just evaluate all top-level statements.
         const root_data = ast_ptr.nodeData(.root);
         const root_stmts = ast_ptr.extraSlice(.{
             .start = @intFromEnum(root_data.lhs),
             .end = @intFromEnum(root_data.rhs),
         });
 
+        // Evaluate top-level statements with careful error handling.
+        // Save/restore interpreter state around each statement so errors
+        // in one statement don't corrupt state for subsequent ones.
         for (root_stmts) |raw| {
             const stmt_idx: NodeIndex = @enumFromInt(raw);
             if (stmt_idx == .none) continue;
-
-            // Skip "use strict" directives
             const tag = ast_ptr.nodeTag(stmt_idx);
+
+            // Skip string expression statements ("use strict", etc.)
             if (tag == .expression_stmt) {
                 const expr_data = ast_ptr.nodeData(stmt_idx);
                 const expr_idx: NodeIndex = @enumFromInt(@intFromEnum(expr_data.lhs));
                 if (expr_idx != .none and ast_ptr.nodeTag(expr_idx) == .string_literal) continue;
             }
 
+            // Save depth before each statement
+            const saved_depth = interp.depth;
+            const saved_return = interp.return_value;
+
             _ = interp.eval(stmt_idx) catch |err| switch (err) {
-                Signal.ReturnSignal => break,
-                else => continue,
+                Signal.ReturnSignal => {},
+                else => {
+                    // Restore depth on error to prevent accumulation
+                    interp.depth = saved_depth;
+                    interp.return_value = saved_return;
+                    continue;
+                },
             };
+
+            // Restore depth (eval's defer should handle this, but be safe)
+            interp.depth = saved_depth;
+            interp.return_value = saved_return;
         }
 
-        // Return module.exports
+        // Extract module.exports
         const final_exports = module_obj.get("exports");
         if (final_exports == .object) return final_exports.object;
         return exports_obj;
