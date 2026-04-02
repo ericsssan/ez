@@ -75,10 +75,9 @@ pub fn main(init: std.process.Init) !void {
 
     // ── QuickJS test ──────────────────────────────────────────
     if (test_quickjs) {
-        // Lint engine test — load rules, lint files
-
-        // Quick lint test with the QJS engine
         const qjs_engine_mod = @import("linter/eslint/qjs_engine.zig");
+
+        // ── Phase 1: Load rules ─────────────────────────────────
         var lint_engine = qjs_engine_mod.QjsLintEngine.init(allocator) orelse {
             try stdout.print("Failed to init lint engine\n", .{});
             try stdout.flush();
@@ -86,95 +85,42 @@ pub fn main(init: std.process.Init) !void {
         };
         defer lint_engine.deinit();
 
-        // Load ALL rules from the ESLint rules directory
-        {
-            var rule_dir = Io.Dir.cwd().openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
-                try stdout.print("Could not open rules dir\n", .{});
-                try stdout.flush();
-                return;
-            };
-            var walker = rule_dir.walk(allocator) catch {
-                try stdout.print("Failed to walk rules dir\n", .{});
-                try stdout.flush();
-                return;
-            };
-            defer walker.deinit();
-            var rule_count: u32 = 0;
-            while (true) {
-                const entry = (walker.next(io) catch break) orelse break;
-                if (entry.kind != .file) continue;
-                if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
-                if (std.mem.eql(u8, entry.basename, "index.js")) continue;
+        var rule_dir = Io.Dir.cwd().openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
+            try stdout.print("Could not open rules dir\n", .{});
+            try stdout.flush();
+            return;
+        };
+        var walker = rule_dir.walk(allocator) catch return;
+        defer walker.deinit();
 
-                const rule_src = rule_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
-                defer allocator.free(rule_src);
+        var rule_count: u32 = 0;
+        while (true) {
+            const entry = (walker.next(io) catch break) orelse break;
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
+            if (std.mem.eql(u8, entry.basename, "index.js")) continue;
 
-                const name = entry.basename[0 .. entry.basename.len - 3];
-                lint_engine.loadRule(name, rule_src) catch continue;
-                rule_count += 1;
-            }
-            try stdout.print("Rules loaded: {d}\n", .{rule_count});
+            const rule_src = rule_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+            defer allocator.free(rule_src);
+
+            lint_engine.loadRule(entry.basename[0 .. entry.basename.len - 3], rule_src) catch continue;
+            rule_count += 1;
         }
 
-        // Build dispatch tables (once, after all rules loaded)
         lint_engine.buildDispatch();
-        try stdout.print("Lint engine: {d} rules, dispatch built\n", .{lint_engine.ruleCount()});
 
-        try stdout.print("Dispatch: {d} handlers (startup: eval {d}ms, create {d}ms)\n", .{ lint_engine.countHandlers(), lint_engine.eval_ns / 1_000_000, lint_engine.create_ns / 1_000_000 });
-
-        // Parse a test file and lint it
-        const parser_mod = @import("parser/parser.zig");
-        const Lexer_mod = @import("parser/lexer.zig").Lexer;
-        const parent_builder = @import("parser/parent_builder.zig");
-
-        const test_src = "debugger; var x = 1; debugger;";
-        var tokens = Lexer_mod.tokenize(allocator, test_src) catch {
-            try stdout.print("Tokenize failed\n", .{});
+        // ── Phase 2: Pre-read corpus ───────────────────────��────
+        const corpus_dir = Io.Dir.cwd().openDir(io, "tests/conformance/test262-parser-tests/pass", .{ .iterate = true }) catch {
+            try stdout.print("No corpus\n", .{});
             try stdout.flush();
             return;
         };
-        var tree = parser_mod.Parser.parse(allocator, test_src, tokens.slice()) catch {
-            try stdout.print("Parse failed\n", .{});
-            try stdout.flush();
-            return;
-        };
-        const traversal = parent_builder.computeTraversal(&tree, allocator) catch {
-            try stdout.print("Traversal failed\n", .{});
-            try stdout.flush();
-            return;
-        };
-
-        // Create a mock BufferAst from the parsed tree
-        // TODO: use real buffer path. For now construct inline.
-        try stdout.print("Parse: {d} nodes, {d} DFS events\n", .{ tree.nodes.len, traversal.dfs_events.len });
-
-        // Quick DFS lint test — manually dispatch DebuggerStatement nodes
-        try stdout.print("Startup done, linting...\n", .{});
-
-        // Lint test input
-        const test_src2 = "var x = 1; debugger; if (x == 2) {} for (var i = 0; i < 10; i--) { continue; } if (true) {}";
-        const diag_count = lint_engine.lintSource(test_src2, allocator);
-        try stdout.print("Diagnostics on test: {d} (ESLint: 16)\n", .{diag_count});
-
-        // Benchmark: lint 100 corpus files
-        const corpus_dir_path = "tests/conformance/test262-parser-tests/pass";
-        const corpus_dir = Io.Dir.cwd().openDir(io, corpus_dir_path, .{ .iterate = true }) catch {
-            try stdout.print("No corpus found, skipping benchmark\n", .{});
-            try stdout.flush();
-            return;
-        };
-
-        // Pre-read all corpus files into memory
         var corpus_sources: std.ArrayList([]const u8) = .empty;
         {
-            var corpus_walker = corpus_dir.walk(allocator) catch {
-                try stdout.print("Cannot walk corpus\n", .{});
-                try stdout.flush();
-                return;
-            };
-            defer corpus_walker.deinit();
+            var cw = corpus_dir.walk(allocator) catch return;
+            defer cw.deinit();
             while (true) {
-                const entry = (corpus_walker.next(io) catch break) orelse break;
+                const entry = (cw.next(io) catch break) orelse break;
                 if (entry.kind != .file) continue;
                 if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
                 if (corpus_sources.items.len >= 1983) break;
@@ -183,14 +129,24 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Lint all files from memory
-        var file_count: u32 = 0;
+        // ── Phase 3: Lint ───────────────────────────────────────
         var total_diags: u32 = 0;
+        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         for (corpus_sources.items) |src| {
-            total_diags += lint_engine.lintSource(src, allocator);
-            file_count += 1;
+            total_diags += lint_engine.lintSource(src, arena_impl.allocator());
+            _ = arena_impl.reset(.retain_capacity);
         }
-        try stdout.print("Corpus: {d} files, {d} diags ({d} dispatches, parse {d}ms, dispatch {d}ms)\n", .{ file_count, total_diags, lint_engine.total_dispatches, lint_engine.parse_ns / 1_000_000, lint_engine.dispatch_ns / 1_000_000 });
+        arena_impl.deinit();
+
+        try stdout.print("{d} rules, {d} files, {d} diags (eval {d}ms, create {d}ms, parse {d}ms, dispatch {d}ms)\n", .{
+            rule_count,
+            corpus_sources.items.len,
+            total_diags,
+            lint_engine.eval_ns / 1_000_000,
+            lint_engine.create_ns / 1_000_000,
+            lint_engine.parse_ns / 1_000_000,
+            lint_engine.dispatch_ns / 1_000_000,
+        });
         try stdout.flush();
         return;
     }
