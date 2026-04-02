@@ -84,19 +84,51 @@ pub fn main(init: std.process.Init) !void {
             return;
         }
 
-        // Test loading real ESLint rules from disk
-        const rule_names = [_][]const u8{ "no-debugger", "no-alert", "eqeqeq", "no-var", "no-self-compare", "default-case-last", "no-constant-binary-expression" };
-        for (rule_names) |rname| {
-            var path_buf: [256]u8 = undefined;
-            const rule_path = std.fmt.bufPrint(&path_buf, "js/node_modules/eslint/lib/rules/{s}.js", .{rname}) catch continue;
-            const rule_src = Io.Dir.cwd().readFileAlloc(io, rule_path, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+        // Load ALL ESLint rules from disk
+        const cwd = Io.Dir.cwd();
+        const rules_dir = cwd.openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
+            try stdout.print("Could not open rules dir\n", .{});
+            try stdout.flush();
+            return;
+        };
+
+        var total: u32 = 0;
+        var loaded: u32 = 0;
+        var failed: u32 = 0;
+        var failed_names: std.ArrayList([]const u8) = .empty;
+        var iter_w = rules_dir.walk(allocator) catch {
+            try stdout.print("Could not walk rules dir\n", .{});
+            try stdout.flush();
+            return;
+        };
+        defer iter_w.deinit();
+        while (true) {
+            const entry = (iter_w.next(io) catch break) orelse break;
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
+            if (std.mem.eql(u8, entry.basename, "index.js")) continue;
+
+            total += 1;
+            const rule_src = rules_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
             defer allocator.free(rule_src);
+
             if (qjs_bridge.loadRuleFile(rule_src)) |keys| {
-                defer std.heap.page_allocator.free(keys);
-                try stdout.print("{s}: {s}\n", .{ rname, keys });
+                std.heap.page_allocator.free(keys);
+                loaded += 1;
             } else {
-                try stdout.print("{s}: FAILED\n", .{rname});
+                failed += 1;
+                const name_copy = allocator.dupe(u8, entry.basename[0 .. entry.basename.len - 3]) catch continue;
+                failed_names.append(allocator, name_copy) catch {};
             }
+        }
+        try stdout.print("Loaded: {d}/{d} rules ({d} failed)\n", .{ loaded, total, failed });
+        if (failed_names.items.len > 0) {
+            try stdout.print("Failed: ", .{});
+            for (failed_names.items, 0..) |name, i| {
+                if (i > 0) try stdout.print(", ", .{});
+                try stdout.print("{s}", .{name});
+            }
+            try stdout.print("\n", .{});
         }
         try stdout.flush();
         return;
