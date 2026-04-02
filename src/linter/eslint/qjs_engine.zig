@@ -23,12 +23,18 @@ pub const QjsLintEngine = struct {
     /// Last error message buffer
     err_buf: [256]u8 = undefined,
     last_error_len: usize = 0,
+    /// Pre-computed tag name table (built once)
+    tag_names: [256][]const u8 = undefined,
+    /// Cached setup function (built once, called per rule)
+    setup_fn_cached: c.JSValue = undefined,
     /// Profiling counters
     total_dispatches: u64 = 0,
     parse_ns: u64 = 0,
     dispatch_ns: u64 = 0,
     eval_ns: u64 = 0,
     create_ns: u64 = 0,
+    /// Global diagnostic counter (avoids per-rule JS array manipulation)
+    diag_counter: u32 = 0,
 
     pub const LoadedRule = struct {
         name: []const u8,
@@ -47,6 +53,9 @@ pub const QjsLintEngine = struct {
         messages: std.StringArrayHashMap([]const u8),
     };
 
+    /// Pointer to self stored in runtime opaque — used by native report callback
+    var g_engine_ptr: ?*QjsLintEngine = null;
+
     pub fn init(allocator: std.mem.Allocator) ?QjsLintEngine {
         const rt = c.JS_NewRuntime() orelse return null;
         const ctx = c.JS_NewContext(rt) orelse {
@@ -57,12 +66,59 @@ pub const QjsLintEngine = struct {
         const bridge = @import("../interp/quickjs_bridge.zig");
         bridge.installRequireForCtx(@ptrCast(ctx), "js/node_modules/eslint/lib/rules");
 
-        return .{
+        // Install native __report() function — increments Zig counter directly
+        const global = c.JS_GetGlobalObject(ctx);
+        const report_fn = c.JS_NewCFunction(ctx, nativeReport, "__report", 0);
+        _ = c.JS_SetPropertyStr(ctx, global, "__report", report_fn);
+        c.JS_FreeValue(ctx, global);
+
+        var self: QjsLintEngine = .{
             .rt = rt,
             .ctx = ctx,
             .rules = .empty,
             .allocator = allocator,
         };
+        for (0..256) |i| self.tag_names[i] = std.mem.span(layout.sanz_tag_name(@intCast(i)));
+
+        // Pre-compile setup script (called once per rule to build mock context)
+        const setup_script =
+            \\(function(exports) {
+            \\  var meta = exports.meta || {};
+            \\  var defOpts = meta.defaultOptions ? JSON.parse(JSON.stringify(meta.defaultOptions)) : [];
+            \\  var schema = meta.schema;
+            \\  if ((!defOpts || defOpts.length === 0) && schema) {
+            \\    var s = Array.isArray(schema) ? schema : (schema.anyOf ? schema.anyOf[0] : null);
+            \\    if (s && Array.isArray(s) && s.length > 0 && s[0] && s[0].type === 'object') defOpts = [{}];
+            \\    else if (s && s.items && Array.isArray(s.items)) {
+            \\      defOpts = s.items.map(function(item) {
+            \\        if (!item) return undefined;
+            \\        if (item.type === 'object') return {};
+            \\        if (item.type === 'string' && item.enum) return item.enum[0];
+            \\        if (item.type === 'string') return '';
+            \\        return undefined;
+            \\      });
+            \\    }
+            \\  }
+            \\  var diags = [];
+            \\  var ctx = {
+            \\    report: function(d) { __report(); },
+            \\    options: defOpts,
+            \\    sourceCode: { getScope:function(){return{type:'module',variables:[],references:[],through:[],set:new Map()};}, getText:function(){return'';}, getFirstToken:function(){return{type:'',value:''};}, getTokenBefore:function(){return null;}, getTokenAfter:function(){return null;}, getTokens:function(){return[];}, getDeclaredVariables:function(){return[];}, ast:{type:'Program',body:[]} },
+            \\    settings: {}, filename: '',
+            \\    parserOptions: {ecmaVersion:2022,ecmaFeatures:{jsx:true}},
+            \\    languageOptions: {ecmaVersion:2022,sourceType:'module'}
+            \\  };
+            \\  return { ctx: ctx, diags: diags };
+            \\})
+        ;
+        self.setup_fn_cached = c.JS_Eval(ctx, setup_script.ptr, setup_script.len, "<setup>", c.JS_EVAL_TYPE_GLOBAL);
+
+        return self;
+    }
+
+    fn nativeReport(_: ?*c.JSContext, _: c.JSValue, _: c_int, _: [*c]c.JSValue) callconv(.c) c.JSValue {
+        if (g_engine_ptr) |eng| eng.diag_counter += 1;
+        return .{ .u = .{ .int32 = 0 }, .tag = c.JS_TAG_UNDEFINED };
     }
 
     pub fn deinit(self: *QjsLintEngine) void {
@@ -134,39 +190,8 @@ pub const QjsLintEngine = struct {
             return error.NoCreateFunction;
         }
 
-        // Build mock context with diags array for collecting reports
-        const setup_script =
-            \\(function(exports) {
-            \\  var meta = exports.meta || {};
-            \\  var defOpts = meta.defaultOptions ? JSON.parse(JSON.stringify(meta.defaultOptions)) : [];
-            \\  var schema = meta.schema;
-            \\  if ((!defOpts || defOpts.length === 0) && schema) {
-            \\    var s = Array.isArray(schema) ? schema : (schema.anyOf ? schema.anyOf[0] : null);
-            \\    if (s && Array.isArray(s) && s.length > 0 && s[0] && s[0].type === 'object') defOpts = [{}];
-            \\    else if (s && s.items && Array.isArray(s.items)) {
-            \\      defOpts = s.items.map(function(item) {
-            \\        if (!item) return undefined;
-            \\        if (item.type === 'object') return {};
-            \\        if (item.type === 'string' && item.enum) return item.enum[0];
-            \\        if (item.type === 'string') return '';
-            \\        return undefined;
-            \\      });
-            \\    }
-            \\  }
-            \\  var diags = [];
-            \\  var ctx = {
-            \\    report: function(d) { diags.push(d.messageId || d.message || 'error'); },
-            \\    options: defOpts,
-            \\    sourceCode: { getScope:function(){return{type:'module',variables:[],references:[],through:[],set:new Map()};}, getText:function(){return'';}, getFirstToken:function(){return{type:'',value:''};}, getTokenBefore:function(){return null;}, getTokenAfter:function(){return null;}, getTokens:function(){return[];}, getDeclaredVariables:function(){return[];}, ast:{type:'Program',body:[]} },
-            \\    settings: {}, filename: '',
-            \\    parserOptions: {ecmaVersion:2022,ecmaFeatures:{jsx:true}},
-            \\    languageOptions: {ecmaVersion:2022,sourceType:'module'}
-            \\  };
-            \\  return { ctx: ctx, diags: diags };
-            \\})
-        ;
-        const setup_fn = c.JS_Eval(self.ctx, setup_script.ptr, setup_script.len, "<setup>", c.JS_EVAL_TYPE_GLOBAL);
-        defer c.JS_FreeValue(self.ctx, setup_fn);
+        // Use pre-compiled setup function
+        const setup_fn = self.setup_fn_cached;
         var setup_args = [_]c.JSValue{result};
         const setup_result = c.JS_Call(self.ctx, setup_fn, jsUndefined(), 1, @ptrCast(&setup_args));
         if (c.JS_IsException(setup_result) != 0) {
@@ -402,17 +427,11 @@ pub const QjsLintEngine = struct {
 
         self.parse_ns += clockNs() - t0;
 
-        var tag_names: [256][]const u8 = undefined;
-        for (0..256) |i| tag_names[i] = std.mem.span(layout.sanz_tag_name(@intCast(i)));
-
         const node_tags_enum = tree.nodes.items(.tag);
 
-        // Reset all diags arrays
-        for (self.rules.items) |*rule| {
-            if (c.JS_IsObject(rule.diags) != 0) {
-                _ = c.JS_SetPropertyStr(self.ctx, rule.diags, "length", c.JS_NewInt32(self.ctx, 0));
-            }
-        }
+        // Reset native diagnostic counter
+        g_engine_ptr = self;
+        self.diag_counter = 0;
 
         const t1 = clockNs();
 
@@ -428,7 +447,7 @@ pub const QjsLintEngine = struct {
             const handlers = if (is_exit) self.exit_dispatch[tag].items else self.enter_dispatch[tag].items;
             if (handlers.len == 0) continue;
 
-            const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
+            const node_obj = self.buildNode(&tree, &self.tag_names, traversal.parents, idx, 0);
 
             for (handlers) |h| {
                 dispatch_count += 1;
@@ -448,18 +467,7 @@ pub const QjsLintEngine = struct {
         self.dispatch_ns += clockNs() - t1;
         self.total_dispatches += dispatch_count;
 
-        // Count total diagnostics
-        var diag_count: u32 = 0;
-        for (self.rules.items) |*rule| {
-            if (c.JS_IsObject(rule.diags) == 0) continue;
-            const len_val = c.JS_GetPropertyStr(self.ctx, rule.diags, "length");
-            var len: f64 = 0;
-            _ = c.JS_ToFloat64(self.ctx, &len, len_val);
-            c.JS_FreeValue(self.ctx, len_val);
-            diag_count += @intFromFloat(len);
-        }
-
-        return diag_count;
+        return self.diag_counter;
     }
 
     /// Build an ESTree-compatible node object from the Zig AST.

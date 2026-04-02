@@ -111,8 +111,6 @@ pub fn main(init: std.process.Init) !void {
 
                 const name = entry.basename[0 .. entry.basename.len - 3];
                 lint_engine.loadRule(name, rule_src) catch continue;
-                const ridx = lint_engine.ruleCount() - 1;
-                lint_engine.discoverVisitors(ridx) catch {};
                 rule_count += 1;
             }
             try stdout.print("Rules loaded: {d}\n", .{rule_count});
@@ -166,24 +164,29 @@ pub fn main(init: std.process.Init) !void {
             return;
         };
 
-        var corpus_walker = corpus_dir.walk(allocator) catch {
-            try stdout.print("Cannot walk corpus\n", .{});
-            try stdout.flush();
-            return;
-        };
-        defer corpus_walker.deinit();
+        // Pre-read all corpus files into memory
+        var corpus_sources: std.ArrayList([]const u8) = .empty;
+        {
+            var corpus_walker = corpus_dir.walk(allocator) catch {
+                try stdout.print("Cannot walk corpus\n", .{});
+                try stdout.flush();
+                return;
+            };
+            defer corpus_walker.deinit();
+            while (true) {
+                const entry = (corpus_walker.next(io) catch break) orelse break;
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
+                if (corpus_sources.items.len >= 1983) break;
+                const src = corpus_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+                try corpus_sources.append(allocator, src);
+            }
+        }
 
+        // Lint all files from memory
         var file_count: u32 = 0;
         var total_diags: u32 = 0;
-        while (true) {
-            const entry = (corpus_walker.next(io) catch break) orelse break;
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
-            if (file_count >= 1983) break; // full Corpus A
-
-            const src = corpus_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
-            defer allocator.free(src);
-
+        for (corpus_sources.items) |src| {
             total_diags += lint_engine.lintSource(src, allocator);
             file_count += 1;
         }
