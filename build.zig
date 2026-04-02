@@ -115,7 +115,7 @@ pub fn build(b: *std.Build) void {
             "-DCONFIG_BIGNUM",
             "-funsigned-char",
             "-fno-sanitize=undefined",
-            "-O2", // Optimize QuickJS interpreter for speed
+            "-O3", // Optimize QuickJS interpreter for speed
         },
     });
     exe_mod.addIncludePath(qjs_include);
