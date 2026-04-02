@@ -589,7 +589,11 @@ fn bufferGetNodeProperty(ctx_ptr: *anyopaque, node_idx: u32, prop: []const u8) I
     if (eql(u8, prop, "elements")) return buildNodeArrayWithHoles(bast, lhs, rhs, ctx);
 
     // ── cases (SwitchStatement) ──
-    if (eql(u8, prop, "cases")) return buildNodeArray(bast, lhs, rhs, ctx);
+    if (eql(u8, prop, "cases")) {
+        // switch_stmt: rhs is extra index to SubRange of cases
+        const sr = bast.extraData(ast_mod.SubRange, rhs);
+        return buildNodeArray(bast, sr.start, sr.end, ctx);
+    }
 
     // ── consequent / alternate (IfStatement, SwitchCase) ──
     if (eql(u8, prop, "consequent")) {

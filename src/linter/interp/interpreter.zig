@@ -1825,7 +1825,7 @@ pub const Interpreter = struct {
                 const val = if (prop_tag == .shorthand_property)
                     self.env.lookup(key)
                 else if (prop_data.rhs != .none)
-                    try self.eval(@enumFromInt(@intFromEnum(prop_data.rhs)))
+                    (self.eval(@enumFromInt(@intFromEnum(prop_data.rhs))) catch .undefined)
                 else
                     .undefined;
                 obj.entries.put(key, val) catch {};
