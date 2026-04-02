@@ -23,6 +23,10 @@ pub const QjsLintEngine = struct {
         severity: Severity,
         /// JS module.exports object (ref counted in QuickJS)
         exports: c.JSValue,
+        /// Cached visitor object from create() — called once at startup
+        visitors: c.JSValue,
+        /// Cached diags array reference
+        diags: c.JSValue,
         /// Visitor keys → sanz tag ordinals
         visitor_tags: std.StringArrayHashMap([]const u16),
         /// Exit visitor keys
@@ -51,6 +55,8 @@ pub const QjsLintEngine = struct {
 
     pub fn deinit(self: *QjsLintEngine) void {
         for (self.rules.items) |rule| {
+            c.JS_FreeValue(self.ctx, rule.visitors);
+            c.JS_FreeValue(self.ctx, rule.diags);
             c.JS_FreeValue(self.ctx, rule.exports);
         }
         c.JS_FreeContext(self.ctx);
@@ -77,19 +83,81 @@ pub const QjsLintEngine = struct {
             return error.EvalFailed;
         }
 
-        // Check it has create
-        const create_val = c.JS_GetPropertyStr(self.ctx, result, "create");
-        const has_create = c.JS_IsFunction(self.ctx, create_val) != 0;
-        c.JS_FreeValue(self.ctx, create_val);
-        if (!has_create) {
+        // Get create function and call it once at startup
+        const create_fn = c.JS_GetPropertyStr(self.ctx, result, "create");
+        if (c.JS_IsFunction(self.ctx, create_fn) == 0) {
+            c.JS_FreeValue(self.ctx, create_fn);
             c.JS_FreeValue(self.ctx, result);
             return error.NoCreateFunction;
+        }
+
+        // Build mock context with diags array for collecting reports
+        const setup_script =
+            \\(function(exports) {
+            \\  var meta = exports.meta || {};
+            \\  var defOpts = meta.defaultOptions ? JSON.parse(JSON.stringify(meta.defaultOptions)) : [];
+            \\  var schema = meta.schema;
+            \\  if ((!defOpts || defOpts.length === 0) && schema) {
+            \\    var s = Array.isArray(schema) ? schema : (schema.anyOf ? schema.anyOf[0] : null);
+            \\    if (s && Array.isArray(s) && s.length > 0 && s[0] && s[0].type === 'object') defOpts = [{}];
+            \\    else if (s && s.items && Array.isArray(s.items)) {
+            \\      defOpts = s.items.map(function(item) {
+            \\        if (!item) return undefined;
+            \\        if (item.type === 'object') return {};
+            \\        if (item.type === 'string' && item.enum) return item.enum[0];
+            \\        if (item.type === 'string') return '';
+            \\        return undefined;
+            \\      });
+            \\    }
+            \\  }
+            \\  var diags = [];
+            \\  var ctx = {
+            \\    report: function(d) { diags.push(d.messageId || d.message || 'error'); },
+            \\    options: defOpts,
+            \\    sourceCode: { getScope:function(){return{type:'module',variables:[],references:[],through:[],set:new Map()};}, getText:function(){return'';}, getFirstToken:function(){return{type:'',value:''};}, getTokenBefore:function(){return null;}, getTokenAfter:function(){return null;}, getTokens:function(){return[];}, getDeclaredVariables:function(){return[];}, ast:{type:'Program',body:[]} },
+            \\    settings: {}, filename: '',
+            \\    parserOptions: {ecmaVersion:2022,ecmaFeatures:{jsx:true}},
+            \\    languageOptions: {ecmaVersion:2022,sourceType:'module'}
+            \\  };
+            \\  return { ctx: ctx, diags: diags };
+            \\})
+        ;
+        const setup_fn = c.JS_Eval(self.ctx, setup_script.ptr, setup_script.len, "<setup>", c.JS_EVAL_TYPE_GLOBAL);
+        defer c.JS_FreeValue(self.ctx, setup_fn);
+        var setup_args = [_]c.JSValue{result};
+        const setup_result = c.JS_Call(self.ctx, setup_fn, jsUndefined(), 1, @ptrCast(&setup_args));
+        if (c.JS_IsException(setup_result) != 0) {
+            const exc = c.JS_GetException(self.ctx);
+            c.JS_FreeValue(self.ctx, exc);
+            c.JS_FreeValue(self.ctx, create_fn);
+            c.JS_FreeValue(self.ctx, result);
+            return error.SetupFailed;
+        }
+        defer c.JS_FreeValue(self.ctx, setup_result);
+
+        const ctx_obj = c.JS_GetPropertyStr(self.ctx, setup_result, "ctx");
+        const diags_arr = c.JS_GetPropertyStr(self.ctx, setup_result, "diags");
+
+        // Call create(context) — ONCE, at startup
+        var create_args = [_]c.JSValue{ctx_obj};
+        const visitors = c.JS_Call(self.ctx, create_fn, result, 1, @ptrCast(&create_args));
+        c.JS_FreeValue(self.ctx, create_fn);
+        c.JS_FreeValue(self.ctx, ctx_obj);
+
+        if (c.JS_IsException(visitors) != 0) {
+            const exc = c.JS_GetException(self.ctx);
+            c.JS_FreeValue(self.ctx, exc);
+            c.JS_FreeValue(self.ctx, diags_arr);
+            c.JS_FreeValue(self.ctx, result);
+            return error.CreateFailed;
         }
 
         try self.rules.append(self.allocator, .{
             .name = try self.allocator.dupe(u8, name),
             .severity = .@"error",
             .exports = result,
+            .visitors = visitors,
+            .diags = diags_arr,
             .visitor_tags = std.StringArrayHashMap([]const u16).init(self.allocator),
             .exit_tags = std.StringArrayHashMap([]const u16).init(self.allocator),
             .messages = std.StringArrayHashMap([]const u8).init(self.allocator),
@@ -197,15 +265,16 @@ pub const QjsLintEngine = struct {
     }
 
     /// Parse a source string and lint it with all loaded rules.
+    /// Uses CACHED visitor objects — no per-file create() calls.
     /// Returns the diagnostic count.
     pub fn lintSource(self: *QjsLintEngine, source: []const u8, allocator: std.mem.Allocator) u32 {
         const Lexer = @import("../../parser/lexer.zig").Lexer;
-        const Parser = @import("../../parser/parser.zig").Parser;
+        const Parser_mod = @import("../../parser/parser.zig").Parser;
         const parent_builder = @import("../../parser/parent_builder.zig");
 
         // Parse
         var tokens = Lexer.tokenize(allocator, source) catch return 0;
-        var tree = Parser.parse(allocator, source, tokens.slice()) catch return 0;
+        var tree = Parser_mod.parse(allocator, source, tokens.slice()) catch return 0;
         const traversal = parent_builder.computeTraversal(&tree, allocator) catch return 0;
         defer allocator.free(traversal.parents);
         defer allocator.free(traversal.pre_order);
@@ -219,51 +288,13 @@ pub const QjsLintEngine = struct {
         const node_tags_enum = tree.nodes.items(.tag);
         var diag_count: u32 = 0;
 
-        // For each rule: call create(), walk DFS, dispatch handlers
+        // For each rule: use CACHED visitors, walk DFS, dispatch handlers
         for (self.rules.items) |*rule| {
-            // Call create() with mock context via JS eval
-            const create_script =
-                \\(function(exports) {
-                \\  var meta = exports.meta || {};
-                \\  var defOpts = meta.defaultOptions ? JSON.parse(JSON.stringify(meta.defaultOptions)) : [];
-                \\  var diags = [];
-                \\  var ctx = {
-                \\    report: function(d) { diags.push(d.messageId || d.message || 'error'); },
-                \\    options: defOpts,
-                \\    sourceCode: { getScope:function(){return{type:'module',variables:[],references:[],through:[],set:new Map()};}, getText:function(){return'';}, getFirstToken:function(){return{type:'',value:''};}, getTokenBefore:function(){return null;}, getTokenAfter:function(){return null;}, getTokens:function(){return[];}, getDeclaredVariables:function(){return[];}, ast:{type:'Program',body:[]} },
-                \\    settings: {}, filename: '',
-                \\    parserOptions: {ecmaVersion:2022,ecmaFeatures:{jsx:true}},
-                \\    languageOptions: {ecmaVersion:2022,sourceType:'module'}
-                \\  };
-                \\  try {
-                \\    var v = exports.create(ctx);
-                \\    return { visitors: v, diags: diags };
-                \\  } catch(e) { return null; }
-                \\})
-            ;
-            const fn_val = c.JS_Eval(self.ctx, create_script.ptr, create_script.len, "<create>", c.JS_EVAL_TYPE_GLOBAL);
-            if (c.JS_IsException(fn_val) != 0) {
-                const exc = c.JS_GetException(self.ctx);
-                c.JS_FreeValue(self.ctx, exc);
-                continue;
-            }
-            defer c.JS_FreeValue(self.ctx, fn_val);
-
-            var cargs = [_]c.JSValue{rule.exports};
-            const result = c.JS_Call(self.ctx, fn_val, jsUndefined(), 1, @ptrCast(&cargs));
-            if (c.JS_IsException(result) != 0 or c.JS_IsNull(result) != 0) {
-                if (c.JS_IsException(result) != 0) {
-                    const exc = c.JS_GetException(self.ctx);
-                    c.JS_FreeValue(self.ctx, exc);
-                }
-                c.JS_FreeValue(self.ctx, result);
-                continue;
-            }
-            defer c.JS_FreeValue(self.ctx, result);
-
-            const visitors = c.JS_GetPropertyStr(self.ctx, result, "visitors");
-            defer c.JS_FreeValue(self.ctx, visitors);
+            const visitors = rule.visitors;
             if (c.JS_IsObject(visitors) == 0) continue;
+
+            // Reset diags array: diags.length = 0
+            _ = c.JS_SetPropertyStr(self.ctx, rule.diags, "length", c.JS_NewInt32(self.ctx, 0));
 
             // DFS walk — dispatch enter and exit events
             for (traversal.dfs_events) |ev| {
@@ -274,7 +305,6 @@ pub const QjsLintEngine = struct {
                 if (tag >= 256) continue;
                 const type_name = tag_names[tag];
 
-                // Build handler key: "TypeName" for enter, "TypeName:exit" for exit
                 var name_buf: [128]u8 = undefined;
                 if (type_name.len + 5 >= name_buf.len) continue;
                 @memcpy(name_buf[0..type_name.len], type_name);
@@ -291,10 +321,9 @@ pub const QjsLintEngine = struct {
                     continue;
                 }
 
-                // Build full ESTree node object from Zig AST data
+                // Build ESTree node object
                 const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
 
-                // Call handler(node)
                 var hargs = [_]c.JSValue{node_obj};
                 const hret = c.JS_Call(self.ctx, handler, visitors, 1, @ptrCast(&hargs));
                 if (c.JS_IsException(hret) != 0) {
@@ -307,10 +336,8 @@ pub const QjsLintEngine = struct {
                 c.JS_FreeValue(self.ctx, handler);
             }
 
-            // Count diagnostics from this rule
-            const diags = c.JS_GetPropertyStr(self.ctx, result, "diags");
-            defer c.JS_FreeValue(self.ctx, diags);
-            const len_val = c.JS_GetPropertyStr(self.ctx, diags, "length");
+            // Count diagnostics
+            const len_val = c.JS_GetPropertyStr(self.ctx, rule.diags, "length");
             defer c.JS_FreeValue(self.ctx, len_val);
             var len: f64 = 0;
             _ = c.JS_ToFloat64(self.ctx, &len, len_val);
@@ -323,6 +350,8 @@ pub const QjsLintEngine = struct {
     /// Build an ESTree-compatible node object from the Zig AST.
     /// depth limits recursion to prevent infinite parent→child→parent chains.
     fn buildNode(self: *QjsLintEngine, tree: *const ast_mod.Ast, tag_names: *const [256][]const u8, parents: []const u32, idx: u32, depth: u8) c.JSValue {
+        // depth limits forward recursion (children). Parent is only set at depth 0.
+        // depth 0 = handler node, 1 = direct children, 2 = grandchildren, 3 = stop
         if (depth > 3 or idx >= tree.nodes.len or idx == 0xFFFFFFFF) return jsNull();
 
         const obj = c.JS_NewObject(self.ctx);
@@ -339,11 +368,12 @@ pub const QjsLintEngine = struct {
         const type_name = tag_names[@intFromEnum(tag)];
         setStr(self.ctx, obj, "type", type_name);
 
-        // parent (only at depth 0 to avoid explosion)
+        // parent — only at depth 0 (the handler's node). Built shallowly.
         if (depth == 0 and idx < parents.len) {
             const pidx = parents[idx];
             if (pidx != NONE) {
-                const p = self.buildNode(tree, tag_names, parents, pidx, depth + 2); // depth+2 to limit parent's children
+                // Parent gets its own type but NO parent chain and limited children
+                const p = self.buildNode(tree, tag_names, parents, pidx, 2);
                 _ = c.JS_SetPropertyStr(self.ctx, obj, "parent", p);
             } else {
                 _ = c.JS_SetPropertyStr(self.ctx, obj, "parent", jsNull());

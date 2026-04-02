@@ -75,59 +75,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ── QuickJS test ──────────────────────────────────────────
     if (test_quickjs) {
-        const qjs_bridge = @import("linter/interp/quickjs_bridge.zig");
-        if (qjs_bridge.testQuickJS()) {
-            try stdout.print("QuickJS OK: eval + rule loading works\n", .{});
-        } else {
-            try stdout.print("QuickJS FAILED\n", .{});
-            try stdout.flush();
-            return;
-        }
-
-        // Load ALL ESLint rules from disk
-        const cwd = Io.Dir.cwd();
-        const rules_dir = cwd.openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
-            try stdout.print("Could not open rules dir\n", .{});
-            try stdout.flush();
-            return;
-        };
-
-        var total: u32 = 0;
-        var loaded: u32 = 0;
-        var failed: u32 = 0;
-        // Errors printed inline below
-        var iter_w = rules_dir.walk(allocator) catch {
-            try stdout.print("Could not walk rules dir\n", .{});
-            try stdout.flush();
-            return;
-        };
-        defer iter_w.deinit();
-        while (true) {
-            const entry = (iter_w.next(io) catch break) orelse break;
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
-            if (std.mem.eql(u8, entry.basename, "index.js")) continue;
-
-            total += 1;
-            const rule_src = rules_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
-            defer allocator.free(rule_src);
-
-            if (qjs_bridge.loadRuleFile(rule_src)) |keys| {
-                if (std.mem.startsWith(u8, keys, "ERROR:")) {
-                    failed += 1;
-                    const name = entry.basename[0 .. entry.basename.len - 3];
-                    try stdout.print("  {s}: {s}\n", .{ name, keys[6..] });
-                    std.heap.page_allocator.free(keys);
-                } else {
-                    std.heap.page_allocator.free(keys);
-                    loaded += 1;
-                }
-            } else {
-                failed += 1;
-                try stdout.print("  {s}: null\n", .{entry.basename[0 .. entry.basename.len - 3]});
-            }
-        }
-        try stdout.print("\nLoaded: {d}/{d} rules ({d} failed)\n", .{ loaded, total, failed });
+        // Lint engine test — load rules, lint files
 
         // Quick lint test with the QJS engine
         const qjs_engine_mod = @import("linter/eslint/qjs_engine.zig");
@@ -138,11 +86,13 @@ pub fn main(init: std.process.Init) !void {
         };
         defer lint_engine.deinit();
 
-        // Load all rules from disk
-
         // Load ALL rules from the ESLint rules directory
         {
-            var rule_dir = rules_dir;
+            var rule_dir = Io.Dir.cwd().openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
+                try stdout.print("Could not open rules dir\n", .{});
+                try stdout.flush();
+                return;
+            };
             var walker = rule_dir.walk(allocator) catch {
                 try stdout.print("Failed to walk rules dir\n", .{});
                 try stdout.flush();
@@ -156,7 +106,7 @@ pub fn main(init: std.process.Init) !void {
                 if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
                 if (std.mem.eql(u8, entry.basename, "index.js")) continue;
 
-                const rule_src = rules_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+                const rule_src = rule_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
                 defer allocator.free(rule_src);
 
                 const name = entry.basename[0 .. entry.basename.len - 3];
@@ -197,6 +147,8 @@ pub fn main(init: std.process.Init) !void {
         try stdout.print("Parse: {d} nodes, {d} DFS events\n", .{ tree.nodes.len, traversal.dfs_events.len });
 
         // Quick DFS lint test — manually dispatch DebuggerStatement nodes
+        try stdout.print("Startup done, linting...\n", .{});
+
         // Lint test input
         const test_src2 = "var x = 1; debugger; if (x == 2) {} for (var i = 0; i < 10; i--) { continue; } if (true) {}";
         const diag_count = lint_engine.lintSource(test_src2, allocator);
