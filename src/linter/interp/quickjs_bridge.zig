@@ -113,12 +113,67 @@ pub fn loadRuleFileWithBase(source: []const u8, base_dir: []const u8) ?[]const u
 
     // CommonJS module wrapper + visitor key extraction
     const prefix = "var module = { exports: {} }; var exports = module.exports;\n";
-    const suffix = "\nvar __create = module.exports.create || (typeof create === 'function' ? create : null);\n" ++
-        "var __result = 'no create';\n" ++
-        "if (__create) {\n" ++
-        "  var __visitors = __create({ report: function(){}, options: [], sourceCode: {}, getScope: function(){return {};}, filename: '', settings: {}, id: 'test', parserOptions: {ecmaVersion:2022}, languageOptions: {ecmaVersion:2022,sourceType:'module'} });\n" ++
-        "  __result = JSON.stringify(Object.keys(__visitors || {}));\n" ++
-        "}\n__result;";
+    const suffix =
+        \\
+        \\var __create = module.exports.create || (typeof create === 'function' ? create : null);
+        \\var __result = 'no create';
+        \\if (__create) {
+        \\  try {
+        \\    var __meta = module.exports.meta || {};
+        \\    var __defOpts = __meta.defaultOptions || [];
+        \\    var __schema = __meta.schema;
+        \\    // Build default options from schema if defaultOptions not provided
+        \\    if (__defOpts.length === 0 && __schema) {
+        \\      var s = Array.isArray(__schema) ? __schema : (__schema.anyOf ? __schema.anyOf[0] : null);
+        \\      if (s && Array.isArray(s) && s.length > 0 && s[0] && s[0].type === 'object') {
+        \\        __defOpts = [{}];
+        \\      } else if (s && s.items && Array.isArray(s.items)) {
+        \\        __defOpts = s.items.map(function(item) {
+        \\          if (item.type === 'object') return {};
+        \\          if (item.type === 'string' && item.enum) return item.enum[0];
+        \\          if (item.type === 'string') return '';
+        \\          if (item.type === 'number' || item.type === 'integer') return 0;
+        \\          if (item.type === 'boolean') return false;
+        \\          return undefined;
+        \\        });
+        \\      }
+        \\    }
+        \\    var __mockSrc = {
+        \\      getScope: function(){ return { type: 'module', upper: null, variables: [], references: [], through: [], childScopes: [], set: new Map() }; },
+        \\      getText: function(){ return ''; },
+        \\      getFirstToken: function(){ return { type: 'Identifier', value: '', loc: {start:{line:0,column:0},end:{line:0,column:0}}, range:[0,0] }; },
+        \\      getLastToken: function(){ return { type: 'Identifier', value: '', loc: {start:{line:0,column:0},end:{line:0,column:0}}, range:[0,0] }; },
+        \\      getTokenBefore: function(){ return null; },
+        \\      getTokenAfter: function(){ return null; },
+        \\      getTokens: function(){ return []; },
+        \\      getDeclaredVariables: function(){ return []; },
+        \\      getCommentsInside: function(){ return []; },
+        \\      getCommentsBefore: function(){ return []; },
+        \\      getCommentsAfter: function(){ return []; },
+        \\      getAllComments: function(){ return []; },
+        \\      isSpaceBetween: function(){ return false; },
+        \\      getNodeByRangeIndex: function(){ return null; },
+        \\      ast: { type: 'Program', body: [], comments: [], tokens: [] },
+        \\      visitorKeys: {}
+        \\    };
+        \\    var __visitors = __create({
+        \\      report: function(){},
+        \\      options: __defOpts,
+        \\      sourceCode: __mockSrc,
+        \\      getScope: __mockSrc.getScope,
+        \\      filename: '',
+        \\      settings: {},
+        \\      id: 'test',
+        \\      parserOptions: { ecmaVersion: 2022, ecmaFeatures: { jsx: true } },
+        \\      languageOptions: { ecmaVersion: 2022, sourceType: 'module' }
+        \\    });
+        \\    __result = JSON.stringify(Object.keys(__visitors || {}));
+        \\  } catch(e) {
+        \\    __result = 'ERROR:' + (e.message || String(e));
+        \\  }
+        \\}
+        \\__result;
+    ;
 
     const total_len = prefix.len + source.len + suffix.len;
     var combined = std.heap.page_allocator.alloc(u8, total_len) catch return null;
@@ -130,7 +185,26 @@ pub fn loadRuleFileWithBase(source: []const u8, base_dir: []const u8) ?[]const u
     const result = engine.eval(combined, "<rule>");
     if (engine.isException(result)) {
         const exc = c.JS_GetException(engine.ctx);
-        defer c.JS_FreeValue(engine.ctx, exc);
+        // Store error message for caller
+        const err_str = c.JS_ToCString(engine.ctx, exc);
+        if (err_str) |es| {
+            const elen = std.mem.len(es);
+            if (elen > 0) {
+                const ecopy = std.heap.page_allocator.alloc(u8, elen + 7) catch {
+                    c.JS_FreeCString(engine.ctx, es);
+                    c.JS_FreeValue(engine.ctx, exc);
+                    return null;
+                };
+                @memcpy(ecopy[0..6], "ERROR:");
+                @memcpy(ecopy[6..][0..elen], es[0..elen]);
+                ecopy[elen + 6] = 0;
+                c.JS_FreeCString(engine.ctx, es);
+                c.JS_FreeValue(engine.ctx, exc);
+                return ecopy[0 .. elen + 6];
+            }
+            c.JS_FreeCString(engine.ctx, es);
+        }
+        c.JS_FreeValue(engine.ctx, exc);
         return null;
     }
     defer engine.freeValue(result);

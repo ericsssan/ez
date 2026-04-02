@@ -95,7 +95,7 @@ pub fn main(init: std.process.Init) !void {
         var total: u32 = 0;
         var loaded: u32 = 0;
         var failed: u32 = 0;
-        var failed_names: std.ArrayList([]const u8) = .empty;
+        // Errors printed inline below
         var iter_w = rules_dir.walk(allocator) catch {
             try stdout.print("Could not walk rules dir\n", .{});
             try stdout.flush();
@@ -113,23 +113,21 @@ pub fn main(init: std.process.Init) !void {
             defer allocator.free(rule_src);
 
             if (qjs_bridge.loadRuleFile(rule_src)) |keys| {
-                std.heap.page_allocator.free(keys);
-                loaded += 1;
+                if (std.mem.startsWith(u8, keys, "ERROR:")) {
+                    failed += 1;
+                    const name = entry.basename[0 .. entry.basename.len - 3];
+                    try stdout.print("  {s}: {s}\n", .{ name, keys[6..] });
+                    std.heap.page_allocator.free(keys);
+                } else {
+                    std.heap.page_allocator.free(keys);
+                    loaded += 1;
+                }
             } else {
                 failed += 1;
-                const name_copy = allocator.dupe(u8, entry.basename[0 .. entry.basename.len - 3]) catch continue;
-                failed_names.append(allocator, name_copy) catch {};
+                try stdout.print("  {s}: null\n", .{entry.basename[0 .. entry.basename.len - 3]});
             }
         }
-        try stdout.print("Loaded: {d}/{d} rules ({d} failed)\n", .{ loaded, total, failed });
-        if (failed_names.items.len > 0) {
-            try stdout.print("Failed: ", .{});
-            for (failed_names.items, 0..) |name, i| {
-                if (i > 0) try stdout.print(", ", .{});
-                try stdout.print("{s}", .{name});
-            }
-            try stdout.print("\n", .{});
-        }
+        try stdout.print("\nLoaded: {d}/{d} rules ({d} failed)\n", .{ loaded, total, failed });
         try stdout.flush();
         return;
     }
