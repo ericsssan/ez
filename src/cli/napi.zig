@@ -330,121 +330,16 @@ fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     }
 
     // If no rules loaded, just return 0 diagnostics
-    const rs = loaded_rule_set orelse {
+    _ = loaded_rule_set orelse {
         var js_result: n.Value = undefined;
         _ = n.napi_create_uint32(env, 0, &js_result);
         return js_result;
     };
 
-    // Re-parse the file in a separate allocation for the interpreter
-    // (the shared buffer is already used by the parse output)
-    const alloc = std.heap.page_allocator;
-    const source = buf_ptr[source_start .. source_start + source_len];
-
-    var tokens = Lexer.tokenize(alloc, source) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer tokens.deinit(alloc);
-
-    var tree = parser_mod.Parser.parse(alloc, source, tokens.slice()) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer tree.deinit(alloc);
-
-    // Semantic analysis
-    var sem = semantic_mod.SemanticAnalyzer.analyze(alloc, &tree) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer sem.deinit(alloc);
-
-    // Compute traversal data
-    const traversal = parent_builder.computeTraversal(&tree, alloc) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer alloc.free(traversal.parents);
-    defer alloc.free(traversal.pre_order);
-    defer alloc.free(traversal.post_order);
-    defer alloc.free(traversal.dfs_events);
-
-    // Compute min/max token indices per node
-    const node_count = tree.nodes.len;
-    const mt = tree.nodes.items(.main_token);
-    const min_tok = alloc.alloc(u32, node_count) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer alloc.free(min_tok);
-    const max_tok = alloc.alloc(u32, node_count) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer alloc.free(max_tok);
-    for (0..node_count) |i| {
-        min_tok[i] = mt[i];
-        max_tok[i] = mt[i];
-    }
-    for (1..node_count) |i| {
-        const p = traversal.parents[i];
-        if (p != 0xFFFFFFFF) {
-            if (min_tok[i] < min_tok[p]) min_tok[p] = min_tok[i];
-            if (max_tok[i] > max_tok[p]) max_tok[p] = max_tok[i];
-        }
-    }
-
-    // Build tag names array from layout module
-    var tag_names: [256][]const u8 = undefined;
-    for (0..256) |i| {
-        const name_ptr: [*:0]const u8 = layout.sanz_tag_name(@intCast(i));
-        tag_names[i] = std.mem.span(name_ptr);
-    }
-
-    // Node scope IDs (from semantic)
-    const node_scope_ids = alloc.alloc(u32, node_count) catch {
-        var js_result: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_result);
-        return js_result;
-    };
-    defer alloc.free(node_scope_ids);
-    @memset(node_scope_ids, 0xFFFFFFFF);
-    for (0..sem.scopes.kinds.items.len) |i| {
-        const nid = sem.scopes.node_ids.items[i];
-        if (nid != .none) {
-            const nidx = @intFromEnum(nid);
-            if (nidx < node_count) node_scope_ids[nidx] = @intCast(i);
-        }
-    }
-
-    // Run interpreted ESLint rules
-    var diagnostics: std.ArrayList(@import("../parser/diagnostic.zig").Diagnostic) = .empty;
-    defer diagnostics.deinit(alloc);
-
-    eslint_rules.runRules(
-        &rs,
-        &tree,
-        &sem,
-        &tag_names,
-        traversal.parents,
-        min_tok,
-        max_tok,
-        traversal.dfs_events,
-        node_scope_ids,
-        &diagnostics,
-        alloc,
-    );
-
-    // Return diagnostic count
+    // parseAndLint is a legacy path — lint now runs via lintLoaded on the buffer.
+    // Just return 0; caller should use parse() + lintLoaded().
     var js_result: n.Value = undefined;
-    _ = n.napi_create_uint32(env, @intCast(diagnostics.items.len), &js_result);
+    _ = n.napi_create_uint32(env, 0, &js_result);
     return js_result;
 }
 
@@ -494,8 +389,8 @@ fn napiLintLoaded(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         var tag_names: [256][]const u8 = undefined;
         var tag_names_init: bool = false;
     };
-    // Reset arena from previous call (reuse backing memory)
-    _ = S.arena.reset(.retain_capacity);
+    // Reset arena from previous call
+    _ = S.arena.reset(.{ .retain_with_limit = 4 * 1024 * 1024 }); // keep up to 4MB
     const alloc = S.arena.allocator();
 
     // Cache tag names (computed once, reused across all calls)
@@ -507,29 +402,22 @@ fn napiLintLoaded(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     // Diagnostics list — also on the arena
     var diagnostics: std.ArrayList(Diagnostic) = .empty;
 
-
     // Pre-build callbacks (same for all visitors in this file)
     const callbacks = makeBufferCallbacks(&bast, &S.tag_names);
 
     // Set arena for buildNodeArray helpers
     lint_arena_alloc = alloc;
 
-    // ── DFS walk: dispatch matching visitors ──
-    for (bast.dfs_events) |ev| {
-        if (ev >= 0) {
-            const idx: u32 = @intCast(ev);
-            if (idx >= bast.node_count) continue;
-            const tag = bast.node_tags[idx];
-            if (tag >= 256) continue;
-
-            const entries = rs.tag_enter[tag];
-            if (entries.len == 0) continue;
-
-            for (entries) |ref| {
-                eslint_rules.execVisitor(&rs, ref, idx, callbacks, &diagnostics, alloc);
-            }
-        }
-    }
+    // ── Run rules: init create() once per rule, then DFS walk ──
+    eslint_rules.runRulesOnFile(
+        &rs,
+        callbacks,
+        bast.dfs_events,
+        bast.node_count,
+        bast.node_tags[0..bast.node_count],
+        &diagnostics,
+        alloc,
+    );
 
     var js_result: n.Value = undefined;
     _ = n.napi_create_uint32(env, @intCast(diagnostics.items.len), &js_result);
@@ -735,8 +623,9 @@ fn bufferGetNodeProperty(ctx_ptr: *anyopaque, node_idx: u32, prop: []const u8) I
         return .{ .boolean = @as(ast_mod.Node.Tag, @enumFromInt(tag)) == .shorthand_property };
     }
 
-    // ── arguments (CallExpression) — rhs is SubRange ──
+    // ── arguments (CallExpression, NewExpression) — rhs is SubRange ──
     if (eql(u8, prop, "arguments")) {
+        if (rhs == 0xFFFFFFFF) return .{ .array = &.{} }; // no args (e.g., `new Ctor`)
         const range = bast.extraData(ast_mod.SubRange, rhs);
         return buildNodeArray(bast, range.start, range.end, ctx);
     }

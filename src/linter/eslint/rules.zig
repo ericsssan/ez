@@ -1,69 +1,66 @@
 const std = @import("std");
-const Ast = @import("../../parser/ast.zig").Ast;
-const Node = @import("../../parser/ast.zig").Node;
-const NodeIndex = @import("../../parser/ast.zig").NodeIndex;
-const semantic_mod = @import("../../parser/semantic.zig");
-const SemanticResult = semantic_mod.SemanticResult;
+const ast_mod = @import("../../parser/ast.zig");
+const Ast = ast_mod.Ast;
+const Node = ast_mod.Node;
+const NodeIndex = ast_mod.NodeIndex;
 const Severity = @import("../../parser/diagnostic.zig").Severity;
 const Diagnostic = @import("../../parser/diagnostic.zig").Diagnostic;
 const Lexer = @import("../../parser/lexer.zig").Lexer;
 const Parser = @import("../../parser/parser.zig").Parser;
 const Value = @import("../interp/value.zig").Value;
 const Interpreter = @import("../interp/interpreter.zig").Interpreter;
+const Signal = @import("../interp/interpreter.zig").Signal;
+const RuntimeCallbacks = @import("../interp/interpreter.zig").RuntimeCallbacks;
 const Environment = @import("../interp/env.zig").Environment;
 const ClosureState = @import("../interp/env.zig").ClosureState;
-const AstQuery = @import("../query/ast_query.zig").AstQuery;
-const EsTreeAdapter = @import("../query/estree.zig").EsTreeAdapter;
-const parent_builder = @import("../../parser/parent_builder.zig");
 
-/// A single parsed ESLint rule, ready for native execution.
+// ── Rule descriptor (parsed at loadRules, lives for session) ────
+
 pub const Rule = struct {
     name: []const u8,
     severity: Severity,
-    /// Visitor entries with their tag mappings.
     visitors: []const Visitor,
-    /// Message templates: messageId → template string.
     messages: std.StringArrayHashMap([]const u8),
-    /// Rule options (from config).
     options: []const Value,
-    /// Parsed create() function AST. The interpreter evaluates this once per file
-    /// to produce the closure environment with all captured variables.
+    /// Parsed create() AST — lives for the session.
     create_ast: ?*const Ast,
-    /// Parsed closure helper functions (extracted from create body).
     closure_fns: std.StringArrayHashMap(*const Ast),
-    /// Allocator that owns this rule's data.
     allocator: std.mem.Allocator,
 };
 
-/// A visitor entry — maps ESTree type to sanz tags.
-/// The actual handler function is obtained by interpreting create().
 pub const Visitor = struct {
-    /// The ESTree visitor key, e.g., "BinaryExpression" or "Program:exit".
     key: []const u8,
-    /// Sanz Node.Tag ordinals this visitor matches.
     tags: []const u16,
-    /// Whether this is an :exit visitor.
     is_exit: bool,
 };
 
-/// A reference to a specific visitor in the rule set.
+/// Reference into the dispatch table: which rule, which visitor.
 const VisitorRef = struct {
     rule_idx: u16,
     visitor_idx: u16,
 };
 
-/// Collection of loaded ESLint rules with prebuilt dispatch tables.
+// ── Per-file rule context ───────────────────────────────────────
+// Created once per rule per file by interpreting create().
+// Holds the visitor object and closure environment.
+
+pub const RuleFileCtx = struct {
+    /// The visitor object returned by create(): { "BinaryExpression": fn, ... }
+    visitor_obj: *Value.Object,
+    /// The interpreter with its environment (closure variables captured).
+    interp: Interpreter,
+    /// Whether init succeeded.
+    valid: bool = true,
+};
+
+// ── Rule set with dispatch tables ───────────────────────────────
+
 pub const RuleSet = struct {
     rules: []Rule,
-    /// Dispatch table: tag ordinal → slice of VisitorRefs to invoke on enter.
     tag_enter: [256][]const VisitorRef,
-    /// Dispatch table: tag ordinal → slice of VisitorRefs to invoke on exit.
     tag_exit: [256][]const VisitorRef,
-    /// Visitors for Program:enter (run before DFS).
     program_enter: []const VisitorRef,
-    /// Visitors for Program:exit (run after DFS).
     program_exit: []const VisitorRef,
-    /// Allocator that owns the dispatch tables.
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *RuleSet) void {
@@ -77,28 +74,13 @@ pub const RuleSet = struct {
         if (self.program_exit.len > 0) self.allocator.free(self.program_exit);
         for (self.rules) |*rule| {
             rule.messages.deinit();
-            for (rule.visitors) |visitor| {
-                // visitor.ast is owned by the rule allocator
-                _ = visitor;
-            }
         }
         self.allocator.free(self.rules);
     }
 };
 
-/// Load a set of ESLint rules from serialized data.
-///
-/// The bundle format (from JS):
-///   - JSON array of rule descriptors, each containing:
-///     - name: string
-///     - severity: 0|1|2
-///     - visitors: [{ keys: string[], isExit: bool, source: string }]
-///     - messages: { [id]: template }
-///     - options: any[]
-///
-/// Parse the create() source and build the dispatch table from visitor key mappings.
-/// The create() AST is stored per-rule — the interpreter evaluates it per-file
-/// to capture closure variables, then dispatches the visitor handlers.
+// ── loadRules: parse create() ASTs, build dispatch tables ───────
+
 pub fn loadRules(
     allocator: std.mem.Allocator,
     rule_descriptors: []const RuleDescriptor,
@@ -106,7 +88,6 @@ pub fn loadRules(
     var rules = try allocator.alloc(Rule, rule_descriptors.len);
     errdefer allocator.free(rules);
 
-    // Temporary lists for building dispatch tables
     var enter_lists: [256]std.ArrayList(VisitorRef) = undefined;
     var exit_lists: [256]std.ArrayList(VisitorRef) = undefined;
     for (0..256) |i| {
@@ -124,7 +105,7 @@ pub fn loadRules(
     defer program_exit_list.deinit(allocator);
 
     for (rule_descriptors, 0..) |desc, rule_idx| {
-        // Parse the entire create() function source
+        // Parse the entire create() function source into an AST
         var create_ast_ptr: ?*const Ast = null;
         {
             var tokens = Lexer.tokenize(allocator, desc.create_source) catch {
@@ -141,7 +122,7 @@ pub fn loadRules(
             create_ast_ptr = ptr;
         }
 
-        // Build visitor entries from the JS-provided key mappings
+        // Build visitor entries from JS-provided key→tag mappings
         var visitors = try allocator.alloc(Visitor, desc.visitor_keys.len);
         for (desc.visitor_keys, 0..) |vk, vis_idx| {
             visitors[vis_idx] = .{
@@ -187,7 +168,6 @@ pub fn loadRules(
         };
     }
 
-    // Freeze dispatch tables
     var result = RuleSet{
         .rules = rules,
         .tag_enter = undefined,
@@ -204,76 +184,252 @@ pub fn loadRules(
     return result;
 }
 
+// ── initRuleForFile: interpret create() once per rule per file ──
+
+/// Interpret a rule's create(context) body to produce the visitor
+/// object and capture all closure variables. Called once per rule per file.
+pub fn initRuleForFile(
+    rule: *const Rule,
+    callbacks: RuntimeCallbacks,
+    diagnostics: *std.ArrayList(Diagnostic),
+    allocator: std.mem.Allocator,
+) ?RuleFileCtx {
+    const create_ast = rule.create_ast orelse return null;
+
+    // Set up the environment with ESLint bindings
+    var env_ptr = allocator.create(Environment) catch return null;
+    env_ptr.* = Environment.init(allocator, null);
+    env_ptr.set("context", .{ .string = "__eslint_context__" });
+    env_ptr.set("sourceCode", .{ .string = "__source_code__" });
+
+    var interp = Interpreter{
+        .rule_ast = create_ast,
+        .env = env_ptr,
+        .runtime = callbacks,
+        .arena = allocator,
+        .diagnostics = diagnostics,
+        .return_value = .undefined,
+        .current_file_node = 0,
+        .rule_name = rule.name,
+        .rule_severity = rule.severity,
+        .messages = &rule.messages,
+        .options = rule.options,
+        .closure_fns = &rule.closure_fns,
+    };
+
+    // Find the FunctionDeclaration for create() and evaluate its body
+    const root_data = create_ast.nodeData(.root);
+    const root_stmts = create_ast.extraSlice(.{
+        .start = @intFromEnum(root_data.lhs),
+        .end = @intFromEnum(root_data.rhs),
+    });
+
+    for (root_stmts) |raw| {
+        const stmt_idx: NodeIndex = @enumFromInt(raw);
+        if (stmt_idx == .none) continue;
+        const tag = create_ast.nodeTag(stmt_idx);
+
+        if (tag == .fn_decl or tag == .async_fn_decl) {
+            const fn_data = create_ast.extraData(
+                ast_mod.FnData,
+                @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
+            );
+
+            // Bind `context` parameter name to the context marker
+            const params = create_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
+            if (params.len > 0) {
+                const p: NodeIndex = @enumFromInt(params[0]);
+                if (p != .none and create_ast.nodeTag(p) == .identifier) {
+                    const pname = create_ast.tokenText(create_ast.nodeMainToken(p));
+                    env_ptr.set(pname, .{ .string = "__eslint_context__" });
+                }
+            }
+
+            if (fn_data.body != .none) {
+                _ = interp.eval(fn_data.body) catch |err| switch (err) {
+                    Signal.ReturnSignal => {},
+                    else => {},
+                };
+            }
+            break;
+        }
+    }
+
+    // The return value should be the visitor object
+    if (interp.return_value == .object) {
+        return .{
+            .visitor_obj = interp.return_value.object,
+            .interp = interp,
+        };
+    }
+
+    return null;
+}
+
+// ── callHandler: invoke a visitor handler on a node ─────────────
+
+/// Call a specific visitor handler from a cached RuleFileCtx.
+/// This is the per-node hot path — no create() re-interpretation.
+pub fn callHandler(
+    ctx: *RuleFileCtx,
+    visitor_key: []const u8,
+    node_idx: u32,
+) void {
+    const handler_val = ctx.visitor_obj.get(visitor_key);
+    if (handler_val == .undefined) return;
+
+    const interp = &ctx.interp;
+    const create_ast = interp.rule_ast;
+    interp.current_file_node = node_idx;
+
+    if (handler_val == .function) {
+        callFunctionValue(interp, create_ast, handler_val.function, node_idx);
+    } else if (handler_val == .string) {
+        const args = [_]Value{.{ .node = node_idx }};
+        _ = interp.callStringBuiltin(handler_val.string, &args) catch {};
+    }
+}
+
+/// Call a Value.function (method_def, fn_expr, arrow_fn, fn_decl).
+fn callFunctionValue(
+    interp: *Interpreter,
+    create_ast: *const Ast,
+    func: Value.Function,
+    node_idx: u32,
+) void {
+    const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
+    const fn_tag = create_ast.nodeTag(fn_idx);
+    const fn_node_data = create_ast.nodeData(fn_idx);
+
+    // Method shorthand: BinaryExpression(node) { ... }
+    if (fn_tag == .method_def or fn_tag == .computed_method_def or
+        fn_tag == .getter_def or fn_tag == .setter_def)
+    {
+        const md = create_ast.extraData(
+            ast_mod.MethodData,
+            @intFromEnum(fn_node_data.rhs),
+        );
+        bindFirstParam(interp, create_ast, md.params_start, md.params_end, node_idx);
+        if (md.body != .none) _ = interp.eval(md.body) catch {};
+        return;
+    }
+
+    // Function expression: function(node) { ... }
+    if (fn_tag == .fn_expr or fn_tag == .async_fn_expr or
+        fn_tag == .generator_fn_expr or fn_tag == .async_generator_fn_expr)
+    {
+        const fd = create_ast.extraData(
+            ast_mod.FnData,
+            @intFromEnum(fn_node_data.lhs),
+        );
+        bindFirstParam(interp, create_ast, fd.params, fd.params_end, node_idx);
+        if (fd.body != .none) _ = interp.eval(fd.body) catch {};
+        return;
+    }
+
+    // Arrow function: (node) => { ... }
+    if (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn) {
+        const ad = create_ast.extraData(
+            ast_mod.ArrowData,
+            @intFromEnum(fn_node_data.lhs),
+        );
+        bindFirstParam(interp, create_ast, ad.params_start, ad.params_end, node_idx);
+        if (ad.body != .none) _ = interp.eval(ad.body) catch {};
+        return;
+    }
+
+    // Function declaration (stored as closure helper)
+    if (fn_tag == .fn_decl or fn_tag == .async_fn_decl or
+        fn_tag == .generator_fn_decl or fn_tag == .async_generator_fn_decl)
+    {
+        const fd = create_ast.extraData(
+            ast_mod.FnData,
+            @intFromEnum(fn_node_data.lhs),
+        );
+        bindFirstParam(interp, create_ast, fd.params, fd.params_end, node_idx);
+        if (fd.body != .none) _ = interp.eval(fd.body) catch {};
+        return;
+    }
+}
+
+fn bindFirstParam(
+    interp: *Interpreter,
+    create_ast: *const Ast,
+    params_start: u32,
+    params_end: u32,
+    node_idx: u32,
+) void {
+    const params = create_ast.extraSlice(.{ .start = params_start, .end = params_end });
+    if (params.len > 0) {
+        const p: NodeIndex = @enumFromInt(params[0]);
+        if (p != .none and create_ast.nodeTag(p) == .identifier) {
+            interp.env.set(
+                create_ast.tokenText(create_ast.nodeMainToken(p)),
+                .{ .node = node_idx },
+            );
+        }
+    }
+}
+
+// ── runRulesOnFile: full per-file pipeline ──────────────────────
+
 /// Run all loaded ESLint rules against a parsed file.
-///
-/// Uses the Zig interpreter to evaluate each visitor handler's parsed
-/// JS AST, with ESTree property access dispatched natively via EsTreeAdapter.
-pub fn runRules(
+/// 1. For each rule: interpret create() once → cache visitor obj + env
+/// 2. Walk DFS events → dispatch to cached handlers
+pub fn runRulesOnFile(
     rule_set: *const RuleSet,
-    file_ast: *const Ast,
-    semantic: *const SemanticResult,
-    tag_names: []const []const u8,
-    parents: []const u32,
-    min_tok: []const u32,
-    max_tok: []const u32,
+    callbacks: RuntimeCallbacks,
     dfs_events: []const i32,
-    node_scope_ids: []const u32,
+    node_count: usize,
+    node_tags: []const u8,
     diagnostics: *std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
 ) void {
-    // Build the AstQuery for this file
-    var query = AstQuery{
-        .ast = file_ast,
-        .parents = parents,
-        .min_tok = min_tok,
-        .max_tok = max_tok,
-        .tag_names = tag_names,
-        .source = file_ast.source,
-    };
-
-    // Build the ESTree adapter
-    var adapter = EsTreeAdapter{
-        .query = &query,
-        .semantic = semantic,
-        .node_scope_ids = node_scope_ids,
-        .arena = allocator,
-    };
-
-    const callbacks = adapter.callbacks();
-
-    // Run Program:enter visitors
-    for (rule_set.program_enter) |ref| {
-        execVisitor(rule_set, ref, 0, callbacks, diagnostics, allocator);
+    // Phase 1: interpret create() once per rule
+    var rule_ctxs = allocator.alloc(?RuleFileCtx, rule_set.rules.len) catch return;
+    for (rule_set.rules, 0..) |*rule, i| {
+        rule_ctxs[i] = initRuleForFile(rule, callbacks, diagnostics, allocator);
     }
 
-    // Walk DFS events
-    const node_count = file_ast.nodes.len;
-    const node_tags = file_ast.nodes.items(.tag);
+    // Phase 2: Program:enter visitors
+    for (rule_set.program_enter) |ref| {
+        if (rule_ctxs[ref.rule_idx]) |*ctx| {
+            callHandler(ctx, rule_set.rules[ref.rule_idx].visitors[ref.visitor_idx].key, 0);
+        }
+    }
+
+    // Phase 3: DFS walk — dispatch to cached handlers
     for (dfs_events) |ev| {
         if (ev >= 0) {
             const idx: u32 = @intCast(ev);
             if (idx >= node_count) continue;
-            const tag = @intFromEnum(node_tags[idx]);
-            if (tag < 256) {
-                for (rule_set.tag_enter[tag]) |ref| {
-                    execVisitor(rule_set, ref, idx, callbacks, diagnostics, allocator);
+            const tag = node_tags[idx];
+            if (tag >= 255) continue;
+            const entries = rule_set.tag_enter[tag];
+            for (entries) |ref| {
+                if (rule_ctxs[ref.rule_idx]) |*ctx| {
+                    callHandler(ctx, rule_set.rules[ref.rule_idx].visitors[ref.visitor_idx].key, idx);
                 }
             }
         } else {
             const idx: u32 = @intCast(~ev);
             if (idx >= node_count) continue;
-            const tag = @intFromEnum(node_tags[idx]);
-            if (tag < 256) {
-                for (rule_set.tag_exit[tag]) |ref| {
-                    execVisitor(rule_set, ref, idx, callbacks, diagnostics, allocator);
+            const tag = node_tags[idx];
+            if (tag >= 255) continue;
+            const entries = rule_set.tag_exit[tag];
+            for (entries) |ref| {
+                if (rule_ctxs[ref.rule_idx]) |*ctx| {
+                    callHandler(ctx, rule_set.rules[ref.rule_idx].visitors[ref.visitor_idx].key, idx);
                 }
             }
         }
     }
 
-    // Run Program:exit visitors
+    // Phase 4: Program:exit visitors
     for (rule_set.program_exit) |ref| {
-        execVisitor(rule_set, ref, 0, callbacks, diagnostics, allocator);
+        if (rule_ctxs[ref.rule_idx]) |*ctx| {
+            callHandler(ctx, rule_set.rules[ref.rule_idx].visitors[ref.visitor_idx].key, 0);
+        }
     }
 }
 
@@ -290,157 +446,20 @@ fn makeEmptyRule(desc: RuleDescriptor, allocator: std.mem.Allocator) Rule {
     };
 }
 
-pub fn execVisitor(
-    rule_set: *const RuleSet,
-    ref: VisitorRef,
-    node_idx: u32,
-    callbacks: @import("../interp/interpreter.zig").RuntimeCallbacks,
-    diagnostics: *std.ArrayList(Diagnostic),
-    allocator: std.mem.Allocator,
-) void {
-    const rule = &rule_set.rules[ref.rule_idx];
-    const visitor = &rule.visitors[ref.visitor_idx];
-    const create_ast = rule.create_ast orelse return;
-
-    // Create environment with ESLint bindings
-    var env = Environment.init(allocator, null);
-    env.set("node", .{ .node = node_idx });
-    env.set("context", .{ .string = "__eslint_context__" });
-    env.set("sourceCode", .{ .string = "__source_code__" });
-    if (rule.options.len > 0) {
-        env.set("options", .{ .array = rule.options });
-    }
-
-    // Interpret the create() body to capture closure variables and get return value
-    var interp = Interpreter{
-        .rule_ast = create_ast,
-        .env = &env,
-        .runtime = callbacks,
-        .arena = allocator,
-        .diagnostics = diagnostics,
-        .return_value = .undefined,
-        .current_file_node = node_idx,
-        .rule_name = rule.name,
-        .rule_severity = rule.severity,
-        .messages = &rule.messages,
-        .options = rule.options,
-        .closure_fns = &rule.closure_fns,
-    };
-
-    // Find the function declaration in the parsed source and evaluate its body.
-    // The source is "function create(context) { ...body... }"
-    // So root > FunctionDeclaration > body (BlockStatement) > statements
-    const root_data = create_ast.nodeData(.root);
-    const root_stmts = create_ast.extraSlice(.{
-        .start = @intFromEnum(root_data.lhs),
-        .end = @intFromEnum(root_data.rhs),
-    });
-
-    for (root_stmts) |raw| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw);
-        if (stmt_idx == .none) continue;
-        const tag = create_ast.nodeTag(stmt_idx);
-
-        // Find FunctionDeclaration
-        if (tag == .fn_decl or tag == .async_fn_decl) {
-            const fn_data = create_ast.extraData(
-                @import("../../parser/ast.zig").FnData,
-                @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
-            );
-
-            // Execute the function body (a BlockStatement)
-            if (fn_data.body != .none) {
-                _ = interp.eval(fn_data.body) catch |err| switch (err) {
-                    @import("../interp/interpreter.zig").Signal.ReturnSignal => {},
-                    else => {},
-                };
-            }
-            break;
-        }
-    }
-
-    // The return value should be the visitor object { key: handler, ... }
-    // Find and call the handler for this visitor's key
-    if (interp.return_value == .object) {
-        const visitor_obj = interp.return_value.object;
-        const handler_val = visitor_obj.get(visitor.key);
-
-        if (handler_val == .function) {
-            const fn_idx: NodeIndex = @enumFromInt(handler_val.function.ast_idx);
-            const fn_tag = create_ast.nodeTag(fn_idx);
-            const fn_node_data = create_ast.nodeData(fn_idx);
-
-            // Method shorthand: MethodDefinition → uses MethodData
-            if (fn_tag == .method_def or fn_tag == .computed_method_def or
-                fn_tag == .getter_def or fn_tag == .setter_def)
-            {
-                const md = create_ast.extraData(
-                    @import("../../parser/ast.zig").MethodData,
-                    @intFromEnum(fn_node_data.rhs),
-                );
-                const params = create_ast.extraSlice(.{ .start = md.params_start, .end = md.params_end });
-                if (params.len > 0) {
-                    const p: NodeIndex = @enumFromInt(params[0]);
-                    if (p != .none and create_ast.nodeTag(p) == .identifier)
-                        interp.env.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .node = node_idx });
-                }
-                if (md.body != .none) _ = interp.eval(md.body) catch {};
-            }
-            // Function expression: fn_expr → uses FnData
-            else if (fn_tag == .fn_expr or fn_tag == .async_fn_expr or
-                fn_tag == .generator_fn_expr or fn_tag == .async_generator_fn_expr)
-            {
-                const fd = create_ast.extraData(
-                    @import("../../parser/ast.zig").FnData,
-                    @intFromEnum(fn_node_data.lhs),
-                );
-                const params = create_ast.extraSlice(.{ .start = fd.params, .end = fd.params_end });
-                if (params.len > 0) {
-                    const p: NodeIndex = @enumFromInt(params[0]);
-                    if (p != .none and create_ast.nodeTag(p) == .identifier)
-                        interp.env.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .node = node_idx });
-                }
-                if (fd.body != .none) _ = interp.eval(fd.body) catch {};
-            }
-            // Arrow function: arrow_fn → uses ArrowData
-            else if (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn)
-            {
-                const ad = create_ast.extraData(
-                    @import("../../parser/ast.zig").ArrowData,
-                    @intFromEnum(fn_node_data.lhs),
-                );
-                const params = create_ast.extraSlice(.{ .start = ad.params_start, .end = ad.params_end });
-                if (params.len > 0) {
-                    const p: NodeIndex = @enumFromInt(params[0]);
-                    if (p != .none and create_ast.nodeTag(p) == .identifier)
-                        interp.env.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .node = node_idx });
-                }
-                if (ad.body != .none) _ = interp.eval(ad.body) catch {};
-            }
-        } else if (handler_val == .string) {
-            const args = [_]Value{.{ .node = node_idx }};
-            _ = interp.callStringBuiltin(handler_val.string, &args) catch {};
-        }
-    }
-}
-
-// ── Types for rule loading (from JS) ──
+// ── Types for rule loading (from JS) ────────────────────────────
 
 pub const RuleDescriptor = struct {
     name: []const u8,
     severity: Severity,
-    /// The complete create() function source. Zig parses and interprets this
-    /// to produce the visitor map with all closure variables captured.
     create_source: []const u8,
-    /// Visitor keys with their sanz tag mappings (from JS-side analysis).
     visitor_keys: []const VisitorKeyMapping,
     messages: []const MessageEntry,
     options: []const Value,
 };
 
 pub const VisitorKeyMapping = struct {
-    key: []const u8,      // ESTree visitor key, e.g., "BinaryExpression" or "Program:exit"
-    tags: []const u16,     // sanz tag ordinals
+    key: []const u8,
+    tags: []const u16,
     is_exit: bool,
 };
 

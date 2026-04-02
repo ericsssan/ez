@@ -83,12 +83,19 @@ pub const Interpreter = struct {
     closure_fns: *const std.StringArrayHashMap(*const Ast),
     /// Per-rule options array.
     options: []const Value,
+    /// Recursion depth counter to prevent stack overflow.
+    depth: u16 = 0,
 
     const NONE: u32 = 0xFFFFFFFF;
+    const MAX_DEPTH: u16 = 128;
 
     /// Evaluate a JS AST node and return its value.
     pub fn eval(self: *Interpreter, node: NodeIndex) Signal!Value {
         if (node == .none or node == .root) return .undefined;
+
+        self.depth += 1;
+        defer self.depth -= 1;
+        if (self.depth > MAX_DEPTH) return .undefined;
 
         const tag = self.rule_ast.nodeTag(node);
         const data = self.rule_ast.nodeData(node);
@@ -286,11 +293,21 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, s, "__eslint_context__")) {
             if (std.mem.eql(u8, prop, "report")) return .{ .string = "__context_report__" };
             if (std.mem.eql(u8, prop, "sourceCode")) return .{ .string = "__source_code__" };
-            if (std.mem.eql(u8, prop, "options")) {
-                return .{ .array = self.options };
-            }
+            if (std.mem.eql(u8, prop, "options")) return .{ .array = self.options };
             if (std.mem.eql(u8, prop, "filename")) return .{ .string = self.rule_name };
             if (std.mem.eql(u8, prop, "getScope")) return .{ .string = "__context_getScope__" };
+            if (std.mem.eql(u8, prop, "parserOptions")) {
+                const ptr = self.arena.create(Value.Object) catch return .undefined;
+                ptr.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+                ptr.entries.put("ecmaVersion", .{ .number = 2022 }) catch {};
+                return .{ .object = ptr };
+            }
+            if (std.mem.eql(u8, prop, "settings")) {
+                const ptr = self.arena.create(Value.Object) catch return .undefined;
+                ptr.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+                return .{ .object = ptr };
+            }
+            if (std.mem.eql(u8, prop, "id")) return .{ .string = self.rule_name };
             return .undefined;
         }
         // Special marker: ESLint SourceCode object
@@ -302,32 +319,78 @@ pub const Interpreter = struct {
             if (std.mem.eql(u8, prop, "getTokenBefore")) return .{ .string = "__source_getTokenBefore__" };
             if (std.mem.eql(u8, prop, "getTokenAfter")) return .{ .string = "__source_getTokenAfter__" };
             if (std.mem.eql(u8, prop, "getDeclaredVariables")) return .{ .string = "__source_getDeclaredVariables__" };
-            if (std.mem.eql(u8, prop, "getScope")) return .{ .string = "__source_getScope__" };
             if (std.mem.eql(u8, prop, "getCommentsInside")) return .{ .string = "__source_getCommentsInside__" };
             if (std.mem.eql(u8, prop, "getCommentsBefore")) return .{ .string = "__source_getCommentsBefore__" };
             if (std.mem.eql(u8, prop, "getCommentsAfter")) return .{ .string = "__source_getCommentsAfter__" };
             if (std.mem.eql(u8, prop, "getTokens")) return .{ .string = "__source_getTokens__" };
+            if (std.mem.eql(u8, prop, "getFirstTokenBetween")) return .{ .string = "__source_getFirstTokenBetween__" };
+            if (std.mem.eql(u8, prop, "getTokensBetween")) return .{ .string = "__source_getTokensBetween__" };
+            if (std.mem.eql(u8, prop, "isSpaceBetween")) return .{ .string = "__source_isSpaceBetween__" };
+            if (std.mem.eql(u8, prop, "ast")) return .{ .node = 0 }; // root node
             return .undefined;
         }
         if (std.mem.eql(u8, prop, "length")) return .{ .number = @floatFromInt(s.len) };
         // Regex .test method: if the string looks like /pattern/flags
         if (std.mem.eql(u8, prop, "test") and s.len > 1 and s[0] == '/') {
-            // Return a marker that callStringBuiltin will recognize
-            return .{ .string = s }; // the regex source itself acts as the callable
+            return .{ .string = s };
         }
-        if (std.mem.eql(u8, prop, "includes")) return .{ .string = s };
-        if (std.mem.eql(u8, prop, "startsWith")) return .{ .string = s };
-        if (std.mem.eql(u8, prop, "endsWith")) return .{ .string = s };
+        // String method markers: encode as "__sm__<method>\x00<receiver_string>"
+        // so callStringBuiltin can dispatch properly.
+        if (std.mem.eql(u8, prop, "includes") or std.mem.eql(u8, prop, "startsWith") or
+            std.mem.eql(u8, prop, "endsWith") or std.mem.eql(u8, prop, "indexOf") or
+            std.mem.eql(u8, prop, "lastIndexOf") or std.mem.eql(u8, prop, "slice") or
+            std.mem.eql(u8, prop, "substring") or std.mem.eql(u8, prop, "charAt") or
+            std.mem.eql(u8, prop, "charCodeAt") or std.mem.eql(u8, prop, "replace") or
+            std.mem.eql(u8, prop, "split") or std.mem.eql(u8, prop, "trim") or
+            std.mem.eql(u8, prop, "trimStart") or std.mem.eql(u8, prop, "trimEnd") or
+            std.mem.eql(u8, prop, "toLowerCase") or std.mem.eql(u8, prop, "toUpperCase") or
+            std.mem.eql(u8, prop, "match") or std.mem.eql(u8, prop, "search") or
+            std.mem.eql(u8, prop, "repeat") or std.mem.eql(u8, prop, "padStart") or
+            std.mem.eql(u8, prop, "padEnd"))
+        {
+            // Encode: "__sm__<method>\x00<string>"
+            const marker = std.fmt.allocPrint(self.arena, "__sm__{s}\x00{s}", .{ prop, s }) catch return .undefined;
+            return .{ .string = marker };
+        }
         return .undefined;
     }
 
     fn getArrayProperty(self: *Interpreter, a: []const Value, prop: []const u8) Value {
-        _ = self;
         if (std.mem.eql(u8, prop, "length")) return .{ .number = @floatFromInt(a.len) };
-        // Parse numeric property: arr[0], arr[1], etc.
+        // Numeric index: arr[0], arr[1], etc.
         if (std.fmt.parseInt(usize, prop, 10)) |idx| {
             if (idx < a.len) return a[idx];
         } else |_| {}
+        // Array method markers
+        if (std.mem.eql(u8, prop, "includes") or std.mem.eql(u8, prop, "indexOf") or
+            std.mem.eql(u8, prop, "some") or std.mem.eql(u8, prop, "every") or
+            std.mem.eql(u8, prop, "filter") or std.mem.eql(u8, prop, "map") or
+            std.mem.eql(u8, prop, "find") or std.mem.eql(u8, prop, "findIndex") or
+            std.mem.eql(u8, prop, "forEach") or std.mem.eql(u8, prop, "join") or
+            std.mem.eql(u8, prop, "flat") or std.mem.eql(u8, prop, "concat") or
+            std.mem.eql(u8, prop, "slice") or std.mem.eql(u8, prop, "reduce") or
+            std.mem.eql(u8, prop, "push") or std.mem.eql(u8, prop, "pop") or
+            std.mem.eql(u8, prop, "reverse") or std.mem.eql(u8, prop, "sort") or
+            std.mem.eql(u8, prop, "at"))
+        {
+            const rec_ptr = self.arena.create(Value) catch return .undefined;
+            rec_ptr.* = .{ .array = a };
+            const kind: Value.BuiltinKind = if (std.mem.eql(u8, prop, "some")) .arr_some
+                else if (std.mem.eql(u8, prop, "every")) .arr_every
+                else if (std.mem.eql(u8, prop, "filter")) .arr_filter
+                else if (std.mem.eql(u8, prop, "map")) .arr_map
+                else if (std.mem.eql(u8, prop, "find")) .arr_find
+                else if (std.mem.eql(u8, prop, "findIndex")) .arr_findIndex
+                else if (std.mem.eql(u8, prop, "forEach")) .arr_forEach
+                else if (std.mem.eql(u8, prop, "includes")) .arr_includes
+                else if (std.mem.eql(u8, prop, "indexOf")) .arr_indexOf
+                else if (std.mem.eql(u8, prop, "join")) .arr_join
+                else if (std.mem.eql(u8, prop, "slice")) .arr_slice
+                else if (std.mem.eql(u8, prop, "concat")) .arr_concat
+                else if (std.mem.eql(u8, prop, "reduce")) .arr_reduce
+                else .arr_at;
+            return .{ .builtin = .{ .kind = kind, .receiver = rec_ptr } };
+        }
         return .undefined;
     }
 
@@ -356,7 +419,7 @@ pub const Interpreter = struct {
 
         // Dispatch
         return switch (callee) {
-            .builtin => |b| self.runtime.callBuiltin(self.runtime.ctx, b.kind, args.items),
+            .builtin => |b| self.callBuiltinMethod(b, args.items),
             .function => |f| self.callUserFunction(f, args.items),
             .string => |s| self.callStringBuiltin(s, args.items),
             else => .undefined,
@@ -364,45 +427,96 @@ pub const Interpreter = struct {
     }
 
     fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
-        // The function is a FunctionDeclaration in the current rule_ast.
-        // Extract its params and body, create a child env, and execute.
         const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
         const fn_tag = self.rule_ast.nodeTag(fn_idx);
+        const fn_node_data = self.rule_ast.nodeData(fn_idx);
+
+        // Extract params range and body based on function type
+        var params_start: u32 = 0;
+        var params_end: u32 = 0;
+        var body: NodeIndex = .none;
 
         if (fn_tag == .fn_decl or fn_tag == .async_fn_decl or
-            fn_tag == .generator_fn_decl or fn_tag == .async_generator_fn_decl)
+            fn_tag == .generator_fn_decl or fn_tag == .async_generator_fn_decl or
+            fn_tag == .fn_expr or fn_tag == .async_fn_expr or
+            fn_tag == .generator_fn_expr or fn_tag == .async_generator_fn_expr)
         {
-            const fd = self.rule_ast.extraData(ast_mod.FnData, @intFromEnum(self.rule_ast.nodeData(fn_idx).lhs));
-
-            // Create child env and bind params
-            var fn_env = Environment.init(self.arena, self.env);
-            const params = self.rule_ast.extraSlice(.{ .start = fd.params, .end = fd.params_end });
-            for (params, 0..) |param_raw, pi| {
-                const param_idx: NodeIndex = @enumFromInt(param_raw);
-                if (param_idx == .none) continue;
-                if (self.rule_ast.nodeTag(param_idx) == .identifier) {
-                    const pname = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(param_idx));
-                    if (pi < args.len) fn_env.set(pname, args[pi]) else fn_env.set(pname, .undefined);
-                }
-            }
-
-            // Execute body
-            const saved_env = self.env;
-            self.env = &fn_env;
-            if (fd.body != .none) {
-                _ = self.eval(fd.body) catch |err| switch (err) {
-                    Signal.ReturnSignal => {
-                        self.env = saved_env;
-                        return self.return_value;
-                    },
-                    else => {},
-                };
-            }
-            self.env = saved_env;
-            return self.return_value;
+            const fd = self.rule_ast.extraData(ast_mod.FnData, @intFromEnum(fn_node_data.lhs));
+            params_start = fd.params;
+            params_end = fd.params_end;
+            body = fd.body;
+        } else if (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn) {
+            const ad = self.rule_ast.extraData(ast_mod.ArrowData, @intFromEnum(fn_node_data.lhs));
+            params_start = ad.params_start;
+            params_end = ad.params_end;
+            body = ad.body;
+        } else if (fn_tag == .method_def or fn_tag == .computed_method_def or
+            fn_tag == .getter_def or fn_tag == .setter_def)
+        {
+            const md = self.rule_ast.extraData(ast_mod.MethodData, @intFromEnum(fn_node_data.rhs));
+            params_start = md.params_start;
+            params_end = md.params_end;
+            body = md.body;
+        } else {
+            return .undefined;
         }
 
-        return .undefined;
+        // Create child env and bind params
+        var fn_env = Environment.init(self.arena, self.env);
+        const params = self.rule_ast.extraSlice(.{ .start = params_start, .end = params_end });
+        for (params, 0..) |param_raw, pi| {
+            const param_idx: NodeIndex = @enumFromInt(param_raw);
+            if (param_idx == .none) continue;
+            const ptag = self.rule_ast.nodeTag(param_idx);
+            if (ptag == .identifier) {
+                const pname = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(param_idx));
+                if (pi < args.len) fn_env.set(pname, args[pi]) else fn_env.set(pname, .undefined);
+            } else if (ptag == .assign) {
+                // Default parameter: function(x = default) { ... }
+                const assign_data = self.rule_ast.nodeData(param_idx);
+                const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(assign_data.lhs));
+                if (self.rule_ast.nodeTag(lhs_idx) == .identifier) {
+                    const pname = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+                    if (pi < args.len and args[pi] != .undefined) {
+                        fn_env.set(pname, args[pi]);
+                    } else {
+                        const default_val = self.eval(@enumFromInt(@intFromEnum(assign_data.rhs))) catch .undefined;
+                        fn_env.set(pname, default_val);
+                    }
+                }
+            } else if (ptag == .object_pattern or ptag == .array_pattern) {
+                // Destructuring parameter
+                if (pi < args.len) {
+                    const saved_env = self.env;
+                    self.env = &fn_env;
+                    self.bindPattern(param_idx, args[pi]);
+                    self.env = saved_env;
+                }
+            }
+        }
+
+        // Execute body
+        const saved_env = self.env;
+        const saved_return = self.return_value;
+        self.env = &fn_env;
+        self.return_value = .undefined;
+
+        if (body != .none) {
+            _ = self.eval(body) catch |err| switch (err) {
+                Signal.ReturnSignal => {
+                    const ret = self.return_value;
+                    self.env = saved_env;
+                    self.return_value = saved_return;
+                    return ret;
+                },
+                Signal.BreakSignal, Signal.ContinueSignal => {},
+                Signal.ThrowSignal => {},
+            };
+        }
+        const ret = self.return_value;
+        self.env = saved_env;
+        self.return_value = saved_return;
+        return ret;
     }
 
     /// Call a closure function by name. Looks up its parsed AST, creates
@@ -486,12 +600,11 @@ pub const Interpreter = struct {
 
     /// Handle calls to string-marker builtins (__context_report__, __source_getScope__, etc.)
     pub fn callStringBuiltin(self: *Interpreter, marker: []const u8, args: []const Value) Signal!Value {
-        if (std.mem.eql(u8, marker, "__context_report__")) {
+        // ── ESLint API markers ──
+        if (std.mem.eql(u8, marker, "__context_report__"))
             return self.handleContextReport(args);
-        }
         if (std.mem.eql(u8, marker, "__source_getScope__") or std.mem.eql(u8, marker, "__context_getScope__")) {
             if (args.len > 0) return self.runtime.callBuiltin(self.runtime.ctx, .source_getScope, args);
-            // No args → use current node
             const node_args = [_]Value{.{ .node = self.current_file_node }};
             return self.runtime.callBuiltin(self.runtime.ctx, .source_getScope, &node_args);
         }
@@ -507,20 +620,253 @@ pub const Interpreter = struct {
             return self.runtime.callBuiltin(self.runtime.ctx, .source_getTokenAfter, args);
         if (std.mem.eql(u8, marker, "__source_getDeclaredVariables__"))
             return self.runtime.callBuiltin(self.runtime.ctx, .source_getDeclaredVariables, args);
-        // Check if it's a closure function name
+        if (std.mem.eql(u8, marker, "__source_getFirstTokenBetween__"))
+            return self.runtime.callBuiltin(self.runtime.ctx, .source_getTokensBetween, args);
+        if (std.mem.eql(u8, marker, "__source_getTokensBetween__"))
+            return self.runtime.callBuiltin(self.runtime.ctx, .source_getTokensBetween, args);
+        if (std.mem.eql(u8, marker, "__source_isSpaceBetween__"))
+            return self.runtime.callBuiltin(self.runtime.ctx, .source_isSpaceBetween, args);
+
+        // ── String methods: __sm__<method>\x00<receiver> ──
+        if (marker.len > 6 and std.mem.startsWith(u8, marker, "__sm__")) {
+            if (std.mem.indexOfScalar(u8, marker[6..], 0)) |null_pos| {
+                const method = marker[6 .. 6 + null_pos];
+                const receiver = marker[6 + null_pos + 1 ..];
+                return self.dispatchStringMethod(method, receiver, args);
+            }
+        }
+
+        // ── Closure function names ──
+        if (self.env.lookup(marker) == .function) {
+            return self.callUserFunction(self.env.lookup(marker).function, args);
+        }
         if (self.closure_fns.contains(marker)) {
             return self.callClosureFunction(marker, args);
         }
-        // Check if it's a regex .test() call: marker looks like /pattern/flags
+
+        // ── Regex .test() ──
         if (marker.len > 1 and marker[0] == '/' and args.len > 0) {
             return self.evalRegexTest(marker, args[0]);
         }
-        // String .includes/.startsWith/.endsWith call
+
+        // ── Legacy string includes (deprecated path) ──
         if (args.len > 0 and args[0] == .string) {
             if (std.mem.indexOf(u8, marker, args[0].string) != null) return .{ .boolean = true };
             return .{ .boolean = false };
         }
         return .undefined;
+    }
+
+    /// Dispatch a string prototype method call.
+    fn dispatchStringMethod(self: *Interpreter, method: []const u8, s: []const u8, args: []const Value) Signal!Value {
+        if (std.mem.eql(u8, method, "includes")) {
+            if (args.len > 0 and args[0] == .string)
+                return .{ .boolean = std.mem.indexOf(u8, s, args[0].string) != null };
+            return .{ .boolean = false };
+        }
+        if (std.mem.eql(u8, method, "startsWith")) {
+            if (args.len > 0 and args[0] == .string)
+                return .{ .boolean = std.mem.startsWith(u8, s, args[0].string) };
+            return .{ .boolean = false };
+        }
+        if (std.mem.eql(u8, method, "endsWith")) {
+            if (args.len > 0 and args[0] == .string)
+                return .{ .boolean = std.mem.endsWith(u8, s, args[0].string) };
+            return .{ .boolean = false };
+        }
+        if (std.mem.eql(u8, method, "indexOf")) {
+            if (args.len > 0 and args[0] == .string) {
+                if (std.mem.indexOf(u8, s, args[0].string)) |pos|
+                    return .{ .number = @floatFromInt(pos) };
+            }
+            return .{ .number = -1.0 };
+        }
+        if (std.mem.eql(u8, method, "lastIndexOf")) {
+            if (args.len > 0 and args[0] == .string) {
+                if (std.mem.lastIndexOf(u8, s, args[0].string)) |pos|
+                    return .{ .number = @floatFromInt(pos) };
+            }
+            return .{ .number = -1.0 };
+        }
+        if (std.mem.eql(u8, method, "slice") or std.mem.eql(u8, method, "substring")) {
+            const len: i64 = @intCast(s.len);
+            const start_arg: i64 = if (args.len > 0 and args[0] == .number) @intFromFloat(args[0].number) else 0;
+            const end_arg: i64 = if (args.len > 1 and args[1] == .number) @intFromFloat(args[1].number) else len;
+            const start: usize = @intCast(@max(0, if (start_arg < 0) len + start_arg else start_arg));
+            const end: usize = @intCast(@min(len, @max(0, if (end_arg < 0) len + end_arg else end_arg)));
+            if (start >= end or start >= s.len) return .{ .string = "" };
+            return .{ .string = s[@min(start, s.len)..@min(end, s.len)] };
+        }
+        if (std.mem.eql(u8, method, "charAt")) {
+            if (args.len > 0 and args[0] == .number) {
+                const idx: usize = @intFromFloat(args[0].number);
+                if (idx < s.len) return .{ .string = s[idx .. idx + 1] };
+            }
+            return .{ .string = "" };
+        }
+        if (std.mem.eql(u8, method, "charCodeAt")) {
+            if (args.len > 0 and args[0] == .number) {
+                const idx: usize = @intFromFloat(args[0].number);
+                if (idx < s.len) return .{ .number = @floatFromInt(s[idx]) };
+            }
+            return .{ .number = std.math.nan(f64) };
+        }
+        if (std.mem.eql(u8, method, "trim")) {
+            return .{ .string = std.mem.trim(u8, s, " \t\n\r") };
+        }
+        if (std.mem.eql(u8, method, "toLowerCase")) {
+            const lower = self.arena.alloc(u8, s.len) catch return .{ .string = s };
+            for (s, 0..) |c, i| lower[i] = std.ascii.toLower(c);
+            return .{ .string = lower };
+        }
+        if (std.mem.eql(u8, method, "toUpperCase")) {
+            const upper = self.arena.alloc(u8, s.len) catch return .{ .string = s };
+            for (s, 0..) |c, i| upper[i] = std.ascii.toUpper(c);
+            return .{ .string = upper };
+        }
+        if (std.mem.eql(u8, method, "split")) {
+            if (args.len > 0 and args[0] == .string) {
+                const sep = args[0].string;
+                var parts: std.ArrayList(Value) = .empty;
+                var iter = std.mem.splitSequence(u8, s, sep);
+                while (iter.next()) |part| {
+                    parts.append(self.arena, .{ .string = part }) catch {};
+                }
+                return .{ .array = parts.items };
+            }
+            const single = self.arena.dupe(Value, &.{.{ .string = s }}) catch return .undefined;
+            return .{ .array = single };
+        }
+        if (std.mem.eql(u8, method, "replace")) {
+            if (args.len >= 2 and args[0] == .string and args[1] == .string) {
+                // Replace first occurrence only
+                if (std.mem.indexOf(u8, s, args[0].string)) |pos| {
+                    var result: std.ArrayList(u8) = .empty;
+                    result.appendSlice(self.arena, s[0..pos]) catch {};
+                    result.appendSlice(self.arena, args[1].string) catch {};
+                    result.appendSlice(self.arena, s[pos + args[0].string.len ..]) catch {};
+                    return .{ .string = result.items };
+                }
+            }
+            return .{ .string = s };
+        }
+        if (std.mem.eql(u8, method, "repeat")) {
+            if (args.len > 0 and args[0] == .number) {
+                const count: usize = @intFromFloat(@max(0, args[0].number));
+                if (count == 0) return .{ .string = "" };
+                var result: std.ArrayList(u8) = .empty;
+                for (0..count) |_| result.appendSlice(self.arena, s) catch {};
+                return .{ .string = result.items };
+            }
+            return .{ .string = "" };
+        }
+        return .undefined;
+    }
+
+    /// Handle calls to builtin methods (array.some, string.slice, etc.)
+    fn callBuiltinMethod(self: *Interpreter, b: Value.Builtin, args: []const Value) Signal!Value {
+        const receiver = b.receiver.*;
+
+        return switch (b.kind) {
+            // ── Array methods ──
+            .arr_some => self.arrayHigherOrder(receiver, args, .some),
+            .arr_every => self.arrayHigherOrder(receiver, args, .every),
+            .arr_filter => self.arrayHigherOrder(receiver, args, .filter),
+            .arr_map => self.arrayHigherOrder(receiver, args, .map),
+            .arr_find => self.arrayHigherOrder(receiver, args, .find),
+            .arr_findIndex => self.arrayHigherOrder(receiver, args, .findIndex),
+            .arr_forEach => self.arrayHigherOrder(receiver, args, .forEach),
+            .arr_includes => blk: {
+                if (receiver != .array or args.len == 0) break :blk .{ .boolean = false };
+                for (receiver.array) |item| {
+                    if (item.strictEquals(args[0])) break :blk .{ .boolean = true };
+                }
+                break :blk .{ .boolean = false };
+            },
+            .arr_indexOf => blk: {
+                if (receiver != .array or args.len == 0) break :blk .{ .number = -1.0 };
+                for (receiver.array, 0..) |item, i| {
+                    if (item.strictEquals(args[0])) break :blk .{ .number = @floatFromInt(i) };
+                }
+                break :blk .{ .number = -1.0 };
+            },
+            .arr_join => blk: {
+                if (receiver != .array) break :blk .{ .string = "" };
+                const sep = if (args.len > 0 and args[0] == .string) args[0].string else ",";
+                var result: std.ArrayList(u8) = .empty;
+                for (receiver.array, 0..) |item, i| {
+                    if (i > 0) result.appendSlice(self.arena, sep) catch {};
+                    if (item == .string) {
+                        result.appendSlice(self.arena, item.string) catch {};
+                    } else if (item == .number) {
+                        const s = item.toStringAlloc(self.arena) catch "?";
+                        result.appendSlice(self.arena, s) catch {};
+                    }
+                }
+                break :blk .{ .string = result.items };
+            },
+            .arr_slice => blk: {
+                if (receiver != .array) break :blk .{ .array = &.{} };
+                const arr = receiver.array;
+                const start_arg = if (args.len > 0 and args[0] == .number) @as(i64, @intFromFloat(args[0].number)) else 0;
+                const end_arg = if (args.len > 1 and args[1] == .number) @as(i64, @intFromFloat(args[1].number)) else @as(i64, @intCast(arr.len));
+                const start: usize = if (start_arg < 0) @intCast(@max(0, @as(i64, @intCast(arr.len)) + start_arg)) else @intCast(@min(start_arg, @as(i64, @intCast(arr.len))));
+                const end: usize = if (end_arg < 0) @intCast(@max(0, @as(i64, @intCast(arr.len)) + end_arg)) else @intCast(@min(end_arg, @as(i64, @intCast(arr.len))));
+                if (start >= end) break :blk .{ .array = &.{} };
+                const duped = self.arena.dupe(Value, arr[start..end]) catch break :blk .{ .array = &.{} };
+                break :blk .{ .array = duped };
+            },
+            .arr_concat => blk: {
+                if (receiver != .array) break :blk .{ .array = &.{} };
+                var result: std.ArrayList(Value) = .empty;
+                result.appendSlice(self.arena, receiver.array) catch {};
+                for (args) |arg| {
+                    if (arg == .array) result.appendSlice(self.arena, arg.array) catch {}
+                    else result.append(self.arena, arg) catch {};
+                }
+                break :blk .{ .array = result.items };
+            },
+
+            // String methods are handled via string markers, not builtins
+            .str_slice => .undefined,
+
+            else => self.runtime.callBuiltin(self.runtime.ctx, b.kind, args),
+        };
+    }
+
+    const ArrayOp = enum { some, every, filter, map, find, findIndex, forEach };
+
+    fn arrayHigherOrder(self: *Interpreter, receiver: Value, args: []const Value, op: ArrayOp) Signal!Value {
+        if (receiver != .array or args.len == 0) return .undefined;
+        const callback = args[0];
+        if (callback != .function) return .undefined;
+
+        const arr = receiver.array;
+        var result: std.ArrayList(Value) = .empty;
+
+        for (arr, 0..) |item, i| {
+            const cb_args = [_]Value{ item, .{ .number = @floatFromInt(i) }, receiver };
+            const ret = self.callUserFunction(callback.function, &cb_args) catch .undefined;
+
+            switch (op) {
+                .some => if (ret.isTruthy()) return .{ .boolean = true },
+                .every => if (!ret.isTruthy()) return .{ .boolean = false },
+                .filter => if (ret.isTruthy()) { result.append(self.arena, item) catch {}; },
+                .map => { result.append(self.arena, ret) catch {}; },
+                .find => if (ret.isTruthy()) return item,
+                .findIndex => if (ret.isTruthy()) return .{ .number = @floatFromInt(i) },
+                .forEach => {},
+            }
+        }
+
+        return switch (op) {
+            .some => .{ .boolean = false },
+            .every => .{ .boolean = true },
+            .filter, .map => .{ .array = result.items },
+            .find => .undefined,
+            .findIndex => .{ .number = -1.0 },
+            .forEach => .undefined,
+        };
     }
 
     /// Evaluate regex.test(string) with a minimal regex engine.
@@ -625,7 +971,7 @@ pub const Interpreter = struct {
             const node_val = obj.get("node");
             if (node_val == .node) report_node = node_val.node;
 
-            // Get message directly or resolve from messageId
+            // Get message directly or resolve from messageId + data
             const msg_val = obj.get("message");
             if (msg_val == .string) {
                 message = msg_val.string;
@@ -634,17 +980,23 @@ pub const Interpreter = struct {
                 if (msg_id_val == .string) {
                     if (self.messages.get(msg_id_val.string)) |template| {
                         message = template;
-                        // TODO: substitute {{ data.key }} placeholders
                     }
                 }
+            }
+
+            // Substitute {{key}} placeholders with data values
+            const data_val = obj.get("data");
+            if (data_val == .object and message.len > 0) {
+                message = self.substituteTemplate(message, data_val.object);
             }
         }
 
         // Emit the diagnostic
         if (message.len > 0) {
+            // TODO: compute span from report_node location
             const span = @import("../../parser/span.zig").Span{
-                .start = 0, // TODO: compute from report_node
-                .end = 0,
+                .start = report_node,
+                .end = report_node,
             };
             self.diagnostics.append(self.arena, .{
                 .message = message,
@@ -654,6 +1006,42 @@ pub const Interpreter = struct {
         }
 
         return .undefined;
+    }
+
+    /// Substitute {{key}} placeholders in a template with values from data object.
+    fn substituteTemplate(self: *Interpreter, template: []const u8, data: *const Value.Object) []const u8 {
+        // Quick check: no {{ means no substitution needed
+        if (std.mem.indexOf(u8, template, "{{") == null) return template;
+
+        var result: std.ArrayList(u8) = .empty;
+        var i: usize = 0;
+        while (i < template.len) {
+            if (i + 1 < template.len and template[i] == '{' and template[i + 1] == '{') {
+                // Find closing }}
+                const start = i + 2;
+                if (std.mem.indexOf(u8, template[start..], "}}")) |end_offset| {
+                    const key = std.mem.trim(u8, template[start .. start + end_offset], " ");
+                    const val = data.get(key);
+                    if (val == .string) {
+                        result.appendSlice(self.arena, val.string) catch {};
+                    } else if (val == .number) {
+                        const s = val.toStringAlloc(self.arena) catch "?";
+                        result.appendSlice(self.arena, s) catch {};
+                    } else {
+                        // Keep original placeholder if no data
+                        result.appendSlice(self.arena, template[i .. start + end_offset + 2]) catch {};
+                    }
+                    i = start + end_offset + 2;
+                } else {
+                    result.append(self.arena, template[i]) catch {};
+                    i += 1;
+                }
+            } else {
+                result.append(self.arena, template[i]) catch {};
+                i += 1;
+            }
+        }
+        return result.items;
     }
 
     // ── Operators ──
@@ -1055,9 +1443,70 @@ pub const Interpreter = struct {
     }
 
     fn evalSwitch(self: *Interpreter, data: Node.Data) Signal!Value {
-        // Simplified switch — evaluate discriminant, then match cases
-        _ = try self.eval(@enumFromInt(@intFromEnum(data.lhs)));
-        // TODO: proper case matching with data.rhs
+        const discriminant = try self.eval(@enumFromInt(@intFromEnum(data.lhs)));
+
+        // rhs is extra index to SubRange of cases
+        const cases_range = ast_mod.SubRange{
+            .start = @intFromEnum(data.rhs),
+            .end = @intFromEnum(data.rhs) + 2,
+        };
+        // Actually: switch_stmt stores cases as extra_data SubRange via rhs
+        // The rhs IS an extra index pointing to a SubRange
+        const sr = self.rule_ast.extraData(ast_mod.SubRange, @intFromEnum(data.rhs));
+        _ = cases_range;
+        const case_items = self.rule_ast.extraSlice(.{ .start = sr.start, .end = sr.end });
+
+        var matched = false;
+        var fell_through = false;
+
+        for (case_items) |raw| {
+            const case_idx: NodeIndex = @enumFromInt(raw);
+            if (case_idx == .none) continue;
+            const case_tag = self.rule_ast.nodeTag(case_idx);
+            const case_data = self.rule_ast.nodeData(case_idx);
+
+            if (case_tag == .switch_case) {
+                // case expr: stmts. lhs = test expr, rhs = extra SubRange of stmts
+                if (!matched and !fell_through) {
+                    const test_val = try self.eval(@enumFromInt(@intFromEnum(case_data.lhs)));
+                    if (discriminant.strictEquals(test_val)) {
+                        matched = true;
+                    }
+                }
+
+                if (matched or fell_through) {
+                    fell_through = true;
+                    const stmts_sr = self.rule_ast.extraData(ast_mod.SubRange, @intFromEnum(case_data.rhs));
+                    const stmts = self.rule_ast.extraSlice(.{ .start = stmts_sr.start, .end = stmts_sr.end });
+                    for (stmts) |stmt_raw| {
+                        const stmt: NodeIndex = @enumFromInt(stmt_raw);
+                        if (stmt == .none) continue;
+                        _ = self.eval(stmt) catch |err| switch (err) {
+                            Signal.BreakSignal => return .undefined,
+                            else => return err,
+                        };
+                    }
+                }
+            } else if (case_tag == .switch_default) {
+                // default: stmts. lhs = none, rhs = extra SubRange of stmts
+                if (!matched) {
+                    fell_through = true;
+                }
+                if (matched or fell_through) {
+                    fell_through = true;
+                    const stmts_sr = self.rule_ast.extraData(ast_mod.SubRange, @intFromEnum(case_data.rhs));
+                    const stmts = self.rule_ast.extraSlice(.{ .start = stmts_sr.start, .end = stmts_sr.end });
+                    for (stmts) |stmt_raw| {
+                        const stmt: NodeIndex = @enumFromInt(stmt_raw);
+                        if (stmt == .none) continue;
+                        _ = self.eval(stmt) catch |err| switch (err) {
+                            Signal.BreakSignal => return .undefined,
+                            else => return err,
+                        };
+                    }
+                }
+            }
+        }
         return .undefined;
     }
 
