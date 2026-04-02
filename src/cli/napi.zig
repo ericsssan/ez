@@ -818,11 +818,83 @@ fn buildNodeArrayWithHoles(bast: *const BufferAstType.BufferAst, start: u32, end
     return .{ .array = arr };
 }
 
-fn bufferGetScopeProperty(_: *anyopaque, _: u32, _: []const u8) InterpValue { return InterpValue.undefined; }
-fn bufferGetVariableProperty(_: *anyopaque, _: u32, _: []const u8) InterpValue { return InterpValue.undefined; }
-fn bufferGetReferenceProperty(_: *anyopaque, _: u32, _: []const u8) InterpValue { return InterpValue.undefined; }
+fn bufferGetScopeProperty(ctx_ptr: *anyopaque, scope_id: u32, prop: []const u8) InterpValue {
+    const ctx: *const BufferCallbackCtx = @ptrCast(@alignCast(ctx_ptr));
+    const bast = ctx.bast;
+    const eql = std.mem.eql;
+    if (scope_id >= bast.scope_count) return InterpValue.undefined;
+    if (eql(u8, prop, "type")) return .{ .string = bast.scopeKindName(scope_id) };
+    if (eql(u8, prop, "upper")) {
+        const p = bast.scopeParent(scope_id);
+        return if (p != 0xFFFFFFFF) .{ .scope = p } else InterpValue.null_val;
+    }
+    if (eql(u8, prop, "isStrict")) return .{ .boolean = bast.scopeIsStrict(scope_id) };
+    // scope.set — return the scope ID as a marker for .get() calls
+    if (eql(u8, prop, "set")) return .{ .scope = scope_id };
+    // scope.variables — collect symbols for this scope
+    if (eql(u8, prop, "variables") or eql(u8, prop, "through")) {
+        // TODO: build arrays from semantic data
+        return .{ .array = &.{} };
+    }
+    return InterpValue.undefined;
+}
+
+fn bufferGetVariableProperty(ctx_ptr: *anyopaque, sym_id: u32, prop: []const u8) InterpValue {
+    const ctx: *const BufferCallbackCtx = @ptrCast(@alignCast(ctx_ptr));
+    const bast = ctx.bast;
+    const eql = std.mem.eql;
+    if (sym_id >= bast.symbol_count) return InterpValue.undefined;
+    if (eql(u8, prop, "name")) return .{ .string = bast.symbolName(sym_id) };
+    if (eql(u8, prop, "scope")) return .{ .scope = bast.symbolScope(sym_id) };
+    if (eql(u8, prop, "defs")) return .{ .array = &.{} }; // TODO
+    if (eql(u8, prop, "references")) return .{ .array = &.{} }; // TODO
+    return InterpValue.undefined;
+}
+
+fn bufferGetReferenceProperty(ctx_ptr: *anyopaque, ref_id: u32, prop: []const u8) InterpValue {
+    const ctx: *const BufferCallbackCtx = @ptrCast(@alignCast(ctx_ptr));
+    const bast = ctx.bast;
+    const eql = std.mem.eql;
+    if (ref_id >= bast.ref_count) return InterpValue.undefined;
+    if (eql(u8, prop, "identifier")) {
+        const nid = bast.refNode(ref_id);
+        return if (nid != 0xFFFFFFFF) .{ .node = nid } else InterpValue.null_val;
+    }
+    if (eql(u8, prop, "resolved")) {
+        const sid = bast.refSymbol(ref_id);
+        return if (sid != 0xFFFFFFFF) .{ .variable = sid } else InterpValue.null_val;
+    }
+    if (eql(u8, prop, "from")) return .{ .scope = bast.refScope(ref_id) };
+    return InterpValue.undefined;
+}
+
 fn bufferGetTokenProperty(_: *anyopaque, _: u32, _: []const u8) InterpValue { return InterpValue.undefined; }
-fn bufferCallBuiltin(_: *anyopaque, _: InterpValue.BuiltinKind, _: []const InterpValue) InterpValue { return InterpValue.undefined; }
+
+fn bufferCallBuiltin(ctx_ptr: *anyopaque, kind: InterpValue.BuiltinKind, args: []const InterpValue) InterpValue {
+    const ctx: *const BufferCallbackCtx = @ptrCast(@alignCast(ctx_ptr));
+    const bast = ctx.bast;
+    switch (kind) {
+        .source_getScope => {
+            if (args.len > 0) {
+                if (args[0].asNode()) |node_idx| {
+                    const scope_id = bast.getScopeForNode(node_idx);
+                    return if (scope_id != 0xFFFFFFFF) .{ .scope = scope_id } else InterpValue.undefined;
+                }
+            }
+            return InterpValue.undefined;
+        },
+        .source_getText => {
+            if (args.len > 0) {
+                if (args[0].asNode()) |node_idx| {
+                    const main_tok = bast.node_main_tokens[node_idx];
+                    return .{ .string = bast.tokenText(main_tok) };
+                }
+            }
+            return .{ .string = "" };
+        },
+        else => return InterpValue.undefined,
+    }
+}
 
 // ── JSON parser for rule descriptors ────────────────────────────
 // Minimal JSON parser for the loadRules format.

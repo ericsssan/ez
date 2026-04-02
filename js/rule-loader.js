@@ -57,7 +57,7 @@ function canExtract(handlerSource, closureFnNames, closureFns) {
   // Some handlers collect data (no report), paired with handlers that report.
 
   // ── Unsupported APIs ──
-  if (handlerSource.includes("getScope")) return false;
+  // getScope is now supported via BufferAst semantic data
   if (handlerSource.includes("getDeclaredVariables")) return false;
   if (handlerSource.includes("getToken")) return false;
   if (handlerSource.includes("getComments")) return false;

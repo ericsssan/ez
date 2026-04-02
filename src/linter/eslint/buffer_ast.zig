@@ -26,8 +26,31 @@ pub const BufferAst = struct {
     parents: [*]const u32,
     dfs_events: []const i32,
 
-    // Semantic data offsets
+    // Semantic data
     sem_offset: u32,
+    scope_count: u32,
+    symbol_count: u32,
+    ref_count: u32,
+    // Scope arrays
+    scope_kinds: [*]const u8,
+    scope_flags: [*]const u16,
+    scope_parents: [*]const u32,
+    scope_node_ids: [*]const u32,
+    scope_bind_starts: [*]const u32,
+    scope_bind_counts: [*]const u32,
+    // Symbol arrays
+    sym_flags: [*]const u16,
+    sym_scope_ids: [*]const u32,
+    sym_decl_nodes: [*]const u32,
+    sym_name_starts: [*]const u32,
+    sym_name_lens: [*]const u32,
+    // Reference arrays
+    ref_symbol_ids: [*]const u32,
+    ref_kinds: [*]const u8,
+    ref_node_ids: [*]const u32,
+    ref_scope_ids: [*]const u32,
+    // Node → scope mapping
+    node_scope_ids: [*]const u32,
 
     const NONE: u32 = 0xFFFFFFFF;
 
@@ -45,7 +68,7 @@ pub const BufferAst = struct {
         const source_off = header.source_offset;
         const source_len = header.source_len;
 
-        return .{
+        var result = BufferAst{
             .buf = buf,
             .node_count = nc,
             .token_count = tc,
@@ -66,7 +89,52 @@ pub const BufferAst = struct {
             else
                 &.{},
             .sem_offset = header.semantic_data_offset,
+            .scope_count = 0,
+            .symbol_count = 0,
+            .ref_count = 0,
+            .scope_kinds = undefined,
+            .scope_flags = undefined,
+            .scope_parents = undefined,
+            .scope_node_ids = undefined,
+            .scope_bind_starts = undefined,
+            .scope_bind_counts = undefined,
+            .sym_flags = undefined,
+            .sym_scope_ids = undefined,
+            .sym_decl_nodes = undefined,
+            .sym_name_starts = undefined,
+            .sym_name_lens = undefined,
+            .ref_symbol_ids = undefined,
+            .ref_kinds = undefined,
+            .ref_node_ids = undefined,
+            .ref_scope_ids = undefined,
+            .node_scope_ids = undefined,
         };
+
+        // Read semantic data if present
+        if (header.semantic_data_offset > 0) {
+            const sem: *const js_buffer.SemanticHeader = @ptrCast(@alignCast(buf + header.semantic_data_offset));
+            result.scope_count = sem.scope_count;
+            result.symbol_count = sem.symbol_count;
+            result.ref_count = sem.ref_count;
+            if (sem.scope_kinds_offset > 0) result.scope_kinds = buf + sem.scope_kinds_offset;
+            if (sem.scope_flags_offset > 0) result.scope_flags = @ptrCast(@alignCast(buf + sem.scope_flags_offset));
+            if (sem.scope_parents_offset > 0) result.scope_parents = @ptrCast(@alignCast(buf + sem.scope_parents_offset));
+            if (sem.scope_node_ids_offset > 0) result.scope_node_ids = @ptrCast(@alignCast(buf + sem.scope_node_ids_offset));
+            if (sem.scope_bindings_start_offset > 0) result.scope_bind_starts = @ptrCast(@alignCast(buf + sem.scope_bindings_start_offset));
+            if (sem.scope_bindings_count_offset > 0) result.scope_bind_counts = @ptrCast(@alignCast(buf + sem.scope_bindings_count_offset));
+            if (sem.symbol_flags_offset > 0) result.sym_flags = @ptrCast(@alignCast(buf + sem.symbol_flags_offset));
+            if (sem.symbol_scope_ids_offset > 0) result.sym_scope_ids = @ptrCast(@alignCast(buf + sem.symbol_scope_ids_offset));
+            if (sem.symbol_decl_nodes_offset > 0) result.sym_decl_nodes = @ptrCast(@alignCast(buf + sem.symbol_decl_nodes_offset));
+            if (sem.symbol_name_starts_offset > 0) result.sym_name_starts = @ptrCast(@alignCast(buf + sem.symbol_name_starts_offset));
+            if (sem.symbol_name_lens_offset > 0) result.sym_name_lens = @ptrCast(@alignCast(buf + sem.symbol_name_lens_offset));
+            if (sem.ref_symbol_ids_offset > 0) result.ref_symbol_ids = @ptrCast(@alignCast(buf + sem.ref_symbol_ids_offset));
+            if (sem.ref_kinds_offset > 0) result.ref_kinds = buf + sem.ref_kinds_offset;
+            if (sem.ref_node_ids_offset > 0) result.ref_node_ids = @ptrCast(@alignCast(buf + sem.ref_node_ids_offset));
+            if (sem.ref_scope_ids_offset > 0) result.ref_scope_ids = @ptrCast(@alignCast(buf + sem.ref_scope_ids_offset));
+            if (sem.node_scope_ids_offset > 0) result.node_scope_ids = @ptrCast(@alignCast(buf + sem.node_scope_ids_offset));
+        }
+
+        return result;
     }
 
     // ── Node queries ──
@@ -203,6 +271,92 @@ pub const BufferAst = struct {
             }
         }
         return result;
+    }
+
+    // ── Scope queries ──
+
+    /// Get the scope ID for a node.
+    pub fn getScopeForNode(self: *const BufferAst, node_idx: u32) u32 {
+        if (self.sem_offset == 0 or node_idx >= self.node_count) return NONE;
+        return self.node_scope_ids[node_idx];
+    }
+
+    /// Get scope kind string.
+    pub fn scopeKindName(self: *const BufferAst, scope_id: u32) []const u8 {
+        if (scope_id >= self.scope_count) return "block";
+        const kind_names = [_][]const u8{ "global", "module", "function", "block", "class", "catch", "switch", "static_block", "with" };
+        const k = self.scope_kinds[scope_id];
+        return if (k < kind_names.len) kind_names[k] else "block";
+    }
+
+    /// Get scope parent.
+    pub fn scopeParent(self: *const BufferAst, scope_id: u32) u32 {
+        if (scope_id >= self.scope_count) return NONE;
+        return self.scope_parents[scope_id];
+    }
+
+    /// Is scope strict mode?
+    pub fn scopeIsStrict(self: *const BufferAst, scope_id: u32) bool {
+        if (scope_id >= self.scope_count) return false;
+        return (self.scope_flags[scope_id] & 1) != 0;
+    }
+
+    /// Get symbol name (reads from raw buffer bytes).
+    pub fn symbolName(self: *const BufferAst, sym_id: u32) []const u8 {
+        if (sym_id >= self.symbol_count) return "";
+        const start = self.sym_name_starts[sym_id];
+        const len = self.sym_name_lens[sym_id];
+        // Read directly from buffer (byte offsets)
+        return self.buf[start .. start + len];
+    }
+
+    /// Get symbol's scope.
+    pub fn symbolScope(self: *const BufferAst, sym_id: u32) u32 {
+        if (sym_id >= self.symbol_count) return NONE;
+        return self.sym_scope_ids[sym_id];
+    }
+
+    /// Get symbol's declaration node.
+    pub fn symbolDeclNode(self: *const BufferAst, sym_id: u32) u32 {
+        if (sym_id >= self.symbol_count) return NONE;
+        return self.sym_decl_nodes[sym_id];
+    }
+
+    /// Get reference's resolved symbol.
+    pub fn refSymbol(self: *const BufferAst, ref_id: u32) u32 {
+        if (ref_id >= self.ref_count) return NONE;
+        return self.ref_symbol_ids[ref_id];
+    }
+
+    /// Get reference's node.
+    pub fn refNode(self: *const BufferAst, ref_id: u32) u32 {
+        if (ref_id >= self.ref_count) return NONE;
+        return self.ref_node_ids[ref_id];
+    }
+
+    /// Get reference's scope.
+    pub fn refScope(self: *const BufferAst, ref_id: u32) u32 {
+        if (ref_id >= self.ref_count) return NONE;
+        return self.ref_scope_ids[ref_id];
+    }
+
+    /// Look up a variable by name in a scope chain.
+    pub fn lookupVariable(self: *const BufferAst, scope_id: u32, name: []const u8) u32 {
+        var sid = scope_id;
+        while (sid != NONE and sid < self.scope_count) {
+            // Check all symbols in this scope
+            const bind_start = self.scope_bind_starts[sid];
+            const bind_count = self.scope_bind_counts[sid];
+            var i: u32 = 0;
+            while (i < bind_count) : (i += 1) {
+                const sym = bind_start + i;
+                if (sym < self.symbol_count and std.mem.eql(u8, self.symbolName(sym), name)) {
+                    return sym;
+                }
+            }
+            sid = self.scope_parents[sid];
+        }
+        return NONE;
     }
 
     fn isNumericChar(c: u8) bool {
