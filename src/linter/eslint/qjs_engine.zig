@@ -20,6 +20,11 @@ pub const QjsLintEngine = struct {
     /// Pre-built dispatch: tag ordinal → list of handlers
     enter_dispatch: [256]std.ArrayList(HandlerRef) = undefined,
     exit_dispatch: [256]std.ArrayList(HandlerRef) = undefined,
+    /// Last error message buffer
+    err_buf: [256]u8 = undefined,
+    last_error_len: usize = 0,
+    /// Total handler dispatches (for profiling)
+    total_dispatches: u64 = 0,
 
     pub const LoadedRule = struct {
         name: []const u8,
@@ -68,9 +73,9 @@ pub const QjsLintEngine = struct {
 
     /// Load a rule from source. Evals the module, stores exports.
     pub fn loadRule(self: *QjsLintEngine, name: []const u8, source: []const u8) !void {
-        // Wrap in CommonJS
-        const prefix = "var module = { exports: {} }; var exports = module.exports;\n";
-        const suffix = "\nmodule.exports;";
+        // Wrap in CommonJS with function scope to prevent global variable collisions
+        const prefix = "(function() { var module = { exports: {} }; var exports = module.exports;\n";
+        const suffix = "\nreturn module.exports; })()";
 
         const total = prefix.len + source.len + suffix.len;
         const combined = try self.allocator.alloc(u8, total);
@@ -79,11 +84,42 @@ pub const QjsLintEngine = struct {
         @memcpy(combined[prefix.len..][0..source.len], source);
         @memcpy(combined[prefix.len + source.len ..], suffix);
 
-        const result = c.JS_Eval(self.ctx, combined.ptr, total, "<rule>", c.JS_EVAL_TYPE_GLOBAL);
+        // Null-terminate for QuickJS safety
+        const combined_z = try self.allocator.alloc(u8, total + 1);
+        defer self.allocator.free(combined_z);
+        @memcpy(combined_z[0..total], combined);
+        combined_z[total] = 0;
+
+        const result = c.JS_Eval(self.ctx, combined_z.ptr, total, "<rule>", c.JS_EVAL_TYPE_GLOBAL);
         if (c.JS_IsException(result) != 0) {
             const exc = c.JS_GetException(self.ctx);
+            const msg = c.JS_ToCString(self.ctx, exc);
+            if (msg) |m| {
+                // Store first 200 chars into last_error buffer
+                const span = std.mem.span(m);
+                const copy_len = @min(span.len, self.err_buf.len - 1);
+                @memcpy(self.err_buf[0..copy_len], span[0..copy_len]);
+                self.err_buf[copy_len] = 0;
+                self.last_error_len = copy_len;
+                c.JS_FreeCString(self.ctx, m);
+            }
             c.JS_FreeValue(self.ctx, exc);
             return error.EvalFailed;
+        }
+
+        // Skip deprecated rules
+        const meta = c.JS_GetPropertyStr(self.ctx, result, "meta");
+        if (c.JS_IsObject(meta) != 0) {
+            const dep = c.JS_GetPropertyStr(self.ctx, meta, "deprecated");
+            const is_dep = c.JS_ToBool(self.ctx, dep);
+            c.JS_FreeValue(self.ctx, dep);
+            c.JS_FreeValue(self.ctx, meta);
+            if (is_dep != 0) {
+                c.JS_FreeValue(self.ctx, result);
+                return error.DeprecatedRule;
+            }
+        } else {
+            c.JS_FreeValue(self.ctx, meta);
         }
 
         // Get create function and call it once at startup
@@ -267,6 +303,11 @@ pub const QjsLintEngine = struct {
         return self.rules.items.len;
     }
 
+    /// Get last error message (valid until next loadRule call).
+    pub fn lastError(self: *const QjsLintEngine) []const u8 {
+        return self.err_buf[0..self.last_error_len];
+    }
+
     const HandlerRef = struct {
         handler: c.JSValue, // cached JS function (DupValue'd)
         visitors: c.JSValue, // this_val for the call
@@ -352,6 +393,7 @@ pub const QjsLintEngine = struct {
         }
 
         // DFS walk — direct tag→handler dispatch, no per-rule iteration
+        var dispatch_count: u32 = 0;
         for (traversal.dfs_events) |ev| {
             const is_exit = ev < 0;
             const idx: u32 = if (is_exit) @intCast(~ev) else @intCast(ev);
@@ -366,6 +408,7 @@ pub const QjsLintEngine = struct {
             const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
 
             for (handlers) |h| {
+                dispatch_count += 1;
                 var hargs = [_]c.JSValue{node_obj};
                 const hret = c.JS_Call(self.ctx, h.handler, h.visitors, 1, @ptrCast(&hargs));
                 if (c.JS_IsException(hret) != 0) {
@@ -378,6 +421,8 @@ pub const QjsLintEngine = struct {
 
             c.JS_FreeValue(self.ctx, node_obj);
         }
+
+        self.total_dispatches += dispatch_count;
 
         // Count total diagnostics
         var diag_count: u32 = 0;

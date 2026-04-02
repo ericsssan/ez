@@ -221,9 +221,15 @@ pub fn loadRuleFileWithBase(source: []const u8, base_dir: []const u8) ?[]const u
 // ── Real require() implementation ───────────────────────────────
 
 /// Module cache — stored as a global in the QuickJS context.
+const MAX_CACHE = 256;
 const RequireState = struct {
     base_dir: []const u8,
     engine: ?*QjsEngine,
+    /// Module cache: resolved path → JSValue (DupValue'd)
+    cache_keys: [MAX_CACHE][1024]u8 = undefined,
+    cache_key_lens: [MAX_CACHE]u16 = [_]u16{0} ** MAX_CACHE,
+    cache_vals: [MAX_CACHE]c.JSValue = undefined,
+    cache_count: u16 = 0,
 };
 
 var g_require_state: RequireState = .{ .base_dir = "", .engine = null };
@@ -264,28 +270,30 @@ fn requireNative(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVa
         return c.JS_NewObject(js_ctx);
     };
 
+    // Check module cache
+    const state = &g_require_state;
+    for (0..state.cache_count) |i| {
+        const klen = state.cache_key_lens[i];
+        if (klen == resolved.len and std.mem.eql(u8, state.cache_keys[i][0..klen], resolved)) {
+            // Cache hit — return a dup'd reference
+            return c.JS_DupValue(js_ctx, state.cache_vals[i]);
+        }
+    }
+
     // Read the file from disk
     const file_content = readFile(resolved) orelse return c.JS_NewObject(js_ctx);
     defer std.heap.page_allocator.free(file_content);
 
-    // Wrap in CommonJS module scope and eval
-    const prefix = "(function(module, exports, require) {\n";
-    const suffix = "\n})(module, exports, require); module.exports;";
-
-    // Create module/exports objects
-    const module_setup = "var module = { exports: {} }; var exports = module.exports;\n";
-    const total = module_setup.len + prefix.len + file_content.len + suffix.len;
+    // Wrap in self-contained IIFE — no global pollution, safe for nested requires
+    const prefix = "(function() { var module = { exports: {} }; var exports = module.exports;\n";
+    const suffix = "\nreturn module.exports; })()";
+    const total = prefix.len + file_content.len + suffix.len;
     const wrapped = std.heap.page_allocator.alloc(u8, total) catch return c.JS_NewObject(js_ctx);
     defer std.heap.page_allocator.free(wrapped);
 
-    var pos: usize = 0;
-    @memcpy(wrapped[pos..][0..module_setup.len], module_setup);
-    pos += module_setup.len;
-    @memcpy(wrapped[pos..][0..prefix.len], prefix);
-    pos += prefix.len;
-    @memcpy(wrapped[pos..][0..file_content.len], file_content);
-    pos += file_content.len;
-    @memcpy(wrapped[pos..][0..suffix.len], suffix);
+    @memcpy(wrapped[0..prefix.len], prefix);
+    @memcpy(wrapped[prefix.len..][0..file_content.len], file_content);
+    @memcpy(wrapped[prefix.len + file_content.len ..], suffix);
 
     const result = c.JS_Eval(js_ctx, wrapped.ptr, total, "<module>", c.JS_EVAL_TYPE_GLOBAL);
     if (c.JS_IsException(result) != 0) {
@@ -293,6 +301,16 @@ fn requireNative(ctx: ?*c.JSContext, _: c.JSValue, argc: c_int, argv: [*c]c.JSVa
         c.JS_FreeValue(js_ctx, exc);
         return c.JS_NewObject(js_ctx);
     }
+
+    // Store in cache (keep a ref)
+    if (state.cache_count < MAX_CACHE and resolved.len < 1024) {
+        const ci = state.cache_count;
+        @memcpy(state.cache_keys[ci][0..resolved.len], resolved);
+        state.cache_key_lens[ci] = @intCast(resolved.len);
+        state.cache_vals[ci] = c.JS_DupValue(js_ctx, result);
+        state.cache_count += 1;
+    }
+
     return result;
 }
 

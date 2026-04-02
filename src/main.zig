@@ -185,7 +185,7 @@ pub fn main(init: std.process.Init) !void {
             total_diags += lint_engine.lintSource(src, allocator);
             file_count += 1;
         }
-        try stdout.print("Corpus: {d} files, {d} diags\n", .{ file_count, total_diags });
+        try stdout.print("Corpus: {d} files, {d} diags, {d} dispatches\n", .{ file_count, total_diags, lint_engine.total_dispatches });
         try stdout.flush();
         return;
     }
