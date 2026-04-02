@@ -8,12 +8,14 @@ const SubRange = ast_mod.SubRange;
 
 pub const NONE: u32 = std.math.maxInt(u32);
 
-/// Full traversal result: parent pointers + DFS pre-order + DFS post-order.
-/// All three slices have length `ast.nodes.len`; caller owns them.
+/// Full traversal result: parent pointers + DFS orders + interleaved events.
+/// `parents`, `pre_order`, `post_order` have length n; `dfs_events` has length 2n.
+/// Caller owns all slices.
 pub const TraversalResult = struct {
     parents: []u32,
     pre_order: []u32,
     post_order: []u32,
+    dfs_events: []i32,
 };
 
 /// Single-pass DFS that simultaneously computes:
@@ -37,7 +39,10 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
     const post_order = try alloc.alloc(u32, n);
     @memset(parents, NONE);
 
-    if (n == 0) return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order };
+    if (n == 0) {
+        const empty_events = try alloc.alloc(i32, 0);
+        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = empty_events };
+    }
 
     // Post-order: trivial fill. Root (index 0) is pre-allocated first; all
     // other nodes are appended after their children (bottom-up), so root is
@@ -400,7 +405,45 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
         }
     }
 
-    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order };
+    // Build interleaved DFS events: enter (+idx) and exit (~idx) in correct order.
+    // O(n) algorithm: for each node in pre-order, pop the stack until the
+    // top is the node's parent. This works because pre-order guarantees
+    // that a node's parent was entered before it and hasn't exited yet.
+    const dfs_events = try alloc.alloc(i32, n * 2);
+    {
+        var ei: u32 = 0;
+        // Stack stores node indices; top of stack = deepest open ancestor.
+        var stk = try alloc.alloc(u32, @max(16, @as(u32, @intCast(n / 4))));
+        defer alloc.free(stk);
+        var stk_len: u32 = 0;
+
+        for (0..pre_idx) |pi| {
+            const node_idx = pre_order[pi];
+            const parent_idx = parents[node_idx];
+            // Pop exits until the top of the stack is this node's parent
+            while (stk_len > 0 and stk[stk_len - 1] != parent_idx) {
+                stk_len -= 1;
+                dfs_events[ei] = ~@as(i32, @intCast(stk[stk_len]));
+                ei += 1;
+            }
+            dfs_events[ei] = @intCast(node_idx);
+            ei += 1;
+            // Push onto stack (grow if needed)
+            if (stk_len >= stk.len) {
+                stk = try alloc.realloc(stk, stk.len * 2);
+            }
+            stk[stk_len] = node_idx;
+            stk_len += 1;
+        }
+        // Flush remaining exits
+        while (stk_len > 0) {
+            stk_len -= 1;
+            dfs_events[ei] = ~@as(i32, @intCast(stk[stk_len]));
+            ei += 1;
+        }
+    }
+
+    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events };
 }
 
 /// Convenience wrapper: compute only parent pointers.
@@ -408,6 +451,7 @@ pub fn computeParents(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
     const result = try computeTraversal(tree, alloc);
     alloc.free(result.pre_order);
     alloc.free(result.post_order);
+    alloc.free(result.dfs_events);
     return result.parents;
 }
 

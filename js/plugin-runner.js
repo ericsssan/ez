@@ -17,6 +17,33 @@ function esquery() {
 }
 const _selectorParseCache = new Map();
 
+// ── ES2022 built-in globals ─────────────────────────────────────
+// Added to the global scope so no-undef doesn't flag these as undeclared.
+// Matches ESLint's default globals (es2022 environment).
+const _BUILTIN_GLOBALS = [
+  // Values
+  'NaN', 'Infinity', 'undefined', 'globalThis',
+  // Functions
+  'eval', 'isFinite', 'isNaN', 'parseFloat', 'parseInt',
+  'decodeURI', 'decodeURIComponent', 'encodeURI', 'encodeURIComponent',
+  // Constructors / namespaces
+  'Object', 'Function', 'Boolean', 'Symbol', 'Number', 'BigInt', 'Math', 'Date',
+  'String', 'RegExp', 'Array', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+  'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
+  'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry',
+  'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Atomics',
+  'JSON', 'Promise', 'Proxy', 'Reflect',
+  'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError',
+  'SyntaxError', 'TypeError', 'URIError',
+  'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+  'queueMicrotask', 'structuredClone', 'atob', 'btoa',
+  'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder',
+  'AbortController', 'AbortSignal', 'Event', 'EventTarget',
+  'FormData', 'Headers', 'Request', 'Response', 'fetch',
+  'crypto', 'performance', 'navigator',
+];
+
 // ── Interned String Table ────────────────────────────────────────
 // Pre-intern all ESTree type name strings so identity comparisons (===)
 // on node.type are O(1) pointer checks, not string byte comparisons.
@@ -106,17 +133,33 @@ const SCAN_CONTINUE_TAGS = new Set([73, 75, 77, 78, 84]);
  *
  * Requires _maxTokCache to be populated (done lazily via _nodeEndPos).
  */
+/** Build minTok cache: minimum main_token index in each node's subtree. */
+function _computeMinTok(ast) {
+  const n = ast.nodeCount;
+  const pd = ast._parentData;
+  const mt = ast._mainTokens;
+  const minTok = new Int32Array(n);
+  for (let i = 0; i < n; i++) minTok[i] = mt[i];
+  if (pd) {
+    for (let i = 1; i < n; i++) {
+      const p = pd[i];
+      if (p !== NONE && minTok[i] < minTok[p]) minTok[p] = minTok[i];
+    }
+  }
+  ast._minTokCache = minTok;
+}
+
 function collectSubtreeTokens(ast, nodeIdx, result) {
   if (nodeIdx === NONE || nodeIdx >= ast.nodeCount) return;
 
-  // Ensure maxTok cache is populated (triggers _computeAllEndPos if not yet done)
+  // Ensure caches are populated
   if (!ast._maxTokCache) ast._nodeEndPos(nodeIdx);
+  if (!ast._minTokCache) _computeMinTok(ast);
 
-  const mt = ast._mainTokens;
   const tc = ast.tokenCount;
   const tags = ast._tokTags;
 
-  const startTok = mt[nodeIdx];
+  const startTok = ast._minTokCache[nodeIdx];
   const maxTok = ast._maxTokCache[nodeIdx];
 
   // Scan forward past maxTok to include closing/separator tokens
@@ -274,7 +317,8 @@ class SourceCode {
     }
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
     const ast = this._ast;
-    const startTok = ast._mainTokens[node._i];
+    if (!ast._minTokCache) _computeMinTok(ast);
+    const startTok = ast._minTokCache[node._i];
     // Fast path: no filter, no skip — just return the first token
     if (!fn && skip === 0) return this._makeToken(startTok);
     // Slow path: filter/skip required — iterate forward from startTok
@@ -473,6 +517,10 @@ class SourceCode {
     const ast = this._ast;
     if (!ast._nodeScopeIds || !node) return this._stubScope();
     const nodeIdx = (node._i !== undefined && node._i !== null) ? node._i : -1;
+    // Program node (root, index 0): always return the global scope (scope 0).
+    // ESLint's eslint-scope maps getScope(Program) → global, not module.
+    // The Zig side maps root to module (scope 1) because both share node 0.
+    if (nodeIdx === 0) return this._buildScope(0);
     const scopeId = nodeIdx >= 0 ? ast._scopeForNode(nodeIdx) : 0;
     return this._buildScope(scopeId);
   }
@@ -595,6 +643,7 @@ class SourceCode {
       ? nodeView(ast, scopeNodeIdx) : null;
 
     const isVarScope = kind === 0 || kind === 1 || kind === 2; // global, module, function
+
     const childScopes = [];
     const scope = {
       type: KIND_NAMES[kind] || 'block',
@@ -611,6 +660,31 @@ class SourceCode {
     };
     scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
 
+    // Add ES2022 built-in globals to the global scope so rules like no-undef
+    // don't flag NaN, undefined, Infinity, etc. as undeclared.
+    if (kind === 0) { // global scope
+      for (const name of _BUILTIN_GLOBALS) {
+        if (!set.has(name)) {
+          const globalVar = { name, defs: [], references: [], identifiers: [],
+            scope, eslintUsed: false, writeable: false,
+            isRead: () => false, isWritten: () => false };
+          set.set(name, globalVar);
+          variables.push(globalVar);
+        }
+      }
+    }
+
+    // Add implicit 'arguments' to function scopes (non-arrow functions).
+    // ESLint's eslint-scope provides 'arguments' as a built-in variable
+    // in every function scope (except arrow functions).
+    if (kind === 2 && !set.has('arguments')) { // kind 2 = function
+      const argsVar = { name: 'arguments', defs: [], references: [], identifiers: [],
+        scope, eslintUsed: false, writeable: false,
+        isRead: () => false, isWritten: () => false };
+      set.set('arguments', argsVar);
+      variables.push(argsVar);
+    }
+
     // Cache before building children to break the parent←→child cycle.
     this._scopeCache.set(scopeId, scope);
 
@@ -619,6 +693,29 @@ class SourceCode {
     if (childIds) {
       for (let j = 0; j < childIds.length; j++) {
         childScopes.push(this._buildScope(childIds[j]));
+      }
+    }
+
+    // Bubble unresolved references from child scopes into this scope's through
+    // list, matching ESLint's eslint-scope behavior. A reference that is
+    // unresolved in a child scope and also not resolved in this scope should
+    // appear in through (so no-undef sees it on the global scope).
+    // If the reference resolves to a variable in this scope (e.g., a built-in
+    // global), link the reference to that variable.
+    for (const child of childScopes) {
+      for (const ref of child.through) {
+        // Skip PrivateIdentifier references — they are class-scoped,
+        // not normal variable references. no-undef should not see them.
+        if (ref.identifier?.type === 'PrivateIdentifier') continue;
+        const name = ref.identifier?.name;
+        const variable = name ? set.get(name) : undefined;
+        if (variable) {
+          // Resolved by this scope — link reference to variable
+          variable.references.push(ref);
+          ref.resolved = variable;
+        } else {
+          through.push(ref);
+        }
       }
     }
 
@@ -2416,6 +2513,84 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // subtree pruning, materialized views, batch scan, etc.) and use
   // a simple DFS with direct visitorMap lookups. The optimizer overhead
   // (0.5ms) exceeds the DFS cost on these tiny files.
+  // ── Interleaved DFS traversal ──────────────────────────────────
+  // Build a single event sequence that interleaves enter (pre-order)
+  // and exit (post-order) events in correct DFS order. This ensures
+  // rules that maintain state across enter/exit (e.g., block-scoped-var's
+  // scope stack) see events in the right order.
+  // Event format: positive index = enter, ~index (bitwise NOT) = exit.
+  function buildInterleavedDFS() {
+    const n = ast.nodeCount;
+    const events = new Int32Array(n * 2);
+    let ei = 0, pi = 0, qi = 0;
+    while (pi < n || qi < n) {
+      // If we still have pre-order entries and the next pre comes before
+      // (or at same position as) the next post, emit enter.
+      // Strategy: pre[pi] < post[qi] means enter first.
+      // We use the pre/post indices directly — in a correct DFS,
+      // a node's enter always comes before its exit.
+      if (pi < n && (qi >= n || preOrder[pi] !== postOrder[qi])) {
+        events[ei++] = preOrder[pi++];
+      } else if (qi < n) {
+        events[ei++] = ~postOrder[qi++];
+        // After emitting an exit, check if the next pre is also ready
+      }
+      // Advance post while the next post matches what we've already entered
+      while (qi < n && pi < n && postOrder[qi] === preOrder[pi - 1]) {
+        // This shouldn't happen in normal DFS — break to avoid infinite loop
+        break;
+      }
+    }
+    return { events, count: ei };
+  }
+
+  // Use Zig-precomputed DFS events if available (v5 buffer), else compute in JS.
+  function getDFSEvents() {
+    if (ast._dfsEvents) {
+      // Find the actual count (events may be zero-padded if fewer were emitted)
+      let count = ast._dfsEvents.length;
+      while (count > 0 && ast._dfsEvents[count - 1] === 0 && count > 1) count--;
+      // But 0 could be a valid enter(0) event. Use the full 2n length.
+      return { events: ast._dfsEvents, count: ast.nodeCount * 2 };
+    }
+    return buildDFSEvents();
+  }
+
+  // JS fallback: reconstruct correct DFS from pre-order + parent data.
+  function buildDFSEvents() {
+    const n = preOrder.length;
+    const events = new Int32Array(n * 2);
+    let ei = 0;
+    // Use a stack to track when to emit exits
+    const stack = [];
+    for (let i = 0; i < n; i++) {
+      const idx = preOrder[i];
+      // Pop exits: any node on the stack that is NOT an ancestor of idx
+      while (stack.length > 0) {
+        const top = stack[stack.length - 1];
+        // Check if top is ancestor of idx using parent data
+        let isAncestor = false;
+        if (pd) {
+          let p = pd[idx];
+          while (p !== NONE && p !== undefined && p < ast.nodeCount) {
+            if (p === top) { isAncestor = true; break; }
+            p = pd[p];
+          }
+        }
+        if (isAncestor) break;
+        stack.pop();
+        events[ei++] = ~top; // exit
+      }
+      events[ei++] = idx; // enter
+      stack.push(idx);
+    }
+    // Flush remaining exits
+    while (stack.length > 0) {
+      events[ei++] = ~stack.pop();
+    }
+    return { events, count: ei };
+  }
+
   if (ast.nodeCount < 100) {
     context._skipSet = null;
     // Lazy nodesByType for rules that need it
@@ -2436,53 +2611,134 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (!indices) return [];
       return indices.map(idx2 => nodeView(this._ast, idx2));
     };
-    for (let i = 0; i < preOrder.length; i++) {
-      const idx = preOrder[i];
-      const tn = tagNames[nodeTags[idx]];
-      if (!tn) continue;
-      if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathStart', idx);
-      const enter = visitorMap.get(tn);
-      if (enter) {
-        const node = nodeView(ast, idx);
-        for (let h = 0; h < enter.length; h++) {
-          const hd = enter[h];
-          if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
-          context._currentRule = hd.ruleId;
-          context._currentRuleMeta = hd.ruleMeta;
-          context.options = hd.ruleOptions;
-          context._currentNodeIdx = idx;
-          try { hd.handler(node); } catch (err) {
-            context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+    // Check if any rule listens for PrivateIdentifier — if so, we need to
+    // dispatch Identifier nodes that are actually PrivateIdentifiers to that handler too.
+    const hasPrivateId = visitorMap.has('PrivateIdentifier');
+    const hasPrivateIdExit = visitorMap.has('PrivateIdentifier:exit');
+    const identTag = tagNames.indexOf('Identifier');
+
+    // For MemberExpression with private property, we also need to synthesize
+    // PrivateIdentifier visits since the property isn't a real AST node.
+    const hasMemberPrivate = hasPrivateId && (visitorMap.has('MemberExpression') || visitorMap.has('PrivateIdentifier'));
+    const memberExprTag = tagNames.indexOf('MemberExpression');
+
+    // Use interleaved DFS to ensure enter/exit events fire in correct order.
+    const { events, count: evCount } = getDFSEvents();
+    for (let i = 0; i < evCount; i++) {
+      const ev = events[i];
+      if (ev >= 0) {
+        // Enter event
+        const idx = ev;
+        const tag = nodeTags[idx];
+        const tn = tagNames[tag];
+        if (!tn) continue;
+        if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathStart', idx);
+        const enter = visitorMap.get(tn);
+        if (enter) {
+          const node = nodeView(ast, idx);
+          for (let h = 0; h < enter.length; h++) {
+            const hd = enter[h];
+            if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
+            context._currentRule = hd.ruleId;
+            context._currentRuleMeta = hd.ruleMeta;
+            context.options = hd.ruleOptions;
+            context._currentNodeIdx = idx;
+            try { hd.handler(node); } catch (err) {
+              context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+            }
           }
         }
-      }
-      if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, false);
-      if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, false);
-      if (hasSelectors) invokeSelectorHandlers(idx, false);
-    }
-    for (let i = 0; i < postOrder.length; i++) {
-      const idx = postOrder[i];
-      const tn = tagNames[nodeTags[idx]];
-      if (!tn) continue;
-      if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
-      const exit = visitorMap.get(tn + ':exit');
-      if (exit) {
-        const node = nodeView(ast, idx);
-        for (let h = 0; h < exit.length; h++) {
-          const hd = exit[h];
-          if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
-          context._currentRule = hd.ruleId;
-          context._currentRuleMeta = hd.ruleMeta;
-          context.options = hd.ruleOptions;
-          context._currentNodeIdx = idx;
-          try { hd.handler(node); } catch (err) {
-            context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+        // PrivateIdentifier dispatch: Identifier nodes with # prefix
+        if (hasPrivateId && tag === identTag) {
+          const pos = ast._tokStarts[ast._mainTokens[idx]];
+          if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
+            const privEnter = visitorMap.get('PrivateIdentifier');
+            if (privEnter) {
+              const node = nodeView(ast, idx);
+              for (let h = 0; h < privEnter.length; h++) {
+                const hd = privEnter[h];
+                context._currentRule = hd.ruleId;
+                context._currentRuleMeta = hd.ruleMeta;
+                context.options = hd.ruleOptions;
+                context._currentNodeIdx = idx;
+                try { hd.handler(node); } catch (err) {
+                  context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+                }
+              }
+            }
           }
         }
+        // Synthesize PrivateIdentifier visit for MemberExpression with private property
+        if (hasMemberPrivate && (tag === memberExprTag || tn === 'MemberExpression')) {
+          const rhs = ast.nodeRhs(idx);
+          if (rhs !== NONE) {
+            const propStart = ast._tokStarts[rhs];
+            if (propStart < ast.source.length && ast.source.charCodeAt(propStart) === 35) {
+              const synth = ast._syntheticId(rhs);
+              const privEnter = visitorMap.get('PrivateIdentifier');
+              if (privEnter && synth.type === 'PrivateIdentifier') {
+                synth.parent = nodeView(ast, idx);
+                for (let h = 0; h < privEnter.length; h++) {
+                  const hd = privEnter[h];
+                  context._currentRule = hd.ruleId;
+                  context._currentRuleMeta = hd.ruleMeta;
+                  context.options = hd.ruleOptions;
+                  try { hd.handler(synth); } catch (err) {
+                    context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+                  }
+                }
+              }
+            }
+          }
+        }
+        if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, false);
+        if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, false);
+        if (hasSelectors) invokeSelectorHandlers(idx, false);
+      } else {
+        // Exit event (bitwise NOT to get node index)
+        const idx = ~ev;
+        const tag = nodeTags[idx];
+        const tn = tagNames[tag];
+        if (!tn) continue;
+        if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
+        const exit = visitorMap.get(tn + ':exit');
+        if (exit) {
+          const node = nodeView(ast, idx);
+          for (let h = 0; h < exit.length; h++) {
+            const hd = exit[h];
+            if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
+            context._currentRule = hd.ruleId;
+            context._currentRuleMeta = hd.ruleMeta;
+            context.options = hd.ruleOptions;
+            context._currentNodeIdx = idx;
+            try { hd.handler(node); } catch (err) {
+              context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+            }
+          }
+        }
+        // PrivateIdentifier:exit dispatch
+        if (hasPrivateIdExit && tag === identTag) {
+          const pos = ast._tokStarts[ast._mainTokens[idx]];
+          if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
+            const privExit = visitorMap.get('PrivateIdentifier:exit');
+            if (privExit) {
+              const node = nodeView(ast, idx);
+              for (let h = 0; h < privExit.length; h++) {
+                const hd = privExit[h];
+                context._currentRule = hd.ruleId;
+                context._currentRuleMeta = hd.ruleMeta;
+                context.options = hd.ruleOptions;
+                try { hd.handler(node); } catch (err) {
+                  context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${err.message}` });
+                }
+              }
+            }
+          }
+        }
+        if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, true);
+        if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathEnd', idx);
+        if (hasSelectors) invokeSelectorHandlers(idx, true);
       }
-      if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, true);
-      if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathEnd', idx);
-      if (hasSelectors) invokeSelectorHandlers(idx, true);
     }
     return;
   }
@@ -2560,41 +2816,89 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
   }
 
-  // Enter pass: DFS pre-order (parents before children)
-  for (let i = 0; i < preOrder.length; i++) {
-    const idx = preOrder[i];
-    if (skipSet.allSkipped) break;
-    if (usePruning && !subtreeRelevant[idx]) continue;
-    const tag = nodeTags[idx];
-    const handlers = tagEnterHandlers[tag];
-    const flags = tagFlags[tag];
-    if (canSkip && !handlers && !flags) continue;
-    if (flags & FLAG_CODEPATH_ENTER) invokeCodePathHandlers('onCodePathStart', idx);
-    if (handlers) {
-      _invokeFused(handlers, nodeView(ast, idx), idx, context);
-    }
-    if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, false);
-    if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
-    if (hasSelectors) invokeSelectorHandlers(idx, false);
-  }
+  // Interleaved DFS: enter and exit events in correct DFS order.
+  const hasPrivateIdOpt = visitorMap.has('PrivateIdentifier');
+  const hasPrivateIdExitOpt = visitorMap.has('PrivateIdentifier:exit');
+  const identTagOpt = tagNames.indexOf('Identifier');
+  const memberExprTagOpt = tagNames.indexOf('MemberExpression');
 
-  // Exit pass: DFS post-order (children before parents)
-  for (let i = 0; i < postOrder.length; i++) {
-    const idx = postOrder[i];
+  const { events: dfsEvents, count: dfsCount } = getDFSEvents();
+  for (let i = 0; i < dfsCount; i++) {
     if (skipSet.allSkipped) break;
-    if (usePruning && !subtreeRelevant[idx]) continue;
-    const tag = nodeTags[idx];
-    const handlers = tagExitHandlers[tag];
-    const flags = tagFlags[tag];
-    if (canSkip && !handlers && !flags) continue;
-    if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
-    if (handlers) {
-      const node = nodeView(ast, idx);
-      _invokeFused(handlers, node, idx, context);
+    const ev = dfsEvents[i];
+    if (ev >= 0) {
+      // Enter event
+      const idx = ev;
+      if (usePruning && !subtreeRelevant[idx]) continue;
+      const tag = nodeTags[idx];
+      const handlers = tagEnterHandlers[tag];
+      const flags = tagFlags[tag];
+      if (canSkip && !handlers && !flags && !(hasPrivateIdOpt && tag === identTagOpt)) continue;
+      if (flags & FLAG_CODEPATH_ENTER) invokeCodePathHandlers('onCodePathStart', idx);
+      if (handlers) {
+        _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      // PrivateIdentifier dispatch for Identifier nodes with # prefix
+      if (hasPrivateIdOpt && tag === identTagOpt) {
+        const pos = ast._tokStarts[ast._mainTokens[idx]];
+        if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
+          const privEnter = visitorMap.get('PrivateIdentifier');
+          if (privEnter) {
+            const node = nodeView(ast, idx);
+            for (let h = 0; h < privEnter.length; h++) {
+              context._currentRule = privEnter[h].ruleId;
+              context._currentRuleMeta = privEnter[h].ruleMeta;
+              context.options = privEnter[h].ruleOptions;
+              try { privEnter[h].handler(node); } catch (err) {
+                context._reports.push({ ruleId: privEnter[h].ruleId, message: `Plugin error: ${err.message}` });
+              }
+            }
+          }
+        }
+      }
+      // Synthesize PrivateIdentifier for MemberExpression with private property
+      if (hasPrivateIdOpt && (tag === memberExprTagOpt || tagNames[tag] === 'MemberExpression')) {
+        const rhs = ast.nodeRhs(idx);
+        if (rhs !== NONE) {
+          const propStart = ast._tokStarts[rhs];
+          if (propStart < ast.source.length && ast.source.charCodeAt(propStart) === 35) {
+            const synth = ast._syntheticId(rhs);
+            if (synth.type === 'PrivateIdentifier') {
+              synth.parent = nodeView(ast, idx);
+              const privEnter = visitorMap.get('PrivateIdentifier');
+              if (privEnter) {
+                for (let h = 0; h < privEnter.length; h++) {
+                  context._currentRule = privEnter[h].ruleId;
+                  context._currentRuleMeta = privEnter[h].ruleMeta;
+                  context.options = privEnter[h].ruleOptions;
+                  try { privEnter[h].handler(synth); } catch (err) {
+                    context._reports.push({ ruleId: privEnter[h].ruleId, message: `Plugin error: ${err.message}` });
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, false);
+      if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
+      if (hasSelectors) invokeSelectorHandlers(idx, false);
+    } else {
+      // Exit event
+      const idx = ~ev;
+      if (usePruning && !subtreeRelevant[idx]) continue;
+      const tag = nodeTags[idx];
+      const handlers = tagExitHandlers[tag];
+      const flags = tagFlags[tag];
+      if (canSkip && !handlers && !flags) continue;
+      if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
+      if (handlers) {
+        _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
+      if (flags & FLAG_CODEPATH_EXIT) invokeCodePathHandlers('onCodePathEnd', idx);
+      if (hasSelectors) invokeSelectorHandlers(idx, true);
     }
-    if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-    if (flags & FLAG_CODEPATH_EXIT) invokeCodePathHandlers('onCodePathEnd', idx);
-    if (hasSelectors) invokeSelectorHandlers(idx, true);
   }
 
   // ── Execute file-level exit rules (after DFS) ─────────────────

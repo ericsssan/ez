@@ -206,7 +206,7 @@ fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module:
     if (tree.errors.len > 0) return .{ .has_error = true, .detail = .{ .kind = .parse, .count = @intCast(tree.errors.len) } };
 
     // Run semantic analysis to catch early errors (duplicate bindings, etc.)
-    var sem = sanz.semantic.SemanticAnalyzer.analyze(allocator, &tree) catch return .{ .has_error = false, .detail = .{ .kind = .semantic, .count = 0 } };
+    var sem = sanz.semantic.SemanticAnalyzer.analyzeModule(allocator, &tree, is_module) catch return .{ .has_error = false, .detail = .{ .kind = .semantic, .count = 0 } };
     defer sem.deinit(allocator);
 
     if (sem.diagnostics.len > 0) return .{ .has_error = true, .detail = .{ .kind = .semantic, .count = @intCast(sem.diagnostics.len) } };

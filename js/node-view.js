@@ -28,6 +28,9 @@ const H = {
   // v4: DFS traversal order arrays (byte 72, 76)
   PRE_ORDER_OFFSET: 72,
   POST_ORDER_OFFSET: 76,
+  // v5: interleaved DFS events (byte 80), source type (byte 84)
+  DFS_EVENTS_OFFSET: 80,
+  SOURCE_TYPE: 84,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -57,6 +60,16 @@ const SH = {
 };
 
 const FLAG_HAS_BOM = 1;
+
+// ── Helpers ─────────────────────────────────────────────────────
+
+/** Resolve Unicode escape sequences (\uXXXX and \u{XXXX}) in identifier names. */
+function _resolveUnicodeEscapes(name) {
+  if (!name || name.indexOf('\\') === -1) return name;
+  return name.replace(/\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g, (_, braced, four) => {
+    return String.fromCodePoint(parseInt(braced || four, 16));
+  });
+}
 
 // ── Tag name table ──────────────────────────────────────────────
 
@@ -150,6 +163,13 @@ class AstView {
     const postOff = dv.getUint32(H.POST_ORDER_OFFSET, true);
     this._preOrder  = preOff  > 0 ? new Int32Array(buffer, preOff,  this.nodeCount) : null;
     this._postOrder = postOff > 0 ? new Int32Array(buffer, postOff, this.nodeCount) : null;
+
+    // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig)
+    const dfsEvOff = dv.getUint32(H.DFS_EVENTS_OFFSET, true);
+    this._dfsEvents = dfsEvOff > 0 ? new Int32Array(buffer, dfsEvOff, this.nodeCount * 2) : null;
+
+    // Source type (v5 — 1 = module, 0 = script)
+    this._sourceType = dv.getUint32(H.SOURCE_TYPE, true);
 
     // Semantic data (v3 — scope/symbol/reference tables)
     const semOff = dv.getUint32(H.SEMANTIC_DATA_OFFSET, true);
@@ -285,12 +305,26 @@ class AstView {
     const src = this.source;
     let end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
     while (end > start && src.charCodeAt(end - 1) <= 32) end--;
-    const name = src.slice(start, end);
+    let name = src.slice(start, end);
+    // Private identifiers: # may be a separate token from the name.
+    let type = 'Identifier';
+    if (name.charCodeAt(0) === 35) { // '#'
+      type = 'PrivateIdentifier';
+      if (name.length === 1 && tokIdx + 1 < this.tokenCount) {
+        const nameStart = this._tokStarts[tokIdx + 1];
+        let nameEnd = tokIdx + 2 < this.tokenCount ? this._tokStarts[tokIdx + 2] : src.length;
+        while (nameEnd > nameStart && src.charCodeAt(nameEnd - 1) <= 32) nameEnd--;
+        name = src.slice(nameStart, nameEnd);
+      } else {
+        name = name.slice(1);
+      }
+    }
+    name = _resolveUnicodeEscapes(name);
     const li = this._findLineIdx(start);
     const eli = this._findLineIdx(end);
     const ls = this._lineStarts();
     return {
-      type: 'Identifier',
+      type,
       name,
       start,
       end,
@@ -419,10 +453,26 @@ class AstView {
     const start = pos;
     while (pos < src.length) {
       const c = src.charCodeAt(pos);
-      // identifier chars: A-Z a-z 0-9 _ $ or unicode
-      if (!((c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
-            (c >= 48 && c <= 57) || c === 95 || c === 36 || c > 127)) break;
-      pos++;
+      // identifier chars: A-Z a-z 0-9 _ $ or unicode (>127)
+      if ((c >= 65 && c <= 90) || (c >= 97 && c <= 122) ||
+          (c >= 48 && c <= 57) || c === 95 || c === 36 || c > 127) {
+        pos++;
+      } else if (c === 92) { // backslash — Unicode escape \uXXXX or \u{XXXX}
+        pos++; // skip '\'
+        if (pos < src.length && src.charCodeAt(pos) === 117) { // 'u'
+          pos++;
+          if (pos < src.length && src.charCodeAt(pos) === 123) { // '{'
+            pos++;
+            while (pos < src.length && src.charCodeAt(pos) !== 125) pos++;
+            if (pos < src.length) pos++; // skip '}'
+          } else {
+            // \uXXXX — 4 hex digits
+            for (let j = 0; j < 4 && pos < src.length; j++) pos++;
+          }
+        }
+      } else {
+        break;
+      }
     }
     return src.slice(start, pos);
   }
@@ -446,12 +496,26 @@ class AstView {
 
   // ── Semantic accessors ─────────────────────────────────────────
 
-  /** Get the name of a symbol (zero-copy string from source). */
+  /** Get the name of a symbol from raw buffer bytes (byte offsets, not UTF-16). */
   _symName(symId) {
     if (!this._symNameStarts) return '';
     const start = this._symNameStarts[symId];
     const len = this._symNameLens[symId];
-    return this.source.slice(start - this._sourceOff, start - this._sourceOff + len);
+    // Read directly from the underlying buffer using byte offsets.
+    // Symbol name starts/lens are byte positions, not UTF-16 character indices.
+    const bytes = new Uint8Array(this.buffer, start, len);
+    // Fast path: ASCII-only (most identifier names)
+    let ascii = true;
+    for (let i = 0; i < bytes.length; i++) {
+      if (bytes[i] > 127) { ascii = false; break; }
+    }
+    if (ascii) {
+      let s = '';
+      for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return s;
+    }
+    // Slow path: UTF-8 decode
+    return new TextDecoder().decode(bytes);
   }
 
   /**
@@ -495,6 +559,28 @@ class AstView {
   _nodeEndPos(nodeIdx) {
     if (!this._endPosCache) this._endPosCache = this._computeAllEndPos();
     return this._endPosCache[nodeIdx];
+  }
+
+  /** Get the start position of a node (minimum token start in its subtree). */
+  _nodeStartPos(nodeIdx) {
+    if (!this._startPosCache) {
+      const n = this.nodeCount;
+      const pd = this._parentData;
+      const mt = this._mainTokens;
+      // minTok[i] = lowest main_token index in node i's subtree
+      const minTok = new Int32Array(n);
+      for (let i = 0; i < n; i++) minTok[i] = mt[i];
+      if (pd) {
+        for (let i = 1; i < n; i++) {
+          const p = pd[i];
+          if (p !== NONE && minTok[i] < minTok[p]) minTok[p] = minTok[i];
+        }
+      }
+      const startPos = new Int32Array(n);
+      for (let i = 0; i < n; i++) startPos[i] = this._tokStarts[minTok[i]];
+      this._startPosCache = startPos;
+    }
+    return this._startPosCache[nodeIdx];
   }
 
   /**
@@ -572,6 +658,24 @@ const NodeProto = {
     // Object.defineProperty on the instance shadows the prototype getter.
     const tagName = TAG_NAMES ? TAG_NAMES[this._ast._nodeTags[this._i]] : String(this._ast._nodeTags[this._i]);
     let result = tagName;
+    // Remap Identifier → PrivateIdentifier when the token starts with #.
+    if (tagName === 'Identifier') {
+      const pos = this._ast._tokStarts[this._ast._mainTokens[this._i]];
+      if (pos < this._ast.source.length && this._ast.source.charCodeAt(pos) === 35) {
+        result = 'PrivateIdentifier';
+      }
+    }
+    // Remap MethodDefinition → Property when inside an object literal/pattern.
+    // ESTree uses Property for object methods, MethodDefinition for class methods.
+    if (tagName === 'MethodDefinition') {
+      const parentIdx = this._ast._parentData ? this._ast._parentData[this._i] : NONE;
+      if (parentIdx !== NONE) {
+        const parentTag = this._ast._nodeTags[parentIdx];
+        if (parentTag === T.object_literal || parentTag === T.object_pattern) {
+          result = 'Property';
+        }
+      }
+    }
     // Remap TSTypeReference to TS*Keyword when it's a built-in keyword type
     // (no type arguments, and main token text matches a TS keyword type).
     if (tagName === 'TSTypeReference' && this._ast.nodeRhs(this._i) === NONE) {
@@ -594,7 +698,7 @@ const NodeProto = {
     return this._ast._mainTokens[this._i];
   },
   get start() {
-    return this._ast._tokStarts[this._ast._mainTokens[this._i]];
+    return this._ast._nodeStartPos(this._i);
   },
   get lhs() {
     return this._ast.nodeLhs(this._i);
@@ -674,7 +778,18 @@ const NodeProto = {
    */
   get name() {
     if (this.tag === T.identifier) {
-      return this._ast._identAt(this.mainToken);
+      const ast = this._ast;
+      const tok = this.mainToken;
+      const pos = ast._tokStarts[tok];
+      // Private identifier: # may be a separate token from the name
+      if (ast.source.charCodeAt(pos) === 35) { // '#'
+        const nextTokStart = tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : pos + 1;
+        if (nextTokStart === pos + 1 && tok + 1 < ast.tokenCount) {
+          return _resolveUnicodeEscapes(ast._identAt(tok + 1));
+        }
+        return _resolveUnicodeEscapes(ast.source.slice(pos + 1, nextTokStart).replace(/\s+$/, ''));
+      }
+      return _resolveUnicodeEscapes(ast._identAt(tok));
     }
     return null;
   },
@@ -688,7 +803,35 @@ const NodeProto = {
     const t = this.tag;
     const ast = this._ast;
     const src = ast._rawTokenText(this.mainToken);
-    if (t === T.string_literal) return src; // raw with quotes; TODO: unescape
+    if (t === T.string_literal) {
+      // Strip surrounding quotes and unescape basic sequences.
+      // ESLint's Literal.value is the evaluated string, not the raw source.
+      if (src.length >= 2 && (src[0] === '"' || src[0] === "'")) {
+        const inner = src.slice(1, -1);
+        // Fast path: no backslash → no escapes to process
+        if (inner.indexOf('\\') === -1) return inner;
+        // Slow path: process escape sequences
+        return inner.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[0-7]{1,3}|.)/g, (_, esc) => {
+          switch (esc[0]) {
+            case 'n': return '\n';
+            case 'r': return '\r';
+            case 't': return '\t';
+            case 'b': return '\b';
+            case 'f': return '\f';
+            case 'v': return '\v';
+            case '0': return esc.length === 1 ? '\0' : String.fromCharCode(parseInt(esc, 8));
+            case 'x': return String.fromCharCode(parseInt(esc.slice(1), 16));
+            case 'u':
+              if (esc[1] === '{') return String.fromCodePoint(parseInt(esc.slice(2, -1), 16));
+              return String.fromCharCode(parseInt(esc.slice(1), 16));
+            default:
+              if (esc[0] >= '1' && esc[0] <= '7') return String.fromCharCode(parseInt(esc, 8));
+              return esc; // \', \", \\, etc.
+          }
+        });
+      }
+      return src;
+    }
     if (t === T.number_literal) return parseFloat(src);
     if (t === T.boolean_literal) return src === 'true';
     if (t === T.null_literal) return null;
@@ -696,10 +839,14 @@ const NodeProto = {
     if (t === T.regex_literal) return src;
     // VariableDeclarator .value = init (ESLint uses .init, but some rules use .value)
     if (t === T.declarator) return this.rhsNode();
-    // Property (key: value) — rhs is the value expression
-    if (t === T.property || t === T.computed_property) {
+    // Property (key: value) — rhs is the value expression.
+    // For shorthand properties ({ a }), value === key (same Identifier node).
+    if (t === T.property || t === T.computed_property || t === T.shorthand_property) {
       const rhs = ast.nodeRhs(this._i);
-      return rhs === NONE ? null : nodeView(ast, rhs);
+      if (rhs !== NONE) return nodeView(ast, rhs);
+      // Shorthand: value is the same as key
+      const lhs = ast.nodeLhs(this._i);
+      return lhs === NONE ? null : nodeView(ast, lhs);
     }
     // Method/getter/setter — return a synthetic FunctionExpression
     if (t === T.method_def || t === T.getter_def || t === T.setter_def ||
@@ -709,6 +856,9 @@ const NodeProto = {
       const flags = _methodFlags(ast, this.mainToken);
       const params = ast._nodesFromRange(md.params_start, md.params_end);
       const body = md.body === NONE ? null : nodeView(ast, md.body);
+      const startPos = ast._tokStarts[this.mainToken];
+      // Use the containing Property/MethodDefinition node's loc for the synthetic FunctionExpression
+      const loc = this.loc;
       return {
         type: 'FunctionExpression',
         id: null,
@@ -717,7 +867,10 @@ const NodeProto = {
         params: params || [],
         body,
         mainToken: this.mainToken,
-        start: ast._tokStarts[this.mainToken],
+        start: startPos,
+        loc,
+        range: loc ? [startPos, loc.end ? (body?.range?.[1] || startPos) : startPos] : undefined,
+        parent: this, // parent = the Property/MethodDefinition node
       };
     }
     return null;
@@ -728,6 +881,32 @@ const NodeProto = {
    */
   get raw() {
     return this._ast._rawTokenText(this.mainToken);
+  },
+
+  /**
+   * node.regex — for regex Literal nodes: { pattern, flags }.
+   * ESLint rules like require-unicode-regexp use Literal[regex] selectors.
+   */
+  get regex() {
+    if (this.tag !== T.regex_literal) return undefined;
+    const src = this._ast._rawTokenText(this.mainToken);
+    // Regex format: /pattern/flags
+    const lastSlash = src.lastIndexOf('/');
+    if (lastSlash <= 0) return undefined;
+    return {
+      pattern: src.slice(1, lastSlash),
+      flags: src.slice(lastSlash + 1),
+    };
+  },
+
+  /**
+   * node.bigint — for BigInt Literal nodes: the numeric string (without 'n').
+   * ESLint's no-magic-numbers uses Literal[bigint] selectors.
+   */
+  get bigint() {
+    if (this.tag !== T.bigint_literal) return undefined;
+    const src = this._ast._rawTokenText(this.mainToken);
+    return src.endsWith('n') ? src.slice(0, -1) : src;
   },
 
   /**
@@ -1151,6 +1330,15 @@ const NodeProto = {
     if (t === T.setter_def || t === T.computed_setter_def) return 'set';
     if (t === T.constructor_def) return 'constructor';
     if (t === T.method_def || t === T.computed_method_def) {
+      // Object literal methods have kind "init" (ESTree Property.kind),
+      // class methods have kind "method" (ESTree MethodDefinition.kind).
+      const parentIdx = this._ast._parentData ? this._ast._parentData[this._i] : NONE;
+      if (parentIdx !== NONE) {
+        const parentTag = this._ast._nodeTags[parentIdx];
+        if (parentTag === T.object_literal || parentTag === T.object_pattern) {
+          return 'init';
+        }
+      }
       // constructor_def tag should distinguish constructors, but in practice
       // constructors appear as method_def. Fall back: check key token text.
       if (t === T.method_def) {
@@ -1210,14 +1398,21 @@ const NodeProto = {
 
   /**
    * node.elements — elements of ArrayExpression or ArrayPattern.
-   * Note: holes are omitted (ESLint includes null for holes).
+   * Holes are represented as null (matching ESLint's AST).
    */
   get elements() {
     const t = this.tag;
     const ast = this._ast;
     if (t === T.array_literal || t === T.array_pattern) {
-      // lhs=range.start, rhs=range.end (stored directly)
-      return ast._nodesFromRange(ast.nodeLhs(this._i), ast.nodeRhs(this._i));
+      const lhs = ast.nodeLhs(this._i);
+      const rhs = ast.nodeRhs(this._i);
+      const slice = ast._extraData.subarray(lhs, rhs);
+      const result = [];
+      for (let j = 0; j < slice.length; j++) {
+        const nodeIdx = slice[j];
+        result.push(nodeIdx === NONE ? null : nodeView(ast, nodeIdx));
+      }
+      return result;
     }
     return null;
   },
@@ -1374,6 +1569,25 @@ const NodeProto = {
   },
 
   /**
+   * node.directive — for ExpressionStatement nodes that are directives
+   * (e.g., "use strict"). Returns the directive string value, or undefined.
+   * ESLint's astUtils.isDirective checks typeof node.directive === "string".
+   */
+  get directive() {
+    if (this.tag !== T.expression_stmt) return undefined;
+    const ast = this._ast;
+    const exprIdx = ast.nodeLhs(this._i);
+    if (exprIdx === NONE) return undefined;
+    if (ast._nodeTags[exprIdx] !== T.string_literal) return undefined;
+    // Return the string value (without quotes)
+    const raw = ast._rawTokenText(ast._mainTokens[exprIdx]);
+    if (raw.length >= 2 && (raw[0] === '"' || raw[0] === "'")) {
+      return raw.slice(1, -1);
+    }
+    return undefined;
+  },
+
+  /**
    * node.specifiers — ImportDeclaration / ExportNamedDeclaration specifiers.
    */
   get specifiers() {
@@ -1474,6 +1688,10 @@ const NodeProto = {
    * end is the position after the last character of the last token in the subtree.
    */
   get range() {
+    // Program node always spans the entire source: [0, sourceLength]
+    if (this._ast._nodeTags[this._i] === T.root) {
+      return [0, this._ast.sourceUtf16Len];
+    }
     return [this.start, this._ast._nodeEndPos(this._i)];
   },
 
@@ -1483,17 +1701,24 @@ const NodeProto = {
    */
   get loc() {
     const ast = this._ast;
-    const start = this.start;
     const end = ast._nodeEndPos(this._i);
     const ls = ast._lineStarts();
-    let lo = 0, hi = ls.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi + 1) >> 1;
-      if (ls[mid] <= start) lo = mid;
-      else hi = mid - 1;
+    // Program node always starts at line 1, column 0
+    let startLine, startCol;
+    if (ast._nodeTags[this._i] === T.root) {
+      startLine = 1;
+      startCol = 0;
+    } else {
+      const start = this.start;
+      let lo = 0, hi = ls.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        if (ls[mid] <= start) lo = mid;
+        else hi = mid - 1;
+      }
+      startLine = lo + 1;
+      startCol = start - ls[lo];
     }
-    const startLine = lo + 1;
-    const startCol = start - ls[lo];
     let elo = 0, ehi = ls.length - 1;
     while (elo < ehi) {
       const mid = (elo + ehi + 1) >> 1;
@@ -1550,6 +1775,17 @@ const NodeProto = {
     }
     ast._tokensCache = result;
     return result;
+  },
+
+  /**
+   * node.sourceType — "module" or "script" on Program nodes.
+   * Read from the Zig buffer header's source_type field.
+   */
+  get sourceType() {
+    if (this._ast._nodeTags[this._i] === T.root) {
+      return this._ast._sourceType === 1 ? 'module' : 'script';
+    }
+    return undefined;
   },
 
   /** node.comments — empty array (sanz doesn't track comments yet). Writable so rules can set it. */
@@ -1612,6 +1848,17 @@ function _methodFlags(ast, mainToken) {
   _methodFlagsResult.async = false;
   _methodFlagsResult.generator = false;
   _methodFlagsResult.static = false;
+  // Check the main token and scan backwards for modifier keywords.
+  // Layout: [static] [async] [*] name (...)
+  // mainToken may be: *, async, static, get, set, or the method name identifier.
+  const mainTag = ast._tokTags[mainToken];
+  if (mainTag === TOK_STAR) _methodFlagsResult.generator = true;
+  if (mainTag === TOK_ASYNC) _methodFlagsResult.async = true;
+  if (mainTag === TOK_STATIC) _methodFlagsResult.static = true;
+  // For async generators: mainToken=async, * is the next token
+  if (mainTag === TOK_ASYNC && mainToken + 1 < ast.tokenCount && ast._tokTags[mainToken + 1] === TOK_STAR) {
+    _methodFlagsResult.generator = true;
+  }
   let i = mainToken - 1;
   while (i >= 0) {
     const tag = ast._tokTags[i];

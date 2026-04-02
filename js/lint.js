@@ -20,6 +20,7 @@ const { Worker } = require("worker_threads");
 const { parse, getTagNames } = require("./index");
 const { runPlugins } = require("./plugin-runner");
 const { loadPlugin } = require("./load-plugin");
+const { extractRules } = require("./rule-loader");
 
 // ── CLI arg parsing ──────────────────────────────────────────────
 
@@ -216,6 +217,28 @@ for (const name of pluginNames) {
 if (allPlugins.length === 0) {
   console.error("error: no rules loaded");
   process.exit(1);
+}
+
+// ── Extract rules to Zig interpreter ────────────────────────────
+// Split rules: extractable ones run in Zig (zero JS per file),
+// remaining ones run in JS via plugin-runner.
+
+let nativeBinding = null;
+let jsPlugins = allPlugins; // default: all in JS
+let nativeRuleCount = 0;
+
+try {
+  nativeBinding = require("./index")._binding || require("../zig-out/lib/sanz.node");
+  if (typeof nativeBinding.loadRules === "function" && typeof nativeBinding.lintLoaded === "function") {
+    const { json, remainingPlugins, extractedCount } = extractRules(allPlugins, tagNames);
+    if (extractedCount > 0) {
+      nativeBinding.loadRules(json);
+      jsPlugins = remainingPlugins;
+      nativeRuleCount = extractedCount;
+    }
+  }
+} catch {
+  // Zig interpreter not available — fall back to all-JS
 }
 
 // Discover files
@@ -536,9 +559,21 @@ async function main() {
         continue;
       }
 
+      // ── Zig native lint (extracted rules, zero JS) ──
+      // Runs on the same buffer that parse() just filled.
+      let nativeDiagCount = 0;
+      if (nativeRuleCount > 0 && ast.buffer) {
+        try {
+          nativeDiagCount = nativeBinding.lintLoaded(ast.buffer);
+        } catch {
+          // Fall back silently
+        }
+      }
+
+      // ── JS lint (remaining rules only) ──
       let reports;
       try {
-        reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig, typeAware });
+        reports = runPlugins(ast, jsPlugins, { filename: file, tagNames, ruleConfig, typeAware });
       } catch (e) {
         if (formatJson) {
           jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });
@@ -550,6 +585,8 @@ async function main() {
       }
 
       const violations = reports.filter(r => !r.message.startsWith("Plugin error:"));
+      // Add native diagnostic count (Zig-interpreted rules)
+      totalViolations += nativeDiagCount;
       totalViolations += violations.length;
       totalFiles++;
 

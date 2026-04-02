@@ -43,10 +43,15 @@ pub const BufferHeader = extern struct {
     // Non-zero = byte offset of a u32[] of length node_count.
     pre_order_offset: u32 = 0,
     post_order_offset: u32 = 0,
+    // Added in v5: interleaved DFS events array (i32[] of length node_count * 2).
+    // Positive = enter (node index), negative = exit (~node index).
+    dfs_events_offset: u32 = 0,
+    // Source type: 1 = module, 0 = script.
+    source_type: u32 = 1,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 80);
+    std.debug.assert(@sizeOf(BufferHeader) == 88);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -145,8 +150,8 @@ pub fn writeSemanticData(
         const rr = sem.symbols.references.items[i];
         symbol_ref_starts[i] = rr.start;
         symbol_ref_ends[i] = rr.end;
-        // Names are zero-copy slices into the source text, which is written
-        // into the buffer by JS at source_offset. Compute offset from buf base.
+        // Names: store byte offset from buffer base and byte length.
+        // These are byte offsets; the JS side converts to UTF-16 indices.
         const name = sem.symbols.names.items[i];
         symbol_name_starts[i] = @intCast(@intFromPtr(name.ptr) - @intFromPtr(buf));
         symbol_name_lens[i] = @intCast(name.len);
@@ -270,6 +275,8 @@ pub const HeaderInfo = struct {
     semantic_data_offset: u32 = 0,
     pre_order_offset: u32 = 0,
     post_order_offset: u32 = 0,
+    dfs_events_offset: u32 = 0,
+    source_type: u32 = 1, // 1 = module, 0 = script
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -300,6 +307,8 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .semantic_data_offset = info.semantic_data_offset,
         .pre_order_offset = info.pre_order_offset,
         .post_order_offset = info.post_order_offset,
+        .dfs_events_offset = info.dfs_events_offset,
+        .source_type = info.source_type,
     };
 }
 
@@ -391,8 +400,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 80 bytes" {
-    try std.testing.expectEqual(@as(usize, 80), @sizeOf(BufferHeader));
+test "BufferHeader is 88 bytes" {
+    try std.testing.expectEqual(@as(usize, 88), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

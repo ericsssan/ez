@@ -226,7 +226,7 @@ test "ConfigResolver.init" {
     defer resolver.deinit();
 
     // Default config should have a populated severity table.
-    const registry = @import("rules/registry.zig");
+    const registry = @import("native/registry.zig");
     try std.testing.expectEqual(registry.count, resolver.default_config.rule_severity_table.len);
 
     // Cache should be empty.

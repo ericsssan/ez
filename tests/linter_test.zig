@@ -1126,11 +1126,12 @@ test "no-implicit-globals" {
             "let y = 2;",
             // var inside a function is not global scope
             "(function() { var z = 3; })();",
+            // In module mode (global→module), var/function at top level
+            // are in module scope (depth 1), not global — no error.
+            "var x = 1;",
+            "function globalFn() {}",
         },
-        .invalid = &.{
-            .{ .code = "var x = 1;" },
-            .{ .code = "function globalFn() {}" },
-        },
+        .invalid = &.{},
     });
 }
 

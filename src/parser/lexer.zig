@@ -466,27 +466,53 @@ pub const Lexer = struct {
         const len: u32 = @intCast(src.len);
         const V = @Vector(16, u8);
 
-        // SIMD: scan for '*' — the only byte that can start '*/'
+        // SIMD: scan for '*' or line terminators.
+        // A block comment containing a line terminator counts as a
+        // LineTerminator for ASI purposes (ES spec §12.4).
         while (self.index + 1 < src.len) {
-            // Bulk-skip 16 bytes at a time looking for '*'
             while (self.index + 16 <= len) {
                 const chunk: V = src[self.index..][0..16].*;
-                const mask: u16 = @bitCast(chunk == @as(V, @splat(@as(u8, '*'))));
-                if (mask != 0) {
-                    self.index += @ctz(mask);
+                const star_mask: u16 = @bitCast(chunk == @as(V, @splat(@as(u8, '*'))));
+                const nl_mask: u16 = @bitCast(chunk == @as(V, @splat(@as(u8, '\n'))));
+                const cr_mask: u16 = @bitCast(chunk == @as(V, @splat(@as(u8, '\r'))));
+                const combined = star_mask | nl_mask | cr_mask;
+                if (combined != 0) {
+                    const pos = @ctz(combined);
+                    self.index += pos;
+                    const byte = src[self.index];
+                    if (byte == '\n' or byte == '\r') {
+                        self.saw_newline = true;
+                        self.index += 1;
+                        break; // back to outer loop
+                    }
+                    // It's a '*' — handled below
                     break;
                 }
                 self.index += 16;
             }
             if (self.index + 1 >= src.len) break;
-            if (src[self.index] == '*' and src[self.index + 1] == '/') {
+            const c = src[self.index];
+            if (c == '\n' or c == '\r') {
+                self.saw_newline = true;
+                self.index += 1;
+                continue;
+            }
+            // Check for Unicode line terminators U+2028/U+2029 (0xE2 0x80 0xA8/0xA9)
+            if (c == 0xE2 and self.index + 2 < src.len and
+                src[self.index + 1] == 0x80 and (src[self.index + 2] == 0xA8 or src[self.index + 2] == 0xA9))
+            {
+                self.saw_newline = true;
+                self.index += 3;
+                continue;
+            }
+            if (c == '*' and src[self.index + 1] == '/') {
                 self.index += 2;
                 return;
             }
-            // Found a '*' not followed by '/' — skip it and keep scanning
             self.index += 1;
         }
         // Unterminated block comment — emit invalid token and advance to end
+        self.saw_newline = true;
         self.index = @intCast(src.len);
         self.tokens.append(self.allocator, .{
             .tag = .invalid,

@@ -96,6 +96,7 @@ pub const SemanticAnalyzer = struct {
     references: ReferenceTable,
     diagnostics: std.ArrayList(Diagnostic),
     allocator: std.mem.Allocator,
+    is_module: bool,
 
     /// The scope that is currently being visited.
     current_scope: ScopeId,
@@ -116,7 +117,7 @@ pub const SemanticAnalyzer = struct {
 
     // ── Lifecycle ──────────────────────────────────────────
 
-    pub fn init(allocator: std.mem.Allocator, ast: *const Ast) SemanticAnalyzer {
+    pub fn init(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool) SemanticAnalyzer {
         return .{
             .ast = ast,
             .scopes = ScopeTree.init(allocator),
@@ -124,6 +125,7 @@ pub const SemanticAnalyzer = struct {
             .references = ReferenceTable.init(allocator),
             .diagnostics = .empty,
             .allocator = allocator,
+            .is_module = is_module,
             .current_scope = .none,
             .scope_binding_map = .empty,
         };
@@ -139,8 +141,14 @@ pub const SemanticAnalyzer = struct {
     }
 
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
+    /// Defaults to module mode (global→module scope, strict).
     pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
-        var self = SemanticAnalyzer.init(allocator, ast);
+        return analyzeModule(allocator, ast, true);
+    }
+
+    /// Analyze with explicit module/script mode.
+    pub fn analyzeModule(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool) !SemanticResult {
+        var self = SemanticAnalyzer.init(allocator, ast, is_module);
         errdefer self.deinit();
         // exported_names and scope_binding_map are temporaries; always free them.
         defer self.exported_names.deinit(allocator);
@@ -152,6 +160,7 @@ pub const SemanticAnalyzer = struct {
 
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
+        self.resolveUnresolved();
         try self.validateExports();
 
         return .{
@@ -241,6 +250,38 @@ pub const SemanticAnalyzer = struct {
             scope = self.scopes.parent(scope);
         }
         // Unresolved — leave ref as .none (implicit global).
+    }
+
+    /// Post-pass: re-resolve any still-unresolved references.
+    /// `var` and function declarations are hoisted, so forward references
+    /// (uses before the declaration in source order) may fail during the
+    /// single-pass walk.  After all bindings have been registered, retry
+    /// the scope-chain lookup for every unresolved reference.
+    fn resolveUnresolved(self: *SemanticAnalyzer) void {
+        const count = self.references.symbol_ids.items.len;
+        for (0..count) |i| {
+            if (self.references.symbol_ids.items[i] != .none) continue;
+            const ref_id: ReferenceId = @enumFromInt(i);
+            const node_idx = self.references.getNode(ref_id);
+            if (node_idx == .none) continue;
+            const name = self.ast.tokenText(self.ast.nodeMainToken(node_idx));
+            // Walk up from the reference's original scope.
+            const ref_scope = self.references.getScope(ref_id);
+            const name_hash = std.hash.Wyhash.hash(0, name);
+            var scope = ref_scope;
+            while (scope.isValid()) {
+                const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
+                if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
+                    self.references.resolve(ref_id, sym_id);
+                    const kind = self.references.getKind(ref_id);
+                    if (kind.isRead()) self.symbols.markRead(sym_id);
+                    if (kind.isWrite()) self.symbols.markWritten(sym_id);
+                    if (kind == .type_of) self.symbols.markTypeOf(sym_id);
+                    break;
+                }
+                scope = self.scopes.parent(scope);
+            }
+        }
     }
 
     // ── Visitor dispatch ───────────────────────────────────
@@ -470,7 +511,13 @@ pub const SemanticAnalyzer = struct {
             .getter_def, .computed_getter_def => try self.visitMethodDef(idx, data),
             .setter_def, .computed_setter_def => try self.visitMethodDef(idx, data),
             .constructor_def => try self.visitMethodDef(idx, data),
-            .property_def, .computed_property_def => {
+            .property_def => {
+                // Non-computed property key is a definition, not a reference.
+                // Only visit the initializer (rhs).
+                try self.visitNode(data.rhs);
+            },
+            .computed_property_def => {
+                // Computed key is an expression — visit both key and initializer.
                 try self.visitNode(data.lhs);
                 try self.visitNode(data.rhs);
             },
@@ -628,9 +675,16 @@ pub const SemanticAnalyzer = struct {
         // Check for undeclared export locals (only for non-re-exports)
         for (self.exported_names.items) |entry| {
             if (entry.is_re_export) continue;
-            // Check if the local name is declared in module/global scope
-            const root_scope_id: ScopeId = @enumFromInt(0);
-            if (self.findSymbolInScope(entry.local_name, root_scope_id) == null) {
+            // Check if the local name is declared in the top-level scope.
+            // In module mode: global (scope 0) → module (scope 1), bindings are in module.
+            // In script mode: global (scope 0) only.
+            const global_scope: ScopeId = @enumFromInt(0);
+            const found_global = self.findSymbolInScope(entry.local_name, global_scope) != null;
+            const found_module = if (self.is_module) blk: {
+                const module_scope: ScopeId = @enumFromInt(1);
+                break :blk self.findSymbolInScope(entry.local_name, module_scope) != null;
+            } else false;
+            if (!found_global and !found_module) {
                 try self.diagnostics.append(self.allocator, .{
                     .message = "Export is not defined",
                     .span = self.ast.nodeSpan(entry.node),
@@ -644,9 +698,18 @@ pub const SemanticAnalyzer = struct {
 
     fn visitRoot(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         _ = try self.enterScope(.global, idx);
+        // In module mode, ESLint's eslint-scope uses a two-level top:
+        // global (isStrict=false) → module (isStrict=true).
+        // All program-level code lives inside the module scope.
+        if (self.is_module) {
+            _ = try self.enterScope(.module, idx);
+        }
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
-        self.leaveScope();
+        if (self.is_module) {
+            self.leaveScope(); // module
+        }
+        self.leaveScope(); // global
     }
 
     fn visitBlockStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
@@ -856,8 +919,15 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitMethodDef(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
-        // Visit the key expression (it may contain computed identifiers).
-        try self.visitNode(data.lhs);
+        // Visit the key expression ONLY for computed members (e.g., [expr](){}).
+        // Non-computed method names are definitions, not references — visiting
+        // them would create false "undefined" references for method names.
+        const tag = self.ast.nodeTag(idx);
+        const is_computed = (tag == .computed_method_def or tag == .computed_getter_def or
+            tag == .computed_setter_def or tag == .computed_property_def);
+        if (is_computed) {
+            try self.visitNode(data.lhs);
+        }
 
         // rhs is extra index to MethodData containing params + body.
         const method_data = self.ast.extraData(MethodData, @intFromEnum(data.rhs));

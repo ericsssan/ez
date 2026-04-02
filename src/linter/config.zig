@@ -1,7 +1,7 @@
 const std = @import("std");
 const Severity = @import("../parser/diagnostic.zig").Severity;
-const registry = @import("rules/registry.zig");
-const Category = @import("rules/rule.zig").Category;
+const registry = @import("native/registry.zig");
+const Category = @import("native/rule.zig").Category;
 const globMatch = @import("gitignore.zig").globMatch;
 
 // ── Rule Severity ──────────────────────────────────────────────────
