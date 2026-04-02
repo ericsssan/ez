@@ -84,6 +84,8 @@ pub const Interpreter = struct {
     closure_fns: *const std.StringArrayHashMap(*const Ast),
     /// Per-rule options array.
     options: []const Value,
+    /// Module loader for require() resolution.
+    module_loader: ?*@import("module.zig").ModuleLoader = null,
     /// Recursion depth counter to prevent stack overflow.
     depth: u16 = 0,
 
@@ -481,7 +483,7 @@ pub const Interpreter = struct {
         };
     }
 
-    fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
+    pub fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
         const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
         const fn_tag = self.rule_ast.nodeTag(fn_idx);
         const fn_node_data = self.rule_ast.nodeData(fn_idx);
@@ -1225,54 +1227,21 @@ pub const Interpreter = struct {
         return result.items;
     }
 
-    /// Handle require() calls — return native module objects for known ESLint modules.
+    /// Handle require() calls — delegate to ModuleLoader for resolution.
     fn handleRequire(self: *Interpreter, args: []const Value) Signal!Value {
         if (args.len == 0 or args[0] != .string) return .undefined;
         const path = args[0].string;
 
-        // ast-utils — the most critical module (used by 177/199 rules)
+        if (self.module_loader) |loader| {
+            return loader.require(path);
+        }
+
+        // Fallback: inline resolution for known modules
         if (std.mem.endsWith(u8, path, "ast-utils") or std.mem.endsWith(u8, path, "ast-utils.js")) {
             return .{ .object = builtins.buildAstUtils(self.arena) };
         }
 
-        // @eslint-community/eslint-utils — getStaticValue, findVariable, etc.
-        if (std.mem.indexOf(u8, path, "eslint-utils") != null) {
-            const obj = self.arena.create(Value.Object) catch return .undefined;
-            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
-            obj.entries.put("getStaticValue", .{ .string = "__eslintUtils_getStaticValue__" }) catch {};
-            obj.entries.put("getStringIfConstant", .{ .string = "__eslintUtils_getStringIfConstant__" }) catch {};
-            obj.entries.put("findVariable", .{ .string = "__eslintUtils_findVariable__" }) catch {};
-            obj.entries.put("ReferenceTracker", .{ .string = "__eslintUtils_ReferenceTracker__" }) catch {};
-            obj.entries.put("CALL", .{ .string = "CALL" }) catch {};
-            obj.entries.put("READ", .{ .string = "READ" }) catch {};
-            obj.entries.put("CONSTRUCT", .{ .string = "CONSTRUCT" }) catch {};
-            return .{ .object = obj };
-        }
-
-        // @eslint-community/regexpp
-        if (std.mem.indexOf(u8, path, "regexpp") != null) {
-            const obj = self.arena.create(Value.Object) catch return .undefined;
-            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
-            obj.entries.put("RegExpParser", .{ .string = "__regexpp_RegExpParser__" }) catch {};
-            obj.entries.put("visitRegExpAST", .{ .string = "__regexpp_visitRegExpAST__" }) catch {};
-            return .{ .object = obj };
-        }
-
-        // shared/string-utils
-        if (std.mem.indexOf(u8, path, "string-utils") != null) {
-            const obj = self.arena.create(Value.Object) catch return .undefined;
-            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
-            obj.entries.put("upperCaseFirst", .{ .string = "__stringUtils_upperCaseFirst__" }) catch {};
-            return .{ .object = obj };
-        }
-
-        // fix-tracker
-        if (std.mem.indexOf(u8, path, "fix-tracker") != null) {
-            // Return a constructor stub
-            return .{ .string = "__FixTracker__" };
-        }
-
-        // Unknown module — return empty object (graceful degradation)
+        // Unknown module — return empty object
         const obj = self.arena.create(Value.Object) catch return .undefined;
         obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
         return .{ .object = obj };
@@ -1559,9 +1528,22 @@ pub const Interpreter = struct {
 
     fn evalAssignment(self: *Interpreter, data: Node.Data) Signal!Value {
         const val = try self.eval(@enumFromInt(@intFromEnum(data.rhs)));
-        if (data.lhs != .none and self.rule_ast.nodeTag(@enumFromInt(@intFromEnum(data.lhs))) == .identifier) {
-            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(@enumFromInt(@intFromEnum(data.lhs))));
-            self.env.update(name, val);
+        const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+        if (lhs_idx == .none) return val;
+
+        const lhs_tag = self.rule_ast.nodeTag(lhs_idx);
+        if (lhs_tag == .identifier) {
+            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+            self.env.set(name, val);
+        } else if (lhs_tag == .member_expr) {
+            // obj.prop = val (e.g., module.exports = {...})
+            const lhs_data = self.rule_ast.nodeData(lhs_idx);
+            const obj = self.eval(@enumFromInt(@intFromEnum(lhs_data.lhs))) catch .undefined;
+            const prop_tok: u32 = @intFromEnum(lhs_data.rhs);
+            const prop_name = self.rule_ast.tokenText(prop_tok);
+            if (obj == .object) {
+                obj.object.entries.put(prop_name, val) catch {};
+            }
         }
         return val;
     }

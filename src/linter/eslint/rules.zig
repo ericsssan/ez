@@ -13,6 +13,7 @@ const Signal = @import("../interp/interpreter.zig").Signal;
 const RuntimeCallbacks = @import("../interp/interpreter.zig").RuntimeCallbacks;
 const Environment = @import("../interp/env.zig").Environment;
 const ClosureState = @import("../interp/env.zig").ClosureState;
+const ModuleLoader = @import("../interp/module.zig").ModuleLoader;
 
 // ── Rule descriptor (parsed at loadRules, lives for session) ────
 
@@ -22,11 +23,14 @@ pub const Rule = struct {
     visitors: []const Visitor,
     messages: std.StringArrayHashMap([]const u8),
     options: []const Value,
-    /// Parsed create() AST — lives for the session.
+    /// Full source text for module interpretation.
+    create_source: []const u8 = "",
+    /// Parsed full file AST.
     create_ast: ?*const Ast,
+    /// Parsed create-only AST (fallback).
+    create_only_ast: ?*const Ast = null,
     closure_fns: std.StringArrayHashMap(*const Ast),
     allocator: std.mem.Allocator,
-    /// Module-level requires to pre-populate in the environment.
     requires: []const ModuleRequire = &.{},
 };
 
@@ -158,13 +162,28 @@ pub fn loadRules(
             try messages.put(msg.id, msg.template);
         }
 
+        // Parse create-only fallback if different from full source
+        var create_only_ast_ptr: ?*const Ast = null;
+        if (desc.create_only.len > 0 and !std.mem.eql(u8, desc.create_only, desc.create_source)) {
+            if (Lexer.tokenize(allocator, desc.create_only)) |*toks| {
+                if (Parser.parse(allocator, desc.create_only, toks.slice())) |tree2| {
+                    if (allocator.create(Ast)) |p| {
+                        p.* = tree2;
+                        create_only_ast_ptr = p;
+                    } else |_| {}
+                } else |_| {}
+            } else |_| {}
+        }
+
         rules[rule_idx] = .{
             .name = desc.name,
             .severity = desc.severity,
             .visitors = visitors,
             .messages = messages,
             .options = desc.options,
+            .create_source = desc.create_source,
             .create_ast = create_ast_ptr,
+            .create_only_ast = create_only_ast_ptr,
             .closure_fns = std.StringArrayHashMap(*const Ast).init(allocator),
             .allocator = allocator,
             .requires = desc.requires,
@@ -199,54 +218,9 @@ pub fn initRuleForFile(
 ) ?RuleFileCtx {
     const create_ast = rule.create_ast orelse return null;
 
-    // Set up the environment with ESLint bindings
+    // Set up the environment
     var env_ptr = allocator.create(Environment) catch return null;
     env_ptr.* = Environment.init(allocator, null);
-    env_ptr.set("context", .{ .string = "__eslint_context__" });
-    env_ptr.set("sourceCode", .{ .string = "__source_code__" });
-
-    // Pre-populate module-level requires in the environment
-    // These are closure variables that create() references.
-    for (rule.requires) |req| {
-        // Call require() to get the module object
-        const builtins_mod = @import("../interp/builtins.zig");
-        const eql = std.mem.eql;
-        if (eql(u8, req.path, "./utils/ast-utils") or eql(u8, req.path, "./utils/ast-utils.js") or
-            std.mem.endsWith(u8, req.path, "ast-utils"))
-        {
-            if (req.destructured) {
-                // Destructured: const { isFunction } = require("./utils/ast-utils")
-                // Set individual function as a string marker
-                const marker = std.fmt.allocPrint(allocator, "__astUtils_{s}__", .{req.name}) catch continue;
-                env_ptr.set(req.name, .{ .string = marker });
-            } else {
-                // Full import: const astUtils = require("./utils/ast-utils")
-                env_ptr.set(req.name, .{ .object = builtins_mod.buildAstUtils(allocator) });
-            }
-        } else if (std.mem.indexOf(u8, req.path, "eslint-utils") != null) {
-            if (req.destructured) {
-                const marker = std.fmt.allocPrint(allocator, "__eslintUtils_{s}__", .{req.name}) catch continue;
-                env_ptr.set(req.name, .{ .string = marker });
-            } else {
-                const obj = allocator.create(Value.Object) catch continue;
-                obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
-                obj.entries.put("getStaticValue", .{ .string = "__eslintUtils_getStaticValue__" }) catch {};
-                obj.entries.put("findVariable", .{ .string = "__eslintUtils_findVariable__" }) catch {};
-                obj.entries.put("getStringIfConstant", .{ .string = "__eslintUtils_getStringIfConstant__" }) catch {};
-                env_ptr.set(req.name, .{ .object = obj });
-            }
-        } else if (std.mem.indexOf(u8, req.path, "regexpp") != null) {
-            if (req.destructured) {
-                const marker = std.fmt.allocPrint(allocator, "__regexpp_{s}__", .{req.name}) catch continue;
-                env_ptr.set(req.name, .{ .string = marker });
-            }
-        } else {
-            // Unknown module — set as empty object
-            const obj = allocator.create(Value.Object) catch continue;
-            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
-            env_ptr.set(req.name, .{ .object = obj });
-        }
-    }
 
     var interp = Interpreter{
         .rule_ast = create_ast,
@@ -263,50 +237,116 @@ pub fn initRuleForFile(
         .closure_fns = &rule.closure_fns,
     };
 
-    // Find the FunctionDeclaration for create() and evaluate its body
-    const root_data = create_ast.nodeData(.root);
-    const root_stmts = create_ast.extraSlice(.{
-        .start = @intFromEnum(root_data.lhs),
-        .end = @intFromEnum(root_data.rhs),
-    });
+    // Try full module interpretation first.
+    // The ModuleLoader handles require() resolution to native builtins
+    // and evaluates all top-level code (functions, variables, constants).
+    var module_loader = ModuleLoader.init(allocator);
+    interp.module_loader = &module_loader;
+    const exports_obj = module_loader.evalModule(create_ast, &interp, env_ptr);
 
-    for (root_stmts) |raw| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw);
-        if (stmt_idx == .none) continue;
-        const tag = create_ast.nodeTag(stmt_idx);
-
-        if (tag == .fn_decl or tag == .async_fn_decl) {
-            const fn_data = create_ast.extraData(
-                ast_mod.FnData,
-                @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
-            );
-
-            // Bind `context` parameter name to the context marker
-            const params = create_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
-            if (params.len > 0) {
-                const p: NodeIndex = @enumFromInt(params[0]);
-                if (p != .none and create_ast.nodeTag(p) == .identifier) {
-                    const pname = create_ast.tokenText(create_ast.nodeMainToken(p));
-                    env_ptr.set(pname, .{ .string = "__eslint_context__" });
-                }
+    if (exports_obj) |exports| {
+        // Try module.exports.create first
+        const create_fn = exports.get("create");
+        if (create_fn == .function) {
+            const args = [_]Value{.{ .string = "__eslint_context__" }};
+            interp.return_value = interp.callUserFunction(create_fn.function, &args) catch .undefined;
+        } else {
+            // module.exports didn't have create — check if create() was a top-level fn_decl
+            const env_create = env_ptr.lookup("create");
+            if (env_create == .function) {
+                const args = [_]Value{.{ .string = "__eslint_context__" }};
+                interp.return_value = interp.callUserFunction(env_create.function, &args) catch .undefined;
             }
-
-            if (fn_data.body != .none) {
-                _ = interp.eval(fn_data.body) catch |err| switch (err) {
-                    Signal.ReturnSignal => {},
-                    else => {},
-                };
-            }
-            break;
         }
     }
 
-    // The return value should be the visitor object
+    if (interp.return_value != .object) {
+        // Fallback: source is just "function create(context) { ... }"
+        // (old format — no module.exports wrapper)
+        env_ptr.set("context", .{ .string = "__eslint_context__" });
+        env_ptr.set("sourceCode", .{ .string = "__source_code__" });
+
+        const root_data = create_ast.nodeData(.root);
+        const root_stmts = create_ast.extraSlice(.{
+            .start = @intFromEnum(root_data.lhs),
+            .end = @intFromEnum(root_data.rhs),
+        });
+
+        for (root_stmts) |raw| {
+            const stmt_idx: NodeIndex = @enumFromInt(raw);
+            if (stmt_idx == .none) continue;
+            const tag = create_ast.nodeTag(stmt_idx);
+
+            if (tag == .fn_decl or tag == .async_fn_decl) {
+                const fn_data = create_ast.extraData(
+                    ast_mod.FnData,
+                    @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
+                );
+                const params = create_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
+                if (params.len > 0) {
+                    const p: NodeIndex = @enumFromInt(params[0]);
+                    if (p != .none and create_ast.nodeTag(p) == .identifier) {
+                        env_ptr.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .string = "__eslint_context__" });
+                    }
+                }
+                if (fn_data.body != .none) {
+                    _ = interp.eval(fn_data.body) catch |err| switch (err) {
+                        Signal.ReturnSignal => {},
+                        else => {},
+                    };
+                }
+                break;
+            }
+        }
+    }
+
     if (interp.return_value == .object) {
         return .{
             .visitor_obj = interp.return_value.object,
             .interp = interp,
         };
+    }
+
+    // Fallback: try create-only AST if full module failed
+    if (rule.create_only_ast) |fallback_ast| {
+        env_ptr.* = Environment.init(allocator, null);
+        env_ptr.set("context", .{ .string = "__eslint_context__" });
+        env_ptr.set("sourceCode", .{ .string = "__source_code__" });
+
+        interp.rule_ast = fallback_ast;
+        interp.env = env_ptr;
+        interp.return_value = .undefined;
+
+        const fb_root = fallback_ast.nodeData(.root);
+        const fb_stmts = fallback_ast.extraSlice(.{
+            .start = @intFromEnum(fb_root.lhs),
+            .end = @intFromEnum(fb_root.rhs),
+        });
+
+        for (fb_stmts) |raw| {
+            const stmt_idx: NodeIndex = @enumFromInt(raw);
+            if (stmt_idx == .none) continue;
+            if (fallback_ast.nodeTag(stmt_idx) == .fn_decl or fallback_ast.nodeTag(stmt_idx) == .async_fn_decl) {
+                const fn_data = fallback_ast.extraData(ast_mod.FnData, @intFromEnum(fallback_ast.nodeData(stmt_idx).lhs));
+                const params = fallback_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
+                if (params.len > 0) {
+                    const p: NodeIndex = @enumFromInt(params[0]);
+                    if (p != .none and fallback_ast.nodeTag(p) == .identifier)
+                        env_ptr.set(fallback_ast.tokenText(fallback_ast.nodeMainToken(p)), .{ .string = "__eslint_context__" });
+                }
+                if (fn_data.body != .none) {
+                    _ = interp.eval(fn_data.body) catch |err| switch (err) {
+                        Signal.ReturnSignal => {},
+                        else => {},
+                    };
+                }
+                break;
+            }
+        }
+
+        if (interp.return_value == .object) {
+            return .{ .visitor_obj = interp.return_value.object, .interp = interp };
+        }
     }
 
     return null;
@@ -497,12 +537,13 @@ fn makeEmptyRule(desc: RuleDescriptor, allocator: std.mem.Allocator) Rule {
 pub const RuleDescriptor = struct {
     name: []const u8,
     severity: Severity,
+    /// Full file source or create-only source.
     create_source: []const u8,
+    /// Fallback: just the create() function (if full file fails).
+    create_only: []const u8 = "",
     visitor_keys: []const VisitorKeyMapping,
     messages: []const MessageEntry,
     options: []const Value,
-    /// Module-level requires from the rule file (e.g., astUtils, regexpp).
-    /// Pre-populated in the environment before interpreting create().
     requires: []const ModuleRequire = &.{},
 };
 
