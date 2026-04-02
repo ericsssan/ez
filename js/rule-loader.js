@@ -34,7 +34,7 @@ function buildTagMap(tagNames) {
  * Check if a handler function can be interpreted by Zig.
  * Phase 1: only accept simple handlers (no complex closures, no external calls).
  */
-function canExtract(handlerSource, closureFnNames) {
+function canExtract(handlerSource, closureFnNames, closureFns) {
   // Extract handlers that use only:
   //   - node property access (node.type, node.kind, node.operator, etc.)
   //   - string/number comparisons (===, !==)
@@ -48,7 +48,11 @@ function canExtract(handlerSource, closureFnNames) {
   // - String/number comparisons (===, !==, ==, !=)
   // - If/else, return, logical operators (&&, ||, !)
   // - context.report()
-  // Reject: closures, loops, scope/token APIs, helper functions.
+  // Reject: closures, loops, scope/token APIs, complex helper functions.
+
+  // Blocklist: rules whose handlers are too complex for the interpreter
+  if (handlerSource.includes("Checker[") || handlerSource.includes("Checker.")) return false;
+  if (handlerSource.includes("regex.test") || handlerSource.includes(".test(")) return false;
 
   if (!handlerSource.includes("context.report")) return false;
 
@@ -87,8 +91,20 @@ function canExtract(handlerSource, closureFnNames) {
          "typeof", "instanceof", "delete", "void", "new",
          "if", "else", "return", "throw", "function",
          "options"].includes(name)) continue;
-    // TODO: allow closure-defined functions once the interpreter can call them
-    // if (closureFnNames && closureFnNames.has(name)) continue;
+    // Closure functions — check if the function body is simple enough
+    // (only node property access, comparisons, logical ops — no typeof, no context)
+    if (closureFnNames && closureFnNames.has(name)) {
+      // Look up the function source to check complexity
+      const fnSource = closureFns ? closureFns[name] : null;
+      if (fnSource && !fnSource.includes("typeof") && !fnSource.includes("context") &&
+          !fnSource.includes("getScope") && !fnSource.includes("getToken") &&
+          !fnSource.includes("for ") && !fnSource.includes("while") &&
+          !fnSource.includes(".filter") && !fnSource.includes(".some") &&
+          !fnSource.includes(".match") && !fnSource.includes("RegExp") &&
+          !fnSource.includes("new ") && !fnSource.includes("Checker")) {
+        continue;
+      }
+    }
     return false;
   }
 
@@ -232,7 +248,7 @@ function extractRules(plugins, tagNames) {
 
       // Get handler source
       const src = handler.toString();
-      if (!canExtract(src, closureFnNames)) {
+      if (!canExtract(src, closureFnNames, closureFns)) {
         allExtractable = false;
         break;
       }
@@ -256,11 +272,18 @@ function extractRules(plugins, tagNames) {
         if (plugin.meta?.messages) msgObj = plugin.meta.messages;
       }
 
+      // Serialize closure function sources
+      const closureFnEntries = [];
+      for (const [fnName, fnSource] of Object.entries(closureFns)) {
+        closureFnEntries.push({ name: fnName, source: fnSource });
+      }
+
       extracted.push({
         name: ruleName,
         severity: 2, // error by default
         visitors: visitorDescs,
         messages: msgObj,
+        closureFns: closureFnEntries,
       });
       extractedNames.add(ruleName);
     } else {

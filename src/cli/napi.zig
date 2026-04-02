@@ -555,6 +555,7 @@ fn napiLintLoaded(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
                     .rule_severity = rule.severity,
                     .messages = &rule.messages,
                     .options = rule.options,
+                    .closure_fns = &rule.closure_fns,
                 };
 
                 const root_data = visitor.ast.nodeData(.root);
@@ -892,12 +893,32 @@ fn parseRulesJSON(
             }
         }
 
+        // Parse closure functions
+        var closure_fns: std.ArrayList(eslint_rules.ClosureFnEntry) = .empty;
+        if (obj.get("closureFns")) |cf_val| {
+            if (cf_val == .array) {
+                for (cf_val.array.items) |cf_item| {
+                    if (cf_item != .object) continue;
+                    const cf_obj = cf_item.object;
+                    const cf_name = if (cf_obj.get("name")) |v| (if (v == .string) v.string else "") else "";
+                    const cf_source = if (cf_obj.get("source")) |v| (if (v == .string) v.string else "") else "";
+                    if (cf_name.len > 0 and cf_source.len > 0) {
+                        try closure_fns.append(allocator, .{
+                            .name = try allocator.dupe(u8, cf_name),
+                            .source = try allocator.dupe(u8, cf_source),
+                        });
+                    }
+                }
+            }
+        }
+
         descriptors[i] = .{
             .name = try allocator.dupe(u8, name),
             .severity = severity,
             .visitors = try visitors.toOwnedSlice(allocator),
             .messages = try messages.toOwnedSlice(allocator),
             .options = &.{},
+            .closure_fns = try closure_fns.toOwnedSlice(allocator),
         };
     }
 

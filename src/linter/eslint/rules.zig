@@ -26,8 +26,8 @@ pub const Rule = struct {
     messages: std.StringArrayHashMap([]const u8),
     /// Rule options (from config).
     options: []const Value,
-    /// Closure initialization AST (from create() body), if any.
-    closure_ast: ?*const Ast,
+    /// Parsed closure helper functions: name → parsed AST.
+    closure_fns: std.StringArrayHashMap(*const Ast),
     /// Allocator that owns this rule's data.
     allocator: std.mem.Allocator,
 };
@@ -176,13 +176,26 @@ pub fn loadRules(
             try messages.put(msg.id, msg.template);
         }
 
+        // Parse closure helper functions
+        var closure_fns = std.StringArrayHashMap(*const Ast).init(allocator);
+        for (desc.closure_fns) |cf| {
+            var fn_tokens = Lexer.tokenize(allocator, cf.source) catch continue;
+            const fn_tree = Parser.parse(allocator, cf.source, fn_tokens.slice()) catch {
+                fn_tokens.deinit(allocator);
+                continue;
+            };
+            const fn_ast = try allocator.create(Ast);
+            fn_ast.* = fn_tree;
+            try closure_fns.put(cf.name, fn_ast);
+        }
+
         rules[rule_idx] = .{
             .name = desc.name,
             .severity = desc.severity,
             .visitors = visitors,
             .messages = messages,
             .options = desc.options,
-            .closure_ast = null,
+            .closure_fns = closure_fns,
             .allocator = allocator,
         };
     }
@@ -309,6 +322,7 @@ fn execVisitor(
         .rule_severity = rule.severity,
         .messages = &rule.messages,
         .options = rule.options,
+        .closure_fns = &rule.closure_fns,
     };
 
     // Execute the visitor handler's body
@@ -331,12 +345,18 @@ fn execVisitor(
 
 // ── Types for rule loading (from JS) ──
 
+pub const ClosureFnEntry = struct {
+    name: []const u8,
+    source: []const u8,
+};
+
 pub const RuleDescriptor = struct {
     name: []const u8,
     severity: Severity,
     visitors: []const VisitorDescriptor,
     messages: []const MessageEntry,
     options: []const Value,
+    closure_fns: []const ClosureFnEntry,
 };
 
 pub const VisitorDescriptor = struct {

@@ -79,6 +79,8 @@ pub const Interpreter = struct {
     rule_severity: Severity,
     /// Message templates: messageId → template string.
     messages: *const std.StringArrayHashMap([]const u8),
+    /// Closure helper functions: name → parsed AST.
+    closure_fns: *const std.StringArrayHashMap(*const Ast),
     /// Per-rule options array.
     options: []const Value,
 
@@ -205,6 +207,9 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, name, "false")) return .{ .boolean = false };
         if (std.mem.eql(u8, name, "NaN")) return .{ .number = std.math.nan(f64) };
         if (std.mem.eql(u8, name, "Infinity")) return .{ .number = std.math.inf(f64) };
+        // Check for closure function names — return a string marker
+        // so callStringBuiltin can dispatch the call
+        if (self.closure_fns.contains(name)) return .{ .string = name };
         return self.env.lookup(name);
     }
 
@@ -338,10 +343,89 @@ pub const Interpreter = struct {
     }
 
     fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
-        // TODO: Look up function AST from func.ast_idx, create new env with params, eval body
-        _ = self;
-        _ = func;
+        
+        // Shouldn't reach here — closure functions are called via callClosureFunction
+        _ = self; _ = func;
         _ = args;
+        return .undefined;
+    }
+
+    /// Call a closure function by name. Looks up its parsed AST, creates
+    /// a new environment with parameters bound, evaluates the body.
+    fn callClosureFunction(self: *Interpreter, fn_name: []const u8, args: []const Value) Signal!Value {
+        const fn_ast = self.closure_fns.get(fn_name) orelse return .undefined;
+
+        // Create a child environment for the function call
+        var fn_env = Environment.init(self.arena, self.env);
+        // No deinit needed — arena owns it
+
+        // Bind parameters: parse the function to find param names
+        // The function AST is: Program > FunctionDeclaration > (params, body)
+        // For simplicity, bind first arg as the first param name found
+        const root_data = fn_ast.nodeData(.root);
+        const stmts = fn_ast.extraSlice(.{
+            .start = @intFromEnum(root_data.lhs),
+            .end = @intFromEnum(root_data.rhs),
+        });
+
+        // Find the function declaration node
+        for (stmts) |raw| {
+            const stmt_idx: ast_mod.NodeIndex = @enumFromInt(raw);
+            if (stmt_idx == .none) continue;
+            const stmt_tag = fn_ast.nodeTag(stmt_idx);
+
+            // Function declaration or expression
+            if (stmt_tag == .fn_decl or stmt_tag == .async_fn_decl or
+                stmt_tag == .fn_expr or stmt_tag == .async_fn_expr or
+                stmt_tag == .generator_fn_decl or stmt_tag == .async_generator_fn_decl)
+            {
+                const fn_data = fn_ast.extraData(ast_mod.FnData, @intFromEnum(fn_ast.nodeData(stmt_idx).lhs));
+
+                // Bind parameters
+                const param_items = fn_ast.extraSlice(.{
+                    .start = fn_data.params,
+                    .end = fn_data.params_end,
+                });
+                for (param_items, 0..) |param_raw, pi| {
+                    const param_idx: ast_mod.NodeIndex = @enumFromInt(param_raw);
+                    if (param_idx == .none) continue;
+                    // Get parameter name (assuming simple identifier params)
+                    if (fn_ast.nodeTag(param_idx) == .identifier) {
+                        const param_name = fn_ast.tokenText(fn_ast.nodeMainToken(param_idx));
+                        if (pi < args.len) {
+                            fn_env.set(param_name, args[pi]);
+                        }
+                    }
+                }
+
+                // Evaluate the function body
+                if (fn_data.body != .none) {
+                    // Save and swap interpreter state
+                    const saved_ast = self.rule_ast;
+                    const saved_env = self.env;
+                    self.rule_ast = fn_ast;
+                    self.env = &fn_env;
+
+                    _ = self.eval(fn_data.body) catch |err| switch (err) {
+                        Signal.ReturnSignal => {
+                            self.rule_ast = saved_ast;
+                            self.env = saved_env;
+                            return self.return_value;
+                        },
+                        else => {
+                            self.rule_ast = saved_ast;
+                            self.env = saved_env;
+                            return .undefined;
+                        },
+                    };
+
+                    self.rule_ast = saved_ast;
+                    self.env = saved_env;
+                }
+                return self.return_value;
+            }
+        }
+
         return .undefined;
     }
 
@@ -368,6 +452,10 @@ pub const Interpreter = struct {
             return self.runtime.callBuiltin(self.runtime.ctx, .source_getTokenAfter, args);
         if (std.mem.eql(u8, marker, "__source_getDeclaredVariables__"))
             return self.runtime.callBuiltin(self.runtime.ctx, .source_getDeclaredVariables, args);
+        // Check if it's a closure function name
+        if (self.closure_fns.contains(marker)) {
+            return self.callClosureFunction(marker, args);
+        }
         return .undefined;
     }
 
