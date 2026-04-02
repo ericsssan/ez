@@ -128,6 +128,63 @@ pub fn main(init: std.process.Init) !void {
             }
         }
         try stdout.print("\nLoaded: {d}/{d} rules ({d} failed)\n", .{ loaded, total, failed });
+
+        // Quick lint test with the QJS engine
+        const qjs_engine_mod = @import("linter/eslint/qjs_engine.zig");
+        var lint_engine = qjs_engine_mod.QjsLintEngine.init(allocator) orelse {
+            try stdout.print("Failed to init lint engine\n", .{});
+            try stdout.flush();
+            return;
+        };
+        defer lint_engine.deinit();
+
+        // Load a simple rule
+        const no_debugger_src = Io.Dir.cwd().readFileAlloc(io, "js/node_modules/eslint/lib/rules/no-debugger.js", allocator, Io.Limit.limited(1024 * 1024)) catch {
+            try stdout.print("Could not read no-debugger.js\n", .{});
+            try stdout.flush();
+            return;
+        };
+        defer allocator.free(no_debugger_src);
+
+        lint_engine.loadRule("no-debugger", no_debugger_src) catch {
+            try stdout.print("Failed to load no-debugger rule\n", .{});
+            try stdout.flush();
+            return;
+        };
+        lint_engine.discoverVisitors(0) catch {};
+
+        try stdout.print("Lint engine: {d} rules loaded\n", .{lint_engine.ruleCount()});
+
+        // Parse a test file and lint it
+        const parser_mod = @import("parser/parser.zig");
+        const Lexer_mod = @import("parser/lexer.zig").Lexer;
+        const parent_builder = @import("parser/parent_builder.zig");
+
+        const test_src = "debugger; var x = 1; debugger;";
+        var tokens = Lexer_mod.tokenize(allocator, test_src) catch {
+            try stdout.print("Tokenize failed\n", .{});
+            try stdout.flush();
+            return;
+        };
+        var tree = parser_mod.Parser.parse(allocator, test_src, tokens.slice()) catch {
+            try stdout.print("Parse failed\n", .{});
+            try stdout.flush();
+            return;
+        };
+        const traversal = parent_builder.computeTraversal(&tree, allocator) catch {
+            try stdout.print("Traversal failed\n", .{});
+            try stdout.flush();
+            return;
+        };
+
+        // Create a mock BufferAst from the parsed tree
+        // TODO: use real buffer path. For now construct inline.
+        try stdout.print("Parse: {d} nodes, {d} DFS events\n", .{ tree.nodes.len, traversal.dfs_events.len });
+
+        // Quick DFS lint test — manually dispatch DebuggerStatement nodes
+        // End-to-end lint test: call create(), DFS walk, dispatch handlers
+        const diag_count = lint_engine.lintSource(test_src, allocator);
+        try stdout.print("Diagnostics from QuickJS: {d}\n", .{diag_count});
         try stdout.flush();
         return;
     }
