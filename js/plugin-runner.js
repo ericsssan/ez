@@ -1305,35 +1305,75 @@ function _expandUnion(key) {
  * This enables efficient single-pass traversal.
  * Also returns a selectorHandlers array for CSS-style AST selectors.
  */
+// Cached visitorMap structure: reuse Map + arrays across files.
+// Only handler function references change (closures are re-created by create()).
+// The Map keys, ruleIds, ruleMeta, and ruleOptions are stable for the same plugins.
+let _cachedVMPlugins = null;
+let _cachedVM = null; // { map, selectorHandlers, handlerSlots }
+
 function buildVisitorMap(plugins, context, ruleConfig = {}) {
+  if (_cachedVMPlugins === plugins && _cachedVM) {
+    // Fast path: reuse Map structure, just update handler references.
+    // Each handler slot has a stable index — overwrite handler field only.
+    const { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions } = _cachedVM;
+
+    // Clear handler arrays (reuse the same array objects)
+    for (const [, arr] of map) arr.length = 0;
+    selectorHandlers.length = 0;
+
+    let slotIdx = 0, selIdx = 0;
+    for (let pi = 0; pi < plugins.length; pi++) {
+      const plugin = plugins[pi];
+      context.options = pluginOptions[pi];
+      let visitors;
+      try { visitors = plugin.create(context); } catch { context.options = []; continue; }
+      finally { context.options = []; }
+      if (!visitors || typeof visitors !== 'object') continue;
+      for (const [visitorKey, handler] of Object.entries(visitors)) {
+        if (typeof handler !== 'function') continue;
+        if (_isSelector(visitorKey)) {
+          // Reuse cached selector slot
+          if (selIdx < selectorSlots.length) {
+            const slot = selectorSlots[selIdx++];
+            slot.handler = handler;
+            selectorHandlers.push(slot);
+          }
+          continue;
+        }
+        for (const mapKey of _expandUnion(visitorKey)) {
+          if (slotIdx < handlerSlots.length) {
+            const slot = handlerSlots[slotIdx++];
+            slot.handler = handler;
+            map.get(mapKey).push(slot);
+          }
+        }
+      }
+    }
+    return { map, selectorHandlers };
+  }
+
+  // Cold path: first file — build from scratch and cache structure.
   const map = new Map();
-  // Array of { selector, isExit, handler, ruleId, ruleMeta, ruleOptions }
   const selectorHandlers = [];
+  const handlerSlots = []; // all handler descriptor objects (reused across files)
+  const selectorSlots = [];
+  const pluginOptions = [];
 
   for (const plugin of plugins) {
     const ruleId = plugin.meta?.name || "unknown";
     const ruleMeta = plugin.meta || null;
-    // Rule config keys can be the full name (e.g. "eslint/eqeqeq") or short name ("eqeqeq").
     const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
     const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
     const ruleOptions = configured !== undefined ? configured : (plugin.meta?.defaultOptions ?? []);
-    // Apply options so rules can safely destructure context.options in create()
+    pluginOptions.push(ruleOptions);
     context.options = ruleOptions;
     let visitors;
-    try {
-      visitors = plugin.create(context);
-    } catch (err) {
-      // Rule failed to initialize — skip it
-      context.options = [];
-      continue;
-    } finally {
-      context.options = [];
-    }
+    try { visitors = plugin.create(context); } catch { context.options = []; continue; }
+    finally { context.options = []; }
     if (!visitors || typeof visitors !== 'object') continue;
     for (const [visitorKey, handler] of Object.entries(visitors)) {
       if (typeof handler !== 'function') continue;
       if (_isSelector(visitorKey)) {
-        // CSS-style AST selector — pre-parse to avoid repeated parsing on every node
         const isExit = visitorKey.endsWith(':exit');
         const selector = isExit ? visitorKey.slice(0, -5) : visitorKey;
         let parsedSelector = _selectorParseCache.get(selector);
@@ -1342,17 +1382,22 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
           _selectorParseCache.set(selector, parsedSelector);
         }
         if (!parsedSelector) continue;
-        selectorHandlers.push({ selector, parsedSelector, isExit, handler, ruleId, ruleMeta, ruleOptions });
+        const slot = { selector, parsedSelector, isExit, handler, ruleId, ruleMeta, ruleOptions };
+        selectorSlots.push(slot);
+        selectorHandlers.push(slot);
         continue;
       }
-      // Expand comma-separated type unions ("A, B" → ["A", "B"])
       for (const mapKey of _expandUnion(visitorKey)) {
         if (!map.has(mapKey)) map.set(mapKey, []);
-        map.get(mapKey).push({ handler, ruleId, ruleMeta, ruleOptions });
+        const slot = { handler, ruleId, ruleMeta, ruleOptions };
+        handlerSlots.push(slot);
+        map.get(mapKey).push(slot);
       }
     }
   }
 
+  _cachedVMPlugins = plugins;
+  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions };
   return { map, selectorHandlers };
 }
 
