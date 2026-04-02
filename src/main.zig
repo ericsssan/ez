@@ -118,7 +118,9 @@ pub fn main(init: std.process.Init) !void {
             try stdout.print("Rules loaded: {d}\n", .{rule_count});
         }
 
-        try stdout.print("Lint engine: {d} rules loaded\n", .{lint_engine.ruleCount()});
+        // Build dispatch tables (once, after all rules loaded)
+        lint_engine.buildDispatch();
+        try stdout.print("Lint engine: {d} rules, dispatch built\n", .{lint_engine.ruleCount()});
 
         // Parse a test file and lint it
         const parser_mod = @import("parser/parser.zig");
@@ -175,7 +177,7 @@ pub fn main(init: std.process.Init) !void {
             const entry = (corpus_walker.next(io) catch break) orelse break;
             if (entry.kind != .file) continue;
             if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
-            if (file_count >= 500) break;
+            if (file_count >= 1983) break; // full Corpus A
 
             const src = corpus_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
             defer allocator.free(src);

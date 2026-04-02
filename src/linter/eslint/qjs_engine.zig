@@ -17,6 +17,9 @@ pub const QjsLintEngine = struct {
     /// Loaded rules: module.exports objects kept alive in the JS context
     rules: std.ArrayList(LoadedRule),
     allocator: std.mem.Allocator,
+    /// Pre-built dispatch: tag ordinal → list of handlers
+    enter_dispatch: [256]std.ArrayList(HandlerRef) = undefined,
+    exit_dispatch: [256]std.ArrayList(HandlerRef) = undefined,
 
     pub const LoadedRule = struct {
         name: []const u8,
@@ -264,15 +267,70 @@ pub const QjsLintEngine = struct {
         return self.rules.items.len;
     }
 
+    const HandlerRef = struct {
+        handler: c.JSValue, // cached JS function (DupValue'd)
+        visitors: c.JSValue, // this_val for the call
+        diags: c.JSValue, // diags array for counting
+    };
+
+    /// Build dispatch tables: tag ordinal → list of (handler, visitors) pairs.
+    /// Called once after all rules are loaded. Eliminates per-node property lookups.
+    pub fn buildDispatch(self: *QjsLintEngine) void {
+        var tag_names: [256][]const u8 = undefined;
+        for (0..256) |i| tag_names[i] = std.mem.span(layout.sanz_tag_name(@intCast(i)));
+
+        for (0..256) |t| {
+            self.enter_dispatch[t] = .empty;
+            self.exit_dispatch[t] = .empty;
+        }
+
+        for (self.rules.items) |*rule| {
+            if (c.JS_IsObject(rule.visitors) == 0) continue;
+
+            // Check each possible tag
+            for (0..256) |t| {
+                const type_name = tag_names[t];
+                if (type_name.len == 0) continue;
+
+                // Enter handler
+                var name_buf: [128]u8 = undefined;
+                @memcpy(name_buf[0..type_name.len], type_name);
+                name_buf[type_name.len] = 0;
+
+                const enter_h = c.JS_GetPropertyStr(self.ctx, rule.visitors, &name_buf);
+                if (c.JS_IsFunction(self.ctx, enter_h) != 0) {
+                    self.enter_dispatch[t].append(self.allocator, .{
+                        .handler = c.JS_DupValue(self.ctx, enter_h),
+                        .visitors = rule.visitors,
+                        .diags = rule.diags,
+                    }) catch {};
+                }
+                c.JS_FreeValue(self.ctx, enter_h);
+
+                // Exit handler
+                @memcpy(name_buf[type_name.len..][0..5], ":exit");
+                name_buf[type_name.len + 5] = 0;
+
+                const exit_h = c.JS_GetPropertyStr(self.ctx, rule.visitors, &name_buf);
+                if (c.JS_IsFunction(self.ctx, exit_h) != 0) {
+                    self.exit_dispatch[t].append(self.allocator, .{
+                        .handler = c.JS_DupValue(self.ctx, exit_h),
+                        .visitors = rule.visitors,
+                        .diags = rule.diags,
+                    }) catch {};
+                }
+                c.JS_FreeValue(self.ctx, exit_h);
+            }
+        }
+    }
+
     /// Parse a source string and lint it with all loaded rules.
-    /// Uses CACHED visitor objects — no per-file create() calls.
-    /// Returns the diagnostic count.
+    /// Uses pre-built dispatch tables — O(nodes), not O(nodes × rules).
     pub fn lintSource(self: *QjsLintEngine, source: []const u8, allocator: std.mem.Allocator) u32 {
         const Lexer = @import("../../parser/lexer.zig").Lexer;
         const Parser_mod = @import("../../parser/parser.zig").Parser;
         const parent_builder = @import("../../parser/parent_builder.zig");
 
-        // Parse
         var tokens = Lexer.tokenize(allocator, source) catch return 0;
         var tree = Parser_mod.parse(allocator, source, tokens.slice()) catch return 0;
         const traversal = parent_builder.computeTraversal(&tree, allocator) catch return 0;
@@ -281,66 +339,54 @@ pub const QjsLintEngine = struct {
         defer allocator.free(traversal.post_order);
         defer allocator.free(traversal.dfs_events);
 
-        // Build tag names
         var tag_names: [256][]const u8 = undefined;
         for (0..256) |i| tag_names[i] = std.mem.span(layout.sanz_tag_name(@intCast(i)));
 
         const node_tags_enum = tree.nodes.items(.tag);
-        var diag_count: u32 = 0;
 
-        // For each rule: use CACHED visitors, walk DFS, dispatch handlers
+        // Reset all diags arrays
         for (self.rules.items) |*rule| {
-            const visitors = rule.visitors;
-            if (c.JS_IsObject(visitors) == 0) continue;
+            if (c.JS_IsObject(rule.diags) != 0) {
+                _ = c.JS_SetPropertyStr(self.ctx, rule.diags, "length", c.JS_NewInt32(self.ctx, 0));
+            }
+        }
 
-            // Reset diags array: diags.length = 0
-            _ = c.JS_SetPropertyStr(self.ctx, rule.diags, "length", c.JS_NewInt32(self.ctx, 0));
+        // DFS walk — direct tag→handler dispatch, no per-rule iteration
+        for (traversal.dfs_events) |ev| {
+            const is_exit = ev < 0;
+            const idx: u32 = if (is_exit) @intCast(~ev) else @intCast(ev);
+            if (idx >= tree.nodes.len) continue;
+            const tag = @intFromEnum(node_tags_enum[idx]);
+            if (tag >= 256) continue;
 
-            // DFS walk — dispatch enter and exit events
-            for (traversal.dfs_events) |ev| {
-                const is_exit = ev < 0;
-                const idx: u32 = if (is_exit) @intCast(~ev) else @intCast(ev);
-                if (idx >= tree.nodes.len) continue;
-                const tag = @intFromEnum(node_tags_enum[idx]);
-                if (tag >= 256) continue;
-                const type_name = tag_names[tag];
+            const handlers = if (is_exit) self.exit_dispatch[tag].items else self.enter_dispatch[tag].items;
+            if (handlers.len == 0) continue;
 
-                var name_buf: [128]u8 = undefined;
-                if (type_name.len + 5 >= name_buf.len) continue;
-                @memcpy(name_buf[0..type_name.len], type_name);
-                if (is_exit) {
-                    @memcpy(name_buf[type_name.len..][0..5], ":exit");
-                    name_buf[type_name.len + 5] = 0;
-                } else {
-                    name_buf[type_name.len] = 0;
-                }
+            // Build node object ONCE for all handlers of this tag
+            const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
 
-                const handler = c.JS_GetPropertyStr(self.ctx, visitors, &name_buf);
-                if (c.JS_IsFunction(self.ctx, handler) == 0) {
-                    c.JS_FreeValue(self.ctx, handler);
-                    continue;
-                }
-
-                // Build ESTree node object
-                const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
-
+            for (handlers) |h| {
                 var hargs = [_]c.JSValue{node_obj};
-                const hret = c.JS_Call(self.ctx, handler, visitors, 1, @ptrCast(&hargs));
+                const hret = c.JS_Call(self.ctx, h.handler, h.visitors, 1, @ptrCast(&hargs));
                 if (c.JS_IsException(hret) != 0) {
                     const exc = c.JS_GetException(self.ctx);
                     c.JS_FreeValue(self.ctx, exc);
                 } else {
                     c.JS_FreeValue(self.ctx, hret);
                 }
-                c.JS_FreeValue(self.ctx, node_obj);
-                c.JS_FreeValue(self.ctx, handler);
             }
 
-            // Count diagnostics
+            c.JS_FreeValue(self.ctx, node_obj);
+        }
+
+        // Count total diagnostics
+        var diag_count: u32 = 0;
+        for (self.rules.items) |*rule| {
+            if (c.JS_IsObject(rule.diags) == 0) continue;
             const len_val = c.JS_GetPropertyStr(self.ctx, rule.diags, "length");
-            defer c.JS_FreeValue(self.ctx, len_val);
             var len: f64 = 0;
             _ = c.JS_ToFloat64(self.ctx, &len, len_val);
+            c.JS_FreeValue(self.ctx, len_val);
             diag_count += @intFromFloat(len);
         }
 
