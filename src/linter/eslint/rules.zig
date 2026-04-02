@@ -242,20 +242,55 @@ pub fn initRuleForFile(
     // and evaluates all top-level code (functions, variables, constants).
     var module_loader = ModuleLoader.init(allocator);
     interp.module_loader = &module_loader;
-    const exports_obj = module_loader.evalModule(create_ast, &interp, env_ptr);
+
+    // Only use module interpretation if the source contains module.exports
+    // (i.e., it's a full CommonJS module file, not just a create() function)
+    const is_full_module = std.mem.indexOf(u8, rule.create_source, "module.exports") != null;
+    const exports_obj: ?*Value.Object = if (is_full_module)
+        module_loader.evalModule(create_ast, &interp, env_ptr)
+    else
+        null;
 
     if (exports_obj) |exports| {
         // Try module.exports.create first
         const create_fn = exports.get("create");
         if (create_fn == .function) {
-            const args = [_]Value{.{ .string = "__eslint_context__" }};
-            interp.return_value = interp.callUserFunction(create_fn.function, &args) catch .undefined;
+            const cargs = [_]Value{.{ .string = "__eslint_context__" }};
+            interp.return_value = interp.callUserFunction(create_fn.function, &cargs) catch .undefined;
         } else {
             // module.exports didn't have create — check if create() was a top-level fn_decl
             const env_create = env_ptr.lookup("create");
             if (env_create == .function) {
-                const args = [_]Value{.{ .string = "__eslint_context__" }};
-                interp.return_value = interp.callUserFunction(env_create.function, &args) catch .undefined;
+                const cargs = [_]Value{.{ .string = "__eslint_context__" }};
+                interp.return_value = interp.callUserFunction(env_create.function, &cargs) catch .undefined;
+            }
+        }
+    } else {
+        // evalModule returned null — parse failure. Try direct create() eval.
+        const root_data2 = create_ast.nodeData(.root);
+        const root_stmts2 = create_ast.extraSlice(.{
+            .start = @intFromEnum(root_data2.lhs),
+            .end = @intFromEnum(root_data2.rhs),
+        });
+        for (root_stmts2) |raw2| {
+            const si: NodeIndex = @enumFromInt(raw2);
+            if (si == .none) continue;
+            const t = create_ast.nodeTag(si);
+            if (t == .fn_decl or t == .async_fn_decl) {
+                const fd = create_ast.extraData(ast_mod.FnData, @intFromEnum(create_ast.nodeData(si).lhs));
+                const ps = create_ast.extraSlice(.{ .start = fd.params, .end = fd.params_end });
+                if (ps.len > 0) {
+                    const p: NodeIndex = @enumFromInt(ps[0]);
+                    if (p != .none and create_ast.nodeTag(p) == .identifier)
+                        env_ptr.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .string = "__eslint_context__" });
+                }
+                if (fd.body != .none) {
+                    _ = interp.eval(fd.body) catch |err| switch (err) {
+                        Signal.ReturnSignal => {},
+                        else => {},
+                    };
+                }
+                break;
             }
         }
     }
