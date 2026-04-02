@@ -539,6 +539,21 @@ fn bufferGetNodeProperty(ctx_ptr: *anyopaque, node_idx: u32, prop: []const u8) I
         } };
     }
 
+    // ── ForStatement special handling: init/test/update stored in ForData ──
+    const tagEnum: ast_mod.Node.Tag = @enumFromInt(tag);
+    if (tagEnum == .for_stmt) {
+        if (eql(u8, prop, "test") or eql(u8, prop, "init") or eql(u8, prop, "update")) {
+            const for_data = bast.extraData(ast_mod.ForData, lhs);
+            const nidx = if (eql(u8, prop, "test")) @intFromEnum(for_data.condition)
+                else if (eql(u8, prop, "init")) @intFromEnum(for_data.init)
+                else @intFromEnum(for_data.update);
+            return if (nidx != NONE) .{ .node = nidx } else InterpValue.null_val;
+        }
+        if (eql(u8, prop, "body")) {
+            return if (rhs != NONE) .{ .node = rhs } else InterpValue.null_val;
+        }
+    }
+
     // ── left / object / callee / argument / test / expression ──
     if (eql(u8, prop, "left") or eql(u8, prop, "object") or
         eql(u8, prop, "callee") or eql(u8, prop, "argument") or

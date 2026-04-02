@@ -1294,7 +1294,7 @@ pub const Interpreter = struct {
                 if (prop_tag == .shorthand_property) {
                     const key_idx: NodeIndex = @enumFromInt(@intFromEnum(self.rule_ast.nodeData(prop_idx).lhs));
                     const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
-                    const val = if (init_val == .object) init_val.object.get(key) else .undefined;
+                    const val = self.getProperty(init_val, key);
                     self.env.set(key, val);
                 }
                 // Full property: { key: binding } or { key = default }
@@ -1302,7 +1302,7 @@ pub const Interpreter = struct {
                     const prop_data = self.rule_ast.nodeData(prop_idx);
                     const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
                     const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
-                    const val = if (init_val == .object) init_val.object.get(key) else .undefined;
+                    const val = self.getProperty(init_val, key);
                     // The value binding might be a different identifier
                     if (prop_data.rhs != .none) {
                         const val_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.rhs));
@@ -1555,9 +1555,20 @@ pub const Interpreter = struct {
             if (prop == .none) continue;
             const prop_data = self.rule_ast.nodeData(prop);
             const prop_tag = self.rule_ast.nodeTag(prop);
+            // Spread: { ...other }
+            if (prop_tag == .spread_element) {
+                const spread_val = self.eval(@enumFromInt(@intFromEnum(prop_data.lhs))) catch .undefined;
+                if (spread_val == .object) {
+                    var iter = spread_val.object.entries.iterator();
+                    while (iter.next()) |entry| {
+                        obj.entries.put(entry.key_ptr.*, entry.value_ptr.*) catch {};
+                    }
+                }
+                continue;
+            }
             if (prop_tag == .property or prop_tag == .shorthand_property) {
                 const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
-                const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+                const key = self.objKeyText(key_idx);
                 const val = if (prop_tag == .shorthand_property)
                     self.env.lookup(key)
                 else if (prop_data.rhs != .none)
@@ -1566,20 +1577,16 @@ pub const Interpreter = struct {
                     .undefined;
                 obj.entries.put(key, val) catch {};
             }
-            // Method definitions in object literals: { MethodName(params) { body } }
-            // Store as a function value. The key is the method name identifier.
+            // Method definitions: { MethodName(params) { body } }
             if (prop_tag == .method_def or prop_tag == .getter_def or prop_tag == .setter_def or
                 prop_tag == .computed_method_def)
             {
                 const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
-                const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
-                // Store the method as a named function reference.
-                // When called, the interpreter will find it by name in closure_fns
-                // or evaluate it directly from the AST.
+                const key = self.objKeyText(key_idx);
                 obj.entries.put(key, .{ .function = .{
                     .ast_idx = @intFromEnum(prop),
                     .closure = null,
-                    .param_count = 1, // most visitor handlers take (node)
+                    .param_count = 1,
                 } }) catch {};
             }
         }
@@ -1651,6 +1658,17 @@ pub const Interpreter = struct {
                 self.bindPattern(@enumFromInt(items[0]), value);
             }
         }
+    }
+
+    /// Get the key text for an object property, stripping quotes for string keys.
+    /// "VariableDeclaration:exit" → VariableDeclaration:exit
+    fn objKeyText(self: *Interpreter, key_idx: NodeIndex) []const u8 {
+        const raw = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+        // Strip quotes from string literal keys
+        if (raw.len >= 2 and (raw[0] == '"' or raw[0] == '\'')) {
+            return raw[1 .. raw.len - 1];
+        }
+        return raw;
     }
 
     fn unquoteString(self: *Interpreter, node: NodeIndex) []const u8 {

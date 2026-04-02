@@ -33,10 +33,10 @@ function canExtract(createSource) {
   // Must have context.report somewhere (directly or in helper functions)
   if (!createSource.includes("context.report") && !createSource.includes(".report(")) return false;
 
-  // Reject rules that use APIs the interpreter doesn't support yet
+  // Reject rules that use APIs the interpreter can't handle
   if (createSource.includes("require(")) return false;
   if (createSource.includes("markVariableAsUsed")) return false;
-  if (createSource.includes(".fix(") || createSource.includes("fix:")) return false;
+  // Note: fix/suggest are ignored by the interpreter — rules still produce diagnostics fine.
 
   return true;
 }
