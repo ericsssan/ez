@@ -197,10 +197,41 @@ pub fn main(init: std.process.Init) !void {
         try stdout.print("Parse: {d} nodes, {d} DFS events\n", .{ tree.nodes.len, traversal.dfs_events.len });
 
         // Quick DFS lint test — manually dispatch DebuggerStatement nodes
-        // Lint a broader test
+        // Lint test input
         const test_src2 = "var x = 1; debugger; if (x == 2) {} for (var i = 0; i < 10; i--) { continue; } if (true) {}";
         const diag_count = lint_engine.lintSource(test_src2, allocator);
-        try stdout.print("Diagnostics on test: {d}\n", .{diag_count});
+        try stdout.print("Diagnostics on test: {d} (ESLint: 16)\n", .{diag_count});
+
+        // Benchmark: lint 100 corpus files
+        const corpus_dir_path = "tests/conformance/test262-parser-tests/pass";
+        const corpus_dir = Io.Dir.cwd().openDir(io, corpus_dir_path, .{ .iterate = true }) catch {
+            try stdout.print("No corpus found, skipping benchmark\n", .{});
+            try stdout.flush();
+            return;
+        };
+
+        var corpus_walker = corpus_dir.walk(allocator) catch {
+            try stdout.print("Cannot walk corpus\n", .{});
+            try stdout.flush();
+            return;
+        };
+        defer corpus_walker.deinit();
+
+        var file_count: u32 = 0;
+        var total_diags: u32 = 0;
+        while (true) {
+            const entry = (corpus_walker.next(io) catch break) orelse break;
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
+            if (file_count >= 100) break;
+
+            const src = corpus_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+            defer allocator.free(src);
+
+            total_diags += lint_engine.lintSource(src, allocator);
+            file_count += 1;
+        }
+        try stdout.print("Corpus: {d} files, {d} diags\n", .{ file_count, total_diags });
         try stdout.flush();
         return;
     }
