@@ -507,8 +507,6 @@ fn napiLintLoaded(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     // Diagnostics list — also on the arena
     var diagnostics: std.ArrayList(Diagnostic) = .empty;
 
-    const Interpreter = @import("../linter/interp/interpreter.zig").Interpreter;
-    const Environment = @import("../linter/interp/env.zig").Environment;
 
     // Pre-build callbacks (same for all visitors in this file)
     const callbacks = makeBufferCallbacks(&bast, &S.tag_names);
@@ -528,46 +526,7 @@ fn napiLintLoaded(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
             if (entries.len == 0) continue;
 
             for (entries) |ref| {
-                const rule = &rs.rules[ref.rule_idx];
-                const visitor = &rule.visitors[ref.visitor_idx];
-
-                // Environment: allocate from arena (no per-visitor heap alloc)
-                var interp_env = Environment.init(alloc, null);
-                // Pre-bind standard ESLint variables
-                interp_env.set("node", .{ .node = idx });
-                interp_env.set("context", .{ .string = "__eslint_context__" });
-                // Common closure aliases (used by 120+ rules)
-                interp_env.set("sourceCode", .{ .string = "__source_code__" });
-                // Rule options
-                if (rule.options.len > 0) {
-                    interp_env.set("options", .{ .array = rule.options });
-                }
-
-                var interp = Interpreter{
-                    .rule_ast = visitor.ast,
-                    .env = &interp_env,
-                    .runtime = callbacks,
-                    .arena = alloc,
-                    .diagnostics = &diagnostics,
-                    .return_value = .undefined,
-                    .current_file_node = idx,
-                    .rule_name = rule.name,
-                    .rule_severity = rule.severity,
-                    .messages = &rule.messages,
-                    .options = rule.options,
-                    .closure_fns = &rule.closure_fns,
-                };
-
-                const root_data = visitor.ast.nodeData(.root);
-                const body_items = visitor.ast.extraSlice(.{
-                    .start = @intFromEnum(root_data.lhs),
-                    .end = @intFromEnum(root_data.rhs),
-                });
-                for (body_items) |raw| {
-                    const stmt: ast_mod.NodeIndex = @enumFromInt(raw);
-                    if (stmt == .none) continue;
-                    _ = interp.eval(stmt) catch break;
-                }
+                eslint_rules.execVisitor(&rs, ref, idx, callbacks, &diagnostics, alloc);
             }
         }
     }
@@ -903,7 +862,6 @@ fn parseRulesJSON(
     allocator: std.mem.Allocator,
     json_str: []const u8,
 ) ![]const eslint_rules.RuleDescriptor {
-    // Use std.json to parse
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
     defer parsed.deinit();
 
@@ -919,31 +877,30 @@ fn parseRulesJSON(
         const sev_val = if (obj.get("severity")) |v| (if (v == .integer) @as(u8, @intCast(v.integer)) else 2) else 2;
         const severity: Severity = if (sev_val == 1) .warning else .@"error";
 
-        // Parse visitors
-        var visitors: std.ArrayList(eslint_rules.VisitorDescriptor) = .empty;
-        if (obj.get("visitors")) |vis_val| {
-            if (vis_val == .array) {
-                for (vis_val.array.items) |vitem| {
-                    if (vitem != .object) continue;
-                    const vobj = vitem.object;
+        // Get create() source
+        const create_source = if (obj.get("createSource")) |v| (if (v == .string) v.string else "") else "";
 
-                    // Parse tags array
+        // Parse visitorKeys
+        var visitor_keys: std.ArrayList(eslint_rules.VisitorKeyMapping) = .empty;
+        if (obj.get("visitorKeys")) |vk_val| {
+            if (vk_val == .array) {
+                for (vk_val.array.items) |vk_item| {
+                    if (vk_item != .object) continue;
+                    const vk_obj = vk_item.object;
+                    const key = if (vk_obj.get("key")) |v| (if (v == .string) v.string else "") else "";
+                    const is_exit = if (vk_obj.get("isExit")) |v| (if (v == .bool) v.bool else false) else false;
                     var tags: std.ArrayList(u16) = .empty;
-                    if (vobj.get("tags")) |tags_val| {
+                    if (vk_obj.get("tags")) |tags_val| {
                         if (tags_val == .array) {
                             for (tags_val.array.items) |t| {
                                 if (t == .integer) try tags.append(allocator, @intCast(t.integer));
                             }
                         }
                     }
-
-                    const is_exit = if (vobj.get("isExit")) |v| (if (v == .bool) v.bool else false) else false;
-                    const source = if (vobj.get("source")) |v| (if (v == .string) v.string else "") else "";
-
-                    try visitors.append(allocator, .{
+                    try visitor_keys.append(allocator, .{
+                        .key = try allocator.dupe(u8, key),
                         .tags = try tags.toOwnedSlice(allocator),
                         .is_exit = is_exit,
-                        .source = try allocator.dupe(u8, source),
                     });
                 }
             }
@@ -965,20 +922,16 @@ fn parseRulesJSON(
             }
         }
 
-        // Parse closure functions
-        var closure_fns: std.ArrayList(eslint_rules.ClosureFnEntry) = .empty;
-        if (obj.get("closureFns")) |cf_val| {
-            if (cf_val == .array) {
-                for (cf_val.array.items) |cf_item| {
-                    if (cf_item != .object) continue;
-                    const cf_obj = cf_item.object;
-                    const cf_name = if (cf_obj.get("name")) |v| (if (v == .string) v.string else "") else "";
-                    const cf_source = if (cf_obj.get("source")) |v| (if (v == .string) v.string else "") else "";
-                    if (cf_name.len > 0 and cf_source.len > 0) {
-                        try closure_fns.append(allocator, .{
-                            .name = try allocator.dupe(u8, cf_name),
-                            .source = try allocator.dupe(u8, cf_source),
-                        });
+        // Parse options
+        var options: std.ArrayList(InterpValue) = .empty;
+        if (obj.get("options")) |opts_val| {
+            if (opts_val == .array) {
+                for (opts_val.array.items) |opt| {
+                    switch (opt) {
+                        .string => |str_val| try options.append(allocator, .{ .string = try allocator.dupe(u8, str_val) }),
+                        .integer => |int_val| try options.append(allocator, .{ .number = @floatFromInt(int_val) }),
+                        .bool => |bool_val| try options.append(allocator, .{ .boolean = bool_val }),
+                        else => try options.append(allocator, InterpValue.undefined),
                     }
                 }
             }
@@ -987,10 +940,10 @@ fn parseRulesJSON(
         descriptors[i] = .{
             .name = try allocator.dupe(u8, name),
             .severity = severity,
-            .visitors = try visitors.toOwnedSlice(allocator),
+            .create_source = try allocator.dupe(u8, create_source),
+            .visitor_keys = try visitor_keys.toOwnedSlice(allocator),
             .messages = try messages.toOwnedSlice(allocator),
-            .options = &.{},
-            .closure_fns = try closure_fns.toOwnedSlice(allocator),
+            .options = try options.toOwnedSlice(allocator),
         };
     }
 

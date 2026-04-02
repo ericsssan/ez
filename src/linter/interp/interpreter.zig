@@ -438,7 +438,7 @@ pub const Interpreter = struct {
     }
 
     /// Handle calls to string-marker builtins (__context_report__, __source_getScope__, etc.)
-    fn callStringBuiltin(self: *Interpreter, marker: []const u8, args: []const Value) Signal!Value {
+    pub fn callStringBuiltin(self: *Interpreter, marker: []const u8, args: []const Value) Signal!Value {
         if (std.mem.eql(u8, marker, "__context_report__")) {
             return self.handleContextReport(args);
         }
@@ -982,6 +982,22 @@ pub const Interpreter = struct {
                 else
                     .undefined;
                 obj.entries.put(key, val) catch {};
+            }
+            // Method definitions in object literals: { MethodName(params) { body } }
+            // Store as a function value. The key is the method name identifier.
+            if (prop_tag == .method_def or prop_tag == .getter_def or prop_tag == .setter_def or
+                prop_tag == .computed_method_def)
+            {
+                const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
+                const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+                // Store the method as a named function reference.
+                // When called, the interpreter will find it by name in closure_fns
+                // or evaluate it directly from the AST.
+                obj.entries.put(key, .{ .function = .{
+                    .ast_idx = @intFromEnum(prop),
+                    .closure = null,
+                    .param_count = 1, // most visitor handlers take (node)
+                } }) catch {};
             }
         }
         // Allocate on arena

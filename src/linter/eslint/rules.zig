@@ -20,28 +20,30 @@ const parent_builder = @import("../../parser/parent_builder.zig");
 pub const Rule = struct {
     name: []const u8,
     severity: Severity,
-    /// Parsed JS ASTs for each visitor handler.
+    /// Visitor entries with their tag mappings.
     visitors: []const Visitor,
     /// Message templates: messageId → template string.
     messages: std.StringArrayHashMap([]const u8),
     /// Rule options (from config).
     options: []const Value,
-    /// Parsed closure helper functions: name → parsed AST.
+    /// Parsed create() function AST. The interpreter evaluates this once per file
+    /// to produce the closure environment with all captured variables.
+    create_ast: ?*const Ast,
+    /// Parsed closure helper functions (extracted from create body).
     closure_fns: std.StringArrayHashMap(*const Ast),
     /// Allocator that owns this rule's data.
     allocator: std.mem.Allocator,
 };
 
-/// A single visitor handler within a rule.
+/// A visitor entry — maps ESTree type to sanz tags.
+/// The actual handler function is obtained by interpreting create().
 pub const Visitor = struct {
+    /// The ESTree visitor key, e.g., "BinaryExpression" or "Program:exit".
+    key: []const u8,
     /// Sanz Node.Tag ordinals this visitor matches.
     tags: []const u16,
     /// Whether this is an :exit visitor.
     is_exit: bool,
-    /// Parsed JS AST of the handler function body.
-    ast: *const Ast,
-    /// Parent data for the handler AST (for tree-walking).
-    parents: []const u32,
 };
 
 /// A reference to a specific visitor in the rule set.
@@ -94,8 +96,9 @@ pub const RuleSet = struct {
 ///     - messages: { [id]: template }
 ///     - options: any[]
 ///
-/// For Phase 1, we accept a simpler format: each rule's visitor source
-/// is parsed using sanz's own JS parser.
+/// Parse the create() source and build the dispatch table from visitor key mappings.
+/// The create() AST is stored per-rule — the interpreter evaluates it per-file
+/// to capture closure variables, then dispatches the visitor handlers.
 pub fn loadRules(
     allocator: std.mem.Allocator,
     rule_descriptors: []const RuleDescriptor,
@@ -121,48 +124,44 @@ pub fn loadRules(
     defer program_exit_list.deinit(allocator);
 
     for (rule_descriptors, 0..) |desc, rule_idx| {
-        var visitors = try allocator.alloc(Visitor, desc.visitors.len);
-
-        for (desc.visitors, 0..) |vdesc, vis_idx| {
-            // Parse the visitor handler JS source using sanz's parser
-            var tokens = Lexer.tokenize(allocator, vdesc.source) catch {
-                visitors[vis_idx] = .{ .tags = &.{}, .is_exit = false, .ast = undefined, .parents = &.{} };
+        // Parse the entire create() function source
+        var create_ast_ptr: ?*const Ast = null;
+        {
+            var tokens = Lexer.tokenize(allocator, desc.create_source) catch {
+                rules[rule_idx] = makeEmptyRule(desc, allocator);
                 continue;
             };
-
-            var tree = Parser.parse(allocator, vdesc.source, tokens.slice()) catch {
+            const tree = Parser.parse(allocator, desc.create_source, tokens.slice()) catch {
                 tokens.deinit(allocator);
-                visitors[vis_idx] = .{ .tags = &.{}, .is_exit = false, .ast = undefined, .parents = &.{} };
+                rules[rule_idx] = makeEmptyRule(desc, allocator);
                 continue;
             };
+            const ptr = try allocator.create(Ast);
+            ptr.* = tree;
+            create_ast_ptr = ptr;
+        }
 
-            // Compute parent pointers for tree-walking
-            const traversal = parent_builder.computeParents(&tree, allocator) catch &.{};
-
-            const ast_ptr = try allocator.create(Ast);
-            ast_ptr.* = tree;
-
+        // Build visitor entries from the JS-provided key mappings
+        var visitors = try allocator.alloc(Visitor, desc.visitor_keys.len);
+        for (desc.visitor_keys, 0..) |vk, vis_idx| {
             visitors[vis_idx] = .{
-                .tags = vdesc.tags,
-                .is_exit = vdesc.is_exit,
-                .ast = ast_ptr,
-                .parents = traversal,
+                .key = vk.key,
+                .tags = vk.tags,
+                .is_exit = vk.is_exit,
             };
 
-            // Register in dispatch table
             const ref = VisitorRef{
                 .rule_idx = @intCast(rule_idx),
                 .visitor_idx = @intCast(vis_idx),
             };
 
-            for (vdesc.tags) |tag| {
-                if (tag == 0 and !vdesc.is_exit) {
-                    // Tag 0 = root = Program
+            for (vk.tags) |tag| {
+                if (tag == 0 and !vk.is_exit) {
                     try program_enter_list.append(allocator, ref);
-                } else if (tag == 0 and vdesc.is_exit) {
+                } else if (tag == 0 and vk.is_exit) {
                     try program_exit_list.append(allocator, ref);
                 } else if (tag < 256) {
-                    if (vdesc.is_exit) {
+                    if (vk.is_exit) {
                         try exit_lists[tag].append(allocator, ref);
                     } else {
                         try enter_lists[tag].append(allocator, ref);
@@ -176,26 +175,14 @@ pub fn loadRules(
             try messages.put(msg.id, msg.template);
         }
 
-        // Parse closure helper functions
-        var closure_fns = std.StringArrayHashMap(*const Ast).init(allocator);
-        for (desc.closure_fns) |cf| {
-            var fn_tokens = Lexer.tokenize(allocator, cf.source) catch continue;
-            const fn_tree = Parser.parse(allocator, cf.source, fn_tokens.slice()) catch {
-                fn_tokens.deinit(allocator);
-                continue;
-            };
-            const fn_ast = try allocator.create(Ast);
-            fn_ast.* = fn_tree;
-            try closure_fns.put(cf.name, fn_ast);
-        }
-
         rules[rule_idx] = .{
             .name = desc.name,
             .severity = desc.severity,
             .visitors = visitors,
             .messages = messages,
             .options = desc.options,
-            .closure_fns = closure_fns,
+            .create_ast = create_ast_ptr,
+            .closure_fns = std.StringArrayHashMap(*const Ast).init(allocator),
             .allocator = allocator,
         };
     }
@@ -290,7 +277,20 @@ pub fn runRules(
     }
 }
 
-fn execVisitor(
+fn makeEmptyRule(desc: RuleDescriptor, allocator: std.mem.Allocator) Rule {
+    return .{
+        .name = desc.name,
+        .severity = desc.severity,
+        .visitors = &.{},
+        .messages = std.StringArrayHashMap([]const u8).init(allocator),
+        .options = desc.options,
+        .create_ast = null,
+        .closure_fns = std.StringArrayHashMap(*const Ast).init(allocator),
+        .allocator = allocator,
+    };
+}
+
+pub fn execVisitor(
     rule_set: *const RuleSet,
     ref: VisitorRef,
     node_idx: u32,
@@ -300,18 +300,20 @@ fn execVisitor(
 ) void {
     const rule = &rule_set.rules[ref.rule_idx];
     const visitor = &rule.visitors[ref.visitor_idx];
+    const create_ast = rule.create_ast orelse return;
 
-    // Create environment with 'node' and 'context' bound
+    // Create environment with ESLint bindings
     var env = Environment.init(allocator, null);
-    defer env.deinit();
     env.set("node", .{ .node = node_idx });
-    // 'context' is a special marker value — the interpreter recognizes
-    // property access on it (context.report, context.sourceCode, context.options)
     env.set("context", .{ .string = "__eslint_context__" });
+    env.set("sourceCode", .{ .string = "__source_code__" });
+    if (rule.options.len > 0) {
+        env.set("options", .{ .array = rule.options });
+    }
 
-    // Create interpreter
+    // Interpret the create() body to capture closure variables and get return value
     var interp = Interpreter{
-        .rule_ast = visitor.ast,
+        .rule_ast = create_ast,
         .env = &env,
         .runtime = callbacks,
         .arena = allocator,
@@ -325,47 +327,97 @@ fn execVisitor(
         .closure_fns = &rule.closure_fns,
     };
 
-    // Execute the visitor handler's body
-    // The AST root is the parsed function body (block_stmt or expression)
-    const root_data = visitor.ast.nodeData(.root);
-    const body_range = @import("../../parser/ast.zig").SubRange{
+    // Find the function declaration in the parsed source and evaluate its body.
+    // The source is "function create(context) { ...body... }"
+    // So root > FunctionDeclaration > body (BlockStatement) > statements
+    const root_data = create_ast.nodeData(.root);
+    const root_stmts = create_ast.extraSlice(.{
         .start = @intFromEnum(root_data.lhs),
         .end = @intFromEnum(root_data.rhs),
-    };
-    const items = visitor.ast.extraSlice(body_range);
-    for (items) |raw| {
-        const stmt: NodeIndex = @enumFromInt(raw);
-        if (stmt == .none) continue;
-        _ = interp.eval(stmt) catch |err| switch (err) {
-            @import("../interp/interpreter.zig").Signal.ReturnSignal => break,
-            else => break,
-        };
+    });
+
+    for (root_stmts) |raw| {
+        const stmt_idx: NodeIndex = @enumFromInt(raw);
+        if (stmt_idx == .none) continue;
+        const tag = create_ast.nodeTag(stmt_idx);
+
+        // Find FunctionDeclaration
+        if (tag == .fn_decl or tag == .async_fn_decl) {
+            const fn_data = create_ast.extraData(
+                @import("../../parser/ast.zig").FnData,
+                @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
+            );
+
+            // Execute the function body (a BlockStatement)
+            if (fn_data.body != .none) {
+                _ = interp.eval(fn_data.body) catch |err| switch (err) {
+                    @import("../interp/interpreter.zig").Signal.ReturnSignal => {},
+                    else => {},
+                };
+            }
+            break;
+        }
+    }
+
+    // The return value should be the visitor object { key: handler, ... }
+    // Find and call the handler for this visitor's key
+    if (interp.return_value == .object) {
+        const visitor_obj = interp.return_value.object;
+        const handler_val = visitor_obj.get(visitor.key);
+
+        if (handler_val == .function) {
+            // The handler is a method definition in the return object.
+            // ast_idx points to the MethodDefinition node in create_ast.
+            // Execute its body with 'node' bound.
+            const method_idx: NodeIndex = @enumFromInt(handler_val.function.ast_idx);
+            const method_data = create_ast.nodeData(method_idx);
+            const method_extra = create_ast.extraData(
+                @import("../../parser/ast.zig").MethodData,
+                @intFromEnum(method_data.rhs),
+            );
+
+            // Bind the 'node' parameter
+            const param_items = create_ast.extraSlice(.{
+                .start = method_extra.params_start,
+                .end = method_extra.params_end,
+            });
+            if (param_items.len > 0) {
+                const param_idx: NodeIndex = @enumFromInt(param_items[0]);
+                if (param_idx != .none and create_ast.nodeTag(param_idx) == .identifier) {
+                    const param_name = create_ast.tokenText(create_ast.nodeMainToken(param_idx));
+                    interp.env.set(param_name, .{ .node = node_idx });
+                }
+            }
+
+            // Execute the method body
+            if (method_extra.body != .none) {
+                _ = interp.eval(method_extra.body) catch {};
+            }
+        } else if (handler_val == .string) {
+            const args = [_]Value{.{ .node = node_idx }};
+            _ = interp.callStringBuiltin(handler_val.string, &args) catch {};
+        }
     }
 }
 
 // ── Types for rule loading (from JS) ──
 
-pub const ClosureFnEntry = struct {
-    name: []const u8,
-    source: []const u8,
-};
-
 pub const RuleDescriptor = struct {
     name: []const u8,
     severity: Severity,
-    visitors: []const VisitorDescriptor,
+    /// The complete create() function source. Zig parses and interprets this
+    /// to produce the visitor map with all closure variables captured.
+    create_source: []const u8,
+    /// Visitor keys with their sanz tag mappings (from JS-side analysis).
+    visitor_keys: []const VisitorKeyMapping,
     messages: []const MessageEntry,
     options: []const Value,
-    closure_fns: []const ClosureFnEntry,
 };
 
-pub const VisitorDescriptor = struct {
-    /// Sanz Node.Tag ordinals this visitor matches.
-    tags: []const u16,
-    /// Whether this is an :exit visitor.
+pub const VisitorKeyMapping = struct {
+    key: []const u8,      // ESTree visitor key, e.g., "BinaryExpression" or "Program:exit"
+    tags: []const u16,     // sanz tag ordinals
     is_exit: bool,
-    /// JS source code of the handler function body.
-    source: []const u8,
 };
 
 pub const MessageEntry = struct {
