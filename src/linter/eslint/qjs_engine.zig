@@ -342,12 +342,10 @@ pub const QjsLintEngine = struct {
         for (self.rules.items) |*rule| {
             if (c.JS_IsObject(rule.visitors) == 0) continue;
 
-            // Check each possible tag
             for (0..256) |t| {
                 const type_name = tag_names[t];
                 if (type_name.len == 0) continue;
 
-                // Enter handler
                 var name_buf: [128]u8 = undefined;
                 @memcpy(name_buf[0..type_name.len], type_name);
                 name_buf[type_name.len] = 0;
@@ -362,7 +360,6 @@ pub const QjsLintEngine = struct {
                 }
                 c.JS_FreeValue(self.ctx, enter_h);
 
-                // Exit handler
                 @memcpy(name_buf[type_name.len..][0..5], ":exit");
                 name_buf[type_name.len + 5] = 0;
 
@@ -419,7 +416,7 @@ pub const QjsLintEngine = struct {
 
         const t1 = clockNs();
 
-        // DFS walk — direct tag→handler dispatch, no per-rule iteration
+        // DFS walk — direct tag→handler dispatch
         var dispatch_count: u32 = 0;
         for (traversal.dfs_events) |ev| {
             const is_exit = ev < 0;
@@ -431,7 +428,6 @@ pub const QjsLintEngine = struct {
             const handlers = if (is_exit) self.exit_dispatch[tag].items else self.enter_dispatch[tag].items;
             if (handlers.len == 0) continue;
 
-            // Build node object ONCE for all handlers of this tag
             const node_obj = self.buildNode(&tree, &tag_names, traversal.parents, idx, 0);
 
             for (handlers) |h| {
