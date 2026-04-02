@@ -85,7 +85,8 @@ function canExtract(handlerSource) {
          "String", "Number", "Boolean", "Array", "Object", "Math", "JSON",
          "parseInt", "parseFloat", "isNaN", "isFinite", "RegExp",
          "typeof", "instanceof", "delete", "void", "new",
-         "if", "else", "return", "throw", "function"].includes(name)) continue;
+         "if", "else", "return", "throw", "function",
+         "options"].includes(name)) continue;
     return false;
   }
 

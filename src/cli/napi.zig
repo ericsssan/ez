@@ -533,9 +533,15 @@ fn napiLintLoaded(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
                 // Environment: allocate from arena (no per-visitor heap alloc)
                 var interp_env = Environment.init(alloc, null);
-                // No deinit needed — arena owns everything
+                // Pre-bind standard ESLint variables
                 interp_env.set("node", .{ .node = idx });
                 interp_env.set("context", .{ .string = "__eslint_context__" });
+                // Common closure aliases (used by 120+ rules)
+                interp_env.set("sourceCode", .{ .string = "__source_code__" });
+                // Rule options
+                if (rule.options.len > 0) {
+                    interp_env.set("options", .{ .array = rule.options });
+                }
 
                 var interp = Interpreter{
                     .rule_ast = visitor.ast,
