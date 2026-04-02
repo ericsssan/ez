@@ -238,9 +238,54 @@ pub fn initRuleForFile(
     var module_loader = ModuleLoader.init(allocator);
     interp.module_loader = &module_loader;
 
-    // If we have the full file AST, evaluate module-level code
-    // to capture helper functions, require() imports, and constants.
+    // First try: evaluate create() directly from create_ast.
+    // This works for all rules where create() is self-contained.
+    {
+        const root_data = create_ast.nodeData(.root);
+        const root_stmts = create_ast.extraSlice(.{
+            .start = @intFromEnum(root_data.lhs),
+            .end = @intFromEnum(root_data.rhs),
+        });
+        for (root_stmts) |raw| {
+            const stmt_idx: NodeIndex = @enumFromInt(raw);
+            if (stmt_idx == .none) continue;
+            const tag = create_ast.nodeTag(stmt_idx);
+            if (tag == .fn_decl or tag == .async_fn_decl) {
+                const fn_data = create_ast.extraData(
+                    ast_mod.FnData,
+                    @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
+                );
+                const params = create_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
+                if (params.len > 0) {
+                    const p: NodeIndex = @enumFromInt(params[0]);
+                    if (p != .none and create_ast.nodeTag(p) == .identifier)
+                        env_ptr.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .string = "__eslint_context__" });
+                }
+                if (fn_data.body != .none) {
+                    _ = interp.eval(fn_data.body) catch |err| switch (err) {
+                        Signal.ReturnSignal => {},
+                        else => {},
+                    };
+                }
+                break;
+            }
+        }
+    }
+
+    // If create-only worked, we're done
+    if (interp.return_value == .object) {
+        return .{ .visitor_obj = interp.return_value.object, .interp = interp };
+    }
+
+    // Second try: full module interpretation for rules that need module-level helpers.
     if (rule.full_ast) |full_ast| {
+        // Reset env for fresh module eval
+        env_ptr.* = Environment.init(allocator, null);
+        env_ptr.set("context", .{ .string = "__eslint_context__" });
+        env_ptr.set("sourceCode", .{ .string = "__source_code__" });
+        interp.env = env_ptr;
+        interp.return_value = .undefined;
+        interp.depth = 0;
         const saved_ast = interp.rule_ast;
         interp.rule_ast = full_ast;
 
@@ -265,8 +310,6 @@ pub fn initRuleForFile(
                 const ed = full_ast.nodeData(si);
                 const ei: NodeIndex = @enumFromInt(@intFromEnum(ed.lhs));
                 if (ei != .none and full_ast.nodeTag(ei) == .string_literal) continue;
-                // Skip module.exports = ... (we use create_ast instead)
-                if (ei != .none and full_ast.nodeTag(ei) == .assign) continue;
             }
             // Evaluate: function decls, variable decls, require() calls
             const saved_depth = interp.depth;
@@ -277,39 +320,21 @@ pub fn initRuleForFile(
             interp.depth = saved_depth;
         }
 
-        // Switch back to create-only AST for the actual create() call
         interp.rule_ast = saved_ast;
         interp.return_value = .undefined;
-    }
 
-    // Find and execute the create() function declaration
-    const root_data = use_ast.nodeData(.root);
-    const root_stmts = use_ast.extraSlice(.{
-        .start = @intFromEnum(root_data.lhs),
-        .end = @intFromEnum(root_data.rhs),
-    });
-    for (root_stmts) |raw| {
-        const stmt_idx: NodeIndex = @enumFromInt(raw);
-        if (stmt_idx == .none) continue;
-        const tag = use_ast.nodeTag(stmt_idx);
-        if (tag == .fn_decl or tag == .async_fn_decl) {
-            const fn_data = use_ast.extraData(
-                ast_mod.FnData,
-                @intFromEnum(use_ast.nodeData(stmt_idx).lhs),
-            );
-            const params = use_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
-            if (params.len > 0) {
-                const p: NodeIndex = @enumFromInt(params[0]);
-                if (p != .none and use_ast.nodeTag(p) == .identifier)
-                    env_ptr.set(use_ast.tokenText(use_ast.nodeMainToken(p)), .{ .string = "__eslint_context__" });
+        // Check if module.exports.create was set by the module eval
+        const mod_val = env_ptr.lookup("module");
+        if (mod_val == .object) {
+            const exports_val = mod_val.object.get("exports");
+            if (exports_val == .object) {
+                const create_fn = exports_val.object.get("create");
+                if (create_fn == .function) {
+                    // Call create(context) — the function lives in full_ast
+                    const cargs = [_]Value{.{ .string = "__eslint_context__" }};
+                    interp.return_value = interp.callUserFunction(create_fn.function, &cargs) catch .undefined;
+                }
             }
-            if (fn_data.body != .none) {
-                _ = interp.eval(fn_data.body) catch |err| switch (err) {
-                    Signal.ReturnSignal => {},
-                    else => {},
-                };
-            }
-            break;
         }
     }
 
