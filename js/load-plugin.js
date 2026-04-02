@@ -50,6 +50,9 @@ function loadPlugin(pkgName, ruleFilters) {
       try {
         const rule = require(path.join(rulesDir, file));
         if (typeof rule.create !== "function") continue;
+        // Skip deprecated rules (formatting rules removed in eslint v9+)
+        // unless explicitly requested via --rule filter.
+        if (rule.meta?.deprecated && ruleFilters.size === 0) continue;
         plugins.push({
           meta: { name: ruleName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema },
           create: rule.create,
