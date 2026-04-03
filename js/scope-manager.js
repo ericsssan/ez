@@ -569,25 +569,63 @@ class ScopeBuilder {
     const ast = this._ast;
     if (!ast._scopeKinds) return this._buildFallback();
 
-    // Lazy scope tree — built only on first acquire() / acquireAll() /
-    // getDeclaredVariables() call. Rules that never call getScope() (e.g.
-    // no-debugger, no-with) pay zero cost for scope construction.
-    let built = false;
-    let globalScope = null;
+    // Two-phase lazy build:
+    // Phase 1 (cheap): global scope stub for addGlobals / scopes[0] / globalScope
+    //   — ESLint's addDeclaredGlobals always accesses scopes[0] to register globals
+    // Phase 2 (full): complete scope tree for acquire() / getDeclaredVariables()
+    //   — only triggered when rules actually call getScope()
+    let globalScope = null;     // phase 1: cheap stub, phase 2: full scope
+    let fullBuilt = false;
     let scopes = null;
     let nodeToScope = null;
 
-    // Pending globals from addGlobals() calls before the tree is built.
-    const pendingGlobals = [];
-
     const self = this;
 
-    function ensureBuilt() {
-      if (built) return;
-      built = true;
+    // Phase 1: build a minimal global scope (just set + variables, no children)
+    function ensureGlobalScope() {
+      if (globalScope) return;
+      const kind = ast._scopeKinds[0];
+      const isStrict = (ast._scopeFlags[0] & 1) !== 0;
+      const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[0] : NONE32;
+      const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+        ? nodeView(ast, scopeNodeIdx) : null;
+      globalScope = {
+        type: KIND_NAMES[kind] || 'global', isStrict, variables: [],
+        set: new Map(), references: [], through: [], childScopes: [],
+        implicit: { variables: [] }, block, upper: null, lookup: (name) => globalScope.set.get(name) || null,
+      };
+      globalScope.variableScope = globalScope;
+      // Add ES2022 built-in globals
+      for (const name of _BUILTIN_GLOBALS) {
+        const gv = {
+          name, defs: [], references: [], identifiers: [],
+          scope: globalScope, eslintUsed: false, writeable: false,
+          isRead: () => false, isWritten: () => false,
+        };
+        globalScope.set.set(name, gv);
+        globalScope.variables.push(gv);
+      }
+    }
+
+    // Phase 2: full scope tree for acquire/getDeclaredVariables
+    function ensureFullBuild() {
+      if (fullBuilt) return;
+      fullBuilt = true;
 
       // Build the full scope tree rooted at scope 0 (global).
-      globalScope = self._buildScope(0);
+      const fullGlobal = self._buildScope(0);
+
+      // Merge any globals that were added via addGlobals() into the full scope
+      if (globalScope) {
+        for (const [name, gv] of globalScope.set) {
+          if (!fullGlobal.set.has(name)) {
+            gv.scope = fullGlobal;
+            fullGlobal.set.set(name, gv);
+            fullGlobal.variables.push(gv);
+          }
+        }
+      }
+      globalScope = fullGlobal;
 
       // Collect all scopes into a flat array in DFS order.
       scopes = [];
@@ -605,9 +643,23 @@ class ScopeBuilder {
         if (existing) existing.push(scope);
         else nodeToScope.set(scope.block, [scope]);
       }
+    }
 
-      // Apply any globals registered before the tree was built.
-      for (const names of pendingGlobals) {
+    return {
+      get globalScope() { ensureGlobalScope(); return globalScope; },
+      get scopes() { ensureGlobalScope(); return scopes || [globalScope]; },
+      acquire(node, inner = false) {
+        ensureFullBuild();
+        const list = nodeToScope.get(node);
+        if (!list || list.length === 0) return null;
+        return inner ? list[list.length - 1] : list[0];
+      },
+      acquireAll(node) {
+        ensureFullBuild();
+        return nodeToScope.get(node) || [];
+      },
+      addGlobals(names) {
+        ensureGlobalScope();
         for (const name of names) {
           if (!globalScope.set.has(name)) {
             const gv = {
@@ -619,47 +671,9 @@ class ScopeBuilder {
             globalScope.variables.push(gv);
           }
         }
-      }
-      pendingGlobals.length = 0;
-    }
-
-    return {
-      get globalScope() { ensureBuilt(); return globalScope; },
-      get scopes() { ensureBuilt(); return scopes; },
-      acquire(node, inner = false) {
-        ensureBuilt();
-        const list = nodeToScope.get(node);
-        if (!list || list.length === 0) return null;
-        return inner ? list[list.length - 1] : list[0];
       },
-      acquireAll(node) {
-        ensureBuilt();
-        return nodeToScope.get(node) || [];
-      },
-      // ESLint 9/10: inject configured globals into the global scope.
-      // Called by ESLint after constructing the source code object —
-      // before any rule traversal — so the scope tree may not be built yet.
-      addGlobals(names) {
-        if (built) {
-          for (const name of names) {
-            if (!globalScope.set.has(name)) {
-              const gv = {
-                name, defs: [], references: [], identifiers: [],
-                scope: globalScope, eslintUsed: false, writeable: true,
-                isRead: () => false, isWritten: () => false,
-              };
-              globalScope.set.set(name, gv);
-              globalScope.variables.push(gv);
-            }
-          }
-        } else {
-          pendingGlobals.push(names.slice());
-        }
-      },
-      // ESLint 9/10: return variables declared by a given AST node.
-      // Used by SourceCode.getDeclaredVariables() which rules call (e.g. no-unused-vars).
       getDeclaredVariables(node) {
-        ensureBuilt();
+        ensureFullBuild();
         return self._getDeclaredVariables(node);
       },
     };
