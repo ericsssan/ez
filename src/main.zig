@@ -77,6 +77,15 @@ pub fn main(init: std.process.Init) !void {
     // ── QuickJS test ──────────────────────────────────────────
     if (test_quickjs) {
         const qjs_engine_mod = @import("linter/eslint/qjs_engine.zig");
+        const posix = @cImport(@cInclude("time.h"));
+        const clockNs = struct {
+            fn f() u64 {
+                var ts: posix.struct_timespec = undefined;
+                _ = posix.clock_gettime(posix.CLOCK_MONOTONIC, &ts);
+                return @intCast(@as(i64, ts.tv_sec) * 1_000_000_000 + ts.tv_nsec);
+            }
+        }.f;
+        const t_start = clockNs();
 
         // ── Phase 1: Load rules ─────────────────────────────────
         var lint_engine = qjs_engine_mod.QjsLintEngine.init(allocator) orelse {
@@ -108,8 +117,7 @@ pub fn main(init: std.process.Init) !void {
             rule_count += 1;
         }
 
-        // QuickJS done — no longer needed at runtime
-        // lint_engine.buildDispatch(); // only needed if QuickJS dispatches
+        const t_rules_loaded = clockNs();
 
         // ── Phase 1b: Extract handler sources for compilation ───
         const extractor = @import("linter/eslint/extractor.zig");
@@ -156,7 +164,7 @@ pub fn main(init: std.process.Init) !void {
             dispatch.exit[i] = exit_lists[i].toOwnedSlice(allocator) catch &.{};
         }
 
-        try stdout.print("{d} handlers, {d} compiled, {d} messages\n", .{ total_handlers, compiled_count, total_messages });
+        const t_compiled = clockNs();
 
         // ── Phase 2: Pre-read corpus ────────────────────────────
         const corpus_dir = Io.Dir.cwd().openDir(io, "tests/conformance/test262-parser-tests/pass", .{ .iterate = true }) catch {
@@ -178,7 +186,9 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // ── Phase 3: Lint (compiled + QuickJS fallback) ─────────
+        const t_corpus_read = clockNs();
+
+        // ── Phase 3: Lint (compiled only) ───────────────────────
         const Lexer_mod = @import("parser/lexer.zig").Lexer;
         const Parser_mod = @import("parser/parser.zig").Parser;
         const parent_builder = @import("parser/parent_builder.zig");
@@ -225,6 +235,7 @@ pub fn main(init: std.process.Init) !void {
         }
         arena_impl.deinit();
 
+        const t_lint_done = clockNs();
         total_diags = compiled_diags;
 
         try stdout.print("{d} rules, {d}/{d} compiled, {d} files, {d} diags\n", .{
@@ -233,6 +244,12 @@ pub fn main(init: std.process.Init) !void {
             total_handlers,
             corpus_sources.items.len,
             total_diags,
+        });
+        try stdout.print("  load {d}ms, compile {d}ms, read {d}ms, lint {d}ms\n", .{
+            (t_rules_loaded - t_start) / 1_000_000,
+            (t_compiled - t_rules_loaded) / 1_000_000,
+            (t_corpus_read - t_compiled) / 1_000_000,
+            (t_lint_done - t_corpus_read) / 1_000_000,
         });
         try stdout.flush();
         return;
