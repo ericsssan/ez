@@ -28,6 +28,7 @@ const _NEEDS_CODE_PATH = new Set([
   "complexity",               // accesses codePath.origin and deep segment graph
   "no-invalid-this",          // accesses codePath properties we don't populate
   "no-fallthrough",           // needs switch case segment merging
+  "no-unreachable-loop",      // needs onCodePathSegmentLoop (loop back-edge event)
 ]);
 
 /**
