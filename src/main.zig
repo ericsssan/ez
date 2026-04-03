@@ -225,86 +225,137 @@ pub fn main(init: std.process.Init) !void {
 
         const t_corpus_read = clockNs();
 
-        // ── Phase 3: Lint (compiled only) ───────────────────────
+        // ── Phase 3: Lint (compiled, multi-threaded) ────────────
         const Lexer_mod = @import("parser/lexer.zig").Lexer;
         const Parser_mod = @import("parser/parser.zig").Parser;
         const parent_builder = @import("parser/parent_builder.zig");
 
         var total_diags: u32 = 0;
-        var compiled_diags: u32 = 0;
-        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        var compiled_diags: std.atomic.Value(u32) = .init(0);
+        var skipped_atomic: std.atomic.Value(u32) = .init(0);
 
-        var skipped_files: u32 = 0;
+        const WorkerCtx = struct {
+            sources: []const []const u8,
+            dispatch_ptr: *const compiled_mod.CompiledDispatch,
+            diags: *std.atomic.Value(u32),
+            skipped: *std.atomic.Value(u32),
 
-        for (corpus_sources.items) |src| {
-            const a = arena_impl.allocator();
+            fn work(ctx: @This()) void {
+                var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                var local_diags: u32 = 0;
+                var local_skipped: u32 = 0;
 
-            // Token pre-screening: skip files that can't trigger any rule
-            if (!compiled_mod.quickScreenSource(src, &dispatch)) {
-                skipped_files += 1;
-                _ = arena_impl.reset(.retain_capacity);
-                continue;
-            }
+                for (ctx.sources) |src| {
+                    const a = arena.allocator();
 
-            // Parse
-            var tokens = Lexer_mod.tokenize(a, src) catch {
-                _ = arena_impl.reset(.retain_capacity);
-                continue;
-            };
-            var tree = Parser_mod.parse(a, src, tokens.slice()) catch {
-                _ = arena_impl.reset(.retain_capacity);
-                continue;
-            };
-
-            // Quick check: any active tag in this file?
-            const node_tags = tree.nodes.items(.tag);
-            if (!dispatch.hasRelevantNodes(node_tags)) {
-                _ = arena_impl.reset(.retain_capacity);
-                continue;
-            }
-
-            // Only compute parent traversal if we have rules that need it
-            const traversal = parent_builder.computeTraversal(&tree, a) catch {
-                _ = arena_impl.reset(.retain_capacity);
-                continue;
-            };
-
-            // Inverted index scan: iterate tag array directly, not DFS
-            // For enter-only rules (no exit handlers), skip DFS entirely
-            for (node_tags, 0..) |tag, idx_usize| {
-                const idx: u32 = @intCast(idx_usize);
-                const t = @intFromEnum(tag);
-                if (t >= 256) continue;
-                const rules = dispatch.enter[t];
-                for (rules) |*cr| {
-                    if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
-                        compiled_diags += 1;
+                    if (!compiled_mod.quickScreenSource(src, ctx.dispatch_ptr)) {
+                        local_skipped += 1;
+                        _ = arena.reset(.retain_capacity);
+                        continue;
                     }
-                }
-            }
 
-            // Exit handlers still need DFS order (reverse traversal)
-            for (traversal.dfs_events) |ev| {
-                if (ev >= 0) continue; // skip enter events
-                const idx: u32 = @intCast(~ev);
-                if (idx >= tree.nodes.len) continue;
-                const t = @intFromEnum(node_tags[idx]);
-                if (t >= 256) continue;
-                const rules = dispatch.exit[t];
-                if (rules.len == 0) continue;
-                for (rules) |*cr| {
-                    if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
-                        compiled_diags += 1;
+                    var tokens = Lexer_mod.tokenize(a, src) catch {
+                        _ = arena.reset(.retain_capacity);
+                        continue;
+                    };
+                    var tree = Parser_mod.parse(a, src, tokens.slice()) catch {
+                        _ = arena.reset(.retain_capacity);
+                        continue;
+                    };
+
+                    const node_tags = tree.nodes.items(.tag);
+                    if (!ctx.dispatch_ptr.hasRelevantNodes(node_tags)) {
+                        _ = arena.reset(.retain_capacity);
+                        continue;
                     }
+
+                    const traversal = parent_builder.computeTraversal(&tree, a) catch {
+                        _ = arena.reset(.retain_capacity);
+                        continue;
+                    };
+
+                    // Enter handlers: direct tag scan
+                    for (node_tags, 0..) |tag, idx_usize| {
+                        const idx: u32 = @intCast(idx_usize);
+                        const t = @intFromEnum(tag);
+                        if (t >= 256) continue;
+                        const rules = ctx.dispatch_ptr.enter[t];
+                        for (rules) |*cr| {
+                            if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
+                                local_diags += 1;
+                            }
+                        }
+                    }
+
+                    // Exit handlers: DFS order
+                    for (traversal.dfs_events) |ev| {
+                        if (ev >= 0) continue;
+                        const idx: u32 = @intCast(~ev);
+                        if (idx >= tree.nodes.len) continue;
+                        const t = @intFromEnum(node_tags[idx]);
+                        if (t >= 256) continue;
+                        const rules = ctx.dispatch_ptr.exit[t];
+                        if (rules.len == 0) continue;
+                        for (rules) |*cr| {
+                            if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
+                                local_diags += 1;
+                            }
+                        }
+                    }
+
+                    _ = arena.reset(.retain_capacity);
                 }
+                arena.deinit();
+
+                _ = ctx.diags.fetchAdd(local_diags, .monotonic);
+                _ = ctx.skipped.fetchAdd(local_skipped, .monotonic);
+            }
+        };
+
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const thread_count = @min(corpus_sources.items.len, cpu_count);
+
+        if (thread_count <= 1) {
+            // Single-threaded
+            const w = WorkerCtx{
+                .sources = corpus_sources.items,
+                .dispatch_ptr = &dispatch,
+                .diags = &compiled_diags,
+                .skipped = &skipped_atomic,
+            };
+            w.work();
+        } else {
+            const threads = try allocator.alloc(std.Thread, thread_count);
+            defer allocator.free(threads);
+
+            const chunk_size = (corpus_sources.items.len + thread_count - 1) / thread_count;
+            var spawned: usize = 0;
+
+            for (0..thread_count) |t| {
+                const start_idx = t * chunk_size;
+                if (start_idx >= corpus_sources.items.len) break;
+                const end_idx = @min(start_idx + chunk_size, corpus_sources.items.len);
+
+                const ctx = WorkerCtx{
+                    .sources = corpus_sources.items[start_idx..end_idx],
+                    .dispatch_ptr = &dispatch,
+                    .diags = &compiled_diags,
+                    .skipped = &skipped_atomic,
+                };
+                threads[t] = std.Thread.spawn(.{}, WorkerCtx.work, .{ctx}) catch {
+                    ctx.work();
+                    continue;
+                };
+                spawned += 1;
             }
 
-            _ = arena_impl.reset(.retain_capacity);
+            for (threads[0..spawned]) |thread| thread.join();
         }
-        arena_impl.deinit();
+
+        const skipped_files = skipped_atomic.load(.monotonic);
 
         const t_lint_done = clockNs();
-        total_diags = compiled_diags;
+        total_diags = compiled_diags.load(.monotonic);
 
         try stdout.print("{d}/{d} compiled, {d} files ({d} skipped), {d} diags {s}\n", .{
             compiled_count,
