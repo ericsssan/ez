@@ -3120,7 +3120,34 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const handlers = tagEnterHandlers[tag];
       const flags = tagFlags[tag];
       if (canSkip && !handlers && !flags && !(hasPrivateIdOpt && tag === identTagOpt)) continue;
-      if (flags & FLAG_CODEPATH_ENTER) invokeCodePathHandlers('onCodePathStart', idx);
+      if (flags & FLAG_CODEPATH_ENTER) {
+        const outerSeg = cpTracker.segment;
+        if (outerSeg) invokeSegmentEvent(outerSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', outerSeg);
+        const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
+        invokeCodePathHandlers('onCodePathStart', idx);
+        invokeSegmentEvent('onCodePathSegmentStart', segment);
+      }
+      // Branch enter
+      if (hasCodePath) {
+        const tn2 = tagNames[tag];
+        if (tn2 === 'IfStatement' || tn2 === 'TryStatement' || tn2 === 'SwitchStatement' ||
+            tn2 === 'WhileStatement' || tn2 === 'DoWhileStatement' || tn2 === 'ForStatement' ||
+            tn2 === 'ForInStatement' || tn2 === 'ForOfStatement') cpTracker.enterBranch();
+        if (tn2 === 'CatchClause' || tn2 === 'SwitchCase') {
+          const seg2 = cpTracker.nextBranch();
+          if (seg2) invokeSegmentEvent('onCodePathSegmentStart', seg2);
+        }
+        if (pd) {
+          const pi3 = pd[idx];
+          if (pi3 !== NONE && pi3 < ast.nodeCount && tagNames[nodeTags[pi3]] === 'IfStatement') {
+            const ifN = nodeView(ast, pi3);
+            if (ifN.alternate && ifN.alternate._i === idx) {
+              const seg2 = cpTracker.nextBranch();
+              if (seg2) invokeSegmentEvent('onCodePathSegmentStart', seg2);
+            }
+          }
+        }
+      }
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
@@ -3182,7 +3209,34 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-      if (flags & FLAG_CODEPATH_EXIT) invokeCodePathHandlers('onCodePathEnd', idx);
+      // Terminators and branch exit for large-file path
+      if (hasCodePath) {
+        const tn2 = tagNames[tag];
+        if (tn2 === 'ReturnStatement' || tn2 === 'ThrowStatement' ||
+            tn2 === 'BreakStatement' || tn2 === 'ContinueStatement') {
+          const oldSeg = cpTracker.segment;
+          if (oldSeg) invokeSegmentEvent('onCodePathSegmentEnd', oldSeg);
+          cpTracker.markUnreachable();
+          invokeSegmentEvent('onUnreachableCodePathSegmentStart', cpTracker.segment);
+        }
+        if (tn2 === 'IfStatement' || tn2 === 'TryStatement' || tn2 === 'SwitchStatement' ||
+            tn2 === 'WhileStatement' || tn2 === 'DoWhileStatement' || tn2 === 'ForStatement' ||
+            tn2 === 'ForInStatement' || tn2 === 'ForOfStatement') {
+          const oldSeg = cpTracker.segment;
+          if (oldSeg) invokeSegmentEvent(oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', oldSeg);
+          const hasAllBranches = tn2 === 'IfStatement' && nodeView(ast, idx).alternate != null;
+          const seg2 = cpTracker.exitBranch(hasAllBranches);
+          invokeSegmentEvent('onCodePathSegmentStart', seg2);
+        }
+      }
+      if (flags & FLAG_CODEPATH_EXIT) {
+        const oldSeg = cpTracker.segment;
+        if (oldSeg) invokeSegmentEvent(oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', oldSeg);
+        invokeCodePathHandlers('onCodePathEnd', idx);
+        cpTracker.exitFunction();
+        const outerSeg = cpTracker.segment;
+        if (outerSeg) invokeSegmentEvent(outerSeg.reachable ? 'onCodePathSegmentStart' : 'onUnreachableCodePathSegmentStart', outerSeg);
+      }
       if (hasSelectors) invokeSelectorHandlers(idx, true);
     }
   }
