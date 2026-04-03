@@ -2009,12 +2009,7 @@ const NodeProto = {
 
   /** node.comments — empty array (sanz doesn't track comments yet). Writable so rules can set it. */
   get comments() {
-    if (this._comments) return this._comments;
-    // For Program nodes, return all comments in the file from Zig-recorded data.
-    if (this._ast._nodeTags[this._i] === T.root && this._ast._commentCount > 0) {
-      return this._ast.commentsInRange(0, this._ast.sourceUtf16Len);
-    }
-    return _emptyArray;
+    return this._comments || _emptyArray;
   },
   set comments(v) {
     this._comments = v;
