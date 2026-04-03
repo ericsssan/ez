@@ -110,14 +110,51 @@ pub fn main(init: std.process.Init) !void {
         lint_engine.buildDispatch();
 
         // ── Phase 1b: Extract handler sources for compilation ───
+        const extractor = @import("linter/eslint/extractor.zig");
+        const compiled_mod = @import("linter/eslint/compiled.zig");
+
         var total_handlers: u32 = 0;
         var total_messages: u32 = 0;
+        var compiled_count: u32 = 0;
+        var dispatch = compiled_mod.CompiledDispatch.init();
+        var enter_lists: [256]std.ArrayList(compiled_mod.CompiledRule) = undefined;
+        var exit_lists: [256]std.ArrayList(compiled_mod.CompiledRule) = undefined;
+        for (0..256) |i| {
+            enter_lists[i] = .empty;
+            exit_lists[i] = .empty;
+        }
+
         for (0..lint_engine.ruleCount()) |ri| {
             const extracted = lint_engine.extractHandlerSources(ri) catch continue;
             total_handlers += @intCast(extracted.handlers.items.len);
             total_messages += @intCast(extracted.messages.count());
+
+            const rule_name = lint_engine.rules.items[ri].name;
+
+            for (extracted.handlers.items) |h| {
+                if (extractor.extract(rule_name, .@"error", h.source, &extracted.messages, allocator)) |cr| {
+                    compiled_count += 1;
+                    // Map ESTree key to sanz tags
+                    for (0..@import("parser/layout.zig").tag_count) |t| {
+                        const tn = std.mem.span(@import("parser/layout.zig").sanz_tag_name(@intCast(t)));
+                        if (std.mem.eql(u8, tn, h.key)) {
+                            if (h.is_exit) {
+                                exit_lists[t].append(allocator, cr) catch {};
+                            } else {
+                                enter_lists[t].append(allocator, cr) catch {};
+                            }
+                        }
+                    }
+                }
+            }
         }
-        try stdout.print("{d} handlers extracted, {d} messages\n", .{ total_handlers, total_messages });
+
+        for (0..256) |i| {
+            dispatch.enter[i] = enter_lists[i].toOwnedSlice(allocator) catch &.{};
+            dispatch.exit[i] = exit_lists[i].toOwnedSlice(allocator) catch &.{};
+        }
+
+        try stdout.print("{d} handlers, {d} compiled, {d} messages\n", .{ total_handlers, compiled_count, total_messages });
 
         // ── Phase 2: Pre-read corpus ────────────────────────────
         const corpus_dir = Io.Dir.cwd().openDir(io, "tests/conformance/test262-parser-tests/pass", .{ .iterate = true }) catch {
