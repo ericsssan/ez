@@ -826,6 +826,17 @@ const NodeProto = {
       parentIdx = pd[parentIdx];
     }
     let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
+    // Method/getter/setter bodies: the block's parent in sanz is the method_def,
+    // but ESTree has FunctionExpression between them. Synthesize it so
+    // `isFunction(node.parent)` works for rules like no-empty.
+    if (result && this._tag === T.block_stmt) {
+      const pt = result._tag;
+      if (pt === T.method_def || pt === T.getter_def || pt === T.setter_def ||
+          pt === T.constructor_def || pt === T.computed_method_def ||
+          pt === T.computed_getter_def || pt === T.computed_setter_def) {
+        result = result.value; // .value getter returns the synthetic FunctionExpression
+      }
+    }
     // ESTree requires ObjectPattern children to be wrapped in Property nodes.
     // Sanz stores AssignmentPattern/Identifier directly under ObjectPattern
     // for destructuring defaults ({a=1}) and shorthand-less patterns.
