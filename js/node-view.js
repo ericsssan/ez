@@ -1429,6 +1429,14 @@ const NodeProto = {
   },
 
   /**
+   * node.expressions — children of SequenceExpression (comma operator).
+   */
+  get expressions() {
+    if (this.tag !== T.sequence_expr) return undefined;
+    return this._ast._nodesFromRange(this._ast.nodeLhs(this._i), this._ast.nodeRhs(this._i));
+  },
+
+  /**
    * node.properties — properties of ObjectExpression or ObjectPattern.
    */
   get properties() {
@@ -1697,7 +1705,6 @@ const NodeProto = {
    * end is the position after the last character of the last token in the subtree.
    */
   get range() {
-    // Program node always spans the entire source: [0, sourceLength]
     if (this._ast._nodeTags[this._i] === T.root) {
       return [0, this._ast.sourceUtf16Len];
     }
@@ -1712,7 +1719,6 @@ const NodeProto = {
     const ast = this._ast;
     const end = ast._nodeEndPos(this._i);
     const ls = ast._lineStarts();
-    // Program node always starts at line 1, column 0
     let startLine, startCol;
     if (ast._nodeTags[this._i] === T.root) {
       startLine = 1;
