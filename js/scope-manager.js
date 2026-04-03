@@ -76,39 +76,39 @@ function _findDefNode(declNode, defType) {
   switch (defType) {
     case 'Variable':
       while (cur) {
-        if (cur.tag === T.declarator) return cur;
-        if (!_DESTRUCTURE_PASSTHROUGH.has(cur.tag)) break;
+        if (cur._tag === T.declarator) return cur;
+        if (!_DESTRUCTURE_PASSTHROUGH.has(cur._tag)) break;
         cur = cur.parent;
       }
       break;
     case 'FunctionName':
       while (cur) {
-        if (_FUNCTION_TAGS.has(cur.tag)) return cur;
+        if (_FUNCTION_TAGS.has(cur._tag)) return cur;
         cur = cur.parent;
       }
       break;
     case 'ClassName':
       while (cur) {
-        if (_CLASS_TAGS.has(cur.tag)) return cur;
+        if (_CLASS_TAGS.has(cur._tag)) return cur;
         cur = cur.parent;
       }
       break;
     case 'ImportBinding':
       while (cur) {
-        if (cur.tag === T.import_decl) return cur;
+        if (cur._tag === T.import_decl) return cur;
         cur = cur.parent;
       }
       break;
     case 'Parameter':
       while (cur) {
-        if (_FUNCTION_TAGS.has(cur.tag)) return cur;
+        if (_FUNCTION_TAGS.has(cur._tag)) return cur;
         // Also walk past formal_parameters, patterns, etc.
         cur = cur.parent;
       }
       break;
     case 'CatchClause':
       while (cur) {
-        if (cur.tag === T.catch_clause) return cur;
+        if (cur._tag === T.catch_clause) return cur;
         cur = cur.parent;
       }
       break;

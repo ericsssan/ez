@@ -695,14 +695,32 @@ const NodeProto = {
     Object.defineProperty(this, 'type', { value: result, configurable: true });
     return result;
   },
-  get tag() {
+  /** Internal numeric tag (Zig AST node type). Use this for all internal checks. */
+  get _tag() {
     return this._ast._nodeTags[this._i];
+  },
+  /**
+   * ESTree-compatible `tag`:
+   * - TaggedTemplateExpression: returns the tag expression node
+   * - All others: returns the internal numeric tag (backward compat for plugin-runner)
+   */
+  get tag() {
+    const t = this._ast._nodeTags[this._i];
+    if (t === T.tagged_template) {
+      const idx = this._ast.nodeLhs(this._i);
+      return idx === NONE ? null : nodeView(this._ast, idx);
+    }
+    return t;
   },
   get mainToken() {
     return this._ast._mainTokens[this._i];
   },
   get start() {
     return this._ast._nodeStartPos(this._i);
+  },
+  get end() {
+    if (this._ast._nodeTags[this._i] === T.root) return this._ast.sourceUtf16Len;
+    return this._ast._nodeEndPos(this._i);
   },
   get lhs() {
     return this._ast.nodeLhs(this._i);
@@ -779,7 +797,7 @@ const NodeProto = {
    * Derived entirely from the tag; no buffer access needed.
    */
   get operator() {
-    return OPERATOR_BY_TAG[this.tag] || null;
+    return OPERATOR_BY_TAG[this._tag] || null;
   },
 
   /**
@@ -787,7 +805,7 @@ const NodeProto = {
    * Also used by FunctionDeclaration/ClassDeclaration via .id.name.
    */
   get name() {
-    if (this.tag === T.identifier) {
+    if (this._tag === T.identifier) {
       const ast = this._ast;
       const tok = this.mainToken;
       const pos = ast._tokStarts[tok];
@@ -812,7 +830,7 @@ const NodeProto = {
    * boolean, or null. ESLint returns the evaluated value; we approximate.
    */
   get value() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const src = ast._rawTokenText(this.mainToken);
     if (t === T.string_literal) {
@@ -881,6 +899,7 @@ const NodeProto = {
         body,
         mainToken: this.mainToken,
         start: myRange[0],
+        end: myRange[1],
         range: myRange,
         loc: myLoc,
         parent: this, // parent = the Property/MethodDefinition node
@@ -906,7 +925,7 @@ const NodeProto = {
    * ESLint rules like require-unicode-regexp use Literal[regex] selectors.
    */
   get regex() {
-    if (this.tag !== T.regex_literal) return undefined;
+    if (this._tag !== T.regex_literal) return undefined;
     const src = this._ast._rawTokenText(this.mainToken);
     // Regex format: /pattern/flags
     const lastSlash = src.lastIndexOf('/');
@@ -922,7 +941,7 @@ const NodeProto = {
    * ESLint's no-magic-numbers uses Literal[bigint] selectors.
    */
   get bigint() {
-    if (this.tag !== T.bigint_literal) return undefined;
+    if (this._tag !== T.bigint_literal) return undefined;
     const src = this._ast._rawTokenText(this.mainToken);
     return src.endsWith('n') ? src.slice(0, -1) : src;
   },
@@ -932,7 +951,7 @@ const NodeProto = {
    * IfStatement, WhileStatement, DoWhileStatement, ForStatement, ConditionalExpression
    */
   get test() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
@@ -960,7 +979,7 @@ const NodeProto = {
    * IfStatement, ConditionalExpression, SwitchCase (array of stmts)
    */
   get consequent() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
@@ -987,7 +1006,7 @@ const NodeProto = {
    * IfStatement, ConditionalExpression
    */
   get alternate() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
     if (t === T.if_stmt) return null;
@@ -1006,7 +1025,7 @@ const NodeProto = {
    * node.body — body of statements, loop body, or function body.
    */
   get body() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
@@ -1042,11 +1061,16 @@ const NodeProto = {
     } else if (t === T.class_decl || t === T.class_expr) {
       const d = ast.extraClassData(lhs);
       const members = ast._nodesFromRange(d.body_start, d.body_end);
+      const cbStart = members.length > 0 ? members[0].start : this.start;
+      const cbEnd = this.end;
       result = {
         type: 'ClassBody',
         body: members,
-        start: members.length > 0 ? members[0].start : this.start,
-        mainToken: this.mainToken,
+        start: cbStart,
+        end: cbEnd,
+        range: [cbStart, cbEnd],
+        loc: this.loc,
+        parent: this,
       };
     } else if (t === T.root) {
       result = ast._nodesFromRange(lhs, rhs);
@@ -1058,7 +1082,7 @@ const NodeProto = {
    * node.left — left operand or for-in/of binding.
    */
   get left() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     // Binary/logical/assignment expressions
@@ -1084,7 +1108,7 @@ const NodeProto = {
    * node.right — right operand or for-in/of iterable.
    */
   get right() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
@@ -1108,7 +1132,7 @@ const NodeProto = {
    * node.argument — operand of unary/spread/rest/return/throw/await/yield.
    */
   get argument() {
-    const t = this.tag;
+    const t = this._tag;
     const lhs = ast => ast.nodeLhs(this._i);
     const a = this._ast;
     if (t === T.unary_plus || t === T.unary_minus || t === T.logical_not ||
@@ -1136,7 +1160,7 @@ const NodeProto = {
    * CallExpression, NewExpression
    */
   get callee() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.call_expr || t === T.optional_call_expr || t === T.new_expr) {
       const idx = this._ast.nodeLhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
@@ -1149,7 +1173,7 @@ const NodeProto = {
    * CallExpression, NewExpression
    */
   get arguments() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
     if (t === T.call_expr || t === T.optional_call_expr) {
@@ -1169,7 +1193,7 @@ const NodeProto = {
    * MemberExpression (all variants)
    */
   get object() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.member_expr || t === T.computed_member_expr ||
         t === T.optional_member_expr || t === T.optional_computed_member_expr ||
         t === T.with_stmt) {
@@ -1185,7 +1209,7 @@ const NodeProto = {
    * Computed access: returns NodeView of the expression.
    */
   get property() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
     if (t === T.member_expr || t === T.optional_member_expr) {
@@ -1216,7 +1240,7 @@ const NodeProto = {
    * node.computed — true for computed member/property access.
    */
   get computed() {
-    const t = this.tag;
+    const t = this._tag;
     return t === T.computed_member_expr || t === T.optional_computed_member_expr ||
            t === T.computed_property || t === T.computed_method_def ||
            t === T.computed_property_def || t === T.computed_getter_def ||
@@ -1227,7 +1251,7 @@ const NodeProto = {
    * node.optional — true for optional chaining.
    */
   get optional() {
-    const t = this.tag;
+    const t = this._tag;
     return t === T.optional_member_expr || t === T.optional_computed_member_expr ||
            t === T.optional_call_expr;
   },
@@ -1236,7 +1260,7 @@ const NodeProto = {
    * node.prefix — true for prefix update expressions (++x, --x).
    */
   get prefix() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.prefix_inc || t === T.prefix_dec) return true;
     if (t === T.postfix_inc || t === T.postfix_dec) return false;
     return null;
@@ -1246,14 +1270,14 @@ const NodeProto = {
    * node.delegate — true for yield* expressions.
    */
   get delegate() {
-    return this.tag === T.yield_delegate;
+    return this._tag === T.yield_delegate;
   },
 
   /**
    * node.tail — true if this TemplateElement is the last in its TemplateLiteral.
    */
   get tail() {
-    if (this.tag !== T.template_element) return undefined;
+    if (this._tag !== T.template_element) return undefined;
     // Check if next sibling in parent's child list is also a TemplateElement or we're at the end.
     const ast = this._ast;
     const parent = this.parent;
@@ -1268,7 +1292,7 @@ const NodeProto = {
    * node.async — true for async functions and for-await-of.
    */
   get async() {
-    const t = this.tag;
+    const t = this._tag;
     return t === T.async_fn_decl || t === T.async_fn_expr ||
            t === T.async_generator_fn_decl || t === T.async_generator_fn_expr ||
            t === T.async_arrow_fn || t === T.for_await_of_stmt;
@@ -1278,7 +1302,7 @@ const NodeProto = {
    * node.generator — true for generator functions.
    */
   get generator() {
-    const t = this.tag;
+    const t = this._tag;
     return t === T.generator_fn_decl || t === T.generator_fn_expr ||
            t === T.async_generator_fn_decl || t === T.async_generator_fn_expr;
   },
@@ -1288,7 +1312,7 @@ const NodeProto = {
    * Returns undefined for non-member nodes.
    */
   get static() {
-    const t = this.tag;
+    const t = this._tag;
     if (t !== T.method_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.constructor_def && t !== T.computed_method_def &&
         t !== T.computed_getter_def && t !== T.computed_setter_def) return undefined;
@@ -1299,7 +1323,7 @@ const NodeProto = {
    * node.id — name identifier of function/class declaration, or VariableDeclarator pattern.
    */
   get id() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     // VariableDeclarator: id is the left-hand side (pattern or identifier)
@@ -1325,7 +1349,7 @@ const NodeProto = {
    * Returns array of NodeViews.
    */
   get params() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     if (t === T.fn_decl || t === T.async_fn_decl ||
@@ -1346,7 +1370,7 @@ const NodeProto = {
    * node.declarations — list of VariableDeclarator nodes.
    */
   get declarations() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     if (t === T.var_decl || t === T.let_decl || t === T.const_decl) {
       // lhs=range.start, rhs=range.end (stored directly)
@@ -1360,7 +1384,7 @@ const NodeProto = {
    *             "init" / "get" / "set" for Property/MethodDefinition.
    */
   get kind() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.var_decl) return 'var';
     if (t === T.let_decl) return 'let';
     if (t === T.const_decl) return 'const';
@@ -1399,7 +1423,7 @@ const NodeProto = {
    * node.init — initializer in VariableDeclarator or ForStatement.
    */
   get init() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
@@ -1417,7 +1441,7 @@ const NodeProto = {
    * node.update — update expression in ForStatement.
    */
   get update() {
-    if (this.tag !== T.for_stmt) return null;
+    if (this._tag !== T.for_stmt) return null;
     const ast = this._ast;
     const d = ast.extraForData(ast.nodeLhs(this._i));
     return d.update === NONE ? null : nodeView(ast, d.update);
@@ -1427,7 +1451,7 @@ const NodeProto = {
    * node.superClass — parent class in ClassDeclaration/Expression.
    */
   get superClass() {
-    const t = this.tag;
+    const t = this._tag;
     if (t !== T.class_decl && t !== T.class_expr) return null;
     const ast = this._ast;
     const d = ast.extraClassData(ast.nodeLhs(this._i));
@@ -1439,7 +1463,7 @@ const NodeProto = {
    * Holes are represented as null (matching ESLint's AST).
    */
   get elements() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     if (t === T.array_literal || t === T.array_pattern) {
       const lhs = ast.nodeLhs(this._i);
@@ -1459,7 +1483,7 @@ const NodeProto = {
    * node.expressions — SequenceExpression children or TemplateLiteral interpolations.
    */
   get expressions() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.sequence_expr) {
       return this._ast._nodesFromRange(this._ast.nodeLhs(this._i), this._ast.nodeRhs(this._i));
     }
@@ -1484,7 +1508,7 @@ const NodeProto = {
    * node.quasis — TemplateElement nodes in a TemplateLiteral.
    */
   get quasis() {
-    if (this.tag !== T.template_literal) return undefined;
+    if (this._tag !== T.template_literal) return undefined;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
     const result = [];
@@ -1502,7 +1526,7 @@ const NodeProto = {
    * node.quasi — the TemplateLiteral in a TaggedTemplateExpression.
    */
   get quasi() {
-    if (this.tag !== T.tagged_template) return undefined;
+    if (this._tag !== T.tagged_template) return undefined;
     const rhs = this._ast.nodeRhs(this._i);
     return rhs === NONE ? null : nodeView(this._ast, rhs);
   },
@@ -1511,7 +1535,7 @@ const NodeProto = {
    * node.properties — properties of ObjectExpression or ObjectPattern.
    */
   get properties() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     if (t === T.object_literal || t === T.object_pattern) {
       const nodes = ast._nodesFromRange(ast.nodeLhs(this._i), ast.nodeRhs(this._i));
@@ -1525,12 +1549,12 @@ const NodeProto = {
         if (n.type === 'AssignmentPattern') {
           const key = n.left || n;
           return { type: 'Property', key, value: n, kind: 'init', method: false,
-                   shorthand: true, computed: false, range: n.range, loc: n.loc, parent: this };
+                   shorthand: true, computed: false, start: n.start, end: n.end, range: n.range, loc: n.loc, parent: this };
         }
         // Shorthand: {a} → Property { key: a, value: a }
         if (n.type === 'Identifier') {
           return { type: 'Property', key: n, value: n, kind: 'init', method: false,
-                   shorthand: true, computed: false, range: n.range, loc: n.loc, parent: this };
+                   shorthand: true, computed: false, start: n.start, end: n.end, range: n.range, loc: n.loc, parent: this };
         }
         return n;
       });
@@ -1542,7 +1566,7 @@ const NodeProto = {
    * node.key — key of Property or MethodDefinition.
    */
   get key() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     if (t === T.property || t === T.shorthand_property ||
@@ -1562,21 +1586,21 @@ const NodeProto = {
    * node.shorthand — true for shorthand Property.
    */
   get shorthand() {
-    return this.tag === T.shorthand_property;
+    return this._tag === T.shorthand_property;
   },
 
   /**
    * node.method — true for method shorthand Property.
    */
   get method() {
-    return this.tag === T.method_def || this.tag === T.computed_method_def;
+    return this._tag === T.method_def || this._tag === T.computed_method_def;
   },
 
   /**
    * node.discriminant — switch expression.
    */
   get discriminant() {
-    if (this.tag !== T.switch_stmt) return null;
+    if (this._tag !== T.switch_stmt) return null;
     const idx = this._ast.nodeLhs(this._i);
     return idx === NONE ? null : nodeView(this._ast, idx);
   },
@@ -1585,7 +1609,7 @@ const NodeProto = {
    * node.cases — array of SwitchCase NodeViews.
    */
   get cases() {
-    if (this.tag !== T.switch_stmt) return null;
+    if (this._tag !== T.switch_stmt) return null;
     const ast = this._ast;
     const sub = ast.extraSubRange(ast.nodeRhs(this._i));
     return ast._nodesFromRange(sub.start, sub.end);
@@ -1596,7 +1620,7 @@ const NodeProto = {
    * LabeledStatement, BreakStatement (with label), ContinueStatement (with label)
    */
   get label() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     let tokIdx = null;
     if (t === T.labeled_stmt) {
@@ -1617,7 +1641,7 @@ const NodeProto = {
     let elo = 0, ehi = ls.length - 1;
     while (elo < ehi) { const m = (elo + ehi + 1) >> 1; if (ls[m] <= end) elo = m; else ehi = m - 1; }
     return {
-      type: 'Identifier', name,
+      type: 'Identifier', name, start, end,
       range: [start, end],
       loc: { start: { line: lo + 1, column: start - ls[lo] }, end: { line: elo + 1, column: end - ls[elo] } },
       parent: this,
@@ -1628,7 +1652,7 @@ const NodeProto = {
    * node.block — try block.
    */
   get block() {
-    if (this.tag !== T.try_stmt) return null;
+    if (this._tag !== T.try_stmt) return null;
     const idx = this._ast.nodeLhs(this._i);
     return idx === NONE ? null : nodeView(this._ast, idx);
   },
@@ -1638,7 +1662,7 @@ const NodeProto = {
    * Returns a proper cached NodeView so ESLint identity checks (parent.handler === node) work.
    */
   get handler() {
-    if (this.tag !== T.try_stmt) return null;
+    if (this._tag !== T.try_stmt) return null;
     const ast = this._ast;
     const d = ast.extraTryData(ast.nodeRhs(this._i));
     return d.catch_node === NONE ? null : nodeView(ast, d.catch_node);
@@ -1648,7 +1672,7 @@ const NodeProto = {
    * node.finalizer — finally block.
    */
   get finalizer() {
-    if (this.tag !== T.try_stmt) return null;
+    if (this._tag !== T.try_stmt) return null;
     const ast = this._ast;
     const d = ast.extraTryData(ast.nodeRhs(this._i));
     return d.finally_body === NONE ? null : nodeView(ast, d.finally_body);
@@ -1658,7 +1682,7 @@ const NodeProto = {
    * node.param — catch clause parameter.
    */
   get param() {
-    if (this.tag !== T.catch_clause) return null;
+    if (this._tag !== T.catch_clause) return null;
     const idx = this._ast.nodeLhs(this._i);
     return idx === NONE ? null : nodeView(this._ast, idx);
   },
@@ -1667,7 +1691,7 @@ const NodeProto = {
    * node.meta — MetaProperty meta identifier (e.g., "new" in new.target).
    */
   get meta() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.new_target) return { type: 'Identifier', name: 'new' };
     if (t === T.import_meta) return { type: 'Identifier', name: 'import' };
     return undefined;
@@ -1678,7 +1702,7 @@ const NodeProto = {
    * Also used for arrow function concise body detection (see getter above).
    */
   get expression() {
-    const t = this.tag;
+    const t = this._tag;
     if (t === T.expression_stmt) {
       const idx = this._ast.nodeLhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
@@ -1698,7 +1722,7 @@ const NodeProto = {
    * ESLint's astUtils.isDirective checks typeof node.directive === "string".
    */
   get directive() {
-    if (this.tag !== T.expression_stmt) return undefined;
+    if (this._tag !== T.expression_stmt) return undefined;
     const ast = this._ast;
     const exprIdx = ast.nodeLhs(this._i);
     if (exprIdx === NONE) return undefined;
@@ -1715,7 +1739,7 @@ const NodeProto = {
    * node.specifiers — ImportDeclaration / ExportNamedDeclaration specifiers.
    */
   get specifiers() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     if (t === T.import_decl) {
       const d = ast.extraImportData(ast.nodeLhs(this._i));
@@ -1734,7 +1758,7 @@ const NodeProto = {
    * Returns a synthetic Literal node so rules can access .range, .loc, etc.
    */
   get source() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     if (t === T.import_decl) {
       const d = ast.extraImportData(ast.nodeLhs(this._i));
@@ -1752,7 +1776,7 @@ const NodeProto = {
    * Returns a synthetic Identifier node (with range/loc).
    */
   get local() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     let syn;
     if (t === T.import_specifier) {
@@ -1778,7 +1802,7 @@ const NodeProto = {
    * Returns a synthetic Identifier node (with range/loc).
    */
   get imported() {
-    if (this.tag !== T.import_specifier) return null;
+    if (this._tag !== T.import_specifier) return null;
     const syn = this._ast._syntheticId(this._ast.nodeLhs(this._i));
     syn.parent = this;
     return syn;
@@ -1789,7 +1813,7 @@ const NodeProto = {
    * Returns a synthetic Identifier node (with range/loc).
    */
   get exported() {
-    if (this.tag !== T.export_specifier) return null;
+    if (this._tag !== T.export_specifier) return null;
     const syn = this._ast._syntheticId(this._ast.nodeRhs(this._i));
     syn.parent = this;
     return syn;
@@ -1799,7 +1823,7 @@ const NodeProto = {
    * node.declaration — ExportDefaultDeclaration / ExportNamedDeclaration inner declaration.
    */
   get declaration() {
-    const t = this.tag;
+    const t = this._tag;
     const ast = this._ast;
     if (t === T.export_default_expr || t === T.export_default_fn || t === T.export_default_class) {
       const idx = ast.nodeLhs(this._i);
