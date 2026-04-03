@@ -1752,8 +1752,8 @@ class CodePathTracker {
     const top = this._branchStack.pop();
     if (!top) return _makeSegment(true);
     if (this.reachable) top.anyBranchReachable = true;
-    const merged = hasAllBranches ? top.anyBranchReachable : true;
-    const seg = _makeSegment(merged || top.savedReachable);
+    const reachable = hasAllBranches ? top.anyBranchReachable : true;
+    const seg = _makeSegment(reachable);
     this._currentSegment = seg;
     if (this._codePath) this._codePath.currentSegments = [seg];
     return seg;
@@ -2671,11 +2671,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     fnExpr._i = methodNodeIdx;
 
     if (!isExit) {
+      const outerSeg = cpTracker.segment;
+      if (outerSeg) invokeSegmentEvent(outerSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', outerSeg);
+      const { segment } = cpTracker.enterFunction(fnExpr);
       invokeCodePathHandlersWithNode('onCodePathStart', fnExpr);
+      invokeSegmentEvent('onCodePathSegmentStart', segment);
       if (hasFn) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
     } else {
       if (hasFn) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
+      const oldSeg = cpTracker.segment;
+      if (oldSeg) invokeSegmentEvent(oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', oldSeg);
       invokeCodePathHandlersWithNode('onCodePathEnd', fnExpr);
+      cpTracker.exitFunction();
+      const outerSeg = cpTracker.segment;
+      if (outerSeg) invokeSegmentEvent(outerSeg.reachable ? 'onCodePathSegmentStart' : 'onUnreachableCodePathSegmentStart', outerSeg);
     }
   }
 
@@ -2840,6 +2849,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           if (tn === 'CatchClause' || tn === 'SwitchCase') {
             const seg = cpTracker.nextBranch();
             if (seg) invokeSegmentEvent('onCodePathSegmentStart', seg);
+          }
+          // Detect else branch
+          if (pd) {
+            const pi2 = pd[idx];
+            if (pi2 !== NONE && pi2 < ast.nodeCount && tagNames[nodeTags[pi2]] === 'IfStatement') {
+              const ifNode = nodeView(ast, pi2);
+              if (ifNode.alternate && ifNode.alternate._i === idx) {
+                const seg = cpTracker.nextBranch();
+                if (seg) invokeSegmentEvent('onCodePathSegmentStart', seg);
+              }
+            }
           }
         }
         const enter = visitorMap.get(tn);
