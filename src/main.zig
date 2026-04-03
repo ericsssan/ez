@@ -108,7 +108,8 @@ pub fn main(init: std.process.Init) !void {
             rule_count += 1;
         }
 
-        lint_engine.buildDispatch();
+        // QuickJS done — no longer needed at runtime
+        // lint_engine.buildDispatch(); // only needed if QuickJS dispatches
 
         // ── Phase 1b: Extract handler sources for compilation ───
         const extractor = @import("linter/eslint/extractor.zig");
@@ -184,7 +185,6 @@ pub fn main(init: std.process.Init) !void {
 
         var total_diags: u32 = 0;
         var compiled_diags: u32 = 0;
-        var qjs_diags: u32 = 0;
         var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
         for (corpus_sources.items) |src| {
@@ -204,7 +204,7 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
 
-            // Compiled path: native Zig predicate evaluation (just count)
+            // Compiled dispatch — pure Zig, no QuickJS
             const node_tags = tree.nodes.items(.tag);
             for (traversal.dfs_events) |ev| {
                 const is_exit = ev < 0;
@@ -221,27 +221,18 @@ pub fn main(init: std.process.Init) !void {
                 }
             }
 
-            // QuickJS fallback path (re-parses internally, will optimize later)
-            qjs_diags += lint_engine.lintSource(src, a);
-
             _ = arena_impl.reset(.retain_capacity);
         }
         arena_impl.deinit();
 
-        total_diags = compiled_diags + qjs_diags;
+        total_diags = compiled_diags;
 
-        try stdout.print("{d} rules, {d} files, {d} diags (compiled: {d}, qjs: {d})\n", .{
+        try stdout.print("{d} rules, {d}/{d} compiled, {d} files, {d} diags\n", .{
             rule_count,
+            compiled_count,
+            total_handlers,
             corpus_sources.items.len,
             total_diags,
-            compiled_diags,
-            qjs_diags,
-        });
-        try stdout.print("  eval {d}ms, create {d}ms, parse {d}ms, dispatch {d}ms\n", .{
-            lint_engine.eval_ns / 1_000_000,
-            lint_engine.create_ns / 1_000_000,
-            lint_engine.parse_ns / 1_000_000,
-            lint_engine.dispatch_ns / 1_000_000,
         });
         try stdout.flush();
         return;
