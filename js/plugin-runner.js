@@ -1,6 +1,6 @@
 "use strict";
 
-const { nodeView, NONE, effectiveTypeName } = require("./node-view");
+const { nodeView, NONE, effectiveTypeName, T } = require("./node-view");
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
@@ -63,6 +63,55 @@ function _intern(str) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+// Tags that act as destructuring pass-through nodes (not the declaring node).
+const _DESTRUCTURE_TAGS = new Set([
+  T.property, T.shorthand_property, T.computed_property,
+  T.object_pattern, T.array_pattern,
+  T.assignment_pattern, T.rest_element, T.spread_element,
+]);
+// Tags that create function scope (including methods/getters/setters).
+const _FN_TAGS = new Set([
+  T.fn_decl, T.async_fn_decl, T.generator_fn_decl, T.async_generator_fn_decl,
+  T.fn_expr, T.async_fn_expr, T.generator_fn_expr, T.async_generator_fn_expr,
+  T.arrow_fn, T.async_arrow_fn,
+  T.method_def, T.getter_def, T.setter_def, T.constructor_def,
+  T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
+]);
+const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
+
+/**
+ * Walk up from declNode to find the correct ESLint def.node for a given def type.
+ */
+function _findDefNode(declNode, defType) {
+  if (!declNode) return null;
+  let cur = declNode.parent;
+  switch (defType) {
+    case 'Variable':
+      while (cur) {
+        if (cur._tag === T.declarator) return cur;
+        if (!_DESTRUCTURE_TAGS.has(cur._tag)) break;
+        cur = cur.parent;
+      }
+      break;
+    case 'FunctionName':
+      while (cur) { if (_FN_TAGS.has(cur._tag)) return cur; cur = cur.parent; }
+      break;
+    case 'ClassName':
+      while (cur) { if (_CLASS_TAG_SET.has(cur._tag)) return cur; cur = cur.parent; }
+      break;
+    case 'ImportBinding':
+      while (cur) { if (cur._tag === T.import_decl) return cur; cur = cur.parent; }
+      break;
+    case 'Parameter':
+      while (cur) { if (_FN_TAGS.has(cur._tag)) return cur; cur = cur.parent; }
+      break;
+    case 'CatchClause':
+      while (cur) { if (cur._tag === T.catch_clause) return cur; cur = cur.parent; }
+      break;
+  }
+  return declNode;
+}
 
 /**
  * Binary-search lineStarts array to find the 1-based line number for pos.
@@ -308,6 +357,23 @@ class SourceCode {
   getFirstToken(node, filterOrOpts) {
     if (!node) return null;
     if (node._i === undefined || node._i === null) {
+      // Synthetic node — use range to scan tokens if available, else mainToken
+      if (node.range) {
+        const { fn, skip } = this._normalizeFilter(filterOrOpts);
+        const ast = this._ast;
+        const starts = ast._tokStarts;
+        const tc = ast.tokenCount;
+        // Binary search for first token at or after range[0]
+        let lo = 0, hi = tc - 1;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (starts[m] < node.range[0]) lo = m + 1; else hi = m; }
+        let skipped = 0;
+        for (let t = lo; t < tc && starts[t] < node.range[1]; t++) {
+          if (ast._tokTags[t] === 131) continue; // skip EOF
+          const tok = this._makeToken(t);
+          if (!fn || fn(tok)) { if (skipped >= skip) return tok; skipped++; }
+        }
+        return null;
+      }
       if (node.mainToken !== undefined) {
         const tok = this._makeToken(node.mainToken);
         const { fn, skip } = this._normalizeFilter(filterOrOpts);
@@ -782,11 +848,7 @@ class SourceCode {
     //   FunctionName:def.name=Identifier, def.node=FunctionDeclaration, def.parent=container
     //   ClassName:   def.name=Identifier, def.node=ClassDeclaration, def.parent=container
     //   ImportBinding: def.name=Identifier, def.node=ImportSpecifier, def.parent=ImportDeclaration
-    let defNode = declNode;
-    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
-      // For these types, def.node = parent of Identifier (Declarator/Declaration/Specifier)
-      defNode = declNode && declNode.parent ? declNode.parent : declNode;
-    }
+    let defNode = declNode ? _findDefNode(declNode, defType) : null;
     const defs = declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
 
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
@@ -896,11 +958,7 @@ class SourceCode {
     const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
-    // Compute def.node and def.parent same as in _buildVariable
-    let defNode = declNode;
-    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
-      defNode = declNode && declNode.parent ? declNode.parent : declNode;
-    }
+    let defNode = declNode ? _findDefNode(declNode, defType) : null;
     return {
       name,
       defs: declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
@@ -1008,7 +1066,7 @@ class SourceCode {
             if (cur === nodeIdx) { result.push(this._buildVariable(i)); break; }
             // Stop if we cross a function or class boundary
             const curTag = tags[cur];
-            if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69)) break;
+            if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69) || _FN_TAGS.has(curTag)) break;
             cur = pd[cur];
           }
         }
@@ -2630,8 +2688,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // Enter event
         const idx = ev;
         const tag = nodeTags[idx];
-        const tn = tagNames[tag];
+        let tn = tagNames[tag];
         if (!tn) continue;
+        // Remap MethodDefinition → Property inside object literals (ESTree convention)
+        if (tn === 'MethodDefinition' && pd) {
+          const pi2 = pd[idx];
+          if (pi2 !== NONE && pi2 < ast.nodeCount) {
+            const pt = nodeTags[pi2];
+            if (tagNames[pt] === 'ObjectExpression' || tagNames[pt] === 'ObjectPattern') tn = 'Property';
+          }
+        }
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathStart', idx);
         const enter = visitorMap.get(tn);
         if (enter) {
@@ -2698,8 +2764,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // Exit event (bitwise NOT to get node index)
         const idx = ~ev;
         const tag = nodeTags[idx];
-        const tn = tagNames[tag];
+        let tn = tagNames[tag];
         if (!tn) continue;
+        // Remap MethodDefinition → Property inside object literals
+        if (tn === 'MethodDefinition' && pd) {
+          const pi2 = pd[idx];
+          if (pi2 !== NONE && pi2 < ast.nodeCount) {
+            const pt = nodeTags[pi2];
+            if (tagNames[pt] === 'ObjectExpression' || tagNames[pt] === 'ObjectPattern') tn = 'Property';
+          }
+        }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
         const exit = visitorMap.get(tn + ':exit');
         if (exit) {
