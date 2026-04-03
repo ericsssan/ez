@@ -161,6 +161,7 @@ pub const SemanticAnalyzer = struct {
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
         self.resolveUnresolved();
+        try self.buildRefRanges();
         try self.validateExports();
 
         return .{
@@ -284,7 +285,27 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    // ── Visitor dispatch ───────────────────────────────────
+    /// Sort the reference table by symbol_id and populate each symbol's
+    /// RefRange so that getRefRange() returns a contiguous, valid slice.
+    fn buildRefRanges(self: *SemanticAnalyzer) !void {
+        try self.references.sortBySymbol(self.allocator);
+
+        const ref_count = self.references.count();
+        if (ref_count == 0) return;
+
+        var i: u32 = 0;
+        while (i < ref_count) {
+            const sym = self.references.getSymbol(ReferenceId.fromInt(i));
+            if (sym == .none) break; // unresolved refs sorted to end
+            const start = i;
+            while (i < ref_count and self.references.getSymbol(ReferenceId.fromInt(i)) == sym) {
+                i += 1;
+            }
+            self.symbols.setRefRange(sym, .{ .start = start, .end = i });
+        }
+    }
+
+    // ── Visitor dispatch ──────────────────────────────��────
 
     fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) std.mem.Allocator.Error!void {
         if (idx == .none or idx == .root) return;

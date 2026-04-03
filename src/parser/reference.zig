@@ -161,6 +161,43 @@ pub const ReferenceTable = struct {
         return @intCast(self.symbol_ids.items.len);
     }
 
+    /// Sort all reference arrays by symbol_id so each symbol's references
+    /// form a contiguous range. Unresolved refs (symbol_id == .none,
+    /// value 0xFFFFFFFF) sort to the end. Call once after resolveUnresolved.
+    pub fn sortBySymbol(self: *ReferenceTable, allocator: std.mem.Allocator) !void {
+        const n = self.symbol_ids.items.len;
+        if (n == 0) return;
+
+        // Build a sort-key index [0..n-1], then sort it by symbol_id.
+        const indices = try allocator.alloc(u32, n);
+        defer allocator.free(indices);
+        for (indices, 0..) |*v, i| v.* = @intCast(i);
+
+        const sym_slice = self.symbol_ids.items;
+        std.mem.sort(u32, indices, sym_slice, struct {
+            fn lt(ctx: []const SymbolId, a: u32, b: u32) bool {
+                return @intFromEnum(ctx[a]) < @intFromEnum(ctx[b]);
+            }
+        }.lt);
+
+        // Apply the permutation to all four parallel arrays.
+        const sym_orig  = try allocator.dupe(SymbolId,      self.symbol_ids.items);
+        defer allocator.free(sym_orig);
+        const kind_orig = try allocator.dupe(ReferenceKind, self.kinds.items);
+        defer allocator.free(kind_orig);
+        const node_orig = try allocator.dupe(ast.NodeIndex,  self.node_ids.items);
+        defer allocator.free(node_orig);
+        const scope_orig = try allocator.dupe(ScopeId,      self.scope_ids.items);
+        defer allocator.free(scope_orig);
+
+        for (indices, 0..) |src, dst| {
+            self.symbol_ids.items[dst] = sym_orig[src];
+            self.kinds.items[dst]      = kind_orig[src];
+            self.node_ids.items[dst]   = node_orig[src];
+            self.scope_ids.items[dst]  = scope_orig[src];
+        }
+    }
+
     /// Count unresolved references (potential globals or errors).
     pub fn unresolvedCount(self: *const ReferenceTable) u32 {
         var n: u32 = 0;
