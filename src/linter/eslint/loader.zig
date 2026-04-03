@@ -299,6 +299,9 @@ fn discoverVisitorKeys(
         .allocator = allocator,
     };
 
+    // Build module cache to extract create() + defaultOptions before key discovery.
+    rules_mod.buildModuleCache(&temp_rule, allocator);
+
     const ctx = rules_mod.initRuleForFile(
         &temp_rule,
         .{
@@ -322,24 +325,28 @@ fn discoverVisitorKeys(
     {
         const obj = ctx.visitor_obj;
         for (obj.entries.keys()) |key| {
-            const is_exit = std.mem.endsWith(u8, key, ":exit");
-            const type_name = if (is_exit) key[0 .. key.len - 5] else key;
+            // Handle comma-joined keys like "Identifier,PrivateIdentifier"
+            var parts_iter = std.mem.splitScalar(u8, key, ',');
+            while (parts_iter.next()) |part| {
+                const is_exit = std.mem.endsWith(u8, part, ":exit");
+                const type_name = if (is_exit) part[0 .. part.len - 5] else part;
 
-            // Map ESTree name to sanz tag ordinals
-            var tags: std.ArrayList(u16) = .empty;
-            for (0..layout.tag_count) |t| {
-                const tn = std.mem.span(layout.sanz_tag_name(@intCast(t)));
-                if (std.mem.eql(u8, tn, type_name)) {
-                    tags.append(allocator, @intCast(t)) catch {};
+                // Map ESTree name to sanz tag ordinals
+                var tags: std.ArrayList(u16) = .empty;
+                for (0..layout.tag_count) |t| {
+                    const tn = std.mem.span(layout.sanz_tag_name(@intCast(t)));
+                    if (std.mem.eql(u8, tn, type_name)) {
+                        tags.append(allocator, @intCast(t)) catch {};
+                    }
                 }
-            }
 
-            if (tags.items.len > 0) {
-                visitor_keys.append(allocator, .{
-                    .key = key,
-                    .tags = tags.toOwnedSlice(allocator) catch &.{},
-                    .is_exit = is_exit,
-                }) catch {};
+                if (tags.items.len > 0) {
+                    visitor_keys.append(allocator, .{
+                        .key = key, // keep original key for visitor_obj lookup
+                        .tags = tags.toOwnedSlice(allocator) catch &.{},
+                        .is_exit = is_exit,
+                    }) catch {};
+                }
             }
         }
     }

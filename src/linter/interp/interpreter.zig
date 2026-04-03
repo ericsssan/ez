@@ -91,7 +91,7 @@ pub const Interpreter = struct {
     /// When true, skip evaluating "meta" property values in object literals.
     /// Used during module body eval to avoid spending time on ESLint rule
     /// metadata (type, docs, schema, messages) that we never access.
-    skip_meta: bool = false,
+    skip_schema: bool = false,
 
     const NONE: u32 = 0xFFFFFFFF;
     const MAX_DEPTH: u16 = 128;
@@ -213,6 +213,9 @@ pub const Interpreter = struct {
             // ── Sequence (comma) ──
             .sequence_expr => self.evalSequence(data),
 
+            // ── Grouping: (expr) — pass through to inner expression ──
+            .grouping_expr => self.eval(@enumFromInt(@intFromEnum(data.lhs))),
+
             // ── Empty / no-op ──
             .empty_stmt => .undefined,
 
@@ -246,6 +249,8 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, name, "parseFloat")) return .{ .string = "__parseFloat__" };
         if (std.mem.eql(u8, name, "isNaN")) return .{ .string = "__isNaN__" };
         if (std.mem.eql(u8, name, "isFinite")) return .{ .string = "__isFinite__" };
+        if (std.mem.eql(u8, name, "Boolean")) return .{ .string = "__Boolean__" };
+        if (std.mem.eql(u8, name, "String")) return .{ .string = "__String__" };
         // Check for closure function names
         if (self.closure_fns.contains(name)) return .{ .string = name };
         return self.env.lookup(name);
@@ -269,8 +274,11 @@ pub const Interpreter = struct {
         // Array index access
         if (obj == .array) {
             if (key == .number) {
-                const idx: usize = @intFromFloat(key.number);
-                if (idx < obj.array.len) return obj.array[idx];
+                const n = key.number;
+                if (n >= 0 and n < @as(f64, @floatFromInt(std.math.maxInt(usize))) and n == @floor(n)) {
+                    const idx: usize = @intFromFloat(n);
+                    if (idx < obj.array.len) return obj.array[idx];
+                }
             }
             if (key == .string) {
                 if (std.mem.eql(u8, key.string, "length"))
@@ -280,13 +288,21 @@ pub const Interpreter = struct {
         // String bracket access: str[0]
         if (obj == .string) {
             if (key == .number) {
-                const idx: usize = @intFromFloat(key.number);
-                if (idx < obj.string.len)
-                    return .{ .string = obj.string[idx .. idx + 1] };
+                const n = key.number;
+                if (n >= 0 and n < @as(f64, @floatFromInt(std.math.maxInt(usize))) and n == @floor(n)) {
+                    const idx: usize = @intFromFloat(n);
+                    if (idx < obj.string.len)
+                        return .{ .string = obj.string[idx .. idx + 1] };
+                }
             }
         }
         // Object property access
         if (key == .string) return self.getProperty(obj, key.string);
+        // Numeric key on object: convert to string (JavaScript semantics for obj[42])
+        if (key == .number) {
+            const ks = valueToString(self.arena, key);
+            if (ks == .string) return self.getProperty(obj, ks.string);
+        }
         return .undefined;
     }
 
@@ -327,10 +343,11 @@ pub const Interpreter = struct {
             if (std.mem.eql(u8, prop, "options")) return .{ .array = self.options };
             if (std.mem.eql(u8, prop, "filename")) return .{ .string = self.rule_name };
             if (std.mem.eql(u8, prop, "getScope")) return .{ .string = "__context_getScope__" };
-            if (std.mem.eql(u8, prop, "parserOptions")) {
+            if (std.mem.eql(u8, prop, "parserOptions") or std.mem.eql(u8, prop, "languageOptions")) {
                 const ptr = self.arena.create(Value.Object) catch return .undefined;
                 ptr.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
                 ptr.entries.put("ecmaVersion", .{ .number = 2022 }) catch {};
+                ptr.entries.put("sourceType", .{ .string = "module" }) catch {};
                 return .{ .object = ptr };
             }
             if (std.mem.eql(u8, prop, "settings")) {
@@ -448,7 +465,10 @@ pub const Interpreter = struct {
             std.mem.eql(u8, prop, "slice") or std.mem.eql(u8, prop, "reduce") or
             std.mem.eql(u8, prop, "push") or std.mem.eql(u8, prop, "pop") or
             std.mem.eql(u8, prop, "reverse") or std.mem.eql(u8, prop, "sort") or
-            std.mem.eql(u8, prop, "at"))
+            std.mem.eql(u8, prop, "at") or
+            // Set-like methods (arrays simulate Sets)
+            std.mem.eql(u8, prop, "has") or std.mem.eql(u8, prop, "add") or
+            std.mem.eql(u8, prop, "delete") or std.mem.eql(u8, prop, "values"))
         {
             const rec_ptr = self.arena.create(Value) catch return .undefined;
             rec_ptr.* = .{ .array = a };
@@ -467,9 +487,15 @@ pub const Interpreter = struct {
                 else if (std.mem.eql(u8, prop, "reduce")) .arr_reduce
                 else if (std.mem.eql(u8, prop, "push")) .arr_push
                 else if (std.mem.eql(u8, prop, "pop")) .arr_pop
+                else if (std.mem.eql(u8, prop, "has")) .set_has
+                else if (std.mem.eql(u8, prop, "add")) .set_add
+                else if (std.mem.eql(u8, prop, "delete")) .set_delete
+                else if (std.mem.eql(u8, prop, "values")) .arr_forEach // simplification
                 else .arr_at;
             return .{ .builtin = .{ .kind = kind, .receiver = rec_ptr } };
         }
+        // .size property for Set-as-array
+        if (std.mem.eql(u8, prop, "size")) return .{ .number = @floatFromInt(a.len) };
         return .undefined;
     }
 
@@ -540,11 +566,11 @@ pub const Interpreter = struct {
                     var new_arr: std.ArrayListUnmanaged(Value) = .empty;
                     new_arr.appendSlice(self.arena, cur.array) catch {};
                     for (args.items) |a| new_arr.append(self.arena, a) catch {};
-                    self.env.set(vname, .{ .array = new_arr.items });
+                    self.env.assign(vname, .{ .array = new_arr.items });
                 } else {
                     // pop — remove last element (value already returned)
                     if (cur.array.len > 0)
-                        self.env.set(vname, .{ .array = cur.array[0 .. cur.array.len - 1] });
+                        self.env.assign(vname, .{ .array = cur.array[0 .. cur.array.len - 1] });
                 }
             }
         }
@@ -634,6 +660,17 @@ pub const Interpreter = struct {
         self.return_value = .undefined;
 
         if (body != .none) {
+            // Arrow function expression bodies (e.g., x => x + 1) return the expression directly
+            const body_is_expr = (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn) and
+                self.rule_ast.nodeTag(body) != .block_stmt;
+
+            if (body_is_expr) {
+                const expr_val = self.eval(body) catch .undefined;
+                self.env = saved_env;
+                self.return_value = saved_return;
+                return expr_val;
+            }
+
             _ = self.eval(body) catch |err| switch (err) {
                 Signal.ReturnSignal => {
                     const ret = self.return_value;
@@ -737,6 +774,24 @@ pub const Interpreter = struct {
             return self.handleRequire(args);
         }
 
+        // ── Boolean() / String() coercions ──
+        if (std.mem.eql(u8, marker, "__Boolean__")) {
+            if (args.len > 0) return .{ .boolean = args[0].isTruthy() };
+            return .{ .boolean = false };
+        }
+        if (std.mem.eql(u8, marker, "__String__")) {
+            if (args.len > 0) return valueToString(self.arena, args[0]);
+            return .{ .string = "" };
+        }
+
+        // ── new RegExp(pattern, flags) ──
+        if (std.mem.eql(u8, marker, "__RegExp__")) {
+            const pat = if (args.len > 0 and args[0] == .string) args[0].string else "";
+            const flags = if (args.len > 1 and args[1] == .string) args[1].string else "";
+            const regex_str = std.fmt.allocPrint(self.arena, "/{s}/{s}", .{ pat, flags }) catch return .undefined;
+            return .{ .string = regex_str };
+        }
+
         // ── Global constructors ──
         if (std.mem.eql(u8, marker, "__Set__")) {
             // new Set() — return empty array; for..of and .forEach work natively.
@@ -788,6 +843,12 @@ pub const Interpreter = struct {
                 return .{ .array = result.items };
             }
             return .{ .array = &.{} };
+        }
+        if (std.mem.eql(u8, marker, "__Object_create__")) {
+            // Object.create(proto) — return a new empty object (ignore proto arg)
+            const ptr = self.arena.create(Value.Object) catch return .undefined;
+            ptr.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            return .{ .object = ptr };
         }
         if (std.mem.eql(u8, marker, "__Object_assign__")) {
             if (args.len >= 2 and args[0] == .object) {
@@ -896,6 +957,12 @@ pub const Interpreter = struct {
             return self.runtime.callBuiltin(self.runtime.ctx, .source_getTokensBetween, args);
         if (std.mem.eql(u8, marker, "__source_isSpaceBetween__"))
             return self.runtime.callBuiltin(self.runtime.ctx, .source_isSpaceBetween, args);
+        if (std.mem.eql(u8, marker, "__source_getCommentsInside__"))
+            return self.runtime.callBuiltin(self.runtime.ctx, .source_getCommentsInside, args);
+        if (std.mem.eql(u8, marker, "__source_getCommentsBefore__"))
+            return self.runtime.callBuiltin(self.runtime.ctx, .source_getCommentsBefore, args);
+        if (std.mem.eql(u8, marker, "__source_getCommentsAfter__"))
+            return self.runtime.callBuiltin(self.runtime.ctx, .source_getCommentsAfter, args);
 
         // ── String methods: __sm__<method>\x00<receiver> ──
         if (marker.len > 6 and std.mem.startsWith(u8, marker, "__sm__")) {
@@ -917,6 +984,25 @@ pub const Interpreter = struct {
         // ── Regex .test() ──
         if (marker.len > 1 and marker[0] == '/' and args.len > 0) {
             return self.evalRegexTest(marker, args[0]);
+        }
+
+        // ── string-utils: getGraphemeCount ──
+        if (std.mem.eql(u8, marker, "__stringUtils_getGraphemeCount__")) {
+            if (args.len > 0 and args[0] == .string)
+                return .{ .number = @floatFromInt(args[0].string.len) };
+            return .{ .number = 0 };
+        }
+
+        // ── string-utils: upperCaseFirst ──
+        if (std.mem.eql(u8, marker, "__stringUtils_upperCaseFirst__")) {
+            if (args.len > 0 and args[0] == .string) {
+                const s2 = args[0].string;
+                if (s2.len == 0) return .{ .string = s2 };
+                const upper = self.arena.dupe(u8, s2) catch return .{ .string = s2 };
+                upper[0] = std.ascii.toUpper(upper[0]);
+                return .{ .string = upper };
+            }
+            return .undefined;
         }
 
         // ── Legacy string includes (deprecated path) ──
@@ -1093,6 +1179,18 @@ pub const Interpreter = struct {
                 if (receiver != .array or receiver.array.len == 0) break :blk .undefined;
                 break :blk receiver.array[receiver.array.len - 1];
             },
+            .arr_at => blk: {
+                if (receiver != .array or args.len == 0 or args[0] != .number) break :blk .undefined;
+                const n = args[0].number;
+                const len = receiver.array.len;
+                const idx: usize = if (n < 0)
+                    if (@as(isize, @intFromFloat(-n)) > @as(isize, @intCast(len))) break :blk .undefined
+                    else len - @as(usize, @intFromFloat(-n))
+                else
+                    if (@as(usize, @intFromFloat(n)) >= len) break :blk .undefined
+                    else @intFromFloat(n);
+                break :blk receiver.array[idx];
+            },
             .arr_some => self.arrayHigherOrder(receiver, args, .some),
             .arr_every => self.arrayHigherOrder(receiver, args, .every),
             .arr_filter => self.arrayHigherOrder(receiver, args, .filter),
@@ -1151,6 +1249,39 @@ pub const Interpreter = struct {
                 break :blk .{ .array = result.items };
             },
 
+            // ── Set methods on arrays (Set simulated as array) ──
+            .set_has => blk: {
+                if (args.len == 0) break :blk .{ .boolean = false };
+                const target = args[0];
+                // Compare by string value for string args (common ESLint pattern)
+                if (receiver == .array) {
+                    for (receiver.array) |item| {
+                        if (item.strictEquals(target)) break :blk .{ .boolean = true };
+                        // Also support string-to-string comparison for type coercion
+                        if (item == .string and target == .string and std.mem.eql(u8, item.string, target.string))
+                            break :blk .{ .boolean = true };
+                    }
+                }
+                break :blk .{ .boolean = false };
+            },
+            .set_add => blk: {
+                // Return the set itself (Set.add returns the Set for chaining)
+                break :blk receiver;
+            },
+            .set_delete => blk: {
+                // Return boolean (simplified: always false)
+                break :blk .{ .boolean = false };
+            },
+            .set_forEach => blk: {
+                if (receiver == .array and args.len > 0 and args[0] == .function) {
+                    for (receiver.array) |item| {
+                        const cb_args = [_]Value{ item, item, receiver };
+                        _ = self.callUserFunction(args[0].function, &cb_args) catch {};
+                    }
+                }
+                break :blk .undefined;
+            },
+
             // String methods are handled via string markers, not builtins
             .str_slice => .undefined,
 
@@ -1205,6 +1336,15 @@ pub const Interpreter = struct {
         const pattern = regex_src[1..last_slash];
 
         if (pattern.len == 0) return .{ .boolean = true }; // empty regex matches everything
+
+        // Common "match any non-empty string" patterns → true iff str is non-empty
+        if (std.mem.eql(u8, pattern, "^.+$") or
+            std.mem.eql(u8, pattern, "^.{1,}$") or
+            std.mem.eql(u8, pattern, ".+"))
+            return .{ .boolean = str.len > 0 };
+        // Match any string including empty
+        if (std.mem.eql(u8, pattern, "^.*$") or std.mem.eql(u8, pattern, ".*"))
+            return .{ .boolean = true };
 
         // Simple pattern matching for common ESLint regex patterns
         // ^literal — starts with
@@ -1317,10 +1457,13 @@ pub const Interpreter = struct {
 
         // Emit the diagnostic
         if (message.len > 0) {
-            // TODO: compute span from report_node location
+            // Get the node's byte offset from the runtime callbacks.
+            var byte_start: u32 = report_node;
+            const start_val = self.runtime.getNodeProperty(self.runtime.ctx, report_node, "start");
+            if (start_val == .number) byte_start = @intFromFloat(start_val.number);
             const span = @import("../../parser/span.zig").Span{
-                .start = report_node,
-                .end = report_node,
+                .start = byte_start,
+                .end = byte_start,
             };
             self.diagnostics.append(self.arena, .{
                 .message = message,
@@ -1469,8 +1612,20 @@ pub const Interpreter = struct {
     // ── Operators ──
 
     fn evalArithmetic(self: *Interpreter, tag: Node.Tag, data: Node.Data) Signal!Value {
-        const left = (try self.eval(@enumFromInt(@intFromEnum(data.lhs)))).toNumber();
-        const right = (try self.eval(@enumFromInt(@intFromEnum(data.rhs)))).toNumber();
+        const lval = try self.eval(@enumFromInt(@intFromEnum(data.lhs)));
+        const rval = try self.eval(@enumFromInt(@intFromEnum(data.rhs)));
+
+        // JavaScript "+": string concatenation if either operand is a string.
+        if (tag == .add and (lval == .string or rval == .string or lval == .array or rval == .array)) {
+            const ls = valueToString(self.arena, lval);
+            const rs = valueToString(self.arena, rval);
+            const ls_str = if (ls == .string) ls.string else "";
+            const rs_str = if (rs == .string) rs.string else "";
+            return .{ .string = std.fmt.allocPrint(self.arena, "{s}{s}", .{ ls_str, rs_str }) catch "" };
+        }
+
+        const left = lval.toNumber();
+        const right = rval.toNumber();
         const result = switch (tag) {
             .add => left + right,
             .subtract => left - right,
@@ -1497,8 +1652,23 @@ pub const Interpreter = struct {
     }
 
     fn evalComparison(self: *Interpreter, tag: Node.Tag, data: Node.Data) Signal!Value {
-        const left = (try self.eval(@enumFromInt(@intFromEnum(data.lhs)))).toNumber();
-        const right = (try self.eval(@enumFromInt(@intFromEnum(data.rhs)))).toNumber();
+        const lval = try self.eval(@enumFromInt(@intFromEnum(data.lhs)));
+        const rval = try self.eval(@enumFromInt(@intFromEnum(data.rhs)));
+
+        // String comparison when both sides are strings (JavaScript spec).
+        if (lval == .string and rval == .string) {
+            const cmp = std.mem.order(u8, lval.string, rval.string);
+            return .{ .boolean = switch (tag) {
+                .less_than => cmp == .lt,
+                .greater_than => cmp == .gt,
+                .less_equal => cmp != .gt,
+                .greater_equal => cmp != .lt,
+                else => false,
+            } };
+        }
+
+        const left = lval.toNumber();
+        const right = rval.toNumber();
         const result = switch (tag) {
             .less_than => left < right,
             .greater_than => left > right,
@@ -1663,86 +1833,94 @@ pub const Interpreter = struct {
 
         // Array destructuring: const [a, b] = array
         if (binding_tag == .array_pattern) {
-            const binding_data = self.rule_ast.nodeData(binding_idx);
-            const elems = self.rule_ast.extraSlice(.{
-                .start = @intFromEnum(binding_data.lhs),
-                .end = @intFromEnum(binding_data.rhs),
-            });
-            for (elems, 0..) |elem_raw, ei| {
-                const elem_idx: NodeIndex = @enumFromInt(elem_raw);
-                if (elem_idx == .none) continue;
-                const elem_tag = self.rule_ast.nodeTag(elem_idx);
-
-                // Get the array element value
-                const arr_val = if (init_val == .array and ei < init_val.array.len)
-                    init_val.array[ei]
-                else
-                    Value.undefined;
-
-                if (elem_tag == .identifier) {
-                    const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(elem_idx));
-                    self.env.set(name, arr_val);
-                } else if (elem_tag == .assign) {
-                    // Default value: [x = "default"] — assign tag has lhs=binding, rhs=default
-                    const assign_data = self.rule_ast.nodeData(elem_idx);
-                    const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(assign_data.lhs));
-                    if (self.rule_ast.nodeTag(lhs_idx) == .identifier) {
-                        const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
-                        if (arr_val == .undefined) {
-                            // Use default value
-                            const default_val = self.eval(@enumFromInt(@intFromEnum(assign_data.rhs))) catch .undefined;
-                            self.env.set(name, default_val);
-                        } else {
-                            self.env.set(name, arr_val);
-                        }
-                    }
-                }
-            }
+            try self.bindArrayPattern(binding_idx, init_val);
             return .undefined;
         }
 
         // Object destructuring: const { a, b } = obj
         if (binding_tag == .object_pattern) {
-            const binding_data = self.rule_ast.nodeData(binding_idx);
-            const props = self.rule_ast.extraSlice(.{
-                .start = @intFromEnum(binding_data.lhs),
-                .end = @intFromEnum(binding_data.rhs),
-            });
-            for (props) |prop_raw| {
-                const prop_idx: NodeIndex = @enumFromInt(prop_raw);
-                if (prop_idx == .none) continue;
-                const prop_tag = self.rule_ast.nodeTag(prop_idx);
-                // Shorthand: { name } → get name from object
-                if (prop_tag == .shorthand_property) {
-                    const key_idx: NodeIndex = @enumFromInt(@intFromEnum(self.rule_ast.nodeData(prop_idx).lhs));
-                    const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
-                    const val = self.getProperty(init_val, key);
-                    self.env.set(key, val);
-                }
-                // Full property: { key: binding } or { key = default }
-                if (prop_tag == .property) {
-                    const prop_data = self.rule_ast.nodeData(prop_idx);
-                    const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
-                    const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
-                    const val = self.getProperty(init_val, key);
-                    // The value binding might be a different identifier
-                    if (prop_data.rhs != .none) {
-                        const val_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.rhs));
-                        if (self.rule_ast.nodeTag(val_idx) == .identifier) {
-                            const binding_name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(val_idx));
-                            self.env.set(binding_name, val);
-                        } else {
-                            self.env.set(key, val);
-                        }
-                    } else {
-                        self.env.set(key, val);
-                    }
-                }
-            }
+            try self.bindObjectPattern(binding_idx, init_val);
             return .undefined;
         }
 
         return .undefined;
+    }
+
+    fn bindObjectPattern(self: *Interpreter, pattern_idx: NodeIndex, obj_val: Value) Signal!void {
+        const pdata = self.rule_ast.nodeData(pattern_idx);
+        const props = self.rule_ast.extraSlice(.{
+            .start = @intFromEnum(pdata.lhs),
+            .end = @intFromEnum(pdata.rhs),
+        });
+        for (props) |prop_raw| {
+            const prop_idx: NodeIndex = @enumFromInt(prop_raw);
+            if (prop_idx == .none) continue;
+            const prop_tag = self.rule_ast.nodeTag(prop_idx);
+            if (prop_tag == .shorthand_property) {
+                const key_idx: NodeIndex = @enumFromInt(@intFromEnum(self.rule_ast.nodeData(prop_idx).lhs));
+                const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+                const val = self.getProperty(obj_val, key);
+                self.env.set(key, val);
+            } else if (prop_tag == .property) {
+                const pd = self.rule_ast.nodeData(prop_idx);
+                const key_idx: NodeIndex = @enumFromInt(@intFromEnum(pd.lhs));
+                const key = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(key_idx));
+                const val = self.getProperty(obj_val, key);
+                if (pd.rhs != .none) {
+                    const val_idx: NodeIndex = @enumFromInt(@intFromEnum(pd.rhs));
+                    const vt = self.rule_ast.nodeTag(val_idx);
+                    if (vt == .identifier) {
+                        const binding_name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(val_idx));
+                        self.env.set(binding_name, val);
+                    } else if (vt == .object_pattern) {
+                        try self.bindObjectPattern(val_idx, val);
+                    } else if (vt == .array_pattern) {
+                        try self.bindArrayPattern(val_idx, val);
+                    } else {
+                        self.env.set(key, val);
+                    }
+                } else {
+                    self.env.set(key, val);
+                }
+            }
+        }
+    }
+
+    fn bindArrayPattern(self: *Interpreter, pattern_idx: NodeIndex, arr_val: Value) Signal!void {
+        const pdata = self.rule_ast.nodeData(pattern_idx);
+        const elems = self.rule_ast.extraSlice(.{
+            .start = @intFromEnum(pdata.lhs),
+            .end = @intFromEnum(pdata.rhs),
+        });
+        for (elems, 0..) |elem_raw, ei| {
+            const elem_idx: NodeIndex = @enumFromInt(elem_raw);
+            if (elem_idx == .none) continue;
+            const elem_tag = self.rule_ast.nodeTag(elem_idx);
+            const elem_val = if (arr_val == .array and ei < arr_val.array.len)
+                arr_val.array[ei]
+            else
+                Value.undefined;
+            if (elem_tag == .identifier) {
+                const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(elem_idx));
+                self.env.set(name, elem_val);
+            } else if (elem_tag == .assign) {
+                const ad = self.rule_ast.nodeData(elem_idx);
+                const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(ad.lhs));
+                if (self.rule_ast.nodeTag(lhs_idx) == .identifier) {
+                    const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+                    if (elem_val == .undefined) {
+                        const default_val = self.eval(@enumFromInt(@intFromEnum(ad.rhs))) catch .undefined;
+                        self.env.set(name, default_val);
+                    } else {
+                        self.env.set(name, elem_val);
+                    }
+                }
+            } else if (elem_tag == .object_pattern) {
+                try self.bindObjectPattern(elem_idx, elem_val);
+            } else if (elem_tag == .array_pattern) {
+                try self.bindArrayPattern(elem_idx, elem_val);
+            }
+        }
     }
 
     fn evalAssignment(self: *Interpreter, data: Node.Data) Signal!Value {
@@ -1753,7 +1931,7 @@ pub const Interpreter = struct {
         const lhs_tag = self.rule_ast.nodeTag(lhs_idx);
         if (lhs_tag == .identifier) {
             const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
-            self.env.set(name, val);
+            self.env.assign(name, val);
         } else if (lhs_tag == .member_expr) {
             // obj.prop = val (e.g., module.exports = {...})
             const lhs_data = self.rule_ast.nodeData(lhs_idx);
@@ -1763,6 +1941,8 @@ pub const Interpreter = struct {
             if (obj == .object) {
                 obj.object.entries.put(prop_name, val) catch {};
             }
+        } else if (lhs_tag == .computed_member_expr or lhs_tag == .optional_computed_member_expr) {
+            self.setComputedMember(lhs_idx, val);
         }
         return val;
     }
@@ -1788,10 +1968,15 @@ pub const Interpreter = struct {
             .div_assign => .{ .number = if (rhs_val.toNumber() == 0) std.math.inf(f64) else cur.toNumber() / rhs_val.toNumber() },
             else => rhs_val,
         };
-        // Write back to the variable
-        if (lhs_idx != .none and self.rule_ast.nodeTag(lhs_idx) == .identifier) {
-            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
-            self.env.set(name, result);
+        // Write back to the variable (identifier or array element)
+        if (lhs_idx != .none) {
+            const lhs_tag2 = self.rule_ast.nodeTag(lhs_idx);
+            if (lhs_tag2 == .identifier) {
+                const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+                self.env.assign(name, result);
+            } else if (lhs_tag2 == .computed_member_expr or lhs_tag2 == .optional_computed_member_expr) {
+                self.setComputedMember(lhs_idx, result);
+            }
         }
         return result;
     }
@@ -1805,15 +1990,58 @@ pub const Interpreter = struct {
             .prefix_dec, .postfix_dec => .{ .number = old - 1.0 },
             else => .{ .number = old },
         };
-        // Write back to variable
-        if (lhs_idx != .none and self.rule_ast.nodeTag(lhs_idx) == .identifier) {
-            const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
-            self.env.set(name, new_val);
+        // Write back to variable (identifier or array element)
+        if (lhs_idx != .none) {
+            const lhs_tag = self.rule_ast.nodeTag(lhs_idx);
+            if (lhs_tag == .identifier) {
+                const name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(lhs_idx));
+                self.env.set(name, new_val);
+            } else if (lhs_tag == .computed_member_expr or lhs_tag == .optional_computed_member_expr) {
+                self.setComputedMember(lhs_idx, new_val);
+            }
         }
         return switch (tag) {
             .prefix_inc, .prefix_dec => new_val,
             else => .{ .number = old }, // postfix returns old value
         };
+    }
+
+    /// Write val to obj[key] where the LHS is a computed_member_expr node.
+    fn setComputedMember(self: *Interpreter, cm_idx: NodeIndex, new_val: Value) void {
+        const cm_data = self.rule_ast.nodeData(cm_idx);
+        const obj_idx: NodeIndex = @enumFromInt(@intFromEnum(cm_data.lhs));
+        const key_idx: NodeIndex = @enumFromInt(@intFromEnum(cm_data.rhs));
+        if (obj_idx == .none or key_idx == .none) return;
+        // Object must be an identifier we can look up
+        if (self.rule_ast.nodeTag(obj_idx) != .identifier) return;
+        const var_name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(obj_idx));
+        const container = self.env.lookup(var_name);
+        const key_val = self.eval(key_idx) catch return;
+
+        if (container == .object) {
+            // Object property assignment: obj[key] = val
+            const key_str: []const u8 = switch (key_val) {
+                .string => |s| s,
+                .number => blk: {
+                    const ks = valueToString(self.arena, key_val);
+                    break :blk if (ks == .string) ks.string else return;
+                },
+                else => return,
+            };
+            container.object.entries.put(key_str, new_val) catch {};
+            return;
+        }
+
+        if (container == .array) {
+            // Array index assignment: arr[i] = val
+            if (key_val != .number) return;
+            const n = key_val.number;
+            if (n < 0 or n != @floor(n) or n >= @as(f64, @floatFromInt(container.array.len))) return;
+            const idx: usize = @intFromFloat(n);
+            const new_arr = self.arena.dupe(Value, container.array) catch return;
+            new_arr[idx] = new_val;
+            self.env.set(var_name, .{ .array = new_arr });
+        }
     }
 
     // ── Loops ──
@@ -2037,8 +2265,8 @@ pub const Interpreter = struct {
             if (prop_tag == .property or prop_tag == .shorthand_property) {
                 const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
                 const key = self.objKeyText(key_idx);
-                // Skip "meta" property during module body evaluation — we never access it.
-                if (self.skip_meta and std.mem.eql(u8, key, "meta")) continue;
+                // Skip "schema" property — it's expensive JSON Schema data we never need.
+                if (self.skip_schema and std.mem.eql(u8, key, "schema")) continue;
                 const val = if (prop_tag == .shorthand_property)
                     self.env.lookup(key)
                 else if (prop_data.rhs != .none)
@@ -2048,11 +2276,33 @@ pub const Interpreter = struct {
                 obj.entries.put(key, val) catch {};
             }
             // Method definitions: { MethodName(params) { body } }
-            if (prop_tag == .method_def or prop_tag == .getter_def or prop_tag == .setter_def or
-                prop_tag == .computed_method_def)
-            {
+            if (prop_tag == .method_def or prop_tag == .getter_def or prop_tag == .setter_def) {
                 const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
                 const key = self.objKeyText(key_idx);
+                // Skip "schema" property (expensive JSON Schema data).
+                if (self.skip_schema and std.mem.eql(u8, key, "schema")) continue;
+                obj.entries.put(key, .{ .function = .{
+                    .ast_idx = @intFromEnum(prop),
+                    .source_ast = self.rule_ast,
+                    .param_count = 1,
+                } }) catch {};
+            }
+            if (prop_tag == .computed_method_def) {
+                const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
+                // Evaluate the computed key expression; arrays become "A,B" joined strings.
+                const key_val = self.eval(key_idx) catch .undefined;
+                const key: []const u8 = switch (key_val) {
+                    .string => |s| s,
+                    .array => |arr| blk: {
+                        var joined: std.ArrayListUnmanaged(u8) = .empty;
+                        for (arr, 0..) |item, i| {
+                            if (i > 0) joined.appendSlice(self.arena, ",") catch {};
+                            if (item == .string) joined.appendSlice(self.arena, item.string) catch {};
+                        }
+                        break :blk joined.items;
+                    },
+                    else => self.objKeyText(key_idx),
+                };
                 obj.entries.put(key, .{ .function = .{
                     .ast_idx = @intFromEnum(prop),
                     .source_ast = self.rule_ast,
@@ -2077,6 +2327,15 @@ pub const Interpreter = struct {
             const elem: NodeIndex = @enumFromInt(raw);
             if (elem == .none) {
                 arr.append(self.arena, .undefined) catch {};
+            } else if (self.rule_ast.nodeTag(elem) == .spread_element) {
+                // Spread: flatten inner array/set into the result.
+                const spread_data = self.rule_ast.nodeData(elem);
+                const inner = try self.eval(@enumFromInt(@intFromEnum(spread_data.lhs)));
+                if (inner == .array) {
+                    arr.appendSlice(self.arena, inner.array) catch {};
+                } else {
+                    arr.append(self.arena, inner) catch {};
+                }
             } else {
                 arr.append(self.arena, try self.eval(elem)) catch {};
             }
@@ -2159,3 +2418,30 @@ pub const Interpreter = struct {
         return std.mem.eql(u8, raw, "true");
     }
 };
+
+/// Convert a Value to its string representation (like JS String() coercion).
+fn valueToString(arena: std.mem.Allocator, v: Value) Value {
+    return switch (v) {
+        .string => v,
+        .number => |n| blk: {
+            if (std.math.isNan(n)) break :blk Value{ .string = "NaN" };
+            if (std.math.isInf(n)) break :blk Value{ .string = if (n > 0) "Infinity" else "-Infinity" };
+            const s = std.fmt.allocPrint(arena, "{d}", .{n}) catch return .{ .string = "" };
+            break :blk Value{ .string = s };
+        },
+        .boolean => |b| .{ .string = if (b) "true" else "false" },
+        .null_val => .{ .string = "null" },
+        .undefined => .{ .string = "undefined" },
+        .array => |arr| blk: {
+            // Array.toString() joins with commas
+            var buf: std.ArrayList(u8) = .empty;
+            for (arr, 0..) |elem, i| {
+                if (i > 0) buf.append(arena, ',') catch {};
+                const s = valueToString(arena, elem);
+                if (s == .string) buf.appendSlice(arena, s.string) catch {};
+            }
+            break :blk Value{ .string = buf.items };
+        },
+        else => .{ .string = "[object Object]" },
+    };
+}

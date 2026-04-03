@@ -512,8 +512,7 @@ pub const ForInOfData = struct {
 
 /// try { block } catch (param) { handler } finally { finalizer }
 pub const TryData = struct {
-    catch_param: NodeIndex, // .none if no param
-    catch_body: NodeIndex, // .none if no catch
+    catch_node: NodeIndex,   // .none if no catch; points to a catch_clause node
     finally_body: NodeIndex, // .none if no finally
 };
 

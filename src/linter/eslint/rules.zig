@@ -35,6 +35,8 @@ pub const Rule = struct {
     cached_module_env: ?*Environment = null,
     /// The create() Function value extracted from module.exports.create at load time.
     cached_create_fn: ?Value.Function = null,
+    /// meta.defaultOptions extracted at load time (ESLint 9 feature).
+    cached_default_options: ?[]const Value = null,
 };
 
 pub const Visitor = struct {
@@ -102,6 +104,86 @@ const stub_callbacks = RuntimeCallbacks{
     .getTokenProperty = stubReturnUndef,
     .callBuiltin = stubBuiltinUndef,
 };
+
+/// Build the module-level env cache for a Rule: runs the module body with stub
+/// callbacks, extracts create() and meta.defaultOptions. Safe to call on any
+/// Rule that has full_ast set. Used by both loadRules and discoverVisitorKeys.
+pub fn buildModuleCache(rule: *Rule, allocator: std.mem.Allocator) void {
+    const full_ast = rule.full_ast orelse return;
+
+    const menv = allocator.create(Environment) catch return;
+    menv.* = Environment.init(allocator, null);
+    menv.set("context", .{ .string = "__eslint_context__" });
+    menv.set("sourceCode", .{ .string = "__source_code__" });
+
+    const mod_obj = allocator.create(Value.Object) catch return;
+    mod_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+    const exp_obj = allocator.create(Value.Object) catch return;
+    exp_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+    mod_obj.entries.put("exports", .{ .object = exp_obj }) catch {};
+    menv.set("module", .{ .object = mod_obj });
+
+    var ml = ModuleLoader.init(allocator);
+    var load_diags: std.ArrayList(Diagnostic) = .empty;
+    defer load_diags.deinit(allocator);
+    const empty_opts: []Value = &.{};
+    var interp_load = Interpreter{
+        .rule_ast = full_ast,
+        .env = menv,
+        .runtime = stub_callbacks,
+        .arena = allocator,
+        .diagnostics = &load_diags,
+        .return_value = .undefined,
+        .current_file_node = 0,
+        .rule_name = rule.name,
+        .rule_severity = rule.severity,
+        .messages = &rule.messages,
+        .closure_fns = &rule.closure_fns,
+        .options = empty_opts,
+        .skip_schema = true,
+    };
+    interp_load.module_loader = &ml;
+
+    const mod_root = full_ast.nodeData(.root);
+    const stmts = full_ast.extraSlice(.{
+        .start = @intFromEnum(mod_root.lhs),
+        .end = @intFromEnum(mod_root.rhs),
+    });
+    for (stmts) |raw| {
+        const si: NodeIndex = @enumFromInt(raw);
+        if (si == .none) continue;
+        const tag2 = full_ast.nodeTag(si);
+        if (tag2 == .expression_stmt) {
+            const ed = full_ast.nodeData(si);
+            const ei: NodeIndex = @enumFromInt(@intFromEnum(ed.lhs));
+            if (ei != .none and full_ast.nodeTag(ei) == .string_literal) continue;
+        }
+        const saved_d = interp_load.depth;
+        _ = interp_load.eval(si) catch {
+            interp_load.depth = saved_d;
+            continue;
+        };
+        interp_load.depth = saved_d;
+    }
+
+    const mod_v = menv.lookup("module");
+    if (mod_v != .object) return;
+    const exp_v = mod_v.object.get("exports");
+    if (exp_v != .object) return;
+    const create_v = exp_v.object.get("create");
+    if (create_v != .function) return;
+
+    rule.cached_module_env = menv;
+    rule.cached_create_fn = create_v.function;
+
+    const meta_v = exp_v.object.get("meta");
+    if (meta_v == .object) {
+        const defs = meta_v.object.get("defaultOptions");
+        if (defs == .array and defs.array.len > 0) {
+            rule.cached_default_options = defs.array;
+        }
+    }
+}
 
 // ── loadRules: parse create() ASTs, build dispatch tables ───────
 
@@ -203,74 +285,8 @@ pub fn loadRules(
             .requires = desc.requires,
         };
 
-        // Pre-build the module-level env ONCE so initRuleForFile can skip it per file.
-        if (full_ast_ptr) |full_ast| blk: {
-            const menv = allocator.create(Environment) catch break :blk;
-            menv.* = Environment.init(allocator, null);
-            menv.set("context", .{ .string = "__eslint_context__" });
-            menv.set("sourceCode", .{ .string = "__source_code__" });
-
-            const mod_obj = allocator.create(Value.Object) catch break :blk;
-            mod_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
-            const exp_obj = allocator.create(Value.Object) catch break :blk;
-            exp_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
-            mod_obj.entries.put("exports", .{ .object = exp_obj }) catch {};
-            menv.set("module", .{ .object = mod_obj });
-
-            var ml = ModuleLoader.init(allocator);
-            var load_diags: std.ArrayList(Diagnostic) = .empty;
-            defer load_diags.deinit(allocator);
-            const empty_opts: []Value = &.{};
-            var interp_load = Interpreter{
-                .rule_ast = full_ast,
-                .env = menv,
-                .runtime = stub_callbacks,
-                .arena = allocator,
-                .diagnostics = &load_diags,
-                .return_value = .undefined,
-                .current_file_node = 0,
-                .rule_name = desc.name,
-                .rule_severity = desc.severity,
-                .messages = &rules[rule_idx].messages,
-                .closure_fns = &rules[rule_idx].closure_fns,
-                .options = empty_opts,
-                .skip_meta = true,
-            };
-            interp_load.module_loader = &ml;
-
-            const mod_root = full_ast.nodeData(.root);
-            const stmts = full_ast.extraSlice(.{
-                .start = @intFromEnum(mod_root.lhs),
-                .end = @intFromEnum(mod_root.rhs),
-            });
-            for (stmts) |raw| {
-                const si: NodeIndex = @enumFromInt(raw);
-                if (si == .none) continue;
-                const tag2 = full_ast.nodeTag(si);
-                if (tag2 == .expression_stmt) {
-                    const ed = full_ast.nodeData(si);
-                    const ei: NodeIndex = @enumFromInt(@intFromEnum(ed.lhs));
-                    if (ei != .none and full_ast.nodeTag(ei) == .string_literal) continue;
-                }
-                const saved_d = interp_load.depth;
-                _ = interp_load.eval(si) catch {
-                    interp_load.depth = saved_d;
-                    continue;
-                };
-                interp_load.depth = saved_d;
-            }
-
-            // Extract create() from module.exports
-            const mod_v = menv.lookup("module");
-            if (mod_v != .object) break :blk;
-            const exp_v = mod_v.object.get("exports");
-            if (exp_v != .object) break :blk;
-            const create_v = exp_v.object.get("create");
-            if (create_v != .function) break :blk;
-
-            rules[rule_idx].cached_module_env = menv;
-            rules[rule_idx].cached_create_fn = create_v.function;
-        }
+        // Pre-build the module-level env ONCE (extracts create() + defaultOptions).
+        buildModuleCache(&rules[rule_idx], allocator);
     }
 
     var result = RuleSet{
@@ -320,7 +336,7 @@ pub fn initRuleForFile(
             .rule_severity = rule.severity,
             .messages = &rule.messages,
             .closure_fns = &rule.closure_fns,
-            .options = rule.options,
+            .options = if (rule.options.len > 0) rule.options else (rule.cached_default_options orelse rule.options),
         };
         var ml = ModuleLoader.init(allocator);
         interp.module_loader = &ml;
@@ -406,7 +422,7 @@ pub fn initRuleForFile(
         .rule_name = rule.name,
         .rule_severity = rule.severity,
         .messages = &rule.messages,
-        .options = rule.options,
+        .options = if (rule.options.len > 0) rule.options else (rule.cached_default_options orelse rule.options),
         .closure_fns = &rule.closure_fns,
     };
 
@@ -415,7 +431,7 @@ pub fn initRuleForFile(
 
     // Run the full module to set up module.exports, helpers, and closure variables.
     // Skip "meta" property evaluation — we never use it, and it can be large.
-    interp.skip_meta = true;
+    interp.skip_schema = true;
     if (rule.full_ast) |full_ast| {
         interp.rule_ast = full_ast;
 
@@ -451,7 +467,7 @@ pub fn initRuleForFile(
         }
 
         interp.return_value = .undefined;
-        interp.skip_meta = false; // restore for create() body eval
+        interp.skip_schema = false; // restore for create() body eval
 
         // Check if module.exports.create was set by the module eval
         const mod_val = env_ptr.lookup("module");
@@ -640,7 +656,9 @@ fn callFunctionValue(
         const saved = interp.rule_ast;
         interp.rule_ast = use_ast;
         bindFirstParam(interp, use_ast, md.params_start, md.params_end, node_idx);
-        if (md.body != .none) _ = interp.eval(md.body) catch {};
+        if (md.body != .none) {
+            _ = interp.eval(md.body) catch {};
+        }
         interp.rule_ast = saved;
         return;
     }

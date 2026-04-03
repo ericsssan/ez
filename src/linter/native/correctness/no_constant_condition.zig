@@ -1,3 +1,4 @@
+const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -38,7 +39,15 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (condition == .none) return;
 
     const cond_tag = ctx.nodeTag(condition);
-    if (isConstantExpr(cond_tag)) {
-        ctx.report(node, meta.name, "Unexpected constant condition", meta.default_severity);
+    if (!isConstantExpr(cond_tag)) return;
+
+    // ESLint default: checkLoops = "allExceptWhileTrue"
+    // while (true) is a common idiom and is not flagged by default.
+    if (tag == .while_stmt and cond_tag == .boolean_literal) {
+        const tok = ctx.nodeMainToken(condition);
+        const text = ctx.tokenText(tok);
+        if (std.mem.eql(u8, text, "true")) return;
     }
+
+    ctx.report(node, meta.name, "Unexpected constant condition", meta.default_severity);
 }

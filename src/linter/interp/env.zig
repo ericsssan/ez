@@ -16,13 +16,13 @@ pub const Environment = struct {
     overflow: ?std.StringArrayHashMap(Value),
 
     /// Parent scope (for lexical scoping / closure chain).
-    parent: ?*const Environment,
+    parent: ?*Environment,
     /// Allocator (only used if overflow is needed).
     allocator: std.mem.Allocator,
 
     const MAX_FIXED: usize = 8;
 
-    pub fn init(allocator: std.mem.Allocator, parent: ?*const Environment) Environment {
+    pub fn init(allocator: std.mem.Allocator, parent: ?*Environment) Environment {
         return .{
             .fixed_names = undefined,
             .fixed_values = undefined,
@@ -73,6 +73,45 @@ pub const Environment = struct {
             self.overflow = std.StringArrayHashMap(Value).init(self.allocator);
         }
         if (self.overflow) |*m| m.put(name, value) catch {};
+    }
+
+    /// Assign a variable: walk up the scope chain to update the first scope
+    /// that already has it. If not found in any scope, create in current scope
+    /// (JavaScript "implicit global" semantics for non-strict mode).
+    pub fn assign(self: *Environment, name: []const u8, value: Value) void {
+        // Check current scope fixed slots
+        for (0..self.fixed_count) |i| {
+            if (std.mem.eql(u8, self.fixed_names[i], name)) {
+                self.fixed_values[i] = value;
+                return;
+            }
+        }
+        // Check current scope overflow
+        if (self.overflow) |*m| {
+            if (m.getPtr(name)) |ptr| {
+                ptr.* = value;
+                return;
+            }
+        }
+        // Walk up the parent chain
+        if (self.parent) |p| {
+            if (p.has(name)) {
+                p.assign(name, value);
+                return;
+            }
+        }
+        // Not found anywhere — create in current scope
+        self.set(name, value);
+    }
+
+    /// Check if the current scope (not parent chain) has a binding for name.
+    fn has(self: *const Environment, name: []const u8) bool {
+        for (0..self.fixed_count) |i| {
+            if (std.mem.eql(u8, self.fixed_names[i], name)) return true;
+        }
+        if (self.overflow) |m| return m.contains(name);
+        if (self.parent) |p| return p.has(name);
+        return false;
     }
 
     /// Update an existing variable in the nearest scope that has it.

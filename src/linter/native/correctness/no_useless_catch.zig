@@ -21,8 +21,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const try_data = ctx.extraData(ast.TryData, @intFromEnum(data.rhs));
 
-    const catch_param = try_data.catch_param;
-    const catch_body = try_data.catch_body;
+    if (try_data.catch_node == .none) return;
+    const catch_clause_data = ctx.nodeData(try_data.catch_node);
+    const catch_param = catch_clause_data.lhs;
+    const catch_body = catch_clause_data.rhs;
 
     if (catch_param == .none or catch_body == .none) return;
 

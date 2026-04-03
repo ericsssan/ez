@@ -1,0 +1,597 @@
+"use strict";
+
+/**
+ * Build an eslint-scope-compatible ScopeManager from sanz's buffer-backed
+ * semantic data. All scope/symbol/reference data comes from the AstView's
+ * typed-array fields — zero JSON, zero extra analysis.
+ *
+ * Interface (matches eslint-scope ScopeManager):
+ *   { globalScope, scopes, acquire(node, inner?), acquireAll(node) }
+ */
+
+const { nodeView, NONE } = require("./node-view");
+
+const NONE32 = 0xFFFFFFFF;
+const KIND_NAMES = ['global', 'module', 'function', 'block', 'class', 'catch', 'switch', 'static_block', 'with'];
+
+// ES2022 built-in globals — added to the global scope so no-undef doesn't
+// flag standard globals as undeclared. Matches ESLint's default es2022 env.
+const _BUILTIN_GLOBALS = [
+  'NaN', 'Infinity', 'undefined', 'globalThis',
+  'eval', 'isFinite', 'isNaN', 'parseFloat', 'parseInt',
+  'decodeURI', 'decodeURIComponent', 'encodeURI', 'encodeURIComponent',
+  'Object', 'Function', 'Boolean', 'Symbol', 'Number', 'BigInt', 'Math', 'Date',
+  'String', 'RegExp', 'Array', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
+  'Int16Array', 'Uint16Array', 'Int32Array', 'Uint32Array',
+  'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
+  'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry',
+  'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Atomics',
+  'JSON', 'Promise', 'Proxy', 'Reflect',
+  'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError',
+  'SyntaxError', 'TypeError', 'URIError',
+  'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
+  'queueMicrotask', 'structuredClone', 'atob', 'btoa',
+  'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder',
+  'AbortController', 'AbortSignal', 'Event', 'EventTarget',
+  'FormData', 'Headers', 'Request', 'Response', 'fetch',
+  'crypto', 'performance', 'navigator',
+];
+
+class ScopeBuilder {
+  constructor(ast) {
+    this._ast = ast;
+    this._scopeCache = new Map();
+    this._thinScopeCache = new Map();
+    this._varCache = new Map();
+    this._scopeSymIndex = null;
+    this._scopeRefIndex = null;
+    this._scopeChildIndex = null;
+    this._symRefIndex = null;
+    this._nodeDeclIndex = null;
+  }
+
+  _ensureScopeIndex() {
+    if (this._scopeSymIndex) return;
+    const ast = this._ast;
+    const scopeCount = ast._semScopeCount || 0;
+
+    const symIndex = new Array(scopeCount);
+    for (let i = 0; i < scopeCount; i++) symIndex[i] = [];
+    if (ast._symScopeIds) {
+      for (let i = 0; i < (ast._semSymbolCount || 0); i++) {
+        const s = ast._symScopeIds[i];
+        if (s < scopeCount) symIndex[s].push(i);
+      }
+    }
+    this._scopeSymIndex = symIndex;
+
+    const refIndex = new Array(scopeCount);
+    for (let i = 0; i < scopeCount; i++) refIndex[i] = [];
+    if (ast._refScopeIds) {
+      for (let i = 0; i < (ast._semRefCount || 0); i++) {
+        const s = ast._refScopeIds[i];
+        if (s < scopeCount) refIndex[s].push(i);
+      }
+    }
+    this._scopeRefIndex = refIndex;
+
+    const childIndex = new Array(scopeCount);
+    for (let i = 0; i < scopeCount; i++) childIndex[i] = [];
+    if (ast._scopeParents) {
+      for (let i = 0; i < scopeCount; i++) {
+        const p = ast._scopeParents[i];
+        if (p !== NONE32 && p < scopeCount) childIndex[p].push(i);
+      }
+    }
+    this._scopeChildIndex = childIndex;
+
+    const symRefIndex = new Array(ast._semSymbolCount || 0);
+    for (let i = 0; i < symRefIndex.length; i++) symRefIndex[i] = [];
+    if (ast._refSymbolIds) {
+      for (let i = 0; i < (ast._semRefCount || 0); i++) {
+        const s = ast._refSymbolIds[i];
+        if (s !== NONE32 && s < symRefIndex.length) symRefIndex[s].push(i);
+      }
+    }
+    this._symRefIndex = symRefIndex;
+
+    // Precompute node → [symIds] for O(1) getDeclaredVariables() lookups.
+    // For each symbol, walk up from its decl node; at each ancestor add the
+    // symbol to that ancestor's entry, stopping at the first scope-creating tag
+    // (but still including the scope boundary itself — mirrors the original loop
+    // where `cur === nodeIdx` is checked before the scope-boundary break).
+    const nodeDeclIndex = new Map();
+    const pd = ast._parentData;
+    const tags = ast._nodeTags;
+    const symCount = ast._semSymbolCount || 0;
+    if (ast._symDeclNodes) {
+      for (let i = 0; i < symCount; i++) {
+        const declNodeIdx = ast._symDeclNodes[i];
+        if (declNodeIdx === undefined || declNodeIdx === NONE || declNodeIdx === NONE32 || declNodeIdx >= ast.nodeCount) continue;
+
+        // Direct-match case: declNodeIdx itself.
+        let arr = nodeDeclIndex.get(declNodeIdx);
+        if (!arr) { arr = []; nodeDeclIndex.set(declNodeIdx, arr); }
+        arr.push(i);
+
+        // Walk ancestors from pd[declNodeIdx] upward.
+        if (!pd || !tags) continue;
+        let cur = pd[declNodeIdx];
+        while (cur !== undefined && cur !== NONE && cur !== NONE32 && cur < ast.nodeCount) {
+          let bucket = nodeDeclIndex.get(cur);
+          if (!bucket) { bucket = []; nodeDeclIndex.set(cur, bucket); }
+          bucket.push(i);
+          // Scope-creating tags: stop after including cur (mirrors original logic
+          // where `cur === nodeIdx` fires before the break, so scope nodes ARE valid).
+          const t = tags[cur];
+          if ((t >= 30 && t <= 34) || (t >= 63 && t <= 69)) break;
+          cur = pd[cur];
+        }
+      }
+    }
+    this._nodeDeclIndex = nodeDeclIndex;
+  }
+
+  _buildScope(scopeId) {
+    const cached = this._scopeCache.get(scopeId);
+    if (cached) return cached;
+
+    const ast = this._ast;
+    if (!ast._scopeKinds || scopeId === NONE || scopeId >= ast._semScopeCount) {
+      return this._stubScope();
+    }
+
+    const kind = ast._scopeKinds[scopeId];
+    const isStrict = (ast._scopeFlags[scopeId] & 1) !== 0;
+    const parentId = ast._scopeParents[scopeId];
+
+    this._ensureScopeIndex();
+
+    const varMap = new Map();
+    const symIds = this._scopeSymIndex[scopeId];
+    if (symIds) {
+      for (let j = 0; j < symIds.length; j++) {
+        const v = this._buildVariable(symIds[j]);
+        if (varMap.has(v.name)) {
+          const existing = varMap.get(v.name);
+          existing.identifiers.push(...v.identifiers);
+          existing.defs.push(...v.defs);
+          existing.references.push(...v.references);
+        } else {
+          varMap.set(v.name, v);
+        }
+      }
+    }
+    const variables = Array.from(varMap.values());
+
+    const references = [];
+    const through = [];
+    const refIds = this._scopeRefIndex[scopeId];
+    if (refIds) {
+      for (let j = 0; j < refIds.length; j++) {
+        const ref = this._buildReference(refIds[j]);
+        references.push(ref);
+        if (!ref.resolved) through.push(ref);
+      }
+    }
+
+    const upper = parentId === NONE32 ? null : this._buildScope(parentId);
+    const set = new Map(varMap);
+
+    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
+    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+      ? nodeView(ast, scopeNodeIdx) : null;
+
+    const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const childScopes = [];
+    const scope = {
+      type: KIND_NAMES[kind] || 'block',
+      isStrict,
+      variables,
+      set,
+      references,
+      through,
+      childScopes,
+      implicit: { variables: [] },
+      block,
+      upper,
+      lookup(name) { return set.get(name) || null; },
+    };
+    scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
+
+    if (kind === 0) {
+      for (const name of _BUILTIN_GLOBALS) {
+        if (!set.has(name)) {
+          const gv = {
+            name, defs: [], references: [], identifiers: [],
+            scope, eslintUsed: false, writeable: false,
+            isRead: () => false, isWritten: () => false,
+          };
+          set.set(name, gv);
+          variables.push(gv);
+        }
+      }
+    }
+
+    if (kind === 2 && !set.has('arguments')) {
+      const argsVar = {
+        name: 'arguments', defs: [], references: [], identifiers: [],
+        scope, eslintUsed: false, writeable: false,
+        isRead: () => false, isWritten: () => false,
+      };
+      set.set('arguments', argsVar);
+      variables.push(argsVar);
+    }
+
+    this._scopeCache.set(scopeId, scope);
+
+    const childIds = this._scopeChildIndex[scopeId];
+    if (childIds) {
+      for (let j = 0; j < childIds.length; j++) {
+        childScopes.push(this._buildScope(childIds[j]));
+      }
+    }
+
+    for (const child of childScopes) {
+      for (const ref of child.through) {
+        if (ref.identifier?.type === 'PrivateIdentifier') continue;
+        const name = ref.identifier?.name;
+        const variable = name ? set.get(name) : undefined;
+        if (variable) {
+          variable.references.push(ref);
+          ref.resolved = variable;
+        } else {
+          through.push(ref);
+        }
+      }
+    }
+
+    return scope;
+  }
+
+  _buildVariable(symId) {
+    const ast = this._ast;
+    const name = ast._symName(symId);
+    const flags16 = ast._symFlags[symId];
+
+    const is_param  = (flags16 & 0x20) !== 0;
+    const is_const  = (flags16 & 0x04) !== 0;
+    const is_import = (flags16 & 0x80) !== 0;
+    const is_let    = (flags16 & 0x02) !== 0;
+    const is_read   = (flags16 & 0x800) !== 0;
+    const is_written= (flags16 & 0x400) !== 0;
+
+    this._ensureScopeIndex();
+    const references = [];
+    const symRefs = this._symRefIndex ? this._symRefIndex[symId] : null;
+    if (symRefs) {
+      for (let j = 0; j < symRefs.length; j++) {
+        references.push(this._buildReference(symRefs[j]));
+      }
+    }
+
+    const declNodeIdx = ast._symDeclNodes[symId];
+    const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
+      ? nodeView(ast, declNodeIdx) : null;
+
+    const is_catch = (flags16 & 0x40) !== 0;
+    let defType = 'Variable';
+    if (is_param) defType = 'Parameter';
+    else if (is_catch) defType = 'CatchClause';
+    else if ((flags16 & 0x08) !== 0) defType = 'FunctionName';
+    else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
+    else if (is_import) defType = 'ImportBinding';
+
+    let defNode = declNode;
+    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
+      defNode = declNode && declNode.parent ? declNode.parent : declNode;
+    }
+    const defs = declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
+
+    const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
+    const scope = (symScopeId !== undefined && symScopeId !== NONE32)
+      ? this._buildThinScope(symScopeId) : this._stubScope();
+
+    if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && declNodeIdx !== NONE32 && ast._parentData) {
+      const declaratorIdx = ast._parentData[declNodeIdx];
+      if (declaratorIdx !== undefined && declaratorIdx !== NONE && declaratorIdx !== NONE32 && declaratorIdx < ast.nodeCount) {
+        const initNodeIdx = ast.nodeRhs(declaratorIdx);
+        if (initNodeIdx !== NONE32 && initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+          const thin = this._buildThinVariable(symId);
+          references.unshift({
+            identifier: declNode,
+            from: scope,
+            resolved: thin,
+            writeExpr: nodeView(ast, initNodeIdx),
+            init: true,
+            isWrite: () => true,
+            isRead: () => false,
+            isWriteOnly: () => true,
+            isReadOnly: () => false,
+            isReadWrite: () => false,
+          });
+        }
+      }
+    }
+
+    return {
+      name,
+      defs,
+      references,
+      scope,
+      identifiers: declNode ? [declNode] : [],
+      eslintUsed: false,
+      writeable: !is_const && !is_import,
+      isRead: () => is_read,
+      isWritten: () => is_written || is_let,
+    };
+  }
+
+  _buildReference(refIdx) {
+    const ast = this._ast;
+    const symId = ast._refSymbolIds[refIdx];
+    const kind  = ast._refKinds[refIdx];
+    const nodeIdx = ast._refNodeIds[refIdx];
+    const refNode = (nodeIdx !== NONE32 && nodeIdx < ast.nodeCount)
+      ? nodeView(ast, nodeIdx) : null;
+
+    const resolved = symId !== NONE32 ? this._buildThinVariable(symId) : null;
+
+    const refScopeId = ast._refScopeIds ? ast._refScopeIds[refIdx] : NONE;
+    const from = (refScopeId !== undefined && refScopeId !== NONE32)
+      ? this._buildThinScope(refScopeId) : this._stubScope();
+
+    return {
+      identifier: refNode,
+      from,
+      resolved,
+      writeExpr: null,
+      init: false,
+      isWrite: () => kind === 1 || kind === 2,
+      isRead:  () => kind === 0 || kind === 2 || kind === 3,
+      isWriteOnly: () => kind === 1,
+      isReadOnly:  () => kind === 0 || kind === 3,
+      isReadWrite: () => kind === 2,
+    };
+  }
+
+  _buildThinVariable(symId) {
+    const cached = this._varCache.get(symId);
+    if (cached !== undefined) return cached;
+    const ast = this._ast;
+    if (!ast._symFlags || symId === NONE || symId === NONE32 || symId >= ast._semSymbolCount) return null;
+    const name = ast._symName(symId);
+    const flags16 = ast._symFlags[symId];
+    const is_const  = (flags16 & 0x04) !== 0;
+    const is_import = (flags16 & 0x80) !== 0;
+    const is_read   = (flags16 & 0x800) !== 0;
+    const is_written= (flags16 & 0x400) !== 0;
+    const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
+    const scope = (symScopeId !== undefined && symScopeId !== NONE32)
+      ? this._buildThinScope(symScopeId) : this._stubScope();
+    const is_catch = (flags16 & 0x40) !== 0;
+    const is_param  = (flags16 & 0x20) !== 0;
+    let defType = 'Variable';
+    if (is_param) defType = 'Parameter';
+    else if (is_catch) defType = 'CatchClause';
+    else if ((flags16 & 0x08) !== 0) defType = 'FunctionName';
+    else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
+    else if (is_import) defType = 'ImportBinding';
+    const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
+    const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
+      ? nodeView(ast, declNodeIdx) : null;
+    let defNode = declNode;
+    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
+      defNode = declNode && declNode.parent ? declNode.parent : declNode;
+    }
+    const v = {
+      name,
+      defs: declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
+      references: [],
+      scope,
+      identifiers: declNode ? [declNode] : [],
+      eslintUsed: false,
+      writeable: !is_const && !is_import,
+      isRead: () => is_read,
+      isWritten: () => is_written,
+    };
+    this._varCache.set(symId, v);
+    return v;
+  }
+
+  _buildThinScope(scopeId) {
+    const cached = this._thinScopeCache.get(scopeId);
+    if (cached) return cached;
+
+    const ast = this._ast;
+    if (!ast._scopeKinds || scopeId === NONE || scopeId === NONE32 || scopeId >= ast._semScopeCount) {
+      return this._stubScope();
+    }
+    const kind = ast._scopeKinds[scopeId];
+    const isStrict = (ast._scopeFlags[scopeId] & 1) !== 0;
+    const parentId = ast._scopeParents[scopeId];
+    const upper = (parentId !== NONE32) ? this._buildThinScope(parentId) : null;
+    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE32;
+    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+      ? nodeView(ast, scopeNodeIdx) : null;
+    const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const s = {
+      type: KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
+      set: new Map(), through: [], childScopes: [], implicit: { variables: [] },
+      block, upper, lookup: () => null,
+    };
+    s.variableScope = isVarScope ? s : (upper ? upper.variableScope || upper : s);
+    this._thinScopeCache.set(scopeId, s);
+    return s;
+  }
+
+  _stubScope() {
+    const upper = {
+      variables: [], references: [], through: [], set: new Map(),
+      isStrict: false, type: 'global', upper: null, block: null,
+      lookup: () => null,
+    };
+    upper.variableScope = upper;
+    const s = {
+      variables: [], childScopes: [], references: [], through: [],
+      set: new Map(), implicit: { variables: [] }, block: null,
+      upper, isStrict: false, type: 'module', lookup: () => null,
+    };
+    s.variableScope = s;
+    return s;
+  }
+
+  _getDeclaredVariables(node) {
+    if (!node) return [];
+    const ast = this._ast;
+    if (!ast._symDeclNodes || node._i === undefined || node._i === null) {
+      // Fallback: stub parameters from node.params
+      const params = node.params;
+      if (!params || !params.length) return [];
+      return params.map(p => {
+        const name = (p && p.name) || (p && p.id && p.id.name) || '';
+        return { name, references: [], defs: [{ type: 'Parameter', node: p }], scope: null };
+      });
+    }
+
+    // Ensure the index is built (no-op if already done).
+    this._ensureScopeIndex();
+
+    const nodeIdx = node._i;
+    const symIds = this._nodeDeclIndex ? this._nodeDeclIndex.get(nodeIdx) : null;
+    if (symIds && symIds.length > 0) {
+      return symIds.map(i => this._buildVariable(i));
+    }
+
+    // Fallback: stub parameters
+    const params = node.params;
+    if (!params || !params.length) return [];
+    return params.map(p => {
+      const name = (p && p.name) || (p && p.id && p.id.name) || '';
+      return { name, references: [], defs: [{ type: 'Parameter', node: p }], scope: null };
+    });
+  }
+
+  build() {
+    const ast = this._ast;
+    if (!ast._scopeKinds) return this._buildFallback();
+
+    // Lazy scope tree — built only on first acquire() / acquireAll() /
+    // getDeclaredVariables() call. Rules that never call getScope() (e.g.
+    // no-debugger, no-with) pay zero cost for scope construction.
+    let built = false;
+    let globalScope = null;
+    let scopes = null;
+    let nodeToScope = null;
+
+    // Pending globals from addGlobals() calls before the tree is built.
+    const pendingGlobals = [];
+
+    const self = this;
+
+    function ensureBuilt() {
+      if (built) return;
+      built = true;
+
+      // Build the full scope tree rooted at scope 0 (global).
+      globalScope = self._buildScope(0);
+
+      // Collect all scopes into a flat array in DFS order.
+      scopes = [];
+      const collect = (scope) => {
+        scopes.push(scope);
+        for (const child of scope.childScopes) collect(child);
+      };
+      collect(globalScope);
+
+      // Build node → scope[] map for acquire().
+      nodeToScope = new Map();
+      for (const scope of scopes) {
+        if (!scope.block) continue;
+        const existing = nodeToScope.get(scope.block);
+        if (existing) existing.push(scope);
+        else nodeToScope.set(scope.block, [scope]);
+      }
+
+      // Apply any globals registered before the tree was built.
+      for (const names of pendingGlobals) {
+        for (const name of names) {
+          if (!globalScope.set.has(name)) {
+            const gv = {
+              name, defs: [], references: [], identifiers: [],
+              scope: globalScope, eslintUsed: false, writeable: true,
+              isRead: () => false, isWritten: () => false,
+            };
+            globalScope.set.set(name, gv);
+            globalScope.variables.push(gv);
+          }
+        }
+      }
+      pendingGlobals.length = 0;
+    }
+
+    return {
+      get globalScope() { ensureBuilt(); return globalScope; },
+      get scopes() { ensureBuilt(); return scopes; },
+      acquire(node, inner = false) {
+        ensureBuilt();
+        const list = nodeToScope.get(node);
+        if (!list || list.length === 0) return null;
+        return inner ? list[list.length - 1] : list[0];
+      },
+      acquireAll(node) {
+        ensureBuilt();
+        return nodeToScope.get(node) || [];
+      },
+      // ESLint 9/10: inject configured globals into the global scope.
+      // Called by ESLint after constructing the source code object —
+      // before any rule traversal — so the scope tree may not be built yet.
+      addGlobals(names) {
+        if (built) {
+          for (const name of names) {
+            if (!globalScope.set.has(name)) {
+              const gv = {
+                name, defs: [], references: [], identifiers: [],
+                scope: globalScope, eslintUsed: false, writeable: true,
+                isRead: () => false, isWritten: () => false,
+              };
+              globalScope.set.set(name, gv);
+              globalScope.variables.push(gv);
+            }
+          }
+        } else {
+          pendingGlobals.push(names.slice());
+        }
+      },
+      // ESLint 9/10: return variables declared by a given AST node.
+      // Used by SourceCode.getDeclaredVariables() which rules call (e.g. no-unused-vars).
+      getDeclaredVariables(node) {
+        ensureBuilt();
+        return self._getDeclaredVariables(node);
+      },
+    };
+  }
+
+  _buildFallback() {
+    const stub = this._stubScope();
+    return {
+      globalScope: stub,
+      scopes: [stub],
+      acquire: () => null,
+      acquireAll: () => [],
+      addGlobals: () => {},
+      getDeclaredVariables: () => [],
+    };
+  }
+}
+
+/**
+ * Build an eslint-scope-compatible scope manager from sanz's AstView.
+ * @param {AstView} ast - The AstView returned by parse()
+ * @returns {{ globalScope, scopes, acquire, acquireAll }}
+ */
+function buildScopeManager(ast) {
+  return new ScopeBuilder(ast).build();
+}
+
+module.exports = { buildScopeManager };

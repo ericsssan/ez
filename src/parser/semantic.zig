@@ -1075,16 +1075,8 @@ pub const SemanticAnalyzer = struct {
         // lhs = try block, rhs = extra index to TryData
         try self.visitNode(data.lhs);
         const try_data = self.ast.extraData(TryData, @intFromEnum(data.rhs));
-        // catch clause (which creates its own scope via visitCatchClause)
-        if (try_data.catch_body != .none) {
-            // Build a synthetic catch_clause visit: param + body.
-            _ = try self.enterScope(.catch_clause, try_data.catch_body);
-            if (try_data.catch_param != .none) {
-                try self.extractBindingNames(try_data.catch_param, self.current_scope, .catch_param);
-            }
-            try self.visitNode(try_data.catch_body);
-            self.leaveScope();
-        }
+        // catch_node is a real catch_clause node — routes to visitCatchClause.
+        try self.visitNode(try_data.catch_node);
         // finally block
         try self.visitNode(try_data.finally_body);
     }

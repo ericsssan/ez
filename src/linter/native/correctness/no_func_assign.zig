@@ -4,6 +4,9 @@ const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 const SymbolId = @import("../../../parser/symbol.zig").SymbolId;
+const ref_mod = @import("../../../parser/reference.zig");
+const ReferenceId = ref_mod.ReferenceId;
+const ReferenceKind = ref_mod.ReferenceKind;
 
 pub const meta = RuleMeta{
     .name = "no-func-assign",
@@ -18,17 +21,16 @@ pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
 pub fn runOnSymbols(ctx: *const LintContext) void {
     const symbols = ctx.symbols();
-    const count = symbols.count();
+    const refs = ctx.references();
+    const ref_count = refs.count();
     var i: u32 = 0;
-    while (i < count) : (i += 1) {
-        const id = SymbolId.fromInt(i);
-        const kind = symbols.getBindingKind(id);
-
-        if (kind != .function_decl) continue;
-
-        const flags = symbols.getFlags(id);
-        if (flags.is_written) {
-            ctx.report(symbols.getDeclNode(id), meta.name, "Reassignment of function declaration", meta.default_severity);
-        }
+    while (i < ref_count) : (i += 1) {
+        const ref_id = ReferenceId.fromInt(i);
+        const sym_id = refs.getSymbol(ref_id);
+        if (sym_id == .none) continue;
+        const kind = refs.getKind(ref_id);
+        if (kind != .write and kind != .read_write) continue;
+        if (symbols.getBindingKind(sym_id) != .function_decl) continue;
+        ctx.report(refs.getNode(ref_id), meta.name, "Reassignment of function declaration", meta.default_severity);
     }
 }

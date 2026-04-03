@@ -60,12 +60,22 @@ const COMPARABLE_RULES = new Set([
 
 // ── Helpers ──────────────────────────────────────────────────
 
+function detectSourceType(filePath) {
+  try {
+    const src = fs.readFileSync(filePath, "utf-8");
+    // If file has top-level import/export, it's a module
+    if (/^(import |export )/m.test(src)) return "module";
+  } catch {}
+  return "script";
+}
+
 function runEslint(filePath) {
   // Write a temp flat config enabling all comparable rules
   const rules = {};
   for (const rule of COMPARABLE_RULES) rules[rule] = "error";
 
-  const configContent = `export default [{ languageOptions: { sourceType: "script" }, rules: ${JSON.stringify(rules)} }];\n`;
+  const sourceType = detectSourceType(filePath);
+  const configContent = `export default [{ languageOptions: { sourceType: "${sourceType}", ecmaVersion: 2022 }, rules: ${JSON.stringify(rules)} }];\n`;
   const configPath = path.resolve(__dirname, ".eslint.config.mjs");
   fs.writeFileSync(configPath, configContent);
 

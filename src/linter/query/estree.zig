@@ -64,18 +64,60 @@ pub const EsTreeAdapter = struct {
         const rhs = @intFromEnum(data.rhs);
 
         // ── Universal properties (all node types) ──
-        if (std.mem.eql(u8, prop, "type")) return .{ .string = q.nodeType(idx) };
+        if (std.mem.eql(u8, prop, "type")) {
+            // grouping_expr (parentheses) is transparent — ESLint has no
+            // ParenthesizedExpression, so (expr).type === expr.type.
+            if (tag == .grouping_expr) return self.getNodeProperty(lhs, "type");
+            // array_literal / object_literal used as a for-in/for-of LHS are
+            // patterns in ESLint's AST.  ESLint refines them via cover grammar;
+            // sanz keeps them as literals.  Return the pattern type so that
+            // rules like id-length see the correct parent type on child nodes.
+            if (tag == .array_literal or tag == .object_literal) {
+                const p = q.nodeParent(idx);
+                if (p != NONE) {
+                    const ptag = q.ast.nodes.items(.tag)[p];
+                    if (ptag == .for_in_stmt or ptag == .for_of_stmt or ptag == .for_await_of_stmt) {
+                        return .{ .string = if (tag == .array_literal) "ArrayPattern" else "ObjectPattern" };
+                    }
+                }
+            }
+            return .{ .string = q.nodeType(idx) };
+        }
         if (std.mem.eql(u8, prop, "parent")) {
             const p = q.nodeParent(idx);
-            return if (p != NONE) .{ .node = p } else .null_val;
+            if (p == NONE) return .null_val;
+            const p_tag = q.ast.nodes.items(.tag)[p];
+            // If parent is a computed object-method/getter/setter and we ARE the
+            // computed key (lhs), synthesize a Property parent with computed=true.
+            // This prevents id-length from firing on computed keys like {[a]() {}}.
+            switch (p_tag) {
+                .computed_method_def, .computed_getter_def, .computed_setter_def => {
+                    const gp = q.nodeParent(p);
+                    if (gp != NONE and q.ast.nodes.items(.tag)[gp] == .object_literal) {
+                        const p_lhs = @intFromEnum(q.ast.nodes.items(.data)[p].lhs);
+                        if (p_lhs == idx) {
+                            return self.synthComputedProperty(p, gp);
+                        }
+                    }
+                },
+                else => {},
+            }
+            return .{ .node = p };
         }
         if (std.mem.eql(u8, prop, "range")) return self.buildRange(idx);
         if (std.mem.eql(u8, prop, "loc")) return self.buildLoc(idx);
         if (std.mem.eql(u8, prop, "start")) return .{ .number = @floatFromInt(q.nodeRange(idx)[0]) };
         if (std.mem.eql(u8, prop, "end")) return .{ .number = @floatFromInt(q.nodeRange(idx)[1]) };
+        // sanz-internal: the text of the node's main_token (not exposed by ESLint).
+        if (std.mem.eql(u8, prop, "__mainTokenValue__")) return .{ .string = q.tokenText(q.nodeMainToken(idx)) };
 
         // ── Tag-specific property dispatch ──
         return switch (tag) {
+            // grouping_expr (parentheses) is transparent in ESLint's AST.
+            // Delegate all non-universal property accesses to the inner node.
+            // (parent/range/loc/start/end are handled above and stay on grouping_expr.)
+            .grouping_expr => self.getNodeProperty(self.unwrapGrouping(lhs), prop),
+
             // Identifier
             .identifier => self.identifierProp(idx, prop),
 
@@ -85,11 +127,11 @@ pub const EsTreeAdapter = struct {
             => self.literalProp(idx, tag, prop),
 
             // Binary/Logical operators
-            .add, .subtract, .multiply, .divide, .modulo,
+            .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
             .equal, .not_equal, .strict_equal, .strict_not_equal,
             .less_than, .greater_than, .less_equal, .greater_equal,
             .bitwise_and, .bitwise_or, .bitwise_xor,
-            .shift_left, .shift_right,
+            .shift_left, .shift_right, .unsigned_shift_right,
             .logical_and, .logical_or, .nullish_coalesce,
             .instanceof_expr, .in_expr,
             => self.binaryProp(idx, tag, prop, lhs, rhs),
@@ -105,7 +147,17 @@ pub const EsTreeAdapter = struct {
 
             // Assignment
             .assign, .add_assign, .sub_assign, .mul_assign, .div_assign,
+            .mod_assign, .exp_assign, .and_assign, .or_assign, .xor_assign,
+            .shl_assign, .shr_assign, .ushr_assign,
+            .logical_and_assign, .logical_or_assign, .nullish_assign,
             => self.assignmentProp(idx, tag, prop, lhs, rhs),
+
+            // AssignmentPattern (destructuring default: `lhs = rhs`)
+            .assignment_pattern => blk: {
+                if (std.mem.eql(u8, prop, "left")) break :blk self.nodeOrNull(lhs);
+                if (std.mem.eql(u8, prop, "right")) break :blk self.nodeOrNull(rhs);
+                break :blk .undefined;
+            },
 
             // MemberExpression
             .member_expr, .optional_member_expr,
@@ -145,7 +197,7 @@ pub const EsTreeAdapter = struct {
             .switch_case, .switch_default => self.switchCaseProp(tag, prop, lhs, rhs),
 
             // Try/Catch
-            .try_stmt => self.tryProp(prop, lhs, rhs),
+            .try_stmt => self.tryProp(idx, prop, lhs, rhs),
 
             // Function declarations
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
@@ -172,6 +224,7 @@ pub const EsTreeAdapter = struct {
             .property, .computed_property, .shorthand_property,
             => self.propertyProp(tag, prop, lhs, rhs),
 
+
             // Import/Export
             .import_decl => self.importProp(prop, lhs),
 
@@ -179,7 +232,28 @@ pub const EsTreeAdapter = struct {
             .root => self.programProp(prop, lhs, rhs),
 
             // Labeled statement
-            .labeled_stmt => self.labeledProp(prop, lhs, rhs),
+            .labeled_stmt => self.labeledProp(prop, lhs, rhs, q.ast.nodes.items(.main_token)[idx]),
+
+            // Break/continue with label: lhs = label token index, rhs = none
+            .break_label, .continue_label => blk: {
+                if (std.mem.eql(u8, prop, "label")) {
+                    // lhs is the token index of the label identifier
+                    const label_tok: u32 = @intCast(lhs);
+                    const label_text = q.tokenText(label_tok);
+                    const obj = self.arena.create(Value.Object) catch break :blk .undefined;
+                    obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+                    obj.entries.put("name", .{ .string = label_text }) catch {};
+                    obj.entries.put("type", .{ .string = "Identifier" }) catch {};
+                    break :blk .{ .object = obj };
+                }
+                break :blk .null_val; // .label = null for break_stmt/continue_stmt (no label)
+            },
+
+            // Break/continue without label: .label = null
+            .break_stmt, .continue_stmt => blk: {
+                if (std.mem.eql(u8, prop, "label")) break :blk .null_val;
+                break :blk .undefined;
+            },
 
             // Template literal
             .template_literal => self.templateProp(prop, lhs, rhs),
@@ -241,9 +315,21 @@ pub const EsTreeAdapter = struct {
         return .undefined;
     }
 
+    /// Unwrap grouping_expr (parentheses) so they are transparent — ESLint has
+    /// no ParenthesizedExpression; expressions inside parens are seen directly.
+    fn unwrapGrouping(self: *EsTreeAdapter, idx: u32) u32 {
+        var inner = idx;
+        const tags = self.query.ast.nodes.items(.tag);
+        const data = self.query.ast.nodes.items(.data);
+        while (inner < self.query.ast.nodes.len and tags[inner] == .grouping_expr) {
+            inner = @intFromEnum(data[inner].lhs);
+        }
+        return inner;
+    }
+
     fn binaryProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
-        if (std.mem.eql(u8, prop, "left")) return self.nodeOrNull(lhs);
-        if (std.mem.eql(u8, prop, "right")) return self.nodeOrNull(rhs);
+        if (std.mem.eql(u8, prop, "left")) return self.nodeOrNull(self.unwrapGrouping(lhs));
+        if (std.mem.eql(u8, prop, "right")) return self.nodeOrNull(self.unwrapGrouping(rhs));
         if (std.mem.eql(u8, prop, "operator")) return .{ .string = self.operatorString(tag, idx) };
         return .undefined;
     }
@@ -281,8 +367,16 @@ pub const EsTreeAdapter = struct {
         if (std.mem.eql(u8, prop, "object")) return self.nodeOrNull(lhs);
         if (std.mem.eql(u8, prop, "property")) {
             if (computed) return self.nodeOrNull(rhs);
-            // Non-computed: rhs is a token index, return synthetic Identifier
-            return .{ .node = rhs }; // TODO: proper synthetic Identifier
+            // Non-computed: rhs is a token index (not node index).
+            // Build a synthetic Identifier object so that rule code like
+            //   node.property.name / node.property.type / getStaticPropertyName
+            // all work correctly.
+            const name = self.query.tokenText(@intCast(rhs));
+            const obj = self.arena.create(Value.Object) catch return .undefined;
+            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            obj.entries.put("type", .{ .string = "Identifier" }) catch {};
+            obj.entries.put("name", .{ .string = name }) catch {};
+            return .{ .object = obj };
         }
         if (std.mem.eql(u8, prop, "computed")) return .{ .boolean = computed };
         if (std.mem.eql(u8, prop, "optional")) return .{ .boolean = false };
@@ -315,7 +409,7 @@ pub const EsTreeAdapter = struct {
 
     fn ifProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
         _ = idx;
-        if (std.mem.eql(u8, prop, "test")) return self.nodeOrNull(lhs);
+        if (std.mem.eql(u8, prop, "test")) return self.nodeOrNull(self.unwrapGrouping(lhs));
         if (std.mem.eql(u8, prop, "consequent")) {
             if (tag == .if_else_stmt) {
                 const extra = self.query.ast.extraData(ast_mod.IfData, rhs);
@@ -401,10 +495,33 @@ pub const EsTreeAdapter = struct {
         return .undefined;
     }
 
-    fn tryProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32, rhs: u32) Value {
+    /// Synthesize a Property object `{ type: "Property", computed: true }` for
+    /// computed method/getter/setter keys in object literals, so that rules like
+    /// id-length correctly skip them (ESLint's Property check requires !computed).
+    fn synthComputedProperty(self: *EsTreeAdapter, method_idx: u32, object_idx: u32) Value {
+        const obj = self.arena.create(Value.Object) catch return .undefined;
+        obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+        obj.entries.put("type", .{ .string = "Property" }) catch {};
+        obj.entries.put("computed", .{ .boolean = true }) catch {};
+        obj.entries.put("parent", .{ .node = object_idx }) catch {};
+        _ = method_idx;
+        return .{ .object = obj };
+    }
+
+    /// Synthesize a CatchClause object `{ type: "CatchClause", parent: try_node }`.
+    /// `try_idx` is the parent TryStatement, `body_idx` is the catch body block.
+    fn tryProp(self: *EsTreeAdapter, idx: u32, prop: []const u8, lhs: u32, rhs: u32) Value {
+        _ = idx;
         if (std.mem.eql(u8, prop, "block")) return self.nodeOrNull(lhs);
-        if (std.mem.eql(u8, prop, "handler")) return self.nodeOrNull(rhs);
-        // TODO: finalizer
+        if (std.mem.eql(u8, prop, "handler")) {
+            // rhs is the extra data index for TryData; catch_node is a real catch_clause node
+            const ed = self.query.ast.extraData(ast_mod.TryData, rhs);
+            return self.nodeOrNull(@intFromEnum(ed.catch_node));
+        }
+        if (std.mem.eql(u8, prop, "finalizer")) {
+            const ed = self.query.ast.extraData(ast_mod.TryData, rhs);
+            return self.nodeOrNull(@intFromEnum(ed.finally_body));
+        }
         return .undefined;
     }
 
@@ -453,7 +570,17 @@ pub const EsTreeAdapter = struct {
     }
 
     fn exprStmtProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32) Value {
-        if (std.mem.eql(u8, prop, "expression")) return self.nodeOrNull(lhs);
+        if (std.mem.eql(u8, prop, "expression")) {
+            // ESLint's AST doesn't have ParenthesizedExpression — parentheses are
+            // transparent. Unwrap any grouping_expr to match ESLint's representation.
+            var inner = lhs;
+            while (inner < self.query.ast.nodes.len and
+                self.query.ast.nodes.items(.tag)[inner] == .grouping_expr)
+            {
+                inner = @intFromEnum(self.query.ast.nodes.items(.data)[inner].lhs);
+            }
+            return self.nodeOrNull(inner);
+        }
         if (std.mem.eql(u8, prop, "directive")) {
             // Check if expression is a string literal (directive)
             if (lhs < self.query.ast.nodes.len) {
@@ -491,6 +618,30 @@ pub const EsTreeAdapter = struct {
         return .undefined;
     }
 
+    /// Exposes method/getter/setter node properties when acting as "Property"
+    /// inside an object literal (ESLint represents them as Property, not MethodDefinition).
+    fn objectMethodAsPropProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
+        _ = idx;
+        if (std.mem.eql(u8, prop, "key")) return self.nodeOrNull(lhs);
+        if (std.mem.eql(u8, prop, "kind")) return .{ .string = switch (tag) {
+            .getter_def, .computed_getter_def => "get",
+            .setter_def, .computed_setter_def => "set",
+            else => "init",
+        } };
+        if (std.mem.eql(u8, prop, "computed")) return .{ .boolean = switch (tag) {
+            .computed_method_def, .computed_getter_def, .computed_setter_def => true,
+            else => false,
+        } };
+        if (std.mem.eql(u8, prop, "method")) return .{ .boolean = switch (tag) {
+            .method_def, .computed_method_def => true,
+            else => false,
+        } };
+        if (std.mem.eql(u8, prop, "shorthand")) return .{ .boolean = false };
+        // 'value' is the function expression body — expose via rhs (MethodData index)
+        _ = rhs;
+        return .undefined;
+    }
+
     fn importProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32) Value {
         if (std.mem.eql(u8, prop, "specifiers")) {
             const import_data = self.query.ast.extraData(ast_mod.ImportData, lhs);
@@ -509,9 +660,19 @@ pub const EsTreeAdapter = struct {
         return .undefined;
     }
 
-    fn labeledProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32, rhs: u32) Value {
+    fn labeledProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32, rhs: u32, main_tok: u32) Value {
+        _ = rhs;
         if (std.mem.eql(u8, prop, "body")) return self.nodeOrNull(lhs);
-        if (std.mem.eql(u8, prop, "label")) return self.nodeOrNull(rhs);
+        if (std.mem.eql(u8, prop, "label")) {
+            // The label is stored as main_token of the labeled_stmt, not as a node.
+            // Return a synthetic Identifier-like object with .name and .type.
+            const label_text = self.query.tokenText(main_tok);
+            const obj = self.arena.create(Value.Object) catch return .undefined;
+            obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+            obj.entries.put("name", .{ .string = label_text }) catch {};
+            obj.entries.put("type", .{ .string = "Identifier" }) catch {};
+            return .{ .object = obj };
+        }
         return .undefined;
     }
 
@@ -523,7 +684,7 @@ pub const EsTreeAdapter = struct {
 
     fn ternaryProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32, rhs: u32) Value {
         const if_data = self.query.ast.extraData(ast_mod.IfData, rhs);
-        if (std.mem.eql(u8, prop, "test")) return self.nodeOrNull(lhs);
+        if (std.mem.eql(u8, prop, "test")) return self.nodeOrNull(self.unwrapGrouping(lhs));
         if (std.mem.eql(u8, prop, "consequent")) return self.nodeOrNull(@intFromEnum(if_data.consequent));
         if (std.mem.eql(u8, prop, "alternate")) return self.nodeOrNull(@intFromEnum(if_data.alternate));
         return .undefined;
@@ -725,6 +886,43 @@ pub const EsTreeAdapter = struct {
                 }
                 return .null_val;
             },
+            .source_getCommentsInside => {
+                // Scan source text from the node's opening token to find any comment markers.
+                // For empty BlockStatements, nodeRange only covers '{' (no child tokens),
+                // so we scan from '{' forward until the matching '}' instead.
+                // Returns a non-empty array if comments found; empty array otherwise.
+                if (args.len > 0) {
+                    if (args[0].asNode()) |node_idx| {
+                        const src = self.query.source;
+                        const open_tok = self.query.nodeMainToken(node_idx);
+                        const open_pos = self.query.tokenStart(open_tok);
+                        if (open_pos >= src.len) return .{ .array = &.{} };
+                        // If the node starts with '{', scan to matching '}'
+                        const start_char = src[open_pos];
+                        var depth: i32 = if (start_char == '{') 1 else 0;
+                        var i: usize = open_pos + 1;
+                        while (i < src.len) : (i += 1) {
+                            switch (src[i]) {
+                                '{' => depth += 1,
+                                '}' => {
+                                    depth -= 1;
+                                    if (depth <= 0) break;
+                                },
+                                '/' => {
+                                    if (i + 1 < src.len and (src[i + 1] == '/' or src[i + 1] == '*')) {
+                                        const arr = self.arena.alloc(Value, 1) catch return .{ .array = &.{} };
+                                        arr[0] = .undefined;
+                                        return .{ .array = arr };
+                                    }
+                                },
+                                else => {},
+                            }
+                        }
+                    }
+                }
+                return .{ .array = &.{} };
+            },
+            .source_getCommentsBefore, .source_getCommentsAfter => .{ .array = &.{} },
             // TODO: implement remaining builtins
             else => .undefined,
         };
@@ -870,6 +1068,23 @@ pub const EsTreeAdapter = struct {
             .sub_assign => "-=",
             .mul_assign => "*=",
             .div_assign => "/=",
+            .mod_assign => "%=",
+            .exp_assign => "**=",
+            .and_assign => "&=",
+            .or_assign => "|=",
+            .xor_assign => "^=",
+            .shl_assign => "<<=",
+            .shr_assign => ">>=",
+            .ushr_assign => ">>>=",
+            .logical_and_assign => "&&=",
+            .logical_or_assign => "||=",
+            .nullish_assign => "??=",
+            .exponentiate => "**",
+            .unsigned_shift_right => ">>>",
+            .prefix_inc, .postfix_inc => "++",
+            .prefix_dec, .postfix_dec => "--",
+            .await_expr => "await",
+            .yield_expr, .yield_delegate => "yield",
             else => "?",
         };
     }

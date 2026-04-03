@@ -30,6 +30,7 @@ pub fn main(init: std.process.Init) !void {
     defer file_paths.deinit(init.arena.allocator());
     var dump_tokens = false;
     var dump_ast = true;
+
     var json_format = false;
     var lint_mode = false;
     var config_path: ?[]const u8 = null;
@@ -91,8 +92,15 @@ pub fn main(init: std.process.Init) !void {
         defer rule_set.deinit();
 
         var cached_count: usize = 0;
-        for (rule_set.rules) |r| { if (r.cached_create_fn != null) cached_count += 1; }
-        try stdout.print("{d} rules loaded ({d} cached)\n", .{descriptors.len, cached_count});
+        var default_opts_count: usize = 0;
+        var visitor_count: usize = 0;
+        for (rule_set.rules) |r| {
+            if (r.cached_create_fn != null) cached_count += 1;
+            if (r.cached_default_options != null) default_opts_count += 1;
+            visitor_count += r.visitors.len;
+        }
+        try stdout.print("{d} rules loaded ({d} cached, {d} with defaultOptions, {d} total visitors)\n",
+            .{descriptors.len, cached_count, default_opts_count, visitor_count});
 
         // Phase 2: Collect all .js files (expanding directories)
         var all_files: std.ArrayList([]const u8) = .empty;
@@ -141,11 +149,35 @@ pub fn main(init: std.process.Init) !void {
             var tn_slices: [layout.tag_count][]const u8 = undefined;
             for (0..layout.tag_count) |ti| tn_slices[ti] = std.mem.span(layout.tag_names[ti]);
 
+            // Compute min_tok / max_tok for each node so that
+            // tokenBefore() / tokenAfter() work (needed by isParenthesised etc.)
+            const n_nodes = tree.nodes.len;
+            const main_tokens = tree.nodes.items(.main_token);
+            const min_tok_arr = try fa.alloc(u32, n_nodes);
+            const max_tok_arr = try fa.alloc(u32, n_nodes);
+            // min_tok[i] = main_token of node i (first token heuristic)
+            for (0..n_nodes) |ni| min_tok_arr[ni] = main_tokens[ni];
+            // max_tok: propagate child maxes to parents using DFS exit events.
+            for (0..n_nodes) |ni| max_tok_arr[ni] = main_tokens[ni];
+            // DFS events: positive = enter, negative = exit (~idx).
+            // Process exit events bottom-up: when we exit a node, its subtree max is finalized.
+            for (traversal.dfs_events) |ev| {
+                if (ev >= 0) continue; // skip enter events
+                const ni: u32 = @intCast(~ev);
+                if (ni >= n_nodes) continue;
+                const par = traversal.parents[ni];
+                const pb = @import("parser/parent_builder.zig");
+                if (par != pb.NONE and par < n_nodes) {
+                    if (max_tok_arr[ni] > max_tok_arr[par]) max_tok_arr[par] = max_tok_arr[ni];
+                    if (min_tok_arr[ni] < min_tok_arr[par]) min_tok_arr[par] = min_tok_arr[ni];
+                }
+            }
+
             var query = AstQuery{
                 .ast = &tree,
                 .parents = traversal.parents,
-                .min_tok = &.{},
-                .max_tok = &.{},
+                .min_tok = min_tok_arr,
+                .max_tok = max_tok_arr,
                 .tag_names = &tn_slices,
                 .source = source,
             };
@@ -182,6 +214,11 @@ pub fn main(init: std.process.Init) !void {
                         gop.value_ptr.* = 1;
                     }
                 }
+                // Emit per-line diagnostic in parseable format
+                const loc = @import("parser/span.zig").Location.fromOffset(source, d.span.start);
+                try stdout.print("{s}:{d}:{d}: error({s}): {s}\n", .{
+                    file_path, loc.line + 1, loc.column + 1, d.rule_name, d.message,
+                });
             }
             total_diags += @intCast(diagnostics_list.items.len);
             file_count += 1;

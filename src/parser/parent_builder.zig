@@ -138,8 +138,7 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .try_stmt => {
                 const ed = tree.extraData(ast_mod.TryData, @intFromEnum(rhs));
                 push(&stack, alloc, ed.finally_body, p) catch return error.OutOfMemory;
-                push(&stack, alloc, ed.catch_body,   p) catch return error.OutOfMemory;
-                push(&stack, alloc, ed.catch_param,  p) catch return error.OutOfMemory;
+                push(&stack, alloc, ed.catch_node,   p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs,             p) catch return error.OutOfMemory;
             },
             .catch_clause => {

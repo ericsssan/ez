@@ -1766,18 +1766,24 @@ pub const Parser = struct {
         const try_tok = self.advance(); // eat 'try'
         const block = try self.parseBlockStatement();
 
-        var catch_param: NodeIndex = .none;
-        var catch_body: NodeIndex = .none;
+        var catch_node: NodeIndex = .none;
         var finally_body: NodeIndex = .none;
 
-        // Parse catch clause
-        if (self.eat(.kw_catch)) |_| {
+        // Parse catch clause — emit it as a real catch_clause node so JS code
+        // gets a stable NodeView (required for ESLint identity checks).
+        if (self.eat(.kw_catch)) |catch_tok| {
+            var catch_param: NodeIndex = .none;
             // Optional catch binding: `catch (e)` or `catch {`
             if (self.eat(.l_paren)) |_| {
                 catch_param = try self.parseBindingPattern();
                 _ = try self.expect(.r_paren);
             }
-            catch_body = try self.parseBlockStatement();
+            const catch_body = try self.parseBlockStatement();
+            catch_node = try self.addNode(.{
+                .tag = .catch_clause,
+                .main_token = catch_tok,
+                .data = .{ .lhs = catch_param, .rhs = catch_body },
+            });
         }
 
         // Parse finally clause
@@ -1786,13 +1792,12 @@ pub const Parser = struct {
         }
 
         // Must have at least catch or finally.
-        if (catch_body == .none and finally_body == .none) {
+        if (catch_node == .none and finally_body == .none) {
             try self.emitDiagnosticAtToken(try_tok, "'try' must be followed by 'catch' or 'finally'", .{});
         }
 
         const extra = try self.addExtra(ast.TryData, .{
-            .catch_param = catch_param,
-            .catch_body = catch_body,
+            .catch_node = catch_node,
             .finally_body = finally_body,
         });
 

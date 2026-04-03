@@ -177,7 +177,7 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             // lhs = block, rhs = extra index to TryData
             try dumpNode(tree, data.lhs, child_indent, writer);
             const try_data = tree.extraData(TryData, @intFromEnum(data.rhs));
-            try dumpNode(tree, try_data.catch_body, child_indent, writer);
+            try dumpNode(tree, try_data.catch_node, child_indent, writer);
             try dumpNode(tree, try_data.finally_body, child_indent, writer);
         },
         .catch_clause => {

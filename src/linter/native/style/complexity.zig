@@ -99,9 +99,10 @@ fn countComplexity(node: NodeIndex, ctx: *const LintContext, depth: u8) u32 {
         .try_stmt => {
             const try_data = ctx.extraData(ast.TryData, @intFromEnum(data.rhs));
             count += countComplexity(data.lhs, ctx, depth - 1);
-            if (try_data.catch_body != .none) {
+            if (try_data.catch_node != .none) {
                 count += 1; // catch is a decision point
-                count += countComplexity(try_data.catch_body, ctx, depth - 1);
+                const catch_data = ctx.nodeData(try_data.catch_node);
+                count += countComplexity(catch_data.rhs, ctx, depth - 1);
             }
         },
 

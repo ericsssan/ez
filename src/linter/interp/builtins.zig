@@ -114,8 +114,11 @@ pub fn callAstUtilsFunction(
             const type_val = runtime.getNodeProperty(runtime.ctx, args[0].node, "type");
             if (type_val == .string) {
                 const t = type_val.string;
+                // ESLint pattern: /^(?:Function(?:Declaration|Expression)|ArrowFunctionExpression)$/
+                // Also include MethodDefinition because sanz's AST puts block_stmt directly under
+                // method_def rather than wrapping it in a FunctionExpression like ESLint does.
                 return .{ .boolean = eql(t, "FunctionDeclaration") or eql(t, "FunctionExpression") or
-                    eql(t, "ArrowFunctionExpression") };
+                    eql(t, "ArrowFunctionExpression") or eql(t, "MethodDefinition") };
             }
         }
         return .{ .boolean = false };
@@ -218,6 +221,12 @@ pub fn callAstUtilsFunction(
                         if (prop == .node) {
                             const pname = runtime.getNodeProperty(runtime.ctx, prop.node, "name");
                             if (pname == .string) return pname;
+                        }
+                        // Synthetic Identifier object (from memberProp non-computed path)
+                        if (prop == .object) {
+                            if (prop.object.entries.get("name")) |n| {
+                                if (n == .string) return n;
+                            }
                         }
                     }
                 }
@@ -354,8 +363,38 @@ pub fn callAstUtilsFunction(
     }
 
     if (eql(name, "isParenthesised")) {
-        // Simplified: check if previous token is (
-        // Full implementation would need sourceCode
+        // args: (sourceCode, node) — check if node is wrapped in parens
+        // Find the node argument (skip sourceCode object)
+        const node_arg = for (args) |a| {
+            if (a == .node) break a;
+        } else return .{ .boolean = false };
+
+        // Standard ESLint check: token after is ")" AND token before is "("
+        const after = runtime.callBuiltin(runtime.ctx, .source_getTokenAfter, &.{node_arg});
+        if (after == .token) {
+            const after_val = runtime.getTokenProperty(runtime.ctx, after.token, "value");
+            if (after_val == .string and eql(after_val.string, ")")) {
+                const before = runtime.callBuiltin(runtime.ctx, .source_getTokenBefore, &.{node_arg});
+                if (before == .token) {
+                    const before_val = runtime.getTokenProperty(runtime.ctx, before.token, "value");
+                    if (before_val == .string and eql(before_val.string, "(")) return .{ .boolean = true };
+                }
+            }
+        }
+
+        // sanz-specific: parenthesized SequenceExpressions include the surrounding parens in
+        // their range (main_token = open_paren), so getTokenBefore/After see tokens outside
+        // the parens. ESLint's SequenceExpression range excludes parens. For these nodes,
+        // check if main_token == "(" to distinguish truly parenthesized sequences from those
+        // whose first sub-expression starts with "(" (e.g. `() => 1, 2`).
+        if (node_arg == .node) {
+            const type_val = runtime.getNodeProperty(runtime.ctx, node_arg.node, "type");
+            if (type_val == .string and eql(type_val.string, "SequenceExpression")) {
+                const mt = runtime.getNodeProperty(runtime.ctx, node_arg.node, "__mainTokenValue__");
+                if (mt == .string and eql(mt.string, "(")) return .{ .boolean = true };
+            }
+        }
+
         return .{ .boolean = false };
     }
 
@@ -377,6 +416,13 @@ pub fn callAstUtilsFunction(
                             if (args.len >= 3 and args[2] == .string) {
                                 const prop_name = runtime.getNodeProperty(runtime.ctx, target.node, "property");
                                 if (prop_name == .string) return .{ .boolean = eql(prop_name.string, args[2].string) };
+                                // Synthetic Identifier object from non-computed member
+                                if (prop_name == .object) {
+                                    if (prop_name.object.entries.get("name")) |n| {
+                                        if (n == .string) return .{ .boolean = eql(n.string, args[2].string) };
+                                    }
+                                }
+                                return .{ .boolean = false };
                             }
                             return .{ .boolean = true };
                         }
@@ -421,6 +467,29 @@ pub fn callAstUtilsFunction(
         return .{ .boolean = false };
     }
 
+    if (eql(name, "couldBeError")) {
+        if (args.len > 0 and args[0] == .node) {
+            return .{ .boolean = couldBeError(args[0].node, runtime) };
+        }
+        return .{ .boolean = false };
+    }
+
+    if (eql(name, "isDirective")) {
+        // isDirective(node) mirrors ESLint's astUtils.isDirective:
+        //   node.type === "ExpressionStatement" && typeof node.directive === "string"
+        // The `directive` property is set only on UNPARENTHESIZED string literal
+        // expression statements (matching espree's behaviour). Parenthesized
+        // string literals like ("a") are NOT directives.
+        if (args.len > 0 and args[0] == .node) {
+            const type_val = runtime.getNodeProperty(runtime.ctx, args[0].node, "type");
+            if (type_val == .string and eql(type_val.string, "ExpressionStatement")) {
+                const directive = runtime.getNodeProperty(runtime.ctx, args[0].node, "directive");
+                return .{ .boolean = directive == .string };
+            }
+        }
+        return .{ .boolean = false };
+    }
+
     // ── Token type checkers (return functions for use as filter callbacks) ──
     // These are used like: sourceCode.getFirstToken(node, { filter: astUtils.isOpeningParenToken })
     // We return a string marker; the interpreter handles the callback dispatch.
@@ -446,6 +515,77 @@ pub fn callAstUtilsFunction(
     // ── Fallback: return undefined for unimplemented functions ──
     _ = arena;
     return .undefined;
+}
+
+/// Mirrors ESLint's astUtils.couldBeError() — returns true if the node could
+/// evaluate to an Error object at runtime (and should therefore not be flagged
+/// by no-throw-literal).
+fn couldBeError(node_id: u32, runtime: RuntimeCallbacks) bool {
+    const type_val = runtime.getNodeProperty(runtime.ctx, node_id, "type");
+    if (type_val != .string) return false;
+    const t = type_val.string;
+
+    // Always possibly an error
+    if (eql(t, "Identifier") or
+        eql(t, "CallExpression") or
+        eql(t, "NewExpression") or
+        eql(t, "MemberExpression") or
+        eql(t, "TaggedTemplateExpression") or
+        eql(t, "YieldExpression") or
+        eql(t, "AwaitExpression") or
+        eql(t, "ChainExpression")) return true;
+
+    if (eql(t, "AssignmentExpression")) {
+        const op = runtime.getNodeProperty(runtime.ctx, node_id, "operator");
+        if (op == .string) {
+            if (eql(op.string, "=") or eql(op.string, "&&=")) {
+                const right = runtime.getNodeProperty(runtime.ctx, node_id, "right");
+                if (right == .node) return couldBeError(right.node, runtime);
+                return false;
+            }
+            if (eql(op.string, "||=") or eql(op.string, "??=")) {
+                const left = runtime.getNodeProperty(runtime.ctx, node_id, "left");
+                const right = runtime.getNodeProperty(runtime.ctx, node_id, "right");
+                const l = if (left == .node) couldBeError(left.node, runtime) else false;
+                const r = if (right == .node) couldBeError(right.node, runtime) else false;
+                return l or r;
+            }
+        }
+        return false;
+    }
+
+    if (eql(t, "SequenceExpression")) {
+        const exprs = runtime.getNodeProperty(runtime.ctx, node_id, "expressions");
+        if (exprs == .array and exprs.array.len > 0) {
+            const last = exprs.array[exprs.array.len - 1];
+            if (last == .node) return couldBeError(last.node, runtime);
+        }
+        return false;
+    }
+
+    if (eql(t, "LogicalExpression")) {
+        const op = runtime.getNodeProperty(runtime.ctx, node_id, "operator");
+        if (op == .string and eql(op.string, "&&")) {
+            const right = runtime.getNodeProperty(runtime.ctx, node_id, "right");
+            if (right == .node) return couldBeError(right.node, runtime);
+            return false;
+        }
+        const left = runtime.getNodeProperty(runtime.ctx, node_id, "left");
+        const right = runtime.getNodeProperty(runtime.ctx, node_id, "right");
+        const l = if (left == .node) couldBeError(left.node, runtime) else false;
+        const r = if (right == .node) couldBeError(right.node, runtime) else false;
+        return l or r;
+    }
+
+    if (eql(t, "ConditionalExpression")) {
+        const consequent = runtime.getNodeProperty(runtime.ctx, node_id, "consequent");
+        const alternate = runtime.getNodeProperty(runtime.ctx, node_id, "alternate");
+        const c = if (consequent == .node) couldBeError(consequent.node, runtime) else false;
+        const a = if (alternate == .node) couldBeError(alternate.node, runtime) else false;
+        return c or a;
+    }
+
+    return false;
 }
 
 fn getLoc(val: Value, runtime: RuntimeCallbacks) ?f64 {
