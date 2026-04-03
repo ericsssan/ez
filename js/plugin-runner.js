@@ -1144,7 +1144,7 @@ class SourceCode {
 
   /** lines property — array of source lines */
   get lines() {
-    if (!this._linesCache) this._linesCache = this.text.split('\n');
+    if (!this._linesCache) this._linesCache = this.text.split(/\r\n|\r|\n|\u2028|\u2029/);
     return this._linesCache;
   }
 

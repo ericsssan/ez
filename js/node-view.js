@@ -775,7 +775,26 @@ const NodeProto = {
     while (parentIdx !== NONE && this._ast._nodeTags[parentIdx] === T.grouping_expr) {
       parentIdx = pd[parentIdx];
     }
-    const result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
+    let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
+    // ESTree requires ObjectPattern children to be wrapped in Property nodes.
+    // Sanz stores AssignmentPattern/Identifier directly under ObjectPattern
+    // for destructuring defaults ({a=1}) and shorthand-less patterns.
+    // Synthesize a Property wrapper so parent-chain checks like
+    // `node.parent.parent.type === "ObjectPattern"` work correctly.
+    if (result && result._tag === T.object_pattern) {
+      const t = this._tag;
+      if (t === T.assignment_pattern || t === T.identifier) {
+        const key = t === T.assignment_pattern
+          ? (this._ast.nodeLhs(this._i) !== NONE ? nodeView(this._ast, this._ast.nodeLhs(this._i)) : this)
+          : this;
+        result = {
+          type: 'Property', key, value: this, kind: 'init', method: false,
+          shorthand: true, computed: false,
+          start: this.start, end: this.end, range: this.range, loc: this.loc,
+          parent: result,
+        };
+      }
+    }
     this._parent = result;
     return result;
   },
