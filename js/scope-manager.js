@@ -45,11 +45,14 @@ const _DESTRUCTURE_PASSTHROUGH = new Set([
   T.assignment_pattern, T.rest_element, T.spread_element,
 ]);
 
-// Function declaration / expression tags.
+// Function declaration / expression tags (includes method/getter/setter since
+// Zig stores params directly under the method node, not a separate FnExpr).
 const _FUNCTION_TAGS = new Set([
   T.fn_decl, T.async_fn_decl, T.generator_fn_decl, T.async_generator_fn_decl,
   T.fn_expr, T.async_fn_expr, T.generator_fn_expr, T.async_generator_fn_expr,
   T.arrow_fn, T.async_arrow_fn,
+  T.method_def, T.getter_def, T.setter_def, T.constructor_def,
+  T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
 ]);
 
 // Class declaration / expression tags.
@@ -515,20 +518,27 @@ class ScopeBuilder {
   _getDeclaredVariables(node) {
     if (!node) return [];
     const ast = this._ast;
-    if (!ast._symDeclNodes || node._i === undefined || node._i === null) {
+
+    // For synthetic FunctionExpression (from value getter on method/getter/setter),
+    // use the parent's _i — that's the real method_def node in the Zig buffer.
+    let nodeIdx = node._i;
+    if ((nodeIdx === undefined || nodeIdx === null) && node.parent && node.parent._i !== undefined) {
+      nodeIdx = node.parent._i;
+    }
+
+    if (!ast._symDeclNodes || nodeIdx === undefined || nodeIdx === null) {
       // Fallback: stub parameters from node.params
       const params = node.params;
       if (!params || !params.length) return [];
       return params.map(p => {
         const name = (p && p.name) || (p && p.id && p.id.name) || '';
-        return { name, references: [], defs: [{ type: 'Parameter', node: p }], scope: null };
+        return { name, references: [], defs: [{ type: 'Parameter', name: p, node: node, parent: node.parent || null }], scope: null };
       });
     }
 
     // Ensure the index is built (no-op if already done).
     this._ensureScopeIndex();
 
-    const nodeIdx = node._i;
     const symIds = this._nodeDeclIndex ? this._nodeDeclIndex.get(nodeIdx) : null;
     if (symIds && symIds.length > 0) {
       return symIds.map(i => this._buildVariable(i));
@@ -539,7 +549,7 @@ class ScopeBuilder {
     if (!params || !params.length) return [];
     return params.map(p => {
       const name = (p && p.name) || (p && p.id && p.id.name) || '';
-      return { name, references: [], defs: [{ type: 'Parameter', node: p }], scope: null };
+      return { name, references: [], defs: [{ type: 'Parameter', name: p, node: node, parent: node.parent || null }], scope: null };
     });
   }
 
