@@ -15,8 +15,6 @@ const DataSource = compiled.DataSource;
 const CompiledRule = compiled.CompiledRule;
 const Severity = @import("../../parser/diagnostic.zig").Severity;
 
-/// Attempt to compile a handler source into a CompiledRule.
-/// Returns null if the handler is too complex to compile.
 pub fn extract(
     rule_name: []const u8,
     severity: Severity,
@@ -24,32 +22,86 @@ pub fn extract(
     messages: *const std.StringArrayHashMap([]const u8),
     allocator: std.mem.Allocator,
 ) ?CompiledRule {
-    // Wrap in object literal so parser can handle method shorthand:
-    // "MethodName(node) { ... }" → "({MethodName(node) { ... }})"
-    const prefix = "({";
-    const suffix = "})";
-    const total = prefix.len + handler_source.len + suffix.len;
-    const wrapped = allocator.alloc(u8, total) catch return null;
+    // Detect source form and wrap appropriately for parsing
+    const is_function = std.mem.startsWith(u8, handler_source, "function ");
+    const is_quoted = handler_source.len > 0 and handler_source[0] == '"';
+
+    var wrapped: []u8 = undefined;
+    var wrapped_len: usize = undefined;
+
+    if (is_function) {
+        // "function checkName(node) { ... }" → parse directly as expression
+        const prefix = "(";
+        const suffix = ")";
+        const total = prefix.len + handler_source.len + suffix.len;
+        wrapped = allocator.alloc(u8, total) catch return null;
+        @memcpy(wrapped[0..prefix.len], prefix);
+        @memcpy(wrapped[prefix.len..][0..handler_source.len], handler_source);
+        @memcpy(wrapped[prefix.len + handler_source.len ..], suffix);
+        wrapped_len = total;
+    } else if (is_quoted) {
+        // '"QuotedKey"(node) { ... }' → strip quotes, wrap as method
+        var qi: usize = 1;
+        while (qi < handler_source.len and handler_source[qi] != '"') qi += 1;
+        if (qi >= handler_source.len) return null;
+        const unquoted_key = handler_source[1..qi];
+
+        // Skip selector-style keys (contain > [ ] = space) — can't be method names
+        for (unquoted_key) |ch| {
+            if (ch == '>' or ch == '[' or ch == ']' or ch == '=' or ch == ' ') return null;
+        }
+
+        // Strip :exit suffix from method name (already tracked in is_exit)
+        const method_name = if (std.mem.endsWith(u8, unquoted_key, ":exit"))
+            unquoted_key[0 .. unquoted_key.len - 5]
+        else
+            unquoted_key;
+
+        const after_quote = handler_source[qi + 1 ..]; // "(node) { ... }"
+        const prefix = "({";
+        const suffix = "})";
+        const total = prefix.len + method_name.len + after_quote.len + suffix.len;
+        wrapped = allocator.alloc(u8, total) catch return null;
+        var pos: usize = 0;
+        @memcpy(wrapped[pos..][0..prefix.len], prefix);
+        pos += prefix.len;
+        @memcpy(wrapped[pos..][0..method_name.len], method_name);
+        pos += method_name.len;
+        @memcpy(wrapped[pos..][0..after_quote.len], after_quote);
+        pos += after_quote.len;
+        @memcpy(wrapped[pos..][0..suffix.len], suffix);
+        wrapped_len = total;
+    } else {
+        // "MethodName(node) { ... }" → wrap in object literal
+        const prefix = "({";
+        const suffix = "})";
+        const total = prefix.len + handler_source.len + suffix.len;
+        wrapped = allocator.alloc(u8, total) catch return null;
+        @memcpy(wrapped[0..prefix.len], prefix);
+        @memcpy(wrapped[prefix.len..][0..handler_source.len], handler_source);
+        @memcpy(wrapped[prefix.len + handler_source.len ..], suffix);
+        wrapped_len = total;
+    }
     defer allocator.free(wrapped);
-    @memcpy(wrapped[0..prefix.len], prefix);
-    @memcpy(wrapped[prefix.len..][0..handler_source.len], handler_source);
-    @memcpy(wrapped[prefix.len + handler_source.len ..], suffix);
 
     // Parse
-    var tokens = Lexer.tokenize(allocator, wrapped) catch return null;
-    var tree = Parser.parse(allocator, wrapped, tokens.slice()) catch return null;
+    var tokens = Lexer.tokenize(allocator, wrapped[0..wrapped_len]) catch return null;
+    var tree = Parser.parse(allocator, wrapped[0..wrapped_len], tokens.slice()) catch return null;
 
-    // Find the method body: root → expr_stmt → object_literal → method_def → body
-    const body_idx = findMethodBody(&tree) orelse return null;
-    const param_name = findParamName(&tree) orelse return null;
+    // Find body and param based on source form
+    const body_idx = if (is_function) findFunctionBody(&tree) else findMethodBody(&tree);
+    const param_name = if (is_function) findFunctionParam(&tree) else findParamName(&tree);
+    if (body_idx == null or param_name == null) return null;
+    const param = param_name.?;
+    const body = body_idx.?;
 
     // Analyze body statements
     var preds: std.ArrayList(Pred) = .empty;
     var report: ?Report = null;
 
-    const body_tag = tree.nodeTag(body_idx);
+    const body_tag = tree.nodeTag(body);
     if (body_tag == .block_stmt) {
-        const data = tree.nodeData(body_idx);
+        const data = tree.nodeData(body);
         const stmts_start = @intFromEnum(data.lhs);
         const stmts_end = @intFromEnum(data.rhs);
         if (stmts_start >= tree.extra_data.len or stmts_end > tree.extra_data.len) return null;
@@ -63,34 +115,37 @@ pub fn extract(
             switch (stmt_tag) {
                 // if (cond) return; → guard predicate
                 .if_stmt => {
-                    if (extractGuard(&tree, stmt, param_name, &preds, allocator)) {
-                        continue;
-                    }
-                    // if (cond) { context.report(...) } → check + report
-                    if (extractIfReport(&tree, stmt, param_name, messages, &preds, &report, allocator)) {
-                        continue;
-                    }
-                    return null; // Complex if — bail
+                    if (extractGuard(&tree, stmt, param, &preds, allocator)) continue;
+                    if (extractIfReport(&tree, stmt, param, messages, &preds, &report, allocator)) continue;
+                    return null;
                 },
-                // context.report({...}) → unconditional report
+                // if (cond) { ... } else { ... }
+                .if_else_stmt => {
+                    // Try as guard: if (cond) return; else ...
+                    if (extractGuard(&tree, stmt, param, &preds, allocator)) continue;
+                    if (extractIfReport(&tree, stmt, param, messages, &preds, &report, allocator)) continue;
+                    return null;
+                },
+                // context.report({...}) or report(node) → unconditional report
                 .expression_stmt => {
                     const expr: NodeIndex = @enumFromInt(@intFromEnum(tree.nodeData(stmt).lhs));
                     if (expr == .none) continue;
-                    if (extractReport(&tree, expr, param_name, messages, &report, allocator)) {
-                        continue;
-                    }
-                    // Other expression — could be variable assignment, bail
+                    if (extractReport(&tree, expr, param, messages, &report, allocator)) continue;
+                    // Non-report expression — skip if we already have predicates
+                    // (could be closure setup like `funcInfo = ...`)
+                    if (preds.items.len > 0 or report != null) continue;
                     return null;
                 },
-                .return_stmt => {
-                    // Early return without condition — end of handler
-                    break;
-                },
+                .return_stmt => break,
+                // Skip variable declarations if we already have enough context
                 .var_decl, .let_decl, .const_decl => {
-                    // Variable declarations — too complex
+                    if (report != null) continue; // already got report, skip rest
                     return null;
                 },
-                else => return null,
+                else => {
+                    if (report != null) continue;
+                    return null;
+                },
             }
         }
     } else {
@@ -108,6 +163,61 @@ pub fn extract(
 }
 
 // ── AST Navigation Helpers ─────────────────────────────────────
+
+fn findFunctionBody(tree: *const Ast) ?NodeIndex {
+    // root → expr_stmt → grouping_expr → fn_expr → body
+    const root_data = tree.nodeData(.root);
+    const stmts = tree.extra_data[@intFromEnum(root_data.lhs)..@intFromEnum(root_data.rhs)];
+    if (stmts.len == 0) return null;
+
+    const stmt: NodeIndex = @enumFromInt(stmts[0]);
+    if (tree.nodeTag(stmt) != .expression_stmt) return null;
+
+    var expr: NodeIndex = @enumFromInt(@intFromEnum(tree.nodeData(stmt).lhs));
+    if (tree.nodeTag(expr) == .grouping_expr) {
+        expr = @enumFromInt(@intFromEnum(tree.nodeData(expr).lhs));
+    }
+
+    const tag = tree.nodeTag(expr);
+    if (tag == .fn_expr or tag == .async_fn_expr or
+        tag == .fn_decl or tag == .async_fn_decl or
+        tag == .generator_fn_expr or tag == .async_generator_fn_expr)
+    {
+        const fd = tree.extraData(ast_mod.FnData, @intFromEnum(tree.nodeData(expr).lhs));
+        return fd.body;
+    }
+    return null;
+}
+
+fn findFunctionParam(tree: *const Ast) ?[]const u8 {
+    const root_data = tree.nodeData(.root);
+    const stmts = tree.extra_data[@intFromEnum(root_data.lhs)..@intFromEnum(root_data.rhs)];
+    if (stmts.len == 0) return null;
+
+    const stmt: NodeIndex = @enumFromInt(stmts[0]);
+    if (tree.nodeTag(stmt) != .expression_stmt) return null;
+
+    var expr: NodeIndex = @enumFromInt(@intFromEnum(tree.nodeData(stmt).lhs));
+    if (tree.nodeTag(expr) == .grouping_expr) {
+        expr = @enumFromInt(@intFromEnum(tree.nodeData(expr).lhs));
+    }
+
+    const tag = tree.nodeTag(expr);
+    if (tag == .fn_expr or tag == .async_fn_expr or
+        tag == .fn_decl or tag == .async_fn_decl or
+        tag == .generator_fn_expr or tag == .async_generator_fn_expr)
+    {
+        const fd = tree.extraData(ast_mod.FnData, @intFromEnum(tree.nodeData(expr).lhs));
+        const params = tree.extra_data[fd.params..fd.params_end];
+        if (params.len > 0) {
+            const p: NodeIndex = @enumFromInt(params[0]);
+            if (p != .none and tree.nodeTag(p) == .identifier) {
+                return tree.tokenText(tree.nodeMainToken(p));
+            }
+        }
+    }
+    return null;
+}
 
 fn findMethodBody(tree: *const Ast) ?NodeIndex {
     // root → expr_stmt → paren_expr → object_literal → method_def → body
@@ -486,6 +596,20 @@ fn extractReport(
 
     if (tree.nodeTag(arg0) == .object_literal) {
         return extractReportObject(tree, arg0, messages, report, allocator);
+    }
+
+    // report(node) — closure helper with just a node arg.
+    // Use first messageId from messages as default.
+    if (tree.nodeTag(arg0) == .identifier and messages.count() > 0) {
+        const keys = messages.keys();
+        const first_key = keys[0];
+        const template = messages.get(first_key) orelse first_key;
+        report.* = .{
+            .message_id = first_key,
+            .template = template,
+            .data_bindings = &.{},
+        };
+        return true;
     }
 
     return false;
