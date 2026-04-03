@@ -690,8 +690,6 @@ const NodeProto = {
       const kw = _TS_KW_TYPES[text];
       if (kw) result = kw;
     }
-    // Memoize: shadow the prototype getter with a direct value property
-    Object.defineProperty(this, 'type', { value: result, configurable: true });
     return result;
   },
   /** Internal numeric tag (Zig AST node type). Use this for all internal checks. */
@@ -767,11 +765,9 @@ const NodeProto = {
    * Root node (index 0) returns null.
    */
   get parent() {
+    if (this._parent !== undefined) return this._parent;
     const pd = this._ast._parentData;
-    if (!pd) {
-      Object.defineProperty(this, 'parent', { value: null, configurable: true, writable: true });
-      return null;
-    }
+    if (!pd) { this._parent = null; return null; }
     // Walk past grouping_expr (ParenthesizedExpression) parents since nodeView
     // unwraps them — without this skip the parent chain would cycle:
     //   child → ParenthesizedExpression parent → nodeView unwraps back to child
@@ -780,15 +776,11 @@ const NodeProto = {
       parentIdx = pd[parentIdx];
     }
     const result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
-    // Memoize: shadow the prototype getter with a writable value property
-    // (writable: true allows ESLint's traversal to set node.parent)
-    Object.defineProperty(this, 'parent', { value: result, configurable: true, writable: true });
+    this._parent = result;
     return result;
   },
   set parent(v) {
-    // ESLint's traversal sets node.parent on every node. Shadow the prototype
-    // getter with a writable own property so subsequent reads/writes are direct.
-    Object.defineProperty(this, 'parent', { value: v, configurable: true, writable: true });
+    this._parent = v;
   },
 
   /**
