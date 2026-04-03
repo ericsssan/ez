@@ -87,44 +87,72 @@ pub fn main(init: std.process.Init) !void {
         }.f;
         const t_start = clockNs();
 
-        // ── Phase 1: Load rules ─────────────────────────────────
-        var lint_engine = qjs_engine_mod.QjsLintEngine.init(allocator) orelse {
-            try stdout.print("Failed to init lint engine\n", .{});
-            try stdout.flush();
-            return;
-        };
-        defer lint_engine.deinit();
+        // ── Phase 1: Load rules (cache or QuickJS) ────────────
+        const extractor = @import("linter/eslint/extractor.zig");
+        const compiled_mod = @import("linter/eslint/compiled.zig");
+        const rule_cache = @import("linter/eslint/rule_cache.zig");
+        const layout_mod = @import("parser/layout.zig");
+        const cache_path = ".sanz-cache/rules.bin";
 
-        var rule_dir = Io.Dir.cwd().openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
-            try stdout.print("Could not open rules dir\n", .{});
-            try stdout.flush();
-            return;
-        };
-        var walker = rule_dir.walk(allocator) catch return;
-        defer walker.deinit();
-
+        var cached_rules: ?[]rule_cache.CachedRule = rule_cache.readCache(cache_path, allocator);
         var rule_count: u32 = 0;
-        while (true) {
-            const entry = (walker.next(io) catch break) orelse break;
-            if (entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
-            if (std.mem.eql(u8, entry.basename, "index.js")) continue;
+        var cache_hit = false;
 
-            const rule_src = rule_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
-            defer allocator.free(rule_src);
+        if (cached_rules) |cr| {
+            rule_count = @intCast(cr.len);
+            cache_hit = true;
+        } else {
+            // Cold path: load via QuickJS
+            var lint_engine = qjs_engine_mod.QjsLintEngine.init(allocator) orelse {
+                try stdout.print("Failed to init lint engine\n", .{});
+                try stdout.flush();
+                return;
+            };
+            defer lint_engine.deinit();
 
-            lint_engine.loadRule(entry.basename[0 .. entry.basename.len - 3], rule_src) catch continue;
-            rule_count += 1;
+            var rule_dir = Io.Dir.cwd().openDir(io, "js/node_modules/eslint/lib/rules", .{ .iterate = true }) catch {
+                try stdout.print("Could not open rules dir\n", .{});
+                try stdout.flush();
+                return;
+            };
+            var walker = rule_dir.walk(allocator) catch return;
+            defer walker.deinit();
+
+            while (true) {
+                const entry = (walker.next(io) catch break) orelse break;
+                if (entry.kind != .file) continue;
+                if (!std.mem.endsWith(u8, entry.basename, ".js")) continue;
+                if (std.mem.eql(u8, entry.basename, "index.js")) continue;
+
+                const rule_src = rule_dir.readFileAlloc(io, entry.basename, allocator, Io.Limit.limited(1024 * 1024)) catch continue;
+                defer allocator.free(rule_src);
+
+                lint_engine.loadRule(entry.basename[0 .. entry.basename.len - 3], rule_src) catch continue;
+                rule_count += 1;
+            }
+
+            // Extract and cache
+            var cache_list: std.ArrayList(rule_cache.CachedRule) = .empty;
+            for (0..lint_engine.ruleCount()) |ri| {
+                const extracted = lint_engine.extractHandlerSources(ri) catch continue;
+                try cache_list.append(allocator, .{
+                    .name = try allocator.dupe(u8, lint_engine.rules.items[ri].name),
+                    .handlers = try allocator.dupe(qjs_engine_mod.QjsLintEngine.HandlerSource, extracted.handlers.items),
+                    .messages = extracted.messages,
+                });
+            }
+            cached_rules = cache_list.toOwnedSlice(allocator) catch null;
+
+            // Write cache (create dir if needed)
+            const cstd = @cImport(@cInclude("sys/stat.h"));
+            _ = cstd.mkdir(".sanz-cache", 0o755);
+            if (cached_rules) |cr| _ = rule_cache.writeCache(cr, cache_path);
         }
 
         const t_rules_loaded = clockNs();
 
-        // ── Phase 1b: Extract handler sources for compilation ───
-        const extractor = @import("linter/eslint/extractor.zig");
-        const compiled_mod = @import("linter/eslint/compiled.zig");
-
+        // ── Phase 1b: Compile predicates ────────────────────────
         var total_handlers: u32 = 0;
-        var total_messages: u32 = 0;
         var compiled_count: u32 = 0;
         var dispatch = compiled_mod.CompiledDispatch.init();
         var enter_lists: [256]std.ArrayList(compiled_mod.CompiledRule) = undefined;
@@ -134,24 +162,20 @@ pub fn main(init: std.process.Init) !void {
             exit_lists[i] = .empty;
         }
 
-        for (0..lint_engine.ruleCount()) |ri| {
-            const extracted = lint_engine.extractHandlerSources(ri) catch continue;
-            total_handlers += @intCast(extracted.handlers.items.len);
-            total_messages += @intCast(extracted.messages.count());
-
-            const rule_name = lint_engine.rules.items[ri].name;
-
-            for (extracted.handlers.items) |h| {
-                if (extractor.extract(rule_name, .@"error", h.source, &extracted.messages, allocator)) |cr| {
-                    compiled_count += 1;
-                    // Map ESTree key to sanz tags
-                    for (0..@import("parser/layout.zig").tag_count) |t| {
-                        const tn = std.mem.span(@import("parser/layout.zig").sanz_tag_name(@intCast(t)));
-                        if (std.mem.eql(u8, tn, h.key)) {
-                            if (h.is_exit) {
-                                exit_lists[t].append(allocator, cr) catch {};
-                            } else {
-                                enter_lists[t].append(allocator, cr) catch {};
+        if (cached_rules) |rules| {
+            for (rules) |*rule| {
+                total_handlers += @intCast(rule.handlers.len);
+                for (rule.handlers) |h| {
+                    if (extractor.extract(rule.name, .@"error", h.source, &rule.messages, allocator)) |cr| {
+                        compiled_count += 1;
+                        for (0..layout_mod.tag_count) |t| {
+                            const tn = std.mem.span(layout_mod.sanz_tag_name(@intCast(t)));
+                            if (std.mem.eql(u8, tn, h.key)) {
+                                if (h.is_exit) {
+                                    exit_lists[t].append(allocator, cr) catch {};
+                                } else {
+                                    enter_lists[t].append(allocator, cr) catch {};
+                                }
                             }
                         }
                     }
@@ -238,12 +262,13 @@ pub fn main(init: std.process.Init) !void {
         const t_lint_done = clockNs();
         total_diags = compiled_diags;
 
-        try stdout.print("{d} rules, {d}/{d} compiled, {d} files, {d} diags\n", .{
+        try stdout.print("{d} rules, {d}/{d} compiled, {d} files, {d} diags {s}\n", .{
             rule_count,
             compiled_count,
             total_handlers,
             corpus_sources.items.len,
             total_diags,
+            if (cache_hit) "(cached)" else "(cold)",
         });
         try stdout.print("  load {d}ms, compile {d}ms, read {d}ms, lint {d}ms\n", .{
             (t_rules_loaded - t_start) / 1_000_000,
