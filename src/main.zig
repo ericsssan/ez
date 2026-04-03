@@ -13,6 +13,7 @@ const FileDiscovery = @import("cli/file_discovery.zig").FileDiscovery;
 const GitIgnore = linter_root.gitignore.GitIgnore;
 const ParallelRunner = @import("cli/parallel.zig").ParallelRunner;
 const DiagnosticFormatter = @import("cli/diagnostic_formatter.zig").DiagnosticFormatter;
+const Diagnostic = @import("parser/diagnostic.zig").Diagnostic;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -176,19 +177,67 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // ── Phase 3: Lint ───────────────────────────────────────
+        // ── Phase 3: Lint (compiled + QuickJS fallback) ─────────
+        const Lexer_mod = @import("parser/lexer.zig").Lexer;
+        const Parser_mod = @import("parser/parser.zig").Parser;
+        const parent_builder = @import("parser/parent_builder.zig");
+
         var total_diags: u32 = 0;
+        var compiled_diags: u32 = 0;
+        var qjs_diags: u32 = 0;
         var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+
         for (corpus_sources.items) |src| {
-            total_diags += lint_engine.lintSource(src, arena_impl.allocator());
+            const a = arena_impl.allocator();
+
+            // Parse once for compiled path
+            var tokens = Lexer_mod.tokenize(a, src) catch {
+                _ = arena_impl.reset(.retain_capacity);
+                continue;
+            };
+            var tree = Parser_mod.parse(a, src, tokens.slice()) catch {
+                _ = arena_impl.reset(.retain_capacity);
+                continue;
+            };
+            const traversal = parent_builder.computeTraversal(&tree, a) catch {
+                _ = arena_impl.reset(.retain_capacity);
+                continue;
+            };
+
+            // Compiled path: native Zig predicate evaluation (just count)
+            const node_tags = tree.nodes.items(.tag);
+            for (traversal.dfs_events) |ev| {
+                const is_exit = ev < 0;
+                const idx: u32 = if (is_exit) @intCast(~ev) else @intCast(ev);
+                if (idx >= tree.nodes.len) continue;
+                const tag = @intFromEnum(node_tags[idx]);
+                if (tag >= 256) continue;
+
+                const rules = if (is_exit) dispatch.exit[tag] else dispatch.enter[tag];
+                for (rules) |*cr| {
+                    if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
+                        compiled_diags += 1;
+                    }
+                }
+            }
+
+            // QuickJS fallback path (re-parses internally, will optimize later)
+            qjs_diags += lint_engine.lintSource(src, a);
+
             _ = arena_impl.reset(.retain_capacity);
         }
         arena_impl.deinit();
 
-        try stdout.print("{d} rules, {d} files, {d} diags (eval {d}ms, create {d}ms, parse {d}ms, dispatch {d}ms)\n", .{
+        total_diags = compiled_diags + qjs_diags;
+
+        try stdout.print("{d} rules, {d} files, {d} diags (compiled: {d}, qjs: {d})\n", .{
             rule_count,
             corpus_sources.items.len,
             total_diags,
+            compiled_diags,
+            qjs_diags,
+        });
+        try stdout.print("  eval {d}ms, create {d}ms, parse {d}ms, dispatch {d}ms\n", .{
             lint_engine.eval_ns / 1_000_000,
             lint_engine.create_ns / 1_000_000,
             lint_engine.parse_ns / 1_000_000,
