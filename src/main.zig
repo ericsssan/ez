@@ -14,6 +14,7 @@ const GitIgnore = linter_root.gitignore.GitIgnore;
 const ParallelRunner = @import("cli/parallel.zig").ParallelRunner;
 const DiagnosticFormatter = @import("cli/diagnostic_formatter.zig").DiagnosticFormatter;
 const Diagnostic = @import("parser/diagnostic.zig").Diagnostic;
+const layout = @import("parser/layout.zig");
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -34,6 +35,8 @@ pub fn main(init: std.process.Init) !void {
     var config_path: ?[]const u8 = null;
     var no_config = false;
     var eslint_compat_mode = false;
+    var eslint_rules_dir: ?[]const u8 = null;
+
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
             dump_tokens = true;
@@ -49,6 +52,8 @@ pub fn main(init: std.process.Init) !void {
             no_config = true;
         } else if (std.mem.eql(u8, arg, "--eslint-compat")) {
             eslint_compat_mode = true;
+        } else if (std.mem.startsWith(u8, arg, "--eslint-rules=")) {
+            eslint_rules_dir = arg["--eslint-rules=".len..];
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
             config_path = arg["--config=".len..];
         } else if (std.mem.eql(u8, arg, "--config")) {
@@ -70,6 +75,80 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+
+    // ── ESLint rules mode: load rules from disk, lint with Zig interpreter ──
+    if (eslint_rules_dir) |rules_dir| {
+        const eslint_loader = @import("linter/eslint/loader.zig");
+        const eslint_rules = @import("linter/eslint/rules.zig");
+        const parent_builder = @import("parser/parent_builder.zig");
+        const semantic_mod = parser_root.semantic;
+        const AstQuery = @import("linter/query/ast_query.zig").AstQuery;
+        const EsTreeAdapter = @import("linter/query/estree.zig").EsTreeAdapter;
+
+        // Phase 1: Load rules from .js files on disk
+        const descriptors = try eslint_loader.loadRulesFromDir(io, rules_dir, allocator);
+        var rule_set = try eslint_rules.loadRules(allocator, descriptors);
+        defer rule_set.deinit();
+
+        try stdout.print("{d} rules loaded\n", .{descriptors.len});
+
+        // Phase 2: Lint each target file
+        var total_diags: u32 = 0;
+        var file_count: u32 = 0;
+
+        for (file_paths.items) |file_path| {
+            const source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
+
+            var tokens_result = Lexer.tokenize(allocator, source) catch continue;
+            var tree = parser.Parser.parse(allocator, source, tokens_result.slice()) catch continue;
+            const traversal = parent_builder.computeTraversal(&tree, allocator) catch continue;
+            var sem_result = semantic_mod.SemanticAnalyzer.analyze(allocator, &tree) catch continue;
+
+            var diagnostics_list: std.ArrayList(Diagnostic) = .empty;
+
+            // Build query + adapter for ESTree property access
+            // Convert tag names to slices
+            var tn_slices: [layout.tag_count][]const u8 = undefined;
+            for (0..layout.tag_count) |ti| tn_slices[ti] = std.mem.span(layout.tag_names[ti]);
+
+            var query = AstQuery{
+                .ast = &tree,
+                .parents = traversal.parents,
+                .min_tok = &.{},
+                .max_tok = &.{},
+                .tag_names = &tn_slices,
+                .source = source,
+            };
+            var adapter = EsTreeAdapter{
+                .query = &query,
+                .semantic = &sem_result,
+                .node_scope_ids = &.{},
+                .arena = allocator,
+            };
+
+            // Run rules via Zig interpreter
+            const node_tags_raw = tree.nodes.items(.tag);
+            var node_tags_u8 = try allocator.alloc(u8, node_tags_raw.len);
+            for (node_tags_raw, 0..) |t, i| node_tags_u8[i] = @intFromEnum(t);
+
+            eslint_rules.runRulesOnFile(
+                &rule_set,
+                adapter.callbacks(),
+                traversal.dfs_events,
+                tree.nodes.len,
+                node_tags_u8,
+                &diagnostics_list,
+                allocator,
+            );
+
+            total_diags += @intCast(diagnostics_list.items.len);
+            file_count += 1;
+        }
+
+        try stdout.print("{d} files, {d} diagnostics\n", .{ file_count, total_diags });
+        try stdout.flush();
+        return;
+    }
 
     // ── Lint mode: multi-file support ────────────────────────
     if (file_paths.items.len == 0) {
