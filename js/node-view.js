@@ -641,6 +641,7 @@ class AstView {
 // After warmup, zero allocations during traversal → zero GC pressure.
 
 const _decoder = new TextDecoder();
+const _emptyArray = Object.freeze([]);
 const POOL_SIZE = 256;
 let _poolIdx = 0;
 
@@ -1805,7 +1806,7 @@ const NodeProto = {
 
   /** node.comments — empty array (sanz doesn't track comments yet). Writable so rules can set it. */
   get comments() {
-    return this._comments || [];
+    return this._comments || _emptyArray;
   },
   set comments(v) {
     this._comments = v;
