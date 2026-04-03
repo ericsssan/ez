@@ -1690,6 +1690,7 @@ class CodePathTracker {
     this._stack = []; // stack of { codePath, segment, returned }
     this._currentSegment = null;
     this._codePath = null;
+    this._branchStack = []; // { savedReachable, anyBranchReachable }
   }
 
   enterFunction(node) {
@@ -1730,11 +1731,32 @@ class CodePathTracker {
     if (this._codePath) this._codePath.currentSegments = [unreachSeg];
   }
 
-  // Called at branch merge points (end of if/else, end of loop, catch, etc.)
-  markReachable() {
-    const seg = _makeSegment(true);
+  // Enter a branching statement (if/try/switch/loop). Saves current reachability.
+  enterBranch() {
+    this._branchStack.push({ savedReachable: this.reachable, anyBranchReachable: false });
+  }
+
+  // Enter alternate path (else/catch/case). Records previous branch result, restores.
+  nextBranch() {
+    const top = this._branchStack[this._branchStack.length - 1];
+    if (!top) return _makeSegment(true);
+    if (this.reachable) top.anyBranchReachable = true;
+    const seg = _makeSegment(top.savedReachable);
     this._currentSegment = seg;
     if (this._codePath) this._codePath.currentSegments = [seg];
+    return seg;
+  }
+
+  // Exit branching statement. Merge: reachable if any branch was, or if implicit path exists.
+  exitBranch(hasAllBranches = false) {
+    const top = this._branchStack.pop();
+    if (!top) return _makeSegment(true);
+    if (this.reachable) top.anyBranchReachable = true;
+    const merged = hasAllBranches ? top.anyBranchReachable : true;
+    const seg = _makeSegment(merged || top.savedReachable);
+    this._currentSegment = seg;
+    if (this._codePath) this._codePath.currentSegments = [seg];
+    return seg;
   }
 
   // Called when entering a new block that restores reachability (else, catch, finally, case)
@@ -2801,15 +2823,23 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
+          // End outer segment before starting a new code path
+          const outerSeg = cpTracker.segment;
+          if (outerSeg) invokeSegmentEvent(outerSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', outerSeg);
           const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
           invokeCodePathHandlers('onCodePathStart', idx);
           invokeSegmentEvent('onCodePathSegmentStart', segment);
         }
-        // Branch points: restore reachability at alternate paths
+        // Branch points
         if (hasCodePath) {
+          if (tn === 'IfStatement' || tn === 'TryStatement' || tn === 'SwitchStatement' ||
+              tn === 'WhileStatement' || tn === 'DoWhileStatement' || tn === 'ForStatement' ||
+              tn === 'ForInStatement' || tn === 'ForOfStatement') {
+            cpTracker.enterBranch();
+          }
           if (tn === 'CatchClause' || tn === 'SwitchCase') {
-            const seg = cpTracker.forkReachable();
-            invokeSegmentEvent('onCodePathSegmentStart', seg);
+            const seg = cpTracker.nextBranch();
+            if (seg) invokeSegmentEvent('onCodePathSegmentStart', seg);
           }
         }
         const enter = visitorMap.get(tn);
@@ -2948,14 +2978,30 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, true);
+        // Exit branching statements — merge reachability
+        if (hasCodePath) {
+          if (tn === 'IfStatement' || tn === 'TryStatement' || tn === 'SwitchStatement' ||
+              tn === 'WhileStatement' || tn === 'DoWhileStatement' || tn === 'ForStatement' ||
+              tn === 'ForInStatement' || tn === 'ForOfStatement') {
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) invokeSegmentEvent(oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', oldSeg);
+            const hasAllBranches = tn === 'IfStatement' && (() => {
+              const node = nodeView(ast, idx);
+              return node.alternate != null;
+            })();
+            const seg = cpTracker.exitBranch(hasAllBranches);
+            invokeSegmentEvent('onCodePathSegmentStart', seg);
+          }
+        }
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
           const oldSeg = cpTracker.segment;
-          if (oldSeg) {
-            const evName = oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd';
-            invokeSegmentEvent(evName, oldSeg);
-          }
-          cpTracker.exitFunction();
+          if (oldSeg) invokeSegmentEvent(oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd', oldSeg);
+          // Fire onCodePathEnd BEFORE exitFunction — rule needs to see the function's codePath
           invokeCodePathHandlers('onCodePathEnd', idx);
+          cpTracker.exitFunction();
+          // Restore outer segment
+          const outerSeg = cpTracker.segment;
+          if (outerSeg) invokeSegmentEvent(outerSeg.reachable ? 'onCodePathSegmentStart' : 'onUnreachableCodePathSegmentStart', outerSeg);
         }
         if (hasSelectors) invokeSelectorHandlers(idx, true);
       }

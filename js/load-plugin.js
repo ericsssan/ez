@@ -65,7 +65,7 @@ function loadPlugin(pkgName, ruleFilters) {
         // run until real code path analysis is added.
         if (_NEEDS_CODE_PATH.has(ruleName) && ruleFilters.size === 0) continue;
         plugins.push({
-          meta: { name: ruleName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema },
+          meta: { name: ruleName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema, messages: rule.meta?.messages },
           create: rule.create,
         });
       } catch { /* skip broken rules */ }
