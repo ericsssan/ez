@@ -305,15 +305,25 @@ fn extractGuard(
     preds: *std.ArrayList(Pred),
     allocator: std.mem.Allocator,
 ) bool {
+    const stmt_tag = tree.nodeTag(if_idx);
     const data = tree.nodeData(if_idx);
     const test_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
-    const consequent: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
 
-    // Consequent must be a return statement (early exit guard)
-    if (!isReturnStmt(tree, consequent)) return false;
+    if (stmt_tag == .if_stmt) {
+        const consequent: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
+        if (!isReturnStmt(tree, consequent)) return false;
+        return extractCondAsPred(tree, test_idx, param, preds, true, allocator);
+    }
 
-    // Extract the negated condition as a positive predicate
-    return extractCondAsPred(tree, test_idx, param, preds, true, allocator);
+    if (stmt_tag == .if_else_stmt) {
+        // lhs = test, rhs = extra index to IfData { consequent, alternate }
+        const if_data = tree.extraData(ast_mod.IfData, @intFromEnum(data.rhs));
+        const consequent: NodeIndex = @enumFromInt(@intFromEnum(if_data.consequent));
+        if (!isReturnStmt(tree, consequent)) return false;
+        return extractCondAsPred(tree, test_idx, param, preds, true, allocator);
+    }
+
+    return false;
 }
 
 fn isReturnStmt(tree: *const Ast, idx: NodeIndex) bool {
@@ -362,27 +372,64 @@ fn extractCondAsPred(
             const arg: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
             return extractCondAsPred(tree, arg, param, preds, !negate, allocator);
         },
-        // a && b → both must hold (when negate=false)
+        // a && b
         .logical_and => {
+            const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+            const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
             if (!negate) {
-                const lhs: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
-                const rhs: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
-                return extractCondAsPred(tree, lhs, param, preds, false, allocator) and
-                    extractCondAsPred(tree, rhs, param, preds, false, allocator);
+                // a && b (positive) → both must hold
+                return extractCondAsPred(tree, lhs_idx, param, preds, false, allocator) and
+                    extractCondAsPred(tree, rhs_idx, param, preds, false, allocator);
+            } else {
+                // !(a && b) → !a || !b — can't express as AND chain
+                return false;
             }
-            return false;
         },
-        // a || b → either must hold (when negate=false)
+        // a || b
         .logical_or => {
+            const lhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+            const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
             if (negate) {
                 // !(a || b) → !a && !b
-                const lhs: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
-                const rhs: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
-                return extractCondAsPred(tree, lhs, param, preds, true, allocator) and
-                    extractCondAsPred(tree, rhs, param, preds, true, allocator);
+                return extractCondAsPred(tree, lhs_idx, param, preds, true, allocator) and
+                    extractCondAsPred(tree, rhs_idx, param, preds, true, allocator);
+            } else {
+                // a || b (positive) — try as any_of disjunction
+                var branch_a: std.ArrayList(Pred) = .empty;
+                var branch_b: std.ArrayList(Pred) = .empty;
+                if (extractCondAsPred(tree, lhs_idx, param, &branch_a, false, allocator) and
+                    extractCondAsPred(tree, rhs_idx, param, &branch_b, false, allocator))
+                {
+                    const branches = allocator.alloc([]const Pred, 2) catch return false;
+                    branches[0] = branch_a.toOwnedSlice(allocator) catch return false;
+                    branches[1] = branch_b.toOwnedSlice(allocator) catch return false;
+                    preds.append(allocator, .{ .any_of = branches }) catch return false;
+                    return true;
+                }
+                return false;
+            }
+        },
+        // Member expression as boolean: node.X (truthy) or !node.X (falsy)
+        .member_expr, .optional_member_expr => {
+            const nav_prop = resolveMemberChain(tree, cond, param);
+            if (nav_prop) |np| {
+                // Boolean properties: node.computed, node.prefix, node.shorthand
+                if (np.prop == .computed or np.prop == .prefix or np.prop == .shorthand) {
+                    const pred: Pred = if (negate)
+                        .{ .bool_false = .{ .nav = np.nav, .prop = np.prop } }
+                    else
+                        .{ .bool_true = .{ .nav = np.nav, .prop = np.prop } };
+                    preds.append(allocator, pred) catch return false;
+                    return true;
+                }
+                // Other named properties: could be child node navigation
+                // This is a truthy check on a child — not a predicate we can compile
+                // without knowing the specific tag→child mapping
             }
             return false;
         },
+        // Identifier as boolean: just a variable name, can't compile
+        .identifier => return false,
         else => return false,
     }
 }
