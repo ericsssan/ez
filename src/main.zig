@@ -109,7 +109,17 @@ pub fn main(init: std.process.Init) !void {
 
         lint_engine.buildDispatch();
 
-        // ── Phase 2: Pre-read corpus ───────────────────────��────
+        // ── Phase 1b: Extract handler sources for compilation ───
+        var total_handlers: u32 = 0;
+        var total_messages: u32 = 0;
+        for (0..lint_engine.ruleCount()) |ri| {
+            const extracted = lint_engine.extractHandlerSources(ri) catch continue;
+            total_handlers += @intCast(extracted.handlers.items.len);
+            total_messages += @intCast(extracted.messages.count());
+        }
+        try stdout.print("{d} handlers extracted, {d} messages\n", .{ total_handlers, total_messages });
+
+        // ── Phase 2: Pre-read corpus ────────────────────────────
         const corpus_dir = Io.Dir.cwd().openDir(io, "tests/conformance/test262-parser-tests/pass", .{ .iterate = true }) catch {
             try stdout.print("No corpus\n", .{});
             try stdout.flush();

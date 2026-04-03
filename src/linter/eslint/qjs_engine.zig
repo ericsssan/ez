@@ -36,6 +36,13 @@ pub const QjsLintEngine = struct {
     /// Global diagnostic counter (avoids per-rule JS array manipulation)
     diag_counter: u32 = 0,
 
+    /// Extracted handler source for compilation.
+    pub const HandlerSource = struct {
+        key: []const u8, // "BinaryExpression", "IfStatement:exit"
+        source: []const u8, // "function(node) { ... }"
+        is_exit: bool,
+    };
+
     pub const LoadedRule = struct {
         name: []const u8,
         severity: Severity,
@@ -345,6 +352,136 @@ pub const QjsLintEngine = struct {
             total += @intCast(self.enter_dispatch[t].items.len + self.exit_dispatch[t].items.len);
         }
         return total;
+    }
+
+    /// Extract handler function sources and message templates for a rule.
+    /// Uses JS_ToString on each handler function to get its source text.
+    /// Also extracts meta.messages for compiled diagnostic emission.
+    pub fn extractHandlerSources(self: *QjsLintEngine, rule_idx: usize) !struct {
+        handlers: std.ArrayList(HandlerSource),
+        messages: std.StringArrayHashMap([]const u8),
+    } {
+        const rule = &self.rules.items[rule_idx];
+        var handlers: std.ArrayList(HandlerSource) = .empty;
+        var messages = std.StringArrayHashMap([]const u8).init(self.allocator);
+
+        // Extract handler sources by iterating visitor object keys
+        // Use JS to get Object.keys(visitors), then toString() each handler
+        const keys_script = "(function(v){return Object.keys(v||{})})";
+        const keys_fn = c.JS_Eval(self.ctx, keys_script, keys_script.len, "<keys>", c.JS_EVAL_TYPE_GLOBAL);
+        defer c.JS_FreeValue(self.ctx, keys_fn);
+
+        var keys_args = [_]c.JSValue{rule.visitors};
+        const keys_arr = c.JS_Call(self.ctx, keys_fn, jsUndefined(), 1, @ptrCast(&keys_args));
+        defer c.JS_FreeValue(self.ctx, keys_arr);
+
+        // Get array length
+        const len_val = c.JS_GetPropertyStr(self.ctx, keys_arr, "length");
+        var len_f: f64 = 0;
+        _ = c.JS_ToFloat64(self.ctx, &len_f, len_val);
+        c.JS_FreeValue(self.ctx, len_val);
+        const key_count: u32 = @intFromFloat(len_f);
+
+        for (0..key_count) |i| {
+            const key_val = c.JS_GetPropertyUint32(self.ctx, keys_arr, @intCast(i));
+            const key_cstr = c.JS_ToCString(self.ctx, key_val) orelse {
+                c.JS_FreeValue(self.ctx, key_val);
+                continue;
+            };
+            const key = std.mem.span(key_cstr);
+
+            // Get the handler function
+            var key_buf: [128]u8 = undefined;
+            if (key.len >= key_buf.len) {
+                c.JS_FreeCString(self.ctx, key_cstr);
+                c.JS_FreeValue(self.ctx, key_val);
+                continue;
+            }
+            @memcpy(key_buf[0..key.len], key);
+            key_buf[key.len] = 0;
+
+            const handler = c.JS_GetPropertyStr(self.ctx, rule.visitors, &key_buf);
+            defer c.JS_FreeValue(self.ctx, handler);
+
+            if (c.JS_IsFunction(self.ctx, handler) != 0) {
+                // Call toString() to get source text
+                const src_val = c.JS_ToString(self.ctx, handler);
+                if (c.JS_IsException(src_val) == 0) {
+                    const src_cstr = c.JS_ToCString(self.ctx, src_val);
+                    c.JS_FreeValue(self.ctx, src_val);
+                    if (src_cstr) |sc| {
+                        const src = std.mem.span(sc);
+                        const is_exit = std.mem.endsWith(u8, key, ":exit");
+                        const type_name = if (is_exit) key[0 .. key.len - 5] else key;
+
+                        try handlers.append(self.allocator, .{
+                            .key = try self.allocator.dupe(u8, type_name),
+                            .source = try self.allocator.dupe(u8, src),
+                            .is_exit = is_exit,
+                        });
+                        c.JS_FreeCString(self.ctx, sc);
+                    }
+                } else {
+                    const exc = c.JS_GetException(self.ctx);
+                    c.JS_FreeValue(self.ctx, exc);
+                }
+            }
+
+            c.JS_FreeCString(self.ctx, key_cstr);
+            c.JS_FreeValue(self.ctx, key_val);
+        }
+
+        // Extract meta.messages: { messageId: "template {{key}}" }
+        const meta = c.JS_GetPropertyStr(self.ctx, rule.exports, "meta");
+        if (c.JS_IsObject(meta) != 0) {
+            const msgs = c.JS_GetPropertyStr(self.ctx, meta, "messages");
+            if (c.JS_IsObject(msgs) != 0) {
+                const msg_keys_script = "(function(m){return Object.keys(m||{})})";
+                const msg_keys_fn = c.JS_Eval(self.ctx, msg_keys_script, msg_keys_script.len, "<mk>", c.JS_EVAL_TYPE_GLOBAL);
+                defer c.JS_FreeValue(self.ctx, msg_keys_fn);
+                var msg_args = [_]c.JSValue{msgs};
+                const msg_keys = c.JS_Call(self.ctx, msg_keys_fn, jsUndefined(), 1, @ptrCast(&msg_args));
+                defer c.JS_FreeValue(self.ctx, msg_keys);
+
+                const mlen_val = c.JS_GetPropertyStr(self.ctx, msg_keys, "length");
+                var mlen_f: f64 = 0;
+                _ = c.JS_ToFloat64(self.ctx, &mlen_f, mlen_val);
+                c.JS_FreeValue(self.ctx, mlen_val);
+                const msg_count: u32 = @intFromFloat(mlen_f);
+
+                for (0..msg_count) |mi| {
+                    const mk_val = c.JS_GetPropertyUint32(self.ctx, msg_keys, @intCast(mi));
+                    const mk_cstr = c.JS_ToCString(self.ctx, mk_val) orelse {
+                        c.JS_FreeValue(self.ctx, mk_val);
+                        continue;
+                    };
+                    const mk = std.mem.span(mk_cstr);
+
+                    var mk_buf: [128]u8 = undefined;
+                    if (mk.len < mk_buf.len) {
+                        @memcpy(mk_buf[0..mk.len], mk);
+                        mk_buf[mk.len] = 0;
+                        const mv = c.JS_GetPropertyStr(self.ctx, msgs, &mk_buf);
+                        const mv_cstr = c.JS_ToCString(self.ctx, mv);
+                        if (mv_cstr) |mc| {
+                            try messages.put(
+                                try self.allocator.dupe(u8, mk),
+                                try self.allocator.dupe(u8, std.mem.span(mc)),
+                            );
+                            c.JS_FreeCString(self.ctx, mc);
+                        }
+                        c.JS_FreeValue(self.ctx, mv);
+                    }
+
+                    c.JS_FreeCString(self.ctx, mk_cstr);
+                    c.JS_FreeValue(self.ctx, mk_val);
+                }
+            }
+            c.JS_FreeValue(self.ctx, msgs);
+        }
+        c.JS_FreeValue(self.ctx, meta);
+
+        return .{ .handlers = handlers, .messages = messages };
     }
 
     const HandlerRef = struct {
