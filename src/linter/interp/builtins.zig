@@ -429,6 +429,20 @@ pub fn callAstUtilsFunction(
         return .undefined;
     }
 
+    // ── Regex-returning functions — return regex strings so exec stub fires ──
+    // Any function returning a regex/matcher must return a string starting with '/'
+    // so that accessing .exec on it returns the __regex_exec_null__ stub.
+    if (eql(name, "createGlobalLinebreakMatcher") or
+        eql(name, "createGlobalLinebreakMatcherFn") or
+        eql(name, "createLinebreakMatcher") or
+        eql(name, "LINEBREAK_MATCHER") or
+        eql(name, "createNewlineRegex") or
+        eql(name, "createTaggedTemplateLiteralChecker"))
+    {
+        _ = arena;
+        return .{ .string = "/regex_stub/g" };
+    }
+
     // ── Fallback: return undefined for unimplemented functions ──
     _ = arena;
     return .undefined;

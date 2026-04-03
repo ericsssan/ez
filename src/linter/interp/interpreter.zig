@@ -88,6 +88,10 @@ pub const Interpreter = struct {
     module_loader: ?*@import("module.zig").ModuleLoader = null,
     /// Recursion depth counter to prevent stack overflow.
     depth: u16 = 0,
+    /// When true, skip evaluating "meta" property values in object literals.
+    /// Used during module body eval to avoid spending time on ESLint rule
+    /// metadata (type, docs, schema, messages) that we never access.
+    skip_meta: bool = false,
 
     const NONE: u32 = 0xFFFFFFFF;
     const MAX_DEPTH: u16 = 128;
@@ -298,8 +302,21 @@ pub const Interpreter = struct {
             .string => |s| self.getStringProperty(s, prop),
             .array => |a| self.getArrayProperty(a, prop),
             .object => |o| o.get(prop),
-            else => .undefined,
+            .number => self.getNumberProperty(obj, prop),
+            // Regex exec on any unrecognized value: return null stub to prevent
+            // infinite while((m=re.exec(s))!==null) loops.
+            else => if (std.mem.eql(u8, prop, "exec")) .{ .string = "__regex_exec_null__" } else .undefined,
         };
+    }
+
+    fn getNumberProperty(self: *Interpreter, num_val: Value, prop: []const u8) Value {
+        const kind: Value.BuiltinKind = if (std.mem.eql(u8, prop, "toPrecision")) .num_toPrecision
+            else if (std.mem.eql(u8, prop, "toString")) .num_toString
+            else if (std.mem.eql(u8, prop, "toFixed")) .num_toFixed
+            else return .undefined;
+        const rec_ptr = self.arena.create(Value) catch return .undefined;
+        rec_ptr.* = num_val;
+        return .{ .builtin = .{ .kind = kind, .receiver = rec_ptr } };
     }
 
     fn getStringProperty(self: *Interpreter, s: []const u8, prop: []const u8) Value {
@@ -389,6 +406,11 @@ pub const Interpreter = struct {
         if (std.mem.eql(u8, prop, "test") and s.len > 1 and s[0] == '/') {
             return .{ .string = s };
         }
+        // Regex .exec — stateful exec can't be safely implemented without lastIndex tracking.
+        // Return a null-returning stub to prevent infinite while((match=re.exec(str))!==null) loops.
+        if (std.mem.eql(u8, prop, "exec") and s.len > 1 and s[0] == '/') {
+            return .{ .string = "__regex_exec_null__" };
+        }
         // String method markers: encode as "__sm__<method>\x00<receiver_string>"
         // so callStringBuiltin can dispatch properly.
         if (std.mem.eql(u8, prop, "includes") or std.mem.eql(u8, prop, "startsWith") or
@@ -443,6 +465,8 @@ pub const Interpreter = struct {
                 else if (std.mem.eql(u8, prop, "slice")) .arr_slice
                 else if (std.mem.eql(u8, prop, "concat")) .arr_concat
                 else if (std.mem.eql(u8, prop, "reduce")) .arr_reduce
+                else if (std.mem.eql(u8, prop, "push")) .arr_push
+                else if (std.mem.eql(u8, prop, "pop")) .arr_pop
                 else .arr_at;
             return .{ .builtin = .{ .kind = kind, .receiver = rec_ptr } };
         }
@@ -452,10 +476,28 @@ pub const Interpreter = struct {
     // ── Function/method calls ──
 
     fn evalCallExpr(self: *Interpreter, _: NodeIndex, data: Node.Data) Signal!Value {
-        // Evaluate callee
-        const callee = try self.eval(@enumFromInt(@intFromEnum(data.lhs)));
+        // Detect mutable array ops (push/pop) on named variables so we can update the binding.
+        const callee_idx: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
+        const callee_tag = self.rule_ast.nodeTag(callee_idx);
+        var mut_var_name: ?[]const u8 = null;
+        var mut_is_push = false;
+        if (callee_tag == .member_expr) {
+            const cd = self.rule_ast.nodeData(callee_idx);
+            const prop_tok: u32 = @intFromEnum(cd.rhs);
+            const method = self.rule_ast.tokenText(prop_tok);
+            if (std.mem.eql(u8, method, "push") or std.mem.eql(u8, method, "pop")) {
+                const obj_idx: NodeIndex = @enumFromInt(@intFromEnum(cd.lhs));
+                if (self.rule_ast.nodeTag(obj_idx) == .identifier) {
+                    mut_var_name = self.rule_ast.tokenText(self.rule_ast.nodeMainToken(obj_idx));
+                    mut_is_push = std.mem.eql(u8, method, "push");
+                }
+            }
+        }
 
-        // Evaluate arguments
+        // Evaluate callee
+        const callee = try self.eval(callee_idx);
+
+        // Evaluate arguments, expanding spread elements
         const args_range = self.rule_ast.extraData(
             ast_mod.SubRange,
             @intFromEnum(data.rhs),
@@ -467,18 +509,47 @@ pub const Interpreter = struct {
         });
         for (items) |raw| {
             const arg_idx: NodeIndex = @enumFromInt(raw);
-            if (arg_idx != .none) {
+            if (arg_idx == .none) continue;
+            // Spread element: ...expr — flatten array args
+            if (self.rule_ast.nodeTag(arg_idx) == .spread_element) {
+                const spread_data = self.rule_ast.nodeData(arg_idx);
+                const inner_val = self.eval(@enumFromInt(@intFromEnum(spread_data.lhs))) catch .undefined;
+                if (inner_val == .array) {
+                    for (inner_val.array) |elem| args.append(self.arena, elem) catch {};
+                } else if (inner_val != .undefined) {
+                    args.append(self.arena, inner_val) catch {};
+                }
+            } else {
                 args.append(self.arena, try self.eval(arg_idx)) catch {};
             }
         }
 
         // Dispatch
-        return switch (callee) {
-            .builtin => |b| self.callBuiltinMethod(b, args.items),
-            .function => |f| self.callUserFunction(f, args.items),
+        const result = switch (callee) {
+            .builtin => |b| try self.callBuiltinMethod(b, args.items),
+            .function => |f| try self.callUserFunction(f, args.items),
             .string => |s| self.callStringBuiltin(s, args.items),
             else => .undefined,
         };
+
+        // Mutate the env binding for push/pop so while-loop conditions see the updated array.
+        if (mut_var_name) |vname| {
+            const cur = self.env.lookup(vname);
+            if (cur == .array) {
+                if (mut_is_push) {
+                    var new_arr: std.ArrayListUnmanaged(Value) = .empty;
+                    new_arr.appendSlice(self.arena, cur.array) catch {};
+                    for (args.items) |a| new_arr.append(self.arena, a) catch {};
+                    self.env.set(vname, .{ .array = new_arr.items });
+                } else {
+                    // pop — remove last element (value already returned)
+                    if (cur.array.len > 0)
+                        self.env.set(vname, .{ .array = cur.array[0 .. cur.array.len - 1] });
+                }
+            }
+        }
+
+        return result;
     }
 
     pub fn callUserFunction(self: *Interpreter, func: Value.Function, args: []const Value) Signal!Value {
@@ -667,16 +738,25 @@ pub const Interpreter = struct {
         }
 
         // ── Global constructors ──
-        if (std.mem.eql(u8, marker, "__Set__") or std.mem.eql(u8, marker, "__Map__")) {
-            // new Set() / new Map() → return empty object (simplified)
+        if (std.mem.eql(u8, marker, "__Set__")) {
+            // new Set() — return empty array; for..of and .forEach work natively.
+            // If constructed with initial values (new Set(arr)), those are passed as args[0].
+            if (args.len > 0) {
+                if (args[0] == .array) return args[0]; // new Set([...]) → use the array directly
+            }
+            const items = self.arena.alloc(Value, 0) catch return .undefined;
+            return .{ .array = items };
+        }
+        if (std.mem.eql(u8, marker, "__Map__")) {
+            // new Map() → return empty object (simplified)
             const ptr = self.arena.create(Value.Object) catch return .undefined;
             ptr.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
-            // Add basic Set/Map methods
-            ptr.entries.put("has", .{ .string = "__set_has__" }) catch {};
-            ptr.entries.put("add", .{ .string = "__set_add__" }) catch {};
-            ptr.entries.put("delete", .{ .string = "__set_delete__" }) catch {};
+            ptr.entries.put("has", .{ .string = "__map_has__" }) catch {};
+            ptr.entries.put("get", .{ .string = "__map_get__" }) catch {};
+            ptr.entries.put("set", .{ .string = "__map_set__" }) catch {};
+            ptr.entries.put("delete", .{ .string = "__map_delete__" }) catch {};
             ptr.entries.put("size", .{ .number = 0 }) catch {};
-            ptr.entries.put("forEach", .{ .string = "__set_forEach__" }) catch {};
+            ptr.entries.put("forEach", .{ .string = "__map_forEach__" }) catch {};
             return .{ .object = ptr };
         }
 
@@ -786,6 +866,9 @@ pub const Interpreter = struct {
             const fn_name = marker[11 .. marker.len - 2];
             return builtins.callAstUtilsFunction(fn_name, args, self.runtime, self.arena);
         }
+
+        // ── Regex exec stub — returns null to break while((m=re.exec(s))!==null) loops ──
+        if (std.mem.eql(u8, marker, "__regex_exec_null__")) return .null_val;
 
         // ── ESLint API markers ──
         if (std.mem.eql(u8, marker, "__context_report__"))
@@ -955,7 +1038,61 @@ pub const Interpreter = struct {
         const receiver = b.receiver.*;
 
         return switch (b.kind) {
+            // ── Number prototype methods ──
+            .num_toPrecision => blk: {
+                const n = if (receiver == .number) receiver.number else break :blk .undefined;
+                const prec: usize = if (args.len > 0 and args[0] == .number)
+                    @intFromFloat(@max(1.0, @min(100.0, args[0].number)))
+                else
+                    21;
+                break :blk numberToPrecision(self.arena, n, prec);
+            },
+            .num_toString => blk: {
+                const n = if (receiver == .number) receiver.number else break :blk .undefined;
+                const base: u8 = if (args.len > 0 and args[0] == .number)
+                    @intFromFloat(@max(2.0, @min(36.0, args[0].number)))
+                else
+                    10;
+                if (base == 10) {
+                    const s = std.fmt.allocPrint(self.arena, "{d}", .{n}) catch break :blk .undefined;
+                    break :blk .{ .string = s };
+                }
+                // For binary/hex/octal: convert integer part
+                const int_n: i64 = @intFromFloat(n);
+                // Base conversion
+                var nbuf: [128]u8 = undefined;
+                const ns = switch (base) {
+                    2 => std.fmt.bufPrint(&nbuf, "{b}", .{int_n}) catch break :blk .undefined,
+                    8 => std.fmt.bufPrint(&nbuf, "{o}", .{int_n}) catch break :blk .undefined,
+                    16 => std.fmt.bufPrint(&nbuf, "{x}", .{int_n}) catch break :blk .undefined,
+                    else => std.fmt.bufPrint(&nbuf, "{d}", .{int_n}) catch break :blk .undefined,
+                };
+                break :blk .{ .string = self.arena.dupe(u8, ns) catch break :blk .undefined };
+            },
+            .num_toFixed => blk: {
+                const n = if (receiver == .number) receiver.number else break :blk .undefined;
+                const digits: usize = if (args.len > 0 and args[0] == .number)
+                    @intFromFloat(@max(0.0, @min(100.0, args[0].number)))
+                else
+                    0;
+                // Format with up to `digits` decimal places
+                var tbuf: [64]u8 = undefined;
+                const s_raw = std.fmt.bufPrint(&tbuf, "{d}", .{n}) catch break :blk .undefined;
+                const dot = std.mem.indexOfScalar(u8, s_raw, '.');
+                const trimmed: []const u8 = if (dot) |di| s_raw[0..@min(s_raw.len, di + 1 + digits)] else s_raw;
+                const s = self.arena.dupe(u8, trimmed) catch break :blk .undefined;
+                break :blk .{ .string = s };
+            },
             // ── Array methods ──
+            .arr_push => blk: {
+                // Return new length (env binding mutation handled in evalCallExpr)
+                const cur_len: f64 = if (receiver == .array) @floatFromInt(receiver.array.len) else 0;
+                break :blk .{ .number = cur_len + @as(f64, @floatFromInt(args.len)) };
+            },
+            .arr_pop => blk: {
+                if (receiver != .array or receiver.array.len == 0) break :blk .undefined;
+                break :blk receiver.array[receiver.array.len - 1];
+            },
             .arr_some => self.arrayHigherOrder(receiver, args, .some),
             .arr_every => self.arrayHigherOrder(receiver, args, .every),
             .arr_filter => self.arrayHigherOrder(receiver, args, .filter),
@@ -1189,6 +1326,7 @@ pub const Interpreter = struct {
                 .message = message,
                 .span = span,
                 .severity = self.rule_severity,
+                .rule_name = self.rule_name,
             }) catch {};
         }
 
@@ -1249,6 +1387,83 @@ pub const Interpreter = struct {
         const obj = self.arena.create(Value.Object) catch return .undefined;
         obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
         return .{ .object = obj };
+    }
+
+    // ── Number helpers ──
+
+    /// Implement JS Number.prototype.toPrecision(prec).
+    /// Returns a decimal string with exactly `prec` significant digits.
+    fn numberToPrecision(arena: std.mem.Allocator, n: f64, prec: usize) Value {
+        if (std.math.isNan(n)) return .{ .string = "NaN" };
+        if (std.math.isInf(n)) return .{ .string = if (n > 0) "Infinity" else "-Infinity" };
+        if (prec == 0) return .{ .string = "0" };
+
+        // Format to full precision in scientific notation, then reshape.
+        var raw: [64]u8 = undefined;
+        const s = std.fmt.bufPrint(&raw, "{e}", .{n}) catch return .undefined;
+
+        // Find 'e' and parse exponent
+        const e_idx = std.mem.indexOfScalar(u8, s, 'e') orelse
+            return .{ .string = arena.dupe(u8, s) catch return .undefined };
+        const exp: i32 = std.fmt.parseInt(i32, s[e_idx + 1 ..], 10) catch 0;
+
+        // Collect significant digits (skip '-' and '.')
+        var dbuf: [32]u8 = undefined;
+        var d_len: usize = 0;
+        for (s[0..e_idx]) |c| {
+            if (c != '.' and c != '-') { dbuf[d_len] = c; d_len += 1; }
+        }
+        // Keep only `prec` significant digits
+        const keep = @min(prec, d_len);
+        const digits = dbuf[0..keep];
+
+        // int_digits = number of digits before the decimal point
+        const int_digits: i32 = exp + 1;
+
+        var out: [128]u8 = undefined;
+        var pos: usize = 0;
+        if (n < 0) { out[pos] = '-'; pos += 1; }
+
+        if (int_digits > 0 and int_digits <= @as(i32, @intCast(prec))) {
+            // Fixed notation: "1234" or "1.23"
+            const i: usize = @intCast(int_digits);
+            const int_part = digits[0..@min(i, digits.len)];
+            @memcpy(out[pos..][0..int_part.len], int_part);
+            pos += int_part.len;
+            if (i > digits.len) {
+                // Pad with zeros
+                var p = digits.len; while (p < i) : (p += 1) { out[pos] = '0'; pos += 1; }
+            }
+            if (i < digits.len) {
+                out[pos] = '.'; pos += 1;
+                const frac = digits[i..];
+                @memcpy(out[pos..][0..frac.len], frac);
+                pos += frac.len;
+            }
+        } else if (int_digits <= 0 and int_digits > -6) {
+            // Fixed with leading zeros: "0.00123"
+            out[pos] = '0'; pos += 1;
+            out[pos] = '.'; pos += 1;
+            var z: i32 = -int_digits; while (z > 0) : (z -= 1) { out[pos] = '0'; pos += 1; }
+            @memcpy(out[pos..][0..digits.len], digits);
+            pos += digits.len;
+        } else {
+            // Exponential notation: "1.23e+4"
+            out[pos] = digits[0]; pos += 1;
+            if (digits.len > 1) {
+                out[pos] = '.'; pos += 1;
+                @memcpy(out[pos..][0..digits.len - 1], digits[1..]);
+                pos += digits.len - 1;
+            }
+            const exp_s = std.fmt.bufPrint(out[pos..], "e+{d}", .{exp}) catch return .undefined;
+            if (exp < 0) {
+                const exp_s2 = std.fmt.bufPrint(out[pos..], "e-{d}", .{-exp}) catch return .undefined;
+                pos += exp_s2.len;
+            } else {
+                pos += exp_s.len;
+            }
+        }
+        return .{ .string = arena.dupe(u8, out[0..pos]) catch return .undefined };
     }
 
     // ── Operators ──
@@ -1822,6 +2037,8 @@ pub const Interpreter = struct {
             if (prop_tag == .property or prop_tag == .shorthand_property) {
                 const key_idx: NodeIndex = @enumFromInt(@intFromEnum(prop_data.lhs));
                 const key = self.objKeyText(key_idx);
+                // Skip "meta" property during module body evaluation — we never access it.
+                if (self.skip_meta and std.mem.eql(u8, key, "meta")) continue;
                 const val = if (prop_tag == .shorthand_property)
                     self.env.lookup(key)
                 else if (prop_data.rhs != .none)

@@ -90,19 +90,49 @@ pub fn main(init: std.process.Init) !void {
         var rule_set = try eslint_rules.loadRules(allocator, descriptors);
         defer rule_set.deinit();
 
-        try stdout.print("{d} rules loaded\n", .{descriptors.len});
+        var cached_count: usize = 0;
+        for (rule_set.rules) |r| { if (r.cached_create_fn != null) cached_count += 1; }
+        try stdout.print("{d} rules loaded ({d} cached)\n", .{descriptors.len, cached_count});
 
-        // Phase 2: Lint each target file
+        // Phase 2: Collect all .js files (expanding directories)
+        var all_files: std.ArrayList([]const u8) = .empty;
+        defer all_files.deinit(allocator);
+        for (file_paths.items) |path| {
+            var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch {
+                try all_files.append(allocator, path);
+                continue;
+            };
+            var walker = try dir.walk(allocator);
+            defer walker.deinit();
+            while (try walker.next(io)) |entry| {
+                if (entry.kind != .file) continue;
+                const name = entry.basename;
+                if (!std.mem.endsWith(u8, name, ".js") and
+                    !std.mem.endsWith(u8, name, ".mjs") and
+                    !std.mem.endsWith(u8, name, ".cjs")) continue;
+                const full = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, entry.path });
+                try all_files.append(allocator, full);
+            }
+        }
+
+        // Phase 3: Lint each target file
         var total_diags: u32 = 0;
         var file_count: u32 = 0;
+        var per_rule_counts = std.StringArrayHashMap(u32).init(allocator);
+        defer per_rule_counts.deinit();
 
-        for (file_paths.items) |file_path| {
-            const source = Io.Dir.cwd().readFileAlloc(io, file_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
+        for (all_files.items) |file_path| {
+            // Use a per-file arena so all working memory is freed after each file.
+            var file_arena = std.heap.ArenaAllocator.init(allocator);
+            defer file_arena.deinit();
+            const fa = file_arena.allocator();
 
-            var tokens_result = Lexer.tokenize(allocator, source) catch continue;
-            var tree = parser.Parser.parse(allocator, source, tokens_result.slice()) catch continue;
-            const traversal = parent_builder.computeTraversal(&tree, allocator) catch continue;
-            var sem_result = semantic_mod.SemanticAnalyzer.analyze(allocator, &tree) catch continue;
+            const source = Io.Dir.cwd().readFileAlloc(io, file_path, fa, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
+
+            var tokens_result = Lexer.tokenize(fa, source) catch continue;
+            var tree = parser.Parser.parse(fa, source, tokens_result.slice()) catch continue;
+            const traversal = parent_builder.computeTraversal(&tree, fa) catch continue;
+            var sem_result = semantic_mod.SemanticAnalyzer.analyze(fa, &tree) catch continue;
 
             var diagnostics_list: std.ArrayList(Diagnostic) = .empty;
 
@@ -123,12 +153,12 @@ pub fn main(init: std.process.Init) !void {
                 .query = &query,
                 .semantic = &sem_result,
                 .node_scope_ids = &.{},
-                .arena = allocator,
+                .arena = fa,
             };
 
             // Run rules via Zig interpreter
             const node_tags_raw = tree.nodes.items(.tag);
-            var node_tags_u8 = try allocator.alloc(u8, node_tags_raw.len);
+            var node_tags_u8 = try fa.alloc(u8, node_tags_raw.len);
             for (node_tags_raw, 0..) |t, i| node_tags_u8[i] = @intFromEnum(t);
 
             eslint_rules.runRulesOnFile(
@@ -138,14 +168,40 @@ pub fn main(init: std.process.Init) !void {
                 tree.nodes.len,
                 node_tags_u8,
                 &diagnostics_list,
-                allocator,
+                fa,
             );
 
+            for (diagnostics_list.items) |d| {
+                if (d.rule_name.len > 0) {
+                    const key = try allocator.dupe(u8, d.rule_name);
+                    const gop = try per_rule_counts.getOrPut(key);
+                    if (gop.found_existing) {
+                        allocator.free(key);
+                        gop.value_ptr.* += 1;
+                    } else {
+                        gop.value_ptr.* = 1;
+                    }
+                }
+            }
             total_diags += @intCast(diagnostics_list.items.len);
             file_count += 1;
+            // file_arena.deinit() called by defer — frees all per-file allocations
         }
 
         try stdout.print("{d} files, {d} diagnostics\n", .{ file_count, total_diags });
+        // Per-rule breakdown (sorted by count descending)
+        const RuleCount = struct { name: []const u8, count: u32 };
+        var rule_list = try allocator.alloc(RuleCount, per_rule_counts.count());
+        defer allocator.free(rule_list);
+        for (per_rule_counts.keys(), per_rule_counts.values(), 0..) |k, v, i| {
+            rule_list[i] = .{ .name = k, .count = v };
+        }
+        std.mem.sort(RuleCount, rule_list, {}, struct {
+            fn lt(_: void, a: RuleCount, b: RuleCount) bool { return a.count > b.count; }
+        }.lt);
+        for (rule_list) |rc| {
+            try stdout.print("{d:>6}  {s}\n", .{ rc.count, rc.name });
+        }
         try stdout.flush();
         return;
     }

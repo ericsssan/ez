@@ -30,6 +30,11 @@ pub const Rule = struct {
     closure_fns: std.StringArrayHashMap(*const Ast),
     allocator: std.mem.Allocator,
     requires: []const ModuleRequire = &.{},
+    /// Module-level env built once at load time (shared read-only across all files).
+    /// When set, initRuleForFile skips re-running the module body.
+    cached_module_env: ?*Environment = null,
+    /// The create() Function value extracted from module.exports.create at load time.
+    cached_create_fn: ?Value.Function = null,
 };
 
 pub const Visitor = struct {
@@ -81,6 +86,21 @@ pub const RuleSet = struct {
         }
         self.allocator.free(self.rules);
     }
+};
+
+// ── Stub runtime callbacks for load-time module body evaluation ─
+
+fn stubReturnUndef(_: *anyopaque, _: u32, _: []const u8) Value { return .undefined; }
+fn stubBuiltinUndef(_: *anyopaque, _: Value.BuiltinKind, _: []const Value) Value { return .undefined; }
+var stub_ctx_byte: u8 = 0;
+const stub_callbacks = RuntimeCallbacks{
+    .ctx = @ptrCast(&stub_ctx_byte),
+    .getNodeProperty = stubReturnUndef,
+    .getScopeProperty = stubReturnUndef,
+    .getVariableProperty = stubReturnUndef,
+    .getReferenceProperty = stubReturnUndef,
+    .getTokenProperty = stubReturnUndef,
+    .callBuiltin = stubBuiltinUndef,
 };
 
 // ── loadRules: parse create() ASTs, build dispatch tables ───────
@@ -182,6 +202,75 @@ pub fn loadRules(
             .allocator = allocator,
             .requires = desc.requires,
         };
+
+        // Pre-build the module-level env ONCE so initRuleForFile can skip it per file.
+        if (full_ast_ptr) |full_ast| blk: {
+            const menv = allocator.create(Environment) catch break :blk;
+            menv.* = Environment.init(allocator, null);
+            menv.set("context", .{ .string = "__eslint_context__" });
+            menv.set("sourceCode", .{ .string = "__source_code__" });
+
+            const mod_obj = allocator.create(Value.Object) catch break :blk;
+            mod_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+            const exp_obj = allocator.create(Value.Object) catch break :blk;
+            exp_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
+            mod_obj.entries.put("exports", .{ .object = exp_obj }) catch {};
+            menv.set("module", .{ .object = mod_obj });
+
+            var ml = ModuleLoader.init(allocator);
+            var load_diags: std.ArrayList(Diagnostic) = .empty;
+            defer load_diags.deinit(allocator);
+            const empty_opts: []Value = &.{};
+            var interp_load = Interpreter{
+                .rule_ast = full_ast,
+                .env = menv,
+                .runtime = stub_callbacks,
+                .arena = allocator,
+                .diagnostics = &load_diags,
+                .return_value = .undefined,
+                .current_file_node = 0,
+                .rule_name = desc.name,
+                .rule_severity = desc.severity,
+                .messages = &rules[rule_idx].messages,
+                .closure_fns = &rules[rule_idx].closure_fns,
+                .options = empty_opts,
+                .skip_meta = true,
+            };
+            interp_load.module_loader = &ml;
+
+            const mod_root = full_ast.nodeData(.root);
+            const stmts = full_ast.extraSlice(.{
+                .start = @intFromEnum(mod_root.lhs),
+                .end = @intFromEnum(mod_root.rhs),
+            });
+            for (stmts) |raw| {
+                const si: NodeIndex = @enumFromInt(raw);
+                if (si == .none) continue;
+                const tag2 = full_ast.nodeTag(si);
+                if (tag2 == .expression_stmt) {
+                    const ed = full_ast.nodeData(si);
+                    const ei: NodeIndex = @enumFromInt(@intFromEnum(ed.lhs));
+                    if (ei != .none and full_ast.nodeTag(ei) == .string_literal) continue;
+                }
+                const saved_d = interp_load.depth;
+                _ = interp_load.eval(si) catch {
+                    interp_load.depth = saved_d;
+                    continue;
+                };
+                interp_load.depth = saved_d;
+            }
+
+            // Extract create() from module.exports
+            const mod_v = menv.lookup("module");
+            if (mod_v != .object) break :blk;
+            const exp_v = mod_v.object.get("exports");
+            if (exp_v != .object) break :blk;
+            const create_v = exp_v.object.get("create");
+            if (create_v != .function) break :blk;
+
+            rules[rule_idx].cached_module_env = menv;
+            rules[rule_idx].cached_create_fn = create_v.function;
+        }
     }
 
     var result = RuleSet{
@@ -212,6 +301,92 @@ pub fn initRuleForFile(
 ) ?RuleFileCtx {
     const create_ast = rule.create_ast orelse return null;
 
+    // Fast path: use the pre-built module env from loadRules.
+    // Just create a child env and call create() directly — no module body re-eval.
+    if (rule.cached_create_fn) |cached_fn| {
+        const child_env = allocator.create(Environment) catch return null;
+        child_env.* = Environment.init(allocator, rule.cached_module_env);
+        child_env.set("context", .{ .string = "__eslint_context__" });
+
+        var interp = Interpreter{
+            .rule_ast = rule.full_ast orelse create_ast,
+            .env = child_env,
+            .runtime = callbacks,
+            .arena = allocator,
+            .diagnostics = diagnostics,
+            .return_value = .undefined,
+            .current_file_node = 0,
+            .rule_name = rule.name,
+            .rule_severity = rule.severity,
+            .messages = &rule.messages,
+            .closure_fns = &rule.closure_fns,
+            .options = rule.options,
+        };
+        var ml = ModuleLoader.init(allocator);
+        interp.module_loader = &ml;
+
+        // Run create() body with closure env fix
+        const use_ast2 = cached_fn.source_ast orelse interp.rule_ast;
+        interp.rule_ast = use_ast2;
+        const fn_idx: NodeIndex = @enumFromInt(cached_fn.ast_idx);
+        const fn_tag = use_ast2.nodeTag(fn_idx);
+        const fn_data = use_ast2.nodeData(fn_idx);
+        const fn_env_ptr = allocator.create(Environment) catch return null;
+        fn_env_ptr.* = Environment.init(allocator, child_env);
+        interp.env = fn_env_ptr;
+
+        if (fn_tag == .fn_decl or fn_tag == .async_fn_decl or
+            fn_tag == .fn_expr or fn_tag == .async_fn_expr)
+        {
+            const fd = use_ast2.extraData(ast_mod.FnData, @intFromEnum(fn_data.lhs));
+            const ps = use_ast2.extraSlice(.{ .start = fd.params, .end = fd.params_end });
+            if (ps.len > 0) {
+                const p: NodeIndex = @enumFromInt(ps[0]);
+                if (p != .none and use_ast2.nodeTag(p) == .identifier) {
+                    const pname = use_ast2.tokenText(use_ast2.nodeMainToken(p));
+                    fn_env_ptr.set(pname, .{ .string = "__eslint_context__" });
+                }
+            }
+            if (fd.body != .none) {
+                _ = interp.eval(fd.body) catch |err| switch (err) {
+                    Signal.ReturnSignal => {},
+                    else => {},
+                };
+            }
+        } else if (fn_tag == .method_def or fn_tag == .computed_method_def) {
+            const md = use_ast2.extraData(ast_mod.MethodData, @intFromEnum(fn_data.rhs));
+            const ps = use_ast2.extraSlice(.{ .start = md.params_start, .end = md.params_end });
+            if (ps.len > 0) {
+                const p: NodeIndex = @enumFromInt(ps[0]);
+                if (p != .none and use_ast2.nodeTag(p) == .identifier) {
+                    const pname = use_ast2.tokenText(use_ast2.nodeMainToken(p));
+                    fn_env_ptr.set(pname, .{ .string = "__eslint_context__" });
+                }
+            }
+            if (md.body != .none) {
+                _ = interp.eval(md.body) catch |err| switch (err) {
+                    Signal.ReturnSignal => {},
+                    else => {},
+                };
+            }
+        }
+
+        if (interp.return_value == .object) {
+            const visitor_obj = interp.return_value.object;
+            const code_path_keys2 = [_][]const u8{
+                "onCodePathStart", "onCodePathEnd",
+                "onCodePathSegmentStart", "onCodePathSegmentEnd",
+                "onCodePathSegmentLoop",
+                "onUnreachableCodePathSegmentStart", "onUnreachableCodePathSegmentEnd",
+            };
+            for (code_path_keys2) |key| {
+                if (visitor_obj.has(key)) return null;
+            }
+            return .{ .visitor_obj = visitor_obj, .interp = interp };
+        }
+        // Fast path failed, fall through to full module eval
+    }
+
     var env_ptr = allocator.create(Environment) catch return null;
     env_ptr.* = Environment.init(allocator, null);
     env_ptr.set("context", .{ .string = "__eslint_context__" });
@@ -238,96 +413,10 @@ pub fn initRuleForFile(
     var module_loader = ModuleLoader.init(allocator);
     interp.module_loader = &module_loader;
 
-    // Pre-populate env with module-level code (helper functions, requires, constants)
-    // from the full file AST. This must happen BEFORE evaluating create() so that
-    // closure variables referenced by create() are available.
+    // Run the full module to set up module.exports, helpers, and closure variables.
+    // Skip "meta" property evaluation — we never use it, and it can be large.
+    interp.skip_meta = true;
     if (rule.full_ast) |full_ast| {
-        const saved_ast = interp.rule_ast;
-        interp.rule_ast = full_ast;
-
-        const mod_obj = allocator.create(Value.Object) catch return null;
-        mod_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
-        const exp_obj = allocator.create(Value.Object) catch return null;
-        exp_obj.* = .{ .entries = std.StringArrayHashMap(Value).init(allocator) };
-        mod_obj.entries.put("exports", .{ .object = exp_obj }) catch {};
-        env_ptr.set("module", .{ .object = mod_obj });
-
-        const mod_root = full_ast.nodeData(.root);
-        const stmts = full_ast.extraSlice(.{
-            .start = @intFromEnum(mod_root.lhs),
-            .end = @intFromEnum(mod_root.rhs),
-        });
-        for (stmts) |raw| {
-            const si: NodeIndex = @enumFromInt(raw);
-            if (si == .none) continue;
-            const tag = full_ast.nodeTag(si);
-            // Skip string literals ("use strict")
-            if (tag == .expression_stmt) {
-                const ed = full_ast.nodeData(si);
-                const ei: NodeIndex = @enumFromInt(@intFromEnum(ed.lhs));
-                if (ei != .none and full_ast.nodeTag(ei) == .string_literal) continue;
-            }
-            const saved_depth = interp.depth;
-            _ = interp.eval(si) catch {
-                interp.depth = saved_depth;
-                continue;
-            };
-            interp.depth = saved_depth;
-        }
-
-        // Restore to create_ast for the actual create() body eval
-        interp.rule_ast = saved_ast;
-        interp.return_value = .undefined;
-    }
-
-    // Evaluate create() from create_ast. The env now has module-level helpers.
-    {
-        const root_data = create_ast.nodeData(.root);
-        const root_stmts = create_ast.extraSlice(.{
-            .start = @intFromEnum(root_data.lhs),
-            .end = @intFromEnum(root_data.rhs),
-        });
-        for (root_stmts) |raw| {
-            const stmt_idx: NodeIndex = @enumFromInt(raw);
-            if (stmt_idx == .none) continue;
-            const tag = create_ast.nodeTag(stmt_idx);
-            if (tag == .fn_decl or tag == .async_fn_decl) {
-                const fn_data = create_ast.extraData(
-                    ast_mod.FnData,
-                    @intFromEnum(create_ast.nodeData(stmt_idx).lhs),
-                );
-                const params = create_ast.extraSlice(.{ .start = fn_data.params, .end = fn_data.params_end });
-                if (params.len > 0) {
-                    const p: NodeIndex = @enumFromInt(params[0]);
-                    if (p != .none and create_ast.nodeTag(p) == .identifier)
-                        env_ptr.set(create_ast.tokenText(create_ast.nodeMainToken(p)), .{ .string = "__eslint_context__" });
-                }
-                if (fn_data.body != .none) {
-                    _ = interp.eval(fn_data.body) catch |err| switch (err) {
-                        Signal.ReturnSignal => {},
-                        else => {},
-                    };
-                }
-                break;
-            }
-        }
-    }
-
-    // If create-only worked, we're done
-    if (interp.return_value == .object) {
-        return .{ .visitor_obj = interp.return_value.object, .interp = interp };
-    }
-
-    // Second try: full module interpretation for rules that need module-level helpers.
-    if (rule.full_ast) |full_ast| {
-        // Reset env for fresh module eval
-        env_ptr.* = Environment.init(allocator, null);
-        env_ptr.set("context", .{ .string = "__eslint_context__" });
-        env_ptr.set("sourceCode", .{ .string = "__source_code__" });
-        interp.env = env_ptr;
-        interp.return_value = .undefined;
-        interp.depth = 0;
-        const saved_ast = interp.rule_ast;
         interp.rule_ast = full_ast;
 
         const mod_obj = allocator.create(Value.Object) catch return null;
@@ -361,8 +450,8 @@ pub fn initRuleForFile(
             interp.depth = saved_depth;
         }
 
-        interp.rule_ast = saved_ast;
         interp.return_value = .undefined;
+        interp.skip_meta = false; // restore for create() body eval
 
         // Check if module.exports.create was set by the module eval
         const mod_val = env_ptr.lookup("module");
@@ -371,16 +460,91 @@ pub fn initRuleForFile(
             if (exports_val == .object) {
                 const create_fn = exports_val.object.get("create");
                 if (create_fn == .function) {
-                    // Call create(context) — the function lives in full_ast
-                    const cargs = [_]Value{.{ .string = "__eslint_context__" }};
-                    interp.return_value = interp.callUserFunction(create_fn.function, &cargs) catch .undefined;
+                    // Call create(context) but keep the function's env so closure
+                    // variables (e.g. currentCodePathSegments) stay accessible.
+                    const func = create_fn.function;
+                    const use_ast2 = func.source_ast orelse interp.rule_ast;
+                    const saved_ast2 = interp.rule_ast;
+                    interp.rule_ast = use_ast2;
+
+                    const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
+                    const fn_tag = use_ast2.nodeTag(fn_idx);
+                    const fn_data = use_ast2.nodeData(fn_idx);
+
+                    // Create a child env for create()'s locals — but keep it as interp.env
+                    const fn_env_ptr = allocator.create(Environment) catch return null;
+                    fn_env_ptr.* = Environment.init(allocator, interp.env);
+                    interp.env = fn_env_ptr;
+
+                    // Bind context parameter
+                    if (fn_tag == .fn_decl or fn_tag == .async_fn_decl or
+                        fn_tag == .fn_expr or fn_tag == .async_fn_expr)
+                    {
+                        const fd = use_ast2.extraData(ast_mod.FnData, @intFromEnum(fn_data.lhs));
+                        const ps = use_ast2.extraSlice(.{ .start = fd.params, .end = fd.params_end });
+                        if (ps.len > 0) {
+                            const p: NodeIndex = @enumFromInt(ps[0]);
+                            if (p != .none and use_ast2.nodeTag(p) == .identifier) {
+                                const pname = use_ast2.tokenText(use_ast2.nodeMainToken(p));
+                                fn_env_ptr.set(pname, .{ .string = "__eslint_context__" });
+                            }
+                        }
+                        if (fd.body != .none) {
+                            const saved_ret = interp.return_value;
+                            interp.return_value = .undefined;
+                            _ = interp.eval(fd.body) catch |err| switch (err) {
+                                Signal.ReturnSignal => {},
+                                else => {},
+                            };
+                            if (interp.return_value == .object) {
+                                // keep it
+                            } else {
+                                interp.return_value = saved_ret;
+                            }
+                        }
+                    } else if (fn_tag == .method_def or fn_tag == .computed_method_def) {
+                        const md = use_ast2.extraData(ast_mod.MethodData, @intFromEnum(fn_data.rhs));
+                        const ps = use_ast2.extraSlice(.{ .start = md.params_start, .end = md.params_end });
+                        if (ps.len > 0) {
+                            const p: NodeIndex = @enumFromInt(ps[0]);
+                            if (p != .none and use_ast2.nodeTag(p) == .identifier) {
+                                const pname = use_ast2.tokenText(use_ast2.nodeMainToken(p));
+                                fn_env_ptr.set(pname, .{ .string = "__eslint_context__" });
+                            }
+                        }
+                        if (md.body != .none) {
+                            const saved_ret = interp.return_value;
+                            interp.return_value = .undefined;
+                            _ = interp.eval(md.body) catch |err| switch (err) {
+                                Signal.ReturnSignal => {},
+                                else => {},
+                            };
+                            if (interp.return_value != .object) interp.return_value = saved_ret;
+                        }
+                    }
+                    interp.rule_ast = saved_ast2;
+                    // intentionally DO NOT restore interp.env — fn_env_ptr stays as the
+                    // active env so visitor handlers can access create()'s closure variables.
                 }
             }
         }
     }
 
     if (interp.return_value == .object) {
-        return .{ .visitor_obj = interp.return_value.object, .interp = interp };
+        const visitor_obj = interp.return_value.object;
+        // Skip rules that use ESLint code path analysis callbacks.
+        // Without a real code path analysis engine these rules always produce
+        // wrong results (both false positives and false negatives).
+        const code_path_keys = [_][]const u8{
+            "onCodePathStart", "onCodePathEnd",
+            "onCodePathSegmentStart", "onCodePathSegmentEnd",
+            "onCodePathSegmentLoop",
+            "onUnreachableCodePathSegmentStart", "onUnreachableCodePathSegmentEnd",
+        };
+        for (code_path_keys) |key| {
+            if (visitor_obj.has(key)) return null;
+        }
+        return .{ .visitor_obj = visitor_obj, .interp = interp };
     }
     return null;
 }
@@ -406,6 +570,49 @@ pub fn callHandler(
     } else if (handler_val == .string) {
         const args = [_]Value{.{ .node = node_idx }};
         _ = interp.callStringBuiltin(handler_val.string, &args) catch {};
+    }
+}
+
+/// Call a visitor handler with an arbitrary Value argument (for code path callbacks).
+fn callHandlerWithValue(ctx: *RuleFileCtx, visitor_key: []const u8, arg: Value) void {
+    const handler_val = ctx.visitor_obj.get(visitor_key);
+    if (handler_val != .function) return;
+    const interp = &ctx.interp;
+    const func = handler_val.function;
+    const use_ast = func.source_ast orelse interp.rule_ast;
+    const saved = interp.rule_ast;
+    interp.rule_ast = use_ast;
+    defer interp.rule_ast = saved;
+    const fn_idx: NodeIndex = @enumFromInt(func.ast_idx);
+    const fn_tag = use_ast.nodeTag(fn_idx);
+    const fn_data = use_ast.nodeData(fn_idx);
+    if (fn_tag == .method_def or fn_tag == .computed_method_def or
+        fn_tag == .getter_def or fn_tag == .setter_def)
+    {
+        const md = use_ast.extraData(ast_mod.MethodData, @intFromEnum(fn_data.rhs));
+        const params = use_ast.extraSlice(.{ .start = md.params_start, .end = md.params_end });
+        if (params.len > 0) {
+            const p: NodeIndex = @enumFromInt(params[0]);
+            if (p != .none) bindParamValue(interp, use_ast, p, arg);
+        }
+        if (md.body != .none) _ = interp.eval(md.body) catch {};
+    } else if (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn) {
+        const ad = use_ast.extraData(ast_mod.ArrowData, @intFromEnum(fn_data.lhs));
+        const params = use_ast.extraSlice(.{ .start = ad.params_start, .end = ad.params_end });
+        if (params.len > 0) {
+            const p: NodeIndex = @enumFromInt(params[0]);
+            if (p != .none) bindParamValue(interp, use_ast, p, arg);
+        }
+        if (ad.body != .none) _ = interp.eval(ad.body) catch {};
+    }
+}
+
+fn bindParamValue(interp: *Interpreter, ast: *const Ast, param: NodeIndex, val: Value) void {
+    if (param == .none) return;
+    const tag = ast.nodeTag(param);
+    if (tag == .identifier) {
+        const name = ast.tokenText(ast.nodeMainToken(param));
+        interp.env.set(name, val);
     }
 }
 
@@ -512,7 +719,7 @@ pub fn runRulesOnFile(
         rule_ctxs[i] = initRuleForFile(rule, callbacks, diagnostics, allocator);
     }
 
-    // Phase 2: Program:enter visitors
+    // Phase 2b: Program:enter visitors
     for (rule_set.program_enter) |ref| {
         if (rule_ctxs[ref.rule_idx]) |*ctx| {
             callHandler(ctx, rule_set.rules[ref.rule_idx].visitors[ref.visitor_idx].key, 0);

@@ -71,14 +71,18 @@ fn loadOneRule(
         }
     }
 
-    // Check deprecated
+    // Check deprecated — ESLint v8 uses `deprecated: true`, v10 uses `deprecated: { ... }`
     if (meta_node) |meta| {
         const dep_node = findProperty(&tree, meta, "deprecated");
         if (dep_node) |dep| {
-            if (tree.nodeTag(dep) == .boolean_literal) {
+            const tag = tree.nodeTag(dep);
+            // boolean `true`
+            if (tag == .boolean_literal) {
                 const raw = tree.tokenText(tree.nodeMainToken(dep));
                 if (std.mem.eql(u8, raw, "true")) return null;
             }
+            // object or array — any truthy value means deprecated
+            if (tag == .object_literal or tag == .array_literal) return null;
         }
     }
 

@@ -61,6 +61,7 @@ fn containsYieldInBlock(block: NodeIndex, ctx: *const LintContext) bool {
 /// Check a single statement for yield, handling common wrappers safely.
 fn stmtContainsYield(node: NodeIndex, ctx: *const LintContext) bool {
     if (node == .none) return false;
+    if (@intFromEnum(node) >= ctx.nodeCount()) return false;
 
     const tag = ctx.nodeTag(node);
 

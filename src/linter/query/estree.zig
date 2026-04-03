@@ -292,6 +292,7 @@ pub const EsTreeAdapter = struct {
     fn callProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
         if (std.mem.eql(u8, prop, "callee")) return self.nodeOrNull(lhs);
         if (std.mem.eql(u8, prop, "arguments")) {
+            if (rhs == std.math.maxInt(u32)) return self.buildNodeArray(0, 0); // no args
             const call_data = self.query.ast.extraData(ast_mod.SubRange, rhs);
             return self.buildNodeArray(call_data.start, call_data.end);
         }
@@ -379,7 +380,11 @@ pub const EsTreeAdapter = struct {
 
     fn switchProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32, rhs: u32) Value {
         if (std.mem.eql(u8, prop, "discriminant")) return self.nodeOrNull(lhs);
-        if (std.mem.eql(u8, prop, "cases")) return self.buildNodeArray(lhs, rhs);
+        if (std.mem.eql(u8, prop, "cases")) {
+            // rhs is an extra index to SubRange of case nodes
+            const range = self.query.ast.extraData(ast_mod.SubRange, rhs);
+            return self.buildNodeArray(range.start, range.end);
+        }
         return .undefined;
     }
 
@@ -388,7 +393,11 @@ pub const EsTreeAdapter = struct {
             if (tag == .switch_default) return .null_val;
             return self.nodeOrNull(lhs);
         }
-        if (std.mem.eql(u8, prop, "consequent")) return self.buildNodeArray(lhs, rhs);
+        if (std.mem.eql(u8, prop, "consequent")) {
+            // rhs is an extra index to SubRange of statements
+            const range = self.query.ast.extraData(ast_mod.SubRange, rhs);
+            return self.buildNodeArray(range.start, range.end);
+        }
         return .undefined;
     }
 
@@ -557,6 +566,16 @@ pub const EsTreeAdapter = struct {
             // TODO: build variable/reference arrays from semantic data
             return .{ .array = &.{} };
         }
+        if (std.mem.eql(u8, prop, "childScopes")) {
+            // Traverse left-child / right-sibling linked list
+            var arr: std.ArrayListUnmanaged(Value) = .empty;
+            var child = scopes.first_child.items[sid.toInt()];
+            while (child.isValid()) {
+                arr.append(self.arena, .{ .scope = child.toInt() }) catch {};
+                child = scopes.next_sibling.items[child.toInt()];
+            }
+            return .{ .array = arr.items };
+        }
         return .undefined;
     }
 
@@ -680,16 +699,28 @@ pub const EsTreeAdapter = struct {
             },
             .source_getTokenBefore => {
                 if (args.len > 0) {
-                    if (args[0].asNode()) |node_idx| {
-                        if (self.query.tokenBefore(node_idx)) |tok| return .{ .token = tok };
+                    switch (args[0]) {
+                        .node => |node_idx| {
+                            if (self.query.tokenBefore(node_idx)) |tok| return .{ .token = tok };
+                        },
+                        .token => |tok_idx| {
+                            if (tok_idx > 0) return .{ .token = tok_idx - 1 };
+                        },
+                        else => {},
                     }
                 }
                 return .null_val;
             },
             .source_getTokenAfter => {
                 if (args.len > 0) {
-                    if (args[0].asNode()) |node_idx| {
-                        if (self.query.tokenAfter(node_idx)) |tok| return .{ .token = tok };
+                    switch (args[0]) {
+                        .node => |node_idx| {
+                            if (self.query.tokenAfter(node_idx)) |tok| return .{ .token = tok };
+                        },
+                        .token => |tok_idx| {
+                            if (tok_idx + 1 < self.query.ast.tokens.len) return .{ .token = tok_idx + 1 };
+                        },
+                        else => {},
                     }
                 }
                 return .null_val;
@@ -764,16 +795,24 @@ pub const EsTreeAdapter = struct {
     }
 
     fn buildTokenLoc(self: *EsTreeAdapter, tok_idx: u32) Value {
-        const start = self.query.tokenStart(tok_idx);
-        const loc = self.query.locationFromOffset(start);
+        const start_off = self.query.tokenStart(tok_idx);
+        const tok_text = self.query.tokenText(tok_idx);
+        const end_off = start_off + @as(u32, @intCast(tok_text.len));
+        const start_loc = self.query.locationFromOffset(start_off);
+        const end_loc = self.query.locationFromOffset(end_off);
         var obj = Value.Object{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
         var start_obj = Value.Object{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
-        start_obj.entries.put("line", .{ .number = @floatFromInt(loc.line) }) catch {};
-        start_obj.entries.put("column", .{ .number = @floatFromInt(loc.column) }) catch {};
+        start_obj.entries.put("line", .{ .number = @floatFromInt(start_loc.line) }) catch {};
+        start_obj.entries.put("column", .{ .number = @floatFromInt(start_loc.column) }) catch {};
         const sp = self.arena.create(Value.Object) catch return .undefined;
         sp.* = start_obj;
+        var end_obj = Value.Object{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+        end_obj.entries.put("line", .{ .number = @floatFromInt(end_loc.line) }) catch {};
+        end_obj.entries.put("column", .{ .number = @floatFromInt(end_loc.column) }) catch {};
+        const ep = self.arena.create(Value.Object) catch return .undefined;
+        ep.* = end_obj;
         obj.entries.put("start", .{ .object = sp }) catch {};
-        // TODO: end location
+        obj.entries.put("end", .{ .object = ep }) catch {};
         const ptr = self.arena.create(Value.Object) catch return .undefined;
         ptr.* = obj;
         return .{ .object = ptr };

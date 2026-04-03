@@ -150,6 +150,11 @@ pub const Value = union(enum) {
         object_hasOwn,
         object_assign,
 
+        // Number prototype methods
+        num_toPrecision,
+        num_toString,
+        num_toFixed,
+
         // RegExp
         regexp_test,
         regexp_exec,
