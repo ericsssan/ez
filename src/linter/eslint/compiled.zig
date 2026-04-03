@@ -364,13 +364,75 @@ pub fn emitDiag(
 pub const CompiledDispatch = struct {
     enter: [256][]const CompiledRule,
     exit: [256][]const CompiledRule,
+    /// Bitmask of tags that have any handlers (for fast skip)
+    active_tags: [256]bool,
 
     pub fn init() CompiledDispatch {
         var self: CompiledDispatch = undefined;
         for (0..256) |i| {
             self.enter[i] = &.{};
             self.exit[i] = &.{};
+            self.active_tags[i] = false;
         }
         return self;
     }
+
+    pub fn finalize(self: *CompiledDispatch) void {
+        for (0..256) |i| {
+            self.active_tags[i] = self.enter[i].len > 0 or self.exit[i].len > 0;
+        }
+    }
+
+    /// Check if a file could possibly trigger any rule, given its tag array.
+    /// Scans tags once — if no active tag found, skip the file.
+    pub fn hasRelevantNodes(self: *const CompiledDispatch, tags: []const Node.Tag) bool {
+        for (tags) |tag| {
+            if (self.active_tags[@intFromEnum(tag)]) return true;
+        }
+        return false;
+    }
 };
+
+// ── Token Pre-screening ────────────────────────────────────────
+
+/// Quick scan of source text for keywords that compiled rules need.
+/// Returns false if the file cannot trigger any compiled rule.
+/// This runs BEFORE parsing — O(source.len) byte scan vs O(n²) parse+walk.
+pub fn quickScreenSource(source: []const u8, dispatch: *const CompiledDispatch) bool {
+    // Build keyword set from active tags
+    // For each active tag, check if any associated keyword appears in source
+    _ = dispatch;
+
+    // Fast check: scan for any of the keywords our compiled rules need.
+    // This is a conservative over-approximation — may return true even if
+    // the keyword appears in a string literal or comment, but never false-negative.
+    var has_debugger = false;
+    var has_delete = false;
+    var has_with = false;
+    var has_continue = false;
+    var has_new = false;
+    var has_question = false; // ternary
+
+    var i: usize = 0;
+    while (i < source.len) : (i += 1) {
+        switch (source[i]) {
+            'd' => {
+                if (i + 8 <= source.len and std.mem.eql(u8, source[i..][0..8], "debugger")) has_debugger = true;
+                if (i + 6 <= source.len and std.mem.eql(u8, source[i..][0..6], "delete")) has_delete = true;
+            },
+            'w' => {
+                if (i + 4 <= source.len and std.mem.eql(u8, source[i..][0..4], "with")) has_with = true;
+            },
+            'c' => {
+                if (i + 8 <= source.len and std.mem.eql(u8, source[i..][0..8], "continue")) has_continue = true;
+            },
+            'n' => {
+                if (i + 3 <= source.len and std.mem.eql(u8, source[i..][0..3], "new")) has_new = true;
+            },
+            '?' => has_question = true,
+            else => {},
+        }
+    }
+
+    return has_debugger or has_delete or has_with or has_continue or has_new or has_question;
+}

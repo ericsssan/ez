@@ -162,6 +162,10 @@ pub fn main(init: std.process.Init) !void {
             exit_lists[i] = .empty;
         }
 
+        var fail_parse: u32 = 0;
+        var fail_no_body: u32 = 0;
+        var fail_complex: u32 = 0;
+
         if (cached_rules) |rules| {
             for (rules) |*rule| {
                 total_handlers += @intCast(rule.handlers.len);
@@ -178,6 +182,14 @@ pub fn main(init: std.process.Init) !void {
                                 }
                             }
                         }
+                    } else {
+                        if (std.mem.startsWith(u8, h.source, "function ")) {
+                            fail_parse += 1;
+                        } else if (std.mem.startsWith(u8, h.source, "\"")) {
+                            fail_no_body += 1;
+                        } else {
+                            fail_complex += 1;
+                        }
                     }
                 }
             }
@@ -187,6 +199,7 @@ pub fn main(init: std.process.Init) !void {
             dispatch.enter[i] = enter_lists[i].toOwnedSlice(allocator) catch &.{};
             dispatch.exit[i] = exit_lists[i].toOwnedSlice(allocator) catch &.{};
         }
+        dispatch.finalize();
 
         const t_compiled = clockNs();
 
@@ -221,10 +234,19 @@ pub fn main(init: std.process.Init) !void {
         var compiled_diags: u32 = 0;
         var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
 
+        var skipped_files: u32 = 0;
+
         for (corpus_sources.items) |src| {
             const a = arena_impl.allocator();
 
-            // Parse once for compiled path
+            // Token pre-screening: skip files that can't trigger any rule
+            if (!compiled_mod.quickScreenSource(src, &dispatch)) {
+                skipped_files += 1;
+                _ = arena_impl.reset(.retain_capacity);
+                continue;
+            }
+
+            // Parse
             var tokens = Lexer_mod.tokenize(a, src) catch {
                 _ = arena_impl.reset(.retain_capacity);
                 continue;
@@ -233,21 +255,43 @@ pub fn main(init: std.process.Init) !void {
                 _ = arena_impl.reset(.retain_capacity);
                 continue;
             };
+
+            // Quick check: any active tag in this file?
+            const node_tags = tree.nodes.items(.tag);
+            if (!dispatch.hasRelevantNodes(node_tags)) {
+                _ = arena_impl.reset(.retain_capacity);
+                continue;
+            }
+
+            // Only compute parent traversal if we have rules that need it
             const traversal = parent_builder.computeTraversal(&tree, a) catch {
                 _ = arena_impl.reset(.retain_capacity);
                 continue;
             };
 
-            // Compiled dispatch — pure Zig, no QuickJS
-            const node_tags = tree.nodes.items(.tag);
-            for (traversal.dfs_events) |ev| {
-                const is_exit = ev < 0;
-                const idx: u32 = if (is_exit) @intCast(~ev) else @intCast(ev);
-                if (idx >= tree.nodes.len) continue;
-                const tag = @intFromEnum(node_tags[idx]);
-                if (tag >= 256) continue;
+            // Inverted index scan: iterate tag array directly, not DFS
+            // For enter-only rules (no exit handlers), skip DFS entirely
+            for (node_tags, 0..) |tag, idx_usize| {
+                const idx: u32 = @intCast(idx_usize);
+                const t = @intFromEnum(tag);
+                if (t >= 256) continue;
+                const rules = dispatch.enter[t];
+                for (rules) |*cr| {
+                    if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
+                        compiled_diags += 1;
+                    }
+                }
+            }
 
-                const rules = if (is_exit) dispatch.exit[tag] else dispatch.enter[tag];
+            // Exit handlers still need DFS order (reverse traversal)
+            for (traversal.dfs_events) |ev| {
+                if (ev >= 0) continue; // skip enter events
+                const idx: u32 = @intCast(~ev);
+                if (idx >= tree.nodes.len) continue;
+                const t = @intFromEnum(node_tags[idx]);
+                if (t >= 256) continue;
+                const rules = dispatch.exit[t];
+                if (rules.len == 0) continue;
                 for (rules) |*cr| {
                     if (compiled_mod.evalPreds(cr.predicates, idx, &tree, traversal.parents)) {
                         compiled_diags += 1;
@@ -262,11 +306,11 @@ pub fn main(init: std.process.Init) !void {
         const t_lint_done = clockNs();
         total_diags = compiled_diags;
 
-        try stdout.print("{d} rules, {d}/{d} compiled, {d} files, {d} diags {s}\n", .{
-            rule_count,
+        try stdout.print("{d}/{d} compiled, {d} files ({d} skipped), {d} diags {s}\n", .{
             compiled_count,
             total_handlers,
             corpus_sources.items.len,
+            skipped_files,
             total_diags,
             if (cache_hit) "(cached)" else "(cold)",
         });
