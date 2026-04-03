@@ -1665,16 +1665,90 @@ const CODE_PATH_TYPES = new Set([
 
 const CLASS_TYPES = new Set(['ClassDeclaration', 'ClassExpression']);
 
-// A minimal fake code path object. Rules that need real code path analysis
-// (consistent-return, etc.) will still fail, but rules that only use the
-// onCodePathStart node argument (no-constructor-return) will work correctly.
-const FAKE_CODE_PATH = Object.freeze({
-  id: 'cp0',
-  currentSegments: [],
-  thrownSegments: [],
-  state: 'normal',
-  upper: null,
-});
+// ── Lightweight Code Path Tracker ────────────────────────────────
+// Tracks reachability through control flow for rules like no-unreachable,
+// getter-return, consistent-return, no-fallthrough. Not a full CFG — just
+// tracks whether code is reachable at each point in the DFS.
+
+let _cpIdCounter = 0;
+let _segIdCounter = 0;
+
+function _makeSegment(reachable = true) {
+  return {
+    id: 's' + (_segIdCounter++),
+    reachable,
+    nextSegments: [],
+    prevSegments: [],
+    allNextSegments: [],
+    allPrevSegments: [],
+    internal: {},
+  };
+}
+
+class CodePathTracker {
+  constructor() {
+    this._stack = []; // stack of { codePath, segment, returned }
+    this._currentSegment = null;
+    this._codePath = null;
+  }
+
+  enterFunction(node) {
+    const seg = _makeSegment(true);
+    const codePath = {
+      id: 'cp' + (_cpIdCounter++),
+      origin: node.type === 'Program' ? 'program' : 'function',
+      upper: this._codePath,
+      childCodePaths: [],
+      currentSegments: [seg],
+      initialSegment: seg,
+      finalSegments: [],
+      thrownSegments: [],
+      returnedForkContext: [],
+      internal: {},
+    };
+    if (this._codePath) this._codePath.childCodePaths.push(codePath);
+    this._stack.push({ codePath: this._codePath, segment: this._currentSegment, returned: false });
+    this._codePath = codePath;
+    this._currentSegment = seg;
+    return { codePath, segment: seg };
+  }
+
+  exitFunction() {
+    const codePath = this._codePath;
+    if (this._currentSegment) codePath.finalSegments.push(this._currentSegment);
+    const prev = this._stack.pop();
+    this._codePath = prev ? prev.codePath : null;
+    this._currentSegment = prev ? prev.segment : null;
+    return codePath;
+  }
+
+  // Called after return/throw/break/continue — subsequent code is unreachable
+  markUnreachable() {
+    if (this._currentSegment) this._currentSegment.reachable = false;
+    const unreachSeg = _makeSegment(false);
+    this._currentSegment = unreachSeg;
+    if (this._codePath) this._codePath.currentSegments = [unreachSeg];
+  }
+
+  // Called at branch merge points (end of if/else, end of loop, catch, etc.)
+  markReachable() {
+    const seg = _makeSegment(true);
+    this._currentSegment = seg;
+    if (this._codePath) this._codePath.currentSegments = [seg];
+  }
+
+  // Called when entering a new block that restores reachability (else, catch, finally, case)
+  forkReachable() {
+    const seg = _makeSegment(true);
+    this._currentSegment = seg;
+    if (this._codePath) this._codePath.currentSegments = [seg];
+    return seg;
+  }
+
+  get segment() { return this._currentSegment; }
+  get codePath() { return this._codePath; }
+  get reachable() { return this._currentSegment ? this._currentSegment.reachable : true; }
+}
 
 // ── Rule Query Optimizer: handler analysis & fusion ─────────────
 
@@ -2450,13 +2524,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const handlers = visitorMap.get(mapKey);
     if (!handlers) return;
     const node = nodeView(ast, nodeIdx);
+    const cp = cpTracker.codePath;
     for (let h = 0; h < handlers.length; h++) {
       context._currentRule = handlers[h].ruleId;
       context._currentRuleMeta = handlers[h].ruleMeta;
       context.options = handlers[h].ruleOptions;
       try {
-        // onCodePathStart receives (codePath, node); onCodePathEnd receives (codePath)
-        handlers[h].handler(FAKE_CODE_PATH, node);
+        handlers[h].handler(cp, node);
       } catch (err) {
         context._reports.push({
           ruleId: handlers[h].ruleId,
@@ -2507,15 +2581,33 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Synthesize FunctionExpression enter/exit and onCodePathStart/End events
   // so rules like no-constructor-return and getter-return work correctly.
 
+  const cpTracker = new CodePathTracker();
+
   function invokeCodePathHandlersWithNode(mapKey, node) {
     const handlers = visitorMap.get(mapKey);
+    if (!handlers) return;
+    const cp = cpTracker.codePath;
+    for (let h = 0; h < handlers.length; h++) {
+      context._currentRule = handlers[h].ruleId;
+      context._currentRuleMeta = handlers[h].ruleMeta;
+      context.options = handlers[h].ruleOptions;
+      try {
+        handlers[h].handler(cp, node);
+      } catch (err) {
+        context._reports.push({ ruleId: handlers[h].ruleId, message: `Plugin error: ${err.message}` });
+      }
+    }
+  }
+
+  function invokeSegmentEvent(eventName, segment) {
+    const handlers = visitorMap.get(eventName);
     if (!handlers) return;
     for (let h = 0; h < handlers.length; h++) {
       context._currentRule = handlers[h].ruleId;
       context._currentRuleMeta = handlers[h].ruleMeta;
       context.options = handlers[h].ruleOptions;
       try {
-        handlers[h].handler(FAKE_CODE_PATH, node);
+        handlers[h].handler(segment, {});
       } catch (err) {
         context._reports.push({ ruleId: handlers[h].ruleId, message: `Plugin error: ${err.message}` });
       }
@@ -2708,7 +2800,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             if (tagNames[pt] === 'ObjectExpression' || tagNames[pt] === 'ObjectPattern') tn = 'Property';
           }
         }
-        if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathStart', idx);
+        if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
+          const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
+          invokeCodePathHandlers('onCodePathStart', idx);
+          invokeSegmentEvent('onCodePathSegmentStart', segment);
+        }
+        // Branch points: restore reachability at alternate paths
+        if (hasCodePath) {
+          if (tn === 'CatchClause' || tn === 'SwitchCase') {
+            const seg = cpTracker.forkReachable();
+            invokeSegmentEvent('onCodePathSegmentStart', seg);
+          }
+        }
         const enter = visitorMap.get(tn);
         if (enter) {
           const node = nodeView(ast, idx);
@@ -2784,6 +2887,31 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             if (tagNames[pt] === 'ObjectExpression' || tagNames[pt] === 'ObjectPattern') tn = 'Property';
           }
         }
+        // Code-path: terminators mark subsequent code unreachable
+        if (hasCodePath) {
+          if (tn === 'ReturnStatement' || tn === 'ThrowStatement' ||
+              tn === 'BreakStatement' || tn === 'ContinueStatement') {
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) invokeSegmentEvent('onCodePathSegmentEnd', oldSeg);
+            cpTracker.markUnreachable();
+            const unreachSeg = cpTracker.segment;
+            invokeSegmentEvent('onUnreachableCodePathSegmentStart', unreachSeg);
+          }
+          // Merge points: restore reachability at block/statement exit
+          if (tn === 'IfStatement' || tn === 'TryStatement' || tn === 'SwitchStatement' ||
+              tn === 'WhileStatement' || tn === 'DoWhileStatement' || tn === 'ForStatement' ||
+              tn === 'ForInStatement' || tn === 'ForOfStatement') {
+            if (!cpTracker.reachable) {
+              const oldSeg = cpTracker.segment;
+              if (oldSeg) invokeSegmentEvent('onUnreachableCodePathSegmentEnd', oldSeg);
+            } else {
+              const oldSeg = cpTracker.segment;
+              if (oldSeg) invokeSegmentEvent('onCodePathSegmentEnd', oldSeg);
+            }
+            const seg = cpTracker.forkReachable();
+            invokeSegmentEvent('onCodePathSegmentStart', seg);
+          }
+        }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
         const exit = visitorMap.get(tn + ':exit');
         if (exit) {
@@ -2820,7 +2948,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, true);
-        if (hasCodePath && CODE_PATH_TYPES.has(tn)) invokeCodePathHandlers('onCodePathEnd', idx);
+        if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
+          const oldSeg = cpTracker.segment;
+          if (oldSeg) {
+            const evName = oldSeg.reachable ? 'onCodePathSegmentEnd' : 'onUnreachableCodePathSegmentEnd';
+            invokeSegmentEvent(evName, oldSeg);
+          }
+          cpTracker.exitFunction();
+          invokeCodePathHandlers('onCodePathEnd', idx);
+        }
         if (hasSelectors) invokeSelectorHandlers(idx, true);
       }
     }

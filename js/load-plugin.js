@@ -22,14 +22,12 @@ function resolvePackageDir(pkgName) {
   return null;
 }
 
-// Rules that depend on code path analysis (onCodePathStart/End, segment tracking).
-// sanz doesn't implement real code path analysis yet — these rules produce false
-// positives with the stub FAKE_CODE_PATH. Skipped by default; --rule forces them.
+// Code-path rules that crash with our lightweight CodePathTracker.
+// These need full CFG (forking, merging, loop detection) that we don't implement yet.
 const _NEEDS_CODE_PATH = new Set([
-  "array-callback-return", "complexity", "consistent-return", "constructor-super",
-  "getter-return", "no-constructor-return", "no-fallthrough", "no-invalid-this",
-  "no-promise-executor-return", "no-this-before-super", "no-unreachable-loop",
-  "no-unreachable", "no-useless-assignment", "no-useless-return", "require-atomic-updates",
+  "complexity",               // accesses codePath.origin and deep segment graph
+  "no-invalid-this",          // accesses codePath properties we don't populate
+  "no-fallthrough",           // needs switch case segment merging
 ]);
 
 /**
