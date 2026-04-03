@@ -61,10 +61,6 @@ fn loadOneRule(
     // Find module.exports = { meta: {...}, create(context) {...} }
     const exports = findModuleExports(&tree) orelse return null;
 
-    // Extract create() source
-    const create_node = findProperty(&tree, exports, "create") orelse return null;
-    const create_source = nodeSourceText(&tree, full_source, create_node) orelse return null;
-
     // Extract meta.messages
     var messages: std.ArrayList(MessageEntry) = .empty;
     const meta_node = findProperty(&tree, exports, "meta");
@@ -86,14 +82,16 @@ fn loadOneRule(
         }
     }
 
-    // Discover visitor keys by interpreting create() with mock context
+    // Use full source for both create and module-level code.
+    // initRuleForFile in rules.zig handles finding and interpreting create().
+    // Discover visitor keys by interpreting the full module.
     var visitor_keys: std.ArrayList(VisitorKeyMapping) = .empty;
-    discoverVisitorKeys(name, create_source, full_source, &tree, &visitor_keys, allocator);
+    discoverVisitorKeys(name, full_source, full_source, &tree, &visitor_keys, allocator);
 
     return .{
         .name = name,
         .severity = .@"error",
-        .create_source = create_source,
+        .create_source = full_source, // rules.zig will parse and find create()
         .full_source = full_source,
         .visitor_keys = visitor_keys.toOwnedSlice(allocator) catch &.{},
         .messages = messages.toOwnedSlice(allocator) catch &.{},
@@ -264,26 +262,11 @@ fn discoverVisitorKeys(
     visitor_keys: *std.ArrayList(VisitorKeyMapping),
     allocator: std.mem.Allocator,
 ) void {
-    _ = full_tree;
+    _ = create_source;
     _ = full_source;
 
-    // Parse create() source
-    var tokens = Lexer.tokenize(allocator, create_source) catch return;
-    var tree = Parser.parse(allocator, create_source, tokens.slice()) catch return;
-    const tree_ptr = allocator.create(Ast) catch return;
-    tree_ptr.* = tree;
-
-    // Set up interpreter with mock context
-    var env_ptr = allocator.create(Environment) catch return;
-    env_ptr.* = Environment.init(allocator, null);
-    env_ptr.set("context", .{ .string = "__eslint_context__" });
-    env_ptr.set("sourceCode", .{ .string = "__source_code__" });
-
-    var diagnostics: std.ArrayList(Diagnostic) = .empty;
-    var empty_messages = std.StringArrayHashMap([]const u8).init(allocator);
-    var empty_closures = std.StringArrayHashMap(*const Ast).init(allocator);
-
-    // Null callbacks for discovery (we just need the return value)
+    // Use initRuleForFile from rules.zig — it already handles full module
+    // interpretation and create() discovery.
     const null_cb = struct {
         fn getNodeProp(_: *anyopaque, _: u32, _: []const u8) Value { return .undefined; }
         fn getScopeProp(_: *anyopaque, _: u32, _: []const u8) Value { return .undefined; }
@@ -293,11 +276,28 @@ fn discoverVisitorKeys(
         fn callBuiltin(_: *anyopaque, _: Value.BuiltinKind, _: []const Value) Value { return .undefined; }
     };
     var dummy: u8 = 0;
+    var diagnostics: std.ArrayList(Diagnostic) = .empty;
+    const empty_messages = std.StringArrayHashMap([]const u8).init(allocator);
 
-    var interp = Interpreter{
-        .rule_ast = tree_ptr,
-        .env = env_ptr,
-        .runtime = .{
+    // Build a temporary Rule from the full_tree
+    const create_ast_ptr = allocator.create(Ast) catch return;
+    create_ast_ptr.* = full_tree.*;
+
+    var temp_rule = rules_mod.Rule{
+        .name = rule_name,
+        .severity = .@"error",
+        .visitors = &.{},
+        .messages = empty_messages,
+        .options = &.{},
+        .create_ast = create_ast_ptr,
+        .full_ast = create_ast_ptr,
+        .closure_fns = std.StringArrayHashMap(*const Ast).init(allocator),
+        .allocator = allocator,
+    };
+
+    const ctx = rules_mod.initRuleForFile(
+        &temp_rule,
+        .{
             .ctx = @ptrCast(&dummy),
             .getNodeProperty = null_cb.getNodeProp,
             .getScopeProperty = null_cb.getScopeProp,
@@ -306,47 +306,17 @@ fn discoverVisitorKeys(
             .getTokenProperty = null_cb.getTokProp,
             .callBuiltin = null_cb.callBuiltin,
         },
-        .arena = allocator,
-        .diagnostics = &diagnostics,
-        .return_value = .undefined,
-        .current_file_node = 0,
-        .rule_name = rule_name,
-        .rule_severity = .@"error",
-        .messages = &empty_messages,
-        .options = &.{},
-        .closure_fns = &empty_closures,
-    };
+        &diagnostics,
+        allocator,
+    ) orelse return;
 
-    // Evaluate create() body
-    const root_data = tree.nodeData(.root);
-    const stmts = tree.extraSlice(.{
-        .start = @intFromEnum(root_data.lhs),
-        .end = @intFromEnum(root_data.rhs),
-    });
+    // Get visitor object from interpreter's return value
+    const interp = ctx.interp;
+    _ = interp;
 
-    for (stmts) |raw| {
-        const stmt: NodeIndex = @enumFromInt(raw);
-        if (stmt == .none) continue;
-        const tag = tree.nodeTag(stmt);
-
-        // Find the create function and evaluate its body
-        if (tag == .fn_decl or tag == .async_fn_decl or
-            tag == .method_def or tag == .fn_expr)
-        {
-            const fd = tree.extraData(ast_mod.FnData, @intFromEnum(tree.nodeData(stmt).lhs));
-            if (fd.body != .none) {
-                _ = interp.eval(fd.body) catch |err| switch (err) {
-                    @import("../interp/interpreter.zig").Signal.ReturnSignal => {},
-                    else => {},
-                };
-            }
-            break;
-        }
-    }
-
-    // Extract visitor keys from return value
-    if (interp.return_value == .object) {
-        const obj = interp.return_value.object;
+    // Extract visitor keys from the visitor object
+    {
+        const obj = ctx.visitor_obj;
         for (obj.entries.keys()) |key| {
             const is_exit = std.mem.endsWith(u8, key, ":exit");
             const type_name = if (is_exit) key[0 .. key.len - 5] else key;
