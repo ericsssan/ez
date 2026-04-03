@@ -4,10 +4,13 @@ const HandlerSource = QjsLintEngine.HandlerSource;
 
 /// Cached rule metadata — everything needed to compile predicates
 /// without running QuickJS.
+const ClosureVar = QjsLintEngine.ClosureVar;
+
 pub const CachedRule = struct {
     name: []const u8,
     handlers: []const HandlerSource,
     messages: std.StringArrayHashMap([]const u8),
+    closures: []const ClosureVar = &.{},
 };
 
 /// Write extracted rule metadata to a binary cache file.

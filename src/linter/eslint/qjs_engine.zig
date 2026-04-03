@@ -43,6 +43,20 @@ pub const QjsLintEngine = struct {
         is_exit: bool,
     };
 
+    /// Closure variable extracted from create() scope.
+    pub const ClosureVar = struct {
+        name: []const u8,
+        kind: ClosureKind,
+    };
+
+    pub const ClosureKind = union(enum) {
+        boolean: bool,
+        string: []const u8,
+        number: f64,
+        string_set: []const []const u8, // new Set(["a", "b"])
+        unknown: void,
+    };
+
     pub const LoadedRule = struct {
         name: []const u8,
         severity: Severity,
@@ -357,13 +371,17 @@ pub const QjsLintEngine = struct {
     /// Extract handler function sources and message templates for a rule.
     /// Uses JS_ToString on each handler function to get its source text.
     /// Also extracts meta.messages for compiled diagnostic emission.
-    pub fn extractHandlerSources(self: *QjsLintEngine, rule_idx: usize) !struct {
+    pub const ExtractedRule = struct {
         handlers: std.ArrayList(HandlerSource),
         messages: std.StringArrayHashMap([]const u8),
-    } {
+        closures: std.ArrayList(ClosureVar),
+    };
+
+    pub fn extractHandlerSources(self: *QjsLintEngine, rule_idx: usize) !ExtractedRule {
         const rule = &self.rules.items[rule_idx];
         var handlers: std.ArrayList(HandlerSource) = .empty;
         var messages = std.StringArrayHashMap([]const u8).init(self.allocator);
+        var closures: std.ArrayList(ClosureVar) = .empty;
 
         // Extract handler sources by iterating visitor object keys
         // Use JS to get Object.keys(visitors), then toString() each handler
@@ -481,7 +499,143 @@ pub const QjsLintEngine = struct {
         }
         c.JS_FreeValue(self.ctx, meta);
 
-        return .{ .handlers = handlers, .messages = messages };
+        // Extract closure variables from create() scope.
+        // Strategy: get create().toString(), find const/let/var X = new Set([...]) patterns,
+        // and also resolve options-derived booleans.
+        const closure_script =
+            \\(function(exports) {
+            \\  var result = [];
+            \\  try {
+            \\    var src = exports.create.toString();
+            \\    // Find new Set([...]) patterns anywhere in create() body
+            \\    var setRe = /(?:const|let|var)\s+(\w+)\s*=\s*new\s+Set\(\s*\[([^\]]*)\]\s*\)/g;
+            \\    var m;
+            \\    while ((m = setRe.exec(src)) !== null) {
+            \\      var vals = m[2].split(',').map(function(s){return s.trim().replace(/['"]/g,'')}).filter(Boolean);
+            \\      if (vals.length > 0) result.push({name:m[1], kind:'set', values:vals});
+            \\    }
+            \\    // Find simple boolean/string/number constants
+            \\    var constRe = /(?:const|let|var)\s+(\w+)\s*=\s*(true|false|"[^"]*"|'[^']*'|\d+(?:\.\d+)?)\s*[;\n,]/g;
+            \\    while ((m = constRe.exec(src)) !== null) {
+            \\      var val = m[2];
+            \\      if (val === 'true') result.push({name:m[1], kind:'bool', value:true});
+            \\      else if (val === 'false') result.push({name:m[1], kind:'bool', value:false});
+            \\      else if (val[0] === '"' || val[0] === "'") result.push({name:m[1], kind:'str', value:val.slice(1,-1)});
+            \\      else result.push({name:m[1], kind:'num', value:Number(val)});
+            \\    }
+            \\    // Find options destructuring: const [X] = context.options or const {X} = options
+            \\    var meta = exports.meta || {};
+            \\    var defOpts = meta.defaultOptions || [];
+            \\    if (defOpts.length > 0 && typeof defOpts[0] === 'object') {
+            \\      var opts = defOpts[0];
+            \\      for (var k in opts) {
+            \\        if (typeof opts[k] === 'boolean') result.push({name:k, kind:'bool', value:opts[k]});
+            \\        else if (typeof opts[k] === 'string') result.push({name:k, kind:'str', value:opts[k]});
+            \\        else if (typeof opts[k] === 'number') result.push({name:k, kind:'num', value:opts[k]});
+            \\      }
+            \\    }
+            \\  } catch(e) {}
+            \\  return JSON.stringify(result);
+            \\})
+        ;
+        const closure_fn = c.JS_Eval(self.ctx, closure_script.ptr, closure_script.len, "<closure>", c.JS_EVAL_TYPE_GLOBAL);
+        if (c.JS_IsException(closure_fn) == 0) {
+            var cl_args = [_]c.JSValue{rule.exports};
+            const cl_result = c.JS_Call(self.ctx, closure_fn, jsUndefined(), 1, @ptrCast(&cl_args));
+            if (c.JS_IsException(cl_result) == 0) {
+                const cl_str = c.JS_ToCString(self.ctx, cl_result);
+                if (cl_str) |cs| {
+                    const json = std.mem.span(cs);
+                    // Simple JSON array parser for closure vars
+                    self.parseClosureJson(json, &closures) catch {};
+                    c.JS_FreeCString(self.ctx, cs);
+                }
+                c.JS_FreeValue(self.ctx, cl_result);
+            } else {
+                const exc = c.JS_GetException(self.ctx);
+                c.JS_FreeValue(self.ctx, exc);
+            }
+            c.JS_FreeValue(self.ctx, closure_fn);
+        } else {
+            const exc = c.JS_GetException(self.ctx);
+            c.JS_FreeValue(self.ctx, exc);
+        }
+
+        return .{ .handlers = handlers, .messages = messages, .closures = closures };
+    }
+
+    fn parseClosureJson(self: *QjsLintEngine, json: []const u8, closures: *std.ArrayList(ClosureVar)) !void {
+        // Parse: [{"name":"X","kind":"set","values":["a","b"]}, {"name":"Y","kind":"bool","value":true}]
+        var i: usize = 0;
+        while (i < json.len) {
+            // Find "name":"..."
+            const name_pos = std.mem.indexOfPos(u8, json, i, "\"name\":\"") orelse break;
+            const name_start = name_pos + 8;
+            const name_end = std.mem.indexOfPos(u8, json, name_start, "\"") orelse break;
+            const name = json[name_start..name_end];
+
+            // Find "kind":"..."
+            const kind_pos = std.mem.indexOfPos(u8, json, name_end, "\"kind\":\"") orelse break;
+            const kind_start = kind_pos + 8;
+            const kind_end = std.mem.indexOfPos(u8, json, kind_start, "\"") orelse break;
+            const kind = json[kind_start..kind_end];
+
+            if (std.mem.eql(u8, kind, "set")) {
+                // Parse values array
+                const vals_pos = std.mem.indexOfPos(u8, json, kind_end, "\"values\":[") orelse { i = kind_end; continue; };
+                const vals_start = vals_pos + 10;
+                const vals_end_bracket = std.mem.indexOfPos(u8, json, vals_start, "]") orelse { i = kind_end; continue; };
+                const vals_str = json[vals_start..vals_end_bracket];
+                // Split by comma, strip quotes
+                var vals: std.ArrayList([]const u8) = .empty;
+                var vi: usize = 0;
+                while (vi < vals_str.len) {
+                    if (vals_str[vi] == '"') {
+                        vi += 1;
+                        const vs = vi;
+                        while (vi < vals_str.len and vals_str[vi] != '"') vi += 1;
+                        try vals.append(self.allocator, try self.allocator.dupe(u8, vals_str[vs..vi]));
+                        vi += 1;
+                    } else vi += 1;
+                }
+                try closures.append(self.allocator, .{
+                    .name = try self.allocator.dupe(u8, name),
+                    .kind = .{ .string_set = try vals.toOwnedSlice(self.allocator) },
+                });
+                i = vals_end_bracket;
+            } else if (std.mem.eql(u8, kind, "bool")) {
+                const val_pos = std.mem.indexOfPos(u8, json, kind_end, "\"value\":") orelse { i = kind_end; continue; };
+                const val_start = val_pos + 8;
+                const is_true = val_start < json.len and json[val_start] == 't';
+                try closures.append(self.allocator, .{
+                    .name = try self.allocator.dupe(u8, name),
+                    .kind = .{ .boolean = is_true },
+                });
+                i = val_start + 4;
+            } else if (std.mem.eql(u8, kind, "num")) {
+                const val_pos = std.mem.indexOfPos(u8, json, kind_end, "\"value\":") orelse { i = kind_end; continue; };
+                const val_start = val_pos + 8;
+                var val_end = val_start;
+                while (val_end < json.len and json[val_end] != ',' and json[val_end] != '}') val_end += 1;
+                const num = std.fmt.parseFloat(f64, json[val_start..val_end]) catch 0;
+                try closures.append(self.allocator, .{
+                    .name = try self.allocator.dupe(u8, name),
+                    .kind = .{ .number = num },
+                });
+                i = val_end;
+            } else if (std.mem.eql(u8, kind, "str")) {
+                const val_pos = std.mem.indexOfPos(u8, json, kind_end, "\"value\":\"") orelse { i = kind_end; continue; };
+                const val_start = val_pos + 9;
+                const val_end_q = std.mem.indexOfPos(u8, json, val_start, "\"") orelse { i = kind_end; continue; };
+                try closures.append(self.allocator, .{
+                    .name = try self.allocator.dupe(u8, name),
+                    .kind = .{ .string = try self.allocator.dupe(u8, json[val_start..val_end_q]) },
+                });
+                i = val_end_q;
+            } else {
+                i = kind_end;
+            }
+        }
     }
 
     const HandlerRef = struct {

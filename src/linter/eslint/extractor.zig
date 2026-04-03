@@ -15,11 +15,16 @@ const DataSource = compiled.DataSource;
 const CompiledRule = compiled.CompiledRule;
 const Severity = @import("../../parser/diagnostic.zig").Severity;
 
+const QjsLintEngine = @import("qjs_engine.zig").QjsLintEngine;
+const ClosureVar = QjsLintEngine.ClosureVar;
+const ClosureKind = QjsLintEngine.ClosureKind;
+
 pub fn extract(
     rule_name: []const u8,
     severity: Severity,
     handler_source: []const u8,
     messages: *const std.StringArrayHashMap([]const u8),
+    closure_vars: []const ClosureVar,
     allocator: std.mem.Allocator,
 ) ?CompiledRule {
     // Detect source form and wrap appropriately for parsing
@@ -115,15 +120,15 @@ pub fn extract(
             switch (stmt_tag) {
                 // if (cond) return; → guard predicate
                 .if_stmt => {
-                    if (extractGuard(&tree, stmt, param, &preds, allocator)) continue;
-                    if (extractIfReport(&tree, stmt, param, messages, &preds, &report, allocator)) continue;
+                    if (extractGuard(&tree, stmt, param, &preds, closure_vars, allocator)) continue;
+                    if (extractIfReport(&tree, stmt, param, messages, &preds, &report, closure_vars, allocator)) continue;
                     return null;
                 },
                 // if (cond) { ... } else { ... }
                 .if_else_stmt => {
                     // Try as guard: if (cond) return; else ...
-                    if (extractGuard(&tree, stmt, param, &preds, allocator)) continue;
-                    if (extractIfReport(&tree, stmt, param, messages, &preds, &report, allocator)) continue;
+                    if (extractGuard(&tree, stmt, param, &preds, closure_vars, allocator)) continue;
+                    if (extractIfReport(&tree, stmt, param, messages, &preds, &report, closure_vars, allocator)) continue;
                     return null;
                 },
                 // context.report({...}) or report(node) → unconditional report
@@ -303,6 +308,7 @@ fn extractGuard(
     if_idx: NodeIndex,
     param: []const u8,
     preds: *std.ArrayList(Pred),
+    closure_vars: []const ClosureVar,
     allocator: std.mem.Allocator,
 ) bool {
     const stmt_tag = tree.nodeTag(if_idx);
@@ -312,7 +318,7 @@ fn extractGuard(
     if (stmt_tag == .if_stmt) {
         const consequent: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
         if (!isReturnStmt(tree, consequent)) return false;
-        return extractCondAsPred(tree, test_idx, param, preds, true, allocator);
+        return extractCondAsPred(tree, test_idx, param, preds, true, closure_vars, allocator);
     }
 
     if (stmt_tag == .if_else_stmt) {
@@ -320,7 +326,7 @@ fn extractGuard(
         const if_data = tree.extraData(ast_mod.IfData, @intFromEnum(data.rhs));
         const consequent: NodeIndex = @enumFromInt(@intFromEnum(if_data.consequent));
         if (!isReturnStmt(tree, consequent)) return false;
-        return extractCondAsPred(tree, test_idx, param, preds, true, allocator);
+        return extractCondAsPred(tree, test_idx, param, preds, true, closure_vars, allocator);
     }
 
     return false;
@@ -353,6 +359,7 @@ fn extractCondAsPred(
     param: []const u8,
     preds: *std.ArrayList(Pred),
     negate: bool,
+    closure_vars: []const ClosureVar,
     allocator: std.mem.Allocator,
 ) bool {
     if (cond == .none) return false;
@@ -370,7 +377,7 @@ fn extractCondAsPred(
         // !expr → negate and recurse
         .logical_not => {
             const arg: NodeIndex = @enumFromInt(@intFromEnum(data.lhs));
-            return extractCondAsPred(tree, arg, param, preds, !negate, allocator);
+            return extractCondAsPred(tree, arg, param, preds, !negate, closure_vars, allocator);
         },
         // a && b
         .logical_and => {
@@ -378,8 +385,8 @@ fn extractCondAsPred(
             const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
             if (!negate) {
                 // a && b (positive) → both must hold
-                return extractCondAsPred(tree, lhs_idx, param, preds, false, allocator) and
-                    extractCondAsPred(tree, rhs_idx, param, preds, false, allocator);
+                return extractCondAsPred(tree, lhs_idx, param, preds, false, closure_vars, allocator) and
+                    extractCondAsPred(tree, rhs_idx, param, preds, false, closure_vars, allocator);
             } else {
                 // !(a && b) → !a || !b — can't express as AND chain
                 return false;
@@ -391,14 +398,14 @@ fn extractCondAsPred(
             const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
             if (negate) {
                 // !(a || b) → !a && !b
-                return extractCondAsPred(tree, lhs_idx, param, preds, true, allocator) and
-                    extractCondAsPred(tree, rhs_idx, param, preds, true, allocator);
+                return extractCondAsPred(tree, lhs_idx, param, preds, true, closure_vars, allocator) and
+                    extractCondAsPred(tree, rhs_idx, param, preds, true, closure_vars, allocator);
             } else {
                 // a || b (positive) — try as any_of disjunction
                 var branch_a: std.ArrayList(Pred) = .empty;
                 var branch_b: std.ArrayList(Pred) = .empty;
-                if (extractCondAsPred(tree, lhs_idx, param, &branch_a, false, allocator) and
-                    extractCondAsPred(tree, rhs_idx, param, &branch_b, false, allocator))
+                if (extractCondAsPred(tree, lhs_idx, param, &branch_a, false, closure_vars, allocator) and
+                    extractCondAsPred(tree, rhs_idx, param, &branch_b, false, closure_vars, allocator))
                 {
                     const branches = allocator.alloc([]const Pred, 2) catch return false;
                     branches[0] = branch_a.toOwnedSlice(allocator) catch return false;
@@ -428,8 +435,68 @@ fn extractCondAsPred(
             }
             return false;
         },
-        // Identifier as boolean: just a variable name, can't compile
-        .identifier => return false,
+        // Identifier as boolean: look up in closure variables
+        .identifier => {
+            const id_name = tree.tokenText(tree.nodeMainToken(cond));
+            for (closure_vars) |cv| {
+                if (std.mem.eql(u8, cv.name, id_name)) {
+                    switch (cv.kind) {
+                        .boolean => |val| {
+                            // Closure boolean: resolve statically
+                            // If negate: !true = skip handler, !false = include
+                            // This effectively removes the guard if the value is known
+                            if (negate) {
+                                if (val) return false; // !true = condition never passes
+                            } else {
+                                if (!val) return false; // false = condition never passes
+                            }
+                            return true; // true (or !false) = always passes, no predicate needed
+                        },
+                        else => {},
+                    }
+                }
+            }
+            return false;
+        },
+        // X.has(node.prop) — Set.has() call
+        .call_expr => {
+            const call_data = tree.nodeData(cond);
+            const callee_idx: NodeIndex = @enumFromInt(@intFromEnum(call_data.lhs));
+            if (callee_idx == .none) return false;
+            if (tree.nodeTag(callee_idx) != .member_expr) return false;
+
+            const callee_data = tree.nodeData(callee_idx);
+            const obj_idx: NodeIndex = @enumFromInt(@intFromEnum(callee_data.lhs));
+            const method_name = tree.tokenText(@intFromEnum(callee_data.rhs));
+
+            if (!std.mem.eql(u8, method_name, "has")) return false;
+            if (obj_idx == .none) return false;
+            if (tree.nodeTag(obj_idx) != .identifier) return false;
+
+            const set_name = tree.tokenText(tree.nodeMainToken(obj_idx));
+
+            // Look up the Set in closures
+            for (closure_vars) |cv| {
+                if (std.mem.eql(u8, cv.name, set_name)) {
+                    if (cv.kind == .string_set) {
+                        // Get the argument: should be node.prop
+                        const args_range = tree.extraData(ast_mod.SubRange, @intFromEnum(call_data.rhs));
+                        const args = tree.extra_data[args_range.start..args_range.end];
+                        if (args.len != 1) return false;
+                        const arg0: NodeIndex = @enumFromInt(args[0]);
+                        const nav_prop = resolveMemberChain(tree, arg0, param) orelse return false;
+
+                        const pred: Pred = if (negate)
+                            .{ .str_not_in = .{ .nav = nav_prop.nav, .prop = nav_prop.prop, .values = cv.kind.string_set } }
+                        else
+                            .{ .str_in = .{ .nav = nav_prop.nav, .prop = nav_prop.prop, .values = cv.kind.string_set } };
+                        preds.append(allocator, pred) catch return false;
+                        return true;
+                    }
+                }
+            }
+            return false;
+        },
         else => return false,
     }
 }
@@ -560,6 +627,7 @@ fn extractIfReport(
     messages: *const std.StringArrayHashMap([]const u8),
     preds: *std.ArrayList(Pred),
     report: *?Report,
+    closure_vars: []const ClosureVar,
     allocator: std.mem.Allocator,
 ) bool {
     const data = tree.nodeData(if_idx);
@@ -567,7 +635,7 @@ fn extractIfReport(
     const consequent: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
 
     // Extract condition as positive predicate
-    if (!extractCondAsPred(tree, test_idx, param, preds, false, allocator)) return false;
+    if (!extractCondAsPred(tree, test_idx, param, preds, false, closure_vars, allocator)) return false;
 
     // Consequent must contain context.report(...)
     return extractReportFromBlock(tree, consequent, param, messages, report, allocator);
@@ -590,9 +658,18 @@ fn extractReportFromBlock(
         for (stmts) |raw| {
             if (raw == 0xFFFFFFFF) continue;
             const s: NodeIndex = @enumFromInt(raw);
-            if (tree.nodeTag(s) == .expression_stmt) {
+            const stag = tree.nodeTag(s);
+            if (stag == .expression_stmt) {
                 const expr: NodeIndex = @enumFromInt(@intFromEnum(tree.nodeData(s).lhs));
                 if (expr != .none and extractReport(tree, expr, param, messages, report, allocator))
+                    return true;
+            }
+            // Nested if: if (cond) { if (inner) { report } }
+            // We can't add inner predicates here (no preds param), so just recurse into the consequent
+            if (stag == .if_stmt) {
+                const sd = tree.nodeData(s);
+                const cons: NodeIndex = @enumFromInt(@intFromEnum(sd.rhs));
+                if (extractReportFromBlock(tree, cons, param, messages, report, allocator))
                     return true;
             }
         }

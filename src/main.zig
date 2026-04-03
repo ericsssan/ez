@@ -139,6 +139,7 @@ pub fn main(init: std.process.Init) !void {
                     .name = try allocator.dupe(u8, lint_engine.rules.items[ri].name),
                     .handlers = try allocator.dupe(qjs_engine_mod.QjsLintEngine.HandlerSource, extracted.handlers.items),
                     .messages = extracted.messages,
+                    .closures = try allocator.dupe(qjs_engine_mod.QjsLintEngine.ClosureVar, extracted.closures.items),
                 });
             }
             cached_rules = cache_list.toOwnedSlice(allocator) catch null;
@@ -170,7 +171,7 @@ pub fn main(init: std.process.Init) !void {
             for (rules) |*rule| {
                 total_handlers += @intCast(rule.handlers.len);
                 for (rule.handlers) |h| {
-                    if (extractor.extract(rule.name, .@"error", h.source, &rule.messages, allocator)) |cr| {
+                    if (extractor.extract(rule.name, .@"error", h.source, &rule.messages, rule.closures, allocator)) |cr| {
                         compiled_count += 1;
                         for (0..layout_mod.tag_count) |t| {
                             const tn = std.mem.span(layout_mod.sanz_tag_name(@intCast(t)));
