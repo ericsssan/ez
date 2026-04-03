@@ -868,9 +868,10 @@ const NodeProto = {
       const flags = _methodFlags(ast, this.mainToken);
       const params = ast._nodesFromRange(md.params_start, md.params_end);
       const body = md.body === NONE ? null : nodeView(ast, md.body);
-      const startPos = ast._tokStarts[this.mainToken];
-      // Use the containing Property/MethodDefinition node's loc for the synthetic FunctionExpression
-      const loc = this.loc;
+      // Use the method node's own range/loc so ESLint's SourceCode token
+      // lookups (getFirstToken, getTokenBefore) work on this synthetic node.
+      const myRange = this.range;
+      const myLoc = this.loc;
       return {
         type: 'FunctionExpression',
         id: null,
@@ -879,9 +880,9 @@ const NodeProto = {
         params: params || [],
         body,
         mainToken: this.mainToken,
-        start: startPos,
-        loc,
-        range: loc ? [startPos, loc.end ? (body?.range?.[1] || startPos) : startPos] : undefined,
+        start: myRange[0],
+        range: myRange,
+        loc: myLoc,
         parent: this, // parent = the Property/MethodDefinition node
       };
     }
@@ -1513,8 +1514,26 @@ const NodeProto = {
     const t = this.tag;
     const ast = this._ast;
     if (t === T.object_literal || t === T.object_pattern) {
-      // lhs=range.start, rhs=range.end (stored directly)
-      return ast._nodesFromRange(ast.nodeLhs(this._i), ast.nodeRhs(this._i));
+      const nodes = ast._nodesFromRange(ast.nodeLhs(this._i), ast.nodeRhs(this._i));
+      if (t !== T.object_pattern) return nodes;
+      // ObjectPattern: wrap bare AssignmentPattern/Identifier/RestElement in
+      // synthetic Property nodes — ESTree requires Property wrappers in patterns.
+      return nodes.map(n => {
+        if (n.type === 'Property') return n;
+        if (n.type === 'RestElement' || n.type === 'SpreadElement') return n;
+        // Shorthand destructuring default: {a=1} → Property { key: a, value: AssignmentPattern }
+        if (n.type === 'AssignmentPattern') {
+          const key = n.left || n;
+          return { type: 'Property', key, value: n, kind: 'init', method: false,
+                   shorthand: true, computed: false, range: n.range, loc: n.loc, parent: this };
+        }
+        // Shorthand: {a} → Property { key: a, value: a }
+        if (n.type === 'Identifier') {
+          return { type: 'Property', key: n, value: n, kind: 'init', method: false,
+                   shorthand: true, computed: false, range: n.range, loc: n.loc, parent: this };
+        }
+        return n;
+      });
     }
     return null;
   },

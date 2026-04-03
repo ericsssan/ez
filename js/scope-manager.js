@@ -204,7 +204,7 @@ class ScopeBuilder {
           // Scope-creating tags: stop after including cur (mirrors original logic
           // where `cur === nodeIdx` fires before the break, so scope nodes ARE valid).
           const t = tags[cur];
-          if ((t >= 30 && t <= 34) || (t >= 63 && t <= 69)) break;
+          if ((t >= 30 && t <= 34) || (t >= 63 && t <= 69) || _FUNCTION_TAGS.has(t)) break;
           cur = pd[cur];
         }
       }
@@ -539,9 +539,21 @@ class ScopeBuilder {
     // Ensure the index is built (no-op if already done).
     this._ensureScopeIndex();
 
+    const isSynthetic = node._i === undefined || node._i === null;
     const symIds = this._nodeDeclIndex ? this._nodeDeclIndex.get(nodeIdx) : null;
     if (symIds && symIds.length > 0) {
-      return symIds.map(i => this._buildVariable(i));
+      const vars = symIds.map(i => this._buildVariable(i));
+      // When called on a synthetic FunctionExpression (from method/getter/setter
+      // value getter), patch def.node to match the synthetic node so that
+      // `variable.defs.find(d => d.node === node)` works in ESLint rules.
+      if (isSynthetic) {
+        for (const v of vars) {
+          for (const d of v.defs) {
+            if (d.node && d.node._i === nodeIdx) d.node = node;
+          }
+        }
+      }
+      return vars;
     }
 
     // Fallback: stub parameters
