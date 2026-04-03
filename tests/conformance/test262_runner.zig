@@ -197,7 +197,7 @@ const ErrorDetail = struct {
 };
 
 fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module: bool, run_lint: bool) struct { has_error: bool, detail: ErrorDetail } {
-    var tokens = Lexer.tokenizeWithOptions(allocator, source, .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } };
+    var tokens = (Lexer.tokenizeWithOptions(allocator, source, .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } }).tokens;
     defer tokens.deinit(allocator);
 
     var tree = Parser.parseWithLanguage(allocator, source, tokens.slice(), .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } };

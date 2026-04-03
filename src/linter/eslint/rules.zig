@@ -214,10 +214,10 @@ pub fn loadRules(
         // Parse the entire create() function source into an AST
         var create_ast_ptr: ?*const Ast = null;
         {
-            var tokens = Lexer.tokenize(allocator, desc.create_source) catch {
+            var tokens = (Lexer.tokenize(allocator, desc.create_source) catch {
                 rules[rule_idx] = makeEmptyRule(desc, allocator);
                 continue;
-            };
+            }).tokens;
             const tree = Parser.parse(allocator, desc.create_source, tokens.slice()) catch {
                 tokens.deinit(allocator);
                 rules[rule_idx] = makeEmptyRule(desc, allocator);
@@ -265,7 +265,7 @@ pub fn loadRules(
         // Parse full file source for module-level code (if available)
         var full_ast_ptr: ?*const Ast = null;
         if (desc.full_source.len > 0) blk: {
-            var ft = Lexer.tokenize(allocator, desc.full_source) catch break :blk;
+            var ft = (Lexer.tokenize(allocator, desc.full_source) catch break :blk).tokens;
             const ftree = Parser.parse(allocator, desc.full_source, ft.slice()) catch break :blk;
             const fp = allocator.create(Ast) catch break :blk;
             fp.* = ftree;

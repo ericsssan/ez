@@ -137,7 +137,7 @@ pub fn main(init: std.process.Init) !void {
 
             const source = Io.Dir.cwd().readFileAlloc(io, file_path, fa, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
 
-            var tokens_result = Lexer.tokenize(fa, source) catch continue;
+            const lex_r = Lexer.tokenize(fa, source) catch continue; var tokens_result = lex_r.tokens;
             var tree = parser.Parser.parse(fa, source, tokens_result.slice()) catch continue;
             const traversal = parent_builder.computeTraversal(&tree, fa) catch continue;
             var sem_result = semantic_mod.SemanticAnalyzer.analyze(fa, &tree) catch continue;
@@ -387,7 +387,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Dump AST mode (default) ──────────────────────────────
     if (dump_ast) {
-        var tokens = try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path));
+        var tokens = (try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path))).tokens;
         defer tokens.deinit(allocator);
 
         const is_module = isModuleFile(file_path);
@@ -433,7 +433,7 @@ fn lintSingleFile(
     // Detect language from file extension
     const lang = Language.fromExtension(file_path) orelse .js;
 
-    var tokens = try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path));
+    var tokens = (try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path))).tokens;
     defer tokens.deinit(allocator);
 
     var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, isModuleFile(file_path));

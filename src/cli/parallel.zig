@@ -144,7 +144,7 @@ pub const ParallelRunner = struct {
 
         const lang = Language.fromExtension(file_path) orelse .js;
 
-        var tokens = Lexer.tokenizeWithLanguage(arena, source, lang) catch {
+        var tokens = (Lexer.tokenizeWithLanguage(arena, source, lang) catch {
             const msg = std.fmt.allocPrint(
                 self.allocator,
                 "{s}: error: tokenization failed\n",
@@ -158,7 +158,7 @@ pub const ParallelRunner = struct {
                 .had_error = true,
             });
             return;
-        };
+        }).tokens;
 
         const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
         var tree = parser_mod.Parser.parseWithLanguage(arena, source, tokens.slice(), lang, is_module) catch {

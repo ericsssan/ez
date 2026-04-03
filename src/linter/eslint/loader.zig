@@ -55,7 +55,7 @@ fn loadOneRule(
     allocator: std.mem.Allocator,
 ) ?RuleDescriptor {
     // Parse full file
-    var tokens = Lexer.tokenize(allocator, full_source) catch return null;
+    var tokens = (Lexer.tokenize(allocator, full_source) catch return null).tokens;
     var tree = Parser.parse(allocator, full_source, tokens.slice()) catch return null;
 
     // Find module.exports = { meta: {...}, create(context) {...} }

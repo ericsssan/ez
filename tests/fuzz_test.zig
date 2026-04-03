@@ -26,7 +26,7 @@ test "fuzz lexer" {
 
 fn fuzzLexer(_: void, input: []const u8) !void {
     const allocator = std.testing.allocator;
-    var tokens = Lexer.tokenize(allocator, input) catch return;
+    var tokens = (Lexer.tokenize(allocator, input) catch return).tokens;
     tokens.deinit(allocator);
 }
 
@@ -47,7 +47,7 @@ test "fuzz parser" {
 fn fuzzParser(_: void, input: []const u8) !void {
     const allocator = std.testing.allocator;
 
-    var tokens = Lexer.tokenize(allocator, input) catch return;
+    var tokens = (Lexer.tokenize(allocator, input) catch return).tokens;
     defer tokens.deinit(allocator);
 
     var tree = Parser.parse(allocator, input, tokens.slice()) catch return;
@@ -68,7 +68,7 @@ test "fuzz full pipeline" {
 fn fuzzFullPipeline(_: void, input: []const u8) !void {
     const allocator = std.testing.allocator;
 
-    var tokens = Lexer.tokenize(allocator, input) catch return;
+    var tokens = (Lexer.tokenize(allocator, input) catch return).tokens;
     defer tokens.deinit(allocator);
 
     var tree = Parser.parse(allocator, input, tokens.slice()) catch return;
@@ -96,7 +96,7 @@ test "fuzz TypeScript parser" {
 fn fuzzTsParser(_: void, input: []const u8) !void {
     const allocator = std.testing.allocator;
 
-    var tokens = Lexer.tokenizeWithLanguage(allocator, input, .ts) catch return;
+    var tokens = (Lexer.tokenizeWithLanguage(allocator, input, .ts) catch return).tokens;
     defer tokens.deinit(allocator);
 
     var tree = Parser.parseWithLanguage(allocator, input, tokens.slice(), .ts) catch return;

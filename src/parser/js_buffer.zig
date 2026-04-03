@@ -48,10 +48,17 @@ pub const BufferHeader = extern struct {
     dfs_events_offset: u32 = 0,
     // Source type: 1 = module, 0 = script.
     source_type: u32 = 1,
+    // Added in v6: comment positions from lexer.
+    // comment_count = number of comments; starts/ends are u32[] of that length;
+    // kinds is u8[] (0 = line //, 1 = block /* */).
+    comment_count: u32 = 0,
+    comment_starts_offset: u32 = 0,
+    comment_ends_offset: u32 = 0,
+    comment_kinds_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 88);
+    std.debug.assert(@sizeOf(BufferHeader) == 104);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -277,6 +284,10 @@ pub const HeaderInfo = struct {
     post_order_offset: u32 = 0,
     dfs_events_offset: u32 = 0,
     source_type: u32 = 1, // 1 = module, 0 = script
+    comment_count: u32 = 0,
+    comment_starts_offset: u32 = 0,
+    comment_ends_offset: u32 = 0,
+    comment_kinds_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -309,6 +320,10 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .post_order_offset = info.post_order_offset,
         .dfs_events_offset = info.dfs_events_offset,
         .source_type = info.source_type,
+        .comment_count = info.comment_count,
+        .comment_starts_offset = info.comment_starts_offset,
+        .comment_ends_offset = info.comment_ends_offset,
+        .comment_kinds_offset = info.comment_kinds_offset,
     };
 }
 
@@ -400,8 +415,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 88 bytes" {
-    try std.testing.expectEqual(@as(usize, 88), @sizeOf(BufferHeader));
+test "BufferHeader is 104 bytes" {
+    try std.testing.expectEqual(@as(usize, 104), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

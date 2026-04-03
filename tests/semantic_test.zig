@@ -10,8 +10,7 @@ const symbol_mod = @import("../src/parser/symbol.zig");
 fn analyzeSource(source: []const u8) !semantic.SemanticResult {
     const allocator = testing.allocator;
 
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
 
     var tree = try parser.Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);

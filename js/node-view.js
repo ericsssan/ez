@@ -31,6 +31,11 @@ const H = {
   // v5: interleaved DFS events (byte 80), source type (byte 84)
   DFS_EVENTS_OFFSET: 80,
   SOURCE_TYPE: 84,
+  // v6: comment positions (byte 88, 92, 96, 100)
+  COMMENT_COUNT: 88,
+  COMMENT_STARTS_OFFSET: 92,
+  COMMENT_ENDS_OFFSET: 96,
+  COMMENT_KINDS_OFFSET: 100,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -171,6 +176,21 @@ class AstView {
     // Source type (v5 — 1 = module, 0 = script)
     this._sourceType = dv.getUint32(H.SOURCE_TYPE, true);
 
+    // Comment positions (v6 — recorded by Zig lexer)
+    this._commentCount = dv.getUint32(H.COMMENT_COUNT, true);
+    if (this._commentCount > 0) {
+      const csOff = dv.getUint32(H.COMMENT_STARTS_OFFSET, true);
+      const ceOff = dv.getUint32(H.COMMENT_ENDS_OFFSET, true);
+      const ckOff = dv.getUint32(H.COMMENT_KINDS_OFFSET, true);
+      this._commentStarts = new Uint32Array(buffer, csOff, this._commentCount);
+      this._commentEnds = new Uint32Array(buffer, ceOff, this._commentCount);
+      this._commentKinds = new Uint8Array(buffer, ckOff, this._commentCount);
+    } else {
+      this._commentStarts = null;
+      this._commentEnds = null;
+      this._commentKinds = null;
+    }
+
     // Semantic data (v3 — scope/symbol/reference tables)
     const semOff = dv.getUint32(H.SEMANTIC_DATA_OFFSET, true);
     if (semOff > 0) {
@@ -249,6 +269,36 @@ class AstView {
   /** Get a range of extra_data as a Uint32Array view. */
   extraSlice(start, end) {
     return this._extraData.subarray(start, end);
+  }
+
+  /**
+   * Find all comments whose ranges overlap [start, end).
+   * Uses binary search on the sorted _commentStarts array. O(log n + k).
+   */
+  commentsInRange(start, end) {
+    if (!this._commentStarts || this._commentCount === 0) return _emptyArray;
+    const cs = this._commentStarts;
+    const ce = this._commentEnds;
+    const ck = this._commentKinds;
+    const src = this.source;
+    // Binary search: first comment that ends after start
+    let lo = 0, hi = this._commentCount;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (ce[m] <= start) lo = m + 1; else hi = m; }
+    const results = [];
+    for (let i = lo; i < this._commentCount && cs[i] < end; i++) {
+      const cStart = cs[i];
+      const cEnd = ce[i];
+      const kind = ck[i] === 0 ? 'Line' : 'Block';
+      // Strip the // or /* */ delimiters for the value
+      const valStart = kind === 'Line' ? cStart + 2 : cStart + 2;
+      const valEnd = kind === 'Block' ? cEnd - 2 : cEnd;
+      results.push({
+        type: kind, value: src.slice(valStart, valEnd),
+        start: cStart, end: cEnd,
+        range: [cStart, cEnd],
+      });
+    }
+    return results;
   }
 
   /** Token start offset (UTF-16) for a given token index. */
@@ -1959,7 +2009,12 @@ const NodeProto = {
 
   /** node.comments — empty array (sanz doesn't track comments yet). Writable so rules can set it. */
   get comments() {
-    return this._comments || _emptyArray;
+    if (this._comments) return this._comments;
+    // For Program nodes, return all comments in the file from Zig-recorded data.
+    if (this._ast._nodeTags[this._i] === T.root && this._ast._commentCount > 0) {
+      return this._ast.commentsInRange(0, this._ast.sourceUtf16Len);
+    }
+    return _emptyArray;
   },
   set comments(v) {
     this._comments = v;

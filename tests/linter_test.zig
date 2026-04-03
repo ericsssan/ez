@@ -12,8 +12,9 @@ const RuleTester = @import("rule_tester.zig").RuleTester;
 
 fn lintSource(source: []const u8) ![]const LintDiagnostic {
     const allocator = testing.allocator;
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var lex_result = try Lexer.tokenize(allocator, source);
+    defer lex_result.deinit(allocator);
+    var tokens = lex_result.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);

@@ -80,7 +80,7 @@ pub fn main(init: std.process.Init) !void {
         const file_alloc = arena.allocator();
 
         const parse_result = blk: {
-            var tokens = Lexer.tokenizeWithAllOptions(file_alloc, source, .js, .{ .is_module = is_module, .annex_b = opts.annex_b }) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" };
+            var tokens = (Lexer.tokenizeWithAllOptions(file_alloc, source, .js, .{ .is_module = is_module, .annex_b = opts.annex_b }) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" }).tokens;
             defer tokens.deinit(file_alloc);
             var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
             defer tree.deinit(file_alloc);

@@ -13,8 +13,7 @@ const linter = sanz.linter;
 fn parseAndLint(source: []const u8) !struct { nodes: usize, errors: usize, lint_diags: usize } {
     const allocator = testing.allocator;
 
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
 
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
@@ -119,8 +118,7 @@ test "recovery: lint fires on valid nodes despite errors" {
     const allocator = testing.allocator;
     const source = "debugger;\nlet x = ;\neval('code');";
 
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
 
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
@@ -168,8 +166,7 @@ test "recovery: single token" {
 
 fn mustParse(source: []const u8) !void {
     const allocator = testing.allocator;
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     if (tree.errors.len > 0) {
@@ -183,8 +180,7 @@ fn mustParse(source: []const u8) !void {
 
 fn mustError(source: []const u8) !void {
     const allocator = testing.allocator;
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     if (tree.errors.len == 0) {
@@ -333,8 +329,7 @@ test "conformance: yield in strict function does not OOM" {
     // Should parse without crashing (may have errors in output)
     const allocator = testing.allocator;
     const source = "function a() { \"use strict\"; yield = 1; }";
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     try testing.expect(tree.nodes.len > 0);
@@ -556,8 +551,7 @@ test "conformance: cascading errors do not OOM" {
         @memcpy(buf[len..][0..stmt.len], stmt);
         len += stmt.len;
     }
-    var tokens = try Lexer.tokenize(allocator, buf[0..len]);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, buf[0..len]); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, buf[0..len], tokens.slice());
     defer tree.deinit(allocator);
     try testing.expect(tree.nodes.len > 0);
@@ -566,8 +560,7 @@ test "conformance: cascading errors do not OOM" {
 test "conformance: with in strict mode does not OOM" {
     const allocator = testing.allocator;
     const source = "(function () { 'use strict'; with (a); }())";
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     try testing.expect(tree.nodes.len > 0);

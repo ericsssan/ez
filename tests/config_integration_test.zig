@@ -16,8 +16,7 @@ const InlineDisables = sanz.inline_disable.InlineDisables;
 
 fn lintWithConfig(source: []const u8, config: ?*const Config) ![]const LintDiagnostic {
     const allocator = testing.allocator;
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
@@ -27,8 +26,7 @@ fn lintWithConfig(source: []const u8, config: ?*const Config) ![]const LintDiagn
 
 fn lintWithInlineDisables(source: []const u8) ![]const LintDiagnostic {
     const allocator = testing.allocator;
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var _lr = try Lexer.tokenize(allocator, source); defer _lr.deinit(allocator); var tokens = _lr.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);

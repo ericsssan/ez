@@ -84,8 +84,9 @@ pub const RuleTester = struct {
 fn lintWithLang(source: []const u8, lang: Language) ![]const LintDiagnostic {
     const allocator = testing.allocator;
 
-    var tokens = try Lexer.tokenizeWithLanguage(allocator, source, lang);
-    defer tokens.deinit(allocator);
+    var lex_result = try Lexer.tokenizeWithLanguage(allocator, source, lang);
+    defer lex_result.deinit(allocator);
+    var tokens = lex_result.tokens;
 
     var tree = try Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, false);
     defer tree.deinit(allocator);

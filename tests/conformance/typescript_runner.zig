@@ -126,10 +126,10 @@ pub fn main(init: std.process.Init) !void {
         } else source;
 
         const parse_ok = parse_blk: {
-            var toks = Lexer.tokenizeWithOptions(file_alloc, parse_source, lang, is_module) catch {
+            var toks = (Lexer.tokenizeWithOptions(file_alloc, parse_source, lang, is_module) catch {
                 first_error = "tokenize failed";
                 break :parse_blk false;
-            };
+            }).tokens;
             defer toks.deinit(file_alloc);
             var tree = Parser.parseWithLanguage(file_alloc, parse_source, toks.slice(), lang, is_module) catch {
                 first_error = "parse OOM";

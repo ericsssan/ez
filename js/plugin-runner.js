@@ -1084,17 +1084,24 @@ class SourceCode {
   }
 
   /**
-   * Stub for getCommentsInside — returns empty array.
-   * Rules that rely on this for correctness (e.g. no-empty) will treat blocks
-   * as having no comments. Sufficient to prevent crashes.
+   * getCommentsInside — comments within the node's range.
+   * Uses Zig-recorded comment positions with O(log n) binary search.
    */
-  getCommentsInside() {
-    return [];
+  getCommentsInside(node) {
+    if (!node || !node.range) return [];
+    return this._ast.commentsInRange(node.range[0], node.range[1]);
   }
 
-  /** Stub for getCommentsBefore — returns empty array. */
-  getCommentsBefore() {
-    return [];
+  /** getCommentsBefore — comments in the gap before a node. */
+  getCommentsBefore(node) {
+    if (!node || !node.range) return [];
+    const start = node.range[0];
+    const ast = this._ast;
+    const starts = ast._tokStarts;
+    let lo = 0, hi = ast.tokenCount - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] < start) lo = m; else hi = m - 1; }
+    const prevEnd = lo > 0 ? starts[lo] : 0;
+    return ast.commentsInRange(prevEnd, start);
   }
 
   /** Stub for getCommentsAfter — returns empty array. */
@@ -1103,10 +1110,13 @@ class SourceCode {
   }
 
   /**
-   * Stub for commentsExistBetween — returns false.
+   * commentsExistBetween — true if any comment exists between two nodes/tokens.
    */
-  commentsExistBetween() {
-    return false;
+  commentsExistBetween(a, b) {
+    if (!a || !b) return false;
+    const start = a.range ? a.range[1] : (a.end || 0);
+    const end = b.range ? b.range[0] : (b.start || 0);
+    return this._ast.commentsInRange(start, end).length > 0;
   }
 
   /**

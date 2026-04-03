@@ -76,6 +76,11 @@ pub const Lexer = struct {
     /// 0 = not in case, 1 = saw `case` keyword, 2 = saw `case X:` colon
     case_colon_state: u2 = 0,
     language: Language,
+    /// Comment positions recorded during lexing.
+    /// Parallel arrays: starts[i], ends[i], kinds[i] (0=line, 1=block).
+    comment_starts: std.ArrayList(u32),
+    comment_ends: std.ArrayList(u32),
+    comment_kinds: std.ArrayList(u8),
 
     /// Initialize a new lexer. Call `next()` repeatedly or use `tokenize()`.
     pub fn init(allocator: std.mem.Allocator, source: []const u8) Lexer {
@@ -92,17 +97,20 @@ pub const Lexer = struct {
             .prev_token_tag = .eof,
             .template_depth = 0,
             .language = language,
+            .comment_starts = .empty,
+            .comment_ends = .empty,
+            .comment_kinds = .empty,
         };
     }
 
-    /// Tokenize the entire source, returning a MultiArrayList of tokens.
+    /// Tokenize the entire source, returning tokens + comment positions.
     /// The final token is always `.eof`.
-    pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenList {
+    pub fn tokenize(allocator: std.mem.Allocator, source: []const u8) !TokenizeResult {
         return tokenizeWithOptions(allocator, source, .js, false);
     }
 
     /// Tokenize with a specific language mode.
-    pub fn tokenizeWithLanguage(allocator: std.mem.Allocator, source: []const u8, language: Language) !TokenList {
+    pub fn tokenizeWithLanguage(allocator: std.mem.Allocator, source: []const u8, language: Language) !TokenizeResult {
         return tokenizeWithOptions(allocator, source, language, false);
     }
 
@@ -112,12 +120,27 @@ pub const Lexer = struct {
     };
 
     /// Tokenize with language and module mode.
-    pub fn tokenizeWithOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, is_module: bool) !TokenList {
+    pub fn tokenizeWithOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, is_module: bool) !TokenizeResult {
         return tokenizeWithAllOptions(allocator, source, language, .{ .is_module = is_module });
     }
 
+    pub const TokenizeResult = struct {
+        tokens: TokenList,
+        comment_starts: []const u32,
+        comment_ends: []const u32,
+        comment_kinds: []const u8,
+        comment_count: u32,
+
+        pub fn deinit(self: *TokenizeResult, allocator: std.mem.Allocator) void {
+            self.tokens.deinit(allocator);
+            if (self.comment_starts.len > 0) allocator.free(self.comment_starts);
+            if (self.comment_ends.len > 0) allocator.free(self.comment_ends);
+            if (self.comment_kinds.len > 0) allocator.free(self.comment_kinds);
+        }
+    };
+
     /// Tokenize with full options control.
-    pub fn tokenizeWithAllOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, opts: TokenizeOptions) !TokenList {
+    pub fn tokenizeWithAllOptions(allocator: std.mem.Allocator, source: []const u8, language: Language, opts: TokenizeOptions) !TokenizeResult {
         var self = initWithLanguage(allocator, source, language);
         self.is_module = opts.is_module;
         self.annex_b = opts.annex_b;
@@ -141,7 +164,19 @@ pub const Lexer = struct {
             if (tok.tag == .eof) break;
         }
 
-        return self.tokens;
+        const cc: u32 = @intCast(self.comment_starts.items.len);
+        // Transfer ownership of comment arrays to caller.
+        // toOwnedSlice shrinks the allocation and releases the ArrayList.
+        const cs = self.comment_starts.toOwnedSlice(allocator) catch &.{};
+        const ce = self.comment_ends.toOwnedSlice(allocator) catch &.{};
+        const ck = self.comment_kinds.toOwnedSlice(allocator) catch &.{};
+        return .{
+            .tokens = self.tokens,
+            .comment_starts = cs,
+            .comment_ends = ce,
+            .comment_kinds = ck,
+            .comment_count = cc,
+        };
     }
 
     /// Return the next token and advance the lexer position.
@@ -159,12 +194,21 @@ pub const Lexer = struct {
             // Check for comments: // and /* ... */
             if (self.peek(0) == '/') {
                 if (self.peek(1) == '/') {
+                    const cstart = self.index;
                     self.skipLineComment();
                     self.saw_newline = true; // line comment ends at newline
+                    // Record line comment position (exclude trailing newline from end)
+                    self.comment_starts.append(self.allocator, cstart) catch {};
+                    self.comment_ends.append(self.allocator, self.index) catch {};
+                    self.comment_kinds.append(self.allocator, 0) catch {};
                     continue;
                 }
                 if (self.peek(1) == '*') {
+                    const cstart = self.index;
                     self.skipBlockComment();
+                    self.comment_starts.append(self.allocator, cstart) catch {};
+                    self.comment_ends.append(self.allocator, self.index) catch {};
+                    self.comment_kinds.append(self.allocator, 1) catch {};
                     continue;
                 }
             }
@@ -2944,8 +2988,7 @@ fn decodeUtf8(bytes: []const u8, len: u32) u32 {
 
 test "empty source" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, ""); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(@as(usize, 1), tags.len);
@@ -2954,8 +2997,7 @@ test "empty source" {
 
 test "simple identifiers and keywords" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "const x = 42;");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "const x = 42;"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.kw_const, tags[0]);
@@ -2968,8 +3010,7 @@ test "simple identifiers and keywords" {
 
 test "number literals" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "42 3.14 0xFF 0o77 0b1010 1_000_000 42n 0xFF_FFn");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "42 3.14 0xFF 0o77 0b1010 1_000_000 42n 0xFF_FFn"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.number_literal, tags[0]); // 42
@@ -2985,8 +3026,7 @@ test "number literals" {
 
 test "string literals" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "'hello' \"world\" 'es\\'cape'");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "'hello' \"world\" 'es\\'cape'"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.string_literal, tags[0]);
@@ -2997,8 +3037,7 @@ test "string literals" {
 
 test "template literals" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "`hello`");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "`hello`"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.template_no_sub, tags[0]);
@@ -3007,8 +3046,7 @@ test "template literals" {
 
 test "template with interpolation" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "`hello ${name} world`");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "`hello ${name} world`"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.template_head, tags[0]); // `hello ${
@@ -3019,8 +3057,7 @@ test "template with interpolation" {
 
 test "template with multiple interpolations" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "`${a}${b}`");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "`${a}${b}`"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.template_head, tags[0]); // `${
@@ -3034,8 +3071,7 @@ test "template with multiple interpolations" {
 test "regex literal" {
     const alloc = std.testing.allocator;
     // After = (assignment), / starts a regex
-    var tokens = try Lexer.tokenize(alloc, "x = /foo/gi;");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "x = /foo/gi;"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]);
@@ -3047,8 +3083,7 @@ test "regex literal" {
 test "division not regex" {
     const alloc = std.testing.allocator;
     // After an identifier, / is division
-    var tokens = try Lexer.tokenize(alloc, "a / b");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "a / b"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]);
@@ -3058,8 +3093,7 @@ test "division not regex" {
 
 test "multi-char operators" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "=== !== >>> >>= ??= ?. => ... ** &&= ||=");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "=== !== >>> >>= ??= ?. => ... ** &&= ||="); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.equal_equal_equal, tags[0]);
@@ -3078,8 +3112,7 @@ test "multi-char operators" {
 
 test "comments are skipped" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "a // comment\nb /* block */ c");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "a // comment\nb /* block */ c"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]); // a
@@ -3090,8 +3123,7 @@ test "comments are skipped" {
 
 test "hashbang" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "#!/usr/bin/env node\nconst x = 1;");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "#!/usr/bin/env node\nconst x = 1;"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.hashbang, tags[0]);
@@ -3105,8 +3137,7 @@ test "hashbang" {
 
 test "dot vs ellipsis vs decimal" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "a.b ... .5");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "a.b ... .5"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]); // a
@@ -3119,8 +3150,7 @@ test "dot vs ellipsis vs decimal" {
 
 test "all keywords tokenized" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "break case catch continue debugger default delete do else export extends finally for function if import in instanceof new return super switch this throw try typeof var void while with yield let const class of async await static get set from as enum null true false");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "break case catch continue debugger default delete do else export extends finally for function if import in instanceof new return super switch this throw try typeof var void while with yield let const class of async await static get set from as enum null true false"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.kw_break, tags[0]);
@@ -3174,8 +3204,7 @@ test "all keywords tokenized" {
 
 test "regex with character class containing slash" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "x = /[a/b]/;");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "x = /[a/b]/;"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]);
@@ -3186,8 +3215,7 @@ test "regex with character class containing slash" {
 
 test "number with exponent" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "1e10 2.5E-3 1e+5");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "1e10 2.5E-3 1e+5"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.number_literal, tags[0]);
@@ -3199,8 +3227,7 @@ test "number with exponent" {
 test "question dot does not match ?.digit" {
     const alloc = std.testing.allocator;
     // x?.1 should be x ? .1 (ternary followed by decimal number)
-    var tokens = try Lexer.tokenize(alloc, "x?.1");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "x?.1"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]); // x
@@ -3211,8 +3238,7 @@ test "question dot does not match ?.digit" {
 
 test "regex after return keyword" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "return /regex/g");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "return /regex/g"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.kw_return, tags[0]);
@@ -3222,8 +3248,7 @@ test "regex after return keyword" {
 
 test "division after closing paren" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "(a) / b");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "(a) / b"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.l_paren, tags[0]);
@@ -3236,8 +3261,7 @@ test "division after closing paren" {
 
 test "slash_equal operator" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "x /= 2");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "x /= 2"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]);
@@ -3248,8 +3272,7 @@ test "slash_equal operator" {
 
 test "token start positions are correct" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "const x = 42;");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "const x = 42;"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const starts = tokens.items(.start);
     try std.testing.expectEqual(@as(u32, 0), starts[0]); // const
@@ -3261,8 +3284,7 @@ test "token start positions are correct" {
 
 test ">>>= operator" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "a >>>= b");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "a >>>= b"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.identifier, tags[0]);
@@ -3273,8 +3295,7 @@ test ">>>= operator" {
 
 test "nested template literals" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "`a ${`b ${c} d`} e`");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "`a ${`b ${c} d`} e`"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.template_head, tags[0]); // `a ${
@@ -3287,8 +3308,7 @@ test "nested template literals" {
 
 test "regex after opening paren" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "(/regex/)");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "(/regex/)"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.l_paren, tags[0]);
@@ -3299,8 +3319,7 @@ test "regex after opening paren" {
 
 test "binary literal with separators" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "0b1010_0101");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "0b1010_0101"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.number_literal, tags[0]);
@@ -3309,8 +3328,7 @@ test "binary literal with separators" {
 
 test "private field hash" {
     const alloc = std.testing.allocator;
-    var tokens = try Lexer.tokenize(alloc, "#field");
-    defer tokens.deinit(alloc);
+    var _tr = try Lexer.tokenize(alloc, "#field"); defer _tr.deinit(alloc); var tokens = _tr.tokens;
 
     const tags = tokens.items(.tag);
     try std.testing.expectEqual(TokenTag.hash, tags[0]);

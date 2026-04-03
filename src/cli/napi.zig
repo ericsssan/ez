@@ -57,7 +57,8 @@ fn parseImpl(
     const alloc = backing.allocator();
 
     // Tokenize — token arrays land in the bump region.
-    var tokens = try Lexer.tokenizeWithLanguage(alloc, source, language);
+    const lex_result = try Lexer.tokenizeWithLanguage(alloc, source, language);
+    var tokens = lex_result.tokens;
 
     // Parse — node/extra_data arrays land in the bump region.
     var tree = try parser_mod.Parser.parseWithLanguage(alloc, source, tokens.slice(), language, false);
@@ -81,6 +82,27 @@ fn parseImpl(
         } else |_| {}
     } else |_| {}
 
+    // Write comment positions into bump region (before UTF-16 conversion).
+    // Comment positions are byte offsets that need the same UTF-16 conversion.
+    const comment_count = lex_result.comment_count;
+    var comment_starts_offset: u32 = 0;
+    var comment_ends_offset: u32 = 0;
+    var comment_kinds_offset: u32 = 0;
+    if (comment_count > 0) {
+        const cs = try alloc.alloc(u32, comment_count);
+        const ce = try alloc.alloc(u32, comment_count);
+        const ck = try alloc.alloc(u8, comment_count);
+        @memcpy(cs, lex_result.comment_starts);
+        @memcpy(ce, lex_result.comment_ends);
+        @memcpy(ck, lex_result.comment_kinds);
+        // Convert comment byte offsets to UTF-16
+        _ = js_buffer.convertSpansToUtf16(source, cs);
+        _ = js_buffer.convertSpansToUtf16(source, ce);
+        comment_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, cs.ptr);
+        comment_ends_offset = js_buffer.ptrOffsetPub(buf_ptr, ce.ptr);
+        comment_kinds_offset = js_buffer.ptrOffsetPub(buf_ptr, ck.ptr);
+    }
+
     // Convert token start offsets from UTF-8 bytes to UTF-16 code units.
     // Must happen AFTER semantic analysis which uses byte offsets for tokenText().
     const tok_starts = tokens.slice().items(.start);
@@ -99,6 +121,10 @@ fn parseImpl(
         .post_order_offset = post_order_offset,
         .dfs_events_offset = dfs_events_offset,
         .source_type = 1, // always module in NAPI path
+        .comment_count = comment_count,
+        .comment_starts_offset = comment_starts_offset,
+        .comment_ends_offset = comment_ends_offset,
+        .comment_kinds_offset = comment_kinds_offset,
     });
 
     return backing.bytesUsed();
