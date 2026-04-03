@@ -10,6 +10,7 @@
  */
 
 const { nodeView, NONE } = require("./node-view");
+const { T } = require("./tags");
 
 const NONE32 = 0xFFFFFFFF;
 const KIND_NAMES = ['global', 'module', 'function', 'block', 'class', 'catch', 'switch', 'static_block', 'with'];
@@ -36,6 +37,82 @@ const _BUILTIN_GLOBALS = [
   'FormData', 'Headers', 'Request', 'Response', 'fetch',
   'crypto', 'performance', 'navigator',
 ];
+
+// Tags that sit between an Identifier and its VariableDeclarator in destructuring patterns.
+const _DESTRUCTURE_PASSTHROUGH = new Set([
+  T.property, T.shorthand_property, T.computed_property,
+  T.object_pattern, T.array_pattern,
+  T.assignment_pattern, T.rest_element, T.spread_element,
+]);
+
+// Function declaration / expression tags.
+const _FUNCTION_TAGS = new Set([
+  T.fn_decl, T.async_fn_decl, T.generator_fn_decl, T.async_generator_fn_decl,
+  T.fn_expr, T.async_fn_expr, T.generator_fn_expr, T.async_generator_fn_expr,
+  T.arrow_fn, T.async_arrow_fn,
+]);
+
+// Class declaration / expression tags.
+const _CLASS_TAGS = new Set([T.class_decl, T.class_expr]);
+
+/**
+ * Walk up the parent chain from `declNode` (the Identifier) to find the
+ * ESLint-compatible `def.node` for a given definition type.
+ *
+ *  - Variable      → VariableDeclarator (walk past destructuring wrappers)
+ *  - FunctionName  → FunctionDeclaration / FunctionExpression
+ *  - ClassName     → ClassDeclaration / ClassExpression
+ *  - ImportBinding → ImportDeclaration
+ *  - Parameter     → enclosing function node
+ *  - CatchClause   → CatchClause
+ *
+ * Returns `declNode` unchanged if no matching ancestor is found (safe fallback).
+ */
+function _findDefNode(declNode, defType) {
+  let cur = declNode.parent;
+  switch (defType) {
+    case 'Variable':
+      while (cur) {
+        if (cur.tag === T.declarator) return cur;
+        if (!_DESTRUCTURE_PASSTHROUGH.has(cur.tag)) break;
+        cur = cur.parent;
+      }
+      break;
+    case 'FunctionName':
+      while (cur) {
+        if (_FUNCTION_TAGS.has(cur.tag)) return cur;
+        cur = cur.parent;
+      }
+      break;
+    case 'ClassName':
+      while (cur) {
+        if (_CLASS_TAGS.has(cur.tag)) return cur;
+        cur = cur.parent;
+      }
+      break;
+    case 'ImportBinding':
+      while (cur) {
+        if (cur.tag === T.import_decl) return cur;
+        cur = cur.parent;
+      }
+      break;
+    case 'Parameter':
+      while (cur) {
+        if (_FUNCTION_TAGS.has(cur.tag)) return cur;
+        // Also walk past formal_parameters, patterns, etc.
+        cur = cur.parent;
+      }
+      break;
+    case 'CatchClause':
+      while (cur) {
+        if (cur.tag === T.catch_clause) return cur;
+        cur = cur.parent;
+      }
+      break;
+  }
+  // Fallback: return declNode itself (better than null).
+  return declNode;
+}
 
 class ScopeBuilder {
   constructor(ast) {
@@ -282,10 +359,7 @@ class ScopeBuilder {
     else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
     else if (is_import) defType = 'ImportBinding';
 
-    let defNode = declNode;
-    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
-      defNode = declNode && declNode.parent ? declNode.parent : declNode;
-    }
+    const defNode = declNode ? _findDefNode(declNode, defType) : null;
     const defs = declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
 
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
@@ -380,10 +454,7 @@ class ScopeBuilder {
     const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
-    let defNode = declNode;
-    if (defType === 'Variable' || defType === 'ClassName' || defType === 'FunctionName' || defType === 'ImportBinding') {
-      defNode = declNode && declNode.parent ? declNode.parent : declNode;
-    }
+    const defNode = declNode ? _findDefNode(declNode, defType) : null;
     const v = {
       name,
       defs: declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],

@@ -801,7 +801,9 @@ const NodeProto = {
       }
       return _resolveUnicodeEscapes(ast._identAt(tok));
     }
-    return null;
+    // Return undefined (not null) for non-Identifier nodes — ESLint rules
+    // check `node.name.length` which crashes on null but not on undefined.
+    return undefined;
   },
 
   /**
@@ -882,6 +884,11 @@ const NodeProto = {
         range: loc ? [startPos, loc.end ? (body?.range?.[1] || startPos) : startPos] : undefined,
         parent: this, // parent = the Property/MethodDefinition node
       };
+    }
+    if (t === T.template_element) {
+      // ESTree: value = { raw: string, cooked: string }
+      const raw = ast.source.slice(this.range[0], this.range[1]).replace(/^`|`$/g, '').replace(/^\}|\$\{$/g, '');
+      return { raw, cooked: raw };
     }
     return null;
   },
@@ -1198,6 +1205,9 @@ const NodeProto = {
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
+    // MetaProperty: new.target → property = Identifier("target")
+    if (t === T.new_target) return { type: 'Identifier', name: 'target' };
+    if (t === T.import_meta) return { type: 'Identifier', name: 'meta' };
     return null;
   },
 
@@ -1236,6 +1246,21 @@ const NodeProto = {
    */
   get delegate() {
     return this.tag === T.yield_delegate;
+  },
+
+  /**
+   * node.tail — true if this TemplateElement is the last in its TemplateLiteral.
+   */
+  get tail() {
+    if (this.tag !== T.template_element) return undefined;
+    // Check if next sibling in parent's child list is also a TemplateElement or we're at the end.
+    const ast = this._ast;
+    const parent = this.parent;
+    if (!parent || parent.tag !== T.template_literal) return true;
+    const rhs = ast.nodeRhs(parent._i);
+    const extra = ast._extraData;
+    // Last child in the range is the tail quasi.
+    return extra[rhs - 1] === this._i;
   },
 
   /**
@@ -1430,11 +1455,55 @@ const NodeProto = {
   },
 
   /**
-   * node.expressions — children of SequenceExpression (comma operator).
+   * node.expressions — SequenceExpression children or TemplateLiteral interpolations.
    */
   get expressions() {
-    if (this.tag !== T.sequence_expr) return undefined;
-    return this._ast._nodesFromRange(this._ast.nodeLhs(this._i), this._ast.nodeRhs(this._i));
+    const t = this.tag;
+    if (t === T.sequence_expr) {
+      return this._ast._nodesFromRange(this._ast.nodeLhs(this._i), this._ast.nodeRhs(this._i));
+    }
+    if (t === T.template_literal) {
+      // Children are interleaved: quasi, expr, quasi, expr, quasi
+      const ast = this._ast;
+      const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
+      const result = [];
+      const extra = ast._extraData;
+      for (let i = lhs; i < rhs; i++) {
+        const idx = extra[i];
+        if (idx !== NONE && ast._nodeTags[idx] !== T.template_element) {
+          result.push(nodeView(ast, idx));
+        }
+      }
+      return result;
+    }
+    return undefined;
+  },
+
+  /**
+   * node.quasis — TemplateElement nodes in a TemplateLiteral.
+   */
+  get quasis() {
+    if (this.tag !== T.template_literal) return undefined;
+    const ast = this._ast;
+    const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
+    const result = [];
+    const extra = ast._extraData;
+    for (let i = lhs; i < rhs; i++) {
+      const idx = extra[i];
+      if (idx !== NONE && ast._nodeTags[idx] === T.template_element) {
+        result.push(nodeView(ast, idx));
+      }
+    }
+    return result;
+  },
+
+  /**
+   * node.quasi — the TemplateLiteral in a TaggedTemplateExpression.
+   */
+  get quasi() {
+    if (this.tag !== T.tagged_template) return undefined;
+    const rhs = this._ast.nodeRhs(this._i);
+    return rhs === NONE ? null : nodeView(this._ast, rhs);
   },
 
   /**
@@ -1510,15 +1579,30 @@ const NodeProto = {
   get label() {
     const t = this.tag;
     const ast = this._ast;
+    let tokIdx = null;
     if (t === T.labeled_stmt) {
-      return ast._identAt(this.mainToken);
-    }
-    if (t === T.break_label || t === T.continue_label) {
-      // lhs stores label token offset relative to main_token
+      tokIdx = this.mainToken;
+    } else if (t === T.break_label || t === T.continue_label) {
       const tokOffset = ast.nodeLhs(this._i);
-      return tokOffset === NONE ? null : ast._identAt(this.mainToken + tokOffset);
+      if (tokOffset === NONE) return null;
+      tokIdx = this.mainToken + tokOffset;
     }
-    return null;
+    if (tokIdx === null) return null;
+    // Return an Identifier-like object with name, range, loc, type.
+    const name = ast._identAt(tokIdx);
+    const start = ast._tokStarts[tokIdx];
+    const end = start + name.length;
+    const ls = ast._lineStarts();
+    let lo = 0, hi = ls.length - 1;
+    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ls[m] <= start) lo = m; else hi = m - 1; }
+    let elo = 0, ehi = ls.length - 1;
+    while (elo < ehi) { const m = (elo + ehi + 1) >> 1; if (ls[m] <= end) elo = m; else ehi = m - 1; }
+    return {
+      type: 'Identifier', name,
+      range: [start, end],
+      loc: { start: { line: lo + 1, column: start - ls[lo] }, end: { line: elo + 1, column: end - ls[elo] } },
+      parent: this,
+    };
   },
 
   /**
@@ -1558,6 +1642,16 @@ const NodeProto = {
     if (this.tag !== T.catch_clause) return null;
     const idx = this._ast.nodeLhs(this._i);
     return idx === NONE ? null : nodeView(this._ast, idx);
+  },
+
+  /**
+   * node.meta — MetaProperty meta identifier (e.g., "new" in new.target).
+   */
+  get meta() {
+    const t = this.tag;
+    if (t === T.new_target) return { type: 'Identifier', name: 'new' };
+    if (t === T.import_meta) return { type: 'Identifier', name: 'import' };
+    return undefined;
   },
 
   /**
