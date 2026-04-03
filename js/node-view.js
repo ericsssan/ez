@@ -369,6 +369,7 @@ class AstView {
         end: { line: eli + 1, column: end - ls[eli] },
       },
       mainToken: tokIdx,
+      parent: null, // set by callers (source getter, etc.)
     };
   }
 
@@ -642,8 +643,6 @@ class AstView {
 
 const _decoder = new TextDecoder();
 const _emptyArray = Object.freeze([]);
-const POOL_SIZE = 256;
-let _poolIdx = 0;
 
 /**
  * Shared prototype for all NodeView objects.
@@ -1165,7 +1164,7 @@ const NodeProto = {
       const idx = this._ast.nodeLhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1185,7 +1184,7 @@ const NodeProto = {
       const sub = ast.extraSubRange(rhs);
       return ast._nodesFromRange(sub.start, sub.end);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1200,7 +1199,7 @@ const NodeProto = {
       const idx = this._ast.nodeLhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1233,7 +1232,7 @@ const NodeProto = {
     // MetaProperty: new.target → property = Identifier("target")
     if (t === T.new_target) return { type: 'Identifier', name: 'target' };
     if (t === T.import_meta) return { type: 'Identifier', name: 'meta' };
-    return null;
+    return undefined;
   },
 
   /**
@@ -1341,7 +1340,7 @@ const NodeProto = {
       const d = ast.extraClassData(lhs);
       return d.name === NONE ? null : nodeView(ast, d.name);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1363,7 +1362,7 @@ const NodeProto = {
       const d = ast.extraArrowData(lhs);
       return ast._nodesFromRange(d.params_start, d.params_end);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1376,7 +1375,7 @@ const NodeProto = {
       // lhs=range.start, rhs=range.end (stored directly)
       return ast._nodesFromRange(ast.nodeLhs(this._i), ast.nodeRhs(this._i));
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1416,7 +1415,7 @@ const NodeProto = {
       return 'method';
     }
     if (t === T.property || t === T.shorthand_property || t === T.computed_property) return 'init';
-    return null;
+    return undefined;
   },
 
   /**
@@ -1476,7 +1475,7 @@ const NodeProto = {
       }
       return result;
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1559,7 +1558,7 @@ const NodeProto = {
         return n;
       });
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1750,7 +1749,7 @@ const NodeProto = {
       if (rhs === NONE) return []; // declaration export has no specifiers
       return ast._nodesFromRange(ast.nodeLhs(this._i), rhs);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1762,13 +1761,19 @@ const NodeProto = {
     const ast = this._ast;
     if (t === T.import_decl) {
       const d = ast.extraImportData(ast.nodeLhs(this._i));
-      return d.source === NONE ? null : ast._syntheticLiteral(d.source);
+      if (d.source === NONE) return null;
+      const lit = ast._syntheticLiteral(d.source);
+      lit.parent = this;
+      return lit;
     }
     if (t === T.export_all) {
       const tokIdx = ast.nodeLhs(this._i);
-      return tokIdx === NONE ? null : ast._syntheticLiteral(tokIdx);
+      if (tokIdx === NONE) return null;
+      const lit = ast._syntheticLiteral(tokIdx);
+      lit.parent = this;
+      return lit;
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1794,7 +1799,7 @@ const NodeProto = {
       syn.parent = this;
       return syn;
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1835,7 +1840,7 @@ const NodeProto = {
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
-    return null;
+    return undefined;
   },
 
   /**
@@ -1950,9 +1955,6 @@ const NodeProto = {
   },
 };
 
-// Pre-allocate the pool (kept for backward compat with callers that import it)
-const _pool = Array.from({ length: POOL_SIZE }, () => Object.create(NodeProto));
-
 /**
  * Return a stable NodeView for the given (ast, index) pair.
  * Uses a per-AstView cache to guarantee reference equality:
@@ -2029,12 +2031,7 @@ function _methodFlags(ast, mainToken) {
  * MUST be called between files to prevent source text retention.
  */
 function reset() {
-  // Caches are per-AstView; nulling _pool entries for legacy callers
-  for (let i = 0; i < POOL_SIZE; i++) {
-    _pool[i]._ast = null;
-    _pool[i]._i = 0;
-  }
-  _poolIdx = 0;
+  // Caches are per-AstView; no global state to clear.
 }
 
 /**
