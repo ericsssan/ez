@@ -2809,6 +2809,51 @@ const _BRANCH_STMT_TYPES = new Set(['IfStatement', 'TryStatement', 'SwitchStatem
 const _CATCH_CASE_TYPES = new Set(['CatchClause', 'SwitchCase']);
 const _TERMINATOR_TYPES = new Set(['ReturnStatement', 'ThrowStatement', 'BreakStatement', 'ContinueStatement']);
 
+// Tag index sets and exit keys cached by tagNames identity — computed once per session,
+// not per file. Saves ~2μs/file of Set construction and string allocation overhead.
+let _tagSetCacheRef = null;
+let _cachedBranchTagSet = null, _cachedCatchTagSet = null, _cachedTerminatorTagSet = null;
+let _cachedIfStmtTag = -1;
+let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
+let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> for O(1) reverse lookup
+
+function _ensureTagCaches(tagNames) {
+  if (_tagSetCacheRef === tagNames) return;
+  _tagSetCacheRef = tagNames;
+  _cachedIfStmtTag = tagNames.indexOf('IfStatement');
+  _cachedBranchTagSet    = new Set([..._BRANCH_STMT_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
+  _cachedCatchTagSet     = new Set([..._CATCH_CASE_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
+  _cachedTerminatorTagSet = new Set([..._TERMINATOR_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
+  _cachedExitKeys = tagNames.map(t => t ? t + ':exit' : null);
+  const m = new Map();
+  for (let i = 0; i < tagNames.length; i++) { if (tagNames[i]) m.set(tagNames[i], i); }
+  _cachedTypeNameToTag = m;
+}
+
+/**
+ * Build or retrieve tag-indexed handler arrays for a visitorMap.
+ * Cached on the map object itself — rebuilt only when visitorMap changes
+ * (first file per rule-set; reused for all subsequent files via recipe fast path).
+ * Replaces O(1) Map.get(string) per node with O(1) array[int] per node.
+ */
+function _getTagHandlerArrays(visitorMap, tagCount) {
+  if (visitorMap._tagHandlers) return visitorMap._tagHandlers;
+  const enter = new Array(tagCount).fill(null);
+  const exit  = new Array(tagCount).fill(null);
+  for (const [key, handlers] of visitorMap) {
+    if (key.endsWith(':exit')) {
+      const t = _cachedTypeNameToTag.get(key.slice(0, -5));
+      if (t !== undefined) exit[t] = handlers;
+    } else {
+      const t = _cachedTypeNameToTag.get(key);
+      if (t !== undefined) enter[t] = handlers;
+    }
+  }
+  visitorMap._tagHandlers = enter;
+  visitorMap._tagExitHandlers = exit;
+  return enter;
+}
+
 // Esquery pseudo-class → concrete node type lists (from esquery source).
 // These allow per-tag dispatch and fast matchers for :function and :expression.
 const _PSEUDO_CLASS_TYPES = {
@@ -3045,6 +3090,18 @@ function _remapList(ruleIds, key, handlerByKey, handlerByRule) {
  */
 function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const { map: visitorMap, selectorHandlers } = visitorMapResult;
+
+  // Fast exit: no rules registered any visitors — nothing to dispatch.
+  if (visitorMap.size === 0 && selectorHandlers.length === 0) {
+    context._skipSet = null;
+    context.sourceCode._nodesByType = null;
+    context.sourceCode.getNodesByType = function() { return []; };
+    return;
+  }
+
+  // Ensure tag index Sets and exit key strings are built (cached across files).
+  _ensureTagCaches(tagNames);
+
   const nodeTags = ast.nodeTags;
   // Use Zig-precomputed DFS orders if available (v4 buffer), else compute in JS.
   const { preOrder, postOrder } = (ast._preOrder && ast._postOrder)
@@ -3313,14 +3370,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const FLAG_TERMINATOR     = 64;
   const FLAG_BRANCH_EXIT    = 128;
   const FLAG_SELECTOR       = 256;
-  const ifStmtTag = tagNames.indexOf('IfStatement');
-  // Integer tag sets for small-file DFS path (faster than string Set.has)
-  const _branchEnterTagSet = new Set(_BRANCH_STMT_TYPES.size > 0
-    ? [..._BRANCH_STMT_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0) : []);
-  const _catchCaseTagSet = new Set(_CATCH_CASE_TYPES.size > 0
-    ? [..._CATCH_CASE_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0) : []);
-  const _terminatorTagSet = new Set(_TERMINATOR_TYPES.size > 0
-    ? [..._TERMINATOR_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0) : []);
+  // Use pre-cached tag index Sets (built once per session in _ensureTagCaches, not per file).
+  const ifStmtTag = _cachedIfStmtTag;
+  const _branchEnterTagSet = _cachedBranchTagSet;
+  const _catchCaseTagSet = _cachedCatchTagSet;
+  const _terminatorTagSet = _cachedTerminatorTagSet;
+  const _exitKeys = _cachedExitKeys; // 'TypeName:exit' pre-interned strings indexed by tag int
   // Per-tag selector dispatch (cached by plugin set, not per-file):
   // selectorsByTagEnter/Exit[tagIdx] = selectors whose root type == tagNames[tagIdx].
   // Avoids looping all selectors per node; slot.handler refs update automatically per file.
@@ -3463,6 +3518,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
     // Use interleaved DFS to ensure enter/exit events fire in correct order.
     const { events, count: evCount } = getDFSEvents();
+    // Pre-index handler arrays by tag int — replaces Map.get(string) per node with array[int].
+    // Cached on visitorMap object (stable across files via recipe fast path).
+    const _tagHandlers     = _getTagHandlerArrays(visitorMap, tagCount);
+    const _tagExitHandlers = visitorMap._tagExitHandlers;
     for (let i = 0; i < evCount; i++) {
       const ev = events[i];
       if (ev >= 0) {
@@ -3503,7 +3562,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             if (seg) if (_segStartH) _dispatchSeg(_segStartH, seg);
           }
         }
-        const enter = visitorMap.get(tn);
+        const enter = isMethodNode ? visitorMap.get(tn) : _tagHandlers[tag];
         if (enter) {
           const node = nodeView(ast, idx);
           context._currentNodeIdx = idx;
@@ -3591,7 +3650,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
-        const exit = visitorMap.get(tn + ':exit');
+        // Use pre-indexed array (no Map lookup, no string allocation); fall back on remap (MethodDefinition→Property)
+        const exit = isMethodNode ? visitorMap.get(tn + ':exit') : _tagExitHandlers[tag];
         if (exit) {
           const node = nodeView(ast, idx);
           context._currentNodeIdx = idx;
