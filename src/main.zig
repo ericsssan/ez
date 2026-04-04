@@ -36,7 +36,6 @@ pub fn main(init: std.process.Init) !void {
     var config_path: ?[]const u8 = null;
     var no_config = false;
     var eslint_compat_mode = false;
-    var eslint_rules_dir: ?[]const u8 = null;
 
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -53,8 +52,6 @@ pub fn main(init: std.process.Init) !void {
             no_config = true;
         } else if (std.mem.eql(u8, arg, "--eslint-compat")) {
             eslint_compat_mode = true;
-        } else if (std.mem.startsWith(u8, arg, "--eslint-rules=")) {
-            eslint_rules_dir = arg["--eslint-rules=".len..];
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
             config_path = arg["--config=".len..];
         } else if (std.mem.eql(u8, arg, "--config")) {
@@ -76,172 +73,6 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-
-    // ── ESLint rules mode: load rules from disk, lint with Zig interpreter ──
-    if (eslint_rules_dir) |rules_dir| {
-        const eslint_loader = @import("linter/eslint/loader.zig");
-        const eslint_rules = @import("linter/eslint/rules.zig");
-        const parent_builder = @import("parser/parent_builder.zig");
-        const semantic_mod = parser_root.semantic;
-        const AstQuery = @import("linter/query/ast_query.zig").AstQuery;
-        const EsTreeAdapter = @import("linter/query/estree.zig").EsTreeAdapter;
-
-        // Phase 1: Load rules from .js files on disk
-        const descriptors = try eslint_loader.loadRulesFromDir(io, rules_dir, allocator);
-        var rule_set = try eslint_rules.loadRules(allocator, descriptors);
-        defer rule_set.deinit();
-
-        var cached_count: usize = 0;
-        var default_opts_count: usize = 0;
-        var visitor_count: usize = 0;
-        for (rule_set.rules) |r| {
-            if (r.cached_create_fn != null) cached_count += 1;
-            if (r.cached_default_options != null) default_opts_count += 1;
-            visitor_count += r.visitors.len;
-        }
-        try stdout.print("{d} rules loaded ({d} cached, {d} with defaultOptions, {d} total visitors)\n",
-            .{descriptors.len, cached_count, default_opts_count, visitor_count});
-
-        // Phase 2: Collect all .js files (expanding directories)
-        var all_files: std.ArrayList([]const u8) = .empty;
-        defer all_files.deinit(allocator);
-        for (file_paths.items) |path| {
-            var dir = Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch {
-                try all_files.append(allocator, path);
-                continue;
-            };
-            var walker = try dir.walk(allocator);
-            defer walker.deinit();
-            while (try walker.next(io)) |entry| {
-                if (entry.kind != .file) continue;
-                const name = entry.basename;
-                if (!std.mem.endsWith(u8, name, ".js") and
-                    !std.mem.endsWith(u8, name, ".mjs") and
-                    !std.mem.endsWith(u8, name, ".cjs")) continue;
-                const full = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ path, entry.path });
-                try all_files.append(allocator, full);
-            }
-        }
-
-        // Phase 3: Lint each target file
-        var total_diags: u32 = 0;
-        var file_count: u32 = 0;
-        var per_rule_counts = std.StringArrayHashMap(u32).init(allocator);
-        defer per_rule_counts.deinit();
-
-        for (all_files.items) |file_path| {
-            // Use a per-file arena so all working memory is freed after each file.
-            var file_arena = std.heap.ArenaAllocator.init(allocator);
-            defer file_arena.deinit();
-            const fa = file_arena.allocator();
-
-            const source = Io.Dir.cwd().readFileAlloc(io, file_path, fa, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
-
-            const lex_r = Lexer.tokenize(fa, source) catch continue; var tokens_result = lex_r.tokens;
-            var tree = parser.Parser.parse(fa, source, tokens_result.slice()) catch continue;
-            const traversal = parent_builder.computeTraversal(&tree, fa) catch continue;
-            var sem_result = semantic_mod.SemanticAnalyzer.analyze(fa, &tree) catch continue;
-
-            var diagnostics_list: std.ArrayList(Diagnostic) = .empty;
-
-            // Build query + adapter for ESTree property access
-            // Convert tag names to slices
-            var tn_slices: [layout.tag_count][]const u8 = undefined;
-            for (0..layout.tag_count) |ti| tn_slices[ti] = std.mem.span(layout.tag_names[ti]);
-
-            // Compute min_tok / max_tok for each node so that
-            // tokenBefore() / tokenAfter() work (needed by isParenthesised etc.)
-            const n_nodes = tree.nodes.len;
-            const main_tokens = tree.nodes.items(.main_token);
-            const min_tok_arr = try fa.alloc(u32, n_nodes);
-            const max_tok_arr = try fa.alloc(u32, n_nodes);
-            // min_tok[i] = main_token of node i (first token heuristic)
-            for (0..n_nodes) |ni| min_tok_arr[ni] = main_tokens[ni];
-            // max_tok: propagate child maxes to parents using DFS exit events.
-            for (0..n_nodes) |ni| max_tok_arr[ni] = main_tokens[ni];
-            // DFS events: positive = enter, negative = exit (~idx).
-            // Process exit events bottom-up: when we exit a node, its subtree max is finalized.
-            for (traversal.dfs_events) |ev| {
-                if (ev >= 0) continue; // skip enter events
-                const ni: u32 = @intCast(~ev);
-                if (ni >= n_nodes) continue;
-                const par = traversal.parents[ni];
-                const pb = @import("parser/parent_builder.zig");
-                if (par != pb.NONE and par < n_nodes) {
-                    if (max_tok_arr[ni] > max_tok_arr[par]) max_tok_arr[par] = max_tok_arr[ni];
-                    if (min_tok_arr[ni] < min_tok_arr[par]) min_tok_arr[par] = min_tok_arr[ni];
-                }
-            }
-
-            var query = AstQuery{
-                .ast = &tree,
-                .parents = traversal.parents,
-                .min_tok = min_tok_arr,
-                .max_tok = max_tok_arr,
-                .tag_names = &tn_slices,
-                .source = source,
-            };
-            var adapter = EsTreeAdapter{
-                .query = &query,
-                .semantic = &sem_result,
-                .node_scope_ids = &.{},
-                .arena = fa,
-            };
-
-            // Run rules via Zig interpreter
-            const node_tags_raw = tree.nodes.items(.tag);
-            var node_tags_u8 = try fa.alloc(u8, node_tags_raw.len);
-            for (node_tags_raw, 0..) |t, i| node_tags_u8[i] = @intFromEnum(t);
-
-            eslint_rules.runRulesOnFile(
-                &rule_set,
-                adapter.callbacks(),
-                traversal.dfs_events,
-                tree.nodes.len,
-                node_tags_u8,
-                &diagnostics_list,
-                fa,
-            );
-
-            for (diagnostics_list.items) |d| {
-                if (d.rule_name.len > 0) {
-                    const key = try allocator.dupe(u8, d.rule_name);
-                    const gop = try per_rule_counts.getOrPut(key);
-                    if (gop.found_existing) {
-                        allocator.free(key);
-                        gop.value_ptr.* += 1;
-                    } else {
-                        gop.value_ptr.* = 1;
-                    }
-                }
-                // Emit per-line diagnostic in parseable format
-                const loc = @import("parser/span.zig").Location.fromOffset(source, d.span.start);
-                try stdout.print("{s}:{d}:{d}: error({s}): {s}\n", .{
-                    file_path, loc.line + 1, loc.column + 1, d.rule_name, d.message,
-                });
-            }
-            total_diags += @intCast(diagnostics_list.items.len);
-            file_count += 1;
-            // file_arena.deinit() called by defer — frees all per-file allocations
-        }
-
-        try stdout.print("{d} files, {d} diagnostics\n", .{ file_count, total_diags });
-        // Per-rule breakdown (sorted by count descending)
-        const RuleCount = struct { name: []const u8, count: u32 };
-        var rule_list = try allocator.alloc(RuleCount, per_rule_counts.count());
-        defer allocator.free(rule_list);
-        for (per_rule_counts.keys(), per_rule_counts.values(), 0..) |k, v, i| {
-            rule_list[i] = .{ .name = k, .count = v };
-        }
-        std.mem.sort(RuleCount, rule_list, {}, struct {
-            fn lt(_: void, a: RuleCount, b: RuleCount) bool { return a.count > b.count; }
-        }.lt);
-        for (rule_list) |rc| {
-            try stdout.print("{d:>6}  {s}\n", .{ rc.count, rc.name });
-        }
-        try stdout.flush();
-        return;
-    }
 
     // ── Lint mode: multi-file support ────────────────────────
     if (file_paths.items.len == 0) {

@@ -4,56 +4,17 @@ const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
 const TokenTag = @import("../../parser/token.zig").Tag;
-const scope_mod = @import("../../parser/scope.zig");
-const ScopeTree = scope_mod.ScopeTree;
-const ScopeId = scope_mod.ScopeId;
-const ScopeKind = scope_mod.ScopeKind;
-const sym_mod = @import("../../parser/symbol.zig");
-const SymbolTable = sym_mod.SymbolTable;
-const SymbolId = sym_mod.SymbolId;
-const ref_mod = @import("../../parser/reference.zig");
-const ReferenceTable = ref_mod.ReferenceTable;
-const ReferenceId = ref_mod.ReferenceId;
-const semantic_mod = @import("../../parser/semantic.zig");
-const SemanticResult = semantic_mod.SemanticResult;
-const Value = @import("../interp/value.zig").Value;
-const Interpreter = @import("../interp/interpreter.zig").Interpreter;
+const Value = @import("./value.zig").Value;
 const AstQuery = @import("ast_query.zig").AstQuery;
 
 const NONE: u32 = 0xFFFFFFFF;
 
-/// ESTree adapter: implements the RuntimeCallbacks interface for JS/TS.
-///
-/// Maps ESTree property names (left, right, callee, operator, body, etc.)
-/// to sanz's SoA buffer fields. Also provides scope, variable, reference,
-/// and token property access — the full ESLint SourceCode API.
+/// ESTree adapter: maps ESTree property names to sanz's SoA buffer fields.
 pub const EsTreeAdapter = struct {
     query: *const AstQuery,
-    semantic: *const SemanticResult,
-    /// Scope IDs per node (from semantic buffer).
-    node_scope_ids: []const u32,
-    /// Allocator for building arrays/objects returned to the interpreter.
     arena: std.mem.Allocator,
 
-    /// Return a RuntimeCallbacks struct pointing to this adapter's methods.
-    pub fn callbacks(self: *EsTreeAdapter) @import("../interp/interpreter.zig").RuntimeCallbacks {
-        return .{
-            .ctx = @ptrCast(self),
-            .getNodeProperty = getNodePropertyCb,
-            .getScopeProperty = getScopePropertyCb,
-            .getVariableProperty = getVariablePropertyCb,
-            .getReferenceProperty = getReferencePropertyCb,
-            .getTokenProperty = getTokenPropertyCb,
-            .callBuiltin = callBuiltinCb,
-        };
-    }
-
     // ── Node property access ──
-
-    fn getNodePropertyCb(ctx: *anyopaque, node_idx: u32, prop: []const u8) Value {
-        const self: *EsTreeAdapter = @ptrCast(@alignCast(ctx));
-        return self.getNodeProperty(node_idx, prop);
-    }
 
     pub fn getNodeProperty(self: *EsTreeAdapter, idx: u32, prop: []const u8) Value {
         const q = self.query;
