@@ -257,6 +257,12 @@ class SourceCode {
     this._tokenObjCache = null;
     this._nodesByType = null;
     this.parserServices = null;
+    // Scope indices are file-specific — must be cleared so _ensureScopeIndex rebuilds
+    // for the new AST instead of returning stale data from the previous file.
+    this._scopeSymIndex = null;
+    this._scopeRefIndex = null;
+    this._scopeChildIndex = null;
+    this._symRefIndex = null;
   }
 
   /**
@@ -1545,47 +1551,34 @@ let _cachedVM = null; // { map, selectorHandlers, handlerSlots }
 
 function buildVisitorMap(plugins, context, ruleConfig = {}) {
   if (_cachedVMPlugins === plugins && _cachedVM) {
-    // Fast path: reuse Map structure, just update handler references.
-    // Each handler slot has a stable index — overwrite handler field only.
-    const { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs } = _cachedVM;
-
-    // Clear handler arrays (reuse the same array objects)
-    for (const [, arr] of map) arr.length = 0;
-    selectorHandlers.length = 0;
-
+    // Fast path: recipe-based update — no Object.entries, no _isSelector, no _expandUnion,
+    // no map-array clear/refill. Direct property access by pre-computed visitorKey.
+    // Map arrays and selectorHandlers are stable (same slot objects); only _state.inner changes.
+    const { map, selectorHandlers, handlerSlots, selectorSlots, perRuleCtxs, perPluginRecipe } = _cachedVM;
     let slotIdx = 0, selIdx = 0;
     let mismatch = false;
-    for (let pi = 0; pi < plugins.length; pi++) {
-      const plugin = plugins[pi];
-      const perRuleCtx = perRuleCtxs[pi]; // reuse cached per-rule context (item 4)
+    for (let pi = 0; pi < plugins.length && !mismatch; pi++) {
+      const recipe = perPluginRecipe[pi];
+      if (!recipe || recipe.length === 0) continue;
       let visitors;
-      try { visitors = plugin.create(perRuleCtx); } catch { continue; }
-      if (!visitors || typeof visitors !== 'object') continue;
-      for (const [visitorKey, handler] of Object.entries(visitors)) {
-        if (typeof handler !== 'function') continue;
-        if (_isSelector(visitorKey)) {
-          if (selIdx < selectorSlots.length) {
-            const slot = selectorSlots[selIdx++];
-            slot.handler = handler;
-            selectorHandlers.push(slot);
-          } else { mismatch = true; }
-          continue;
-        }
-        for (const mapKey of _expandUnion(visitorKey)) {
-          if (slotIdx < handlerSlots.length) {
-            const slot = handlerSlots[slotIdx];
-            // Verify slot identity: same ruleId and same mapKey
-            if (slot.ruleId === (plugin.meta?.name || "unknown")) {
-              slot.handler._state.inner = handler; // update inner ref, no new closure (item 1)
-              map.get(mapKey).push(slot);
-              slotIdx++;
-            } else { mismatch = true; }
-          } else { mismatch = true; }
+      try { visitors = plugins[pi].create(perRuleCtxs[pi]); }
+      catch { mismatch = true; break; }
+      if (!visitors || typeof visitors !== 'object') { mismatch = true; break; }
+      for (let r = 0; r < recipe.length && !mismatch; r++) {
+        const step = recipe[r];
+        const handler = visitors[step.visitorKey];
+        if (typeof handler !== 'function') { mismatch = true; break; }
+        if (step.sel) {
+          selectorSlots[selIdx++].handler = handler;
+        } else {
+          // numSlots >= 1 for union keys (e.g. "Foo, Bar:exit" → 2 slots with same handler)
+          for (let k = 0; k < step.numSlots; k++) {
+            handlerSlots[slotIdx++].handler._state.inner = handler;
+          }
         }
       }
     }
     if (mismatch) {
-      // Visitor keys changed — invalidate cache and rebuild from scratch
       _cachedVMPlugins = null;
       _cachedVM = null;
       return buildVisitorMap(plugins, context, ruleConfig);
@@ -1600,6 +1593,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const selectorSlots = [];
   const pluginOptions = [];
   const perRuleCtxs = []; // cached per-rule contexts (item 4)
+  const perPluginRecipe = []; // fast-path recipe: per-plugin ordered list of {visitorKey, sel, numSlots}
 
   for (const plugin of plugins) {
     const ruleId = plugin.meta?.name || "unknown";
@@ -1616,9 +1610,10 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     perRuleCtx.id = ruleId;
     perRuleCtx.report = _makeBoundReport(ruleId, ruleMeta, context);
     perRuleCtxs.push(perRuleCtx);
+    const recipe = [];
     let visitors;
-    try { visitors = plugin.create(perRuleCtx); } catch { continue; }
-    if (!visitors || typeof visitors !== 'object') continue;
+    try { visitors = plugin.create(perRuleCtx); } catch { perPluginRecipe.push(recipe); continue; }
+    if (!visitors || typeof visitors !== 'object') { perPluginRecipe.push(recipe); continue; }
     for (const [visitorKey, handler] of Object.entries(visitors)) {
       if (typeof handler !== 'function') continue;
       if (_isSelector(visitorKey)) {
@@ -1633,9 +1628,12 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         const slot = { selector, parsedSelector, isExit, handler, ruleId, ruleMeta, ruleOptions };
         selectorSlots.push(slot);
         selectorHandlers.push(slot);
+        recipe.push({ visitorKey, sel: true, numSlots: 1 });
         continue;
       }
-      for (const mapKey of _expandUnion(visitorKey)) {
+      const expandedKeys = _expandUnion(visitorKey);
+      recipe.push({ visitorKey, sel: false, numSlots: expandedKeys.length });
+      for (const mapKey of expandedKeys) {
         if (!map.has(mapKey)) map.set(mapKey, []);
         // Safe handler wrapper (items 1+2): try/catch + skipSet check baked in,
         // inner reference updated per file with no new closure allocation.
@@ -1646,10 +1644,11 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         map.get(mapKey).push(slot);
       }
     }
+    perPluginRecipe.push(recipe);
   }
 
   _cachedVMPlugins = plugins;
-  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs };
+  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe };
   return { map, selectorHandlers };
 }
 
