@@ -2379,39 +2379,24 @@ function _extractFileLevelRules(visitorMap, tagNames, tagCount, tagEnterHandlers
   }
   if (programTag < 0) return { fileLevelEnter, fileLevelExit, extractedRules: new Set() };
 
-  // Check each Program handler: file-level if this rule ONLY registers Program/Program:exit
+  // Build a Set of ruleIds that appear in ANY non-Program handler in O(rules) one pass.
+  // Then isFileLevelOnly is just a Set.has() — O(1) instead of O(tagCount) per rule.
   const enterHandlers = tagEnterHandlers[programTag];
   const exitHandlers = tagExitHandlers[programTag];
   const extractedRules = new Set();
 
-  function isFileLevelOnly(ruleId) {
-    // Check if this rule appears in any non-Program handler
-    for (let t = 0; t < tagCount; t++) {
-      if (t === programTag) continue;
-      const e = tagEnterHandlers[t];
-      if (e) {
-        const items = e._fused ? e.items : e;
-        for (let j = 0; j < items.length; j++) {
-          if (items[j].ruleId === ruleId) return false;
-        }
-      }
-      const x = tagExitHandlers[t];
-      if (x) {
-        const items = x._fused ? x.items : x;
-        for (let j = 0; j < items.length; j++) {
-          if (items[j].ruleId === ruleId) return false;
-        }
-      }
-    }
-    // Also check visitorMap for non-tag entries
-    for (const [key, handlers] of visitorMap) {
-      if (key === 'Program' || key === 'Program:exit') continue;
-      const items = Array.isArray(handlers) ? handlers : (handlers.items || []);
-      for (const h of items) {
-        if (h.ruleId === ruleId) return false;
-      }
-    }
-    return true;
+  const _nonProgramRules = new Set();
+  for (let t = 0; t < tagCount; t++) {
+    if (t === programTag) continue;
+    const e = tagEnterHandlers[t];
+    if (e) { const items = e._fused ? e.items : e; for (let j = 0; j < items.length; j++) _nonProgramRules.add(items[j].ruleId); }
+    const x = tagExitHandlers[t];
+    if (x) { const items = x._fused ? x.items : x; for (let j = 0; j < items.length; j++) _nonProgramRules.add(items[j].ruleId); }
+  }
+  for (const [key, handlers] of visitorMap) {
+    if (key === 'Program' || key === 'Program:exit') continue;
+    const items = Array.isArray(handlers) ? handlers : (handlers.items || []);
+    for (const h of items) _nonProgramRules.add(h.ruleId);
   }
 
   // Extract file-level enter handlers
@@ -2419,7 +2404,7 @@ function _extractFileLevelRules(visitorMap, tagNames, tagCount, tagEnterHandlers
     const items = enterHandlers._fused ? enterHandlers.items : enterHandlers;
     const keep = [];
     for (let h = 0; h < items.length; h++) {
-      if (isFileLevelOnly(items[h].ruleId)) {
+      if (!_nonProgramRules.has(items[h].ruleId)) {
         fileLevelEnter.push(items[h]);
         extractedRules.add(items[h].ruleId);
       } else {
