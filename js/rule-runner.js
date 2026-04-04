@@ -1923,10 +1923,6 @@ function _invokeFused(desc, node, nodeIdx, context) {
       const d = desc[h];
       // Skip bitmap: fast O(1) check if rule is exhausted
       if (skipSet && skipSet.has(d.ruleId)) continue;
-      if (context._ruleErrors[d.ruleId] >= context._errorBudget) {
-        if (skipSet) skipSet.mark(d.ruleId);
-        continue;
-      }
       context._currentRule = d.ruleId;
       context._currentRuleMeta = d.ruleMeta;
       context.options = d.ruleOptions;
@@ -1945,10 +1941,6 @@ function _invokeFused(desc, node, nodeIdx, context) {
     const item = items[h];
     // Skip bitmap: fast O(1) check
     if (skipSet && skipSet.has(item.ruleId)) continue;
-    if (context._ruleErrors[item.ruleId] >= context._errorBudget) {
-      if (skipSet) skipSet.mark(item.ruleId);
-      continue;
-    }
     // Predicate pushdown with coalesced guard check
     if (item.parentGuard) {
       const guardKey = item._coalescedGuard !== undefined ? item._coalescedGuard : item.parentGuard.parentType;
@@ -3080,7 +3072,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const node = nodeView(ast, idx);
       for (let h = 0; h < handlers.length; h++) {
         const hd = handlers[h];
-        if (context._ruleErrors[hd.ruleId] >= context._errorBudget) continue;
+        if (skipSet.has(hd.ruleId)) continue;
         context._currentRule = hd.ruleId;
         context._currentRuleMeta = hd.ruleMeta;
         context.options = hd.ruleOptions;
