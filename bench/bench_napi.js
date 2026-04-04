@@ -7,7 +7,7 @@
  */
 
 const { parse, reset, getTagNames } = require("../js/index");
-const { runPlugins } = require("../js/plugin-runner");
+const { runPlugins } = require("../js/rule-runner");
 const fs = require("fs");
 const path = require("path");
 

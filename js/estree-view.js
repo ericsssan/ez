@@ -311,7 +311,7 @@ class AstView {
     return this._tokTags[index];
   }
 
-  /** Node tag array (Uint8Array). Used by plugin-runner for fast traversal. */
+  /** Node tag array (Uint8Array). Used by rule-runner for fast traversal. */
   get nodeTags() {
     return this._nodeTags;
   }
@@ -749,7 +749,7 @@ const NodeProto = {
   /**
    * ESTree-compatible `tag`:
    * - TaggedTemplateExpression: returns the tag expression node
-   * - All others: returns the internal numeric tag (backward compat for plugin-runner)
+   * - All others: returns the internal numeric tag (backward compat for rule-runner)
    */
   get tag() {
     const t = this._ast._nodeTags[this._i];
@@ -2111,7 +2111,7 @@ function reset() {
  * the effective ESTree type name — remapping TSTypeReference to TS*Keyword
  * when the node is actually a TypeScript built-in keyword type.
  *
- * Used by walkNodes in plugin-runner.js so visitor dispatch uses the same
+ * Used by walkNodes in rule-runner.js so visitor dispatch uses the same
  * type names as NodeProto.type.
  */
 function effectiveTypeName(ast, idx, rawTagName) {

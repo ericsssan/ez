@@ -1,6 +1,6 @@
 "use strict";
 
-const { AstView, setTagNames, reset: resetView } = require("./node-view");
+const { AstView, setTagNames, reset: resetView } = require("./estree-view");
 
 // ── Load native binding ──────────────────────────────────────────
 
@@ -145,7 +145,7 @@ let _cachedTagNames = null;
 
 /**
  * Get the tag name table (ESTree-compatible type names).
- * Cached after first call. Also initializes node-view.js TAG_NAMES.
+ * Cached after first call. Also initializes estree-view.js TAG_NAMES.
  */
 function getTagNames() {
   if (_cachedTagNames) return _cachedTagNames;

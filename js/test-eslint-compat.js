@@ -8,7 +8,7 @@
 const path = require("path");
 const fs = require("fs");
 const { parse, getTagNames } = require("./index");
-const { runPlugins } = require("./plugin-runner");
+const { runPlugins } = require("./rule-runner");
 
 const RULES_DIR = path.join(__dirname, "node_modules/eslint/lib/rules");
 const tagNames = getTagNames();

@@ -7,20 +7,6 @@ const parser_mod = @import("../parser/parser.zig");
 const parent_builder = @import("../parser/parent_builder.zig");
 const semantic_mod = @import("../parser/semantic.zig");
 const Language = parser.token.Language;
-const Ast = @import("../parser/ast.zig").Ast;
-const AstQuery = @import("../linter/query/ast_query.zig").AstQuery;
-const EsTreeAdapter = @import("../linter/query/estree.zig").EsTreeAdapter;
-const EsTreeValue = @import("../linter/query/value.zig").Value;
-
-/// Comptime-built tag name table in the []const u8 format AstQuery expects.
-const tag_name_slices: [layout.tag_count][]const u8 = blk: {
-    @setEvalBranchQuota(100_000);
-    var names: [layout.tag_count][]const u8 = undefined;
-    for (layout.tag_names, 0..) |name, i| {
-        names[i] = std.mem.span(name);
-    }
-    break :blk names;
-};
 
 // ── Layer 1: Core C ABI ──────────────────────────────────────────
 // Called directly by Bun FFI and indirectly via NAPI wrappers.
@@ -169,13 +155,6 @@ const n = struct {
     extern fn napi_get_element(env: Env, object: Value, index: u32, result: *Value) Status;
     extern fn napi_get_named_property(env: Env, object: Value, name: [*:0]const u8, result: *Value) Status;
     extern fn napi_typeof(env: Env, value: Value, result: *u32) Status;
-    extern fn napi_get_undefined(env: Env, result: *Value) Status;
-    extern fn napi_get_null(env: Env, result: *Value) Status;
-    extern fn napi_get_boolean(env: Env, value: bool, result: *Value) Status;
-    extern fn napi_create_double(env: Env, value: f64, result: *Value) Status;
-    extern fn napi_create_array_with_length(env: Env, length: usize, result: *Value) Status;
-    extern fn napi_set_element(env: Env, object: Value, index: u32, value: Value) Status;
-    extern fn napi_create_object(env: Env, result: *Value) Status;
 };
 
 /// Module initialization — called by Node.js when loading the .node addon.
@@ -183,7 +162,6 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parse", napiParse);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
-    registerFn(env, exports, "getNodeProperty", napiGetNodeProperty);
     return exports;
 }
 
@@ -262,168 +240,3 @@ fn napiTagName(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     return result;
 }
 
-// ── getNodeProperty(buffer, bytesUsed, nodeIdx, propName) → value ─
-
-fn napiGetNodeProperty(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 4;
-    var argv: [4]n.Value = undefined;
-    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
-
-    if (argc < 4) {
-        _ = n.napi_throw_error(env, null, "getNodeProperty(buffer, bytesUsed, nodeIdx, propName): 4 args required");
-        return null;
-    }
-
-    // Arg 0: ArrayBuffer (the shared parse buffer)
-    var buf_data: ?*anyopaque = null;
-    var buf_len_napi: usize = 0;
-    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len_napi) != n.OK) {
-        _ = n.napi_throw_error(env, null, "getNodeProperty: arg 0 must be ArrayBuffer");
-        return null;
-    }
-    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse return null);
-    const buf_len: u32 = @intCast(buf_len_napi);
-
-    // Arg 1: bytesUsed — accepted for API symmetry, not validated here
-    { var _v: u32 = 0; _ = n.napi_get_value_uint32(env, argv[1], &_v); }
-
-    // Arg 2: node index
-    var node_idx: u32 = 0;
-    _ = n.napi_get_value_uint32(env, argv[2], &node_idx);
-
-    // Arg 3: property name (short — max 127 chars)
-    var prop_buf: [128]u8 = undefined;
-    var prop_len: usize = 0;
-    if (n.napi_get_value_string_utf8(env, argv[3], &prop_buf, prop_buf.len, &prop_len) != n.OK) return null;
-    const prop = prop_buf[0..prop_len];
-
-    // Stack arena — all EsTreeValue allocations live until valueToNapi finishes.
-    var stack_buf: [8192]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&stack_buf);
-    const arena = fba.allocator();
-
-    const val = getNodePropertyImpl(buf_ptr, buf_len, node_idx, prop, arena);
-    return valueToNapi(env, val);
-}
-
-/// Reconstruct a read-only Ast view from the shared buffer and call EsTreeAdapter.
-///
-/// NOTE: tok_starts in the buffer have been converted to UTF-16 code unit offsets.
-/// tokenText() will be incorrect for non-ASCII source — this is an acceptable
-/// limitation until byte-offset tok_starts are added to the buffer.
-fn getNodePropertyImpl(
-    buf_ptr: [*]u8,
-    buf_len: u32,
-    node_idx: u32,
-    prop: []const u8,
-    arena: std.mem.Allocator,
-) EsTreeValue {
-    if (buf_len < @sizeOf(js_buffer.BufferHeader)) return .undefined;
-
-    const hdr: *const js_buffer.BufferHeader = @ptrCast(@alignCast(buf_ptr));
-    if (hdr.node_count == 0 or node_idx >= hdr.node_count) return .undefined;
-    if (hdr.token_count == 0) return .undefined;
-
-    const nc = hdr.node_count;
-    const tc = hdr.token_count;
-    const ec = hdr.extra_count;
-
-    // ── NodeList.Slice — ptrs indexed by field enum ordinal ──────────
-    // NodeList = MultiArrayList(Node);  Field enum: tag=0, main_token=1, data=2
-    // Use `undefined` init: unused ptrs[N] are never dereferenced by estree.zig.
-    var node_slice: Ast.NodeList.Slice = undefined;
-    node_slice.len = nc;
-    node_slice.capacity = nc;
-    node_slice.ptrs[0] = buf_ptr + hdr.tags_offset;         // tag  (u8 × nc)
-    node_slice.ptrs[1] = buf_ptr + hdr.main_tokens_offset;  // main_token (u32 × nc)
-    node_slice.ptrs[2] = buf_ptr + hdr.data_offset;         // data (8B × nc)
-
-    // ── TokenList.Slice ──────────────────────────────────────────────
-    // TokenList = MultiArrayList({ tag, start, len, has_newline_before })
-    // Field enum: tag=0, start=1, len=2, has_newline_before=3
-    // Only tag and start are in the buffer; ptrs[2..3] stay undefined (never accessed).
-    var tok_slice: Ast.TokenList.Slice = undefined;
-    tok_slice.len = tc;
-    tok_slice.capacity = tc;
-    tok_slice.ptrs[0] = buf_ptr + hdr.tok_tags_offset;      // tag   (u8 × tc)
-    tok_slice.ptrs[1] = buf_ptr + hdr.tok_starts_offset;    // start (u32 × tc)
-
-    // ── Source and extra_data ────────────────────────────────────────
-    const src_end = hdr.source_offset + hdr.source_len;
-    if (src_end > buf_len) return .undefined;
-    const source: []const u8 = buf_ptr[hdr.source_offset..src_end];
-
-    const extra_ptr: [*]const u32 = @alignCast(@ptrCast(buf_ptr + hdr.extra_data_offset));
-    const extra_data: []const u32 = extra_ptr[0..ec];
-
-    // ── Parent indices ───────────────────────────────────────────────
-    const parents: []const u32 = if (hdr.parent_indices_offset > 0) blk: {
-        const p: [*]const u32 = @alignCast(@ptrCast(buf_ptr + hdr.parent_indices_offset));
-        break :blk p[0..nc];
-    } else &.{};
-
-    // ── Build Ast view (stack-allocated, zero-copy over buffer data) ─
-    const ast = Ast{
-        .source = source,
-        .nodes = node_slice,
-        .tokens = tok_slice,
-        .extra_data = extra_data,
-        .errors = &.{},
-    };
-
-    // ── Build AstQuery ───────────────────────────────────────────────
-    // min_tok/max_tok left empty: range/start/end return 0 from this path.
-    // node-view.js computes those correctly from the buffer directly.
-    const query = AstQuery{
-        .ast = &ast,
-        .parents = parents,
-        .min_tok = &.{},
-        .max_tok = &.{},
-        .tag_names = &tag_name_slices,
-        .source = source,
-    };
-
-    var adapter = EsTreeAdapter{
-        .query = &query,
-        .arena = arena,
-    };
-    return adapter.getNodeProperty(node_idx, prop);
-}
-
-/// Recursively convert an EsTreeValue to a NAPI value.
-/// .node variants become u32 numbers — JS wraps them in NodeView proxies.
-fn valueToNapi(env: n.Env, val: EsTreeValue) ?n.Value {
-    var r: n.Value = undefined;
-    switch (val) {
-        .undefined => _ = n.napi_get_undefined(env, &r),
-        .null_val => _ = n.napi_get_null(env, &r),
-        .boolean => |b| _ = n.napi_get_boolean(env, b, &r),
-        .number => |num| _ = n.napi_create_double(env, num, &r),
-        .string => |s| _ = n.napi_create_string_utf8(env, s.ptr, s.len, &r),
-        // Node/scope/variable/reference/token — return as u32; JS wraps lazily.
-        .node, .scope, .variable, .reference, .token => |idx| _ = n.napi_create_uint32(env, idx, &r),
-        .array => |arr| {
-            _ = n.napi_create_array_with_length(env, arr.len, &r);
-            for (arr, 0..) |item, i| {
-                const elem = valueToNapi(env, item) orelse continue;
-                _ = n.napi_set_element(env, r, @intCast(i), elem);
-            }
-        },
-        .object => |obj| {
-            _ = n.napi_create_object(env, &r);
-            var it = obj.entries.iterator();
-            while (it.next()) |entry| {
-                const key = entry.key_ptr.*;
-                const v = valueToNapi(env, entry.value_ptr.*) orelse continue;
-                // napi_set_named_property requires a null-terminated key.
-                var key_z: [64:0]u8 = std.mem.zeroes([64:0]u8);
-                const copy_len = @min(key.len, 63);
-                @memcpy(key_z[0..copy_len], key[0..copy_len]);
-                _ = n.napi_set_named_property(env, r, &key_z, v);
-            }
-        },
-        // function/builtin are not meaningful as node properties — return undefined.
-        .function, .builtin => _ = n.napi_get_undefined(env, &r),
-    }
-    return r;
-}

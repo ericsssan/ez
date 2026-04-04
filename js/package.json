@@ -10,8 +10,8 @@
   "files": [
     "index.js",
     "bun-ffi.js",
-    "node-view.js",
-    "plugin-runner.js"
+    "estree-view.js",
+    "rule-runner.js"
   ],
   "license": "MIT",
   "devDependencies": {

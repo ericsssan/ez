@@ -18,7 +18,7 @@ const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
 const { parse, getTagNames } = require("./index");
-const { runPlugins } = require("./plugin-runner");
+const { runPlugins } = require("./rule-runner");
 const { loadPlugin } = require("./load-plugin");
 const { extractRules } = require("./rule-loader");
 
@@ -221,7 +221,7 @@ if (allPlugins.length === 0) {
 
 // ── Extract rules to Zig interpreter ────────────────────────────
 // Split rules: extractable ones run in Zig (zero JS per file),
-// remaining ones run in JS via plugin-runner.
+// remaining ones run in JS via rule-runner.
 
 let nativeBinding = null;
 let jsPlugins = allPlugins; // default: all in JS

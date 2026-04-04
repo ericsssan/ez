@@ -1,6 +1,6 @@
 "use strict";
 
-const { nodeView, NONE, effectiveTypeName, T } = require("./node-view");
+const { nodeView, NONE, effectiveTypeName, T } = require("./estree-view");
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
