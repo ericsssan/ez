@@ -3,6 +3,7 @@ const ast_mod = @import("../../parser/ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
 const NodeIndex = ast_mod.NodeIndex;
+const TokenTag = @import("../../parser/token.zig").Tag;
 const scope_mod = @import("../../parser/scope.zig");
 const ScopeTree = scope_mod.ScopeTree;
 const ScopeId = scope_mod.ScopeId;
@@ -80,6 +81,17 @@ pub const EsTreeAdapter = struct {
                         return .{ .string = if (tag == .array_literal) "ArrayPattern" else "ObjectPattern" };
                     }
                 }
+            }
+            // Method/getter/setter tags inside an object literal → ESTree "Property".
+            // Inside a class body they stay "MethodDefinition".
+            switch (tag) {
+                .method_def, .getter_def, .setter_def,
+                .computed_method_def, .computed_getter_def, .computed_setter_def => {
+                    const p = q.nodeParent(idx);
+                    if (p != NONE and q.ast.nodes.items(.tag)[p] == .object_literal)
+                        return .{ .string = "Property" };
+                },
+                else => {},
             }
             return .{ .string = q.nodeType(idx) };
         }
@@ -220,10 +232,15 @@ pub const EsTreeAdapter = struct {
             .object_literal, .object_pattern => self.objectProp(prop, lhs, rhs),
             .array_literal, .array_pattern => self.arrayProp(prop, lhs, rhs),
 
-            // Property
+            // Property (plain key:value, shorthand, computed)
             .property, .computed_property, .shorthand_property,
             => self.propertyProp(tag, prop, lhs, rhs),
 
+            // Method/getter/setter in class body → MethodDefinition
+            // Method/getter/setter in object literal → Property (type handled above)
+            .method_def, .getter_def, .setter_def, .constructor_def,
+            .computed_method_def, .computed_getter_def, .computed_setter_def,
+            => self.methodNodeProp(idx, tag, prop, lhs, rhs),
 
             // Import/Export
             .import_decl => self.importProp(prop, lhs),
@@ -618,10 +635,37 @@ pub const EsTreeAdapter = struct {
         return .undefined;
     }
 
-    /// Exposes method/getter/setter node properties when acting as "Property"
-    /// inside an object literal (ESLint represents them as Property, not MethodDefinition).
+    /// Dispatches method/getter/setter/constructor node properties.
+    /// Routes to Property semantics when inside an object literal,
+    /// MethodDefinition semantics when inside a class body.
+    fn methodNodeProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
+        const q = self.query;
+        const p = q.nodeParent(idx);
+        const in_object = p != NONE and q.ast.nodes.items(.tag)[p] == .object_literal;
+        if (in_object) return self.objectMethodAsPropProp(idx, tag, prop, lhs, rhs);
+        return self.classMethodProp(idx, tag, prop, lhs, rhs);
+    }
+
+    /// MethodDefinition properties (class body context).
+    fn classMethodProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
+        if (std.mem.eql(u8, prop, "key")) return self.nodeOrNull(lhs);
+        if (std.mem.eql(u8, prop, "kind")) return .{ .string = switch (tag) {
+            .getter_def, .computed_getter_def => "get",
+            .setter_def, .computed_setter_def => "set",
+            .constructor_def => "constructor",
+            else => "method",
+        } };
+        if (std.mem.eql(u8, prop, "computed")) return .{ .boolean = switch (tag) {
+            .computed_method_def, .computed_getter_def, .computed_setter_def => true,
+            else => false,
+        } };
+        if (std.mem.eql(u8, prop, "static")) return .{ .boolean = self.methodIsStatic(idx) };
+        if (std.mem.eql(u8, prop, "value")) return self.synthFunctionExpr(idx, tag, rhs);
+        return .undefined;
+    }
+
+    /// Property properties (object literal method context).
     fn objectMethodAsPropProp(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, prop: []const u8, lhs: u32, rhs: u32) Value {
-        _ = idx;
         if (std.mem.eql(u8, prop, "key")) return self.nodeOrNull(lhs);
         if (std.mem.eql(u8, prop, "kind")) return .{ .string = switch (tag) {
             .getter_def, .computed_getter_def => "get",
@@ -637,9 +681,61 @@ pub const EsTreeAdapter = struct {
             else => false,
         } };
         if (std.mem.eql(u8, prop, "shorthand")) return .{ .boolean = false };
-        // 'value' is the function expression body — expose via rhs (MethodData index)
-        _ = rhs;
+        if (std.mem.eql(u8, prop, "value")) return self.synthFunctionExpr(idx, tag, rhs);
         return .undefined;
+    }
+
+    /// Synthesize a FunctionExpression Value for a method/getter/setter node.
+    /// rhs is the extra_data index into MethodData { params_start, params_end, body, return_type }.
+    fn synthFunctionExpr(self: *EsTreeAdapter, idx: u32, tag: Node.Tag, rhs: u32) Value {
+        const q = self.query;
+        const method_data = q.ast.extraData(ast_mod.MethodData, rhs);
+        const params = self.buildNodeArray(method_data.params_start, method_data.params_end);
+        const body_idx = @intFromEnum(method_data.body);
+
+        // Detect async/generator from the main_token tag.
+        // Layout: [static] [async] [*] name (...)
+        const main_tok = q.nodeMainToken(idx);
+        const main_tok_tag = q.tokenTag(main_tok);
+        const is_async = main_tok_tag == @intFromEnum(TokenTag.kw_async);
+        const is_generator_star = main_tok_tag == @intFromEnum(TokenTag.asterisk);
+        // async generator: mainToken=async, next token is *
+        const is_generator = is_generator_star or
+            (is_async and main_tok + 1 < q.ast.tokens.len and
+             q.tokenTag(main_tok + 1) == @intFromEnum(TokenTag.asterisk));
+
+        _ = tag;
+
+        const obj = self.arena.create(Value.Object) catch return .undefined;
+        obj.* = .{ .entries = std.StringArrayHashMap(Value).init(self.arena) };
+        obj.entries.put("type", .{ .string = "FunctionExpression" }) catch {};
+        obj.entries.put("id", .null_val) catch {};
+        obj.entries.put("params", params) catch {};
+        obj.entries.put("body", self.nodeOrNull(body_idx)) catch {};
+        obj.entries.put("async", .{ .boolean = is_async }) catch {};
+        obj.entries.put("generator", .{ .boolean = is_generator }) catch {};
+        return .{ .object = obj };
+    }
+
+    /// Returns true if a class method node has a `static` modifier.
+    /// Scans backwards from main_token for kw_static.
+    fn methodIsStatic(self: *EsTreeAdapter, idx: u32) bool {
+        const q = self.query;
+        const main_tok = q.nodeMainToken(idx);
+        const kw_static = @intFromEnum(TokenTag.kw_static);
+        var i: i64 = @as(i64, @intCast(main_tok)) - 1;
+        while (i >= 0) : (i -= 1) {
+            const t = q.tokenTag(@intCast(i));
+            if (t == kw_static) return true;
+            // Stop at tokens that can't be method modifiers
+            const kw_async_tag = @intFromEnum(TokenTag.kw_async);
+            const star_tag = @intFromEnum(TokenTag.asterisk);
+            const kw_get_tag = @intFromEnum(TokenTag.kw_get);
+            const kw_set_tag = @intFromEnum(TokenTag.kw_set);
+            if (t != kw_static and t != kw_async_tag and t != star_tag and
+                t != kw_get_tag and t != kw_set_tag) break;
+        }
+        return false;
     }
 
     fn importProp(self: *EsTreeAdapter, prop: []const u8, lhs: u32) Value {
