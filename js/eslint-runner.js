@@ -2990,7 +2990,7 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
   const _template = _buildTemplate(tagEnterHandlers, tagExitHandlers, tagCount, fileLevelEnter, fileLevelExit, batchScannable);
 
   return { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
-           fileLevelEnter, fileLevelExit, batchScannable, _template, allSelectorsTyped };
+           fileLevelEnter, fileLevelExit, batchScannable, _template };
 }
 
 function _buildTemplate(tagEnterHandlers, tagExitHandlers, tagCount, fileLevelEnter, fileLevelExit, batchScannable) {
@@ -3113,16 +3113,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const esq = hasSelectors ? esquery() : null;
   const pd = ast._parentData;
 
+  // Reusable ancestors buffer — reset per node, never reallocated.
+  // Safe: esquery only reads the array; both _runSelectorList calls per node are synchronous.
+  const _ancestorsBuf = [];
+
   function getAncestorsFor(nodeIdx) {
-    if (!pd) return [];
+    _ancestorsBuf.length = 0;
+    if (!pd) return _ancestorsBuf;
     // esquery expects ancestors[0] = immediate parent (closest first), not root-first.
-    const ancestors = [];
     let p = pd[nodeIdx];
     while (p !== NONE && p !== undefined && p < ast.nodeCount) {
-      ancestors.push(nodeView(ast, p));
+      _ancestorsBuf.push(nodeView(ast, p));
       p = pd[p];
     }
-    return ancestors;
+    return _ancestorsBuf;
   }
 
   function invokeHandlers(mapKey, nodeIdx) {
@@ -3708,7 +3712,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // ── Full optimizer path (files with >= 100 nodes) ──────────────
   const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip, selectorHandlers);
   const { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
-          fileLevelEnter, fileLevelExit, batchScannable, allSelectorsTyped } = plan;
+          fileLevelEnter, fileLevelExit, batchScannable } = plan;
 
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   const usePruning = canSkip && relevantTagCount < tagCount * 0.5 && pd;
