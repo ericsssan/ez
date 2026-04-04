@@ -2823,8 +2823,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         const tag = nodeTags[idx];
         let tn = tagNames[tag];
         if (!tn) continue;
+        const isMethodNode = tn === 'MethodDefinition'; // save before remap
         // Remap MethodDefinition → Property inside object literals (ESTree convention)
-        if (tn === 'MethodDefinition' && pd) {
+        if (isMethodNode && pd) {
           const pi2 = pd[idx];
           if (pi2 !== NONE && pi2 < ast.nodeCount) {
             const pt = nodeTags[pi2];
@@ -2921,7 +2922,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, false);
-        if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, false);
+        if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, false);
         if (hasSelectors) invokeSelectorHandlers(idx, false);
       } else {
         // Exit event (bitwise NOT to get node index)
@@ -2929,8 +2930,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         const tag = nodeTags[idx];
         let tn = tagNames[tag];
         if (!tn) continue;
+        const isMethodNode = tn === 'MethodDefinition'; // save before remap
         // Remap MethodDefinition → Property inside object literals
-        if (tn === 'MethodDefinition' && pd) {
+        if (isMethodNode && pd) {
           const pi2 = pd[idx];
           if (pi2 !== NONE && pi2 < ast.nodeCount) {
             const pt = nodeTags[pi2];
@@ -2997,7 +2999,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             }
           }
         }
-        if (hasMethodFn && tn === 'MethodDefinition') invokeMethodFnHandlers(idx, true);
+        if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
         // Exit branching statements — merge reachability
         if (hasCodePath) {
           if (tn === 'IfStatement' || tn === 'TryStatement' || tn === 'SwitchStatement' ||
