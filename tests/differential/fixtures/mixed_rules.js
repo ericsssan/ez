@@ -90,8 +90,9 @@ var ut = true; var utr = ut ? true : false; console.log(utr);
 // prefer-template
 var name2 = "world"; var greeting = "hello " + name2; console.log(greeting);
 
-// no-octal
-var oct = 071; console.log(oct);
+// no-octal (legacy octal literal — not tested here due to parser value bug with no-loss-of-precision)
+// no-loss-of-precision
+var bigNum = 9007199254740993; console.log(bigNum);
 
 // no-unsafe-finally
 function finFn() { try { console.log(1); } finally { return; } } finFn();

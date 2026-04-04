@@ -365,13 +365,18 @@ class SourceCode {
       if (node.mainToken !== undefined) return [this._makeToken(node.mainToken)];
       return [];
     }
-    const tokenIndices = [];
-    collectSubtreeTokens(ast, node._i, tokenIndices);
-    tokenIndices.sort((a, b) => ast._tokStarts[a] - ast._tokStarts[b]);
-    const toks = tokenIndices.map(i => this._makeToken(i));
-    // Apply filter if provided
-    if (filterOrOpts && typeof filterOrOpts.filter === 'function') {
-      return toks.filter(filterOrOpts.filter);
+    // Use strict range: only tokens within [startTok, maxTok] — no forward-scan extension.
+    // collectSubtreeTokens extends past maxTok to include trailing ); etc., which breaks
+    // token-comparison rules like no-self-compare.
+    if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+    if (!ast._minTokCache) _computeMinTok(ast);
+    const startTok = ast._minTokCache[node._i];
+    const maxTok   = ast._maxTokCache[node._i];
+    const fn = filterOrOpts && typeof filterOrOpts.filter === 'function' ? filterOrOpts.filter : null;
+    const toks = [];
+    for (let t = startTok; t <= maxTok; t++) {
+      const tok = this._makeToken(t);
+      if (!fn || fn(tok)) toks.push(tok);
     }
     return toks;
   }
@@ -2761,12 +2766,16 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
     }
     const types = Array.isArray(rootType) ? rootType : [rootType];
     for (const rt of types) {
-      const i = tagNames.indexOf(rt);
-      if (i < 0) continue;
-      selectorTagArr[i] = 1;
-      const byTag = sh.isExit ? selectorsByTagExit : selectorsByTagEnter;
-      if (!byTag[i]) byTag[i] = [];
-      byTag[i].push(sh);
+      // sanz uses variant tags: populate ALL tag indices for this type name.
+      const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;
+      const indices = allTags ? allTags : (tagNames.indexOf(rt) >= 0 ? [tagNames.indexOf(rt)] : []);
+      for (let ki = 0; ki < indices.length; ki++) {
+        const i = indices[ki];
+        selectorTagArr[i] = 1;
+        const byTag = sh.isExit ? selectorsByTagExit : selectorsByTagEnter;
+        if (!byTag[i]) byTag[i] = [];
+        byTag[i].push(sh);
+      }
     }
   }
   _cachedSelectorPlanPlugins = plugins;
@@ -2808,7 +2817,8 @@ let _tagSetCacheRef = null;
 let _cachedBranchTagSet = null, _cachedCatchTagSet = null, _cachedTerminatorTagSet = null;
 let _cachedIfStmtTag = -1;
 let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
-let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> for O(1) reverse lookup
+let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> — last occurrence, for O(1) reverse lookup
+let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL variant tag indices
 
 function _ensureTagCaches(tagNames) {
   if (_tagSetCacheRef === tagNames) return;
@@ -2819,8 +2829,20 @@ function _ensureTagCaches(tagNames) {
   _cachedTerminatorTagSet = new Set([..._TERMINATOR_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
   _cachedExitKeys = tagNames.map(t => t ? t + ':exit' : null);
   const m = new Map();
-  for (let i = 0; i < tagNames.length; i++) { if (tagNames[i]) m.set(tagNames[i], i); }
+  const allTags = new Map(); // typeName → Array<int>
+  for (let i = 0; i < tagNames.length; i++) {
+    const tn = tagNames[i];
+    if (!tn) continue;
+    m.set(tn, i);
+    let arr = allTags.get(tn);
+    if (!arr) { arr = []; allTags.set(tn, arr); }
+    arr.push(i);
+  }
+  // Convert to Int32Arrays for fast iteration
+  const allTagsFinal = new Map();
+  for (const [tn, arr] of allTags) allTagsFinal.set(tn, new Int32Array(arr));
   _cachedTypeNameToTag = m;
+  _cachedTypeNameToAllTags = allTagsFinal;
 }
 
 /**
@@ -2833,13 +2855,17 @@ function _getTagHandlerArrays(visitorMap, tagCount) {
   if (visitorMap._tagHandlers) return visitorMap._tagHandlers;
   const enter = new Array(tagCount).fill(null);
   const exit  = new Array(tagCount).fill(null);
+  // sanz uses variant tags: multiple tag indices per ESTree type name (e.g. BinaryExpression
+  // has one tag per operator, Literal has one per literal kind). We must populate ALL variant
+  // tags with the same handler array so that any variant fires the right visitors.
   for (const [key, handlers] of visitorMap) {
     if (key.endsWith(':exit')) {
-      const t = _cachedTypeNameToTag.get(key.slice(0, -5));
-      if (t !== undefined) exit[t] = handlers;
+      const typeName = key.slice(0, -5);
+      const tags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(typeName) : null;
+      if (tags) { for (let i = 0; i < tags.length; i++) exit[tags[i]] = handlers; }
     } else {
-      const t = _cachedTypeNameToTag.get(key);
-      if (t !== undefined) enter[t] = handlers;
+      const tags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(key) : null;
+      if (tags) { for (let i = 0; i < tags.length; i++) enter[tags[i]] = handlers; }
     }
   }
   visitorMap._tagHandlers = enter;
@@ -2908,11 +2934,11 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
     for (const sh of selectorHandlers) {
       const rootType = _getSelectorRootTypes(sh.selector);
       if (rootType === null) { hasUniversalSelectors = true; continue; }
-      if (Array.isArray(rootType)) {
-        for (const rt of rootType) { const i = tagNames.indexOf(rt); if (i >= 0) selectorRelevantTags[i] = 1; }
-      } else {
-        const tagIdx = tagNames.indexOf(rootType);
-        if (tagIdx >= 0) selectorRelevantTags[tagIdx] = 1;
+      const rtArr = Array.isArray(rootType) ? rootType : [rootType];
+      for (const rt of rtArr) {
+        const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;
+        if (allTags) { for (let ki = 0; ki < allTags.length; ki++) selectorRelevantTags[allTags[ki]] = 1; }
+        else { const i = tagNames.indexOf(rt); if (i >= 0) selectorRelevantTags[i] = 1; }
       }
       // unknown tag name (e.g. TSModuleDeclaration not in sanz's tagNames): selector won't fire, skip
     }

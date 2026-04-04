@@ -52,7 +52,7 @@ const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 let sharedBuffer = null;
 
 function ensureBuffer(sourceLen) {
-  const needed = HEADER_SIZE + sourceLen * 20; // heuristic: 20x source size
+  const needed = HEADER_SIZE + sourceLen * 30; // heuristic: 30x source size (minified files need ~25x)
   const minSize = Math.max(needed, DEFAULT_BUFFER_SIZE);
 
   if (!sharedBuffer || sharedBuffer.byteLength < minSize) {

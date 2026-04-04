@@ -175,11 +175,16 @@ function runScalingBench(label, handlerObj, hitsPerFile) {
   const ns1   = results[1] ? results[1].ns - baseNs : 1;
   const ns200 = results[results.length - 1].ns - baseNs;
   const ratio = ns200 / (ns1 || 1);
+  // Ratio buckets: 200x more rules → how much slower?
+  //   < 3x  → O(1): traversal/parse dominates, adding rules is essentially free
+  //   < 15x → sub-linear: good (~O(log n) territory, dispatch tables working)
+  //   < 80x → moderate: noticeable scaling, room for improvement
+  //   else  → near-linear: O(rules) dispatch problem
   let verdict;
-  if      (ratio < 200 * 0.1)  verdict = "✓ effectively O(1)  (parse/traversal dominates)";
-  else if (ratio < 200 * 0.4)  verdict = "~ sub-linear";
-  else if (ratio < 200 * 0.75) verdict = "~ moderate";
-  else                         verdict = "✗ near-linear  ← O(rules) problem";
+  if      (ratio < 3)   verdict = "✓ O(1)  (traversal dominates, rules are free)";
+  else if (ratio < 15)  verdict = "~ sub-linear  (~O(log n) dispatch overhead)";
+  else if (ratio < 80)  verdict = "~ moderate  (noticeable scaling)";
+  else                  verdict = "✗ near-linear  ← O(rules) problem";
   console.log(`  Rules 1→200: 200×  |  Dispatch 1→200: ${ratio.toFixed(1)}×  |  ${verdict}`);
   return results;
 }

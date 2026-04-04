@@ -1721,9 +1721,9 @@ const NodeProto = {
     if (t === T.labeled_stmt) {
       tokIdx = this.mainToken;
     } else if (t === T.break_label || t === T.continue_label) {
-      const tokOffset = ast.nodeLhs(this._i);
-      if (tokOffset === NONE) return null;
-      tokIdx = this.mainToken + tokOffset;
+      const tokAbsIdx = ast.nodeLhs(this._i);
+      if (tokAbsIdx === NONE) return null;
+      tokIdx = tokAbsIdx; // nodeLhs stores absolute token index for break/continue label
     }
     if (tokIdx === null) return null;
     // Return an Identifier-like object with name, range, loc, type.
