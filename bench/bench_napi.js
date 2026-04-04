@@ -7,7 +7,7 @@
  */
 
 const { parse, reset, getTagNames } = require("../js/index");
-const { runPlugins } = require("../js/rule-runner");
+const { runPlugins } = require("../js/eslint-runner");
 const fs = require("fs");
 const path = require("path");
 

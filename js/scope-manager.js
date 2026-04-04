@@ -9,7 +9,7 @@
  *   { globalScope, scopes, acquire(node, inner?), acquireAll(node) }
  */
 
-const { nodeView, NONE } = require("./estree-view");
+const { nodeView, NONE } = require("./estree-adapter");
 const { T } = require("./tags");
 
 const NONE32 = 0xFFFFFFFF;

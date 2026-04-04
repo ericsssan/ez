@@ -1,6 +1,6 @@
 "use strict";
 const { parse, reset, getTagNames } = require("../js/index");
-const { runPlugins } = require("../js/rule-runner");
+const { runPlugins } = require("../js/eslint-runner");
 
 const tagNames = getTagNames();
 

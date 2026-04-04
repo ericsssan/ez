@@ -18,7 +18,7 @@ const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
 const { parse, getTagNames } = require("./index");
-const { runPlugins } = require("./rule-runner");
+const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
 // ── CLI arg parsing ──────────────────────────────────────────────

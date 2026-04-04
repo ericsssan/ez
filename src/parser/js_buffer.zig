@@ -97,10 +97,13 @@ pub const SemanticHeader = extern struct {
 
     // Node → containing scope mapping (one entry per AST node)
     node_scope_ids_offset: u32,        // u32[] — for each node, its containing ScopeId
+
+    // Per-node reachability (one byte per AST node): 1 = live, 0 = dead code
+    node_reachable_offset: u32,        // u8[] — 1 if node is in reachable code path
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 88);
+    std.debug.assert(@sizeOf(SemanticHeader) == 92);
 }
 
 // ── Semantic Data Serializer ─────────────────────────────────────
@@ -230,6 +233,15 @@ pub fn writeSemanticData(
         .ref_scope_ids_offset = ptrOffsetPub(buf, ref_scope_ids.ptr),
 
         .node_scope_ids_offset = ptrOffsetPub(buf, node_scope_ids.ptr),
+
+        .node_reachable_offset = blk: {
+            if (sem.node_reachable.len > 0) {
+                const arr = try alloc.alloc(u8, sem.node_reachable.len);
+                @memcpy(arr, sem.node_reachable);
+                break :blk ptrOffsetPub(buf, arr.ptr);
+            }
+            break :blk 0;
+        },
     };
 
     return ptrOffsetPub(buf, header_mem.ptr);

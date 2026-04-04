@@ -1,6 +1,6 @@
 "use strict";
 
-const { AstView, setTagNames, reset: resetView } = require("./estree-view");
+const { AstView, setTagNames, reset: resetView } = require("./estree-adapter");
 
 // ── Load native binding ──────────────────────────────────────────
 
@@ -120,9 +120,52 @@ function parse(source, options = {}) {
     throw new Error("sanz: parse failed (buffer too small or invalid source)");
   }
 
+  // Copy the AST output into a private buffer so that subsequent parse() calls
+  // (which reuse sharedBuffer) don't corrupt this AstView's typed array views.
+  //
+  // Layout of privateBuf:
+  //   [0 .. totalUsed)         compact AST data (header + nodes + tokens + semantic + ...)
+  //   [totalUsed .. srcStart)  zero padding — covers semantic header fields that may extend
+  //                            past totalUsed (e.g. NODE_REACHABLE at semOff+88 can equal
+  //                            totalUsed; in the original 4MB buffer those bytes are zero,
+  //                            but without padding they'd alias source text in privateBuf)
+  //   [srcStart .. srcStart+sourceLen)  source bytes
+  //
+  // After copy we must update:
+  //   H.SOURCE_OFFSET (byte 52): old value = sourceStart (~4MB); new value = srcStart
+  //   _symNameStarts[i]: old values = sourceStart + byte_offset; new = srcStart + byte_offset
+  const dv0 = new DataView(buf);
+  const totalUsed = dv0.getUint32(56 /* H.TOTAL_USED */, true);
+  const semOff = dv0.getUint32(68 /* H.SEMANTIC_DATA_OFFSET */, true);
+  // Semantic header occupies semOff .. semOff+96 (NODE_REACHABLE at +88, +4 bytes, +4 padding).
+  // srcStart must be >= semOff+96 so the zero-filled gap keeps all header reads returning 0.
+  const semEnd = semOff > 0 ? semOff + 96 : 0;
+  const srcStart = Math.max(totalUsed, semEnd);
+  const privateSize = srcStart + sourceLen;
+  const privateArr = new Uint8Array(privateSize); // zero-initialized
+  privateArr.set(new Uint8Array(buf, 0, totalUsed));             // compact data
+  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart); // source bytes
+  const privateBuf = privateArr.buffer;
+  const pdv = new DataView(privateBuf);
+
+  // Fix SOURCE_OFFSET
+  pdv.setUint32(52 /* H.SOURCE_OFFSET */, srcStart, true);
+  if (semOff > 0) {
+    const symCount = pdv.getUint32(semOff + 4 /* SH.SYMBOL_COUNT */, true);
+    if (symCount > 0) {
+      const nameStartsArrOff = pdv.getUint32(semOff + 60 /* SH.SYMBOL_NAME_STARTS */, true);
+      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
+        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
+        const shift = totalUsed - sourceStart; // negative: sourceStart >> totalUsed
+        for (let i = 0; i < symCount; i++) {
+          nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+        }
+      }
+    }
+  }
+
   // Verify magic
-  const dv = new DataView(buf);
-  const magic = dv.getUint32(0, true);
+  const magic = pdv.getUint32(0, true);
   if (magic !== MAGIC) {
     throw new Error("sanz: invalid buffer header (magic mismatch)");
   }
@@ -130,7 +173,7 @@ function parse(source, options = {}) {
   // Ensure tag names are loaded for NodeProto.type
   getTagNames();
 
-  return new AstView(buf);
+  return new AstView(privateBuf);
 }
 
 /**
@@ -145,7 +188,7 @@ let _cachedTagNames = null;
 
 /**
  * Get the tag name table (ESTree-compatible type names).
- * Cached after first call. Also initializes estree-view.js TAG_NAMES.
+ * Cached after first call. Also initializes estree-adapter.js TAG_NAMES.
  */
 function getTagNames() {
   if (_cachedTagNames) return _cachedTagNames;

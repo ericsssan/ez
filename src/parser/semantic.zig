@@ -74,12 +74,16 @@ pub const SemanticResult = struct {
     symbols: SymbolTable,
     references: ReferenceTable,
     diagnostics: []const Diagnostic,
+    /// Per-node reachability: 1 = live, 0 = dead (after return/throw/break/continue).
+    /// Length = node count of the analyzed AST.
+    node_reachable: []u8 = &.{},
 
     pub fn deinit(self: *SemanticResult, allocator: std.mem.Allocator) void {
         self.scopes.deinit();
         self.symbols.deinit();
         self.references.deinit();
         allocator.free(self.diagnostics);
+        if (self.node_reachable.len > 0) allocator.free(self.node_reachable);
         self.* = undefined;
     }
 };
@@ -100,6 +104,14 @@ pub const SemanticAnalyzer = struct {
 
     /// The scope that is currently being visited.
     current_scope: ScopeId,
+
+    /// Per-node reachability: 1 = live, 0 = dead code. Length = ast.nodes.len.
+    /// Owned by SemanticResult after analysis; freed via SemanticResult.deinit().
+    node_reachable: []u8 = &.{},
+
+    /// Whether the current code path is alive (not terminated by return/throw/break/continue).
+    /// Reset to true on entering each function body.
+    cfg_alive: bool = true,
 
     /// Global (scope_id, name) → SymbolId map for O(1) binding lookup.
     /// Single allocation replaces one StringHashMapUnmanaged per scope.
@@ -158,6 +170,12 @@ pub const SemanticAnalyzer = struct {
         // Heuristic: ~1 symbol per 8 nodes is conservative; avoids most rehashes.
         try self.scope_binding_map.ensureTotalCapacity(allocator, @max(64, @as(u32, @intCast(@min(ast.nodes.len / 8, std.math.maxInt(u32))))));
 
+        // Allocate per-node reachability array (1 byte per node; written during walk).
+        const node_count = ast.nodes.len;
+        const node_reachable = try allocator.alloc(u8, node_count);
+        @memset(node_reachable, 1); // default: all nodes reachable
+        self.node_reachable = node_reachable;
+
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
         self.resolveUnresolved();
@@ -169,6 +187,7 @@ pub const SemanticAnalyzer = struct {
             .symbols = self.symbols,
             .references = self.references,
             .diagnostics = try self.diagnostics.toOwnedSlice(self.allocator),
+            .node_reachable = node_reachable,
         };
     }
 
@@ -310,6 +329,12 @@ pub const SemanticAnalyzer = struct {
     fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) std.mem.Allocator.Error!void {
         if (idx == .none or idx == .root) return;
 
+        // Record reachability at the point this node is visited.
+        const node_int = @intFromEnum(idx);
+        if (node_int < self.node_reachable.len) {
+            self.node_reachable[node_int] = if (self.cfg_alive) 1 else 0;
+        }
+
         const tag = self.ast.nodeTag(idx);
         const data = self.ast.nodeData(idx);
 
@@ -394,27 +419,46 @@ pub const SemanticAnalyzer = struct {
 
             // ── Control flow with children ─────────────────
             .if_stmt => {
-                try self.visitNode(data.lhs);
-                try self.visitNode(data.rhs);
+                // if (cond) consequent  — no else branch
+                try self.visitNode(data.lhs); // condition (same liveness)
+                const alive_pre = self.cfg_alive;
+                try self.visitNode(data.rhs); // consequent (taken branch)
+                // After: either the skip path (alive_pre) or the taken path survives
+                self.cfg_alive = alive_pre or self.cfg_alive;
             },
             .if_else_stmt => {
-                try self.visitNode(data.lhs);
+                try self.visitNode(data.lhs); // condition
                 const if_data = self.ast.extraData(IfData, @intFromEnum(data.rhs));
+                const alive_pre = self.cfg_alive;
                 try self.visitNode(if_data.consequent);
+                const alive_true = self.cfg_alive;
+                self.cfg_alive = alive_pre;
                 try self.visitNode(if_data.alternate);
+                self.cfg_alive = alive_true or self.cfg_alive;
             },
             .while_stmt => {
-                try self.visitNode(data.lhs);
-                try self.visitNode(data.rhs);
+                const alive_pre = self.cfg_alive;
+                try self.visitNode(data.lhs); // condition
+                try self.visitNode(data.rhs); // body
+                // Loop may not execute; path after = alive_pre (conservative)
+                self.cfg_alive = alive_pre;
             },
             .do_while_stmt => {
-                try self.visitNode(data.lhs);
-                try self.visitNode(data.rhs);
+                const alive_pre = self.cfg_alive;
+                try self.visitNode(data.lhs); // body (runs at least once)
+                try self.visitNode(data.rhs); // condition
+                self.cfg_alive = alive_pre;
             },
             .try_stmt => try self.visitTryStmt(data),
             .labeled_stmt => try self.visitNode(data.lhs),
-            .return_stmt => try self.visitNode(data.lhs),
-            .throw_stmt => try self.visitNode(data.lhs),
+            .return_stmt => {
+                try self.visitNode(data.lhs); // return expression
+                self.cfg_alive = false;       // code after return is dead
+            },
+            .throw_stmt => {
+                try self.visitNode(data.lhs); // thrown expression
+                self.cfg_alive = false;       // code after throw is dead
+            },
             .expression_stmt => try self.visitNode(data.lhs),
 
             // ── Switch cases ───────────────────────────────
@@ -605,8 +649,10 @@ pub const SemanticAnalyzer = struct {
             .jsx_text_node => {},
 
             // ── Leaf nodes / no-ops ────────────────────────
-            .empty_stmt, .break_stmt, .break_label, .continue_stmt,
-            .continue_label, .debugger_stmt, .this_expr, .super_expr,
+            .break_stmt, .break_label, .continue_stmt, .continue_label => {
+                self.cfg_alive = false; // code after jump is dead
+            },
+            .empty_stmt, .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal,
             .null_literal, .regex_literal, .bigint_literal,
             .template_element, .import_meta,
@@ -745,19 +791,24 @@ pub const SemanticAnalyzer = struct {
         // Create a block scope for let/const in the init clause.
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
+        const alive_pre = self.cfg_alive;
         try self.visitNode(for_data.init);
         try self.visitNode(for_data.condition);
         try self.visitNode(for_data.update);
         try self.visitNode(data.rhs);
+        // Loop may not execute; code after is alive if pre-loop path was alive.
+        self.cfg_alive = alive_pre;
         self.leaveScope();
     }
 
     fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
         const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, fiof_data.body);
+        const alive_pre = self.cfg_alive;
         try self.visitNode(fiof_data.binding);
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
+        self.cfg_alive = alive_pre;
         self.leaveScope();
     }
 
@@ -816,8 +867,11 @@ pub const SemanticAnalyzer = struct {
         // Declare params.
         try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
 
-        // Visit body.
+        // Each function body starts with a fresh live path; restore outer state after.
+        const saved_alive = self.cfg_alive;
+        self.cfg_alive = true;
         try self.visitNode(fn_data.body);
+        self.cfg_alive = saved_alive;
 
         self.leaveScope();
     }
@@ -841,7 +895,10 @@ pub const SemanticAnalyzer = struct {
         }
 
         try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
+        const saved_alive = self.cfg_alive;
+        self.cfg_alive = true;
         try self.visitNode(fn_data.body);
+        self.cfg_alive = saved_alive;
 
         self.leaveScope();
     }
@@ -857,7 +914,10 @@ pub const SemanticAnalyzer = struct {
         self.scopes.setFlags(fn_scope, scope_flags);
 
         try self.visitParams(SubRange{ .start = arrow_data.params_start, .end = arrow_data.params_end });
+        const saved_alive = self.cfg_alive;
+        self.cfg_alive = true;
         try self.visitNode(arrow_data.body);
+        self.cfg_alive = saved_alive;
 
         self.leaveScope();
     }
@@ -1094,11 +1154,20 @@ pub const SemanticAnalyzer = struct {
 
     fn visitTryStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
         // lhs = try block, rhs = extra index to TryData
-        try self.visitNode(data.lhs);
+        const alive_before = self.cfg_alive;
+        try self.visitNode(data.lhs); // try block
+        const alive_after_try = self.cfg_alive;
+
         const try_data = self.ast.extraData(TryData, @intFromEnum(data.rhs));
-        // catch_node is a real catch_clause node — routes to visitCatchClause.
+        // catch: exception may be thrown from any point in try, so start with alive_before
+        self.cfg_alive = alive_before;
         try self.visitNode(try_data.catch_node);
-        // finally block
+        const alive_after_catch = self.cfg_alive;
+
+        // After try+catch: either try completed normally OR catch completed
+        self.cfg_alive = alive_after_try or alive_after_catch;
+
+        // finally: always runs; liveness after = liveness after finally body
         try self.visitNode(try_data.finally_body);
     }
 

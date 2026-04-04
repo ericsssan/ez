@@ -10,8 +10,8 @@
   "files": [
     "index.js",
     "bun-ffi.js",
-    "estree-view.js",
-    "rule-runner.js"
+    "estree-adapter.js",
+    "eslint-runner.js"
   ],
   "license": "MIT",
   "devDependencies": {

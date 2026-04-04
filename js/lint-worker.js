@@ -11,7 +11,7 @@
 const { workerData, parentPort } = require("worker_threads");
 const fs = require("fs");
 const { parse, getTagNames } = require("./index");
-const { runPlugins } = require("./rule-runner");
+const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
 const { pluginNames, ruleFilters: ruleFiltersArr, ruleConfig, applyFix, typeAware } = workerData;

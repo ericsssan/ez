@@ -263,6 +263,7 @@ class SourceCode {
     this._scopeRefIndex = null;
     this._scopeChildIndex = null;
     this._symRefIndex = null;
+    this._declSymIndex = null;
   }
 
   /**
@@ -666,6 +667,31 @@ class SourceCode {
       }
     }
     this._symRefIndex = symRefIndex;
+
+    // declNode ancestor → [symId, ...] index for O(1) getDeclaredVariables lookups.
+    // For each symbol, index it under its decl node AND all ancestor nodes up to the
+    // nearest scope boundary (covers VariableDeclaration → Declarator → Identifier pattern).
+    const declSymIndex = new Map();
+    if (ast._symDeclNodes && ast._parentData) {
+      const pd2 = ast._parentData;
+      const tags2 = ast._nodeTags;
+      const NONE32b = 0xFFFFFFFF;
+      for (let i = 0; i < (ast._semSymbolCount || 0); i++) {
+        const declNodeIdx = ast._symDeclNodes[i];
+        if (declNodeIdx === NONE32b || declNodeIdx >= ast.nodeCount) continue;
+        // Register at decl node itself and walk up to scope boundary
+        let cur = declNodeIdx;
+        while (cur !== NONE && cur !== NONE32b && cur < ast.nodeCount) {
+          let arr = declSymIndex.get(cur);
+          if (!arr) { arr = []; declSymIndex.set(cur, arr); }
+          arr.push(i);
+          const curTag = tags2[cur];
+          if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69) || _FN_TAGS.has(curTag)) break;
+          cur = pd2[cur];
+        }
+      }
+    }
+    this._declSymIndex = declSymIndex;
   }
 
   /**
@@ -1063,40 +1089,14 @@ class SourceCode {
     if (!node) return [];
     const ast = this._ast;
 
-    // Use real semantic data if available
+    // Use real semantic data if available — O(1) via precomputed _declSymIndex.
     if (ast._symDeclNodes && node._i !== undefined && node._i !== null) {
-      const NONE32 = 0xFFFFFFFF;
-      const nodeIdx = node._i;
-      const result = [];
-      // Find symbols whose decl_node is nodeIdx or a direct structural descendant.
-      // ESLint rules (e.g., prefer-const) call getDeclaredVariables(varDeclNode)
-      // while sanz stores the Identifier as decl_node, 2 hops deeper in the tree.
-      // IMPORTANT: Stop at function/class scope boundaries so that parameters of
-      // nested arrow functions don't get returned for the outer VariableDeclarator.
-      const pd = ast._parentData;
-      const tags = ast._nodeTags;
-      for (let i = 0; i < ast._semSymbolCount; i++) {
-        const declNodeIdx = ast._symDeclNodes[i];
-        if (declNodeIdx === NONE32 || declNodeIdx >= ast.nodeCount) continue;
-        if (declNodeIdx === nodeIdx) {
-          result.push(this._buildVariable(i));
-          continue;
-        }
-        // Walk ancestors of declNodeIdx looking for nodeIdx, stopping at scope boundaries.
-        // Scope-creating node tags: fn_decl(30-33), class_decl(34), fn_expr(63-66),
-        // class_expr(67), arrow_fn(68), async_arrow_fn(69).
-        if (pd) {
-          let cur = pd[declNodeIdx];
-          while (cur !== NONE && cur !== NONE32 && cur < ast.nodeCount) {
-            if (cur === nodeIdx) { result.push(this._buildVariable(i)); break; }
-            // Stop if we cross a function or class boundary
-            const curTag = tags[cur];
-            if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69) || _FN_TAGS.has(curTag)) break;
-            cur = pd[cur];
-          }
-        }
+      this._ensureScopeIndex();
+      const symIds = this._declSymIndex ? this._declSymIndex.get(node._i) : null;
+      if (symIds && symIds.length > 0) {
+        return symIds.map(i => this._buildVariable(i));
       }
-      if (result.length > 0) return result;
+      return [];
     }
 
     // Fallback: return param stubs with defs so rules don't crash
@@ -2575,12 +2575,12 @@ function _compileSelectorFastMatcher(parsedSelector) {
 
     // A > B (right identifier)
     if (right.type === 'identifier') {
-      return { fn: (_n, a) => checkParent(a), complete: leftComplete };
+      return { fn: (_n, a) => checkParent(a), complete: leftComplete, requiredParentType: leftType };
     }
     // A > .field (right is a field selector)
     if (right.type === 'field') {
       const fieldName = right.name;
-      return { fn: (n, a) => checkParent(a) && a[0][fieldName] === n, complete: leftComplete };
+      return { fn: (n, a) => checkParent(a) && a[0][fieldName] === n, complete: leftComplete, requiredParentType: leftType };
     }
     // A > compound (wildcard/identifier + optional field + optional attributes on node)
     if (right.type === 'compound') {
@@ -2604,7 +2604,8 @@ function _compileSelectorFastMatcher(parsedSelector) {
           if (rChecks) { for (let i = 0; i < rChecks.length; i++) if (!rChecks[i](n)) return false; }
           return true;
         },
-        complete: leftComplete // right checks fully compiled
+        complete: leftComplete, // right checks fully compiled
+        requiredParentType: leftType
       };
     }
     return null;
@@ -2748,6 +2749,13 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
     }
     if (rootType === null) {
       // Unresolvable root type (e.g. universal selector *): must check every node.
+      // For child-combinator selectors with a known parent type (e.g. "ForStatement > .test"),
+      // store the parent tag index so invokeSelectorHandlers can pre-filter by parent tag,
+      // avoiding getAncestorsFor for the ~99% of nodes that are not children of that parent type.
+      if (sh._fastMatcher && sh._fastMatcher.requiredParentType && sh._fastMatcher.requiredParentTagIdx === undefined) {
+        const pti = tagNames.indexOf(sh._fastMatcher.requiredParentType);
+        sh._fastMatcher.requiredParentTagIdx = pti >= 0 ? pti : -1;
+      }
       (sh.isExit ? universalExit : universalEnter).push(sh);
       continue;
     }
@@ -3139,6 +3147,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         try {
           const fm = sh._fastMatcher;
           if (fm) {
+            // Parent tag pre-check: for child-combinator selectors with a known parent type
+            // (e.g. "ForStatement > .test"), skip getAncestorsFor when parent tag doesn't match.
+            // This avoids O(n) ancestor allocation for the vast majority of nodes.
+            if (fm.requiredParentTagIdx !== undefined && fm.requiredParentTagIdx >= 0) {
+              const pIdx = pd ? pd[nodeIdx] : NONE;
+              if (pIdx === NONE || pIdx >= nodeTags.length || nodeTags[pIdx] !== fm.requiredParentTagIdx) continue;
+            }
             // Fast path: use pre-compiled matcher
             let matched;
             if (!fm.complete || fm.fn.length >= 2) {
@@ -3474,6 +3489,30 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     return arr;
   })() : null;
 
+  // ── Catch stack: transparent parent pre-warming for findParentCatch ──
+  // preserve-caught-error calls node.parent in a loop up to the nearest CatchClause.
+  // During DFS we maintain a stack of CatchClause/function-boundary indices so that
+  // when we visit a ThrowStatement we can pre-warm those parent pointers in one pass.
+  // Cost: near-zero for files with no ThrowStatement nodes; O(depth) only for throws.
+  const _throwStmtTag   = _cachedTypeNameToTag !== null ? (_cachedTypeNameToTag.get('ThrowStatement')   ?? -1) : -1;
+  const _catchClauseTag = _cachedTypeNameToTag !== null ? (_cachedTypeNameToTag.get('CatchClause')       ?? -1) : -1;
+  // Uint8Array for O(1) tag membership checks in the hot path.
+  const _catchBarrierTagArr = new Uint8Array(tagCount);
+  for (const _bn of ['FunctionDeclaration','FunctionExpression','ArrowFunctionExpression','StaticBlock']) {
+    const _bt = _cachedTypeNameToTag !== null ? _cachedTypeNameToTag.get(_bn) : undefined;
+    if (_bt !== undefined) _catchBarrierTagArr[_bt] = 1;
+  }
+  // Only activate the catch stack when a rule actually listens to ThrowStatement.
+  const catchStack = (_throwStmtTag >= 0 && visitorMap.has('ThrowStatement') && pd) ? [] : null;
+  // For the large-file DFS skip guard: which tags must not be pruned for catch-stack bookkeeping.
+  // (CatchClause and barrier types must be visited to keep the stack consistent.)
+  const _catchStackTrackArr = catchStack !== null ? (() => {
+    const a = new Uint8Array(tagCount);
+    if (_catchClauseTag >= 0) a[_catchClauseTag] = 1;
+    for (let _t = 0; _t < tagCount; _t++) if (_catchBarrierTagArr[_t]) a[_t] = 1;
+    return a;
+  })() : null;
+
   if (ast.nodeCount < 100) {
     context._skipSet = null;
     // Lazy nodesByType for rules that need it
@@ -3526,6 +3565,26 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           if (pi2 !== NONE && pi2 < ast.nodeCount) {
             const pt = nodeTags[pi2];
             if (tagNames[pt] === 'ObjectExpression' || tagNames[pt] === 'ObjectPattern') tn = 'Property';
+          }
+        }
+        // Catch stack: bookkeep CatchClause/function-boundary for ThrowStatement pre-warming
+        if (catchStack !== null) {
+          if (tag === _catchClauseTag) {
+            catchStack.push(idx);
+          } else if (_catchBarrierTagArr[tag]) {
+            catchStack.push(-1); // function boundary — no enclosing catch in this scope
+          } else if (tag === _throwStmtTag) {
+            // Pre-warm parent pointers up to nearest CatchClause so rule's node.parent calls hit cache.
+            const top = catchStack.length > 0 ? catchStack[catchStack.length - 1] : -1;
+            if (top >= 0) {
+              let _p = pd[idx];
+              while (_p !== NONE && _p !== undefined && _p < ast.nodeCount) {
+                nodeView(ast, _p).parent; // populate .parent cache (idempotent)
+                if (_p === top) break;
+                if (_catchBarrierTagArr[nodeTags[_p]]) break;
+                _p = pd[_p];
+              }
+            }
           }
         }
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
@@ -3615,6 +3674,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             const pt = nodeTags[pi2];
             if (tagNames[pt] === 'ObjectExpression' || tagNames[pt] === 'ObjectPattern') tn = 'Property';
           }
+        }
+        // Catch stack: pop on CatchClause/function-boundary exit
+        if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
+          catchStack.pop();
         }
         // Code-path: terminators mark subsequent code unreachable (integer tag checks)
         if (hasCodePath) {
@@ -3782,7 +3845,26 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const tag = nodeTags[idx];
       const handlers = tagEnterHandlers[tag];
       const flags = tagFlags[tag];
-      if (canSkip && !handlers && !flags && !(hasPrivateIdOpt && tag === identTagOpt)) continue;
+      if (canSkip && !handlers && !flags && !(hasPrivateIdOpt && tag === identTagOpt) && !(_catchStackTrackArr && _catchStackTrackArr[tag])) continue;
+      // Catch stack: bookkeep CatchClause/function-boundary for ThrowStatement pre-warming
+      if (catchStack !== null) {
+        if (tag === _catchClauseTag) {
+          catchStack.push(idx);
+        } else if (_catchBarrierTagArr[tag]) {
+          catchStack.push(-1); // function boundary — no enclosing catch in this scope
+        } else if (tag === _throwStmtTag) {
+          const top = catchStack.length > 0 ? catchStack[catchStack.length - 1] : -1;
+          if (top >= 0) {
+            let _p = pd[idx];
+            while (_p !== NONE && _p !== undefined && _p < ast.nodeCount) {
+              nodeView(ast, _p).parent; // populate .parent cache (idempotent)
+              if (_p === top) break;
+              if (_catchBarrierTagArr[nodeTags[_p]]) break;
+              _p = pd[_p];
+            }
+          }
+        }
+      }
       if (flags & FLAG_CODEPATH_ENTER) {
         const outerSeg = cpTracker.segment;
         if (outerSeg) _segEndEvent(outerSeg);
@@ -3846,7 +3928,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const tag = nodeTags[idx];
       const handlers = tagExitHandlers[tag];
       const flags = tagFlags[tag];
-      if (canSkip && !handlers && !flags) continue;
+      if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag])) continue;
+      // Catch stack: pop CatchClause/function-boundary on exit
+      if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
+        catchStack.pop();
+      }
       if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
