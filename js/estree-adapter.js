@@ -720,6 +720,12 @@ const _emptyArray = Object.freeze([]);
  * named field getters (test, consequent, body, operator, etc.) so that
  * real ESLint rules can run against sanz's zero-copy AST buffer.
  */
+// Sentinel for "parent not yet computed". Using a unique object (not undefined/null)
+// lets nodeView pre-set _parent as an own property on every new node so all nodes
+// share the same V8 hidden class {_ast, _i, _parent} from creation — preventing
+// the IC polymorphism that occurs when _parent is added on first access.
+const _PARENT_UNSET = Object.create(null);
+
 const NodeProto = {
   // ── Low-level sanz accessors (existing) ──────────────────────
 
@@ -833,7 +839,7 @@ const NodeProto = {
    * Root node (index 0) returns null.
    */
   get parent() {
-    if (this._parent !== undefined) return this._parent;
+    if (this._parent !== _PARENT_UNSET) return this._parent;
     const pd = this._ast._parentData;
     if (!pd) { this._parent = null; return null; }
     // Walk past grouping_expr (ParenthesizedExpression) parents since nodeView
@@ -2070,6 +2076,7 @@ function nodeView(ast, index) {
     n = Object.create(NodeProto);
     n._ast = ast;
     n._i = index;
+    n._parent = _PARENT_UNSET; // pre-set own property → stable hidden class for all nodes
     cache[index] = n;
   }
   return n;
