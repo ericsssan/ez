@@ -122,8 +122,9 @@ for (const ruleName of COMPARABLE_RULES) {
 function runRunner(filePath) {
   const source = fs.readFileSync(filePath, "utf-8");
   try {
+    const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
     const ast = parse(source, { filename: filePath });
-    const reports = runPlugins(ast, _runnerPlugins, { tagNames });
+    const reports = runPlugins(ast, _runnerPlugins, { tagNames, sourceType });
     const results = [];
     for (const r of reports) {
       if (!r.ruleId || !COMPARABLE_RULES.has(r.ruleId)) continue;

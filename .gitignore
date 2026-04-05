@@ -1,5 +1,6 @@
 # Build artifacts
 .zig-cache/
+zig-pkg/
 zig-out/
 *.o
 main

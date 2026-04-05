@@ -691,14 +691,90 @@ class AstView {
     // Cache maxTok for use by collectSubtreeTokens (O(1) lookup instead of O(n) scan)
     this._maxTokCache = maxTok;
 
-    // Convert token indices to end byte positions (trimmed)
+    // Compute minMainTok[i] = min main-token index in node i's subtree
+    const minMainTok = new Int32Array(n);
+    for (let i = 0; i < n; i++) minMainTok[i] = mt[i];
+    if (pd) {
+      for (let i = 1; i < n; i++) {
+        const p = pd[i];
+        if (p !== NONE && minMainTok[i] < minMainTok[p]) minMainTok[p] = minMainTok[i];
+      }
+    }
+
+    // Build bracket matching: closeOpen[k] = opener token index for closing bracket k, or -1
+    const tokStarts = this._tokStarts;
+    const closeOpen = new Int32Array(tc).fill(-1);
+    const stack = [];
+    for (let j = 0; j < tc; j++) {
+      const c = src.charCodeAt(tokStarts[j]);
+      if (c === 123 || c === 91 || c === 40) { // { [ (
+        stack.push(j);
+      } else if (c === 125 || c === 93 || c === 41) { // } ] )
+        if (stack.length > 0) closeOpen[j] = stack.pop();
+      }
+    }
+
+    // Build isMainTok lookup (1 if token j is the main token of some AST node)
+    const isMainTok = new Uint8Array(tc);
+    for (let i = 0; i < n; i++) isMainTok[mt[i]] = 1;
+
+    // Comment positions for boundary-aware token end computation
+    const commentStarts = this._commentStarts;
+    const commentCount = this._commentCount || 0;
+
+    /**
+     * Compute the effective end of token j: trim trailing whitespace from the
+     * gap before the next token, but stop at comment boundaries.
+     * Without this, trimming from the next token's start position walks backwards
+     * through comment text, making the token appear to extend into the comment.
+     */
+    const effectiveTokEnd = (j) => {
+      const tStart = tokStarts[j];
+      let tEnd = j + 1 < tc ? tokStarts[j + 1] : src.length;
+      // Clamp to first comment that starts after this token
+      if (commentCount > 0) {
+        let lo = 0, hi = commentCount;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (commentStarts[m] <= tStart) lo = m + 1; else hi = m; }
+        if (lo < commentCount && commentStarts[lo] < tEnd) tEnd = commentStarts[lo];
+      }
+      while (tEnd > tStart && src.charCodeAt(tEnd - 1) <= 32) tEnd--;
+      return tEnd;
+    };
+
+    // Compute endPos: extend beyond maxTok to include trailing ; and matched closing brackets
+    const nodeTags = this._nodeTags;
     const endPos = new Int32Array(n);
     for (let i = 0; i < n; i++) {
-      const tokIdx = maxTok[i];
-      const tStart = this._tokStarts[tokIdx];
-      let tEnd = tokIdx + 1 < tc ? this._tokStarts[tokIdx + 1] : src.length;
-      while (tEnd > tStart && src.charCodeAt(tEnd - 1) <= 32) tEnd--;
-      endPos[i] = tEnd;
+      const base = maxTok[i];
+      let extEnd = effectiveTokEnd(base);
+
+      // SequenceExpression (tag 133): sanz uses '(' as main token but ESTree range
+      // excludes the outer parens — just use the last-expression end, no extension.
+      if (nodeTags[i] === T.sequence_expr) {
+        endPos[i] = extEnd;
+        continue;
+      }
+
+      const startP = tokStarts[minMainTok[i]];
+      let j = base + 1;
+      while (j < tc) {
+        if (isMainTok[j]) break; // next sibling/parent main token — stop
+        const c = src.charCodeAt(tokStarts[j]);
+        if (c === 125 || c === 93 || c === 41) { // } ] )
+          const opener = closeOpen[j];
+          if (opener >= 0 && tokStarts[opener] >= startP) {
+            // Closing bracket whose opener is within this node's range — include it
+            extEnd = Math.max(extEnd, effectiveTokEnd(j));
+          } else {
+            break; // Closing bracket belongs to parent/ancestor — stop
+          }
+        } else {
+          // Non-bracket token (e.g. ;) — always include
+          extEnd = Math.max(extEnd, effectiveTokEnd(j));
+        }
+        j++;
+      }
+      endPos[i] = extEnd;
     }
 
     return endPos;
@@ -997,6 +1073,9 @@ const NodeProto = {
     if (t === T.method_def || t === T.getter_def || t === T.setter_def ||
         t === T.constructor_def || t === T.computed_method_def ||
         t === T.computed_getter_def || t === T.computed_setter_def) {
+      // Cache the synthetic to ensure identity equality: node.parent.value === node
+      // (no-setter-return checks `parent.value === node` — must be the same object).
+      if (this._syntheticFn !== undefined) return this._syntheticFn;
       const md = ast.extraMethodData(ast.nodeRhs(this._i));
       const flags = _methodFlags(ast, this.mainToken);
       const params = ast._nodesFromRange(md.params_start, md.params_end);
@@ -1005,7 +1084,7 @@ const NodeProto = {
       // lookups (getFirstToken, getTokenBefore) work on this synthetic node.
       const myRange = this.range;
       const myLoc = this.loc;
-      return {
+      const synth = {
         type: 'FunctionExpression',
         id: null,
         async: flags.async,
@@ -1019,6 +1098,8 @@ const NodeProto = {
         loc: myLoc,
         parent: this, // parent = the Property/MethodDefinition node
       };
+      this._syntheticFn = synth;
+      return synth;
     }
     if (t === T.template_element) {
       // ESTree: value = { raw: string, cooked: string }

@@ -148,6 +148,11 @@ function _tokType(tag) {
   return 'Punctuator';
 }
 
+// ── Scope flag bit positions (must match src/parser/scope.zig ScopeFlags) ─────
+// packed struct(u16) { strict_mode, is_var_scope, has_use_strict, is_async, ... }
+const SF_STRICT_MODE    = 1; // bit 0 — strict by any cause (module mode, use strict, class body)
+const SF_HAS_USE_STRICT = 4; // bit 2 — has explicit 'use strict' directive in this scope
+
 // ── Source Code ──────────────────────────────────────────────────
 
 /**
@@ -234,9 +239,10 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
  * Provides getText(), getTokens(), getFirstToken(), getLastToken().
  */
 class SourceCode {
-  constructor(ast, sourceText) {
+  constructor(ast, sourceText, sourceType) {
     this._ast = ast;
     this.text = sourceText;
+    this._sourceType = sourceType || 'module';
     this._linesCache = null;
     this._tokensCache = null;
     this._scopeCache = new Map();
@@ -245,9 +251,10 @@ class SourceCode {
     this._tokenSkipList = null; // lazily built token position index
   }
 
-  reset(ast, sourceText) {
+  reset(ast, sourceText, sourceType) {
     this._ast = ast;
     this.text = sourceText;
+    this._sourceType = sourceType || 'module';
     this._linesCache = null;
     this._tokensCache = null;
     this._scopeCache.clear();
@@ -311,6 +318,15 @@ class SourceCode {
     const src = this.text;
     const start = ast._tokStarts[i];
     let end = i + 1 < ast.tokenCount ? ast._tokStarts[i + 1] : src.length;
+    // Clamp end to the first comment that starts after this token, so that
+    // trimming backwards does not walk through comment text into the token.
+    const cs = ast._commentStarts;
+    const cc = ast._commentCount || 0;
+    if (cc > 0) {
+      let lo = 0, hi = cc;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (cs[m] <= start) lo = m + 1; else hi = m; }
+      if (lo < cc && cs[lo] < end) end = cs[lo];
+    }
     while (end > start && src.charCodeAt(end - 1) <= 32) end--;
     const value = src.slice(start, end);
     const ls = ast._lineStarts();
@@ -745,7 +761,6 @@ class SourceCode {
     const KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
     const kind = ast._scopeKinds[scopeId];
     const flags16 = ast._scopeFlags[scopeId];
-    const isStrict = (flags16 & 1) !== 0;
     const parentId = ast._scopeParents[scopeId];
 
     // Ensure scope→symbol/ref/child indices are built (once per SourceCode).
@@ -790,6 +805,16 @@ class SourceCode {
       ? nodeView(ast, scopeNodeIdx) : null;
 
     const isVarScope = kind === 0 || kind === 1 || kind === 2; // global, module, function
+
+    // In script mode, isStrict comes from an explicit 'use strict' directive in this
+    // scope or inherited from an ancestor — NOT from module-mode wrapping.
+    // Class bodies (kind 4) and static blocks (kind 7) are always strict per spec.
+    const isAlwaysStrict = kind === 4 || kind === 7;
+    const isStrict = isAlwaysStrict || (
+      this._sourceType === 'script'
+        ? (flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict)
+        : (flags16 & SF_STRICT_MODE) !== 0
+    );
 
     const childScopes = [];
     const scope = {
@@ -1076,9 +1101,14 @@ class SourceCode {
     const KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
     const kind = ast._scopeKinds[scopeId];
     const flags16 = ast._scopeFlags[scopeId];
-    const isStrict = (flags16 & 1) !== 0;
     const parentId = ast._scopeParents[scopeId];
     const upper = (parentId !== NONE32) ? this._buildThinScope(parentId) : null;
+    const isAlwaysStrict = kind === 4 || kind === 7;
+    const isStrict = isAlwaysStrict || (
+      this._sourceType === 'script'
+        ? (flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict)
+        : (flags16 & SF_STRICT_MODE) !== 0
+    );
     const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE32;
     const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
       ? nodeView(ast, scopeNodeIdx) : null;
@@ -1128,7 +1158,21 @@ class SourceCode {
       this._ensureScopeIndex();
       const symIds = this._declSymIndex ? this._declSymIndex.get(node._i) : null;
       if (symIds && symIds.length > 0) {
-        return symIds.map(i => this._buildVariable(i));
+        // Merge variables with the same name (e.g. duplicate params `function f(a,b,a)`).
+        // ESLint scope analysis merges them into one variable with multiple defs.
+        const varMap = new Map();
+        for (const i of symIds) {
+          const v = this._buildVariable(i);
+          if (varMap.has(v.name)) {
+            const ex = varMap.get(v.name);
+            ex.identifiers.push(...v.identifiers);
+            ex.defs.push(...v.defs);
+            ex.references.push(...v.references);
+          } else {
+            varMap.set(v.name, v);
+          }
+        }
+        return Array.from(varMap.values());
       }
       return [];
     }
@@ -1380,9 +1424,12 @@ function _execReport(descriptor, ruleId, ruleMeta, ctx) {
   let resolvedLoc = loc;
   if (!resolvedLoc && node) {
     const sc = ctx.sourceCode;
+    // node may be a NodeView (.start/.end) or a token object (.range[0]/.range[1]).
+    const startIdx = node.start != null ? node.start : (node.range ? node.range[0] : 0);
+    const endIdx   = node.end   != null ? node.end   : (node.range ? node.range[1] : startIdx);
     resolvedLoc = {
-      start: sc.getLocFromIndex(node.start),
-      end: sc.getLocFromIndex(node.end != null ? node.end : node.start),
+      start: sc.getLocFromIndex(startIdx),
+      end:   sc.getLocFromIndex(endIdx),
     };
   } else if (resolvedLoc && typeof resolvedLoc.start === 'number') {
     const sc = ctx.sourceCode;
@@ -1409,7 +1456,7 @@ function _execReport(descriptor, ruleId, ruleMeta, ctx) {
   ctx._reports.push({
     ruleId,
     message: resolvedMsg,
-    node: node ? { type: node.type, start: node.start } : undefined,
+    node: node ? { type: node.type, start: node.start != null ? node.start : (node.range ? node.range[0] : undefined) } : undefined,
     loc: resolvedLoc,
     fix: fix && fix.length > 0 ? fix : undefined,
   });
@@ -1473,7 +1520,7 @@ class RuleContext {
     this.settings = {};
     // Satisfy ESLint v8 parserPath check used by getParserServices
     this.parserPath = '@typescript-eslint/parser';
-    const sc = new SourceCode(ast, sourceText);
+    const sc = new SourceCode(ast, sourceText, options.sourceType);
     this.sourceCode = sc;
     // Attach TypeScript parserServices for .ts/.tsx files
     if (options.parserServices) {
@@ -1482,6 +1529,7 @@ class RuleContext {
     // Short-circuit / error budget: per-rule violation count
     this._ruleErrors = Object.create(null);
     this._errorBudget = options.errorBudget || DEFAULT_ERROR_BUDGET;
+    if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
   }
 
   reset(ast, filename, sourceText, options = {}) {
@@ -1496,8 +1544,9 @@ class RuleContext {
     this._currentNodeIdx = 0;
     this._currentRule = null;
     this._currentRuleMeta = null;
-    this.sourceCode.reset(ast, sourceText);
+    this.sourceCode.reset(ast, sourceText, options.sourceType);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
+    if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
   }
 
   /**
@@ -1858,11 +1907,14 @@ class CodePathTracker {
   }
 
   // Exit branching statement. Merge: reachable if any branch was, or if implicit path exists.
+  // hasAllBranches=true (if-else, try-catch): all paths go through branch → reachable = anyBranchReachable
+  // hasAllBranches=false (switch-no-default, if-no-else, loops): implicit bypass path exists →
+  //   reachable = anyBranchReachable || savedReachable (bypass inherits entry reachability)
   exitBranch(hasAllBranches = false) {
     const top = this._branchStack.pop();
     if (!top) return _makeSegment(true);
     if (this.reachable) top.anyBranchReachable = true;
-    const reachable = hasAllBranches ? top.anyBranchReachable : true;
+    const reachable = hasAllBranches ? top.anyBranchReachable : (top.anyBranchReachable || top.savedReachable);
     const seg = _makeSegment(reachable);
     this._currentSegment = seg;
     if (this._codePath) this._codePath.currentSegments = [seg];
@@ -2739,11 +2791,10 @@ function _compileAttrCheck(attr) {
 
   // Existence check: [attr] means attr != null
   if (!op) return (n) => accessPath(n) != null;
-  // String/number comparison — use loose == to match esquery's behavior with "true"/"false"
-  // eslint-disable-next-line eqeqeq
-  if (op === '=')  return (n) => accessPath(n) == rawVal;
-  // eslint-disable-next-line eqeqeq
-  if (op === '!=') return (n) => accessPath(n) != rawVal;
+  // Literal comparisons: esquery coerces both sides to string ("true" === "".concat(true)).
+  // Using == would fail for e.g. true == "true" (JS: 1 == NaN → false).
+  if (op === '=')  { const sv = ''.concat(rawVal); return (n) => ''.concat(accessPath(n)) === sv; }
+  if (op === '!=') { const sv = ''.concat(rawVal); return (n) => ''.concat(accessPath(n)) !== sv; }
   if (op === '<')  return (n) => accessPath(n) <  rawVal;
   if (op === '>')  return (n) => accessPath(n) >  rawVal;
   if (op === '<=') return (n) => accessPath(n) <= rawVal;
@@ -2846,6 +2897,7 @@ let _tagSetCacheRef = null;
 let _cachedBranchTagSet = null, _cachedCatchTagSet = null, _cachedTerminatorTagSet = null;
 let _cachedIfStmtTagSet = null; // Set of ALL tag indices whose name is 'IfStatement'
 let _cachedIfStmtTag = -1; // first IfStatement tag (used for elseStartNodes only)
+let _cachedTryStmtTagSet = null; // Set of ALL tag indices whose name is 'TryStatement'
 let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
 let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> — last occurrence, for O(1) reverse lookup
 let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL variant tag indices
@@ -2860,6 +2912,7 @@ function _ensureTagCaches(tagNames) {
   _cachedCatchTagSet     = new Set();
   _cachedTerminatorTagSet = new Set();
   _cachedIfStmtTagSet    = new Set();
+  _cachedTryStmtTagSet   = new Set();
   for (let _t = 0; _t < tagNames.length; _t++) {
     const _tn = tagNames[_t];
     if (!_tn) continue;
@@ -2867,6 +2920,7 @@ function _ensureTagCaches(tagNames) {
     if (_CATCH_CASE_TYPES.has(_tn))  _cachedCatchTagSet.add(_t);
     if (_TERMINATOR_TYPES.has(_tn))  _cachedTerminatorTagSet.add(_t);
     if (_tn === 'IfStatement')       _cachedIfStmtTagSet.add(_t);
+    if (_tn === 'TryStatement')      _cachedTryStmtTagSet.add(_t);
   }
   _cachedIfStmtTag = tagNames.indexOf('IfStatement');
   _cachedExitKeys = tagNames.map(t => t ? t + ':exit' : null);
@@ -3445,6 +3499,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Use pre-cached tag index Sets (built once per session in _ensureTagCaches, not per file).
   const ifStmtTag = _cachedIfStmtTag;
   const _ifStmtTagSet = _cachedIfStmtTagSet;
+  const _tryStmtTagSet = _cachedTryStmtTagSet;
   const _branchEnterTagSet = _cachedBranchTagSet;
   const _catchCaseTagSet = _cachedCatchTagSet;
   const _terminatorTagSet = _cachedTerminatorTagSet;
@@ -3673,14 +3728,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             const oldSeg = cpTracker.segment;
             if (oldSeg) _segEndEvent(oldSeg);
             const seg = cpTracker.nextBranch();
-            if (seg) if (_segStartH) _dispatchSeg(_segStartH, seg);
+            if (seg) _segStartOrUnreachEvent(seg);
           }
           // Detect else branch (pre-computed map)
           if (elseStartNodes && elseStartNodes[idx]) {
             const oldSeg = cpTracker.segment;
             if (oldSeg) _segEndEvent(oldSeg);
             const seg = cpTracker.nextBranch();
-            if (seg) if (_segStartH) _dispatchSeg(_segStartH, seg);
+            if (seg) _segStartOrUnreachEvent(seg);
           }
         }
         const enter = isMethodNode ? visitorMap.get(tn) : _tagHandlers[tag];
@@ -3810,9 +3865,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (hasCodePath && _branchEnterTagSet.has(tag)) {
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
-          const hasAllBranches = _ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null;
+          const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
+            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null);
           const seg = cpTracker.exitBranch(hasAllBranches);
-          if (_segStartH) _dispatchSeg(_segStartH, seg);
+          _segStartOrUnreachEvent(seg);
         }
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
           const oldSeg = cpTracker.segment;
@@ -3978,13 +4034,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         const oldSeg2 = cpTracker.segment;
         if (oldSeg2) _segEndEvent(oldSeg2);
         const seg2 = cpTracker.nextBranch();
-        if (seg2) if (_segStartH) _dispatchSeg(_segStartH, seg2);
+        if (seg2) _segStartOrUnreachEvent(seg2);
       }
       if (elseStartNodes && elseStartNodes[idx]) {
         const oldSeg2 = cpTracker.segment;
         if (oldSeg2) _segEndEvent(oldSeg2);
         const seg2 = cpTracker.nextBranch();
-        if (seg2) if (_segStartH) _dispatchSeg(_segStartH, seg2);
+        if (seg2) _segStartOrUnreachEvent(seg2);
       }
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
@@ -4052,9 +4108,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (flags & FLAG_BRANCH_EXIT) {
         const oldSeg = cpTracker.segment;
         if (oldSeg) _segEndEvent(oldSeg);
-        const hasAllBranches = _ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null;
+        const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
+          (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null);
         const seg2 = cpTracker.exitBranch(hasAllBranches);
-        if (_segStartH) _dispatchSeg(_segStartH, seg2);
+        _segStartOrUnreachEvent(seg2);
       }
       if (flags & FLAG_CODEPATH_EXIT) {
         const oldSeg = cpTracker.segment;
@@ -4110,7 +4167,7 @@ let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
@@ -4144,10 +4201,10 @@ function runPlugins(ast, plugins, options = {}) {
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;
   if (_cachedContext) {
-    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget });
+    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType });
     context = _cachedContext;
   } else {
-    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget });
+    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType });
     _cachedContext = context;
   }
 

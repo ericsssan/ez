@@ -1,12 +1,7 @@
 .{
     .name = .sanz,
     .version = "0.0.1",
-    .dependencies = .{
-        .quickjs = .{
-            .url = "https://github.com/quickjs-ng/quickjs/archive/refs/tags/v0.8.0.tar.gz",
-            .hash = "N-V-__8AAOc8PgAx372JiWPXDPfXXmRee68lSiEGIJVCQx4G",
-        },
-    },
+    .dependencies = .{},
     .minimum_zig_version = "0.16.0-dev.2637+6a9510c0e",
     .fingerprint = 0x5a75af72cec19230,
     .paths = .{
