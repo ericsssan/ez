@@ -1,7 +1,7 @@
 ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.3028+a85495ca2/files/zig
 LINK_FLAGS :=
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance test-eslint-conformance run napi submodules
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi submodules
 
 test: test-unit test-linter test-recovery test-config
 
@@ -31,7 +31,7 @@ build-conformance:
 	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/babel_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/babel_runner $(LINK_FLAGS)
 	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/typescript_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
 
-test-conformance: build-conformance
+test-conformance: build-conformance napi
 	@echo ""
 	@echo "Parser Conformance"
 	@echo "────────────────────────────────────────────────────────────"
@@ -39,9 +39,6 @@ test-conformance: build-conformance
 	@./zig-out/bin/parser_tests_runner tests/conformance/test262-parser-tests --compact
 	@./zig-out/bin/babel_runner tests/conformance/babel/packages/babel-parser/test/fixtures --compact
 	@./zig-out/bin/typescript_runner tests/conformance/typescript/tests/cases/conformance --compact
-	@echo ""
-
-test-eslint-conformance: napi
 	@echo ""
 	@echo "ESLint Rule Conformance"
 	@echo "────────────────────────────────────────────────────────────"
@@ -54,7 +51,7 @@ test-differential: build napi
 test-e2e: build
 	bash tests/e2e/run.sh
 
-test-all: test test-fuzz test-js test-e2e test-differential test-conformance test-eslint-conformance
+test-all: test test-fuzz test-js test-e2e test-differential test-conformance
 
 build:
 	@mkdir -p zig-out/bin
