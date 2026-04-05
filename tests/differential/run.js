@@ -1,13 +1,15 @@
 "use strict";
 
 /**
- * Differential test harness — compares Sanz vs ESLint output.
+ * Differential test — compares both Sanz backends against ESLint+Espree.
  *
- * For each test file, runs both linters and reports mismatches:
- * - Rules that ESLint flags but Sanz doesn't (false negatives)
- * - Rules that Sanz flags but ESLint doesn't (false positives)
+ * For each fixture, runs COMPARABLE_RULES three ways:
+ *   espree  — ESLint's own Linter (authoritative reference)
+ *   native  — sanz binary (zig-out/bin/sanz --lint)
+ *   runner  — sanz parse → eslint-runner visitor dispatch (JS path)
  *
- * Requires: npm install eslint
+ * Reports false negatives (missed) and false positives (extra) per backend.
+ *
  * Run: node tests/differential/run.js [dir|file]
  */
 
@@ -18,12 +20,11 @@ const path = require("path");
 // ── Config ───────────────────────────────────────────────────
 
 const SANZ_BIN = path.resolve(__dirname, "../../zig-out/bin/sanz");
+const JS_ROOT   = path.resolve(__dirname, "../../js");
 const DEFAULT_DIR = path.resolve(__dirname, "fixtures");
 
-// All rules with direct ESLint equivalents (same name, same semantics).
-// Covers 70+ of our 98 rules.
 const COMPARABLE_RULES = new Set([
-  // Correctness (35)
+  // Correctness
   "no-debugger", "no-empty", "no-extra-semi", "no-dupe-keys",
   "no-dupe-args", "no-sparse-arrays", "no-unreachable",
   "no-unsafe-negation", "use-isnan", "valid-typeof",
@@ -37,7 +38,7 @@ const COMPARABLE_RULES = new Set([
   "no-irregular-whitespace", "no-new-symbol", "no-obj-calls",
   "no-prototype-builtins", "no-setter-return",
   "no-template-curly-in-string", "no-useless-catch",
-  // Suspicious (25)
+  // Suspicious
   "eqeqeq", "no-cond-assign", "no-control-regex", "no-delete-var",
   "no-empty-character-class", "no-eval", "no-implied-eval",
   "no-label-var", "no-lone-blocks", "no-multi-str",
@@ -47,7 +48,7 @@ const COMPARABLE_RULES = new Set([
   "no-unused-labels", "no-useless-escape", "no-void", "no-with",
   "require-yield", "no-case-declarations", "no-sequences",
   "no-throw-literal",
-  // Style (27)
+  // Style
   "no-var", "prefer-const", "no-array-constructor", "no-bitwise",
   "no-caller", "no-continue", "no-else-return", "no-eq-null",
   "no-extend-native", "no-extra-bind", "no-extra-boolean-cast",
@@ -58,157 +59,171 @@ const COMPARABLE_RULES = new Set([
   "no-return-assign", "no-unneeded-ternary", "prefer-template",
 ]);
 
-// ── Helpers ──────────────────────────────────────────────────
+// ── Espree (reference) ───────────────────────────────────────
 
-function detectSourceType(filePath) {
-  try {
-    const src = fs.readFileSync(filePath, "utf-8");
-    // If file has top-level import/export, it's a module
-    if (/^(import |export )/m.test(src)) return "module";
-  } catch {}
-  return "script";
+const { Linter } = require(path.join(JS_ROOT, "node_modules/eslint"));
+const espree = new Linter();
+const _espreeRules = {};
+for (const r of COMPARABLE_RULES) _espreeRules[r] = "error";
+
+function runEspree(filePath) {
+  const source = fs.readFileSync(filePath, "utf-8");
+  const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
+  const messages = espree.verify(source, [{
+    languageOptions: { ecmaVersion: 2022, sourceType },
+    rules: _espreeRules,
+  }], { filename: filePath });
+  return messages
+    .filter(m => !m.fatal && COMPARABLE_RULES.has(m.ruleId))
+    .map(m => ({ rule: m.ruleId, line: m.line }));
 }
 
-function runEslint(filePath) {
-  // Write a temp flat config enabling all comparable rules
-  const rules = {};
-  for (const rule of COMPARABLE_RULES) rules[rule] = "error";
+// ── Native binary ────────────────────────────────────────────
 
-  const sourceType = detectSourceType(filePath);
-  const configContent = `export default [{ languageOptions: { sourceType: "${sourceType}", ecmaVersion: 2022 }, rules: ${JSON.stringify(rules)} }];\n`;
-  const configPath = path.resolve(__dirname, ".eslint.config.mjs");
-  fs.writeFileSync(configPath, configContent);
-
-  const cmd = `npx eslint --config "${configPath}" --no-config-lookup --format json "${filePath}"`;
-
+function runNative(filePath) {
   try {
-    const result = execSync(cmd, { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-    fs.unlinkSync(configPath);
-    return parseEslintOutput(result);
+    const out = execSync(`"${SANZ_BIN}" --lint "${filePath}"`,
+      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
+    return parseNativeOutput(out);
   } catch (e) {
-    try { fs.unlinkSync(configPath); } catch {}
-    if (e.stdout) return parseEslintOutput(e.stdout);
-    return [];
+    return parseNativeOutput(e.stdout || e.stderr || "");
   }
 }
 
-function parseEslintOutput(json) {
-  try {
-    const data = JSON.parse(json);
-    if (!data[0] || !data[0].messages) return [];
-    return data[0].messages
-      .filter(m => COMPARABLE_RULES.has(m.ruleId))
-      .map(m => ({ rule: m.ruleId, line: m.line, message: m.message }));
-  } catch {
-    return [];
-  }
-}
-
-function runSanz(filePath) {
-  try {
-    const result = execSync(
-      `"${SANZ_BIN}" --lint "${filePath}"`,
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
-    );
-    return parseSanzOutput(result);
-  } catch (e) {
-    if (e.stdout) return parseSanzOutput(e.stdout);
-    if (e.stderr) return parseSanzOutput(e.stderr);
-    return [];
-  }
-}
-
-function parseSanzOutput(output) {
+function parseNativeOutput(output) {
   const results = [];
   for (const line of output.split("\n")) {
-    // Format: file:line:col: severity(rule-name): message
-    const match = line.match(/:(\d+):\d+: \w+\(([^)]+)\): (.+)/);
-    if (match && COMPARABLE_RULES.has(match[2])) {
-      results.push({ rule: match[2], line: parseInt(match[1]), message: match[3] });
-    }
+    const m = line.match(/:(\d+):\d+: \w+\(([^)]+)\): (.+)/);
+    if (m && COMPARABLE_RULES.has(m[2]))
+      results.push({ rule: m[2], line: parseInt(m[1]) });
   }
   return results;
 }
 
-function compareResults(file, eslintResults, sanzResults) {
-  const eslintRules = new Set(eslintResults.map(r => `${r.rule}:${r.line}`));
-  const sanzRules = new Set(sanzResults.map(r => `${r.rule}:${r.line}`));
+// ── ESLint-runner (JS path) ──────────────────────────────────
 
-  const falseNegatives = []; // ESLint flags, Sanz doesn't
-  const falsePositives = []; // Sanz flags, ESLint doesn't
+const { parse, getTagNames } = require(path.join(JS_ROOT, "index"));
+const { runPlugins } = require(path.join(JS_ROOT, "eslint-runner"));
+const RULES_DIR = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
+const tagNames = getTagNames();
 
-  for (const key of eslintRules) {
-    if (!sanzRules.has(key)) {
-      const [rule, line] = key.split(":");
-      falseNegatives.push({ rule, line: parseInt(line) });
-    }
-  }
-
-  for (const key of sanzRules) {
-    if (!eslintRules.has(key)) {
-      const [rule, line] = key.split(":");
-      falsePositives.push({ rule, line: parseInt(line) });
-    }
-  }
-
-  return { falseNegatives, falsePositives };
+// Load only the COMPARABLE_RULES as plugins once.
+const _runnerPlugins = [];
+for (const ruleName of COMPARABLE_RULES) {
+  try {
+    const mod = require(path.join(RULES_DIR, `${ruleName}.js`));
+    _runnerPlugins.push({
+      meta: { name: ruleName, defaultOptions: mod.meta?.defaultOptions },
+      create: mod.create,
+    });
+  } catch { /* rule file not found — skip */ }
 }
 
-// ── Main ─────────────────────────────────────────────────────
+function runRunner(filePath) {
+  const source = fs.readFileSync(filePath, "utf-8");
+  try {
+    const ast = parse(source, { filename: filePath });
+    const reports = runPlugins(ast, _runnerPlugins, { tagNames });
+    const results = [];
+    for (const r of reports) {
+      if (!r.ruleId || !COMPARABLE_RULES.has(r.ruleId)) continue;
+      const line = r.loc?.start?.line ?? r.line;
+      if (r.message?.startsWith("Plugin error:"))
+        results.push({ rule: r.ruleId, line, crash: r.message });
+      else
+        results.push({ rule: r.ruleId, line });
+    }
+    return results;
+  } catch (e) {
+    return [{ crash: e.message }];
+  }
+}
+
+// ── Diff helper ──────────────────────────────────────────────
+
+function diff(reference, candidate) {
+  const refKeys  = new Set(reference.map(r => `${r.rule}:${r.line}`));
+  const candKeys = new Set(candidate.filter(r => !r.crash).map(r => `${r.rule}:${r.line}`));
+  const crashes  = candidate.filter(r => r.crash);
+
+  const fn = [...refKeys].filter(k => !candKeys.has(k))
+    .map(k => { const [rule, line] = k.split(":"); return { rule, line: +line }; });
+  const fp = [...candKeys].filter(k => !refKeys.has(k))
+    .map(k => { const [rule, line] = k.split(":"); return { rule, line: +line }; });
+
+  return { fn, fp, crashes };
+}
+
+// ── Discover files ───────────────────────────────────────────
 
 function discoverFiles(dir) {
   const files = [];
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...discoverFiles(full));
-    } else if (/\.(js|mjs)$/.test(entry.name)) {
-      files.push(full);
-    }
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) files.push(...discoverFiles(full));
+    else if (/\.(js|mjs)$/.test(e.name)) files.push(full);
   }
   return files;
 }
 
+// ── Main ─────────────────────────────────────────────────────
+
 const target = process.argv[2] || DEFAULT_DIR;
-const files = fs.statSync(target).isDirectory()
-  ? discoverFiles(target)
-  : [target];
+const files = fs.statSync(target).isDirectory() ? discoverFiles(target) : [target];
 
 if (!fs.existsSync(SANZ_BIN)) {
-  console.error(`sanz binary not found at ${SANZ_BIN}`);
-  console.error("Run 'zig build' first.");
+  console.error(`sanz binary not found at ${SANZ_BIN} — run 'zig build' first`);
   process.exit(1);
 }
 
-console.log(`Differential test: Sanz vs ESLint`);
-console.log(`Files: ${files.length}\n`);
+console.log(`Differential test — ${files.length} fixture(s), ${COMPARABLE_RULES.size} rules\n`);
 
-let totalFN = 0, totalFP = 0, totalMatch = 0;
+let anyFail = false;
+const nativeTotals = { fn: 0, fp: 0, crash: 0 };
+const runnerTotals = { fn: 0, fp: 0, crash: 0 };
 
 for (const file of files) {
-  const eslint = runEslint(file);
-  const sanz = runSanz(file);
-  const { falseNegatives, falsePositives } = compareResults(file, eslint, sanz);
-
   const rel = path.relative(process.cwd(), file);
-  const matched = eslint.length - falseNegatives.length;
 
-  if (falseNegatives.length === 0 && falsePositives.length === 0) {
-    console.log(`  ✓ ${rel} (${eslint.length} rules matched)`);
-  } else {
-    console.log(`  ✗ ${rel}`);
-    for (const fn of falseNegatives) {
-      console.log(`    MISS: ${fn.rule} at line ${fn.line} (ESLint flags, Sanz doesn't)`);
-    }
-    for (const fp of falsePositives) {
-      console.log(`    EXTRA: ${fp.rule} at line ${fp.line} (Sanz flags, ESLint doesn't)`);
-    }
+  const espreeResults = runEspree(file);
+  const nativeResults = runNative(file);
+  const runnerResults = runRunner(file);
+
+  const nativeDiff = diff(espreeResults, nativeResults);
+  const runnerDiff = diff(espreeResults, runnerResults);
+
+  nativeTotals.fn += nativeDiff.fn.length; nativeTotals.fp += nativeDiff.fp.length; nativeTotals.crash += nativeDiff.crashes.length;
+  runnerTotals.fn += runnerDiff.fn.length; runnerTotals.fp += runnerDiff.fp.length; runnerTotals.crash += runnerDiff.crashes.length;
+
+  const nativeOk = nativeDiff.fn.length === 0 && nativeDiff.fp.length === 0 && nativeDiff.crashes.length === 0;
+  const runnerOk = runnerDiff.fn.length === 0 && runnerDiff.fp.length === 0 && runnerDiff.crashes.length === 0;
+
+  if (nativeOk && runnerOk) {
+    console.log(`  ✓ ${rel} (${espreeResults.length} violations, both backends match)`);
+    continue;
   }
 
-  totalFN += falseNegatives.length;
-  totalFP += falsePositives.length;
-  totalMatch += matched;
+  anyFail = true;
+  console.log(`  ✗ ${rel} (${espreeResults.length} espree violations)`);
+
+  function printDiff(label, { fn, fp, crashes }) {
+    if (fn.length === 0 && fp.length === 0 && crashes.length === 0) {
+      console.log(`    ${label}: ✓`);
+      return;
+    }
+    for (const { rule, line } of fn)
+      console.log(`    ${label} MISS:  ${rule} at line ${line}`);
+    for (const { rule, line } of fp)
+      console.log(`    ${label} EXTRA: ${rule} at line ${line}`);
+    for (const { rule, crash } of crashes)
+      console.log(`    ${label} CRASH: ${rule || "?"} — ${crash}`);
+  }
+
+  printDiff("native", nativeDiff);
+  printDiff("runner", runnerDiff);
 }
 
-console.log(`\nResults: ${totalMatch} matched, ${totalFN} false negatives, ${totalFP} false positives`);
-if (totalFN > 0 || totalFP > 0) process.exit(1);
+console.log(`\nnative: ${nativeTotals.fn} FN, ${nativeTotals.fp} FP, ${nativeTotals.crash} crashes`);
+console.log(`runner: ${runnerTotals.fn} FN, ${runnerTotals.fp} FP, ${runnerTotals.crash} crashes`);
+
+if (anyFail) process.exit(1);

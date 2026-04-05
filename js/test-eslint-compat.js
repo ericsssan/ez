@@ -1,128 +1,178 @@
 "use strict";
 /**
- * ESLint core rules compatibility test.
- * Tries to load and run every rule in eslint/lib/rules/ against a sample JS file.
- * Reports which rules crash vs run cleanly.
+ * ESLint eslint-runner compatibility test.
+ *
+ * For each fixture file, runs all ESLint core rules two ways:
+ *   Espree  — ESLint's own Linter (Espree parser, authoritative reference)
+ *   Sanz    — sanz parse → eslint-runner visitor dispatch
+ *
+ * Reports per-rule:
+ *   ✓  same violation lines as Espree
+ *   ~  different lines (false negatives / false positives)
+ *   ✗  crashed in sanz
+ *
+ * Run: node js/test-eslint-compat.js [fixture-dir-or-file]
  */
 
 const path = require("path");
 const fs = require("fs");
 const { parse, getTagNames } = require("./index");
 const { runPlugins } = require("./eslint-runner");
+const { Linter } = require("eslint");
 
 const RULES_DIR = path.join(__dirname, "node_modules/eslint/lib/rules");
+const FIXTURES_DIR = path.resolve(__dirname, "../tests/differential/fixtures");
 const tagNames = getTagNames();
 
-// Sample JS that exercises many AST node types
-const SAMPLE = `
-"use strict";
-var x = 1;
-const y = 2;
-let z = x + y;
-if (z > 1) {
-  console.log(z);
-} else {
-  console.log("nope");
-}
-for (var i = 0; i < 10; i++) {
-  if (i === 5) break;
-}
-while (z > 0) {
-  z--;
-}
-function foo(a, b) {
-  return a + b;
-}
-const bar = (a) => a * 2;
-class MyClass {
-  constructor(val) { this.val = val; }
-  get value() { return this.val; }
-  set value(v) { this.val = v; }
-  method() { return this.val; }
-}
-const obj = { a: 1, b: 2, c: 3 };
-const arr = [1, 2, 3];
-try {
-  foo(1, 2);
-} catch (e) {
-  console.error(e);
-} finally {
-  z = 0;
-}
-switch (x) {
-  case 1: break;
-  case 2: z = 1; break;
-  default: z = 2;
-}
-const p = new Promise((resolve, reject) => {
-  resolve(42);
-});
-async function asyncFoo() {
-  const v = await p;
-  return v;
-}
-export default foo;
-export { bar, MyClass };
-import { something } from "somewhere";
-`;
+// ── Load all ESLint core rules ────────────────────────────────────
 
-const ruleFiles = fs.readdirSync(RULES_DIR)
-  .filter(f => f.endsWith(".js") && !f.startsWith("index"))
-  .sort();
+const allRules = new Map(); // ruleName → ruleModule
+for (const file of fs.readdirSync(RULES_DIR).filter(f => f.endsWith(".js") && !f.startsWith("index")).sort()) {
+  const name = path.basename(file, ".js");
+  try { allRules.set(name, require(path.join(RULES_DIR, file))); } catch { /* skip */ }
+}
 
-let passed = 0;
-let crashed = 0;
-const crashes = [];
+// ── Espree runner ────────────────────────────────────────────────
 
-for (const file of ruleFiles) {
-  const ruleName = path.basename(file, ".js");
-  let ruleModule;
-  try {
-    ruleModule = require(path.join(RULES_DIR, file));
-  } catch (e) {
-    crashed++;
-    crashes.push({ rule: ruleName, error: `require() failed: ${e.message}` });
-    continue;
-  }
+const espree = new Linter();
 
-  const ast = parse(SAMPLE, { filename: "test.js" });
-
-  // Wrap as ESLint-style plugin
-  const plugin = {
-    meta: {
-      name: ruleName,
-      defaultOptions: ruleModule.meta?.defaultOptions,
-    },
-    create: ruleModule.create,
-  };
-
-  try {
-    const reports = runPlugins(ast, [plugin], { tagNames });
-    // Check if any report is a plugin error
-    const errors = reports.filter(r =>
-      r.message && r.message.startsWith("Plugin error:")
-    );
-    if (errors.length > 0) {
-      crashed++;
-      crashes.push({ rule: ruleName, error: errors[0].message });
-    } else {
-      passed++;
+/** Run all rules through ESLint+Espree. Returns Map<ruleName, number[]> of violation lines. */
+function runEspreeAll(source, sourceType) {
+  const rules = {};
+  for (const name of allRules.keys()) rules[name] = "error";
+  const messages = espree.verify(source, [{
+    languageOptions: { ecmaVersion: 2022, sourceType },
+    rules,
+  }], { filename: "test.js" });
+  const result = new Map();
+  for (const m of messages) {
+    if (!m.fatal && m.ruleId) {
+      if (!result.has(m.ruleId)) result.set(m.ruleId, []);
+      result.get(m.ruleId).push(m.line);
     }
-  } catch (e) {
-    crashed++;
-    crashes.push({ rule: ruleName, error: e.message });
+  }
+  return result;
+}
+
+// ── Sanz eslint-runner ───────────────────────────────────────────
+
+/** Run all rules through sanz eslint-runner. Returns Map<ruleName, number[]|{crash}> */
+function runSanzAll(source) {
+  const ast = parse(source, { filename: "test.js" });
+  const plugins = [];
+  for (const [name, mod] of allRules) {
+    plugins.push({ meta: { name, defaultOptions: mod.meta?.defaultOptions }, create: mod.create });
+  }
+  const reports = runPlugins(ast, plugins, { tagNames });
+  const result = new Map();
+  for (const r of reports) {
+    if (!r.ruleId) continue;
+    if (r.message?.startsWith("Plugin error:")) {
+      result.set(r.ruleId, { crash: r.message.slice("Plugin error: ".length) });
+    } else {
+      if (!result.has(r.ruleId)) result.set(r.ruleId, []);
+      const arr = result.get(r.ruleId);
+      if (!arr.crash) arr.push(r.line);
+    }
+  }
+  return result;
+}
+
+// ── File helpers ─────────────────────────────────────────────────
+
+function detectSourceType(filePath) {
+  const src = fs.readFileSync(filePath, "utf8");
+  return /^(import |export )/m.test(src) ? "module" : "script";
+}
+
+function discoverFiles(target) {
+  if (!fs.statSync(target).isDirectory()) return [target];
+  const files = [];
+  for (const e of fs.readdirSync(target, { withFileTypes: true })) {
+    const full = path.join(target, e.name);
+    if (e.isDirectory()) files.push(...discoverFiles(full));
+    else if (/\.(js|mjs)$/.test(e.name)) files.push(full);
+  }
+  return files;
+}
+
+// ── Main ─────────────────────────────────────────────────────────
+
+const target = process.argv[2] ? path.resolve(process.argv[2]) : FIXTURES_DIR;
+const files = discoverFiles(target);
+
+console.log(`ESLint eslint-runner compat — ${allRules.size} rules, ${files.length} fixture(s)\n`);
+
+let totalMatch = 0, totalDiff = 0, totalCrash = 0;
+const allDiffs = [];   // { file, rule, fn, fp }
+const allCrashes = []; // { file, rule, error }
+
+for (const file of files) {
+  const rel = path.relative(process.cwd(), file);
+  const source = fs.readFileSync(file, "utf8");
+  const sourceType = detectSourceType(file);
+
+  const espreeMap = runEspreeAll(source, sourceType);
+  const sanzMap   = runSanzAll(source);
+
+  // Merge all rule names that either side reported
+  const ruleNames = new Set([...espreeMap.keys(), ...sanzMap.keys(), ...allRules.keys()]);
+
+  let fileCrash = 0, fileDiff = 0, fileMatch = 0;
+
+  for (const rule of [...ruleNames].sort()) {
+    const sanzVal = sanzMap.get(rule);
+
+    if (sanzVal?.crash) {
+      fileCrash++;
+      allCrashes.push({ file: rel, rule, error: sanzVal.crash });
+      continue;
+    }
+
+    const espreeLines = espreeMap.get(rule) ?? [];
+    const sanzLines   = sanzVal   ?? [];
+
+    const espreeSet = new Set(espreeLines);
+    const sanzSet   = new Set(sanzLines);
+    const fn = espreeLines.filter(l => !sanzSet.has(l));
+    const fp = sanzLines.filter(l => !espreeSet.has(l));
+
+    if (fn.length === 0 && fp.length === 0) {
+      fileMatch++;
+    } else {
+      fileDiff++;
+      allDiffs.push({ file: rel, rule, fn, fp });
+    }
+  }
+
+  const total = fileMatch + fileDiff + fileCrash;
+  const status = fileCrash > 0 ? `${fileCrash} crashes` : fileDiff > 0 ? `${fileDiff} diffs` : "all match";
+  console.log(`  ${rel}: ${fileMatch}/${total} match, ${status}`);
+
+  totalMatch += fileMatch;
+  totalDiff  += fileDiff;
+  totalCrash += fileCrash;
+}
+
+const grand = totalMatch + totalDiff + totalCrash;
+console.log(`\nTotal: ${totalMatch}/${grand} match, ${totalDiff} diffs, ${totalCrash} crashes`);
+
+if (allDiffs.length > 0) {
+  console.log("\nDiffs:");
+  for (const { file, rule, fn, fp } of allDiffs) {
+    const parts = [];
+    if (fn.length) parts.push(`${fn.length} FN [lines ${fn.join(",")}]`);
+    if (fp.length) parts.push(`${fp.length} FP [lines ${fp.join(",")}]`);
+    console.log(`  [${rule}] ${path.basename(file)}: ${parts.join(" | ")}`);
   }
 }
 
-const total = passed + crashed;
-console.log(`\nESLint core rules: ${passed}/${total} crash-free`);
-console.log(`  passed: ${passed}, crashed: ${crashed}\n`);
-
-if (crashes.length > 0) {
-  console.log("Crashes:");
-  for (const { rule, error } of crashes) {
-    // Trim long error messages
-    const msg = error.length > 120 ? error.slice(0, 117) + "..." : error;
-    console.log(`  [${rule}] ${msg}`);
+if (allCrashes.length > 0) {
+  console.log("\nCrashes:");
+  for (const { file, rule, error } of allCrashes) {
+    const msg = error.length > 100 ? error.slice(0, 97) + "..." : error;
+    console.log(`  [${rule}] ${path.basename(file)}: ${msg}`);
   }
 }
+
+if (totalDiff > 0 || totalCrash > 0) process.exit(1);

@@ -303,7 +303,7 @@ class AstView {
    * Uses binary search on the sorted _commentStarts array. O(log n + k).
    */
   commentsInRange(start, end) {
-    if (!this._commentStarts || this._commentCount === 0) return _emptyArray;
+    if (!this._commentStarts || this._commentCount === 0) return [];
     const cs = this._commentStarts;
     const ce = this._commentEnds;
     const ck = this._commentKinds;
