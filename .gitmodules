@@ -10,3 +10,6 @@
 [submodule "tests/conformance/babel"]
 	path = tests/conformance/babel
 	url = https://github.com/babel/babel.git
+[submodule "tests/conformance/eslint"]
+	path = tests/conformance/eslint
+	url = https://github.com/eslint/eslint

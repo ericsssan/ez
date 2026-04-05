@@ -1,7 +1,7 @@
 ZIG ?= /Users/ericsan/.local/share/zigup/0.16.0-dev.3028+a85495ca2/files/zig
 LINK_FLAGS :=
 
-.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance run napi submodules
+.PHONY: test test-unit test-linter test-recovery test-config test-fuzz test-js test-all build build-conformance test-conformance test-eslint-conformance run napi submodules
 
 test: test-unit test-linter test-recovery test-config
 
@@ -41,13 +41,20 @@ test-conformance: build-conformance
 	@./zig-out/bin/typescript_runner tests/conformance/typescript/tests/cases/conformance --compact
 	@echo ""
 
+test-eslint-conformance: napi
+	@echo ""
+	@echo "ESLint Rule Conformance"
+	@echo "────────────────────────────────────────────────────────────"
+	@node tests/conformance/eslint_runner.js
+	@echo ""
+
 test-differential: build napi
 	node tests/differential/run.js
 
 test-e2e: build
 	bash tests/e2e/run.sh
 
-test-all: test test-fuzz test-js test-e2e test-differential test-conformance
+test-all: test test-fuzz test-js test-e2e test-differential test-conformance test-eslint-conformance
 
 build:
 	@mkdir -p zig-out/bin
