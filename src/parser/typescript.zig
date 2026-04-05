@@ -104,13 +104,13 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
 
         // Pack conditional type data into extra: [check, extends, true, false]
         const scratch_top = p.scratchLen();
+        defer p.scratchPop(scratch_top);
         try p.scratchPush(result); // check type (LHS of extends)
         try p.scratchPush(check_type); // extends type (RHS of extends)
         try p.scratchPush(true_type);
         try p.scratchPush(false_type);
         const items = p.scratchSlice(scratch_top);
         const range = try p.addSlice(items);
-        p.scratchPop(scratch_top);
 
         result = try p.addNode(.{
             .tag = .ts_conditional_type,
@@ -141,6 +141,7 @@ pub fn parseNonConditionalType(p: *Parser) Error!NodeIndex {
 
     // Collect union members.
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
     try p.scratchPush(first);
 
     while (p.peek() == .pipe) {
@@ -151,7 +152,6 @@ pub fn parseNonConditionalType(p: *Parser) Error!NodeIndex {
 
     const members = p.scratchSlice(scratch_top);
     const range = try p.addSlice(members);
-    p.scratchPop(scratch_top);
 
     return p.addNode(.{
         .tag = .ts_union_type,
@@ -179,6 +179,7 @@ pub fn parseIntersectionType(p: *Parser) Error!NodeIndex {
 
     // Collect intersection members.
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
     try p.scratchPush(first);
 
     while (p.peek() == .ampersand) {
@@ -189,7 +190,6 @@ pub fn parseIntersectionType(p: *Parser) Error!NodeIndex {
 
     const members = p.scratchSlice(scratch_top);
     const range = try p.addSlice(members);
-    p.scratchPop(scratch_top);
 
     return p.addNode(.{
         .tag = .ts_intersection_type,
@@ -667,6 +667,7 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
     //  Here we handle the common form where params are already in parens.)
 
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (p.peek() != .r_paren and !p.isAtEnd()) {
         // Rest parameter: `...name: Type`
@@ -707,7 +708,6 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
 
     const params = p.scratchSlice(scratch_top);
     const params_range = try p.addSlice(params);
-    p.scratchPop(scratch_top);
 
     const fn_extra = try p.addExtra(ast.FnData, .{
         .name = .none,
@@ -815,6 +815,7 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
 fn parseTupleType(p: *Parser) Error!NodeIndex {
     const open_tok = p.advance(); // consume `[`
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (p.peek() != .r_bracket and !p.isAtEnd()) {
         // Spread element in tuple: `...Type` or `...label: Type`
@@ -880,7 +881,6 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
 
     const elements = p.scratchSlice(scratch_top);
     const range = try p.addSlice(elements);
-    p.scratchPop(scratch_top);
 
     return p.addNode(.{
         .tag = .ts_tuple_type,
@@ -897,6 +897,7 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
 fn parseTypeLiteral(p: *Parser) Error!NodeIndex {
     const open_tok = p.advance(); // consume `{`
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     // Check for mapped type: `{ [K in T]: V }` or `{ readonly [K in T]: V }`
     // Also handles `{ +readonly [K in T]: V }` and `{ -readonly [K in T]: V }`
@@ -928,7 +929,6 @@ fn parseTypeLiteral(p: *Parser) Error!NodeIndex {
 
     const members = p.scratchSlice(scratch_top);
     const range = try p.addSlice(members);
-    p.scratchPop(scratch_top);
 
     return p.addNode(.{
         .tag = .ts_type_literal,
@@ -941,6 +941,7 @@ fn parseTypeLiteral(p: *Parser) Error!NodeIndex {
 /// Also handles modifiers: `{ readonly [K in T]: V }`, `{ -readonly [K in T]: V }`.
 fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     // Skip optional +/- readonly modifier
     if (p.peek() == .plus or p.peek() == .minus) _ = p.advance();
@@ -993,7 +994,6 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
 
     const items = p.scratchSlice(scratch_top);
     const range = try p.addSlice(items);
-    p.scratchPop(scratch_top);
 
     return p.addNode(.{
         .tag = .ts_mapped_type,
@@ -1019,6 +1019,7 @@ fn parseConstructorType(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.l_paren);
 
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (p.peek() != .r_paren and !p.isAtEnd()) {
         const param = try parseFunctionTypeParam(p);
@@ -1039,7 +1040,6 @@ fn parseConstructorType(p: *Parser) Error!NodeIndex {
 
     const params = p.scratchSlice(scratch_top);
     const params_range = try p.addSlice(params);
-    p.scratchPop(scratch_top);
 
     const fn_extra = try p.addExtra(ast.FnData, .{
         .name = .none,
@@ -1063,6 +1063,7 @@ fn parseConstructorType(p: *Parser) Error!NodeIndex {
 fn parseTemplateLiteralType(p: *Parser) Error!NodeIndex {
     const head_tok = p.tok_i;
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     if (p.peek() == .template_no_sub) {
         // No-substitution template: `text`
@@ -1114,7 +1115,6 @@ fn parseTemplateLiteralType(p: *Parser) Error!NodeIndex {
 
     const parts = p.scratchSlice(scratch_top);
     const range = try p.addSlice(parts);
-    p.scratchPop(scratch_top);
 
     return p.addNode(.{
         .tag = .ts_template_literal_type,
@@ -1133,6 +1133,7 @@ pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
     _ = try p.expect(.less_than);
 
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (!isClosingAngleBracket(p.peek()) and !p.isAtEnd()) {
         // TS 5.0: `const` modifier on type parameter — `<const T>`
@@ -1184,7 +1185,6 @@ pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
 
     const params = p.scratchSlice(scratch_top);
     const range = try p.addSlice(params);
-    p.scratchPop(scratch_top);
 
     return range;
 }
@@ -1199,6 +1199,7 @@ pub fn parseTypeArguments(p: *Parser) Error!SubRange {
     _ = try p.expect(.less_than);
 
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (!isClosingAngleBracket(p.peek()) and !p.isAtEnd()) {
         const type_node = try parseType(p);
@@ -1215,7 +1216,6 @@ pub fn parseTypeArguments(p: *Parser) Error!SubRange {
 
     const types = p.scratchSlice(scratch_top);
     const range = try p.addSlice(types);
-    p.scratchPop(scratch_top);
 
     return range;
 }
@@ -1245,6 +1245,7 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
     if (p.peek() == .kw_extends) {
         _ = p.advance(); // consume `extends`
         const scratch_top = p.scratchLen();
+        defer p.scratchPop(scratch_top);
 
         // Parse comma-separated list of type references
         const first_type = try parseType(p);
@@ -1258,13 +1259,13 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
 
         const extends = p.scratchSlice(scratch_top);
         extends_range = try p.addSlice(extends);
-        p.scratchPop(scratch_top);
     }
 
     // Interface body: `{ members }`
     _ = try p.expect(.l_brace);
 
     const body_scratch_top = p.scratchLen();
+    defer p.scratchPop(body_scratch_top);
 
     while (p.peek() != .r_brace and !p.isAtEnd()) {
         const member = try parseInterfaceMember(p);
@@ -1275,7 +1276,6 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
 
     const body_members = p.scratchSlice(body_scratch_top);
     const body_range = try p.addSlice(body_members);
-    p.scratchPop(body_scratch_top);
 
     const extra = try p.addExtra(ast.InterfaceData, .{
         .name = name_tok,
@@ -1349,6 +1349,7 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.l_brace);
 
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (p.peek() != .r_brace and !p.isAtEnd()) {
         const member_tok = p.tok_i;
@@ -1407,7 +1408,6 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
 
     const members = p.scratchSlice(scratch_top);
     const members_range = try p.addSlice(members);
-    p.scratchPop(scratch_top);
 
     const extra = try p.addExtra(ast.EnumData, .{
         .name = name_tok,
@@ -1607,6 +1607,7 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
 
         _ = try p.expect(.l_paren);
         const scratch_top = p.scratchLen();
+        defer p.scratchPop(scratch_top);
 
         while (p.peek() != .r_paren and !p.isAtEnd()) {
             const param = try parseFunctionTypeParam(p);
@@ -1620,8 +1621,6 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
         }
 
         _ = try p.expect(.r_paren);
-
-        p.scratchPop(scratch_top);
 
         // Optional return type annotation
         var return_type: NodeIndex = .none;
@@ -1664,6 +1663,7 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex) Error!NodeI
 
     _ = try p.expect(.l_paren);
     const scratch_top = p.scratchLen();
+    defer p.scratchPop(scratch_top);
 
     while (p.peek() != .r_paren and !p.isAtEnd()) {
         const param = try parseFunctionTypeParam(p);
@@ -1677,7 +1677,6 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex) Error!NodeI
     }
 
     _ = try p.expect(.r_paren);
-    p.scratchPop(scratch_top);
 
     // Optional return type
     var return_type: NodeIndex = .none;

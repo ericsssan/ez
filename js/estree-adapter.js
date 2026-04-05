@@ -957,7 +957,15 @@ const NodeProto = {
       }
       return src;
     }
-    if (t === T.number_literal) return parseFloat(src);
+    if (t === T.number_literal) {
+      const s = src.replace(/_/g, ''); // strip numeric separators (1_000 → 1000)
+      const sl = s.toLowerCase();
+      if (sl.startsWith('0b')) return parseInt(sl.slice(2), 2);  // binary: 0b101
+      if (sl.startsWith('0o')) return parseInt(sl.slice(2), 8);  // modern octal: 0o71
+      if (sl.startsWith('0x')) return parseInt(sl.slice(2), 16); // hex: 0xff
+      if (/^0[0-7]+$/.test(s)) return parseInt(s, 8);             // legacy octal: 071
+      return parseFloat(s);
+    }
     if (t === T.boolean_literal) return src === 'true';
     if (t === T.null_literal) return null;
     if (t === T.bigint_literal) return src.slice(0, -1); // strip 'n'

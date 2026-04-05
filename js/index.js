@@ -46,7 +46,7 @@ function loadBinding() {
 // ── Buffer management ────────────────────────────────────────────
 
 const DEFAULT_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
-const HEADER_SIZE = 80; // v2: 20 fields × 4 bytes (added parent_indices_offset)
+const HEADER_SIZE = 104; // 26 fields × 4 bytes
 const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 
 let sharedBuffer = null;

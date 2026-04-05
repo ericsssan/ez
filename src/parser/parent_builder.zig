@@ -471,6 +471,7 @@ inline fn push(stack: *std.ArrayList(WorkItem), alloc: std.mem.Allocator, node: 
 /// popped (and visited) in forward (document) order.
 inline fn pushSubRangeRev(stack: *std.ArrayList(WorkItem), alloc: std.mem.Allocator, tree: *const Ast, sub: SubRange, parent: u32) !void {
     if (sub.start >= sub.end) return;
+    if (sub.end > tree.extra_data.len) return;
     const items = tree.extra_data[sub.start..sub.end];
     var i: usize = items.len;
     while (i > 0) {

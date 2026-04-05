@@ -50,15 +50,15 @@ fn parseImpl(
     const alloc = backing.allocator();
 
     // Tokenize — token arrays land in the bump region.
-    const lex_result = try Lexer.tokenizeWithLanguage(alloc, source, language);
+    const lex_result = Lexer.tokenizeWithLanguage(alloc, source, language) catch |e| return e;
     var tokens = lex_result.tokens;
 
     // Parse — node/extra_data arrays land in the bump region.
-    var tree = try parser_mod.Parser.parseWithLanguage(alloc, source, tokens.slice(), language, false);
+    var tree = parser_mod.Parser.parseWithLanguage(alloc, source, tokens.slice(), language, false) catch |e| return e;
 
     // Compute parent indices and DFS traversal orders in a single pass.
     // All three arrays are allocated into the bump region.
-    const traversal = try parent_builder.computeTraversal(&tree, alloc);
+    const traversal = parent_builder.computeTraversal(&tree, alloc) catch |e| return e;
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
     const pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
@@ -66,10 +66,17 @@ fn parseImpl(
 
     // Run semantic analysis BEFORE converting to UTF-16 so that
     // tokenText() (used for symbol names) reads correct byte offsets.
+    //
+    // Use a separate arena for the intermediate analysis data (ArrayLists,
+    // HashMaps) so their growth-related waste does NOT fragment the bump
+    // region.  Only the compact serialized output (written by writeSemanticData)
+    // ends up in the bump.  The arena is freed after serialization.
     var semantic_data_offset: u32 = 0;
-    if (semantic_mod.SemanticAnalyzer.analyze(alloc, &tree)) |sem_result| {
+    var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer sem_arena.deinit();
+    if (semantic_mod.SemanticAnalyzer.analyze(sem_arena.allocator(), &tree)) |sem_result| {
         var sem = sem_result;
-        defer sem.deinit(alloc);
+        // sem.deinit() is intentionally skipped — the arena frees everything.
         if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len))) |off| {
             semantic_data_offset = off;
         } else |_| {}
