@@ -145,7 +145,238 @@ fn parseImpl(
     return backing.bytesUsed();
 }
 
+// ── parseAndLint C ABI ───────────────────────────────────────────
+//
+// Single call that runs the full pipeline ONCE and produces both:
+//   (a) the compact JS AST buffer  (same format as sanz_parse)
+//   (b) native lint diagnostics    (same format as sanz_lint)
+//
+// Avoids double lex+parse+semantic: the live AST and SemanticResult are
+// reused for lint before being serialized into the JS buffer format.
+//
+// Layout:
+//   buf[0..return_value)  → AST buffer (same as sanz_parse output)
+//   out_ptr[0..N)         → diagnostics (same as sanz_lint output)
+//
+// Returns bytes used in buf (same as sanz_parse), or 0 on error.
+// On error out_ptr is undefined; on success out_ptr[0..4] holds diag count.
+
+pub export fn sanz_parse_and_lint(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+) u32 {
+    return parseAndLintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len) catch 0;
+}
+
+fn parseAndLintImpl(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+) !u32 {
+    if (source_start + source_len > buf_len) return 0;
+    if (source_start < js_buffer.HEADER_SIZE) return 0;
+
+    const raw_source = buf_ptr[source_start .. source_start + source_len];
+    const bom = js_buffer.stripBom(raw_source);
+    const source = bom.text;
+    const language: Language = @enumFromInt(lang_val);
+
+    var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
+    const alloc = backing.allocator();
+
+    const lex_result = Lexer.tokenizeWithLanguage(alloc, source, language) catch |e| return e;
+    var tokens = lex_result.tokens;
+    var tree = parser_mod.Parser.parseWithLanguage(alloc, source, tokens.slice(), language, false) catch |e| return e;
+
+    const traversal = parent_builder.computeTraversal(&tree, alloc) catch |e| return e;
+    const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
+    const pre_order_offset      = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
+    const post_order_offset     = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
+    const dfs_events_offset     = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
+
+    // Semantic analysis — keep result alive for lint below.
+    var semantic_data_offset: u32 = 0;
+    var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer sem_arena.deinit();
+    var sem_result_opt: ?semantic_mod.SemanticResult = null;
+    if (semantic_mod.SemanticAnalyzer.analyze(sem_arena.allocator(), &tree)) |sr| {
+        sem_result_opt = sr;
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len))) |off| {
+            semantic_data_offset = off;
+        } else |_| {}
+    } else |_| {}
+
+    // ── Run lint (while AST + SemanticResult are still live, UTF-8 offsets intact) ──
+    //
+    // This is the key: we reuse the already-computed tree and sem_result rather
+    // than re-parsing.  Lint MUST happen before the UTF-16 conversion below.
+    const lint_arena_impl = getLintArena();
+    defer _ = lint_arena_impl.reset(.retain_capacity);
+    const lint_arena = lint_arena_impl.allocator();
+
+    var empty_sem = semantic_mod.SemanticResult.initEmpty(lint_arena);
+    const sem_ptr: *const semantic_mod.SemanticResult =
+        if (sem_result_opt != null) &sem_result_opt.? else &empty_sem;
+
+    const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, null) catch &.{};
+
+    // Serialize diagnostics into out_ptr (same format as sanz_lint).
+    if (out_len >= 4) {
+        const out = out_ptr[0..out_len];
+        std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
+        var pos: u32 = 4;
+        for (diagnostics) |diag| {
+            const rule     = diag.rule_name;
+            const msg      = diag.message;
+            const rule_len: u8  = @intCast(@min(rule.len, 255));
+            const msg_len:  u16 = @intCast(@min(msg.len, 65535));
+            const needed: u32 = 4 + 1 + 1 + rule_len + 2 + msg_len;
+            if (pos + needed > out_len) break;
+            std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
+            out[pos] = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 }; pos += 1;
+            out[pos] = rule_len; pos += 1;
+            @memcpy(out[pos..][0..rule_len], rule[0..rule_len]); pos += rule_len;
+            std.mem.writeInt(u16, out[pos..][0..2], msg_len, .little); pos += 2;
+            @memcpy(out[pos..][0..msg_len], msg[0..msg_len]); pos += msg_len;
+        }
+    }
+
+    // Write comment positions (before UTF-16 conversion).
+    const comment_count = lex_result.comment_count;
+    var comment_starts_offset: u32 = 0;
+    var comment_ends_offset:   u32 = 0;
+    var comment_kinds_offset:  u32 = 0;
+    if (comment_count > 0) {
+        const cs = try alloc.alloc(u32, comment_count);
+        const ce = try alloc.alloc(u32, comment_count);
+        const ck = try alloc.alloc(u8,  comment_count);
+        @memcpy(cs, lex_result.comment_starts);
+        @memcpy(ce, lex_result.comment_ends);
+        @memcpy(ck, lex_result.comment_kinds);
+        _ = js_buffer.convertSpansToUtf16(source, cs);
+        _ = js_buffer.convertSpansToUtf16(source, ce);
+        comment_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, cs.ptr);
+        comment_ends_offset   = js_buffer.ptrOffsetPub(buf_ptr, ce.ptr);
+        comment_kinds_offset  = js_buffer.ptrOffsetPub(buf_ptr, ck.ptr);
+    }
+
+    // Convert token starts UTF-8 → UTF-16 (AFTER lint which needs UTF-8).
+    const tok_starts = tokens.slice().items(.start);
+    const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
+
+    js_buffer.writeHeader(buf_ptr, &tree, .{
+        .source_start        = if (bom.has_bom) source_start + 3 else source_start,
+        .source_len          = @intCast(source.len),
+        .source_utf16_len    = utf16_len,
+        .total_used          = backing.bytesUsed(),
+        .flags               = if (bom.has_bom) js_buffer.FLAG_HAS_BOM else 0,
+        .parent_indices_offset  = parent_indices_offset,
+        .semantic_data_offset   = semantic_data_offset,
+        .pre_order_offset       = pre_order_offset,
+        .post_order_offset      = post_order_offset,
+        .dfs_events_offset      = dfs_events_offset,
+        .source_type            = 1,
+        .comment_count          = comment_count,
+        .comment_starts_offset  = comment_starts_offset,
+        .comment_ends_offset    = comment_ends_offset,
+        .comment_kinds_offset   = comment_kinds_offset,
+    });
+
+    return backing.bytesUsed();
+}
+
 // sanz_tag_count and sanz_tag_name are exported from layout.zig.
+
+// ── lintBuffer C ABI ─────────────────────────────────────────────
+//
+// Run native lint on a previously-parsed sanz buffer (output of sanz_parse).
+// Reads the source text from the buffer's own header (SOURCE_OFFSET / source_len)
+// so the caller does not need to re-encode or re-pass the source string.
+//
+// This is the fast path for the hybrid routing scenario:
+//   1. JS calls sanz_parse()  → compact AST buffer (for ESTree/JS rules)
+//   2. JS calls sanz_lint_buffer() → native lint diagnostics (same source, no re-encode)
+//
+// Output format: same as sanz_lint.
+// Returns bytes written to out_ptr, or 0 on error.
+
+pub export fn sanz_lint_buffer(
+    parsed_buf_ptr: [*]u8,
+    parsed_buf_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+) u32 {
+    return lintBufferImpl(parsed_buf_ptr, parsed_buf_len, lang_val, out_ptr, out_len) catch 0;
+}
+
+fn lintBufferImpl(
+    parsed_buf_ptr: [*]u8,
+    parsed_buf_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+) !u32 {
+    if (parsed_buf_len < js_buffer.HEADER_SIZE) return 0;
+
+    // Read source location directly from the header struct.
+    const hdr: *const js_buffer.BufferHeader = @ptrCast(@alignCast(parsed_buf_ptr));
+    if (hdr.magic != js_buffer.MAGIC) return 0;
+
+    const source_offset = hdr.source_offset;
+    const source_len_bytes = hdr.source_len;
+    if (source_len_bytes == 0) return 0;
+    if (source_offset + source_len_bytes > parsed_buf_len) return 0;
+
+    // Source is UTF-8, already BOM-stripped (sanz_parse adjusts source_offset past BOM).
+    const source = parsed_buf_ptr[source_offset .. source_offset + source_len_bytes];
+    const language: Language = @enumFromInt(lang_val);
+
+    // Use the thread-local pooled arena (same as sanz_lint).
+    const arena_impl = getLintArena();
+    defer _ = arena_impl.reset(.retain_capacity);
+    const arena = arena_impl.allocator();
+
+    const lex_result = try Lexer.tokenizeWithLanguage(arena, source, language);
+    var tokens = lex_result.tokens;
+    var tree = try parser_mod.Parser.parseWithLanguage(arena, source, tokens.slice(), language, false);
+
+    var sem_result = if (linter_mod.needsSemantic(null))
+        try semantic_mod.SemanticAnalyzer.analyze(arena, &tree)
+    else
+        semantic_mod.SemanticResult.initEmpty(arena);
+    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, null);
+
+    // Serialize diagnostics — same format as sanz_lint.
+    if (out_len < 4) return 0;
+    const out = out_ptr[0..out_len];
+    std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
+    var pos: u32 = 4;
+    for (diagnostics) |diag| {
+        const rule = diag.rule_name;
+        const msg  = diag.message;
+        const rule_len: u8  = @intCast(@min(rule.len, 255));
+        const msg_len: u16  = @intCast(@min(msg.len, 65535));
+        const needed: u32 = 4 + 1 + 1 + rule_len + 2 + msg_len;
+        if (pos + needed > out_len) break;
+        std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
+        out[pos] = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 }; pos += 1;
+        out[pos] = rule_len; pos += 1;
+        @memcpy(out[pos..][0..rule_len], rule[0..rule_len]); pos += rule_len;
+        std.mem.writeInt(u16, out[pos..][0..2], msg_len, .little); pos += 2;
+        @memcpy(out[pos..][0..msg_len], msg[0..msg_len]); pos += msg_len;
+    }
+    return pos;
+}
 
 // ── Lint C ABI ───────────────────────────────────────────────────
 //
@@ -207,7 +438,10 @@ fn lintImpl(
     defer _ = arena_impl.reset(.retain_capacity);
     const arena = arena_impl.allocator();
 
-    var sem_result = try semantic_mod.SemanticAnalyzer.analyze(arena, &tree);
+    var sem_result = if (linter_mod.needsSemantic(null))
+        try semantic_mod.SemanticAnalyzer.analyze(arena, &tree)
+    else
+        semantic_mod.SemanticResult.initEmpty(arena);
     const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, null);
 
     // Serialize diagnostics into the caller's output buffer.
@@ -272,6 +506,8 @@ const n = struct {
 pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parse", napiParse);
     registerFn(env, exports, "lint", napiLint);
+    registerFn(env, exports, "lintBuffer", napiLintBuffer);
+    registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
     return exports;
@@ -363,6 +599,88 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         buf_ptr, @intCast(src_buf_len),
         source_start, source_len, @intCast(lang_val),
         out_ptr, @intCast(out_buf_len),
+    );
+
+    var js_result: n.Value = undefined;
+    if (n.napi_create_uint32(env, bytes_written, &js_result) != n.OK) return null;
+    return js_result;
+}
+
+// ── parseAndLint(buf, sourceStart, sourceLen, lang, outBuf) → bytesUsed ──
+
+fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 5;
+    var argv: [5]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+
+    if (argc < 5) {
+        _ = n.napi_throw_error(env, null, "parseAndLint(buf, srcStart, srcLen, lang, outBuf): 5 args required");
+        return null;
+    }
+
+    var buf_data: ?*anyopaque = null;
+    var buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len) != n.OK) return null;
+    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse return null);
+
+    var source_start: u32 = 0;
+    var source_len: u32 = 0;
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[1], &source_start);
+    _ = n.napi_get_value_uint32(env, argv[2], &source_len);
+    _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
+
+    var out_data: ?*anyopaque = null;
+    var out_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[4], &out_data, &out_len) != n.OK) return null;
+    const out_ptr: [*]u8 = @ptrCast(out_data orelse return null);
+
+    const bytes_used = sanz_parse_and_lint(
+        buf_ptr, @intCast(buf_len),
+        source_start, source_len, @intCast(lang_val),
+        out_ptr, @intCast(out_len),
+    );
+
+    var js_result: n.Value = undefined;
+    if (n.napi_create_uint32(env, bytes_used, &js_result) != n.OK) return null;
+    return js_result;
+}
+
+// ── lintBuffer(parsedBuf, lang, outBuf) → bytesWritten ──────────
+
+fn napiLintBuffer(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 3;
+    var argv: [3]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+
+    if (argc < 3) {
+        _ = n.napi_throw_error(env, null, "lintBuffer(parsedBuf, lang, outBuf): 3 args required");
+        return null;
+    }
+
+    var parsed_data: ?*anyopaque = null;
+    var parsed_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[0], &parsed_data, &parsed_len) != n.OK) {
+        _ = n.napi_throw_error(env, null, "lintBuffer: first argument must be an ArrayBuffer");
+        return null;
+    }
+
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[1], &lang_val);
+
+    var out_data: ?*anyopaque = null;
+    var out_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[2], &out_data, &out_len) != n.OK) {
+        _ = n.napi_throw_error(env, null, "lintBuffer: third argument must be an ArrayBuffer");
+        return null;
+    }
+
+    const bytes_written = sanz_lint_buffer(
+        @ptrCast(parsed_data orelse return null),
+        @intCast(parsed_len),
+        @intCast(lang_val),
+        @ptrCast(out_data orelse return null),
+        @intCast(out_len),
     );
 
     var js_result: n.Value = undefined;

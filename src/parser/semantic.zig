@@ -78,6 +78,20 @@ pub const SemanticResult = struct {
     /// Length = node count of the analyzed AST.
     node_reachable: []u8 = &.{},
 
+    /// Return an empty SemanticResult with no scopes/symbols/references.
+    /// Used when the caller determines that no semantic-phase rules are active,
+    /// allowing SemanticAnalyzer.analyze() to be skipped entirely.
+    /// The tables are allocated from `allocator` but contain no data.
+    pub fn initEmpty(allocator: std.mem.Allocator) SemanticResult {
+        return .{
+            .scopes = ScopeTree.init(allocator),
+            .symbols = SymbolTable.init(allocator),
+            .references = ReferenceTable.init(allocator),
+            .diagnostics = &.{},
+            .node_reachable = &.{},
+        };
+    }
+
     pub fn deinit(self: *SemanticResult, allocator: std.mem.Allocator) void {
         self.scopes.deinit();
         self.symbols.deinit();

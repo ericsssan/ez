@@ -7,6 +7,8 @@ const std = @import("std");
 const SymbolId = @import("../../../parser/symbol.zig").SymbolId;
 
 pub const relevant_tags = [_]Node.Tag{.labeled_stmt};
+/// This rule accesses ctx.symbols() in run() — not just runOnSymbols.
+pub const needs_semantic = true;
 
 pub const meta = RuleMeta{
     .name = "no-label-var",

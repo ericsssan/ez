@@ -268,4 +268,148 @@ function lint(source, options = {}) {
   return diags;
 }
 
-module.exports = { parse, lint, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+/**
+ * Parse + lint in a single pipeline pass — avoids double lex/parse/semantic.
+ *
+ * Equivalent to calling parse() and lint() separately, but the native side
+ * reuses the live AST and SemanticResult for both, cutting pipeline cost
+ * from 2× to 1×.
+ *
+ * @param {string} source
+ * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
+ * @returns {{ ast: AstView, diags: Array<{offset, severity, ruleName, message}> }}
+ */
+function parseAndLint(source, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename
+      ? detectLang(options.filename)
+      : LANG.js;
+
+  // Encode source into shared buffer (same as parse()).
+  let sourceLen, buf, sourceStart;
+  const reservedLen = source.length + 128;
+  buf = ensureBuffer(reservedLen);
+  sourceStart = buf.byteLength - reservedLen;
+  const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
+  if (read === source.length) {
+    sourceLen = written;
+  } else {
+    const encoded = _encoder.encode(source);
+    sourceLen = encoded.byteLength;
+    buf = ensureBuffer(sourceLen);
+    sourceStart = buf.byteLength - sourceLen;
+    new Uint8Array(buf).set(encoded, sourceStart);
+  }
+
+  // Ensure lint output buffer.
+  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
+  if (_lintOutBuf.byteLength < needed) {
+    _lintOutBuf = new ArrayBuffer(needed * 2);
+  }
+
+  // Single native call — returns AST bytesUsed; diags written to _lintOutBuf.
+  const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf);
+  if (bytesUsed === 0) {
+    throw new Error("sanz: parseAndLint failed (buffer too small or invalid source)");
+  }
+
+  // Build AstView from the buffer (same copy logic as parse()).
+  const dv0 = new DataView(buf);
+  const totalUsed = dv0.getUint32(56 /* H.TOTAL_USED */, true);
+  const semOff = dv0.getUint32(68 /* H.SEMANTIC_DATA_OFFSET */, true);
+  const semEnd = semOff > 0 ? semOff + 96 : 0;
+  const srcStart = Math.max(totalUsed, semEnd);
+  const privateSize = srcStart + sourceLen;
+  const privateArr = new Uint8Array(privateSize);
+  privateArr.set(new Uint8Array(buf, 0, totalUsed));
+  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
+  const privateBuf = privateArr.buffer;
+  const pdv = new DataView(privateBuf);
+  pdv.setUint32(52 /* H.SOURCE_OFFSET */, srcStart, true);
+  if (semOff > 0) {
+    const symCount = pdv.getUint32(semOff + 4, true);
+    if (symCount > 0) {
+      const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
+      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
+        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
+        const shift = totalUsed - sourceStart;
+        for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+      }
+    }
+  }
+
+  getTagNames();
+  const ast = new AstView(privateBuf);
+
+  // Parse diagnostics from _lintOutBuf.
+  const dv = new DataView(_lintOutBuf);
+  const count = dv.getUint32(0, true);
+  const diags = [];
+  let pos = 4;
+  for (let i = 0; i < count; i++) {
+    if (pos + 8 > _lintOutBuf.byteLength) break;
+    const offset   = dv.getUint32(pos, true); pos += 4;
+    const severity = dv.getUint8(pos);         pos += 1;
+    const ruleLen  = dv.getUint8(pos);          pos += 1;
+    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
+    const msgLen   = dv.getUint16(pos, true);   pos += 2;
+    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
+    diags.push({ offset, severity, ruleName, message });
+  }
+
+  return { ast, diags };
+}
+
+/**
+ * Lint source code using an already-parsed AstView (output of parse()).
+ *
+ * Avoids re-encoding the source string — reads source bytes directly from
+ * the AstView's underlying buffer. Use this in the hybrid routing scenario:
+ *
+ *   const ast  = sanz.parse(source, { filename });   // parse once (for JS rules)
+ *   const diags = sanz.lintBuffer(ast, { filename }); // lint from same buffer (native rules)
+ *
+ * @param {AstView} astView - Result of a previous parse() call
+ * @param {object} [options] - { lang?: 'js'|'ts'|'jsx'|'tsx', filename?: string }
+ * @returns {Array<{offset: number, severity: number, ruleName: string, message: string}>}
+ */
+function lintBuffer(astView, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename
+      ? detectLang(options.filename)
+      : LANG.js;
+
+  const buf = astView.buffer;
+
+  // Ensure output buffer is large enough (use source_len from header as proxy).
+  const dv = new DataView(buf);
+  const sourceLen = dv.getUint32(20 /* H.SOURCE_LEN */, true);
+  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
+  if (_lintOutBuf.byteLength < needed) {
+    _lintOutBuf = new ArrayBuffer(needed * 2);
+  }
+
+  const bytesWritten = b.lintBuffer(buf, lang, _lintOutBuf);
+  if (bytesWritten < 4) return [];
+
+  const dvOut = new DataView(_lintOutBuf);
+  const count = dvOut.getUint32(0, true);
+  const diags = [];
+  let pos = 4;
+  for (let i = 0; i < count && pos < bytesWritten; i++) {
+    const offset   = dvOut.getUint32(pos, true); pos += 4;
+    const severity = dvOut.getUint8(pos);         pos += 1;
+    const ruleLen  = dvOut.getUint8(pos);          pos += 1;
+    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
+    const msgLen   = dvOut.getUint16(pos, true);   pos += 2;
+    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
+    diags.push({ offset, severity, ruleName, message });
+  }
+  return diags;
+}
+
+module.exports = { parse, lint, lintBuffer, parseAndLint, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

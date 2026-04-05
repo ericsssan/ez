@@ -220,12 +220,19 @@ pub fn lint(
     return diagnostics.toOwnedSlice(allocator);
 }
 
-/// Returns true if any symbol-phase (runOnSymbols) rule is enabled.
-/// Callers can use this to skip SemanticAnalyzer.analyze() when no
-/// symbol-phase rules are active, saving 10–25% of lint time.
+/// Returns true if any rule requiring semantic data is enabled.
+/// This covers:
+///   - Rules with `runOnSymbols` (symbol-phase rules)
+///   - Rules with `pub const needs_semantic = true` (node-walk rules that
+///     call ctx.symbols() / ctx.scopes() / ctx.references() inside run())
+///
+/// When false, callers may skip SemanticAnalyzer.analyze() and pass
+/// SemanticResult.initEmpty() instead, saving ~10% of per-file time.
 pub fn needsSemantic(config: ?*const Config) bool {
     inline for (registry.all_rules, 0..) |Rule, rule_idx| {
-        if (@hasDecl(Rule, "runOnSymbols")) {
+        const requires = @hasDecl(Rule, "runOnSymbols") or
+            (@hasDecl(Rule, "needs_semantic") and Rule.needs_semantic);
+        if (requires) {
             const sev = if (config) |cfg|
                 cfg.rule_severity_table[rule_idx]
             else
