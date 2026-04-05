@@ -58,7 +58,7 @@ test-all: test test-fuzz test-js test-e2e test-differential test-conformance
 
 build:
 	@mkdir -p zig-out/bin
-	$(ZIG) build-exe src/main.zig -femit-bin=zig-out/bin/sanz $(LINK_FLAGS)
+	$(ZIG) build-exe src/main.zig -O ReleaseFast -femit-bin=zig-out/bin/sanz $(LINK_FLAGS)
 
 napi:
 	zig build napi
