@@ -787,7 +787,19 @@ const NodeProto = {
     return this._ast._mainTokens[this._i];
   },
   get start() {
-    return this._ast._nodeStartPos(this._i);
+    const ast = this._ast;
+    // SequenceExpression: sanz assigns '(' as main token, but ESTree requires
+    // start at the first expression (the paren is not part of the node's range).
+    if (ast._nodeTags[this._i] === T.sequence_expr) {
+      const lhs = ast.nodeLhs(this._i);
+      const rhs = ast.nodeRhs(this._i);
+      const extra = ast._extraData;
+      for (let i = lhs; i < rhs; i++) {
+        const ci = extra[i];
+        if (ci !== NONE) return ast._nodeStartPos(ci);
+      }
+    }
+    return ast._nodeStartPos(this._i);
   },
   get end() {
     if (this._ast._nodeTags[this._i] === T.root) return this._ast.sourceUtf16Len;

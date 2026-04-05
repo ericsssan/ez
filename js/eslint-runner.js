@@ -500,13 +500,24 @@ class SourceCode {
 
   getTokenBefore(node, filterOrOpts) {
     if (!node) return null;
+    const ast = this._ast;
     const mainTok = node.mainToken;
     if (mainTok === undefined || mainTok === null) return null;
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
-    // Fast path: no filter, no skip — O(1)
-    if (!fn && skip === 0 && mainTok > 0) return this._makeToken(mainTok - 1);
+    // Range-based fallback: when node.range[0] differs from mainToken start
+    // (e.g. SequenceExpression whose mainToken is '('), binary-search for the
+    // last token strictly before node.range[0].
+    let anchorTok = mainTok - 1;
+    if (node.range) {
+      const nodeStart = node.range[0];
+      if (ast._tokStarts[mainTok] !== nodeStart) {
+        anchorTok = this._tokenIndexAtOrBefore(nodeStart - 1);
+      }
+    }
+    if (anchorTok < 0) return null;
+    if (!fn && skip === 0) return this._makeToken(anchorTok);
     let skipped = 0;
-    for (let i = mainTok - 1; i >= 0; i--) {
+    for (let i = anchorTok; i >= 0; i--) {
       const tok = this._makeToken(i);
       if (!fn || fn(tok)) {
         if (skipped >= skip) return tok;
@@ -522,10 +533,28 @@ class SourceCode {
     const mainTok = node.mainToken;
     if (mainTok === undefined || mainTok === null) return null;
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
-    // Fast path: no filter, no skip — O(1)
-    if (!fn && skip === 0 && mainTok + 1 < ast.tokenCount) return this._makeToken(mainTok + 1);
+    // Range-based fallback: when node.range[0] differs from mainToken start
+    // (e.g. SequenceExpression whose mainToken is '('), binary-search for the
+    // first token at or after node.range[1].
+    let anchorTok = mainTok + 1;
+    if (node.range) {
+      const nodeStart = node.range[0];
+      if (ast._tokStarts[mainTok] !== nodeStart) {
+        const nodeEnd = node.range[1];
+        const starts = ast._tokStarts;
+        let lo = 0, hi = ast.tokenCount - 1;
+        anchorTok = ast.tokenCount;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (starts[mid] >= nodeEnd) { anchorTok = mid; hi = mid - 1; }
+          else lo = mid + 1;
+        }
+      }
+    }
+    if (anchorTok >= ast.tokenCount) return null;
+    if (!fn && skip === 0) return this._makeToken(anchorTok);
     let skipped = 0;
-    for (let i = mainTok + 1; i < ast.tokenCount; i++) {
+    for (let i = anchorTok; i < ast.tokenCount; i++) {
       const tok = this._makeToken(i);
       if (!fn || fn(tok)) {
         if (skipped >= skip) return tok;
@@ -2815,7 +2844,8 @@ const _TERMINATOR_TYPES = new Set(['ReturnStatement', 'ThrowStatement', 'BreakSt
 // not per file. Saves ~2μs/file of Set construction and string allocation overhead.
 let _tagSetCacheRef = null;
 let _cachedBranchTagSet = null, _cachedCatchTagSet = null, _cachedTerminatorTagSet = null;
-let _cachedIfStmtTag = -1;
+let _cachedIfStmtTagSet = null; // Set of ALL tag indices whose name is 'IfStatement'
+let _cachedIfStmtTag = -1; // first IfStatement tag (used for elseStartNodes only)
 let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
 let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> — last occurrence, for O(1) reverse lookup
 let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL variant tag indices
@@ -2823,10 +2853,22 @@ let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL varian
 function _ensureTagCaches(tagNames) {
   if (_tagSetCacheRef === tagNames) return;
   _tagSetCacheRef = tagNames;
+  // Build tag sets by iterating ALL tags (not indexOf which only finds first occurrence).
+  // This handles sanz variants like if_stmt (tag 4) and if_else_stmt (tag 5) that share
+  // the same ESTree type name 'IfStatement'.
+  _cachedBranchTagSet    = new Set();
+  _cachedCatchTagSet     = new Set();
+  _cachedTerminatorTagSet = new Set();
+  _cachedIfStmtTagSet    = new Set();
+  for (let _t = 0; _t < tagNames.length; _t++) {
+    const _tn = tagNames[_t];
+    if (!_tn) continue;
+    if (_BRANCH_STMT_TYPES.has(_tn)) _cachedBranchTagSet.add(_t);
+    if (_CATCH_CASE_TYPES.has(_tn))  _cachedCatchTagSet.add(_t);
+    if (_TERMINATOR_TYPES.has(_tn))  _cachedTerminatorTagSet.add(_t);
+    if (_tn === 'IfStatement')       _cachedIfStmtTagSet.add(_t);
+  }
   _cachedIfStmtTag = tagNames.indexOf('IfStatement');
-  _cachedBranchTagSet    = new Set([..._BRANCH_STMT_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
-  _cachedCatchTagSet     = new Set([..._CATCH_CASE_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
-  _cachedTerminatorTagSet = new Set([..._TERMINATOR_TYPES].map(t => tagNames.indexOf(t)).filter(t => t >= 0));
   _cachedExitKeys = tagNames.map(t => t ? t + ':exit' : null);
   const m = new Map();
   const allTags = new Map(); // typeName → Array<int>
@@ -3402,6 +3444,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const FLAG_SELECTOR       = 256;
   // Use pre-cached tag index Sets (built once per session in _ensureTagCaches, not per file).
   const ifStmtTag = _cachedIfStmtTag;
+  const _ifStmtTagSet = _cachedIfStmtTagSet;
   const _branchEnterTagSet = _cachedBranchTagSet;
   const _catchCaseTagSet = _cachedCatchTagSet;
   const _terminatorTagSet = _cachedTerminatorTagSet;
@@ -3507,7 +3550,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const elseStartNodes = hasCodePath && pd ? (() => {
     const arr = new Uint8Array(ast.nodeCount);
     for (let i = 0; i < ast.nodeCount; i++) {
-      if (nodeTags[i] === ifStmtTag) {
+      if (_ifStmtTagSet && _ifStmtTagSet.has(nodeTags[i])) {
         const ifN = nodeView(ast, i);
         if (ifN.alternate) arr[ifN.alternate._i] = 1;
       }
@@ -3627,11 +3670,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             cpTracker.enterBranch();
           }
           if (_catchCaseTagSet.has(tag)) {
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) _segEndEvent(oldSeg);
             const seg = cpTracker.nextBranch();
             if (seg) if (_segStartH) _dispatchSeg(_segStartH, seg);
           }
           // Detect else branch (pre-computed map)
           if (elseStartNodes && elseStartNodes[idx]) {
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) _segEndEvent(oldSeg);
             const seg = cpTracker.nextBranch();
             if (seg) if (_segStartH) _dispatchSeg(_segStartH, seg);
           }
@@ -3763,7 +3810,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (hasCodePath && _branchEnterTagSet.has(tag)) {
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
-          const hasAllBranches = tag === ifStmtTag && nodeView(ast, idx).alternate != null;
+          const hasAllBranches = _ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null;
           const seg = cpTracker.exitBranch(hasAllBranches);
           if (_segStartH) _dispatchSeg(_segStartH, seg);
         }
@@ -3854,6 +3901,33 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     for (const hd of fileLevelEnter) hd.handler(rootNode);
   }
 
+  // Pre-compute MethodDefinition → Property remap for object literal methods.
+  // sanz uses the same tags (getter_def, setter_def, method_def) for both class
+  // methods (→ MethodDefinition) and object literal methods (→ Property).
+  // The adapter's .type getter does the remap, but the runner dispatches by raw
+  // tag → we need to intercept and use Property handlers for object-context nodes.
+  const _methodDefTagBits = new Uint8Array(tagNames.length);
+  const _objContainerTagBits = new Uint8Array(tagNames.length);
+  let _propertyTagNum = -1;
+  for (let _t = 0; _t < tagNames.length; _t++) {
+    const _tn = tagNames[_t];
+    if (_tn === 'MethodDefinition') _methodDefTagBits[_t] = 1;
+    if (_tn === 'ObjectExpression' || _tn === 'ObjectPattern') _objContainerTagBits[_t] = 1;
+    if (_tn === 'Property') _propertyTagNum = _t;
+  }
+  const _hasMdRemap = _propertyTagNum >= 0 && _methodDefTagBits.some(v => v);
+
+  /** Resolve actual enter/exit handlers accounting for MethodDef-in-object-literal remap. */
+  function _resolveHandlers(handlersArr, tag, idx) {
+    if (_hasMdRemap && _methodDefTagBits[tag] && pd) {
+      const parentIdx = pd[idx];
+      if (parentIdx !== undefined && parentIdx !== NONE && _objContainerTagBits[nodeTags[parentIdx]]) {
+        return _propertyTagNum >= 0 ? handlersArr[_propertyTagNum] : null;
+      }
+    }
+    return handlersArr[tag];
+  }
+
   // Interleaved DFS: enter and exit events in correct DFS order.
   const hasPrivateIdOpt = visitorMap.has('PrivateIdentifier');
   const hasPrivateIdExitOpt = visitorMap.has('PrivateIdentifier:exit');
@@ -3869,7 +3943,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = ev;
       if (usePruning && !subtreeRelevant[idx]) continue;
       const tag = nodeTags[idx];
-      const handlers = tagEnterHandlers[tag];
+      const handlers = _resolveHandlers(tagEnterHandlers, tag, idx);
       const flags = tagFlags[tag];
       if (canSkip && !handlers && !flags && !(hasPrivateIdOpt && tag === identTagOpt) && !(_catchStackTrackArr && _catchStackTrackArr[tag])) continue;
       // Catch stack: bookkeep CatchClause/function-boundary for ThrowStatement pre-warming
@@ -3901,10 +3975,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Branch enter (flag-based: no string lookups in hot path)
       if (flags & FLAG_BRANCH_ENTER) cpTracker.enterBranch();
       if (flags & FLAG_CATCH_CASE) {
+        const oldSeg2 = cpTracker.segment;
+        if (oldSeg2) _segEndEvent(oldSeg2);
         const seg2 = cpTracker.nextBranch();
         if (seg2) if (_segStartH) _dispatchSeg(_segStartH, seg2);
       }
       if (elseStartNodes && elseStartNodes[idx]) {
+        const oldSeg2 = cpTracker.segment;
+        if (oldSeg2) _segEndEvent(oldSeg2);
         const seg2 = cpTracker.nextBranch();
         if (seg2) if (_segStartH) _dispatchSeg(_segStartH, seg2);
       }
@@ -3952,7 +4030,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = ~ev;
       if (usePruning && !subtreeRelevant[idx]) continue;
       const tag = nodeTags[idx];
-      const handlers = tagExitHandlers[tag];
+      const handlers = _resolveHandlers(tagExitHandlers, tag, idx);
       const flags = tagFlags[tag];
       if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag])) continue;
       // Catch stack: pop CatchClause/function-boundary on exit
@@ -3974,7 +4052,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (flags & FLAG_BRANCH_EXIT) {
         const oldSeg = cpTracker.segment;
         if (oldSeg) _segEndEvent(oldSeg);
-        const hasAllBranches = tag === ifStmtTag && nodeView(ast, idx).alternate != null;
+        const hasAllBranches = _ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null;
         const seg2 = cpTracker.exitBranch(hasAllBranches);
         if (_segStartH) _dispatchSeg(_segStartH, seg2);
       }
