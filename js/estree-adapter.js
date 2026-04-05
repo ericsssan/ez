@@ -857,9 +857,10 @@ const NodeProto = {
   // ── Low-level sanz accessors (existing) ──────────────────────
 
   get type() {
-    // Property memoization: cache the computed type on the instance.
-    // After first access, subsequent reads are O(1) direct property lookups.
-    // Object.defineProperty on the instance shadows the prototype getter.
+    // Fast path: return cached value from pre-allocated own field.
+    // _type is initialized to null in nodeView(); all instances share the same
+    // hidden class so V8 can inline this check with a single field offset load.
+    if (this._type !== null) return this._type;
     const tagName = TAG_NAMES ? TAG_NAMES[this._ast._nodeTags[this._i]] : String(this._ast._nodeTags[this._i]);
     let result = tagName;
     // Remap Identifier → PrivateIdentifier when the token starts with #.
@@ -891,6 +892,7 @@ const NodeProto = {
       const kw = _TS_KW_TYPES[text];
       if (kw) result = kw;
     }
+    this._type = result; // cached in pre-allocated own field (see nodeView)
     return result;
   },
   /** Internal numeric tag (Zig AST node type). Use this for all internal checks. */
@@ -2129,6 +2131,7 @@ const NodeProto = {
    * Line is 1-indexed; column is 0-indexed.
    */
   get loc() {
+    if (this._loc !== null) return this._loc;
     const ast = this._ast;
     const end = ast._nodeEndPos(this._i);
     const ls = ast._lineStarts();
@@ -2153,10 +2156,11 @@ const NodeProto = {
       if (ls[mid] <= end) elo = mid;
       else ehi = mid - 1;
     }
-    return {
+    this._loc = {
       start: { line: startLine, column: startCol },
       end: { line: elo + 1, column: end - ls[elo] },
     };
+    return this._loc;
   },
 
   /**
@@ -2252,7 +2256,9 @@ function nodeView(ast, index) {
     n = Object.create(NodeProto);
     n._ast = ast;
     n._i = index;
-    n._parent = _PARENT_UNSET; // pre-set own property → stable hidden class for all nodes
+    n._parent = _PARENT_UNSET; // pre-set → stable hidden class
+    n._type = null;            // pre-allocated cache slot for get type()
+    n._loc  = null;            // pre-allocated cache slot for get loc()
     cache[index] = n;
   }
   return n;
