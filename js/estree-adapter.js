@@ -2,6 +2,50 @@
 
 const { T, OPERATOR_BY_TAG } = require("./tags");
 
+// ── Template literal cooked value processor ──────────────────────
+// Processes escape sequences in a template literal quasi raw string,
+// returning the cooked string or null for illegal escapes.
+function _cookTemplate(raw) {
+  let result = '';
+  let i = 0;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch !== '\\') { result += ch; i++; continue; }
+    i++; // consume backslash
+    if (i >= raw.length) break;
+    const next = raw[i];
+    if (next === '\n') { i++; }                          // line continuation LF
+    else if (next === '\r') { i++; if (raw[i] === '\n') i++; } // line continuation CRLF
+    else if (next === 'n')  { result += '\n'; i++; }
+    else if (next === 'r')  { result += '\r'; i++; }
+    else if (next === 't')  { result += '\t'; i++; }
+    else if (next === 'b')  { result += '\b'; i++; }
+    else if (next === 'f')  { result += '\f'; i++; }
+    else if (next === 'v')  { result += '\v'; i++; }
+    else if (next === '0' && (i + 1 >= raw.length || !/[0-9]/.test(raw[i + 1]))) { result += '\0'; i++; }
+    else if (next === 'x')  {
+      const hex = raw.slice(i + 1, i + 3);
+      if (/^[0-9a-fA-F]{2}$/.test(hex)) { result += String.fromCharCode(parseInt(hex, 16)); i += 3; }
+      else return null;
+    }
+    else if (next === 'u')  {
+      if (raw[i + 1] === '{') {
+        const end = raw.indexOf('}', i + 2);
+        if (end === -1) return null;
+        const cp = parseInt(raw.slice(i + 2, end), 16);
+        try { result += String.fromCodePoint(cp); } catch { return null; }
+        i = end + 1;
+      } else {
+        const hex = raw.slice(i + 1, i + 5);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) { result += String.fromCharCode(parseInt(hex, 16)); i += 5; }
+        else return null;
+      }
+    }
+    else { result += next; i++; } // unrecognized escape — identity
+  }
+  return result;
+}
+
 // ── Header offsets (matches BufferHeader extern struct) ──────────
 
 const H = {
@@ -312,6 +356,7 @@ class AstView {
     let lo = 0, hi = this._commentCount;
     while (lo < hi) { const m = (lo + hi) >> 1; if (ce[m] <= start) lo = m + 1; else hi = m; }
     const results = [];
+    const ls = this._lineStarts();
     for (let i = lo; i < this._commentCount && cs[i] < end; i++) {
       const cStart = cs[i];
       const cEnd = ce[i];
@@ -319,10 +364,16 @@ class AstView {
       // Strip the // or /* */ delimiters for the value
       const valStart = kind === 'Line' ? cStart + 2 : cStart + 2;
       const valEnd = kind === 'Block' ? cEnd - 2 : cEnd;
+      const startLine = this._findLineIdx(cStart);
+      const endLine   = this._findLineIdx(cEnd);
       results.push({
         type: kind, value: src.slice(valStart, valEnd),
         start: cStart, end: cEnd,
         range: [cStart, cEnd],
+        loc: {
+          start: { line: startLine + 1, column: cStart - ls[startLine] },
+          end:   { line: endLine + 1,   column: cEnd   - ls[endLine]   },
+        },
       });
     }
     return results;
@@ -1057,7 +1108,15 @@ const NodeProto = {
     if (t === T.boolean_literal) return src === 'true';
     if (t === T.null_literal) return null;
     if (t === T.bigint_literal) return src.slice(0, -1); // strip 'n'
-    if (t === T.regex_literal) return src;
+    if (t === T.regex_literal) {
+      // ESTree spec: Literal.value for a regex is the RegExp object, not a string.
+      // Returning the raw source string as value causes rules like no-useless-escape
+      // to take the string-escape path (typeof value === "string") instead of the
+      // regex path, producing false positives for valid regex escapes like /\./.
+      const r = this.regex;
+      if (!r) return null;
+      try { return new RegExp(r.pattern, r.flags); } catch { return null; }
+    }
     // VariableDeclarator .value = init (ESLint uses .init, but some rules use .value)
     if (t === T.declarator) return this.rhsNode();
     // Property (key: value) — rhs is the value expression.
@@ -1068,6 +1127,11 @@ const NodeProto = {
       // Shorthand: value is the same as key
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    // PropertyDefinition (class field) — rhs is the initializer expression, or null if absent.
+    if (t === T.property_def || t === T.computed_property_def) {
+      const rhs = ast.nodeRhs(this._i);
+      return rhs === NONE ? null : nodeView(ast, rhs);
     }
     // Method/getter/setter — return a synthetic FunctionExpression
     if (t === T.method_def || t === T.getter_def || t === T.setter_def ||
@@ -1102,9 +1166,17 @@ const NodeProto = {
       return synth;
     }
     if (t === T.template_element) {
-      // ESTree: value = { raw: string, cooked: string }
-      const raw = ast.source.slice(this.range[0], this.range[1]).replace(/^`|`$/g, '').replace(/^\}|\$\{$/g, '');
-      return { raw, cooked: raw };
+      // ESTree: value = { raw: string, cooked: string | null }
+      // raw = literal source text; cooked = text with escape sequences processed.
+      // Use tokStarts[mainToken+1] as the end rather than this.range[1], because
+      // _nodeEndPos can extend past the quasi boundary into trailing `;` tokens.
+      const mt = this.mainToken;
+      const start = ast._tokStarts[mt];
+      const end = (mt + 1 < ast.tokenCount) ? ast._tokStarts[mt + 1] : ast.source.length;
+      // trimEnd() strips the whitespace gap between the token and the next token,
+      // so the closing ` or } is always at the end when the regex anchors run.
+      const raw = ast.source.slice(start, end).trimEnd().replace(/^`|`$/g, '').replace(/^\}|\$\{$/g, '');
+      return { raw, cooked: _cookTemplate(raw) };
     }
     return null;
   },
@@ -1511,7 +1583,8 @@ const NodeProto = {
     const t = this._tag;
     if (t !== T.method_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.constructor_def && t !== T.computed_method_def &&
-        t !== T.computed_getter_def && t !== T.computed_setter_def) return undefined;
+        t !== T.computed_getter_def && t !== T.computed_setter_def &&
+        t !== T.property_def && t !== T.computed_property_def) return undefined;
     return _methodFlags(this._ast, this.mainToken).static;
   },
 
@@ -2134,10 +2207,12 @@ const NodeProto = {
 
   /**
    * node.sourceType — "module" or "script" on Program nodes.
-   * Read from the Zig buffer header's source_type field.
+   * Uses the runtime-provided sourceType if set (via _runtimeSourceType),
+   * otherwise reads from the Zig buffer header's source_type field.
    */
   get sourceType() {
     if (this._ast._nodeTags[this._i] === T.root) {
+      if (this._ast._runtimeSourceType !== undefined) return this._ast._runtimeSourceType;
       return this._ast._sourceType === 1 ? 'module' : 'script';
     }
     return undefined;

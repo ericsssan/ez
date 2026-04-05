@@ -17,6 +17,61 @@ function esquery() {
 }
 const _selectorParseCache = new Map();
 
+// ── defaultOptions deep merge ───────────────────────────────────
+// Mirrors ESLint's getRuleOptions / deepMergeArrays so that rules with
+// meta.defaultOptions get the correct merged options when user options
+// are a partial override (e.g. [] means "use all defaults").
+function _deepMergeObjects(first, second) {
+  if (second === undefined) return first;
+  if (typeof first !== "object" || first === null || Array.isArray(first) ||
+      typeof second !== "object" || second === null || Array.isArray(second))
+    return second;
+  const result = { ...first, ...second };
+  for (const key of Object.keys(second)) {
+    if (Object.prototype.propertyIsEnumerable.call(first, key))
+      result[key] = _deepMergeObjects(first[key], second[key]);
+  }
+  return result;
+}
+function _deepMergeArrays(first, second) {
+  if (!first || !second) return second || first || [];
+  return [
+    ...first.map((v, i) => _deepMergeObjects(v, i < second.length ? second[i] : undefined)),
+    ...second.slice(first.length),
+  ];
+}
+// Compute the effective rule options: merge defaultOptions with user-supplied options.
+function _mergeRuleOptions(defaultOptions, configured) {
+  if (configured === undefined) return defaultOptions ?? [];
+  return _deepMergeArrays(defaultOptions ?? [], configured);
+}
+
+// ── ecmaVersion normalization ────────────────────────────────────
+// Matches ESLint's normalizeEcmaVersionForLanguageOptions:
+// short form (3,5,6..13) → year form (3,5,2015..2022).
+function _normalizeEcmaVersion(v) {
+  if (!v) return 2022;
+  if (v === 3 || v === 5) return v;
+  return v >= 2015 ? v : v + 2009;
+}
+
+// Minimum ecmaVersion (year) for globals that were added after ES5.
+// Globals not in this map were available since ES3/5 (pre-ES2015).
+const _GLOBAL_MIN_VERSION = {
+  // ES2015 (ES6)
+  Symbol: 2015, Promise: 2015, Proxy: 2015, Reflect: 2015, Map: 2015, Set: 2015,
+  WeakMap: 2015, WeakSet: 2015, ArrayBuffer: 2015, DataView: 2015,
+  Int8Array: 2015, Uint8Array: 2015, Uint8ClampedArray: 2015,
+  Int16Array: 2015, Uint16Array: 2015, Int32Array: 2015, Uint32Array: 2015,
+  Float32Array: 2015, Float64Array: 2015,
+  // ES2017
+  Atomics: 2017, SharedArrayBuffer: 2017,
+  // ES2020
+  BigInt: 2020, BigInt64Array: 2020, BigUint64Array: 2020, globalThis: 2020,
+  // ES2021
+  WeakRef: 2021, FinalizationRegistry: 2021, AggregateError: 2021,
+};
+
 // ── ES2022 built-in globals ─────────────────────────────────────
 // Added to the global scope so no-undef doesn't flag these as undeclared.
 // Matches ESLint's default globals (es2022 environment).
@@ -63,6 +118,19 @@ function _intern(str) {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+// Returns true if a function AST node has a 'use strict' directive as its first body statement.
+// Used to detect strict mode when Zig's SF_HAS_USE_STRICT flag isn't set (module-mode wrapper bug).
+function _fnHasUseStrict(fnNode) {
+  const body = fnNode.body;
+  if (!body || body.type !== 'BlockStatement') return false;
+  const stmts = body.body;
+  if (!stmts || stmts.length === 0) return false;
+  const first = stmts[0];
+  return first.type === 'ExpressionStatement' &&
+    first.expression?.type === 'Literal' &&
+    first.expression?.value === 'use strict';
+}
 
 // Tags that act as destructuring pass-through nodes (not the declaring node).
 const _DESTRUCTURE_TAGS = new Set([
@@ -239,10 +307,14 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
  * Provides getText(), getTokens(), getFirstToken(), getLastToken().
  */
 class SourceCode {
-  constructor(ast, sourceText, sourceType) {
+  constructor(ast, sourceText, sourceType, ecmaVersion) {
     this._ast = ast;
     this.text = sourceText;
     this._sourceType = sourceType || 'module';
+    this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
+    // Expose runtime sourceType on the AST so node.sourceType returns correctly.
+    // Zig always parses in module mode, so the buffer always says 'module'.
+    ast._runtimeSourceType = this._sourceType;
     this._linesCache = null;
     this._tokensCache = null;
     this._scopeCache = new Map();
@@ -251,10 +323,12 @@ class SourceCode {
     this._tokenSkipList = null; // lazily built token position index
   }
 
-  reset(ast, sourceText, sourceType) {
+  reset(ast, sourceText, sourceType, ecmaVersion) {
     this._ast = ast;
     this.text = sourceText;
     this._sourceType = sourceType || 'module';
+    this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
+    ast._runtimeSourceType = this._sourceType;
     this._linesCache = null;
     this._tokensCache = null;
     this._scopeCache.clear();
@@ -465,19 +539,21 @@ class SourceCode {
     }
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
     const ast = this._ast;
-    // Ensure maxTok cache exists
-    if (!ast._maxTokCache) ast._nodeEndPos(node._i);
-    const maxTok = ast._maxTokCache[node._i];
-    const tags = ast._tokTags;
+    // Use the true end position (accounts for trailing } and matched brackets)
+    // rather than the simple SCAN_CONTINUE_TAGS scan, which stops at l_brace (tag=74).
+    const nodeEnd = ast._nodeEndPos(node._i);
+    const starts = ast._tokStarts;
     const tc = ast.tokenCount;
-    // Compute endTok (maxTok + trailing structural tokens)
-    let endTok = maxTok;
-    for (let t = maxTok + 1; t < tc; t++) {
-      const tag = tags[t];
-      if (tag === 131) break;
-      if (SCAN_CONTINUE_TAGS.has(tag)) endTok = t;
-      else break;
+    // Binary search: last token whose start position is strictly before nodeEnd
+    let endTok = 0;
+    let lo = 0, hi = tc - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] < nodeEnd) { endTok = mid; lo = mid + 1; }
+      else hi = mid - 1;
     }
+    // Skip EOF
+    while (endTok > 0 && ast._tokTags[endTok] === 131) endTok--;
     // Fast path: no filter, no skip
     if (!fn && skip === 0) return this._makeToken(endTok);
     // Slow path: iterate backwards
@@ -549,11 +625,30 @@ class SourceCode {
     const mainTok = node.mainToken;
     if (mainTok === undefined || mainTok === null) return null;
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
-    // Range-based fallback: when node.range[0] differs from mainToken start
-    // (e.g. SequenceExpression whose mainToken is '('), binary-search for the
-    // first token at or after node.range[1].
+    // Default: one past the main token.
     let anchorTok = mainTok + 1;
-    if (node.range) {
+
+    if (node._i !== undefined && node._i !== null) {
+      // For real AST nodes: check if the subtree has tokens beyond mainToken
+      // (i.e., it's a multi-token node like UnaryExpression `!a`). If so, use
+      // range[1] to find the first token strictly after the entire node.
+      // We detect multi-token via maxTok: if maxTok > mainTok, the subtree
+      // extends past mainToken and mainToken+1 lands inside the node.
+      if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+      const maxTok = ast._maxTokCache[node._i];
+      if (maxTok !== undefined && maxTok > mainTok && node.range) {
+        const nodeEnd = node.range[1];
+        const starts = ast._tokStarts;
+        let lo = 0, hi = ast.tokenCount - 1;
+        anchorTok = ast.tokenCount;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (starts[mid] >= nodeEnd) { anchorTok = mid; hi = mid - 1; }
+          else lo = mid + 1;
+        }
+      }
+    } else if (node.range) {
+      // Synthetic node or fallback: use range[1] if mainToken start != node start
       const nodeStart = node.range[0];
       if (ast._tokStarts[mainTok] !== nodeStart) {
         const nodeEnd = node.range[1];
@@ -810,7 +905,18 @@ class SourceCode {
     // scope or inherited from an ancestor — NOT from module-mode wrapping.
     // Class bodies (kind 4) and static blocks (kind 7) are always strict per spec.
     const isAlwaysStrict = kind === 4 || kind === 7;
-    const isStrict = isAlwaysStrict || (
+    // Detect 'use strict' directive by checking the function body's first statement,
+    // since Zig's analyze() always uses module mode so SF_HAS_USE_STRICT is never set.
+    const hasUseStrict = kind === 2 && block !== null && _fnHasUseStrict(block);
+    // Function expressions in a class extends clause are always strict per spec
+    // (class heritage is evaluated in strict mode). Zig's scope parent for these
+    // functions points to the module scope rather than the class scope, so we
+    // need to detect this case explicitly.
+    const inClassExtends = kind === 2 && block !== null &&
+      block.parent !== null &&
+      (block.parent.type === 'ClassDeclaration' || block.parent.type === 'ClassExpression') &&
+      block.parent.superClass !== null && block.parent.superClass._i === block._i;
+    const isStrict = isAlwaysStrict || inClassExtends || hasUseStrict || (
       this._sourceType === 'script'
         ? (flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict)
         : (flags16 & SF_STRICT_MODE) !== 0
@@ -835,7 +941,11 @@ class SourceCode {
     // Add ES2022 built-in globals to the global scope so rules like no-undef
     // don't flag NaN, undefined, Infinity, etc. as undeclared.
     if (kind === 0) { // global scope
+      const ecmaVersion = this._ecmaVersion;
       for (const name of _BUILTIN_GLOBALS) {
+        // Exclude globals that weren't available at the specified ecmaVersion.
+        const minVer = _GLOBAL_MIN_VERSION[name];
+        if (minVer !== undefined && ecmaVersion < minVer) continue;
         if (!set.has(name)) {
           const globalVar = { name, defs: [], references: [], identifiers: [],
             scope, eslintUsed: false, writeable: false,
@@ -968,26 +1078,44 @@ class SourceCode {
     // Synthesize an init-write reference for let/const variables that have an initializer.
     // The Zig semantic analyzer only tracks explicit write references (assignments),
     // but ESLint's prefer-const also needs the initializer tracked as a write reference.
+    // For destructured patterns (let {a, b} = obj), the identifier's immediate parent is
+    // a property/shorthand_property/object_pattern/array_pattern, not the VariableDeclarator.
+    // Walk up through destructuring nodes to find the enclosing VariableDeclarator.
     const is_let = (flags16 & 0x02) !== 0;
-    if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && declNodeIdx !== 0xFFFFFFFF && ast._parentData) {
-      const declaratorIdx = ast._parentData[declNodeIdx]; // Identifier → Declarator
-      if (declaratorIdx !== undefined && declaratorIdx !== NONE && declaratorIdx !== 0xFFFFFFFF && declaratorIdx < ast.nodeCount) {
-        const initNodeIdx = ast.nodeRhs(declaratorIdx);
-        if (initNodeIdx !== 0xFFFFFFFF && initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
-          // Has initializer — prepend synthetic init write reference.
-          const thin = this._buildThinVariable(symId);
-          references.unshift({
-            identifier: declNode,
-            from: scope, // same object as variable.scope — required for prefer-const
-            resolved: thin,
-            writeExpr: nodeView(ast, initNodeIdx),
-            init: true,
-            isWrite: () => true,
-            isRead: () => false,
-            isWriteOnly: () => true,
-            isReadOnly: () => false,
-            isReadWrite: () => false,
-          });
+    if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+      let curIdx = ast._parentData[declNodeIdx];
+      let initAdded = false;
+      while (!initAdded && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
+        const curTag = ast._nodeTags[curIdx];
+        if (curTag === T.declarator) {
+          const initNodeIdx = ast.nodeRhs(curIdx);
+          if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+            const thin = this._buildThinVariable(symId);
+            // Append (push) the init-write so that Zig-tracked refs (in source order)
+            // come first. This ensures reads that precede the declaration in source order
+            // appear before the init-write, allowing the prefer-const rule's
+            // ignoreReadBeforeAssign option to see the read-before-write ordering.
+            references.push({
+              identifier: declNode,
+              from: scope, // same object as variable.scope — required for prefer-const
+              resolved: thin,
+              writeExpr: nodeView(ast, initNodeIdx),
+              init: true,
+              isWrite: () => true,
+              isRead: () => false,
+              isWriteOnly: () => true,
+              isReadOnly: () => false,
+              isReadWrite: () => false,
+            });
+          }
+          initAdded = true; // found declarator; stop regardless of whether init exists
+        } else if (curTag === T.property || curTag === T.shorthand_property ||
+                   curTag === T.computed_property || curTag === T.object_pattern ||
+                   curTag === T.array_pattern || curTag === T.assignment_pattern ||
+                   curTag === T.rest_element) {
+          curIdx = ast._parentData[curIdx];
+        } else {
+          break;
         }
       }
     }
@@ -1223,10 +1351,11 @@ class SourceCode {
   }
 
   /**
-   * Stub for getAllComments — returns empty array.
+   * getAllComments — all comment nodes in the file.
+   * Used by rules like no-irregular-whitespace to filter out violations in comments.
    */
   getAllComments() {
-    return [];
+    return this._ast.commentsInRange(0, this.text.length);
   }
 
   /**
@@ -1520,7 +1649,7 @@ class RuleContext {
     this.settings = {};
     // Satisfy ESLint v8 parserPath check used by getParserServices
     this.parserPath = '@typescript-eslint/parser';
-    const sc = new SourceCode(ast, sourceText, options.sourceType);
+    const sc = new SourceCode(ast, sourceText, options.sourceType, options.ecmaVersion);
     this.sourceCode = sc;
     // Attach TypeScript parserServices for .ts/.tsx files
     if (options.parserServices) {
@@ -1530,6 +1659,7 @@ class RuleContext {
     this._ruleErrors = Object.create(null);
     this._errorBudget = options.errorBudget || DEFAULT_ERROR_BUDGET;
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
+    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
   }
 
   reset(ast, filename, sourceText, options = {}) {
@@ -1544,9 +1674,10 @@ class RuleContext {
     this._currentNodeIdx = 0;
     this._currentRule = null;
     this._currentRuleMeta = null;
-    this.sourceCode.reset(ast, sourceText, options.sourceType);
+    this.sourceCode.reset(ast, sourceText, options.sourceType, options.ecmaVersion);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
+    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
   }
 
   /**
@@ -1683,7 +1814,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     const ruleMeta = plugin.meta || null;
     const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
     const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
-    const ruleOptions = configured !== undefined ? configured : (plugin.meta?.defaultOptions ?? []);
+    const ruleOptions = _mergeRuleOptions(plugin.meta?.defaultOptions, configured);
     pluginOptions.push(ruleOptions);
     // Per-rule context — created once, reused across all files (items 4+5).
     // report() and options are stable per rule; prototype chain reads per-file
@@ -2898,6 +3029,7 @@ let _cachedBranchTagSet = null, _cachedCatchTagSet = null, _cachedTerminatorTagS
 let _cachedIfStmtTagSet = null; // Set of ALL tag indices whose name is 'IfStatement'
 let _cachedIfStmtTag = -1; // first IfStatement tag (used for elseStartNodes only)
 let _cachedTryStmtTagSet = null; // Set of ALL tag indices whose name is 'TryStatement'
+let _cachedDoWhileStmtTagSet = null; // Set of ALL tag indices whose name is 'DoWhileStatement'
 let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
 let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> — last occurrence, for O(1) reverse lookup
 let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL variant tag indices
@@ -2913,6 +3045,7 @@ function _ensureTagCaches(tagNames) {
   _cachedTerminatorTagSet = new Set();
   _cachedIfStmtTagSet    = new Set();
   _cachedTryStmtTagSet   = new Set();
+  _cachedDoWhileStmtTagSet = new Set();
   for (let _t = 0; _t < tagNames.length; _t++) {
     const _tn = tagNames[_t];
     if (!_tn) continue;
@@ -2921,6 +3054,7 @@ function _ensureTagCaches(tagNames) {
     if (_TERMINATOR_TYPES.has(_tn))  _cachedTerminatorTagSet.add(_t);
     if (_tn === 'IfStatement')       _cachedIfStmtTagSet.add(_t);
     if (_tn === 'TryStatement')      _cachedTryStmtTagSet.add(_t);
+    if (_tn === 'DoWhileStatement')  _cachedDoWhileStmtTagSet.add(_t);
   }
   _cachedIfStmtTag = tagNames.indexOf('IfStatement');
   _cachedExitKeys = tagNames.map(t => t ? t + ':exit' : null);
@@ -3500,6 +3634,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const ifStmtTag = _cachedIfStmtTag;
   const _ifStmtTagSet = _cachedIfStmtTagSet;
   const _tryStmtTagSet = _cachedTryStmtTagSet;
+  const _doWhileStmtTagSet = _cachedDoWhileStmtTagSet;
   const _branchEnterTagSet = _cachedBranchTagSet;
   const _catchCaseTagSet = _cachedCatchTagSet;
   const _terminatorTagSet = _cachedTerminatorTagSet;
@@ -3816,18 +3951,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             const unreachSeg = cpTracker.segment;
             if (_unreachStartH) _dispatchSeg(_unreachStartH, unreachSeg);
           }
-          // Merge points: restore reachability at block/statement exit
-          if (_branchEnterTagSet.has(tag)) {
-            if (!cpTracker.reachable) {
-              const oldSeg = cpTracker.segment;
-              if (oldSeg) if (_unreachEndH) _dispatchSeg(_unreachEndH, oldSeg);
-            } else {
-              const oldSeg = cpTracker.segment;
-              if (oldSeg) if (_segEndH) _dispatchSeg(_segEndH, oldSeg);
-            }
-            const seg = cpTracker.forkReachable();
-            if (_segStartH) _dispatchSeg(_segStartH, seg);
-          }
         }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
         // Use pre-indexed array (no Map lookup, no string allocation); fall back on remap (MethodDefinition→Property)
@@ -3866,7 +3989,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
           const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
-            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null);
+            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
+            (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
           const seg = cpTracker.exitBranch(hasAllBranches);
           _segStartOrUnreachEvent(seg);
         }
@@ -4109,7 +4233,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         const oldSeg = cpTracker.segment;
         if (oldSeg) _segEndEvent(oldSeg);
         const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
-          (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null);
+          (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
+          (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
         const seg2 = cpTracker.exitBranch(hasAllBranches);
         _segStartOrUnreachEvent(seg2);
       }
@@ -4167,7 +4292,7 @@ let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
@@ -4201,10 +4326,10 @@ function runPlugins(ast, plugins, options = {}) {
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;
   if (_cachedContext) {
-    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType });
+    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion });
     context = _cachedContext;
   } else {
-    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType });
+    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion });
     _cachedContext = context;
   }
 

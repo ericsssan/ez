@@ -23,6 +23,7 @@
 
 const { execSync } = require("child_process");
 const fs     = require("fs");
+const os     = require("os");
 const path   = require("path");
 const Module = require("module");
 
@@ -119,14 +120,18 @@ function runEspree(filePath) {
     .map(m => ({ rule: m.ruleId, line: m.line }));
 }
 
-// Per-rule espree call for corpus mode (forwards per-case options + sourceType).
-function runEspreeForRule(src, ruleName, ruleOptions, sourceType) {
+// Per-rule espree call for corpus mode (forwards per-case options, sourceType, ecmaVersion, JSX).
+function runEspreeForRule(src, ruleName, ruleOptions, sourceType, tcLanguageOptions = {}) {
   const ruleEntry = ruleOptions.length > 0 ? ["error", ...ruleOptions] : "error";
+  const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
+  const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
+  const langOpts = { ecmaVersion, sourceType };
+  if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
   try {
     const messages = eslintLinter.verify(src, [{
-      languageOptions: { ecmaVersion: 2022, sourceType },
+      languageOptions: langOpts,
       rules: { [ruleName]: ruleEntry },
-    }], { filename: "test.js" });
+    }], { filename: jsxEnabled ? "test.jsx" : "test.js" });
     return messages
       .filter(m => m.ruleId === ruleName && !m.fatal)
       .map(m => ({ rule: m.ruleId, line: m.line }));
@@ -180,22 +185,103 @@ function runRunner(filePath) {
   }
 }
 
-// Per-rule runner call for corpus mode (forwards per-case options + sourceType).
-function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType) {
+// Per-rule runner call for corpus mode (forwards per-case options, sourceType, JSX mode).
+function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}) {
+  const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   try {
-    const ast = parse(src, { filename: "test.js" });
+    const ast = parse(src, { filename: jsxEnabled ? "test.jsx" : "test.js" });
     const plugin = {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions },
       create: ruleModule.create,
     };
+    const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
     const reports = runPlugins(ast, [plugin], {
-      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions },
+      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion,
     });
     return reports
       .filter(r => r.ruleId === ruleName && !r.message?.startsWith("Plugin error:"))
       .map(r => ({ rule: r.ruleId, line: r.loc?.start?.line ?? r.line }));
   } catch {
     return null;
+  }
+}
+
+// Run native across ALL rules in one binary invocation.
+// Layout: <tmpDir>/<ruleName>/c<idx>.(js|mjs)
+// Each rule name is the subdirectory name, so we can recover it from the output path.
+// rulesCaseMap: { ruleName → allCases[] }
+// defaultSTMap:  { ruleName → sourceType }
+// Returns: { results, fileWriteMs, execMs, fileCount, totalBytes }
+//   results: { ruleName → results[] } where each entry is
+//     [] or [{rule,line}] on success, "skip" (options>0 or hasCustomParser), null (timeout).
+function runNativeAllRules(rulesCaseMap, defaultSTMap) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sanz_diff_"));
+  try {
+    const writtenMap = {};
+    let fileCount = 0, totalBytes = 0;
+    const t0 = Date.now();
+    for (const [ruleName, allCases] of Object.entries(rulesCaseMap)) {
+      const ruleDir = path.join(tmpDir, ruleName);
+      fs.mkdirSync(ruleDir);
+      const written = new Array(allCases.length).fill(false);
+      const defST = defaultSTMap[ruleName];
+      for (let i = 0; i < allCases.length; i++) {
+        const tc = allCases[i];
+        if (tc.hasCustomParser || tc.options.length > 0) continue;
+        const st = tc.languageOptions?.sourceType || defST;
+        const content = tc.code;
+        fs.writeFileSync(path.join(ruleDir, `c${i}${st === "module" ? ".mjs" : ".js"}`), content, "utf-8");
+        written[i] = true;
+        fileCount++;
+        totalBytes += Buffer.byteLength(content, "utf-8");
+      }
+      writtenMap[ruleName] = written;
+    }
+    const fileWriteMs = Date.now() - t0;
+
+    let rawOut = "";
+    let timedOut = false;
+    const t1 = Date.now();
+    try {
+      rawOut = execSync(`"${SANZ_BIN}" --lint --no-config "${tmpDir}"`, {
+        encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
+        timeout: 120000, maxBuffer: 256 * 1024 * 1024,
+      });
+    } catch (e) {
+      timedOut = !!e.killed;
+      rawOut = (e.stdout || "") + (e.stderr || "");
+    }
+    const execMs = Date.now() - t1;
+
+    // Parse lines: .../sanz_diff_XXX/<ruleName>/c<idx>.<ext>:<line>:<col>: sev(<ruleId>): msg
+    // Filter: only record hits where ruleId matches the subdirectory (target rule).
+    const hitsByRule = {}; // ruleName → { idx → [{rule,line}] }
+    if (!timedOut) {
+      for (const line of rawOut.split("\n")) {
+        const m = line.match(/[/\\]([^/\\]+)[/\\]c(\d+)\.[a-z]+:(\d+):\d+: \w+\(([^)]+)\)/);
+        if (!m) continue;
+        const [, ruleDir, rawIdx, rawLine, ruleId] = m;
+        if (ruleId !== ruleDir) continue; // ignore cross-rule noise
+        const idx = parseInt(rawIdx), lineNum = parseInt(rawLine);
+        if (!hitsByRule[ruleDir]) hitsByRule[ruleDir] = {};
+        if (!hitsByRule[ruleDir][idx]) hitsByRule[ruleDir][idx] = [];
+        hitsByRule[ruleDir][idx].push({ rule: ruleId, line: lineNum });
+      }
+    }
+
+    const out = {};
+    for (const [ruleName, allCases] of Object.entries(rulesCaseMap)) {
+      const written = writtenMap[ruleName];
+      const hits    = hitsByRule[ruleName] || {};
+      out[ruleName] = allCases.map((_, i) => {
+        if (!written[i]) return "skip";
+        if (timedOut)    return null;
+        return hits[i] ?? [];
+      });
+    }
+    return { results: out, fileWriteMs, execMs, fileCount, totalBytes };
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
@@ -319,7 +405,8 @@ function loadBaseline() {
 
 // ── Main ──────────────────────────────────────────────────────
 
-if (!corpusOnly && !fs.existsSync(SANZ_BIN)) {
+const nativeBinAvailable = fs.existsSync(SANZ_BIN);
+if (!corpusOnly && !nativeBinAvailable) {
   console.error(`sanz binary not found at ${SANZ_BIN} — run 'make build' first`);
   process.exit(1);
 }
@@ -328,6 +415,7 @@ const baseline = loadBaseline();
 const newBaseline = { files: {}, corpus: {} };
 
 let anyRegression = false;
+const _startTime = Date.now();
 
 // ── Source 1: Fixture files — all 3 backends ──────────────────
 
@@ -404,37 +492,70 @@ if (!corpusOnly) {
   console.log(`runner: ${runnerTotals.fn} FN, ${runnerTotals.fp} FP, ${runnerTotals.crash} crashes`);
 }
 
-// ── Source 2: ESLint submodule corpus — espree + runner ───────
+// ── Source 2: ESLint submodule corpus — espree + runner + native ──
 
 if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
-  console.log(`\nESLint corpus (${COMPARABLE_RULES.size} rules, espree + runner)\n`);
+  const nativeLabel = nativeBinAvailable ? "espree + runner + native" : "espree + runner";
+  console.log(`\nESLint corpus (${COMPARABLE_RULES.size} rules, ${nativeLabel})\n`);
 
   const { TESTS_DIR, restore } = installCorpusIntercept();
   const RULES_DIR_SUB = path.join(ESLINT_ROOT, "lib/rules");
 
-  let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
-  const ruleResults = {}; // ruleName → { fn, fp, crash, total }
-
+  // Phase 1: Load all rule cases upfront.
+  const allRuleData = [];
   for (const ruleName of COMPARABLE_RULES) {
     const cases = loadRuleCases(TESTS_DIR, ruleName);
     if (!cases) continue;
-
     const ruleModule = (() => {
       try { return require(path.join(RULES_DIR_SUB, `${ruleName}.js`)); } catch { return null; }
     })();
     if (!ruleModule) continue;
-
     const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
-    let fn = 0, fp = 0, crash = 0, pass = 0, skip = 0;
+    const allCases = [...cases.valid, ...cases.invalid];
+    allRuleData.push({ ruleName, ruleModule, defaultSourceType, allCases });
+  }
 
-    for (const tc of [...cases.valid, ...cases.invalid]) {
+  // Phase 2: Single native binary invocation for all rules.
+  let nativeAllResults = null;
+  let nativeExecMs = 0, nativeFileWriteMs = 0, nativeFileCount = 0, nativeTotalBytes = 0;
+  if (nativeBinAvailable) {
+    const rulesCaseMap = {}, defaultSTMap = {};
+    for (const { ruleName, allCases, defaultSourceType } of allRuleData) {
+      rulesCaseMap[ruleName] = allCases;
+      defaultSTMap[ruleName] = defaultSourceType;
+    }
+    const r = runNativeAllRules(rulesCaseMap, defaultSTMap);
+    nativeAllResults   = r.results;
+    nativeExecMs       = r.execMs;
+    nativeFileWriteMs  = r.fileWriteMs;
+    nativeFileCount    = r.fileCount;
+    nativeTotalBytes   = r.totalBytes;
+  }
+
+  // Phase 3: Per-rule analysis.
+  const runnerT0 = Date.now();
+  let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
+  let totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
+      totalNativeSkip = 0, totalNativeCrash = 0;
+  let runnerOnlyMs = 0; // time spent in runRunnerForRule only (excludes espree)
+
+  for (const { ruleName, ruleModule, defaultSourceType, allCases } of allRuleData) {
+    const nativeBatch = nativeAllResults ? nativeAllResults[ruleName] : null;
+
+    let fn = 0, fp = 0, crash = 0, pass = 0, skip = 0;
+    let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkip = 0;
+
+    for (let tcIdx = 0; tcIdx < allCases.length; tcIdx++) {
+      const tc = allCases[tcIdx];
       if (tc.hasCustomParser) { skip++; continue; }
       const sourceType = tc.languageOptions?.sourceType || defaultSourceType;
 
-      const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType);
+      const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType, tc.languageOptions);
       if (espreeResult === null) { crash++; continue; }
 
-      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType);
+      const _rt0 = Date.now();
+      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions);
+      runnerOnlyMs += Date.now() - _rt0;
       if (runnerResult === null) { crash++; continue; }
 
       const espreeKeys = new Set(espreeResult.map(r => `${r.rule}:${r.line}`));
@@ -444,54 +565,112 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
 
       if (caseFn === 0 && caseFp === 0) pass++;
       else { fn += caseFn; fp += caseFp; }
+
+      // Native comparison (pre-computed, single-spawn results).
+      const nativeResult = nativeBatch ? nativeBatch[tcIdx] : "skip";
+      if (nativeResult === "skip") {
+        nativeSkip++;
+      } else if (nativeResult === null) {
+        nativeCrash++;
+      } else {
+        const nativeKeys = new Set(nativeResult.map(r => `${r.rule}:${r.line}`));
+        const caseNativeFn = [...espreeKeys].filter(k => !nativeKeys.has(k)).length;
+        const caseNativeFp = [...nativeKeys].filter(k => !espreeKeys.has(k)).length;
+        if (caseNativeFn === 0 && caseNativeFp === 0) nativePass++;
+        else { nativeFn += caseNativeFn; nativeFp += caseNativeFp; }
+      }
     }
 
     const total = pass + fn + fp + crash;
-    totalCases += total;
-    totalPass  += pass;
-    totalSkip  += skip;
-    totalCrash += crash;
+    const nativeTotal = nativePass + nativeFn + nativeFp + nativeCrash;
+    totalCases       += total;
+    totalPass        += pass;
+    totalSkip        += skip;
+    totalCrash       += crash;
+    totalNativePass  += nativePass;
+    totalNativeFn    += nativeFn;
+    totalNativeFp    += nativeFp;
+    totalNativeSkip  += nativeSkip;
+    totalNativeCrash += nativeCrash;
 
-    ruleResults[ruleName] = { fn, fp, crash, total };
-    newBaseline.corpus[ruleName] = { fn, fp, crash };
+    // Baseline — supports old flat format {fn,fp,crash} and new nested format.
+    newBaseline.corpus[ruleName] = {
+      runner: { fn, fp, crash },
+      native: { fn: nativeFn, fp: nativeFp, crash: nativeCrash, skip: nativeSkip },
+    };
+    const baseRule   = baseline?.corpus?.[ruleName];
+    const baseRunner = baseRule?.runner ?? baseRule ?? null;  // old: flat, new: nested
+    const baseNative = baseRule?.native ?? null;
 
-    const baseRule = baseline?.corpus?.[ruleName];
     let ruleRegression = false;
-    if (!strict && baseRule) {
-      ruleRegression = fn > baseRule.fn || fp > baseRule.fp || crash > baseRule.crash;
+    if (!strict && (baseRunner || baseNative)) {
+      if (baseRunner)
+        ruleRegression = fn > baseRunner.fn || fp > baseRunner.fp || crash > baseRunner.crash;
+      if (nativeBinAvailable && baseNative)
+        ruleRegression = ruleRegression || nativeFn > baseNative.fn || nativeFp > baseNative.fp;
     } else if (strict) {
-      ruleRegression = fn > 0 || fp > 0 || crash > 0;
+      ruleRegression = fn > 0 || fp > 0 || crash > 0 ||
+                       (nativeBinAvailable && (nativeFn > 0 || nativeFp > 0));
     }
 
     if (ruleRegression) anyRegression = true;
 
-    const status = (fn + fp + crash) === 0 ? "✓"
-                 : ruleRegression            ? "✗"
-                 : "~";
-    const detail = [
-      fn    > 0 ? `${fn} FN`    : "",
-      fp    > 0 ? `${fp} FP`    : "",
+    const allClean = (fn + fp + crash) === 0 &&
+                     (!nativeBinAvailable || (nativeFn + nativeFp + nativeCrash) === 0);
+    const status = allClean ? "✓" : ruleRegression ? "✗" : "~";
+
+    const runnerDetail = [
+      fn    > 0 ? `${fn} FN`       : "",
+      fp    > 0 ? `${fp} FP`       : "",
       crash > 0 ? `${crash} crash` : "",
       skip  > 0 ? `${skip} skip`   : "",
     ].filter(Boolean).join(", ");
-    console.log(`  ${status} ${ruleName}: ${pass}/${total}${detail ? ` (${detail})` : ""}`);
+
+    if (nativeBinAvailable) {
+      const nativeDetail = [
+        nativeFn    > 0 ? `${nativeFn} FN`       : "",
+        nativeFp    > 0 ? `${nativeFp} FP`       : "",
+        nativeCrash > 0 ? `${nativeCrash} crash` : "",
+        nativeSkip  > 0 ? `${nativeSkip} skip`   : "",
+      ].filter(Boolean).join(", ");
+      const runnerStr = `runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`;
+      const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
+      console.log(`  ${status} ${ruleName}: ${runnerStr}  ${nativeStr}`);
+    } else {
+      console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
+    }
   }
 
   restore();
+  const runnerMs = Date.now() - runnerT0;
 
-  console.log(`\nCorpus: ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes`);
+  if (nativeBinAvailable) {
+    const nativeTotal    = totalNativePass + totalNativeFn + totalNativeFp + totalNativeCrash;
+    const runnerCasesSec = Math.round(totalCases / (runnerOnlyMs / 1000)).toLocaleString();
+    const nativeCasesSec = Math.round(nativeFileCount / (nativeExecMs / 1000)).toLocaleString();
+    // Note: native runs all rules per file; runner runs one rule per case.
+    console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes`);
+    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s, 1 rule/case)`);
+    console.log(`Corpus native:  ${totalNativePass}/${nativeTotal} pass, ${totalNativeSkip} skipped, ${totalNativeCrash} crashes`);
+    console.log(`  linting: ${(nativeExecMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s, ${COMPARABLE_RULES.size} rules/case)  file I/O: ${(nativeFileWriteMs/1000).toFixed(2)}s`);
+  } else {
+    console.log(`\nCorpus: ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes  (${(runnerMs/1000).toFixed(2)}s)`);
+  }
 } else if (!fixturesOnly) {
   console.log("\n(ESLint submodule not found — skipping corpus. Run: git submodule update --init tests/conformance/eslint)");
 }
 
 // ── Save baseline / exit ──────────────────────────────────────
 
+const elapsed = ((Date.now() - _startTime) / 1000).toFixed(2);
+console.log(`\nTotal time: ${elapsed}s`);
+
 if (saveBaseline) {
   fs.writeFileSync(BASELINE_FILE, JSON.stringify(newBaseline, null, 2));
-  console.log(`\nBaseline saved → ${path.relative(path.resolve(__dirname, "../.."), BASELINE_FILE)}`);
+  console.log(`Baseline saved → ${path.relative(path.resolve(__dirname, "../.."), BASELINE_FILE)}`);
 } else if (anyRegression) {
-  console.log("\nRegressions detected. Run with --save-baseline to update baseline after intentional changes.");
+  console.log("Regressions detected. Run with --save-baseline to update baseline after intentional changes.");
   process.exit(1);
 } else {
-  console.log("\nNo regressions.");
+  console.log("No regressions.");
 }

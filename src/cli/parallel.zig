@@ -4,7 +4,6 @@ const parser = @import("../parser/root.zig");
 const Lexer = parser.Lexer;
 const parser_mod = @import("../parser/parser.zig");
 const semantic_mod = parser.semantic;
-const Location = parser.span.Location;
 const Severity = parser.diagnostic.Severity;
 const Language = parser.token.Language;
 const linter = @import("../linter/root.zig");
@@ -42,6 +41,22 @@ pub const FileResult = struct {
     had_error: bool,
 };
 
+/// Per-phase timing counters (nanoseconds, summed across all files/threads).
+pub const PhaseTimings = struct {
+    io_ns:     std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    lex_ns:    std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    parse_ns:  std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    sem_ns:    std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    lint_ns:   std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    fmt_ns:    std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    file_count: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+
+    pub fn add(self: *PhaseTimings, field: *std.atomic.Value(u64), ns: u64) void {
+        _ = self;
+        _ = field.fetchAdd(ns, .monotonic);
+    }
+};
+
 /// Runs the full lint pipeline (lex -> parse -> semantic -> lint) on
 /// multiple files in parallel, collecting formatted results.
 pub const ParallelRunner = struct {
@@ -49,6 +64,8 @@ pub const ParallelRunner = struct {
     results: std.ArrayList(FileResult),
     mutex: SpinLock,
     config: ?*const Config = null,
+    timings: PhaseTimings = .{},
+    profile_phases: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) ParallelRunner {
         return .{
@@ -73,9 +90,12 @@ pub const ParallelRunner = struct {
         const thread_count = @min(files.len, cpu_count);
 
         if (thread_count <= 1) {
-            // Single-threaded fast path.
+            // Single-threaded fast path — one arena for all files.
+            var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena_impl.deinit();
             for (files) |path| {
-                self.lintOneFile(io, path);
+                self.lintOneFile(io, path, &arena_impl);
+                _ = arena_impl.reset(.retain_capacity);
             }
             return;
         }
@@ -95,8 +115,11 @@ pub const ParallelRunner = struct {
 
             threads[t] = std.Thread.spawn(.{}, threadWorker, .{ self, io, chunk }) catch {
                 // If we can't spawn, run in current thread.
+                var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+                defer arena_impl.deinit();
                 for (chunk) |path| {
-                    self.lintOneFile(io, path);
+                    self.lintOneFile(io, path, &arena_impl);
+                    _ = arena_impl.reset(.retain_capacity);
                 }
                 continue;
             };
@@ -110,16 +133,19 @@ pub const ParallelRunner = struct {
     }
 
     fn threadWorker(self: *ParallelRunner, io: Io, files: []const []const u8) void {
+        // One arena per thread — reset between files, never freed until thread exits.
+        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_impl.deinit();
         for (files) |path| {
-            self.lintOneFile(io, path);
+            self.lintOneFile(io, path, &arena_impl);
+            _ = arena_impl.reset(.retain_capacity);
         }
     }
 
-    fn lintOneFile(self: *ParallelRunner, io: Io, file_path: []const u8) void {
-        // Use a per-file arena for all temporary allocations.
-        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena_impl.deinit();
+    fn lintOneFile(self: *ParallelRunner, io: Io, file_path: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
         const arena = arena_impl.allocator();
+
+        var t_phase = if (self.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
 
         const source = Io.Dir.cwd().readFileAlloc(
             io,
@@ -141,6 +167,7 @@ pub const ParallelRunner = struct {
             });
             return;
         };
+        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.io_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         const lang = Language.fromExtension(file_path) orelse .js;
 
@@ -159,6 +186,7 @@ pub const ParallelRunner = struct {
             });
             return;
         }).tokens;
+        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.lex_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
         var tree = parser_mod.Parser.parseWithLanguage(arena, source, tokens.slice(), lang, is_module) catch {
@@ -176,6 +204,7 @@ pub const ParallelRunner = struct {
             });
             return;
         };
+        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.parse_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         var sem_result = semantic_mod.SemanticAnalyzer.analyze(arena, &tree) catch {
             const msg = std.fmt.allocPrint(
@@ -192,6 +221,7 @@ pub const ParallelRunner = struct {
             });
             return;
         };
+        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.sem_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         const raw_diagnostics = linter_mod.lint(arena, &tree, &sem_result, self.config) catch {
             const msg = std.fmt.allocPrint(
@@ -208,6 +238,7 @@ pub const ParallelRunner = struct {
             });
             return;
         };
+        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.lint_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         // Filter by inline disable comments.
         var disables = InlineDisables.parse(arena, source) catch InlineDisables.empty();
@@ -227,42 +258,67 @@ pub const ParallelRunner = struct {
         }
 
         // Format all diagnostics into a single output string.
+        // Sort by source offset so we can resolve line/col in a single forward
+        // pass through the source instead of O(offset) per diagnostic.
         var error_count: u32 = 0;
         var warning_count: u32 = 0;
 
         var output_buf: std.ArrayList(u8) = .empty;
 
-        // Parse errors (always severity "error").
-        for (tree.errors) |*err| {
-            const loc = Location.fromOffset(source, err.span.start);
-            const line = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}: {s}\n", .{
-                file_path,
-                loc.line + 1,
-                loc.column + 1,
-                err.severity.symbol(),
-                err.message,
-            }) catch continue;
-            output_buf.appendSlice(arena, line) catch {};
-            error_count += 1;
-        }
+        const DiagKind = enum(u1) { parse_error, lint };
+        const DiagRef = struct { offset: u32, kind: DiagKind, idx: u32 };
 
-        // Lint diagnostics.
-        for (diagnostics) |*diag| {
-            switch (diag.severity) {
-                .@"error" => error_count += 1,
-                .warning => warning_count += 1,
-                else => {},
+        const total_diags = tree.errors.len + diagnostics.len;
+        var empty_refs: [0]DiagRef = .{};
+        const diag_refs: []DiagRef = arena.alloc(DiagRef, total_diags) catch empty_refs[0..];
+        var dr: u32 = 0;
+        for (tree.errors, 0..) |*err, i| {
+            if (dr < total_diags) { diag_refs[dr] = .{ .offset = err.span.start, .kind = .parse_error, .idx = @intCast(i) }; dr += 1; }
+        }
+        for (diagnostics, 0..) |*diag, i| {
+            if (dr < total_diags) { diag_refs[dr] = .{ .offset = diag.span.start, .kind = .lint, .idx = @intCast(i) }; dr += 1; }
+        }
+        std.sort.pdq(DiagRef, diag_refs[0..dr], {}, struct {
+            fn lt(_: void, a: DiagRef, b: DiagRef) bool { return a.offset < b.offset; }
+        }.lt);
+
+        // One forward pass through source to compute line/column for all diagnostics.
+        var cur_pos: u32 = 0;
+        var cur_line: u32 = 0;
+        var cur_line_start: u32 = 0;
+
+        for (diag_refs[0..dr]) |ref| {
+            // Advance cursor forward to this offset.
+            while (cur_pos < ref.offset and cur_pos < source.len) : (cur_pos += 1) {
+                if (source[cur_pos] == '\n') {
+                    cur_line += 1;
+                    cur_line_start = cur_pos + 1;
+                }
             }
-            const loc = Location.fromOffset(source, diag.span.start);
-            const line = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s}): {s}\n", .{
-                file_path,
-                loc.line + 1,
-                loc.column + 1,
-                diag.severity.symbol(),
-                diag.rule_name,
-                diag.message,
-            }) catch continue;
-            output_buf.appendSlice(arena, line) catch {};
+            const column = ref.offset - cur_line_start;
+
+            switch (ref.kind) {
+                .parse_error => {
+                    const err = &tree.errors[ref.idx];
+                    const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}: {s}\n", .{
+                        file_path, cur_line + 1, column + 1, err.severity.symbol(), err.message,
+                    }) catch continue;
+                    output_buf.appendSlice(arena, out) catch {};
+                    error_count += 1;
+                },
+                .lint => {
+                    const diag = &diagnostics[ref.idx];
+                    switch (diag.severity) {
+                        .@"error" => error_count += 1,
+                        .warning => warning_count += 1,
+                        else => {},
+                    }
+                    const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s}): {s}\n", .{
+                        file_path, cur_line + 1, column + 1, diag.severity.symbol(), diag.rule_name, diag.message,
+                    }) catch continue;
+                    output_buf.appendSlice(arena, out) catch {};
+                },
+            }
         }
 
         // Copy the formatted output to the shared allocator so it survives
@@ -273,6 +329,9 @@ pub const ParallelRunner = struct {
         else
             @as([]const u8, "");
 
+        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.fmt_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
+        _ = self.timings.file_count.fetchAdd(1, .monotonic);
+
         self.appendResult(.{
             .file_path = file_path,
             .output = owned_output,
@@ -280,6 +339,28 @@ pub const ParallelRunner = struct {
             .warning_count = warning_count,
             .had_error = false,
         });
+    }
+
+    /// Print per-phase timing breakdown to stderr.
+    pub fn printTimings(self: *const ParallelRunner) void {
+        const n = self.timings.file_count.load(.monotonic);
+        if (n == 0) return;
+        const io_ms    = self.timings.io_ns.load(.monotonic)    / 1_000_000;
+        const lex_ms   = self.timings.lex_ns.load(.monotonic)   / 1_000_000;
+        const parse_ms = self.timings.parse_ns.load(.monotonic) / 1_000_000;
+        const sem_ms   = self.timings.sem_ns.load(.monotonic)   / 1_000_000;
+        const lint_ms  = self.timings.lint_ns.load(.monotonic)  / 1_000_000;
+        const fmt_ms   = self.timings.fmt_ns.load(.monotonic)   / 1_000_000;
+        const total_ms = io_ms + lex_ms + parse_ms + sem_ms + lint_ms + fmt_ms;
+        // Note: these are summed across all threads (wall time would be lower).
+        std.debug.print("\nPhase breakdown ({d} files, summed across threads):\n", .{n});
+        std.debug.print("  I/O read:  {d:6}ms  ({d}%)\n", .{ io_ms,    io_ms    * 100 / total_ms });
+        std.debug.print("  Lexer:     {d:6}ms  ({d}%)\n", .{ lex_ms,   lex_ms   * 100 / total_ms });
+        std.debug.print("  Parser:    {d:6}ms  ({d}%)\n", .{ parse_ms, parse_ms * 100 / total_ms });
+        std.debug.print("  Semantic:  {d:6}ms  ({d}%)\n", .{ sem_ms,   sem_ms   * 100 / total_ms });
+        std.debug.print("  Lint:      {d:6}ms  ({d}%)\n", .{ lint_ms,  lint_ms  * 100 / total_ms });
+        std.debug.print("  Format:    {d:6}ms  ({d}%)\n", .{ fmt_ms,   fmt_ms   * 100 / total_ms });
+        std.debug.print("  Total:     {d:6}ms\n",         .{total_ms});
     }
 
     fn appendResult(self: *ParallelRunner, result: FileResult) void {

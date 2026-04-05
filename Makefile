@@ -62,7 +62,6 @@ build:
 
 napi:
 	zig build napi
-	cp zig-out/lib/libsanz.dylib zig-out/lib/sanz.node
 
 submodules:
 	git submodule update --init --depth 1

@@ -7,6 +7,21 @@ const parser_mod = @import("../parser/parser.zig");
 const parent_builder = @import("../parser/parent_builder.zig");
 const semantic_mod = @import("../parser/semantic.zig");
 const Language = parser.token.Language;
+const linter_root = @import("../linter/root.zig");
+const linter_mod = linter_root.linter;
+
+// Thread-local arena for lint — allocated once per thread, reset between calls.
+// Avoids mmap/munmap per lint() call.
+threadlocal var tl_lint_arena: std.heap.ArenaAllocator = undefined;
+threadlocal var tl_lint_arena_ready: bool = false;
+
+fn getLintArena() *std.heap.ArenaAllocator {
+    if (!tl_lint_arena_ready) {
+        tl_lint_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        tl_lint_arena_ready = true;
+    }
+    return &tl_lint_arena;
+}
 
 // ── Layer 1: Core C ABI ──────────────────────────────────────────
 // Called directly by Bun FFI and indirectly via NAPI wrappers.
@@ -132,6 +147,95 @@ fn parseImpl(
 
 // sanz_tag_count and sanz_tag_name are exported from layout.zig.
 
+// ── Lint C ABI ───────────────────────────────────────────────────
+//
+// Run the full lint pipeline (lex → parse → semantic → lint) on
+// source bytes already placed in the caller's buffer and write
+// diagnostics to a separate output buffer.
+//
+// Output format (little-endian):
+//   [u32: count]
+//   per diagnostic:
+//     [u32: span_start]   byte offset into source
+//     [u8:  severity]     0 = error, 1 = warning
+//     [u8:  rule_len]
+//     [rule_len bytes]
+//     [u16: msg_len]
+//     [msg_len bytes]
+//
+// Returns bytes written to out_ptr, or 0 on error / buffer too small.
+
+pub export fn sanz_lint(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+) u32 {
+    return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len) catch 0;
+}
+
+fn lintImpl(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang_val: u8,
+    out_ptr: [*]u8,
+    out_len: u32,
+) !u32 {
+    if (source_start + source_len > buf_len) return 0;
+    if (source_start < js_buffer.HEADER_SIZE) return 0;
+
+    const raw_source = buf_ptr[source_start .. source_start + source_len];
+    const bom = js_buffer.stripBom(raw_source);
+    const source = bom.text;
+    const language: Language = @enumFromInt(lang_val);
+
+    // Bump allocator over the AST buffer for parse data.
+    var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
+    const bump = backing.allocator();
+
+    const lex_result = try Lexer.tokenizeWithLanguage(bump, source, language);
+    var tokens = lex_result.tokens;
+    var tree = try parser_mod.Parser.parseWithLanguage(bump, source, tokens.slice(), language, false);
+
+    // Pooled thread-local arena — reset after use, never freed between calls.
+    const arena_impl = getLintArena();
+    defer _ = arena_impl.reset(.retain_capacity);
+    const arena = arena_impl.allocator();
+
+    var sem_result = try semantic_mod.SemanticAnalyzer.analyze(arena, &tree);
+    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, null);
+
+    // Serialize diagnostics into the caller's output buffer.
+    if (out_len < 4) return 0;
+    const out = out_ptr[0..out_len];
+
+    std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
+    var pos: u32 = 4;
+
+    for (diagnostics) |diag| {
+        const rule = diag.rule_name;
+        const msg  = diag.message;
+        const rule_len: u8  = @intCast(@min(rule.len, 255));
+        const msg_len: u16  = @intCast(@min(msg.len, 65535));
+        const needed: u32 = 4 + 1 + 1 + rule_len + 2 + msg_len;
+        if (pos + needed > out_len) break;
+
+        std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
+        out[pos] = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 }; pos += 1;
+        out[pos] = rule_len; pos += 1;
+        @memcpy(out[pos..][0..rule_len], rule[0..rule_len]); pos += rule_len;
+        std.mem.writeInt(u16, out[pos..][0..2], msg_len, .little); pos += 2;
+        @memcpy(out[pos..][0..msg_len], msg[0..msg_len]); pos += msg_len;
+    }
+
+    return pos;
+}
+
 // ── Layer 2: NAPI Wrappers ───────────────────────────────────────
 // Thin JS value marshalling around the core C ABI functions.
 
@@ -167,6 +271,7 @@ const n = struct {
 /// Module initialization — called by Node.js when loading the .node addon.
 pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parse", napiParse);
+    registerFn(env, exports, "lint", napiLint);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
     return exports;
@@ -214,6 +319,54 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
+    return js_result;
+}
+
+// ── lint(srcBuf, sourceStart, sourceLen, lang, outBuf) → bytesWritten ──
+
+fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 5;
+    var argv: [5]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+
+    if (argc < 5) {
+        _ = n.napi_throw_error(env, null, "lint(srcBuf, sourceStart, sourceLen, lang, outBuf): 5 args required");
+        return null;
+    }
+
+    // Source ArrayBuffer
+    var src_data: ?*anyopaque = null;
+    var src_buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[0], &src_data, &src_buf_len) != n.OK) {
+        _ = n.napi_throw_error(env, null, "first argument must be an ArrayBuffer");
+        return null;
+    }
+    const buf_ptr: [*]u8 = @ptrCast(src_data orelse return null);
+
+    var source_start: u32 = 0;
+    var source_len: u32 = 0;
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[1], &source_start);
+    _ = n.napi_get_value_uint32(env, argv[2], &source_len);
+    _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
+
+    // Output ArrayBuffer
+    var out_data: ?*anyopaque = null;
+    var out_buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[4], &out_data, &out_buf_len) != n.OK) {
+        _ = n.napi_throw_error(env, null, "fifth argument must be an ArrayBuffer");
+        return null;
+    }
+    const out_ptr: [*]u8 = @ptrCast(out_data orelse return null);
+
+    const bytes_written = sanz_lint(
+        buf_ptr, @intCast(src_buf_len),
+        source_start, source_len, @intCast(lang_val),
+        out_ptr, @intCast(out_buf_len),
+    );
+
+    var js_result: n.Value = undefined;
+    if (n.napi_create_uint32(env, bytes_written, &js_result) != n.OK) return null;
     return js_result;
 }
 

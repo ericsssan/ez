@@ -202,4 +202,70 @@ function getTagNames() {
   return _cachedTagNames;
 }
 
-module.exports = { parse, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+// ── Lint ─────────────────────────────────────────────────────────
+
+const _decoder = new TextDecoder();
+
+// Persistent output buffer — grown as needed, never shrunk (high-water-mark).
+let _lintOutBuf = new ArrayBuffer(64 * 1024);
+
+/**
+ * Lint source code in-process using the native Zig lint rules.
+ * No subprocess, no disk I/O — source is passed as a string.
+ *
+ * @param {string} source
+ * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
+ * @returns {Array<{offset: number, severity: number, ruleName: string, message: string}>}
+ *   severity: 0 = error, 1 = warning
+ */
+function lint(source, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename
+      ? detectLang(options.filename)
+      : LANG.js;
+
+  // Encode source into the shared parse buffer (same path as parse()).
+  let sourceLen, buf, sourceStart;
+  const reservedLen = source.length + 128;
+  buf = ensureBuffer(reservedLen);
+  sourceStart = buf.byteLength - reservedLen;
+  const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
+  if (read === source.length) {
+    sourceLen = written;
+  } else {
+    const encoded = _encoder.encode(source);
+    sourceLen = encoded.byteLength;
+    buf = ensureBuffer(sourceLen);
+    sourceStart = buf.byteLength - sourceLen;
+    new Uint8Array(buf).set(encoded, sourceStart);
+  }
+
+  // Ensure output buffer is large enough (heuristic: source * 4 + 4KB minimum).
+  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
+  if (_lintOutBuf.byteLength < needed) {
+    _lintOutBuf = new ArrayBuffer(needed * 2);
+  }
+
+  const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf);
+  if (bytesWritten < 4) return [];
+
+  // Parse packed binary output.
+  const dv = new DataView(_lintOutBuf);
+  const count = dv.getUint32(0, true);
+  const diags = [];
+  let pos = 4;
+  for (let i = 0; i < count && pos < bytesWritten; i++) {
+    const offset   = dv.getUint32(pos, true); pos += 4;
+    const severity = dv.getUint8(pos);         pos += 1;
+    const ruleLen  = dv.getUint8(pos);          pos += 1;
+    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
+    const msgLen   = dv.getUint16(pos, true);   pos += 2;
+    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
+    diags.push({ offset, severity, ruleName, message });
+  }
+  return diags;
+}
+
+module.exports = { parse, lint, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

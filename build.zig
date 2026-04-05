@@ -97,9 +97,10 @@ pub fn build(b: *std.Build) void {
     });
     // NAPI symbols are resolved at load time by the JS runtime.
     napi_lib.linker_allow_shlib_undefined = true;
-    const napi_install = b.addInstallArtifact(napi_lib, .{});
+    // Install as sanz.node (Node.js requires .node extension) in addition to the native lib name.
+    const napi_install_node = b.addInstallLibFile(napi_lib.getEmittedBin(), "sanz.node");
     const napi_step = b.step("napi", "Build NAPI shared library for JS plugins");
-    napi_step.dependOn(&napi_install.step);
+    napi_step.dependOn(&napi_install_node.step);
 
     // QuickJS removed — pure Zig interpreter for ESLint rules
 

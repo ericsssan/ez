@@ -36,6 +36,7 @@ pub fn main(init: std.process.Init) !void {
     var config_path: ?[]const u8 = null;
     var no_config = false;
     var eslint_compat_mode = false;
+    var profile_phases = false;
 
     for (args[1..]) |arg| {
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
@@ -50,6 +51,8 @@ pub fn main(init: std.process.Init) !void {
             dump_ast = false;
         } else if (std.mem.eql(u8, arg, "--no-config")) {
             no_config = true;
+        } else if (std.mem.eql(u8, arg, "--profile-phases")) {
+            profile_phases = true;
         } else if (std.mem.eql(u8, arg, "--eslint-compat")) {
             eslint_compat_mode = true;
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
@@ -153,8 +156,10 @@ pub fn main(init: std.process.Init) !void {
         var runner = ParallelRunner.init(allocator);
         defer runner.deinit();
         runner.config = resolved_config;
+        runner.profile_phases = profile_phases;
         try runner.lintFiles(io, files);
         runner.sortResults();
+        if (profile_phases) runner.printTimings();
 
         // Output results.
         const results = runner.results.items;
