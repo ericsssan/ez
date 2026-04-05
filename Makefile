@@ -48,6 +48,9 @@ test-conformance: build-conformance napi
 test-differential: build napi
 	node tests/differential/run.js
 
+differential-baseline: build napi
+	node tests/differential/run.js --save-baseline
+
 test-e2e: build
 	bash tests/e2e/run.sh
 

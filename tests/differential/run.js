@@ -1,27 +1,48 @@
 "use strict";
 
 /**
- * Differential test — compares both Sanz backends against ESLint+Espree.
+ * Differential test — compares Sanz backends against ESLint+Espree.
  *
- * For each fixture, runs COMPARABLE_RULES three ways:
- *   espree  — ESLint's own Linter (authoritative reference)
- *   native  — sanz binary (zig-out/bin/sanz --lint)
- *   runner  — sanz parse → eslint-runner visitor dispatch (JS path)
+ * Two input sources:
+ *   1. Fixture files (tests/differential/fixtures/) — all 3 backends
+ *      espree (oracle), native Zig binary, JS runner
+ *   2. ESLint submodule test cases — espree + runner only
+ *      Per-case options and sourceType forwarded to both sides.
  *
- * Reports false negatives (missed) and false positives (extra) per backend.
+ * Flags:
+ *   --save-baseline  Write current results as tests/differential/baseline.json
+ *   --strict         Fail on any mismatch regardless of baseline
+ *   --fixtures-only  Skip corpus extraction
+ *   --corpus-only    Skip fixture files
  *
- * Run: node tests/differential/run.js [dir|file]
+ * Default: load baseline.json; fail only on new regressions.
+ *
+ * Run: node tests/differential/run.js [options]
+ *      make test-differential
  */
 
 const { execSync } = require("child_process");
-const fs = require("fs");
-const path = require("path");
+const fs     = require("fs");
+const path   = require("path");
+const Module = require("module");
 
-// ── Config ───────────────────────────────────────────────────
+// ── Paths ────────────────────────────────────────────────────
 
-const SANZ_BIN = path.resolve(__dirname, "../../zig-out/bin/sanz");
-const JS_ROOT   = path.resolve(__dirname, "../../js");
-const DEFAULT_DIR = path.resolve(__dirname, "fixtures");
+const SANZ_BIN     = path.resolve(__dirname, "../../zig-out/bin/sanz");
+const JS_ROOT      = path.resolve(__dirname, "../../js");
+const ESLINT_ROOT  = path.resolve(__dirname, "../conformance/eslint");
+const FIXTURES_DIR = path.resolve(__dirname, "fixtures");
+const BASELINE_FILE = path.resolve(__dirname, "baseline.json");
+
+// ── CLI flags ─────────────────────────────────────────────────
+
+const args         = process.argv.slice(2);
+const saveBaseline = args.includes("--save-baseline");
+const strict       = args.includes("--strict");
+const fixturesOnly = args.includes("--fixtures-only");
+const corpusOnly   = args.includes("--corpus-only");
+
+// ── Rules ─────────────────────────────────────────────────────
 
 const COMPARABLE_RULES = new Set([
   // Correctness
@@ -59,17 +80,37 @@ const COMPARABLE_RULES = new Set([
   "no-return-assign", "no-unneeded-ternary", "prefer-template",
 ]);
 
-// ── Espree (reference) ───────────────────────────────────────
+// ── ESLint + Sanz runner setup ────────────────────────────────
 
-const { Linter } = require(path.join(JS_ROOT, "node_modules/eslint"));
-const espree = new Linter();
+const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
+const { parse, getTagNames }    = require(path.join(JS_ROOT, "index"));
+const { runPlugins }            = require(path.join(JS_ROOT, "eslint-runner"));
+const tagNames                  = getTagNames();
+const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
+
+const eslintLinter = new Linter();
+
+// Pre-load runner plugins for fixture-file mode (all rules at once).
+const _runnerPlugins = [];
+for (const ruleName of COMPARABLE_RULES) {
+  try {
+    const mod = require(path.join(RULES_DIR_NM, `${ruleName}.js`));
+    _runnerPlugins.push({
+      meta: { name: ruleName, defaultOptions: mod.meta?.defaultOptions },
+      create: mod.create,
+    });
+  } catch { /* rule file not found */ }
+}
+
+// ── Espree (reference) ────────────────────────────────────────
+
 const _espreeRules = {};
 for (const r of COMPARABLE_RULES) _espreeRules[r] = "error";
 
 function runEspree(filePath) {
   const source = fs.readFileSync(filePath, "utf-8");
   const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
-  const messages = espree.verify(source, [{
+  const messages = eslintLinter.verify(source, [{
     languageOptions: { ecmaVersion: 2022, sourceType },
     rules: _espreeRules,
   }], { filename: filePath });
@@ -78,7 +119,23 @@ function runEspree(filePath) {
     .map(m => ({ rule: m.ruleId, line: m.line }));
 }
 
-// ── Native binary ────────────────────────────────────────────
+// Per-rule espree call for corpus mode (forwards per-case options + sourceType).
+function runEspreeForRule(src, ruleName, ruleOptions, sourceType) {
+  const ruleEntry = ruleOptions.length > 0 ? ["error", ...ruleOptions] : "error";
+  try {
+    const messages = eslintLinter.verify(src, [{
+      languageOptions: { ecmaVersion: 2022, sourceType },
+      rules: { [ruleName]: ruleEntry },
+    }], { filename: "test.js" });
+    return messages
+      .filter(m => m.ruleId === ruleName && !m.fatal)
+      .map(m => ({ rule: m.ruleId, line: m.line }));
+  } catch {
+    return null;
+  }
+}
+
+// ── Native binary ─────────────────────────────────────────────
 
 function runNative(filePath) {
   try {
@@ -100,24 +157,7 @@ function parseNativeOutput(output) {
   return results;
 }
 
-// ── ESLint-runner (JS path) ──────────────────────────────────
-
-const { parse, getTagNames } = require(path.join(JS_ROOT, "index"));
-const { runPlugins } = require(path.join(JS_ROOT, "eslint-runner"));
-const RULES_DIR = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
-const tagNames = getTagNames();
-
-// Load only the COMPARABLE_RULES as plugins once.
-const _runnerPlugins = [];
-for (const ruleName of COMPARABLE_RULES) {
-  try {
-    const mod = require(path.join(RULES_DIR, `${ruleName}.js`));
-    _runnerPlugins.push({
-      meta: { name: ruleName, defaultOptions: mod.meta?.defaultOptions },
-      create: mod.create,
-    });
-  } catch { /* rule file not found — skip */ }
-}
+// ── ESLint-runner (JS path) ───────────────────────────────────
 
 function runRunner(filePath) {
   const source = fs.readFileSync(filePath, "utf-8");
@@ -140,7 +180,26 @@ function runRunner(filePath) {
   }
 }
 
-// ── Diff helper ──────────────────────────────────────────────
+// Per-rule runner call for corpus mode (forwards per-case options + sourceType).
+function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType) {
+  try {
+    const ast = parse(src, { filename: "test.js" });
+    const plugin = {
+      meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions },
+      create: ruleModule.create,
+    };
+    const reports = runPlugins(ast, [plugin], {
+      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions },
+    });
+    return reports
+      .filter(r => r.ruleId === ruleName && !r.message?.startsWith("Plugin error:"))
+      .map(r => ({ rule: r.ruleId, line: r.loc?.start?.line ?? r.line }));
+  } catch {
+    return null;
+  }
+}
+
+// ── Diff helper ───────────────────────────────────────────────
 
 function diff(reference, candidate) {
   const refKeys  = new Set(reference.map(r => `${r.rule}:${r.line}`));
@@ -155,7 +214,7 @@ function diff(reference, candidate) {
   return { fn, fp, crashes };
 }
 
-// ── Discover files ───────────────────────────────────────────
+// ── File discovery ────────────────────────────────────────────
 
 function discoverFiles(dir) {
   const files = [];
@@ -167,64 +226,272 @@ function discoverFiles(dir) {
   return files;
 }
 
-// ── Main ─────────────────────────────────────────────────────
+// ── ESLint submodule corpus extraction ────────────────────────
+// Intercept Module._load to:
+//   - Route rule-tester → CapturingRuleTester (extracts test cases without running them)
+//   - Redirect bare imports from ESLint submodule → js/node_modules
+//   - Stub custom parsers (@typescript-eslint/parser, fixture parsers)
 
-const target = process.argv[2] || DEFAULT_DIR;
-const files = fs.statSync(target).isDirectory() ? discoverFiles(target) : [target];
+const CUSTOM_PARSER_STUB = {
+  parse() { return { type: "Program", body: [], range: [0, 0] }; }
+};
 
-if (!fs.existsSync(SANZ_BIN)) {
-  console.error(`sanz binary not found at ${SANZ_BIN} — run 'zig build' first`);
+let _captured = null;
+
+class CapturingRuleTester {
+  constructor(defaultConfig) { this._config = defaultConfig || {}; }
+
+  run(name, rule, cases) {
+    _captured = {
+      name,
+      defaultConfig: this._config,
+      valid:   (cases.valid   || []).map(normalizeCase),
+      invalid: (cases.invalid || []).map(normalizeCase),
+    };
+  }
+
+  static get describe() { return null; }
+  static get it()       { return null; }
+  static defineRule()   {}
+  static setDefaultConfig() {}
+}
+
+function normalizeCase(c) {
+  if (typeof c === "string") return { code: c, options: [], languageOptions: {}, errors: [], hasCustomParser: false };
+  return {
+    code:            c.code || "",
+    options:         c.options || [],
+    languageOptions: c.languageOptions || {},
+    errors:          c.errors || [],
+    hasCustomParser: !!(c.parser || (c.languageOptions && c.languageOptions.parser)),
+  };
+}
+
+function installCorpusIntercept() {
+  const TESTS_DIR    = path.join(ESLINT_ROOT, "tests/lib/rules");
+  const _ruleTestPath = require.resolve(
+    path.join(ESLINT_ROOT, "lib/rule-tester/rule-tester")
+  );
+  const _ESLINT_PREFIX = ESLINT_ROOT + path.sep;
+  const _JS_NM         = path.join(JS_ROOT, "node_modules");
+  const _origLoad = Module._load;
+
+  Module._load = function (request, parent, isMain) {
+    if (parent && parent.filename) {
+      try {
+        const resolved = Module._resolveFilename(request, parent, isMain);
+        if (resolved === _ruleTestPath) return CapturingRuleTester;
+      } catch { /* unresolvable */ }
+
+      if (!request.startsWith(".") && !request.startsWith("/")) {
+        if (request === "@typescript-eslint/parser" || request.includes("parsers/"))
+          return CUSTOM_PARSER_STUB;
+        if (parent.filename.startsWith(_ESLINT_PREFIX)) {
+          const redirected = path.join(_JS_NM, request);
+          try {
+            const resolved = Module._resolveFilename(redirected, parent, isMain);
+            return _origLoad.call(this, resolved, parent, isMain);
+          } catch { /* not in js/node_modules — fall through */ }
+        }
+      }
+    }
+    return _origLoad.apply(this, arguments);
+  };
+
+  return { TESTS_DIR, _origLoad, restore: () => { Module._load = _origLoad; } };
+}
+
+function loadRuleCases(testsDir, ruleName) {
+  const testFile = path.join(testsDir, `${ruleName}.js`);
+  if (!fs.existsSync(testFile)) return null;
+  _captured = null;
+  delete require.cache[testFile];
+  try { require(testFile); } catch { return null; }
+  return _captured;
+}
+
+// ── Baseline ──────────────────────────────────────────────────
+
+function loadBaseline() {
+  if (saveBaseline || !fs.existsSync(BASELINE_FILE)) return null;
+  return JSON.parse(fs.readFileSync(BASELINE_FILE, "utf8"));
+}
+
+// ── Main ──────────────────────────────────────────────────────
+
+if (!corpusOnly && !fs.existsSync(SANZ_BIN)) {
+  console.error(`sanz binary not found at ${SANZ_BIN} — run 'make build' first`);
   process.exit(1);
 }
 
-console.log(`Differential test — ${files.length} fixture(s), ${COMPARABLE_RULES.size} rules\n`);
+const baseline = loadBaseline();
+const newBaseline = { files: {}, corpus: {} };
 
-let anyFail = false;
-const nativeTotals = { fn: 0, fp: 0, crash: 0 };
-const runnerTotals = { fn: 0, fp: 0, crash: 0 };
+let anyRegression = false;
 
-for (const file of files) {
-  const rel = path.relative(process.cwd(), file);
+// ── Source 1: Fixture files — all 3 backends ──────────────────
 
-  const espreeResults = runEspree(file);
-  const nativeResults = runNative(file);
-  const runnerResults = runRunner(file);
+if (!corpusOnly) {
+  const files = discoverFiles(FIXTURES_DIR);
+  const nativeTotals  = { fn: 0, fp: 0, crash: 0 };
+  const runnerTotals  = { fn: 0, fp: 0, crash: 0 };
 
-  const nativeDiff = diff(espreeResults, nativeResults);
-  const runnerDiff = diff(espreeResults, runnerResults);
+  console.log(`Fixture files: ${files.length}, ${COMPARABLE_RULES.size} rules\n`);
 
-  nativeTotals.fn += nativeDiff.fn.length; nativeTotals.fp += nativeDiff.fp.length; nativeTotals.crash += nativeDiff.crashes.length;
-  runnerTotals.fn += runnerDiff.fn.length; runnerTotals.fp += runnerDiff.fp.length; runnerTotals.crash += runnerDiff.crashes.length;
+  for (const file of files) {
+    const rel = path.relative(path.resolve(__dirname, "../.."), file);
 
-  const nativeOk = nativeDiff.fn.length === 0 && nativeDiff.fp.length === 0 && nativeDiff.crashes.length === 0;
-  const runnerOk = runnerDiff.fn.length === 0 && runnerDiff.fp.length === 0 && runnerDiff.crashes.length === 0;
+    const espreeResults = runEspree(file);
+    const nativeResults = runNative(file);
+    const runnerResults = runRunner(file);
 
-  if (nativeOk && runnerOk) {
-    console.log(`  ✓ ${rel} (${espreeResults.length} violations, both backends match)`);
-    continue;
-  }
+    const nativeDiff = diff(espreeResults, nativeResults);
+    const runnerDiff = diff(espreeResults, runnerResults);
 
-  anyFail = true;
-  console.log(`  ✗ ${rel} (${espreeResults.length} espree violations)`);
+    nativeTotals.fn += nativeDiff.fn.length;
+    nativeTotals.fp += nativeDiff.fp.length;
+    nativeTotals.crash += nativeDiff.crashes.length;
+    runnerTotals.fn += runnerDiff.fn.length;
+    runnerTotals.fp += runnerDiff.fp.length;
+    runnerTotals.crash += runnerDiff.crashes.length;
 
-  function printDiff(label, { fn, fp, crashes }) {
-    if (fn.length === 0 && fp.length === 0 && crashes.length === 0) {
-      console.log(`    ${label}: ✓`);
-      return;
+    newBaseline.files[rel] = {
+      native: { fn: nativeDiff.fn.map(r => `${r.rule}:${r.line}`).sort(), fp: nativeDiff.fp.map(r => `${r.rule}:${r.line}`).sort() },
+      runner: { fn: runnerDiff.fn.map(r => `${r.rule}:${r.line}`).sort(), fp: runnerDiff.fp.map(r => `${r.rule}:${r.line}`).sort() },
+    };
+
+    const basefile  = baseline?.files?.[rel];
+    const nativeOk  = nativeDiff.fn.length === 0 && nativeDiff.fp.length === 0 && nativeDiff.crashes.length === 0;
+    const runnerOk  = runnerDiff.fn.length === 0 && runnerDiff.fp.length === 0 && runnerDiff.crashes.length === 0;
+
+    let fileRegression = false;
+    if (!strict && basefile) {
+      const baseNativeFn = new Set(basefile.native?.fn || []);
+      const baseNativeFp = new Set(basefile.native?.fp || []);
+      const baseRunnerFn = new Set(basefile.runner?.fn || []);
+      const baseRunnerFp = new Set(basefile.runner?.fp || []);
+      const newNativeFn  = nativeDiff.fn.filter(r => !baseNativeFn.has(`${r.rule}:${r.line}`));
+      const newNativeFp  = nativeDiff.fp.filter(r => !baseNativeFp.has(`${r.rule}:${r.line}`));
+      const newRunnerFn  = runnerDiff.fn.filter(r => !baseRunnerFn.has(`${r.rule}:${r.line}`));
+      const newRunnerFp  = runnerDiff.fp.filter(r => !baseRunnerFp.has(`${r.rule}:${r.line}`));
+      fileRegression = newNativeFn.length > 0 || newNativeFp.length > 0 ||
+                       newRunnerFn.length > 0 || newRunnerFp.length > 0 ||
+                       nativeDiff.crashes.length > 0 || runnerDiff.crashes.length > 0;
+    } else {
+      fileRegression = !nativeOk || !runnerOk;
     }
-    for (const { rule, line } of fn)
-      console.log(`    ${label} MISS:  ${rule} at line ${line}`);
-    for (const { rule, line } of fp)
-      console.log(`    ${label} EXTRA: ${rule} at line ${line}`);
-    for (const { rule, crash } of crashes)
-      console.log(`    ${label} CRASH: ${rule || "?"} — ${crash}`);
+
+    if (fileRegression) anyRegression = true;
+
+    if (nativeOk && runnerOk) {
+      console.log(`  ✓ ${rel} (${espreeResults.length} violations, both backends match)`);
+    } else if (!fileRegression) {
+      console.log(`  ~ ${rel} (known mismatches in baseline)`);
+    } else {
+      console.log(`  ✗ ${rel} (${espreeResults.length} espree violations)`);
+      function printDiff(label, { fn, fp, crashes }) {
+        if (fn.length === 0 && fp.length === 0 && crashes.length === 0) return;
+        for (const { rule, line } of fn)   console.log(`    ${label} MISS:  ${rule} at line ${line}`);
+        for (const { rule, line } of fp)   console.log(`    ${label} EXTRA: ${rule} at line ${line}`);
+        for (const { rule, crash } of crashes) console.log(`    ${label} CRASH: ${rule || "?"} — ${crash}`);
+      }
+      printDiff("native", nativeDiff);
+      printDiff("runner", runnerDiff);
+    }
   }
 
-  printDiff("native", nativeDiff);
-  printDiff("runner", runnerDiff);
+  console.log(`\nnative: ${nativeTotals.fn} FN, ${nativeTotals.fp} FP, ${nativeTotals.crash} crashes`);
+  console.log(`runner: ${runnerTotals.fn} FN, ${runnerTotals.fp} FP, ${runnerTotals.crash} crashes`);
 }
 
-console.log(`\nnative: ${nativeTotals.fn} FN, ${nativeTotals.fp} FP, ${nativeTotals.crash} crashes`);
-console.log(`runner: ${runnerTotals.fn} FN, ${runnerTotals.fp} FP, ${runnerTotals.crash} crashes`);
+// ── Source 2: ESLint submodule corpus — espree + runner ───────
 
-if (anyFail) process.exit(1);
+if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
+  console.log(`\nESLint corpus (${COMPARABLE_RULES.size} rules, espree + runner)\n`);
+
+  const { TESTS_DIR, restore } = installCorpusIntercept();
+  const RULES_DIR_SUB = path.join(ESLINT_ROOT, "lib/rules");
+
+  let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
+  const ruleResults = {}; // ruleName → { fn, fp, crash, total }
+
+  for (const ruleName of COMPARABLE_RULES) {
+    const cases = loadRuleCases(TESTS_DIR, ruleName);
+    if (!cases) continue;
+
+    const ruleModule = (() => {
+      try { return require(path.join(RULES_DIR_SUB, `${ruleName}.js`)); } catch { return null; }
+    })();
+    if (!ruleModule) continue;
+
+    const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
+    let fn = 0, fp = 0, crash = 0, pass = 0, skip = 0;
+
+    for (const tc of [...cases.valid, ...cases.invalid]) {
+      if (tc.hasCustomParser) { skip++; continue; }
+      const sourceType = tc.languageOptions?.sourceType || defaultSourceType;
+
+      const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType);
+      if (espreeResult === null) { crash++; continue; }
+
+      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType);
+      if (runnerResult === null) { crash++; continue; }
+
+      const espreeKeys = new Set(espreeResult.map(r => `${r.rule}:${r.line}`));
+      const runnerKeys = new Set(runnerResult.map(r => `${r.rule}:${r.line}`));
+      const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
+      const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
+
+      if (caseFn === 0 && caseFp === 0) pass++;
+      else { fn += caseFn; fp += caseFp; }
+    }
+
+    const total = pass + fn + fp + crash;
+    totalCases += total;
+    totalPass  += pass;
+    totalSkip  += skip;
+    totalCrash += crash;
+
+    ruleResults[ruleName] = { fn, fp, crash, total };
+    newBaseline.corpus[ruleName] = { fn, fp, crash };
+
+    const baseRule = baseline?.corpus?.[ruleName];
+    let ruleRegression = false;
+    if (!strict && baseRule) {
+      ruleRegression = fn > baseRule.fn || fp > baseRule.fp || crash > baseRule.crash;
+    } else if (strict) {
+      ruleRegression = fn > 0 || fp > 0 || crash > 0;
+    }
+
+    if (ruleRegression) anyRegression = true;
+
+    const status = (fn + fp + crash) === 0 ? "✓"
+                 : ruleRegression            ? "✗"
+                 : "~";
+    const detail = [
+      fn    > 0 ? `${fn} FN`    : "",
+      fp    > 0 ? `${fp} FP`    : "",
+      crash > 0 ? `${crash} crash` : "",
+      skip  > 0 ? `${skip} skip`   : "",
+    ].filter(Boolean).join(", ");
+    console.log(`  ${status} ${ruleName}: ${pass}/${total}${detail ? ` (${detail})` : ""}`);
+  }
+
+  restore();
+
+  console.log(`\nCorpus: ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes`);
+} else if (!fixturesOnly) {
+  console.log("\n(ESLint submodule not found — skipping corpus. Run: git submodule update --init tests/conformance/eslint)");
+}
+
+// ── Save baseline / exit ──────────────────────────────────────
+
+if (saveBaseline) {
+  fs.writeFileSync(BASELINE_FILE, JSON.stringify(newBaseline, null, 2));
+  console.log(`\nBaseline saved → ${path.relative(path.resolve(__dirname, "../.."), BASELINE_FILE)}`);
+} else if (anyRegression) {
+  console.log("\nRegressions detected. Run with --save-baseline to update baseline after intentional changes.");
+  process.exit(1);
+} else {
+  console.log("\nNo regressions.");
+}

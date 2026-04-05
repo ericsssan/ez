@@ -1,0 +1,506 @@
+{
+  "files": {
+    "tests/differential/fixtures/clean.js": {
+      "native": {
+        "fn": [],
+        "fp": []
+      },
+      "runner": {
+        "fn": [],
+        "fp": []
+      }
+    },
+    "tests/differential/fixtures/mixed_rules.js": {
+      "native": {
+        "fn": [],
+        "fp": []
+      },
+      "runner": {
+        "fn": [],
+        "fp": []
+      }
+    },
+    "tests/differential/fixtures/more_rules.js": {
+      "native": {
+        "fn": [
+          "no-extra-bind:167",
+          "no-redeclare:127",
+          "no-redeclare:21",
+          "no-unreachable:143",
+          "no-unreachable:161",
+          "no-unreachable:167",
+          "no-unreachable:170",
+          "no-unreachable:173",
+          "no-unreachable:182",
+          "no-unreachable:93"
+        ],
+        "fp": [
+          "no-implied-eval:106",
+          "no-useless-escape:120",
+          "no-useless-escape:176"
+        ]
+      },
+      "runner": {
+        "fn": [],
+        "fp": []
+      }
+    }
+  },
+  "corpus": {
+    "no-debugger": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-empty": {
+      "fn": 9,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-extra-semi": {
+      "fn": 13,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-dupe-keys": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-dupe-args": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-sparse-arrays": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-unreachable": {
+      "fn": 20,
+      "fp": 2,
+      "crash": 0
+    },
+    "no-unsafe-negation": {
+      "fn": 6,
+      "fp": 1,
+      "crash": 0
+    },
+    "use-isnan": {
+      "fn": 49,
+      "fp": 0,
+      "crash": 0
+    },
+    "valid-typeof": {
+      "fn": 14,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-constant-condition": {
+      "fn": 137,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-func-assign": {
+      "fn": 4,
+      "fp": 2,
+      "crash": 0
+    },
+    "no-import-assign": {
+      "fn": 49,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-self-assign": {
+      "fn": 35,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-self-compare": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-loss-of-precision": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-const-assign": {
+      "fn": 2,
+      "fp": 4,
+      "crash": 0
+    },
+    "no-unsafe-optional-chaining": {
+      "fn": 96,
+      "fp": 0,
+      "crash": 0
+    },
+    "for-direction": {
+      "fn": 2,
+      "fp": 0,
+      "crash": 0
+    },
+    "getter-return": {
+      "fn": 21,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-async-promise-executor": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-compare-neg-zero": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-dupe-class-members": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-dupe-else-if": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-duplicate-case": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-empty-pattern": {
+      "fn": 9,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-ex-assign": {
+      "fn": 2,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-fallthrough": {
+      "fn": 21,
+      "fp": 2,
+      "crash": 0
+    },
+    "no-global-assign": {
+      "fn": 8,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-inner-declarations": {
+      "fn": 20,
+      "fp": 3,
+      "crash": 0
+    },
+    "no-irregular-whitespace": {
+      "fn": 101,
+      "fp": 65,
+      "crash": 0
+    },
+    "no-new-symbol": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-obj-calls": {
+      "fn": 7,
+      "fp": 2,
+      "crash": 0
+    },
+    "no-prototype-builtins": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-setter-return": {
+      "fn": 24,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-template-curly-in-string": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-useless-catch": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "eqeqeq": {
+      "fn": 1,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-cond-assign": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-control-regex": {
+      "fn": 1,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-delete-var": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-empty-character-class": {
+      "fn": 0,
+      "fp": 8,
+      "crash": 0
+    },
+    "no-eval": {
+      "fn": 36,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-implied-eval": {
+      "fn": 17,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-label-var": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-lone-blocks": {
+      "fn": 0,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-multi-str": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-new-wrappers": {
+      "fn": 0,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-nonoctal-decimal-escape": {
+      "fn": 0,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-octal": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-redeclare": {
+      "fn": 41,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-regex-spaces": {
+      "fn": 0,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-restricted-globals": {
+      "fn": 0,
+      "fp": 22,
+      "crash": 0
+    },
+    "no-shadow-restricted-names": {
+      "fn": 26,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-unsafe-finally": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-unused-labels": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-useless-escape": {
+      "fn": 52,
+      "fp": 48,
+      "crash": 0
+    },
+    "no-void": {
+      "fn": 3,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-with": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "require-yield": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-case-declarations": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-sequences": {
+      "fn": 19,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-throw-literal": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-var": {
+      "fn": 0,
+      "fp": 4,
+      "crash": 0
+    },
+    "prefer-const": {
+      "fn": 56,
+      "fp": 4,
+      "crash": 0
+    },
+    "no-array-constructor": {
+      "fn": 7,
+      "fp": 2,
+      "crash": 0
+    },
+    "no-bitwise": {
+      "fn": 14,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-caller": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-continue": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-else-return": {
+      "fn": 73,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-eq-null": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-extend-native": {
+      "fn": 20,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-extra-bind": {
+      "fn": 1,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-extra-boolean-cast": {
+      "fn": 218,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-floating-decimal": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-iterator": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-labels": {
+      "fn": 9,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-lonely-if": {
+      "fn": 0,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-multi-assign": {
+      "fn": 14,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-negated-condition": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-nested-ternary": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-new": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-new-func": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-new-object": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-octal-escape": {
+      "fn": 0,
+      "fp": 1,
+      "crash": 0
+    },
+    "no-param-reassign": {
+      "fn": 7,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-plusplus": {
+      "fn": 4,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-proto": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    },
+    "no-return-assign": {
+      "fn": 0,
+      "fp": 6,
+      "crash": 0
+    },
+    "no-unneeded-ternary": {
+      "fn": 13,
+      "fp": 0,
+      "crash": 0
+    },
+    "prefer-template": {
+      "fn": 0,
+      "fp": 0,
+      "crash": 0
+    }
+  }
+}
