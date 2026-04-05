@@ -170,7 +170,7 @@ pub export fn sanz_parse_and_lint(
     out_ptr: [*]u8,
     out_len: u32,
 ) u32 {
-    return parseAndLintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len) catch 0;
+    return parseAndLintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null) catch 0;
 }
 
 fn parseAndLintImpl(
@@ -181,6 +181,7 @@ fn parseAndLintImpl(
     lang_val: u8,
     out_ptr: [*]u8,
     out_len: u32,
+    config: ?*const linter_root.config.Config,
 ) !u32 {
     if (source_start + source_len > buf_len) return 0;
     if (source_start < js_buffer.HEADER_SIZE) return 0;
@@ -227,7 +228,7 @@ fn parseAndLintImpl(
     const sem_ptr: *const semantic_mod.SemanticResult =
         if (sem_result_opt != null) &sem_result_opt.? else &empty_sem;
 
-    const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, null) catch &.{};
+    const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, config) catch &.{};
 
     // Serialize diagnostics into out_ptr (same format as sanz_lint).
     if (out_len >= 4) {
@@ -316,7 +317,7 @@ pub export fn sanz_lint_buffer(
     out_ptr: [*]u8,
     out_len: u32,
 ) u32 {
-    return lintBufferImpl(parsed_buf_ptr, parsed_buf_len, lang_val, out_ptr, out_len) catch 0;
+    return lintBufferImpl(parsed_buf_ptr, parsed_buf_len, lang_val, out_ptr, out_len, null) catch 0;
 }
 
 fn lintBufferImpl(
@@ -325,6 +326,7 @@ fn lintBufferImpl(
     lang_val: u8,
     out_ptr: [*]u8,
     out_len: u32,
+    config: ?*const linter_root.config.Config,
 ) !u32 {
     if (parsed_buf_len < js_buffer.HEADER_SIZE) return 0;
 
@@ -350,11 +352,11 @@ fn lintBufferImpl(
     var tokens = lex_result.tokens;
     var tree = try parser_mod.Parser.parseWithLanguage(arena, source, tokens.slice(), language, false);
 
-    var sem_result = if (linter_mod.needsSemantic(null))
+    var sem_result = if (linter_mod.needsSemantic(config))
         try semantic_mod.SemanticAnalyzer.analyze(arena, &tree)
     else
         semantic_mod.SemanticResult.initEmpty(arena);
-    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, null);
+    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config);
 
     // Serialize diagnostics — same format as sanz_lint.
     if (out_len < 4) return 0;
@@ -405,7 +407,7 @@ pub export fn sanz_lint(
     out_ptr: [*]u8,
     out_len: u32,
 ) u32 {
-    return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len) catch 0;
+    return lintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null) catch 0;
 }
 
 fn lintImpl(
@@ -416,6 +418,7 @@ fn lintImpl(
     lang_val: u8,
     out_ptr: [*]u8,
     out_len: u32,
+    config: ?*const linter_root.config.Config,
 ) !u32 {
     if (source_start + source_len > buf_len) return 0;
     if (source_start < js_buffer.HEADER_SIZE) return 0;
@@ -438,11 +441,11 @@ fn lintImpl(
     defer _ = arena_impl.reset(.retain_capacity);
     const arena = arena_impl.allocator();
 
-    var sem_result = if (linter_mod.needsSemantic(null))
+    var sem_result = if (linter_mod.needsSemantic(config))
         try semantic_mod.SemanticAnalyzer.analyze(arena, &tree)
     else
         semantic_mod.SemanticResult.initEmpty(arena);
-    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, null);
+    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config);
 
     // Serialize diagnostics into the caller's output buffer.
     if (out_len < 4) return 0;
@@ -500,7 +503,51 @@ const n = struct {
     extern fn napi_get_element(env: Env, object: Value, index: u32, result: *Value) Status;
     extern fn napi_get_named_property(env: Env, object: Value, name: [*:0]const u8, result: *Value) Status;
     extern fn napi_typeof(env: Env, value: Value, result: *u32) Status;
+    extern fn napi_create_array_with_length(env: Env, length: usize, result: *Value) Status;
+    extern fn napi_create_object(env: Env, result: *Value) Status;
+    extern fn napi_set_element(env: Env, object: Value, index: u32, value: Value) Status;
+    extern fn napi_get_typedarray_info(env: Env, typedarray: Value, type_out: ?*c_uint, length: *usize, data: *?*anyopaque, arraybuffer: ?*Value, byte_offset: ?*usize) Status;
 };
+
+// ── Config helpers ────────────────────────────────────────────────
+
+/// Build a Config from a raw severity byte table.
+/// bytes[i]: 0=off, 1=warning, else=error for rule at index i.
+/// Rules beyond bytes.len default to off.
+fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
+    const RuleSeverity = linter_root.config.RuleSeverity;
+    const reg = linter_root.rules;
+    var config: linter_root.config.Config = .{
+        .rule_severities = .{},
+        .include_patterns = &.{},
+        .exclude_patterns = &.{},
+        .overrides = &.{},
+        .rule_severity_table = undefined,
+        .allocator = std.heap.page_allocator,
+    };
+    inline for (reg.all_rules, 0..) |_, i| {
+        const byte: u8 = if (i < bytes.len) bytes[i] else 0;
+        config.rule_severity_table[i] = switch (byte) {
+            0 => RuleSeverity.off,
+            1 => RuleSeverity.warning,
+            else => RuleSeverity.@"error",
+        };
+    }
+    return config;
+}
+
+/// Try to read a Uint8Array (TypedArray) argument as a byte slice.
+/// Returns null if the value is not a TypedArray or is empty.
+fn getOptionalConfigBytes(env: n.Env, val: n.Value) ?[]const u8 {
+    var length: usize = 0;
+    var data: ?*anyopaque = null;
+    if (n.napi_get_typedarray_info(env, val, null, &length, &data, null, null) == n.OK) {
+        if (data) |ptr| {
+            if (length > 0) return @as([*]const u8, @ptrCast(ptr))[0..length];
+        }
+    }
+    return null;
+}
 
 /// Module initialization — called by Node.js when loading the .node addon.
 pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
@@ -508,6 +555,7 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "lint", napiLint);
     registerFn(env, exports, "lintBuffer", napiLintBuffer);
     registerFn(env, exports, "parseAndLint", napiParseAndLint);
+    registerFn(env, exports, "getNativeRules", napiGetNativeRules);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
     return exports;
@@ -558,15 +606,15 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     return js_result;
 }
 
-// ── lint(srcBuf, sourceStart, sourceLen, lang, outBuf) → bytesWritten ──
+// ── lint(srcBuf, sourceStart, sourceLen, lang, outBuf[, configBuf]) → bytesWritten ──
 
 fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 5;
-    var argv: [5]n.Value = undefined;
+    var argc: usize = 6;
+    var argv: [6]n.Value = undefined;
     if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
 
     if (argc < 5) {
-        _ = n.napi_throw_error(env, null, "lint(srcBuf, sourceStart, sourceLen, lang, outBuf): 5 args required");
+        _ = n.napi_throw_error(env, null, "lint(srcBuf, sourceStart, sourceLen, lang, outBuf[, configBuf]): 5 args required");
         return null;
     }
 
@@ -595,26 +643,36 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     }
     const out_ptr: [*]u8 = @ptrCast(out_data orelse return null);
 
-    const bytes_written = sanz_lint(
+    // Optional config Uint8Array (arg 6)
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 6) {
+        if (getOptionalConfigBytes(env, argv[5])) |bytes| {
+            config_val = configFromSeverityBytes(bytes);
+        }
+    }
+    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
+
+    const bytes_written = lintImpl(
         buf_ptr, @intCast(src_buf_len),
         source_start, source_len, @intCast(lang_val),
         out_ptr, @intCast(out_buf_len),
-    );
+        config_ptr,
+    ) catch 0;
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, bytes_written, &js_result) != n.OK) return null;
     return js_result;
 }
 
-// ── parseAndLint(buf, sourceStart, sourceLen, lang, outBuf) → bytesUsed ──
+// ── parseAndLint(buf, sourceStart, sourceLen, lang, outBuf[, configBuf]) → bytesUsed ──
 
 fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 5;
-    var argv: [5]n.Value = undefined;
+    var argc: usize = 6;
+    var argv: [6]n.Value = undefined;
     if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
 
     if (argc < 5) {
-        _ = n.napi_throw_error(env, null, "parseAndLint(buf, srcStart, srcLen, lang, outBuf): 5 args required");
+        _ = n.napi_throw_error(env, null, "parseAndLint(buf, srcStart, srcLen, lang, outBuf[, configBuf]): 5 args required");
         return null;
     }
 
@@ -635,26 +693,36 @@ fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     if (n.napi_get_arraybuffer_info(env, argv[4], &out_data, &out_len) != n.OK) return null;
     const out_ptr: [*]u8 = @ptrCast(out_data orelse return null);
 
-    const bytes_used = sanz_parse_and_lint(
+    // Optional config Uint8Array (arg 6)
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 6) {
+        if (getOptionalConfigBytes(env, argv[5])) |bytes| {
+            config_val = configFromSeverityBytes(bytes);
+        }
+    }
+    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
+
+    const bytes_used = parseAndLintImpl(
         buf_ptr, @intCast(buf_len),
         source_start, source_len, @intCast(lang_val),
         out_ptr, @intCast(out_len),
-    );
+        config_ptr,
+    ) catch 0;
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, bytes_used, &js_result) != n.OK) return null;
     return js_result;
 }
 
-// ── lintBuffer(parsedBuf, lang, outBuf) → bytesWritten ──────────
+// ── lintBuffer(parsedBuf, lang, outBuf[, configBuf]) → bytesWritten ──
 
 fn napiLintBuffer(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 3;
-    var argv: [3]n.Value = undefined;
+    var argc: usize = 4;
+    var argv: [4]n.Value = undefined;
     if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
 
     if (argc < 3) {
-        _ = n.napi_throw_error(env, null, "lintBuffer(parsedBuf, lang, outBuf): 3 args required");
+        _ = n.napi_throw_error(env, null, "lintBuffer(parsedBuf, lang, outBuf[, configBuf]): 3 args required");
         return null;
     }
 
@@ -675,17 +743,65 @@ fn napiLintBuffer(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         return null;
     }
 
-    const bytes_written = sanz_lint_buffer(
+    // Optional config Uint8Array (arg 4)
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 4) {
+        if (getOptionalConfigBytes(env, argv[3])) |bytes| {
+            config_val = configFromSeverityBytes(bytes);
+        }
+    }
+    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
+
+    const bytes_written = lintBufferImpl(
         @ptrCast(parsed_data orelse return null),
         @intCast(parsed_len),
         @intCast(lang_val),
         @ptrCast(out_data orelse return null),
         @intCast(out_len),
-    );
+        config_ptr,
+    ) catch 0;
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, bytes_written, &js_result) != n.OK) return null;
     return js_result;
+}
+
+// ── getNativeRules() → Array<{name,index,category,defaultSeverity}> ─
+
+fn napiGetNativeRules(env: n.Env, _: n.CallbackInfo) callconv(.c) ?n.Value {
+    const reg = linter_root.rules;
+    var result: n.Value = undefined;
+    if (n.napi_create_array_with_length(env, reg.count, &result) != n.OK) return null;
+
+    inline for (reg.all_rules, 0..) |Rule, i| {
+        var obj: n.Value = undefined;
+        if (n.napi_create_object(env, &obj) == n.OK) {
+            var v: n.Value = undefined;
+            // name
+            const rule_name = Rule.meta.name;
+            if (n.napi_create_string_utf8(env, rule_name.ptr, rule_name.len, &v) == n.OK)
+                _ = n.napi_set_named_property(env, obj, "name", v);
+            // index
+            if (n.napi_create_uint32(env, @intCast(i), &v) == n.OK)
+                _ = n.napi_set_named_property(env, obj, "index", v);
+            // category
+            const cat_name = @tagName(Rule.meta.category);
+            if (n.napi_create_string_utf8(env, cat_name.ptr, cat_name.len, &v) == n.OK)
+                _ = n.napi_set_named_property(env, obj, "category", v);
+            // defaultSeverity
+            const sev_str: []const u8 = switch (Rule.meta.default_severity) {
+                .@"error" => "error",
+                .warning  => "warning",
+                .info     => "warning",
+                .hint     => "off",
+            };
+            if (n.napi_create_string_utf8(env, sev_str.ptr, sev_str.len, &v) == n.OK)
+                _ = n.napi_set_named_property(env, obj, "defaultSeverity", v);
+            _ = n.napi_set_element(env, result, @intCast(i), obj);
+        }
+    }
+
+    return result;
 }
 
 // ── tagCount() → u32 ────────────────────────────────────────────

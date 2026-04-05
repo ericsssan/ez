@@ -248,7 +248,8 @@ function lint(source, options = {}) {
     _lintOutBuf = new ArrayBuffer(needed * 2);
   }
 
-  const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf);
+  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
   if (bytesWritten < 4) return [];
 
   // Parse packed binary output.
@@ -310,7 +311,8 @@ function parseAndLint(source, options = {}) {
   }
 
   // Single native call — returns AST bytesUsed; diags written to _lintOutBuf.
-  const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf);
+  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
   if (bytesUsed === 0) {
     throw new Error("sanz: parseAndLint failed (buffer too small or invalid source)");
   }
@@ -393,7 +395,8 @@ function lintBuffer(astView, options = {}) {
     _lintOutBuf = new ArrayBuffer(needed * 2);
   }
 
-  const bytesWritten = b.lintBuffer(buf, lang, _lintOutBuf);
+  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  const bytesWritten = b.lintBuffer(buf, lang, _lintOutBuf, configBuf);
   if (bytesWritten < 4) return [];
 
   const dvOut = new DataView(_lintOutBuf);
@@ -412,4 +415,49 @@ function lintBuffer(astView, options = {}) {
   return diags;
 }
 
-module.exports = { parse, lint, lintBuffer, parseAndLint, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+// ── Native rule config ───────────────────────────────────────────
+
+let _nativeRulesMap = null;
+
+/**
+ * Get metadata for all natively-implemented lint rules.
+ * Returns a Map<name, {name, index, category, defaultSeverity}>.
+ * Cached after first call.
+ */
+function getNativeRules() {
+  if (_nativeRulesMap === null) {
+    const b = loadBinding();
+    const arr = b.getNativeRules();
+    _nativeRulesMap = new Map(arr.map(r => [r.name, r]));
+  }
+  return _nativeRulesMap;
+}
+
+/**
+ * Build a severity config buffer for the native linter from an ESLint rules object.
+ *
+ * Only rules with a native Zig implementation are included; all others are ignored.
+ * Rules not present in rulesObj default to OFF (not the rule's own default severity).
+ * This lets callers route only their explicitly-configured native rules to Zig, and
+ * send the rest to the JS runner.
+ *
+ * @param {Object} rulesObj - ESLint-style rules: { "no-debugger": "error", "no-var": 1 }
+ * @returns {Uint8Array} Severity table — pass as options.config to lint/parseAndLint/lintBuffer
+ */
+function buildNativeConfig(rulesObj) {
+  const nativeRules = getNativeRules();
+  const buf = new Uint8Array(nativeRules.size); // all off by default
+  for (const [ruleName, severity] of Object.entries(rulesObj)) {
+    const info = nativeRules.get(ruleName);
+    if (!info) continue;
+    const sev = typeof severity === 'number'
+      ? Math.min(2, Math.max(0, severity))
+      : severity === 'error' || severity === '2' ? 2
+      : (severity === 'warn' || severity === 'warning' || severity === '1') ? 1
+      : 0;
+    buf[info.index] = sev;
+  }
+  return buf;
+}
+
+module.exports = { parse, lint, lintBuffer, parseAndLint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
