@@ -4210,7 +4210,10 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
     // Try parsing type arguments
     const typescript = @import("typescript.zig");
     _ = typescript.parseTypeArguments(p) catch {
-        // Failed — backtrack
+        // Failed — backtrack.
+        // Free any diagnostic messages allocated during the failed attempt
+        // before shrinking the list; shrinkRetainingCapacity does not free them.
+        for (p.diagnostics.items[saved_diag_len..]) |d| p.gpa.free(d.message);
         p.tok_i = saved_tok;
         p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
         p.nodes.len = @intCast(saved_nodes_len);
