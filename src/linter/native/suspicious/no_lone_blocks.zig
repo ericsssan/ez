@@ -1,6 +1,7 @@
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
+const SubRange = ast.SubRange;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
@@ -13,49 +14,91 @@ pub const meta = RuleMeta{
     .description = "Disallow unnecessary nested blocks",
 };
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    // Only flag blocks that appear inside another block's statement list
-    // (i.e., standalone blocks that serve no purpose).
-    //
-    // Strategy: scan the parent block's statement list.  A block_stmt is
-    // "lone" when it is a direct child of another block_stmt — this means
-    // it was written as a bare { } inside a block, not as the required body
-    // of an if/while/for/function/etc.
-    //
-    // We walk all nodes looking for block_stmts whose statement lists
-    // contain `node`.  If found, the enclosing block is the parent.
-    // Because we can't cheaply walk parents, we use a heuristic:
-    // only flag root-level blocks (the root node's direct children).
-    const root_data = ctx.nodeData(.root);
-    const root_range = ast.SubRange{
-        .start = @intFromEnum(root_data.lhs),
-        .end = @intFromEnum(root_data.rhs),
-    };
-    const root_stmts = ctx.extraSlice(root_range);
+const ParentInfo = struct {
+    tag: Node.Tag,
+    child_count: u32,
+    child_index: u32,
+};
 
-    const node_int = @intFromEnum(node);
-    for (root_stmts) |raw| {
-        if (raw == node_int) {
-            // This block_stmt is a direct child of the root — check contents
-            const data = ctx.nodeData(node);
-            const range = ast.SubRange{
-                .start = @intFromEnum(data.lhs),
-                .end = @intFromEnum(data.rhs),
-            };
-            const stmts = ctx.extraSlice(range);
+/// Scan all nodes to find which statement-list contains `target`.
+/// Returns info about the parent or null if not found in any statement list.
+fn findParent(target: NodeIndex, ctx: *const LintContext) ?ParentInfo {
+    const target_int = @intFromEnum(target);
+    const n = ctx.nodeCount();
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        const tag = ctx.nodeTag(ni);
+        const data = ctx.nodeData(ni);
 
-            // If it contains block-scoped declarations, the block serves a purpose
-            for (stmts) |stmt_raw| {
-                const stmt: NodeIndex = @enumFromInt(stmt_raw);
-                const tag = ctx.nodeTag(stmt);
-                switch (tag) {
-                    .let_decl, .const_decl, .class_decl, .fn_decl, .async_fn_decl => return,
-                    else => {},
+        switch (tag) {
+            // Direct SubRange: lhs = start, rhs = end
+            .root, .block_stmt, .static_block => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const stmts = ctx.extraSlice(range);
+                for (stmts, 0..) |raw, idx| {
+                    if (raw == target_int) {
+                        return ParentInfo{ .tag = tag, .child_count = @intCast(stmts.len), .child_index = @intCast(idx) };
+                    }
                 }
-            }
-
-            ctx.report(node, meta.name, "Block is unnecessary", meta.default_severity);
-            return;
+            },
+            // switch_case / switch_default: rhs = extra index to SubRange
+            .switch_case, .switch_default => {
+                if (data.rhs == .none) continue;
+                const range = ctx.extraData(SubRange, @intFromEnum(data.rhs));
+                const stmts = ctx.extraSlice(range);
+                for (stmts, 0..) |raw, idx| {
+                    if (raw == target_int) {
+                        return ParentInfo{ .tag = tag, .child_count = @intCast(stmts.len), .child_index = @intCast(idx) };
+                    }
+                }
+            },
+            else => {},
         }
     }
+    return null;
 }
+
+/// Returns true if the block contains any block-scoped declaration
+/// (let, const, or class). Function declarations in strict mode also
+/// create block scope, but we skip that check.
+fn blockHasScopedDecl(node: NodeIndex, ctx: *const LintContext) bool {
+    const data = ctx.nodeData(node);
+    const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+    const stmts = ctx.extraSlice(range);
+    for (stmts) |raw| {
+        const stmt: NodeIndex = @enumFromInt(raw);
+        switch (ctx.nodeTag(stmt)) {
+            .let_decl, .const_decl, .class_decl => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    const parent = findParent(node, ctx) orelse return;
+
+    // Determine if this block is in a "lone" position
+    const is_lone = switch (parent.tag) {
+        .root, .block_stmt, .static_block => true,
+        // Switch case: lone unless this block is the sole statement in the case
+        .switch_case, .switch_default => !(parent.child_count == 1 and parent.child_index == 0),
+        else => false,
+    };
+
+    if (!is_lone) return;
+
+    // ES6 logic: if the block contains block-scoped declarations, it may be valid.
+    // Exception: if the parent is a block/static_block with only this one child,
+    // the block is still redundant (removing it is equivalent).
+    const has_scoped = blockHasScopedDecl(node, ctx);
+    if (has_scoped) {
+        const parent_is_block = parent.tag == .block_stmt or parent.tag == .static_block;
+        if (!(parent_is_block and parent.child_count == 1)) return;
+    }
+
+    ctx.report(node, meta.name, "Block is unnecessary", meta.default_severity);
+}
+
+pub fn runOnSymbols(_: *const LintContext) void {}
