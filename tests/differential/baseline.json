@@ -952,8 +952,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 14,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 8
       }
