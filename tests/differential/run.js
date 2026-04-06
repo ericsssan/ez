@@ -14,6 +14,9 @@
  *   --strict         Fail on any mismatch regardless of baseline
  *   --fixtures-only  Skip corpus extraction
  *   --corpus-only    Skip fixture files
+ *   --rule <name>    Run only this rule; show all failing cases with code snippets
+ *   --fails          Show code snippets for up to 3 failing cases per rule
+ *   --verbose / -v   Show all cases (pass and fail) with details
  *
  * Default: load baseline.json; fail only on new regressions.
  *
@@ -42,6 +45,51 @@ const saveBaseline = args.includes("--save-baseline");
 const strict       = args.includes("--strict");
 const fixturesOnly = args.includes("--fixtures-only");
 const corpusOnly   = args.includes("--corpus-only");
+const showFails    = args.includes("--fails") || args.includes("--show-fails");
+const verboseAll   = args.includes("--verbose") || args.includes("-v");
+const _ruleIdx     = args.indexOf("--rule");
+const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
+
+// ── Helpers ───────────────────────────────────────────────────
+
+/** Truncate a multi-line code string to N lines, adding ellipsis. */
+function truncateCode(code, maxLines = 8) {
+  const lines = code.split("\n");
+  if (lines.length <= maxLines) return code;
+  return lines.slice(0, maxLines).join("\n") + `\n  ... (${lines.length - maxLines} more lines)`;
+}
+
+/** Print a code snippet with line numbers, highlighting specific lines. */
+function printCodeSnippet(code, highlightLines, indent = "    ") {
+  const lines = code.split("\n");
+  const hlSet = new Set(highlightLines);
+  // Show a window of ±2 lines around each highlighted line
+  const toShow = new Set();
+  for (const hl of hlSet) {
+    for (let i = Math.max(1, hl - 2); i <= Math.min(lines.length, hl + 2); i++) toShow.add(i);
+  }
+  let prev = -1;
+  for (const lineNum of [...toShow].sort((a, b) => a - b)) {
+    if (prev >= 0 && lineNum > prev + 1) console.log(indent + "  ...");
+    const marker = hlSet.has(lineNum) ? "►" : " ";
+    const num = String(lineNum).padStart(3);
+    console.log(`${indent}${marker}${num}: ${lines[lineNum - 1]}`);
+    prev = lineNum;
+  }
+}
+
+/** Format a single test-case mismatch for debugging. */
+function printCaseDiff(label, code, espreeLines, ourLines, indent = "  ") {
+  const espreeSet = new Set(espreeLines);
+  const ourSet    = new Set(ourLines);
+  const fn = [...espreeSet].filter(l => !ourSet.has(l));
+  const fp = [...ourSet].filter(l => !espreeSet.has(l));
+  if (fn.length === 0 && fp.length === 0) return;
+  console.log(`${indent}${label}`);
+  if (fn.length) console.log(`${indent}  ESLint fires at line(s): ${fn.join(", ")} — we MISS`);
+  if (fp.length) console.log(`${indent}  We fire at line(s):      ${fp.join(", ")} — ESLint doesn't`);
+  printCodeSnippet(code, [...fn, ...fp], indent + "  ");
+}
 
 // ── Rules ─────────────────────────────────────────────────────
 
@@ -539,16 +587,28 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       totalNativeSkip = 0, totalNativeCrash = 0;
   let runnerOnlyMs = 0; // time spent in runRunnerForRule only (excludes espree)
 
+  const _showCases = showFails || verboseAll || filterRule !== null;
+  let _processed = 0, _total = allRuleData.reduce((s, r) => s + r.allCases.length, 0);
+
   for (const { ruleName, ruleModule, defaultSourceType, allCases } of allRuleData) {
+    if (filterRule && ruleName !== filterRule) continue;
     const nativeBatch = nativeAllResults ? nativeAllResults[ruleName] : null;
 
     let fn = 0, fp = 0, crash = 0, pass = 0, skip = 0;
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkip = 0;
+    // Collect failing cases for --fails / --verbose output
+    const failedCases = [];  // { tcIdx, kind:"runner"|"native", espreeLines, ourLines, code }
 
     for (let tcIdx = 0; tcIdx < allCases.length; tcIdx++) {
       const tc = allCases[tcIdx];
       if (tc.hasCustomParser) { skip++; continue; }
       const sourceType = tc.languageOptions?.sourceType || defaultSourceType;
+
+      // Progress indicator when running all rules (no filter)
+      if (!filterRule && !verboseAll && (_processed % 200 === 0)) {
+        process.stderr.write(`\r  [${_processed}/${_total}]  ${ruleName}...  \x1B[K`);
+      }
+      _processed++;
 
       const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType, tc.languageOptions);
       if (espreeResult === null) { crash++; continue; }
@@ -563,8 +623,26 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
       const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
 
-      if (caseFn === 0 && caseFp === 0) pass++;
-      else { fn += caseFn; fp += caseFp; }
+      if (caseFn === 0 && caseFp === 0) {
+        pass++;
+        if (verboseAll && _showCases) {
+          const diags = espreeResult.map(r => r.line);
+          console.log(`    [${tcIdx}] PASS  diags=${diags.length ? diags.join(",") : "none"}`);
+        }
+      } else {
+        fn += caseFn; fp += caseFp;
+        if (_showCases) {
+          failedCases.push({
+            tcIdx,
+            kind: "runner",
+            espreeLines: espreeResult.map(r => r.line),
+            ourLines:    runnerResult.map(r => r.line),
+            code: tc.code,
+            options: tc.options,
+            sourceType,
+          });
+        }
+      }
 
       // Native comparison (pre-computed, single-spawn results).
       const nativeResult = nativeBatch ? nativeBatch[tcIdx] : "skip";
@@ -639,7 +717,25 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     } else {
       console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
     }
+
+    // Print failing cases when --fails / --verbose / --rule
+    if (failedCases.length > 0 && _showCases) {
+      const maxShow = filterRule ? failedCases.length : 3; // show all for --rule, 3 otherwise
+      for (let i = 0; i < Math.min(failedCases.length, maxShow); i++) {
+        const c = failedCases[i];
+        const espreeStr = c.espreeLines.length ? `line(s) ${c.espreeLines.join(",")}` : "nothing";
+        const oursStr   = c.ourLines.length    ? `line(s) ${c.ourLines.join(",")}`    : "nothing";
+        const opts = c.options.length ? ` options=${JSON.stringify(c.options)}` : "";
+        const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
+        console.log(`    [case ${c.tcIdx}${opts}${st}]  ESLint: ${espreeStr}  ours: ${oursStr}`);
+        printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
+      }
+      if (failedCases.length > maxShow) {
+        console.log(`    ... and ${failedCases.length - maxShow} more failing cases (use --rule ${ruleName} to see all)`);
+      }
+    }
   }
+  if (!filterRule && !verboseAll) process.stderr.write("\r\x1B[K"); // clear progress line
 
   restore();
   const runnerMs = Date.now() - runnerT0;
