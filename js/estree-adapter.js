@@ -215,8 +215,16 @@ class AstView {
     this._postOrder = postOff > 0 ? new Int32Array(buffer, postOff, this.nodeCount) : null;
 
     // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig)
+    // Copy immediately: the Zig allocator reuses this memory region during subsequent
+    // native calls, so a live TypedArray view would see stale data by the time
+    // getDFSEvents() is called inside runPlugins.
     const dfsEvOff = dv.getUint32(H.DFS_EVENTS_OFFSET, true);
-    this._dfsEvents = dfsEvOff > 0 ? new Int32Array(buffer, dfsEvOff, this.nodeCount * 2) : null;
+    if (dfsEvOff > 0) {
+      const view = new Int32Array(buffer, dfsEvOff, this.nodeCount * 2);
+      this._dfsEvents = new Int32Array(view);  // copy, not a view
+    } else {
+      this._dfsEvents = null;
+    }
 
     // Source type (v5 — 1 = module, 0 = script)
     this._sourceType = dv.getUint32(H.SOURCE_TYPE, true);
@@ -852,6 +860,12 @@ const _emptyArray = Object.freeze([]);
 // share the same V8 hidden class {_ast, _i, _parent} from creation — preventing
 // the IC polymorphism that occurs when _parent is added on first access.
 const _PARENT_UNSET = Object.create(null);
+// Sentinel for "body not yet computed". Distinct from null (valid body value for
+// nodes where body is absent) and from arrays/objects (valid body values).
+const _BODY_UNSET = Object.create(null);
+// Sentinel for "value not yet computed". Distinct from null (valid for null_literal)
+// and from false/0/"" (valid for boolean/number/string literals).
+const _VALUE_UNSET = Object.create(null);
 
 const NodeProto = {
   // ── Low-level sanz accessors (existing) ──────────────────────
@@ -1066,6 +1080,8 @@ const NodeProto = {
    * boolean, or null. ESLint returns the evaluated value; we approximate.
    */
   get value() {
+    if (this._value !== _VALUE_UNSET) return this._value;
+    let v;
     const t = this._tag;
     const ast = this._ast;
     const src = ast._rawTokenText(this.mainToken);
@@ -1074,100 +1090,111 @@ const NodeProto = {
       // ESLint's Literal.value is the evaluated string, not the raw source.
       if (src.length >= 2 && (src[0] === '"' || src[0] === "'")) {
         const inner = src.slice(1, -1);
-        // Fast path: no backslash → no escapes to process
-        if (inner.indexOf('\\') === -1) return inner;
-        // Slow path: process escape sequences
-        return inner.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[0-7]{1,3}|.)/g, (_, esc) => {
-          switch (esc[0]) {
-            case 'n': return '\n';
-            case 'r': return '\r';
-            case 't': return '\t';
-            case 'b': return '\b';
-            case 'f': return '\f';
-            case 'v': return '\v';
-            case '0': return esc.length === 1 ? '\0' : String.fromCharCode(parseInt(esc, 8));
-            case 'x': return String.fromCharCode(parseInt(esc.slice(1), 16));
-            case 'u':
-              if (esc[1] === '{') return String.fromCodePoint(parseInt(esc.slice(2, -1), 16));
-              return String.fromCharCode(parseInt(esc.slice(1), 16));
-            default:
-              if (esc[0] >= '1' && esc[0] <= '7') return String.fromCharCode(parseInt(esc, 8));
-              return esc; // \', \", \\, etc.
-          }
-        });
+        if (inner.indexOf('\\') === -1) {
+          // Fast path: no backslash → no escapes to process
+          v = inner;
+        } else {
+          // Slow path: process escape sequences
+          v = inner.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|[0-7]{1,3}|.)/g, (_, esc) => {
+            switch (esc[0]) {
+              case 'n': return '\n';
+              case 'r': return '\r';
+              case 't': return '\t';
+              case 'b': return '\b';
+              case 'f': return '\f';
+              case 'v': return '\v';
+              case '0': return esc.length === 1 ? '\0' : String.fromCharCode(parseInt(esc, 8));
+              case 'x': return String.fromCharCode(parseInt(esc.slice(1), 16));
+              case 'u':
+                if (esc[1] === '{') return String.fromCodePoint(parseInt(esc.slice(2, -1), 16));
+                return String.fromCharCode(parseInt(esc.slice(1), 16));
+              default:
+                if (esc[0] >= '1' && esc[0] <= '7') return String.fromCharCode(parseInt(esc, 8));
+                return esc; // \', \", \\, etc.
+            }
+          });
+        }
+      } else {
+        v = src;
       }
-      return src;
-    }
-    if (t === T.number_literal) {
+    } else if (t === T.number_literal) {
       const s = src.replace(/_/g, ''); // strip numeric separators (1_000 → 1000)
       const sl = s.toLowerCase();
-      if (sl.startsWith('0b')) return parseInt(sl.slice(2), 2);  // binary: 0b101
-      if (sl.startsWith('0o')) return parseInt(sl.slice(2), 8);  // modern octal: 0o71
-      if (sl.startsWith('0x')) return parseInt(sl.slice(2), 16); // hex: 0xff
-      if (/^0[0-7]+$/.test(s)) return parseInt(s, 8);             // legacy octal: 071
-      return parseFloat(s);
-    }
-    if (t === T.boolean_literal) return src === 'true';
-    if (t === T.null_literal) return null;
-    if (t === T.bigint_literal) return src.slice(0, -1); // strip 'n'
-    if (t === T.regex_literal) {
+      if (sl.startsWith('0b')) v = parseInt(sl.slice(2), 2);       // binary: 0b101
+      else if (sl.startsWith('0o')) v = parseInt(sl.slice(2), 8);  // modern octal: 0o71
+      else if (sl.startsWith('0x')) v = parseInt(sl.slice(2), 16); // hex: 0xff
+      else if (/^0[0-7]+$/.test(s)) v = parseInt(s, 8);            // legacy octal: 071
+      else v = parseFloat(s);
+    } else if (t === T.boolean_literal) {
+      v = src === 'true';
+    } else if (t === T.null_literal) {
+      v = null;
+    } else if (t === T.bigint_literal) {
+      v = src.slice(0, -1); // strip 'n'
+    } else if (t === T.regex_literal) {
       // ESTree spec: Literal.value for a regex is the RegExp object, not a string.
       // Returning the raw source string as value causes rules like no-useless-escape
       // to take the string-escape path (typeof value === "string") instead of the
       // regex path, producing false positives for valid regex escapes like /\./.
       const r = this.regex;
-      if (!r) return null;
-      try { return new RegExp(r.pattern, r.flags); } catch { return null; }
-    }
-    // VariableDeclarator .value = init (ESLint uses .init, but some rules use .value)
-    if (t === T.declarator) return this.rhsNode();
-    // Property (key: value) — rhs is the value expression.
-    // For shorthand properties ({ a }), value === key (same Identifier node).
-    if (t === T.property || t === T.computed_property || t === T.shorthand_property) {
+      if (!r) {
+        v = null;
+      } else {
+        try { v = new RegExp(r.pattern, r.flags); } catch { v = null; }
+      }
+    } else if (t === T.declarator) {
+      // VariableDeclarator .value = init (ESLint uses .init, but some rules use .value)
+      v = this.rhsNode();
+    } else if (t === T.property || t === T.computed_property || t === T.shorthand_property) {
+      // Property (key: value) — rhs is the value expression.
+      // For shorthand properties ({ a }), value === key (same Identifier node).
       const rhs = ast.nodeRhs(this._i);
-      if (rhs !== NONE) return nodeView(ast, rhs);
-      // Shorthand: value is the same as key
-      const lhs = ast.nodeLhs(this._i);
-      return lhs === NONE ? null : nodeView(ast, lhs);
-    }
-    // PropertyDefinition (class field) — rhs is the initializer expression, or null if absent.
-    if (t === T.property_def || t === T.computed_property_def) {
+      if (rhs !== NONE) {
+        v = nodeView(ast, rhs);
+      } else {
+        // Shorthand: value is the same as key
+        const lhs = ast.nodeLhs(this._i);
+        v = lhs === NONE ? null : nodeView(ast, lhs);
+      }
+    } else if (t === T.property_def || t === T.computed_property_def) {
+      // PropertyDefinition (class field) — rhs is the initializer expression, or null if absent.
       const rhs = ast.nodeRhs(this._i);
-      return rhs === NONE ? null : nodeView(ast, rhs);
-    }
-    // Method/getter/setter — return a synthetic FunctionExpression
-    if (t === T.method_def || t === T.getter_def || t === T.setter_def ||
+      v = rhs === NONE ? null : nodeView(ast, rhs);
+    } else if (t === T.method_def || t === T.getter_def || t === T.setter_def ||
         t === T.constructor_def || t === T.computed_method_def ||
         t === T.computed_getter_def || t === T.computed_setter_def) {
+      // Method/getter/setter — return a synthetic FunctionExpression.
       // Cache the synthetic to ensure identity equality: node.parent.value === node
       // (no-setter-return checks `parent.value === node` — must be the same object).
-      if (this._syntheticFn !== undefined) return this._syntheticFn;
-      const md = ast.extraMethodData(ast.nodeRhs(this._i));
-      const flags = _methodFlags(ast, this.mainToken);
-      const params = ast._nodesFromRange(md.params_start, md.params_end);
-      const body = md.body === NONE ? null : nodeView(ast, md.body);
-      // Use the method node's own range/loc so ESLint's SourceCode token
-      // lookups (getFirstToken, getTokenBefore) work on this synthetic node.
-      const myRange = this.range;
-      const myLoc = this.loc;
-      const synth = {
-        type: 'FunctionExpression',
-        id: null,
-        async: flags.async,
-        generator: flags.generator,
-        params: params || [],
-        body,
-        mainToken: this.mainToken,
-        start: myRange[0],
-        end: myRange[1],
-        range: myRange,
-        loc: myLoc,
-        parent: this, // parent = the Property/MethodDefinition node
-      };
-      this._syntheticFn = synth;
-      return synth;
-    }
-    if (t === T.template_element) {
+      if (this._syntheticFn !== undefined) {
+        v = this._syntheticFn;
+      } else {
+        const md = ast.extraMethodData(ast.nodeRhs(this._i));
+        const flags = _methodFlags(ast, this.mainToken);
+        const params = ast._nodesFromRange(md.params_start, md.params_end);
+        const body = md.body === NONE ? null : nodeView(ast, md.body);
+        // Use the method node's own range/loc so ESLint's SourceCode token
+        // lookups (getFirstToken, getTokenBefore) work on this synthetic node.
+        const myRange = this.range;
+        const myLoc = this.loc;
+        const synth = {
+          type: 'FunctionExpression',
+          id: null,
+          async: flags.async,
+          generator: flags.generator,
+          params: params || [],
+          body,
+          mainToken: this.mainToken,
+          start: myRange[0],
+          end: myRange[1],
+          range: myRange,
+          loc: myLoc,
+          parent: this, // parent = the Property/MethodDefinition node
+        };
+        this._syntheticFn = synth;
+        v = synth;
+      }
+    } else if (t === T.template_element) {
       // ESTree: value = { raw: string, cooked: string | null }
       // raw = literal source text; cooked = text with escape sequences processed.
       // Use tokStarts[mainToken+1] as the end rather than this.range[1], because
@@ -1178,9 +1205,12 @@ const NodeProto = {
       // trimEnd() strips the whitespace gap between the token and the next token,
       // so the closing ` or } is always at the end when the regex anchors run.
       const raw = ast.source.slice(start, end).trimEnd().replace(/^`|`$/g, '').replace(/^\}|\$\{$/g, '');
-      return { raw, cooked: _cookTemplate(raw) };
+      v = { raw, cooked: _cookTemplate(raw) };
+    } else {
+      v = null;
     }
-    return null;
+    this._value = v;
+    return v;
   },
 
   /**
@@ -1295,6 +1325,7 @@ const NodeProto = {
    * node.body — body of statements, loop body, or function body.
    */
   get body() {
+    if (this._body !== _BODY_UNSET) return this._body;
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
@@ -1345,6 +1376,7 @@ const NodeProto = {
     } else if (t === T.root) {
       result = ast._nodesFromRange(lhs, rhs);
     }
+    this._body = result;
     return result;
   },
 
@@ -2120,10 +2152,13 @@ const NodeProto = {
    * end is the position after the last character of the last token in the subtree.
    */
   get range() {
+    if (this._range !== null) return this._range;
     if (this._ast._nodeTags[this._i] === T.root) {
-      return [0, this._ast.sourceUtf16Len];
+      this._range = [0, this._ast.sourceUtf16Len];
+    } else {
+      this._range = [this.start, this._ast._nodeEndPos(this._i)];
     }
-    return [this.start, this._ast._nodeEndPos(this._i)];
+    return this._range;
   },
 
   /**
@@ -2259,6 +2294,9 @@ function nodeView(ast, index) {
     n._parent = _PARENT_UNSET; // pre-set → stable hidden class
     n._type = null;            // pre-allocated cache slot for get type()
     n._loc  = null;            // pre-allocated cache slot for get loc()
+    n._range = null;           // pre-allocated cache slot for get range()
+    n._body = _BODY_UNSET;     // pre-allocated cache slot for get body()
+    n._value = _VALUE_UNSET;   // pre-allocated cache slot for get value()
     cache[index] = n;
   }
   return n;

@@ -72,6 +72,18 @@ const _GLOBAL_MIN_VERSION = {
   WeakRef: 2021, FinalizationRegistry: 2021, AggregateError: 2021,
 };
 
+// ── Reference prototype ─────────────────────────────────────────
+// Shared prototype for all reference objects — eliminates 5 closure allocations
+// per reference (previously each ref had isWrite/isRead/etc. as own closures over `kind`).
+// _kind is stored as an own property; methods read it via `this._kind`.
+const _refProto = {
+  isWrite:     function() { return this._kind === 1 || this._kind === 2; },
+  isRead:      function() { return this._kind === 0 || this._kind === 2 || this._kind === 3; },
+  isWriteOnly: function() { return this._kind === 1; },
+  isReadOnly:  function() { return this._kind === 0 || this._kind === 3; },
+  isReadWrite: function() { return this._kind === 2; },
+};
+
 // ── ES2022 built-in globals ─────────────────────────────────────
 // Added to the global scope so no-undef doesn't flag these as undeclared.
 // Matches ESLint's default globals (es2022 environment).
@@ -317,9 +329,9 @@ class SourceCode {
     ast._runtimeSourceType = this._sourceType;
     this._linesCache = null;
     this._tokensCache = null;
-    this._scopeCache = new Map();
-    this._thinScopeCache = new Map();
-    this._thinVarCache = new Map();
+    this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
+    this._thinScopeCache = null; // lazily allocated Array[scopeCount]
+    this._thinVarCache = null;   // lazily allocated Array[symCount]
     this._tokenSkipList = null; // lazily built token position index
   }
 
@@ -331,9 +343,9 @@ class SourceCode {
     ast._runtimeSourceType = this._sourceType;
     this._linesCache = null;
     this._tokensCache = null;
-    this._scopeCache.clear();
-    this._thinScopeCache.clear();
-    this._thinVarCache.clear();
+    this._scopeCache = null;
+    this._thinScopeCache = null;
+    this._thinVarCache = null;
     this._tokenSkipList = null;
     this._tokenObjCache = null;
     this._nodesByType = null;
@@ -345,6 +357,7 @@ class SourceCode {
     this._scopeChildIndex = null;
     this._symRefIndex = null;
     this._declSymIndex = null;
+    this._allComments = undefined;
   }
 
   /**
@@ -845,7 +858,9 @@ class SourceCode {
    * to break the parent↔child circular reference during construction.
    */
   _buildScope(scopeId) {
-    const cached = this._scopeCache.get(scopeId);
+    // Use an Array instead of Map for O(1) integer-indexed cache lookups.
+    if (!this._scopeCache) this._scopeCache = new Array(this._ast._semScopeCount || 64);
+    const cached = this._scopeCache[scopeId];
     if (cached) return cached;
 
     const ast = this._ast;
@@ -862,22 +877,24 @@ class SourceCode {
     this._ensureScopeIndex();
 
     // Build variables: only symbols belonging to THIS scope (via precomputed index).
-    const varMap = new Map();
+    // Use `set` directly as the dedup map — avoids varMap + Array.from() + new Map(varMap).
+    const set = new Map();
+    const variables = [];
     const symIds = this._scopeSymIndex[scopeId];
     if (symIds) {
       for (let j = 0; j < symIds.length; j++) {
         const v = this._buildVariable(symIds[j]);
-        if (varMap.has(v.name)) {
-          const existing = varMap.get(v.name);
+        const existing = set.get(v.name);
+        if (existing) {
           existing.identifiers.push(...v.identifiers);
           existing.defs.push(...v.defs);
           existing.references.push(...v.references);
         } else {
-          varMap.set(v.name, v);
+          set.set(v.name, v);
+          variables.push(v);
         }
       }
     }
-    const variables = Array.from(varMap.values());
 
     // Build references: only refs from THIS scope (via precomputed index).
     const references = [];
@@ -892,7 +909,6 @@ class SourceCode {
     }
 
     const upper = parentId === NONE32 ? null : this._buildScope(parentId);
-    const set = new Map(varMap);
 
     // block = the AST node that created this scope (for require-atomic-updates)
     const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
@@ -968,7 +984,7 @@ class SourceCode {
     }
 
     // Cache before building children to break the parent←→child cycle.
-    this._scopeCache.set(scopeId, scope);
+    this._scopeCache[scopeId] = scope;
 
     // Populate childScopes via precomputed index (not full scan).
     const childIds = this._scopeChildIndex[scopeId];
@@ -1150,18 +1166,14 @@ class SourceCode {
     const from = (refScopeId !== undefined && refScopeId !== NONE32)
       ? this._buildThinScope(refScopeId) : this._stubScope();
 
-    return {
-      identifier: refNode,
-      from,
-      resolved,
-      writeExpr: null,
-      init: false,
-      isWrite: () => kind === 1 || kind === 2,
-      isRead:  () => kind === 0 || kind === 2 || kind === 3,
-      isWriteOnly: () => kind === 1,
-      isReadOnly:  () => kind === 0 || kind === 3,
-      isReadWrite: () => kind === 2,
-    };
+    const ref = Object.create(_refProto);
+    ref.identifier = refNode;
+    ref.from = from;
+    ref.resolved = resolved;
+    ref.writeExpr = null;
+    ref.init = false;
+    ref._kind = kind;
+    return ref;
   }
 
   /**
@@ -1169,11 +1181,12 @@ class SourceCode {
    * Avoids cycles: _buildVariable → _buildReference → _buildVariable.
    */
   _buildThinVariable(symId) {
-    const thinCached = this._thinVarCache.get(symId);
+    if (!this._thinVarCache) this._thinVarCache = new Array(this._ast._semSymbolCount || 64);
+    const thinCached = this._thinVarCache[symId];
     if (thinCached !== undefined) return thinCached;
     const ast = this._ast;
     const NONE32 = 0xFFFFFFFF;
-    if (!ast._symFlags || symId === NONE || symId === NONE32 || symId >= ast._semSymbolCount) { this._thinVarCache.set(symId, null); return null; }
+    if (!ast._symFlags || symId === NONE || symId === NONE32 || symId >= ast._semSymbolCount) { this._thinVarCache[symId] = null; return null; }
     const name = ast._symName(symId);
     const flags16 = ast._symFlags[symId];
     const is_const  = (flags16 & 0x04) !== 0;
@@ -1206,7 +1219,7 @@ class SourceCode {
       isRead: () => is_read,
       isWritten: () => is_written,
     };
-    this._thinVarCache.set(symId, thinVar);
+    this._thinVarCache[symId] = thinVar;
     return thinVar;
   }
 
@@ -1218,7 +1231,8 @@ class SourceCode {
    * in prefer-const: writer.from === variable.scope).
    */
   _buildThinScope(scopeId) {
-    const cached = this._thinScopeCache.get(scopeId);
+    if (!this._thinScopeCache) this._thinScopeCache = new Array(this._ast._semScopeCount || 64);
+    const cached = this._thinScopeCache[scopeId];
     if (cached) return cached;
 
     const ast = this._ast;
@@ -1247,7 +1261,7 @@ class SourceCode {
       block, upper, lookup: () => null,
     };
     s.variableScope = isVarScope ? s : (upper ? upper.variableScope || upper : s);
-    this._thinScopeCache.set(scopeId, s);
+    this._thinScopeCache[scopeId] = s;
     return s;
   }
 
@@ -1288,19 +1302,21 @@ class SourceCode {
       if (symIds && symIds.length > 0) {
         // Merge variables with the same name (e.g. duplicate params `function f(a,b,a)`).
         // ESLint scope analysis merges them into one variable with multiple defs.
-        const varMap = new Map();
+        const mergeSet = new Map();
+        const mergeVars = [];
         for (const i of symIds) {
           const v = this._buildVariable(i);
-          if (varMap.has(v.name)) {
-            const ex = varMap.get(v.name);
+          const ex = mergeSet.get(v.name);
+          if (ex) {
             ex.identifiers.push(...v.identifiers);
             ex.defs.push(...v.defs);
             ex.references.push(...v.references);
           } else {
-            varMap.set(v.name, v);
+            mergeSet.set(v.name, v);
+            mergeVars.push(v);
           }
         }
-        return Array.from(varMap.values());
+        return mergeVars;
       }
       return [];
     }
@@ -1353,9 +1369,14 @@ class SourceCode {
   /**
    * getAllComments — all comment nodes in the file.
    * Used by rules like no-irregular-whitespace to filter out violations in comments.
+   * Memoized: commentsInRange allocates a new array+objects on every call; rules like
+   * no-irregular-whitespace call this during create() (once per file), which also
+   * eagerly triggers _lineStarts() (O(source.length) newline scan) before the DFS.
    */
   getAllComments() {
-    return this._ast.commentsInRange(0, this.text.length);
+    if (this._allComments !== undefined) return this._allComments;
+    this._allComments = this._ast.commentsInRange(0, this.text.length);
+    return this._allComments;
   }
 
   /**
@@ -3362,17 +3383,36 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const esq = hasSelectors ? esquery() : null;
   const pd = ast._parentData;
 
-  // Reusable ancestors buffer — reset per node, never reallocated.
+  // Reusable ancestors buffer — pre-sized per node, never reallocated.
   // Safe: esquery only reads the array; both _runSelectorList calls per node are synchronous.
   const _ancestorsBuf = [];
 
+  // Pre-compute node depths for O(1) ancestor buffer pre-sizing.
+  // sanz AST: children have LOWER indices than parents (root=0 is the unique exception).
+  // Use pre-order (parent-before-child guaranteed) for a single correct O(n) pass:
+  // when processing node preOrder[j], its parent has already been processed.
+  // _parentData is Uint32Array: values are always plain JS numbers, no undefined.
+  const _nodeDepths = (hasSelectors && pd) ? (() => {
+    const n = ast.nodeCount;
+    const depths = new Uint16Array(n); // root gets depth 0 by default
+    for (let j = 1; j < n; j++) {
+      const idx = preOrder[j]; // pre-order: parent always visited before child
+      const p = pd[idx];
+      if (p < n) depths[idx] = depths[p] + 1; // p < n implies p !== NONE (NONE=0xFFFFFFFF)
+    }
+    return depths;
+  })() : null;
+
   function getAncestorsFor(nodeIdx) {
-    _ancestorsBuf.length = 0;
-    if (!pd) return _ancestorsBuf;
-    // esquery expects ancestors[0] = immediate parent (closest first), not root-first.
+    if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
+    // Pre-size exactly: no push() overhead, no length-check per element.
+    const depth = _nodeDepths ? _nodeDepths[nodeIdx] : 0;
+    _ancestorsBuf.length = depth;
+    // esquery expects ancestors[0] = immediate parent (closest first).
     let p = pd[nodeIdx];
-    while (p !== NONE && p !== undefined && p < ast.nodeCount) {
-      _ancestorsBuf.push(nodeView(ast, p));
+    let k = 0;
+    while (k < depth) {
+      _ancestorsBuf[k++] = nodeView(ast, p);
       p = pd[p];
     }
     return _ancestorsBuf;
@@ -3691,11 +3731,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Use Zig-precomputed DFS events if available (v5 buffer), else compute in JS.
   function getDFSEvents() {
     if (ast._dfsEvents) {
-      // Find the actual count (events may be zero-padded if fewer were emitted)
-      let count = ast._dfsEvents.length;
-      while (count > 0 && ast._dfsEvents[count - 1] === 0 && count > 1) count--;
-      // But 0 could be a valid enter(0) event. Use the full 2n length.
-      return { events: ast._dfsEvents, count: ast.nodeCount * 2 };
+      // Find the true end of the DFS by scanning forward for Program:exit (= ~0 = -1).
+      // -1 is unique: only EXIT of node 0 (Program) produces it. Positions after
+      // Program:exit contain stale data from Zig's allocator (memory is not zeroed).
+      const events = ast._dfsEvents;
+      const len = events.length;
+      let count = 0;
+      while (count < len && events[count] !== -1) count++;
+      count++; // include Program:exit itself
+      return { events, count };
     }
     return buildDFSEvents();
   }
@@ -3946,7 +3990,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (hasCodePath) {
           if (_terminatorTagSet.has(tag)) {
             const oldSeg = cpTracker.segment;
-            if (oldSeg) if (_segEndH) _dispatchSeg(_segEndH, oldSeg);
+            if (oldSeg) _segEndEvent(oldSeg);  // respects reachability: segEnd vs unreachableSegEnd
             cpTracker.markUnreachable();
             const unreachSeg = cpTracker.segment;
             if (_unreachStartH) _dispatchSeg(_unreachStartH, unreachSeg);
@@ -4028,7 +4072,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
   }
-
 
   const skipSet = new RuleSkipSet();
   skipSet.init(visitorMap.size);
@@ -4225,7 +4268,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Terminators and branch exit (flag-based: no string lookups in hot path)
       if (flags & FLAG_TERMINATOR) {
         const oldSeg = cpTracker.segment;
-        if (oldSeg) if (_segEndH) _dispatchSeg(_segEndH, oldSeg);
+        if (oldSeg) _segEndEvent(oldSeg);  // respects reachability: segEnd vs unreachableSegEnd
         cpTracker.markUnreachable();
         if (_unreachStartH) _dispatchSeg(_unreachStartH, cpTracker.segment);
       }
@@ -4322,6 +4365,15 @@ function runPlugins(ast, plugins, options = {}) {
     _nodeCachePool.fill(undefined, 0, nc);
   }
   ast._nodeCache = _nodeCachePool;
+
+  // Pre-warm lazy O(N) per-file computations before the DFS hot path.
+  // _lineStarts() scans source for newlines (needed by any .loc access).
+  // _computeAllEndPos() computes end positions for all nodes (needed by .range/.end).
+  // Doing this upfront removes mid-DFS cold-init from V8's optimization context
+  // and ensures all per-file setup cost is visible as setup, not rule execution.
+  ast._lineStarts();    // O(source.length) newline scan → needed by all .loc accesses
+  ast._nodeEndPos(0);  // O(N) end-pos table → needed by all .range/.end accesses
+  ast._nodeStartPos(0); // O(N) start-pos table → needed by all .start/.range accesses
 
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;
