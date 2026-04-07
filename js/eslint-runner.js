@@ -760,10 +760,9 @@ class SourceCode {
   getScope(node) {
     const ast = this._ast;
     if (!ast._nodeScopeIds || !node) return this._stubScope();
+    // Ensure global scope + builtin resolution is done on first access.
+    if (!this._globalScope) this._precomputeScopes();
     const nodeIdx = (node._i !== undefined && node._i !== null) ? node._i : -1;
-    // Program node (root, index 0): always return the global scope (scope 0).
-    // ESLint's eslint-scope maps getScope(Program) → global, not module.
-    // The Zig side maps root to module (scope 1) because both share node 0.
     if (nodeIdx === 0) return this._buildScope(0);
     const scopeId = nodeIdx >= 0 ? ast._scopeForNode(nodeIdx) : 0;
     return this._buildScope(scopeId);
@@ -1070,21 +1069,32 @@ class SourceCode {
     // list, matching ESLint's eslint-scope behavior. A reference that is
     // unresolved in a child scope and also not resolved in this scope should
     // appear in through (so no-undef sees it on the global scope).
-    // If the reference resolves to a variable in this scope (e.g., a built-in
-    // global), link the reference to that variable.
     for (const child of childScopes) {
       for (const ref of child.through) {
-        // Skip PrivateIdentifier references — they are class-scoped,
-        // not normal variable references. no-undef should not see them.
         if (ref.identifier?.type === 'PrivateIdentifier') continue;
         const name = ref.identifier?.name;
         const variable = name ? set.get(name) : undefined;
         if (variable) {
-          // Resolved by this scope — link reference to variable
           variable.references.push(ref);
           ref.resolved = variable;
         } else {
           through.push(ref);
+        }
+      }
+    }
+
+    // Resolve this scope's own unresolved references against its variables.
+    // This handles builtin globals (undefined, NaN, Boolean, etc.) that are
+    // added to the global scope AFTER references are initially built.
+    if (through.length > 0 && set.size > 0) {
+      for (let k = through.length - 1; k >= 0; k--) {
+        const ref = through[k];
+        const name = ref.identifier?.name;
+        const variable = name ? set.get(name) : undefined;
+        if (variable) {
+          variable.references.push(ref);
+          ref.resolved = variable;
+          through.splice(k, 1);
         }
       }
     }
@@ -1102,7 +1112,26 @@ class SourceCode {
     if (!ast._scopeKinds) return;
     // Build all scopes bottom-up (children before parents are already handled
     // by the recursive _buildScope + cache). Just trigger the root scope.
-    this._buildScope(0);
+    const globalScope = this._buildScope(0);
+    this._globalScope = globalScope;
+
+    // Post-build: resolve unresolved references against global scope variables.
+    // Zig's semantic analyzer doesn't know about JS builtin globals (undefined,
+    // NaN, Boolean, etc.), so references to them have resolved=null. Walk all
+    // scopes and resolve them now that global variables are populated.
+    const globalSet = globalScope.set;
+    if (globalSet && globalSet.size > 0) {
+      const resolveInScope = (scope) => {
+        for (const ref of scope.references) {
+          if (!ref.resolved && ref.identifier) {
+            const v = globalSet.get(ref.identifier.name);
+            if (v) { ref.resolved = v; v.references.push(ref); }
+          }
+        }
+        for (const child of scope.childScopes) resolveInScope(child);
+      };
+      resolveInScope(globalScope);
+    }
   }
 
   /** Build an ESLint Variable object for a symbol. */
