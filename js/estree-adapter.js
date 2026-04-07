@@ -654,12 +654,16 @@ class AstView {
   _rawTokenText(tokIdx) {
     const src = this.source;
     const start = this._tokStarts[tokIdx];
-    let end;
-    if (tokIdx + 1 < this.tokenCount) {
-      end = this._tokStarts[tokIdx + 1];
-      while (end > start && (src.charCodeAt(end - 1) <= 32)) end--;
-    } else {
-      end = src.length;
+    // Use token end position if available (accounts for comments between tokens)
+    // Otherwise fall back to next token's start or source length
+    let end = this._tokEnds?.[tokIdx];
+    if (end === undefined) {
+      if (tokIdx + 1 < this.tokenCount) {
+        end = this._tokStarts[tokIdx + 1];
+        while (end > start && (src.charCodeAt(end - 1) <= 32)) end--;
+      } else {
+        end = src.length;
+      }
     }
     return src.slice(start, end);
   }
