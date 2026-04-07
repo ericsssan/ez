@@ -56,12 +56,15 @@ pub const BufferHeader = extern struct {
     comment_ends_offset: u32 = 0,
     comment_kinds_offset: u32 = 0,
     // Added in v7: token end positions (UTF-16), one per token.
-    // Eliminates JS-side effectiveTokEnd() computation.
     tok_ends_offset: u32 = 0,
+    // Added in v8: pre-computed node start/end positions (UTF-16).
+    // Eliminates JS-side _computeAllEndPos() and _nodeStartPos().
+    node_start_pos_offset: u32 = 0,
+    node_end_pos_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 108);
+    std.debug.assert(@sizeOf(BufferHeader) == 116);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -304,6 +307,8 @@ pub const HeaderInfo = struct {
     comment_ends_offset: u32 = 0,
     comment_kinds_offset: u32 = 0,
     tok_ends_offset: u32 = 0,
+    node_start_pos_offset: u32 = 0,
+    node_end_pos_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -341,6 +346,8 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .comment_ends_offset = info.comment_ends_offset,
         .comment_kinds_offset = info.comment_kinds_offset,
         .tok_ends_offset = info.tok_ends_offset,
+        .node_start_pos_offset = info.node_start_pos_offset,
+        .node_end_pos_offset = info.node_end_pos_offset,
     };
 }
 
@@ -420,6 +427,130 @@ inline fn utf16Advance(source: []const u8, byte_pos: *u32) u32 {
     }
 }
 
+// ── Node Position Computation ────────────────────────────────────
+
+const ast_mod = @import("ast.zig");
+const token_mod = @import("token.zig");
+
+/// Compute node start and end positions (UTF-16) from the parsed AST.
+/// Must be called AFTER tok_starts and tok_ends are converted to UTF-16.
+///
+/// Algorithm mirrors estree-adapter.js _computeAllEndPos + _nodeStartPos:
+/// 1. Propagate max/min main_token through parent pointers
+/// 2. Bracket matching via token tags
+/// 3. Extend each node's end past maxTok to include trailing ; and matched brackets
+pub fn computeNodePositions(
+    alloc: std.mem.Allocator,
+    node_tags: []const ast_mod.Node.Tag,
+    main_tokens: []const u32,
+    parent_indices: []const u32,
+    tok_tags: []const token_mod.Tag,
+    tok_starts: []const u32,
+    tok_ends: []const u32,
+    node_count: u32,
+    token_count: u32,
+) !struct { starts: []u32, ends: []u32 } {
+    const n: usize = node_count;
+    const tc: usize = token_count;
+    const NONE: u32 = 0xFFFFFFFF;
+
+    // maxTok[i] = highest main_token index in node i's subtree
+    const maxTok = try alloc.alloc(u32, n);
+    defer alloc.free(maxTok);
+    @memcpy(maxTok, main_tokens[0..n]);
+    for (1..n) |i| {
+        const p = parent_indices[i];
+        if (p != NONE and maxTok[i] > maxTok[p]) maxTok[p] = maxTok[i];
+    }
+
+    // minMainTok[i] = lowest main_token index in node i's subtree
+    const minTok = try alloc.alloc(u32, n);
+    defer alloc.free(minTok);
+    @memcpy(minTok, main_tokens[0..n]);
+    for (1..n) |i| {
+        const p = parent_indices[i];
+        if (p != NONE and minTok[i] < minTok[p]) minTok[p] = minTok[i];
+    }
+
+    // node_start_pos[i] = tok_starts[minTok[i]]
+    const node_starts = try alloc.alloc(u32, n);
+    for (node_starts, minTok[0..n]) |*ns, mt| ns.* = tok_starts[mt];
+
+    // Bracket matching: closeOpen[k] = opener token index for closing bracket k
+    const closeOpen = try alloc.alloc(u32, tc);
+    defer alloc.free(closeOpen);
+    @memset(closeOpen, NONE);
+    // Stack for bracket matching (reuse alloc — max depth = tc)
+    var stack_buf = try alloc.alloc(u32, @min(tc, 4096));
+    defer alloc.free(stack_buf);
+    var stack_top: usize = 0;
+    for (0..tc) |j| {
+        const tt = tok_tags[j];
+        if (tt == .l_brace or tt == .l_bracket or tt == .l_paren) {
+            if (stack_top < stack_buf.len) {
+                stack_buf[stack_top] = @intCast(j);
+                stack_top += 1;
+            }
+        }
+        // Closers: } ] ) and template tokens starting with } (template_middle, template_tail)
+        // This mirrors JS _computeAllEndPos which matches by source character, not token tag.
+        else if (tt == .r_brace or tt == .r_bracket or tt == .r_paren or
+            tt == .template_middle or tt == .template_tail)
+        {
+            if (stack_top > 0) {
+                stack_top -= 1;
+                closeOpen[j] = stack_buf[stack_top];
+            }
+        }
+    }
+
+    // isMainTok[j] = 1 if token j is the main token of some AST node
+    const isMainTok = try alloc.alloc(u8, tc);
+    defer alloc.free(isMainTok);
+    @memset(isMainTok, 0);
+    for (main_tokens[0..n]) |mt| isMainTok[mt] = 1;
+
+    // Compute node end positions
+    const node_ends = try alloc.alloc(u32, n);
+    for (0..n) |i| {
+        const base = maxTok[i];
+        var ext_end = tok_ends[base];
+        const tag = node_tags[i];
+
+        // SequenceExpression / TemplateElement: no extension
+        if (tag == .sequence_expr or tag == .template_element) {
+            node_ends[i] = ext_end;
+            continue;
+        }
+
+        const start_p = tok_starts[minTok[i]];
+        var j = base + 1;
+        while (j < tc) {
+            if (isMainTok[j] == 1) break;
+            const tt = tok_tags[j];
+            if (tt == .r_brace or tt == .r_bracket or tt == .r_paren or
+                tt == .template_middle or tt == .template_tail)
+            {
+                const opener = closeOpen[j];
+                if (opener != NONE and tok_starts[opener] >= start_p) {
+                    const te = tok_ends[j];
+                    if (te > ext_end) ext_end = te;
+                } else {
+                    break;
+                }
+            } else {
+                // Non-bracket token (;, etc.) — include it
+                const te = tok_ends[j];
+                if (te > ext_end) ext_end = te;
+            }
+            j += 1;
+        }
+        node_ends[i] = ext_end;
+    }
+
+    return .{ .starts = node_starts, .ends = node_ends };
+}
+
 // ── BOM Handling ─────────────────────────────────────────────────
 
 /// Strip UTF-8 BOM (EF BB BF) from the start of source.
@@ -432,8 +563,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 104 bytes" {
-    try std.testing.expectEqual(@as(usize, 104), @sizeOf(BufferHeader));
+test "BufferHeader is 116 bytes" {
+    try std.testing.expectEqual(@as(usize, 116), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

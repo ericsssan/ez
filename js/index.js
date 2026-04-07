@@ -46,7 +46,7 @@ function loadBinding() {
 // ── Buffer management ────────────────────────────────────────────
 
 const DEFAULT_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
-const HEADER_SIZE = 108; // 27 fields × 4 bytes
+const HEADER_SIZE = 116; // 29 fields × 4 bytes
 const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 
 let sharedBuffer = null;
@@ -177,34 +177,40 @@ function parseSource(source, options = {}) {
 }
 
 /**
- * Parse a file by path — Zig reads it directly (no TextEncoder overhead).
+ * Parse a file by path — single NAPI call: Zig reads + parses in one shot.
  *
  * @param {string} filePath - Absolute or relative path to the file
- * @param {object} [options] - { lang?: 'js'|'ts'|'jsx'|'tsx' }
+ * @param {object} [options] - { lang?, noPrivateCopy? }
  * @returns {AstView}
  */
 function parse(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
-  const { buf, sourceLen, sourceStart } = _loadFile(filePath);
-
-  const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
+  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
+  let bytesUsed = b.parseFile(buf, filePath, lang);
   if (bytesUsed === 0) {
-    throw new Error(`sanz: parse failed: ${filePath}`);
+    // Check if "buffer too small" — Zig writes needed file size at buf[0..4]
+    const needed = new DataView(buf).getUint32(0, true);
+    if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
+      buf = ensureBuffer(needed);
+      sharedBuffer = buf;
+      bytesUsed = b.parseFile(buf, filePath, lang);
+    }
+    if (bytesUsed === 0) throw new Error(`sanz: parse failed: ${filePath}`);
   }
+  sharedBuffer = buf;
 
   getTagNames();
 
-  // noPrivateCopy: caller guarantees it will not hold the AstView past the next
-  // parse/parseAndLint call on this module instance (safe in single-threaded workers
-  // that process files sequentially). Skips the buffer copy — ~25% faster.
   if (options.noPrivateCopy) {
     return new AstView(buf);
   }
 
   const dv0 = new DataView(buf);
   const totalUsed = dv0.getUint32(56, true);
+  const sourceLen = dv0.getUint32(20, true);
+  const sourceStart = dv0.getUint32(52, true);
   const semOff = dv0.getUint32(68, true);
   const semEnd = semOff > 0 ? semOff + 96 : 0;
   const srcStart = Math.max(totalUsed, semEnd);
@@ -496,22 +502,31 @@ function parseAndLint(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
-  const { buf, sourceLen, sourceStart } = _loadFile(filePath);
-
-  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
-  if (_lintOutBuf.byteLength < needed) _lintOutBuf = new ArrayBuffer(needed * 2);
+  // Ensure lint output buffer (use a conservative estimate — we don't know file size yet).
+  if (_lintOutBuf.byteLength < 64 * 1024) _lintOutBuf = new ArrayBuffer(128 * 1024);
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-  const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
+  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
+  let bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
   if (bytesUsed === 0) {
-    throw new Error(`sanz: parseAndLint failed: ${filePath}`);
+    const needed = new DataView(buf).getUint32(0, true);
+    if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
+      buf = ensureBuffer(needed);
+      sharedBuffer = buf;
+      bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
+    }
+    if (bytesUsed === 0) throw new Error(`sanz: parseAndLint failed: ${filePath}`);
   }
+  sharedBuffer = buf;
 
   getTagNames();
 
+  const dv0 = new DataView(buf);
+  const sourceLen = dv0.getUint32(20, true);
+  const sourceStart = dv0.getUint32(52, true);
+
   // noPrivateCopy: skip buffer copy (safe in sequential single-threaded workers).
   const ast = options.noPrivateCopy ? new AstView(buf) : (() => {
-    const dv0 = new DataView(buf);
     const totalUsed = dv0.getUint32(56, true);
     const semOff = dv0.getUint32(68, true);
     const semEnd = semOff > 0 ? semOff + 96 : 0;
@@ -529,7 +544,7 @@ function parseAndLint(filePath, options = {}) {
         const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
         if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
           const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-          const shift = totalUsed - sourceStart;
+          const shift = srcStart - sourceStart;
           for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
         }
       }
@@ -537,7 +552,7 @@ function parseAndLint(filePath, options = {}) {
     return new AstView(privateBuf);
   })();
 
-  // Parse diags — source bytes still valid in buf until next _loadFile.
+  // Parse diags — source bytes still valid in buf until next parseFile call.
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
   const dv = new DataView(_lintOutBuf);
   const count = dv.getUint32(0, true);

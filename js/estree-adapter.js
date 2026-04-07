@@ -82,6 +82,9 @@ const H = {
   COMMENT_KINDS_OFFSET: 100,
   // v7: token end positions (UTF-16)
   TOK_ENDS_OFFSET: 104,
+  // v8: pre-computed node positions (UTF-16)
+  NODE_START_POS_OFFSET: 108,
+  NODE_END_POS_OFFSET: 112,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -200,6 +203,12 @@ class AstView {
     this._tokStarts = new Uint32Array(buffer, tokStartsOff, this.tokenCount);
     const tokEndsOff = dv.getUint32(H.TOK_ENDS_OFFSET, true);
     this._tokEnds = tokEndsOff > 0 ? new Uint32Array(buffer, tokEndsOff, this.tokenCount) : null;
+
+    // Pre-computed node positions (v8 — computed in Zig)
+    const nspOff = dv.getUint32(H.NODE_START_POS_OFFSET, true);
+    const nepOff = dv.getUint32(H.NODE_END_POS_OFFSET, true);
+    this._nodeStartPosArr = nspOff > 0 ? new Uint32Array(buffer, nspOff, this.nodeCount) : null;
+    this._nodeEndPosArr = nepOff > 0 ? new Uint32Array(buffer, nepOff, this.nodeCount) : null;
 
     // Source text (UTF-8 in buffer, decoded lazily)
     this._sourceBytes = new Uint8Array(buffer, sourceOff, this.sourceLen);
@@ -692,17 +701,34 @@ class AstView {
    * Result is cached per AstView instance.
    */
   _nodeEndPos(nodeIdx) {
+    if (this._nodeEndPosArr) return this._nodeEndPosArr[nodeIdx];
     if (!this._endPosCache) this._endPosCache = this._computeAllEndPos();
     return this._endPosCache[nodeIdx];
   }
 
-  /** Get the start position of a node (minimum token start in its subtree). */
+  /** Ensure _maxTokCache is populated (for collectSubtreeTokens). */
+  _ensureMaxTokCache() {
+    if (this._maxTokCache) return;
+    const n = this.nodeCount;
+    const pd = this._parentData;
+    const mt = this._mainTokens;
+    const maxTok = new Int32Array(n);
+    for (let i = 0; i < n; i++) maxTok[i] = mt[i];
+    if (pd) {
+      for (let i = 1; i < n; i++) {
+        const p = pd[i];
+        if (p !== NONE && maxTok[i] > maxTok[p]) maxTok[p] = maxTok[i];
+      }
+    }
+    this._maxTokCache = maxTok;
+  }
+
   _nodeStartPos(nodeIdx) {
+    if (this._nodeStartPosArr) return this._nodeStartPosArr[nodeIdx];
     if (!this._startPosCache) {
       const n = this.nodeCount;
       const pd = this._parentData;
       const mt = this._mainTokens;
-      // minTok[i] = lowest main_token index in node i's subtree
       const minTok = new Int32Array(n);
       for (let i = 0; i < n; i++) minTok[i] = mt[i];
       if (pd) {

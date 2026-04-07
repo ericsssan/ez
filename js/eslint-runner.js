@@ -292,7 +292,7 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
   if (nodeIdx === NONE || nodeIdx >= ast.nodeCount) return;
 
   // Ensure caches are populated
-  if (!ast._maxTokCache) ast._nodeEndPos(nodeIdx);
+  if (!ast._maxTokCache) ast._ensureMaxTokCache();
   if (!ast._minTokCache) _computeMinTok(ast);
 
   const tc = ast.tokenCount;
@@ -476,7 +476,7 @@ class SourceCode {
     // Use strict range: only tokens within [startTok, maxTok] — no forward-scan extension.
     // collectSubtreeTokens extends past maxTok to include trailing ); etc., which breaks
     // token-comparison rules like no-self-compare.
-    if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+    if (!ast._maxTokCache) ast._ensureMaxTokCache();
     if (!ast._minTokCache) _computeMinTok(ast);
     const startTok = ast._minTokCache[node._i];
     const maxTok   = ast._maxTokCache[node._i];
@@ -523,7 +523,7 @@ class SourceCode {
     // Fast path: no filter, no skip — just return the first token
     if (!fn && skip === 0) return this._makeToken(startTok);
     // Slow path: filter/skip required — iterate forward from startTok
-    if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+    if (!ast._maxTokCache) ast._ensureMaxTokCache();
     const maxTok = ast._maxTokCache[node._i];
     const tags = ast._tokTags;
     const tc = ast.tokenCount;
@@ -652,7 +652,7 @@ class SourceCode {
       // range[1] to find the first token strictly after the entire node.
       // We detect multi-token via maxTok: if maxTok > mainTok, the subtree
       // extends past mainToken and mainToken+1 lands inside the node.
-      if (!ast._maxTokCache) ast._nodeEndPos(node._i);
+      if (!ast._maxTokCache) ast._ensureMaxTokCache();
       const maxTok = ast._maxTokCache[node._i];
       if (maxTok !== undefined && maxTok > mainTok && node.range) {
         const nodeEnd = node.range[1];

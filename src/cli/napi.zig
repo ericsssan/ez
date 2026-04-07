@@ -130,6 +130,23 @@ fn parseImpl(
     // Must happen AFTER semantic analysis which uses byte offsets for tokenText().
     const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
 
+    // Compute node start/end positions (UTF-16) — eliminates JS-side _computeAllEndPos.
+    const node_count: u32 = @intCast(tree.nodes.len);
+    const token_count: u32 = @intCast(tokens.len);
+    const node_pos = try js_buffer.computeNodePositions(
+        alloc,
+        tree.nodes.items(.tag),
+        tree.nodes.items(.main_token),
+        traversal.parents,
+        tokens.slice().items(.tag),
+        tok_starts,
+        tok_ends,
+        node_count,
+        token_count,
+    );
+    const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
+    const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
+
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start = if (bom.has_bom) source_start + 3 else source_start,
@@ -148,6 +165,8 @@ fn parseImpl(
         .comment_ends_offset = comment_ends_offset,
         .comment_kinds_offset = comment_kinds_offset,
         .tok_ends_offset = tok_ends_offset,
+        .node_start_pos_offset = node_start_pos_offset,
+        .node_end_pos_offset = node_end_pos_offset,
     });
 
     return backing.bytesUsed();
@@ -289,6 +308,23 @@ fn parseAndLintImpl(
     // Convert token starts UTF-8 → UTF-16 (AFTER lint which needs UTF-8).
     const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
 
+    // Compute node start/end positions (UTF-16).
+    const node_count: u32 = @intCast(tree.nodes.len);
+    const token_count: u32 = @intCast(tokens.len);
+    const node_pos = try js_buffer.computeNodePositions(
+        alloc,
+        tree.nodes.items(.tag),
+        tree.nodes.items(.main_token),
+        traversal.parents,
+        tokens.slice().items(.tag),
+        tok_starts,
+        tok_ends,
+        node_count,
+        token_count,
+    );
+    const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
+    const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
+
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start        = if (bom.has_bom) source_start + 3 else source_start,
         .source_len          = @intCast(source.len),
@@ -306,6 +342,8 @@ fn parseAndLintImpl(
         .comment_ends_offset    = comment_ends_offset,
         .comment_kinds_offset   = comment_kinds_offset,
         .tok_ends_offset        = tok_ends_offset,
+        .node_start_pos_offset  = node_start_pos_offset,
+        .node_end_pos_offset    = node_end_pos_offset,
     });
 
     return backing.bytesUsed();
@@ -486,8 +524,10 @@ fn getOptionalConfigBytes(env: n.Env, val: n.Value) ?[]const u8 {
 /// Module initialization — called by Node.js when loading the .node addon.
 pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parse", napiParse);
+    registerFn(env, exports, "parseFile", napiParseFile);
     registerFn(env, exports, "lint", napiLint);
     registerFn(env, exports, "parseAndLint", napiParseAndLint);
+    registerFn(env, exports, "parseAndLintFile", napiParseAndLintFile);
     registerFn(env, exports, "lintFiles", napiLintFiles);
     registerFn(env, exports, "readFileToBuf", napiReadFileToBuf);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
@@ -539,6 +579,133 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
     return js_result;
+}
+
+// ── readFileIntoBuf: shared helper for parseFile / parseAndLintFile ──
+//
+// Opens the file, reads it into buf tail. On success returns {source_start, source_len}.
+// On "buffer too small": writes needed file size at buf[0..4] and returns error.
+// Caller is responsible for ensuring buf_len >= HEADER_SIZE.
+
+const ReadFileResult = struct { source_start: u32, source_len: u32 };
+
+fn readFileIntoBuf(buf_ptr: [*]u8, buf_len: u32, path_z: [:0]const u8) !ReadFileResult {
+    const fd = std.c.open(path_z.ptr, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) return error.FileOpenFailed;
+    defer _ = std.c.close(fd);
+
+    var stat: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &stat) != 0 or stat.size <= 0) return error.FileStatFailed;
+    const file_size: u32 = @intCast(stat.size);
+
+    if (file_size >= buf_len) {
+        // Signal "buffer too small" — write needed size at buf[0..4].
+        const needed: *align(1) u32 = @ptrCast(buf_ptr);
+        needed.* = file_size;
+        return error.BufferTooSmall;
+    }
+
+    const source_start = buf_len - file_size;
+    var offset: usize = 0;
+    while (offset < file_size) {
+        const nread = std.c.read(fd, buf_ptr + source_start + offset, file_size - offset);
+        if (nread <= 0) break;
+        offset += @intCast(nread);
+    }
+    if (offset != file_size) return error.ReadFailed;
+
+    return .{ .source_start = source_start, .source_len = file_size };
+}
+
+// ── parseFile(buf, path, lang) → bytesUsed ──────────────────────
+//
+// Single NAPI call: reads file + parses. Returns bytesUsed on success.
+// Returns 0 on error. If buffer too small, buf[0..4] = needed file size.
+
+fn napiParseFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 3;
+    var argv: [3]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 3) {
+        _ = n.napi_throw_error(env, null, "parseFile(buf, path, lang): 3 args required");
+        return null;
+    }
+
+    var buf_data: ?*anyopaque = null;
+    var buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len) != n.OK) return null;
+    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse return returnU32(env, 0));
+
+    var path_stack: [4096]u8 = undefined;
+    var written: usize = 0;
+    _ = n.napi_get_value_string_utf8(env, argv[1], &path_stack, path_stack.len, &written);
+    if (written == 0 or written >= path_stack.len) return returnU32(env, 0);
+    path_stack[written] = 0;
+    const path_z: [:0]const u8 = path_stack[0..written :0];
+
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[2], &lang_val);
+
+    const file_info = readFileIntoBuf(buf_ptr, @intCast(buf_len), path_z) catch return returnU32(env, 0);
+
+    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val)) catch return returnU32(env, 0);
+    return returnU32(env, result);
+}
+
+// ── parseAndLintFile(buf, path, lang, outBuf[, configBuf]) → bytesUsed ──
+
+fn napiParseAndLintFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 5;
+    var argv: [5]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 4) {
+        _ = n.napi_throw_error(env, null, "parseAndLintFile(buf, path, lang, outBuf[, configBuf]): 4 args required");
+        return null;
+    }
+
+    var buf_data: ?*anyopaque = null;
+    var buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len) != n.OK) return null;
+    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse return returnU32(env, 0));
+
+    var path_stack: [4096]u8 = undefined;
+    var written: usize = 0;
+    _ = n.napi_get_value_string_utf8(env, argv[1], &path_stack, path_stack.len, &written);
+    if (written == 0 or written >= path_stack.len) return returnU32(env, 0);
+    path_stack[written] = 0;
+    const path_z: [:0]const u8 = path_stack[0..written :0];
+
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[2], &lang_val);
+
+    var out_data: ?*anyopaque = null;
+    var out_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[3], &out_data, &out_len) != n.OK) return null;
+    const out_ptr: [*]u8 = @ptrCast(out_data orelse return returnU32(env, 0));
+
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 5) {
+        if (getOptionalConfigBytes(env, argv[4])) |bytes| {
+            config_val = configFromSeverityBytes(bytes);
+        }
+    }
+    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
+
+    const file_info = readFileIntoBuf(buf_ptr, @intCast(buf_len), path_z) catch return returnU32(env, 0);
+
+    const bytes_used = parseAndLintImpl(
+        buf_ptr, @intCast(buf_len),
+        file_info.source_start, file_info.source_len, @intCast(lang_val),
+        out_ptr, @intCast(out_len),
+        config_ptr,
+    ) catch return returnU32(env, 0);
+    return returnU32(env, bytes_used);
+}
+
+fn returnU32(env: n.Env, val: u32) ?n.Value {
+    var result: n.Value = undefined;
+    if (n.napi_create_uint32(env, val, &result) != n.OK) return null;
+    return result;
 }
 
 // ── lint(srcBuf, sourceStart, sourceLen, lang, outBuf[, configBuf]) → bytesWritten ──
