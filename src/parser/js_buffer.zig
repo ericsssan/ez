@@ -420,6 +420,67 @@ pub fn convertSpansToUtf16(source: []const u8, tok_starts: []u32) u32 {
     return utf16_pos;
 }
 
+/// Convert multiple sorted byte-offset arrays to UTF-16 in a single source scan.
+/// All arrays must be sorted. Avoids re-scanning the source for each array.
+/// Returns the total UTF-16 length of the source.
+pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
+    var byte_pos: u32 = 0;
+    var utf16_pos: u32 = 0;
+    // Cursors: one per array, tracking which element to convert next.
+    var cursors: [8]usize = .{0} ** 8;
+    const n = @min(arrays.len, 8);
+
+    // Process until all cursors are exhausted.
+    while (true) {
+        // Find the smallest byte offset across all arrays.
+        var min_target: u32 = @intCast(source.len);
+        var any_left = false;
+        for (0..n) |a| {
+            if (cursors[a] < arrays[a].len) {
+                any_left = true;
+                const t = arrays[a][cursors[a]];
+                if (t < min_target) min_target = t;
+            }
+        }
+        if (!any_left) break;
+
+        // Advance scanner to min_target.
+        const simd_end = @min(min_target, @as(u32, @intCast(source.len)));
+        while (byte_pos + 16 <= simd_end) {
+            const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
+            if (!@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) break;
+            utf16_pos += 16;
+            byte_pos += 16;
+        }
+        while (byte_pos < min_target and byte_pos < source.len) {
+            utf16_pos += utf16Advance(source, &byte_pos);
+        }
+
+        // Update all cursors that point to min_target.
+        for (0..n) |a| {
+            while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == min_target) {
+                arrays[a][cursors[a]] = utf16_pos;
+                cursors[a] += 1;
+            }
+        }
+    }
+
+    // Scan remaining source for total UTF-16 length.
+    while (byte_pos < source.len) {
+        if (byte_pos + 16 <= source.len) {
+            const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
+            if (@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) {
+                utf16_pos += 16;
+                byte_pos += 16;
+                continue;
+            }
+        }
+        utf16_pos += utf16Advance(source, &byte_pos);
+    }
+
+    return utf16_pos;
+}
+
 /// Advance one UTF-8 codepoint, returning the number of UTF-16 code units.
 inline fn utf16Advance(source: []const u8, byte_pos: *u32) u32 {
     const b = source[byte_pos.*];

@@ -103,34 +103,36 @@ fn parseImpl(
     var comment_starts_offset: u32 = 0;
     var comment_ends_offset: u32 = 0;
     var comment_kinds_offset: u32 = 0;
+    var cs: []u32 = &.{};
+    var ce: []u32 = &.{};
     if (comment_count > 0) {
-        const cs = try alloc.alloc(u32, comment_count);
-        const ce = try alloc.alloc(u32, comment_count);
+        cs = try alloc.alloc(u32, comment_count);
+        ce = try alloc.alloc(u32, comment_count);
         const ck = try alloc.alloc(u8, comment_count);
         @memcpy(cs, lex_result.comment_starts);
         @memcpy(ce, lex_result.comment_ends);
         @memcpy(ck, lex_result.comment_kinds);
-        // Convert comment byte offsets to UTF-16
-        _ = js_buffer.convertSpansToUtf16(source, cs);
-        _ = js_buffer.convertSpansToUtf16(source, ce);
         comment_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, cs.ptr);
         comment_ends_offset = js_buffer.ptrOffsetPub(buf_ptr, ce.ptr);
         comment_kinds_offset = js_buffer.ptrOffsetPub(buf_ptr, ck.ptr);
     }
 
-    // Compute token end positions (UTF-8) before converting starts to UTF-16.
+    // Compute token end positions (UTF-8 byte offsets).
     const tok_starts = tokens.slice().items(.start);
     const tok_lens = tokens.slice().items(.len);
     const tok_ends = try alloc.alloc(u32, tok_starts.len);
     for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
-    _ = js_buffer.convertSpansToUtf16(source, tok_ends);
     const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
 
-    // Convert token start offsets from UTF-8 bytes to UTF-16 code units.
-    // Must happen AFTER semantic analysis which uses byte offsets for tokenText().
-    const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
+    // Compute line starts (UTF-8 byte offsets).
+    const line_starts = try js_buffer.computeLineStarts(source, alloc);
+    const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
-    // Compute node start/end positions (UTF-16) — eliminates JS-side _computeAllEndPos.
+    // Convert ALL byte-offset arrays to UTF-16 in a single source scan.
+    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts };
+    const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
+
+    // Compute node start/end positions (UTF-16) — uses already-converted tok_starts/tok_ends.
     const node_count: u32 = @intCast(tree.nodes.len);
     const token_count: u32 = @intCast(tokens.len);
     const node_pos = try js_buffer.computeNodePositions(
@@ -147,11 +149,6 @@ fn parseImpl(
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
-
-    // Compute line starts (UTF-8 byte offsets → convert to UTF-16).
-    const line_starts = try js_buffer.computeLineStarts(source, alloc);
-    _ = js_buffer.convertSpansToUtf16(source, line_starts);
-    const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
@@ -292,32 +289,33 @@ fn parseAndLintImpl(
     var comment_starts_offset: u32 = 0;
     var comment_ends_offset:   u32 = 0;
     var comment_kinds_offset:  u32 = 0;
+    var cs2: []u32 = &.{};
+    var ce2: []u32 = &.{};
     if (comment_count > 0) {
-        const cs = try alloc.alloc(u32, comment_count);
-        const ce = try alloc.alloc(u32, comment_count);
-        const ck = try alloc.alloc(u8,  comment_count);
-        @memcpy(cs, lex_result.comment_starts);
-        @memcpy(ce, lex_result.comment_ends);
+        cs2 = try alloc.alloc(u32, comment_count);
+        ce2 = try alloc.alloc(u32, comment_count);
+        const ck = try alloc.alloc(u8, comment_count);
+        @memcpy(cs2, lex_result.comment_starts);
+        @memcpy(ce2, lex_result.comment_ends);
         @memcpy(ck, lex_result.comment_kinds);
-        _ = js_buffer.convertSpansToUtf16(source, cs);
-        _ = js_buffer.convertSpansToUtf16(source, ce);
-        comment_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, cs.ptr);
-        comment_ends_offset   = js_buffer.ptrOffsetPub(buf_ptr, ce.ptr);
+        comment_starts_offset = js_buffer.ptrOffsetPub(buf_ptr, cs2.ptr);
+        comment_ends_offset   = js_buffer.ptrOffsetPub(buf_ptr, ce2.ptr);
         comment_kinds_offset  = js_buffer.ptrOffsetPub(buf_ptr, ck.ptr);
     }
 
-    // Compute token end positions (UTF-8) before converting starts to UTF-16.
     const tok_starts = tokens.slice().items(.start);
     const tok_lens = tokens.slice().items(.len);
     const tok_ends = try alloc.alloc(u32, tok_starts.len);
     for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
-    _ = js_buffer.convertSpansToUtf16(source, tok_ends);
     const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
 
-    // Convert token starts UTF-8 → UTF-16 (AFTER lint which needs UTF-8).
-    const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
+    const line_starts = try js_buffer.computeLineStarts(source, alloc);
+    const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
-    // Compute node start/end positions (UTF-16).
+    // Single-pass UTF-16 conversion for all byte-offset arrays.
+    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts };
+    const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans2);
+
     const node_count: u32 = @intCast(tree.nodes.len);
     const token_count: u32 = @intCast(tokens.len);
     const node_pos = try js_buffer.computeNodePositions(
@@ -334,10 +332,6 @@ fn parseAndLintImpl(
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
-
-    const line_starts = try js_buffer.computeLineStarts(source, alloc);
-    _ = js_buffer.convertSpansToUtf16(source, line_starts);
-    const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start        = if (bom.has_bom) source_start + 3 else source_start,

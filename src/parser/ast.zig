@@ -622,8 +622,6 @@ pub const Ast = struct {
         /// Byte length of the token in source (end = start + len).
         len: u32 = 0,
         /// True if there is a line terminator between the previous token and this one.
-        /// Set by the lexer from saw_newline. Lets the parser replace O(n) source
-        /// scans in hasNewLineBetween with a single array lookup.
         has_newline_before: bool = false,
     });
 

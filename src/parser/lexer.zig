@@ -153,8 +153,6 @@ pub const Lexer = struct {
 
         while (true) {
             const tok = self.next();
-            // saw_newline is set during whitespace/comment skipping inside next();
-            // it correctly reflects whether a line terminator preceded this token.
             try self.tokens.append(allocator, .{
                 .tag = tok.tag,
                 .start = tok.start,
@@ -2850,6 +2848,8 @@ pub const Lexer = struct {
     // ══════════════════════════════════════════════════════════
 
     /// Create a token and update prev_token_tag for regex disambiguation.
+    /// Advance utf16_pos from utf16_sync to target byte position.
+    /// Counts UTF-16 code units: ASCII = 1, 2-byte = 1, 3-byte = 1, 4-byte = 2.
     fn makeToken(self: *Lexer, tag: TokenTag, start: u32) Token.Token {
         // Clear control_paren_closed when any token is emitted
         if (tag != .r_paren) self.control_paren_closed = false;
