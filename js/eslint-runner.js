@@ -755,37 +755,6 @@ class SourceCode {
   }
 
   /**
-   * getNodeByRangeIndex — returns the deepest AST node whose range contains pos.
-   * Uses the preorder traversal order: the last node with start ≤ pos is the
-   * deepest enclosing node (since preorder visits parent before children and
-   * children before the next sibling, the last node with start ≤ pos that also
-   * has end > pos is the innermost match).
-   */
-  getNodeByRangeIndex(pos) {
-    const ast = this._ast;
-    if (!ast._startPosCache || !ast._endPosCache) {
-      ast._nodeStartPos(0);
-      ast._nodeEndPos(0);
-    }
-    const starts = ast._startPosCache;
-    const ends = ast._endPosCache;
-    if (!starts || !ends) return null;
-    const n = ast.nodeCount;
-    let best = -1;
-    // Scan all nodes: find the innermost (smallest span) that contains pos.
-    // For performance, track the smallest matching span.
-    let bestSpan = Infinity;
-    for (let i = 0; i < n; i++) {
-      const s = starts[i], e = ends[i];
-      if (s <= pos && pos < e) {
-        const span = e - s;
-        if (span < bestSpan) { best = i; bestSpan = span; }
-      }
-    }
-    return best >= 0 ? nodeView(ast, best) : null;
-  }
-
-  /**
    * Get the scope containing a node. Uses real semantic data when available.
    */
   getScope(node) {
@@ -4544,14 +4513,8 @@ function runPlugins(ast, plugins, options = {}) {
   }
   ast._nodeCache = _nodeCachePool;
 
-  // Pre-warm lazy O(N) per-file computations before the DFS hot path.
-  // _lineStarts() scans source for newlines (needed by any .loc access).
-  // _computeAllEndPos() computes end positions for all nodes (needed by .range/.end).
-  // Doing this upfront removes mid-DFS cold-init from V8's optimization context
-  // and ensures all per-file setup cost is visible as setup, not rule execution.
-  ast._lineStarts();    // O(source.length) newline scan → needed by all .loc accesses
-  ast._nodeEndPos(0);  // O(N) end-pos table → needed by all .range/.end accesses
-  ast._nodeStartPos(0); // O(N) start-pos table → needed by all .start/.range accesses
+  // All pre-computation is now done in Zig buffer (line starts, node positions, maxTok).
+  // No JS-side lazy scans needed.
 
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;

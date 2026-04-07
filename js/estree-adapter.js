@@ -434,19 +434,8 @@ class AstView {
    */
   _lineStarts() {
     if (this._ls !== undefined) return this._ls;
-    // Use Zig-computed line starts from buffer if available (O(1)).
-    if (this._lineStartsArr) {
-      this._ls = this._lineStartsArr;
-      return this._ls;
-    }
-    // Fallback: scan source for newlines (O(n)).
-    const src = this.source;
-    const ls = [0];
-    for (let i = 0; i < src.length; i++) {
-      if (src.charCodeAt(i) === 10) ls.push(i + 1);
-    }
-    this._ls = ls;
-    return ls;
+    this._ls = this._lineStartsArr;
+    return this._ls;
   }
 
   /**
@@ -720,167 +709,17 @@ class AstView {
    * Result is cached per AstView instance.
    */
   _nodeEndPos(nodeIdx) {
-    if (this._nodeEndPosArr) return this._nodeEndPosArr[nodeIdx];
-    if (!this._endPosCache) this._endPosCache = this._computeAllEndPos();
-    return this._endPosCache[nodeIdx];
+    return this._nodeEndPosArr[nodeIdx];
   }
 
-  /** Ensure _maxTokCache is populated (for collectSubtreeTokens). */
   _ensureMaxTokCache() {
-    if (this._maxTokCache) return;
-    // Use Zig-computed maxTok from buffer if available (O(1)).
-    if (this._maxTokFromBuffer) {
-      this._maxTokCache = this._maxTokFromBuffer;
-      return;
-    }
-    // Fallback: propagate through parent pointers (O(n)).
-    const n = this.nodeCount;
-    const pd = this._parentData;
-    const mt = this._mainTokens;
-    const maxTok = new Int32Array(n);
-    for (let i = 0; i < n; i++) maxTok[i] = mt[i];
-    if (pd) {
-      for (let i = 1; i < n; i++) {
-        const p = pd[i];
-        if (p !== NONE && maxTok[i] > maxTok[p]) maxTok[p] = maxTok[i];
-      }
-    }
-    this._maxTokCache = maxTok;
+    if (!this._maxTokCache) this._maxTokCache = this._maxTokFromBuffer;
   }
 
   _nodeStartPos(nodeIdx) {
-    if (this._nodeStartPosArr) return this._nodeStartPosArr[nodeIdx];
-    if (!this._startPosCache) {
-      const n = this.nodeCount;
-      const pd = this._parentData;
-      const mt = this._mainTokens;
-      const minTok = new Int32Array(n);
-      for (let i = 0; i < n; i++) minTok[i] = mt[i];
-      if (pd) {
-        for (let i = 1; i < n; i++) {
-          const p = pd[i];
-          if (p !== NONE && minTok[i] < minTok[p]) minTok[p] = minTok[i];
-        }
-      }
-      const startPos = new Int32Array(n);
-      for (let i = 0; i < n; i++) startPos[i] = this._tokStarts[minTok[i]];
-      this._startPosCache = startPos;
-    }
-    return this._startPosCache[nodeIdx];
+    return this._nodeStartPosArr[nodeIdx];
   }
 
-  /**
-   * Build end-position and max-token-index arrays for all nodes.
-   * Uses iterative multi-pass propagation through parent pointers.
-   *
-   * Stores maxTok array as _maxTokCache for use by collectSubtreeTokens,
-   * avoiding the O(n) per-call scan.
-   */
-  _computeAllEndPos() {
-    const n = this.nodeCount;
-    const pd = this._parentData;
-    const mt = this._mainTokens;
-    const tc = this.tokenCount;
-    const src = this.source;
-
-    // maxTok[i] = highest main_token index in node i's subtree
-    const maxTok = new Int32Array(n);
-    for (let i = 0; i < n; i++) maxTok[i] = mt[i];
-
-    if (pd) {
-      // Single-pass propagation: process nodes in reverse order (high → low index).
-      // In sanz's AST, children always have lower indices than parents (except root=0),
-      // so reverse order guarantees children are finalized before their parents.
-      // This replaces the O(n × depth) fixpoint loop with a single O(n) pass.
-      for (let i = 1; i < n; i++) {
-        const p = pd[i];
-        if (p !== NONE && maxTok[i] > maxTok[p]) {
-          maxTok[p] = maxTok[i];
-        }
-      }
-      // Root (0) is processed separately: propagate up from all direct children.
-      // The above loop handles this since children of root have pd[i] = 0.
-    }
-
-    // Cache maxTok for use by collectSubtreeTokens (O(1) lookup instead of O(n) scan)
-    this._maxTokCache = maxTok;
-
-    // Compute minMainTok[i] = min main-token index in node i's subtree
-    const minMainTok = new Int32Array(n);
-    for (let i = 0; i < n; i++) minMainTok[i] = mt[i];
-    if (pd) {
-      for (let i = 1; i < n; i++) {
-        const p = pd[i];
-        if (p !== NONE && minMainTok[i] < minMainTok[p]) minMainTok[p] = minMainTok[i];
-      }
-    }
-
-    // Build bracket matching: closeOpen[k] = opener token index for closing bracket k, or -1
-    const tokStarts = this._tokStarts;
-    const closeOpen = new Int32Array(tc).fill(-1);
-    const stack = [];
-    for (let j = 0; j < tc; j++) {
-      const c = src.charCodeAt(tokStarts[j]);
-      if (c === 123 || c === 91 || c === 40) { // { [ (
-        stack.push(j);
-      } else if (c === 125 || c === 93 || c === 41) { // } ] )
-        if (stack.length > 0) closeOpen[j] = stack.pop();
-      }
-    }
-
-    // Build isMainTok lookup (1 if token j is the main token of some AST node)
-    const isMainTok = new Uint8Array(tc);
-    for (let i = 0; i < n; i++) isMainTok[mt[i]] = 1;
-
-    const tokEnds = this._tokEnds;
-    const effectiveTokEnd = (j) => tokEnds[j];
-
-    // Compute endPos: extend beyond maxTok to include trailing ; and matched closing brackets
-    const nodeTags = this._nodeTags;
-    const endPos = new Int32Array(n);
-    for (let i = 0; i < n; i++) {
-      const base = maxTok[i];
-      let extEnd = effectiveTokEnd(base);
-
-      // SequenceExpression (tag 133): sanz uses '(' as main token but ESTree range
-      // excludes the outer parens — just use the last-expression end, no extension.
-      if (nodeTags[i] === T.sequence_expr) {
-        endPos[i] = extEnd;
-        continue;
-      }
-
-      // TemplateElement: use the trimmed token end only (the closing ` / } delimiter).
-      // Don't extend with the EOF token that follows — that would pull in trailing
-      // Unicode whitespace that is outside the template literal.
-      if (nodeTags[i] === T.template_element) {
-        endPos[i] = extEnd;
-        continue;
-      }
-
-      const startP = tokStarts[minMainTok[i]];
-      let j = base + 1;
-      while (j < tc) {
-        if (isMainTok[j]) break; // next sibling/parent main token — stop
-        const c = src.charCodeAt(tokStarts[j]);
-        if (c === 125 || c === 93 || c === 41) { // } ] )
-          const opener = closeOpen[j];
-          if (opener >= 0 && tokStarts[opener] >= startP) {
-            // Closing bracket whose opener is within this node's range — include it
-            extEnd = Math.max(extEnd, effectiveTokEnd(j));
-          } else {
-            break; // Closing bracket belongs to parent/ancestor — stop
-          }
-        } else {
-          // Non-bracket token (e.g. ;) — always include
-          extEnd = Math.max(extEnd, effectiveTokEnd(j));
-        }
-        j++;
-      }
-      endPos[i] = extEnd;
-    }
-
-    return endPos;
-  }
 }
 
 // ── NodeView Pool ────────────────────────────────────────────────
