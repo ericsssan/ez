@@ -4193,11 +4193,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // Code-path: terminators mark subsequent code unreachable (integer tag checks)
         if (hasCodePath) {
           if (_terminatorTagSet.has(tag)) {
-            const oldSeg = cpTracker.segment;
-            if (oldSeg) _segEndEvent(oldSeg);  // respects reachability: segEnd vs unreachableSegEnd
-            cpTracker.markUnreachable();
-            const unreachSeg = cpTracker.segment;
-            if (_unreachStartH) _dispatchSeg(_unreachStartH, unreachSeg);
+            // Labeled break/continue just exit to the label — don't mark unreachable.
+            const nv2 = nodeView(ast, idx);
+            const isLbl = (nv2.type === 'BreakStatement' || nv2.type === 'ContinueStatement') && nv2.label != null;
+            if (!isLbl) {
+              const oldSeg = cpTracker.segment;
+              if (oldSeg) _segEndEvent(oldSeg);
+              cpTracker.markUnreachable();
+              const unreachSeg = cpTracker.segment;
+              if (_unreachStartH) _dispatchSeg(_unreachStartH, unreachSeg);
+            }
           }
         }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
@@ -4471,10 +4476,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
       // Terminators and branch exit (flag-based: no string lookups in hot path)
       if (flags & FLAG_TERMINATOR) {
-        const oldSeg = cpTracker.segment;
-        if (oldSeg) _segEndEvent(oldSeg);  // respects reachability: segEnd vs unreachableSegEnd
-        cpTracker.markUnreachable();
-        if (_unreachStartH) _dispatchSeg(_unreachStartH, cpTracker.segment);
+        // Labeled break/continue just exit to the label — code after the labeled
+        // statement IS reachable. Only mark unreachable for return/throw and
+        // unlabeled break/continue (which terminate within their loop/switch).
+        const nv = nodeView(ast, idx);
+        const isLabeled = (nv.type === 'BreakStatement' || nv.type === 'ContinueStatement') && nv.label != null;
+        if (!isLabeled) {
+          const oldSeg = cpTracker.segment;
+          if (oldSeg) _segEndEvent(oldSeg);
+          cpTracker.markUnreachable();
+          if (_unreachStartH) _dispatchSeg(_unreachStartH, cpTracker.segment);
+        }
       }
       if (flags & FLAG_BRANCH_EXIT) {
         const oldSeg = cpTracker.segment;
