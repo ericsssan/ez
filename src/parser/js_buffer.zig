@@ -687,6 +687,8 @@ pub fn computeNodePositions(
 
         const start_p = tok_starts[minTok[i]];
         var j = base + 1;
+        // For arrays, continue through trailing commas to find the closing bracket
+        var is_array = tag == .array_literal or tag == .array_pattern;
         while (j < tc) {
             if (isMainTok[j] == 1) break;
             const tt = tok_tags[j];
@@ -697,6 +699,8 @@ pub fn computeNodePositions(
                 if (opener != NONE and tok_starts[opener] >= start_p) {
                     const te = tok_ends[j];
                     if (te > ext_end) ext_end = te;
+                    // For arrays, mark that we found the closing bracket
+                    if (is_array and tt == .r_bracket) is_array = false;
                 } else {
                     break;
                 }
@@ -707,6 +711,10 @@ pub fn computeNodePositions(
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
                 if (is_expr_stmt and tt == .semicolon) break;
+            } else if (is_array and tt == .comma) {
+                // For arrays: include trailing commas until we find the closing bracket
+                const te = tok_ends[j];
+                if (te > ext_end) ext_end = te;
             } else {
                 // Expression/identifier: stop at non-bracket tokens
                 break;

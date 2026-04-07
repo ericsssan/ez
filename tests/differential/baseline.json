@@ -1031,7 +1031,7 @@
     "array-bracket-spacing": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1199,7 +1199,7 @@
     },
     "comma-style": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
