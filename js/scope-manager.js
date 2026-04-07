@@ -123,15 +123,28 @@ class ScopeBuilder {
     this._scopeCache = new Map();
     this._thinScopeCache = new Map();
     this._varCache = new Map();
+    this._scopeSymIndex = null;
     this._scopeRefIndex = null;
     this._scopeChildIndex = null;
     this._nodeDeclIndex = null;
   }
 
   _ensureScopeIndex() {
-    if (this._scopeRefIndex) return;
+    if (this._scopeSymIndex) return;
     const ast = this._ast;
     const scopeCount = ast._semScopeCount || 0;
+
+    // scope → [symId, ...]: group symbols by their declaring scope.
+    // Uses _symScopeIds since _scopeBindStart/_scopeBindCount are not populated.
+    const symIndex = new Array(scopeCount);
+    for (let i = 0; i < scopeCount; i++) symIndex[i] = [];
+    if (ast._symScopeIds) {
+      for (let i = 0; i < (ast._semSymbolCount || 0); i++) {
+        const s = ast._symScopeIds[i];
+        if (s < scopeCount) symIndex[s].push(i);
+      }
+    }
+    this._scopeSymIndex = symIndex;
 
     const refIndex = new Array(scopeCount);
     for (let i = 0; i < scopeCount; i++) refIndex[i] = [];
@@ -206,11 +219,10 @@ class ScopeBuilder {
     this._ensureScopeIndex();
 
     const varMap = new Map();
-    {
-      const start = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
-      const end = start + (ast._scopeBindCount ? ast._scopeBindCount[scopeId] : 0);
-      for (let j = start; j < end; j++) {
-        const v = this._buildVariable(j);
+    const symIds = this._scopeSymIndex[scopeId];
+    if (symIds) {
+      for (let j = 0; j < symIds.length; j++) {
+        const v = this._buildVariable(symIds[j]);
         if (varMap.has(v.name)) {
           const existing = varMap.get(v.name);
           existing.identifiers.push(...v.identifiers);
