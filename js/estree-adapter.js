@@ -599,6 +599,18 @@ class AstView {
     return { params_start: e[i], params_end: e[i + 1], body: e[i + 2] };
   }
 
+  /** JsxElementData { opening, children_start, children_end, closing } */
+  extraJsxElementData(i) {
+    const e = this._extraData;
+    return { opening: e[i], children_start: e[i + 1], children_end: e[i + 2], closing: e[i + 3] };
+  }
+
+  /** JsxOpeningData { name, attrs_start, attrs_end } */
+  extraJsxOpeningData(i) {
+    const e = this._extraData;
+    return { name: e[i], attrs_start: e[i + 1], attrs_end: e[i + 2] };
+  }
+
   // ── Token text helpers ─────────────────────────────────────────
 
   /**
@@ -938,11 +950,11 @@ const NodeProto = {
    * Also used by FunctionDeclaration/ClassDeclaration via .id.name.
    */
   get name() {
-    if (this._tag === T.identifier) {
+    const t = this._tag;
+    if (t === T.identifier) {
       const ast = this._ast;
       const tok = this.mainToken;
       const pos = ast._tokStarts[tok];
-      // Private identifier: # may be a separate token from the name
       if (ast.source.charCodeAt(pos) === 35) { // '#'
         const nextTokStart = tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : pos + 1;
         if (nextTokStart === pos + 1 && tok + 1 < ast.tokenCount) {
@@ -952,8 +964,21 @@ const NodeProto = {
       }
       return _resolveUnicodeEscapes(ast._identAt(tok));
     }
-    // Return undefined (not null) for non-Identifier nodes — ESLint rules
-    // check `node.name.length` which crashes on null but not on undefined.
+    // JSXOpeningElement.name / JSXClosingElement.name / JSXSelfClosing.name
+    if (t === T.jsx_opening_element || t === T.jsx_self_closing) {
+      const ast = this._ast;
+      const d = ast.extraJsxOpeningData(ast.nodeLhs(this._i));
+      return d.name !== NONE ? nodeView(ast, d.name) : null;
+    }
+    if (t === T.jsx_closing_element) {
+      const lhs = this._ast.nodeLhs(this._i);
+      return lhs !== NONE ? nodeView(this._ast, lhs) : null;
+    }
+    // JSXAttribute.name
+    if (t === T.jsx_attribute) {
+      const lhs = this._ast.nodeLhs(this._i);
+      return lhs !== NONE ? nodeView(this._ast, lhs) : null;
+    }
     return undefined;
   },
 
@@ -1089,6 +1114,15 @@ const NodeProto = {
       // so the closing ` or } is always at the end when the regex anchors run.
       const raw = ast.source.slice(start, end).trimEnd().replace(/^`|`$/g, '').replace(/^\}|\$\{$/g, '');
       v = { raw, cooked: _cookTemplate(raw) };
+    } else if (t === T.jsx_text_node) {
+      // JSXText: value is the raw text content between tags.
+      const mt = this.mainToken;
+      const s = ast._tokStarts[mt], e = ast._tokEnds[mt];
+      v = ast.source.slice(s, e);
+    } else if (t === T.jsx_attribute) {
+      // JSXAttribute: value is the rhs (string literal, expression container, or null)
+      const rhs = ast.nodeRhs(this._i);
+      v = rhs === NONE ? null : nodeView(ast, rhs);
     } else {
       v = null;
     }
@@ -1377,6 +1411,10 @@ const NodeProto = {
       return idx === NONE ? null : nodeView(a, idx);
     }
     if (t === T.return_stmt || t === T.throw_stmt) {
+      const idx = lhs(a);
+      return idx === NONE ? null : nodeView(a, idx);
+    }
+    if (t === T.jsx_spread_attribute) {
       const idx = lhs(a);
       return idx === NONE ? null : nodeView(a, idx);
     }
@@ -1951,10 +1989,13 @@ const NodeProto = {
       return idx === NONE ? null : nodeView(this._ast, idx);
     }
     if (t === T.arrow_fn || t === T.async_arrow_fn) {
-      // concise body = body is not a block
       const ast = this._ast;
       const d = ast.extraArrowData(ast.nodeLhs(this._i));
       return d.body !== NONE && ast._nodeTags[d.body] !== T.block_stmt;
+    }
+    if (t === T.jsx_expression_container) {
+      const idx = this._ast.nodeLhs(this._i);
+      return idx === NONE ? null : nodeView(this._ast, idx);
     }
     return null;
   },
@@ -2204,7 +2245,69 @@ const NodeProto = {
   set comments(v) {
     this._comments = v;
   },
+
+  // ── JSX getters ─────────────────────────────────────────────
+
+  /** JSXElement.openingElement (jsx_element → opening child, jsx_self_closing → self) */
+  get openingElement() {
+    const t = this._tag;
+    const ast = this._ast;
+    if (t === T.jsx_element) {
+      const d = ast.extraJsxElementData(ast.nodeLhs(this._i));
+      return d.opening !== NONE ? nodeView(ast, d.opening) : null;
+    }
+    // Self-closing: the element IS its own opening element
+    if (t === T.jsx_self_closing) return this;
+    return undefined;
+  },
+
+  /** JSXElement.closingElement */
+  get closingElement() {
+    const t = this._tag;
+    if (t === T.jsx_element) {
+      const ast = this._ast;
+      const d = ast.extraJsxElementData(ast.nodeLhs(this._i));
+      return d.closing !== NONE ? nodeView(ast, d.closing) : null;
+    }
+    if (t === T.jsx_self_closing) return null;
+    return undefined;
+  },
+
+  /** JSXElement.children / JSXFragment.children */
+  get children() {
+    const t = this._tag;
+    const ast = this._ast;
+    if (t === T.jsx_element) {
+      const d = ast.extraJsxElementData(ast.nodeLhs(this._i));
+      return ast._nodesFromRange(d.children_start, d.children_end);
+    }
+    if (t === T.jsx_self_closing) return []; // self-closing has no children
+    if (t === T.jsx_fragment) {
+      const lhs = ast.nodeLhs(this._i);
+      const rhs = ast.nodeRhs(this._i);
+      return ast._nodesFromRange(lhs, rhs);
+    }
+    return undefined;
+  },
+
+  /** JSXOpeningElement.attributes / JSXElement(self-closing).attributes */
+  get attributes() {
+    const t = this._tag;
+    if (t !== T.jsx_opening_element && t !== T.jsx_self_closing) return undefined;
+    const ast = this._ast;
+    const d = ast.extraJsxOpeningData(ast.nodeLhs(this._i));
+    return ast._nodesFromRange(d.attrs_start, d.attrs_end);
+  },
+
+  /** JSXOpeningElement.selfClosing */
+  get selfClosing() {
+    if (this._tag === T.jsx_self_closing) return true;
+    if (this._tag === T.jsx_opening_element) return false;
+    return undefined;
+  },
+
 };
+
 
 /**
  * Return a stable NodeView for the given (ast, index) pair.
