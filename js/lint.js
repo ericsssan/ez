@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
-const { parseAndLint, parse, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLint, parse, lint: lintBatch, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -231,12 +231,22 @@ const hasNativeRules = Object.keys(nativeRuleObj).length > 0;
 const nativeConfig = hasNativeRules ? buildNativeConfig(nativeRuleObj) : null;
 const jsOnlyPlugins = allPlugins.filter(p => !nativeRules.has(p.meta?.name));
 
-/** Convert UTF-8 byte offset to 1-based line number. */
+/** Convert UTF-8 byte offset to 1-based line number (string source). */
 function offsetToLine(src, offset) {
   let line = 1;
   const end = Math.min(offset, src.length);
   for (let i = 0; i < end; i++) {
     if (src.charCodeAt(i) === 10) line++;
+  }
+  return line;
+}
+
+/** Convert UTF-8 byte offset to 1-based line number (Buffer/Uint8Array). */
+function bufferOffsetToLine(buf, offset) {
+  let line = 1;
+  const end = Math.min(offset, buf.length);
+  for (let i = 0; i < end; i++) {
+    if (buf[i] === 10) line++;
   }
   return line;
 }
@@ -468,10 +478,55 @@ async function main() {
   let errorFiles = 0;
   let totalFixed = 0;
 
-  const useWorkers = numThreads > 1 && allFiles.length > 1;
+  // Native batch: all rules handled by Zig, JS workers not needed.
+  // lintBatch reads files and parallelizes internally using OS threads.
+  // Falls back to sequential when --fix is set (lintBatch has no fix ranges).
+  const useNativeBatch = jsOnlyPlugins.length === 0 && hasNativeRules && allFiles.length > 1 && !applyFix;
+  const useWorkers = !useNativeBatch && numThreads > 1 && allFiles.length > 1;
 
-  if (useWorkers) {
-    // ── Parallel path ──────────────────────────────────────────
+  if (useNativeBatch) {
+    // ── Native batch path (lintBatch → Zig OS threads) ─────────
+    const batchResults = lintBatch(allFiles, { config: nativeConfig });
+
+    // Build a file→buffer map only for files that have violations (for offsetToLine).
+    // Files with no diags need no I/O.
+    const bufCache = new Map();
+    const getBuf = (file) => {
+      if (!bufCache.has(file)) bufCache.set(file, fs.readFileSync(file));
+      return bufCache.get(file);
+    };
+
+    for (const { file, diags } of batchResults) {
+      totalFiles++;
+      if (diags.length === 0) continue;
+
+      const buf = getBuf(file);
+      const violations = diags.map(d => ({
+        ruleId: d.ruleName,
+        severity: d.severity === 0 ? 2 : 1,
+        message: d.message,
+        loc: { start: { line: bufferOffsetToLine(buf, d.offset), column: 0 } },
+      }));
+
+      totalViolations += violations.length;
+
+      if (formatJson) {
+        jsonResults.push({
+          filePath: file,
+          messages: violations.map(r => ({
+            ruleId: r.ruleId || null,
+            severity: r.severity,
+            message: r.message,
+            line: r.loc?.start?.line ?? null,
+            column: null,
+          })),
+        });
+      } else {
+        printViolations(file, violations);
+      }
+    }
+  } else if (useWorkers) {
+    // ── Worker parallel path (JS-only rules or --fix) ──────────
     let workerResults;
     try {
       workerResults = await runParallel(allFiles, Math.min(numThreads, allFiles.length));
