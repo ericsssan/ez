@@ -102,41 +102,12 @@ function offsetToLine(source, offset) {
 
 // ── Rules ─────────────────────────────────────────────────────
 
-const COMPARABLE_RULES = new Set([
-  // Correctness
-  "no-debugger", "no-empty", "no-extra-semi", "no-dupe-keys",
-  "no-dupe-args", "no-sparse-arrays", "no-unreachable",
-  "no-unsafe-negation", "use-isnan", "valid-typeof",
-  "no-constant-condition", "no-func-assign", "no-import-assign",
-  "no-self-assign", "no-self-compare", "no-loss-of-precision",
-  "no-const-assign", "no-unsafe-optional-chaining",
-  "for-direction", "getter-return", "no-async-promise-executor",
-  "no-compare-neg-zero", "no-dupe-class-members", "no-dupe-else-if",
-  "no-duplicate-case", "no-empty-pattern", "no-ex-assign",
-  "no-fallthrough", "no-global-assign", "no-inner-declarations",
-  "no-irregular-whitespace", "no-new-symbol", "no-obj-calls",
-  "no-prototype-builtins", "no-setter-return",
-  "no-template-curly-in-string", "no-useless-catch",
-  // Suspicious
-  "eqeqeq", "no-cond-assign", "no-control-regex", "no-delete-var",
-  "no-empty-character-class", "no-eval", "no-implied-eval",
-  "no-label-var", "no-lone-blocks", "no-multi-str",
-  "no-new-wrappers", "no-nonoctal-decimal-escape", "no-octal",
-  "no-redeclare", "no-regex-spaces", "no-restricted-globals",
-  "no-shadow-restricted-names", "no-unsafe-finally",
-  "no-unused-labels", "no-useless-escape", "no-void", "no-with",
-  "require-yield", "no-case-declarations", "no-sequences",
-  "no-throw-literal",
-  // Style
-  "no-var", "prefer-const", "no-array-constructor", "no-bitwise",
-  "no-caller", "no-continue", "no-else-return", "no-eq-null",
-  "no-extend-native", "no-extra-bind", "no-extra-boolean-cast",
-  "no-floating-decimal", "no-iterator", "no-labels", "no-lonely-if",
-  "no-multi-assign", "no-negated-condition", "no-nested-ternary",
-  "no-new", "no-new-func", "no-new-object", "no-octal-escape",
-  "no-param-reassign", "no-plusplus", "no-proto",
-  "no-return-assign", "no-unneeded-ternary", "prefer-template",
-]);
+// Discover ALL available ESLint rules from the installed package.
+const COMPARABLE_RULES = new Set(
+  fs.readdirSync(path.join(JS_ROOT, "node_modules/eslint/lib/rules"))
+    .filter(f => f.endsWith(".js") && !f.startsWith("_") && !f.startsWith("index"))
+    .map(f => f.replace(/\.js$/, ""))
+);
 
 // ── ESLint + Sanz runner setup ────────────────────────────────
 
