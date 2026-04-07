@@ -992,6 +992,20 @@ class SourceCode {
       }
     }
 
+    // CommonJS globals: require, module, exports, __dirname, __filename
+    if (kind === 0 && this._sourceType === 'commonjs') {
+      for (const name of ['require', 'module', 'exports', '__dirname', '__filename']) {
+        if (!set.has(name)) {
+          const globalVar = { name, defs: [], references: [], identifiers: [],
+            scope, eslintUsed: false, writeable: false,
+            eslintImplicitGlobalSetting: 'readonly',
+            isRead: () => false, isWritten: () => false };
+          set.set(name, globalVar);
+          variables.push(globalVar);
+        }
+      }
+    }
+
     // Process /*global X, Y */ and /*globals X: writable */ directive comments.
     // ESLint's scope analysis exposes these via variable.eslintExplicitGlobalComments
     // so rules like no-redeclare can flag double-declarations.
@@ -1009,7 +1023,7 @@ class SourceCode {
           const [rawName, rawValue] = trimmed.split(':').map(s => s.trim());
           const name = rawName;
           if (!name || !/^[$_a-zA-Z][\w$]*$/.test(name)) continue;
-          const valueStr = (rawValue || 'writable').toLowerCase();
+          const valueStr = (rawValue || 'readonly').toLowerCase();
           if (valueStr === 'off') {
             // Remove the global variable so rules don't see it as a global reference.
             if (set.has(name)) {
@@ -1019,13 +1033,15 @@ class SourceCode {
             }
             continue;
           }
+          const isWritable = valueStr === 'writable' || valueStr === 'true' || valueStr === 'writeable';
           if (set.has(name)) {
             const v = set.get(name);
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
             v.eslintExplicitGlobalComments.push(comment);
+            if (isWritable) v.writeable = true;
           } else {
             const globalVar = { name, defs: [], references: [], identifiers: [],
-              scope, eslintUsed: false, writeable: false,
+              scope, eslintUsed: false, writeable: isWritable,
               eslintExplicitGlobalComments: [comment],
               isRead: () => false, isWritten: () => false };
             set.set(name, globalVar);
