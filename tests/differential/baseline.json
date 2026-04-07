@@ -7,7 +7,9 @@
       },
       "runner": {
         "fn": [],
-        "fp": []
+        "fp": [
+          "no-extra-semi:27"
+        ]
       }
     },
     "tests/differential/fixtures/mixed_rules.js": {
@@ -45,7 +47,8 @@
       "runner": {
         "fn": [],
         "fp": [
-          "no-implied-eval:106"
+          "no-implied-eval:106",
+          "no-unreachable:187"
         ]
       }
     }
@@ -79,7 +82,7 @@
     },
     "no-extra-semi": {
       "runner": {
-        "fn": 9,
+        "fn": 5,
         "fp": 1,
         "crash": 0
       },
@@ -469,8 +472,8 @@
     },
     "no-obj-calls": {
       "runner": {
-        "fn": 5,
-        "fp": 2,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -496,7 +499,7 @@
     "no-setter-return": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -613,7 +616,7 @@
     "no-implied-eval": {
       "runner": {
         "fn": 17,
-        "fp": 13,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -665,7 +668,7 @@
     "no-new-wrappers": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -781,8 +784,8 @@
     },
     "no-useless-escape": {
       "runner": {
-        "fn": 3,
-        "fp": 2,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -994,7 +997,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
