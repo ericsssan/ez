@@ -226,7 +226,8 @@ function lint(source, options = {}) {
   if (Array.isArray(source)) {
     const b = loadBinding();
     const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-    return b.lintFiles(source, configBuf);
+    const sizes = options.sizes instanceof Uint32Array ? options.sizes : undefined;
+    return b.lintFiles(source, sizes, configBuf);
   }
   const b = loadBinding();
   const lang = options.lang

@@ -120,7 +120,7 @@ function discoverFiles(pathArg) {
         walk(path.join(p, entry));
       }
     } else if (stat.isFile() && JS_EXTS.has(path.extname(p)) && !p.endsWith(".d.ts") && !p.endsWith(".d.mts") && !p.endsWith(".d.cts")) {
-      results.push(p);
+      results.push({ path: p, size: stat.size });
     }
   }
   walk(pathArg);
@@ -251,11 +251,13 @@ function bufferOffsetToLine(buf, offset) {
   return line;
 }
 
-// Discover files
-const allFiles = [];
+// Discover files — collect {path, size} pairs to avoid re-stat in Zig workers
+const allFileEntries = [];
 for (const p of filePaths) {
-  allFiles.push(...discoverFiles(p));
+  allFileEntries.push(...discoverFiles(p));
 }
+const allFiles = allFileEntries.map(e => e.path);
+const allFileSizes = new Uint32Array(allFileEntries.map(e => Math.min(e.size, 0xFFFFFFFF)));
 
 if (allFiles.length === 0) {
   console.error("error: no JS/TS files found");
@@ -486,7 +488,7 @@ async function main() {
 
   if (useNativeBatch) {
     // ── Native batch path (lintBatch → Zig OS threads) ─────────
-    const batchResults = lintFiles(allFiles, { config: nativeConfig });
+    const batchResults = lintFiles(allFiles, { config: nativeConfig, sizes: allFileSizes });
 
     // Build a file→buffer map only for files that have violations (for offsetToLine).
     // Files with no diags need no I/O.

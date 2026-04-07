@@ -701,17 +701,16 @@ const SourceView = struct { ptr: [*]const u8, len: usize };
 
 const BatchWorkerArgs = struct {
     file_paths: []const []const u8,
-    sources: ?[]const SourceView, // null → workers read files themselves
+    sources: ?[]const SourceView,  // non-null → pre-loaded buffers from JS
+    file_sizes: ?[]const u32,      // non-null → known sizes, skip fstat
     config: ?*const linter_root.config.Config,
     results: []FileRaw,
     out_alloc: std.mem.Allocator,
 };
 
 /// Read a file into allocator-owned memory using libc primitives.
-/// Avoids std.Io abstraction overhead — suitable for background threads
-/// that don't have an Io runtime instance.
-fn readFilePosix(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
-    // Null-terminate path for libc.
+/// known_size: if non-null, skip fstat (caller already has size from stat during discovery).
+fn readFilePosix(path: []const u8, known_size: ?u32, allocator: std.mem.Allocator) ![]u8 {
     const path_z = try allocator.dupeZ(u8, path);
     defer allocator.free(path_z);
 
@@ -719,9 +718,11 @@ fn readFilePosix(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
     if (fd < 0) return error.FileOpenFailed;
     defer _ = std.c.close(fd);
 
-    var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0) return error.FileStatFailed;
-    const size: usize = @intCast(stat.size);
+    const size: usize = if (known_size) |s| @as(usize, s) else blk: {
+        var stat: std.c.Stat = undefined;
+        if (std.c.fstat(fd, &stat) != 0) return error.FileStatFailed;
+        break :blk @intCast(stat.size);
+    };
     if (size == 0) return &.{};
 
     const buf = try allocator.alloc(u8, size);
@@ -748,7 +749,8 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
             const sv = srcs[i];
             break :blk sv.ptr[0..sv.len];
         } else blk: {
-            break :blk readFilePosix(file_path, parse_arena.allocator()) catch {
+            const known = if (args.file_sizes) |sz| sz[i] else null;
+            break :blk readFilePosix(file_path, known, parse_arena.allocator()) catch {
                 args.results[i] = .{ .file_path = file_path, .diags = &.{}, .had_error = true };
                 continue;
             };
@@ -864,6 +866,7 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         var args = BatchWorkerArgs{
             .file_paths = file_paths,
             .sources    = sources,
+            .file_sizes = null, // lintBatch has no sizes
             .config     = config_ptr,
             .results    = results,
             .out_alloc  = out_arenas[0].allocator(),
@@ -882,6 +885,7 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
             worker_args[t] = .{
                 .file_paths = file_paths[start..end],
                 .sources    = sources[start..end],
+                .file_sizes = null, // lintBatch has no sizes
                 .config     = config_ptr,
                 .results    = results[start..end],
                 .out_alloc  = out_arenas[t].allocator(),
@@ -929,17 +933,17 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     return js_result;
 }
 
-// ── lintFiles(paths[], config?) → {file, diags[]}[] ─────────────────────────
+// ── lintFiles(paths[], sizes?, config?) → {file, diags[]}[] ─────────────────
 //
-// Like lintBatch but workers read files from disk themselves — no JS-side
-// fs.readFileSync loop. Eliminates serial I/O bottleneck before Zig starts.
+// Workers read files from disk. Optional sizes[] (Uint32Array) skips fstat per
+// file — callers that already stat'd files during discovery pass sizes here.
 
 fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 2;
-    var argv: [2]n.Value = undefined;
+    var argc: usize = 3;
+    var argv: [3]n.Value = undefined;
     if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
     if (argc < 1) {
-        _ = n.napi_throw_error(env, null, "lintFiles(paths[], config?): 1 arg required");
+        _ = n.napi_throw_error(env, null, "lintFiles(paths[], sizes?, config?): 1 arg required");
         return null;
     }
 
@@ -952,9 +956,22 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         return empty_result;
     }
 
-    var config_val: ?linter_root.config.Config = null;
+    // Optional sizes[] (arg 2): Uint32Array from JS discovery stat calls.
+    var file_sizes: ?[]const u32 = null;
     if (argc >= 2) {
-        if (getOptionalConfigBytes(env, argv[1])) |bytes| {
+        var sizes_data: ?*anyopaque = null;
+        var sizes_len: usize = 0;
+        if (n.napi_get_typedarray_info(env, argv[1], null, &sizes_len, &sizes_data, null, null) == n.OK) {
+            if (sizes_data != null and sizes_len == file_count) {
+                file_sizes = @as([*]const u32, @ptrCast(@alignCast(sizes_data)))[0..sizes_len];
+            }
+        }
+    }
+
+    // Optional config (arg 3).
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 3) {
+        if (getOptionalConfigBytes(env, argv[2])) |bytes| {
             config_val = configFromSeverityBytes(bytes);
         }
     }
@@ -989,7 +1006,8 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     if (thread_count <= 1) {
         var args = BatchWorkerArgs{
             .file_paths = file_paths,
-            .sources    = null, // workers read files
+            .sources    = null,
+            .file_sizes = file_sizes,
             .config     = config_ptr,
             .results    = results,
             .out_alloc  = out_arenas[0].allocator(),
@@ -1007,7 +1025,8 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
             const end = @min(start + chunk_size, @as(usize, file_count));
             worker_args[t] = .{
                 .file_paths = file_paths[start..end],
-                .sources    = null, // workers read files
+                .sources    = null,
+                .file_sizes = if (file_sizes) |sz| sz[start..end] else null,
                 .config     = config_ptr,
                 .results    = results[start..end],
                 .out_alloc  = out_arenas[t].allocator(),
