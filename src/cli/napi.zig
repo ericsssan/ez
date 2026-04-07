@@ -146,6 +146,12 @@ fn parseImpl(
     );
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
+    const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
+
+    // Compute line starts (UTF-8 byte offsets → convert to UTF-16).
+    const line_starts = try js_buffer.computeLineStarts(source, alloc);
+    _ = js_buffer.convertSpansToUtf16(source, line_starts);
+    const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
@@ -167,6 +173,9 @@ fn parseImpl(
         .tok_ends_offset = tok_ends_offset,
         .node_start_pos_offset = node_start_pos_offset,
         .node_end_pos_offset = node_end_pos_offset,
+        .line_starts_offset = line_starts_offset,
+        .line_starts_count = @intCast(line_starts.len),
+        .max_tok_offset = max_tok_offset,
     });
 
     return backing.bytesUsed();
@@ -324,6 +333,11 @@ fn parseAndLintImpl(
     );
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
+    const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
+
+    const line_starts = try js_buffer.computeLineStarts(source, alloc);
+    _ = js_buffer.convertSpansToUtf16(source, line_starts);
+    const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start        = if (bom.has_bom) source_start + 3 else source_start,
@@ -344,6 +358,9 @@ fn parseAndLintImpl(
         .tok_ends_offset        = tok_ends_offset,
         .node_start_pos_offset  = node_start_pos_offset,
         .node_end_pos_offset    = node_end_pos_offset,
+        .line_starts_offset     = line_starts_offset,
+        .line_starts_count      = @intCast(line_starts.len),
+        .max_tok_offset         = max_tok_offset,
     });
 
     return backing.bytesUsed();

@@ -85,6 +85,10 @@ const H = {
   // v8: pre-computed node positions (UTF-16)
   NODE_START_POS_OFFSET: 108,
   NODE_END_POS_OFFSET: 112,
+  // v9: line starts + maxTok from Zig
+  LINE_STARTS_OFFSET: 116,
+  LINE_STARTS_COUNT: 120,
+  MAX_TOK_OFFSET: 124,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -209,6 +213,15 @@ class AstView {
     const nepOff = dv.getUint32(H.NODE_END_POS_OFFSET, true);
     this._nodeStartPosArr = nspOff > 0 ? new Uint32Array(buffer, nspOff, this.nodeCount) : null;
     this._nodeEndPosArr = nepOff > 0 ? new Uint32Array(buffer, nepOff, this.nodeCount) : null;
+
+    // Line starts (v9 — computed in Zig, UTF-16 positions)
+    const lsCount = dv.getUint32(H.LINE_STARTS_COUNT, true);
+    const lsOff = dv.getUint32(H.LINE_STARTS_OFFSET, true);
+    this._lineStartsArr = (lsCount > 0 && lsOff > 0) ? new Uint32Array(buffer, lsOff, lsCount) : null;
+
+    // Max token per subtree (v9 — pre-computed in Zig)
+    const mtOff = dv.getUint32(H.MAX_TOK_OFFSET, true);
+    this._maxTokFromBuffer = mtOff > 0 ? new Uint32Array(buffer, mtOff, this.nodeCount) : null;
 
     // Source text (UTF-8 in buffer, decoded lazily)
     this._sourceBytes = new Uint8Array(buffer, sourceOff, this.sourceLen);
@@ -421,6 +434,12 @@ class AstView {
    */
   _lineStarts() {
     if (this._ls !== undefined) return this._ls;
+    // Use Zig-computed line starts from buffer if available (O(1)).
+    if (this._lineStartsArr) {
+      this._ls = this._lineStartsArr;
+      return this._ls;
+    }
+    // Fallback: scan source for newlines (O(n)).
     const src = this.source;
     const ls = [0];
     for (let i = 0; i < src.length; i++) {
@@ -709,6 +728,12 @@ class AstView {
   /** Ensure _maxTokCache is populated (for collectSubtreeTokens). */
   _ensureMaxTokCache() {
     if (this._maxTokCache) return;
+    // Use Zig-computed maxTok from buffer if available (O(1)).
+    if (this._maxTokFromBuffer) {
+      this._maxTokCache = this._maxTokFromBuffer;
+      return;
+    }
+    // Fallback: propagate through parent pointers (O(n)).
     const n = this.nodeCount;
     const pd = this._parentData;
     const mt = this._mainTokens;

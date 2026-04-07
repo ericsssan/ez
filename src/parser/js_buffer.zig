@@ -61,10 +61,15 @@ pub const BufferHeader = extern struct {
     // Eliminates JS-side _computeAllEndPos() and _nodeStartPos().
     node_start_pos_offset: u32 = 0,
     node_end_pos_offset: u32 = 0,
+    // Added in v9: line starts (UTF-16) + maxTok per node.
+    // Eliminates JS-side _lineStarts() scan and _ensureMaxTokCache() propagation.
+    line_starts_offset: u32 = 0,
+    line_starts_count: u32 = 0,
+    max_tok_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 116);
+    std.debug.assert(@sizeOf(BufferHeader) == 128);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -309,6 +314,9 @@ pub const HeaderInfo = struct {
     tok_ends_offset: u32 = 0,
     node_start_pos_offset: u32 = 0,
     node_end_pos_offset: u32 = 0,
+    line_starts_offset: u32 = 0,
+    line_starts_count: u32 = 0,
+    max_tok_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -348,6 +356,9 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .tok_ends_offset = info.tok_ends_offset,
         .node_start_pos_offset = info.node_start_pos_offset,
         .node_end_pos_offset = info.node_end_pos_offset,
+        .line_starts_offset = info.line_starts_offset,
+        .line_starts_count = info.line_starts_count,
+        .max_tok_offset = info.max_tok_offset,
     };
 }
 
@@ -449,14 +460,13 @@ pub fn computeNodePositions(
     tok_ends: []const u32,
     node_count: u32,
     token_count: u32,
-) !struct { starts: []u32, ends: []u32 } {
+) !struct { starts: []u32, ends: []u32, max_tok: []u32 } {
     const n: usize = node_count;
     const tc: usize = token_count;
     const NONE: u32 = 0xFFFFFFFF;
 
     // maxTok[i] = highest main_token index in node i's subtree
     const maxTok = try alloc.alloc(u32, n);
-    defer alloc.free(maxTok);
     @memcpy(maxTok, main_tokens[0..n]);
     for (1..n) |i| {
         const p = parent_indices[i];
@@ -523,6 +533,31 @@ pub fn computeNodePositions(
             continue;
         }
 
+        // Determine if this node is a statement/declaration (owns trailing `;`)
+        // vs an expression/identifier (should NOT include trailing operators).
+        const is_stmt = switch (tag) {
+            // Statements that own their terminating `;`
+            .expression_stmt, .var_decl, .empty_stmt, .debugger_stmt,
+            .return_stmt, .throw_stmt, .break_stmt, .continue_stmt,
+            .do_while_stmt, .import_decl, .export_named,
+            .export_default_expr, .export_default_fn, .export_default_class,
+            .property_def, .computed_property_def,
+            .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
+            // Block-level constructs that include closing `}` + possible `;`
+            .root, .block_stmt, .class_decl, .class_expr,
+            .fn_decl, .fn_expr, .async_fn_decl, .async_fn_expr,
+            .generator_fn_decl, .generator_fn_expr,
+            .async_generator_fn_decl, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn,
+            .if_stmt, .if_else_stmt, .while_stmt, .for_stmt,
+            .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
+            .switch_stmt, .try_stmt, .with_stmt, .labeled_stmt,
+            .catch_clause, .switch_case, .switch_default,
+            .static_block, .method_def, .computed_method_def,
+            => true,
+            else => false,
+        };
+
         const start_p = tok_starts[minTok[i]];
         var j = base + 1;
         while (j < tc) {
@@ -538,17 +573,39 @@ pub fn computeNodePositions(
                 } else {
                     break;
                 }
-            } else {
-                // Non-bracket token (;, etc.) — include it
+            } else if (is_stmt) {
+                // Statement/declaration: include trailing `;` and other tokens
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
+            } else {
+                // Expression/identifier: stop at non-bracket tokens
+                break;
             }
             j += 1;
         }
         node_ends[i] = ext_end;
     }
 
-    return .{ .starts = node_starts, .ends = node_ends };
+    return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok };
+}
+
+/// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).
+/// Line 1 starts at offset 0. Each `\n` starts a new line.
+pub fn computeLineStarts(source: []const u8, alloc: std.mem.Allocator) ![]u32 {
+    // Count newlines
+    var count: u32 = 1; // line 1 always at offset 0
+    for (source) |c| { if (c == '\n') count += 1; }
+
+    const starts = try alloc.alloc(u32, count);
+    starts[0] = 0;
+    var idx: u32 = 1;
+    for (source, 0..) |c, i| {
+        if (c == '\n' and idx < count) {
+            starts[idx] = @intCast(i + 1);
+            idx += 1;
+        }
+    }
+    return starts[0..idx];
 }
 
 // ── BOM Handling ─────────────────────────────────────────────────
