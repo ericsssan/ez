@@ -98,11 +98,14 @@ fn stmtContainsYield(node: NodeIndex, ctx: *const LintContext) bool {
     // Direct yield.
     if (tag == .yield_expr or tag == .yield_delegate) return true;
 
-    // Don't recurse into nested functions.
+    // Don't recurse into nested functions or class bodies (their lhs/rhs
+    // are extra-data indices, not child node indices — misinterpretation
+    // causes OOB access in ReleaseFast).
     switch (tag) {
         .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
         .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
         .arrow_fn, .async_arrow_fn,
+        .class_decl, .class_expr, .export_default_class,
         => return false,
         else => {},
     }

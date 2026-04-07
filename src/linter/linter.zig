@@ -182,6 +182,10 @@ pub fn lint(
     semantic: *const SemanticResult,
     config: ?*const Config,
 ) ![]const LintDiagnostic {
+    // Keep safety checks in ReleaseFast — prevents Zig optimizer from generating
+    // illegal instructions on edge-case ASTs (e.g. generator+class+yield combos).
+    @setRuntimeSafety(true);
+
     var diagnostics: std.ArrayList(LintDiagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
@@ -193,9 +197,6 @@ pub fn lint(
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────
-    //
-    // For each node, look up the 1–3 rules that care about its tag
-    // and skip the other ~210.  Typical speedup: ~30–80× vs inline-for.
     const node_count: u32 = @intCast(tree.nodes.len);
     var i: u32 = 0;
     while (i < node_count) : (i += 1) {

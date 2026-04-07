@@ -85,10 +85,13 @@ pub fn build(b: *std.Build) void {
     // ── NAPI shared library (JS plugin support) ────────────
     // Root is src/napi_entry.zig (in src/) so that cli/napi.zig's relative
     // imports (../parser/root.zig) stay within the module path (src/).
+    // ReleaseSafe: same optimizations as ReleaseFast but keeps bounds/overflow
+    // checks. Prevents SIGILL from lint rules accessing invalid node indices on
+    // edge-case ASTs (generator+class+yield combos, TS syntax, etc.).
     const napi_mod = b.createModule(.{
         .root_source_file = b.path("src/napi_entry.zig"),
         .target = target,
-        .optimize = .ReleaseFast,
+        .optimize = .ReleaseSafe,
     });
     const napi_lib = b.addLibrary(.{
         .name = "sanz",
