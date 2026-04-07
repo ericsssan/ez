@@ -547,6 +547,35 @@ pub fn computeNodePositions(
     const node_starts = try alloc.alloc(u32, n);
     for (node_starts, minTok[0..n]) |*ns, mt| ns.* = tok_starts[mt];
 
+    // Adjust MethodDefinition start to include get/set/static/async keywords.
+    // These modifier tokens precede the method name but aren't any child's main token.
+    // Adjust MethodDefinition/PropertyDefinition start to include modifier keywords.
+    // get/set/static/async/* precede the method name but aren't any child's main token.
+    // Also covers getter_def, setter_def, constructor_def and computed_ variants.
+    for (0..n) |i| {
+        const tag = node_tags[i];
+        switch (tag) {
+            .method_def, .computed_method_def,
+            .getter_def, .computed_getter_def,
+            .setter_def, .computed_setter_def,
+            .constructor_def,
+            .property_def, .computed_property_def,
+            => {
+                var t = minTok[i];
+                while (t > 0) {
+                    const pt = tok_tags[t - 1];
+                    if (pt == .kw_get or pt == .kw_set or pt == .kw_static or
+                        pt == .kw_async or pt == .asterisk)
+                    {
+                        t -= 1;
+                    } else break;
+                }
+                if (t != minTok[i]) node_starts[i] = tok_starts[t];
+            },
+            else => {},
+        }
+    }
+
     // Bracket matching: closeOpen[k] = opener token index for closing bracket k
     const closeOpen = try alloc.alloc(u32, tc);
     defer alloc.free(closeOpen);
@@ -597,7 +626,11 @@ pub fn computeNodePositions(
         // MethodDefinition / StaticBlock: extend through closing brackets but
         // stop including non-bracket tokens after the outermost `}`.
         // In ESTree, the `;` after `a() {}` is NOT part of the MethodDefinition.
-        if (tag == .method_def or tag == .computed_method_def or tag == .static_block) {
+        if (tag == .method_def or tag == .computed_method_def or
+            tag == .getter_def or tag == .computed_getter_def or
+            tag == .setter_def or tag == .computed_setter_def or
+            tag == .constructor_def or tag == .static_block)
+        {
             const sp = tok_starts[minTok[i]];
             var found_outer_brace = false;
             var j2 = base + 1;
