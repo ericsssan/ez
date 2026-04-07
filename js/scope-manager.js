@@ -223,17 +223,6 @@ class ScopeBuilder {
     }
     const variables = Array.from(varMap.values());
 
-    const references = [];
-    const through = [];
-    const refIds = this._scopeRefIndex[scopeId];
-    if (refIds) {
-      for (let j = 0; j < refIds.length; j++) {
-        const ref = this._buildReference(refIds[j]);
-        references.push(ref);
-        if (!ref.resolved) through.push(ref);
-      }
-    }
-
     const upper = parentId === NONE32 ? null : this._buildScope(parentId);
     const set = new Map(varMap);
 
@@ -242,15 +231,72 @@ class ScopeBuilder {
       ? nodeView(ast, scopeNodeIdx) : null;
 
     const isVarScope = kind === 0 || kind === 1 || kind === 2;
+
+    // Lazy references / through / childScopes — only materialise when accessed.
+    const refIds = this._scopeRefIndex[scopeId] || [];
+    let _references = null;
+    let _through = null;
+    let _childScopesBuilt = false;
     const childScopes = [];
+
+    const self = this;
+
+    const ensureChildren = () => {
+      if (_childScopesBuilt) return;
+      _childScopesBuilt = true;
+      const childIds = self._scopeChildIndex[scopeId];
+      if (childIds) {
+        for (let j = 0; j < childIds.length; j++) {
+          childScopes.push(self._buildScope(childIds[j]));
+        }
+      }
+    };
+
+    const getReferences = () => {
+      if (_references !== null) return _references;
+      _references = [];
+      for (let j = 0; j < refIds.length; j++) {
+        _references.push(self._buildReference(refIds[j]));
+      }
+      return _references;
+    };
+
+    const getThrough = () => {
+      if (_through !== null) return _through;
+      _through = [];
+      // Direct unresolved refs in this scope.
+      const refs = getReferences();
+      for (let j = 0; j < refs.length; j++) {
+        if (!refs[j].resolved) _through.push(refs[j]);
+      }
+      // Propagate unresolved refs from children.
+      ensureChildren();
+      for (let c = 0; c < childScopes.length; c++) {
+        const childThrough = childScopes[c].through;
+        for (let j = 0; j < childThrough.length; j++) {
+          const ref = childThrough[j];
+          if (ref.identifier?.type === 'PrivateIdentifier') continue;
+          const name = ref.identifier?.name;
+          const variable = name ? set.get(name) : undefined;
+          if (variable) {
+            variable.references.push(ref);
+            ref.resolved = variable;
+          } else {
+            _through.push(ref);
+          }
+        }
+      }
+      return _through;
+    };
+
     const scope = {
       type: KIND_NAMES[kind] || 'block',
       isStrict,
       variables,
       set,
-      references,
-      through,
-      childScopes,
+      get references() { return getReferences(); },
+      get through()    { return getThrough(); },
+      get childScopes() { ensureChildren(); return childScopes; },
       implicit: { variables: [] },
       block,
       upper,
@@ -284,27 +330,6 @@ class ScopeBuilder {
 
     this._scopeCache.set(scopeId, scope);
 
-    const childIds = this._scopeChildIndex[scopeId];
-    if (childIds) {
-      for (let j = 0; j < childIds.length; j++) {
-        childScopes.push(this._buildScope(childIds[j]));
-      }
-    }
-
-    for (const child of childScopes) {
-      for (const ref of child.through) {
-        if (ref.identifier?.type === 'PrivateIdentifier') continue;
-        const name = ref.identifier?.name;
-        const variable = name ? set.get(name) : undefined;
-        if (variable) {
-          variable.references.push(ref);
-          ref.resolved = variable;
-        } else {
-          through.push(ref);
-        }
-      }
-    }
-
     return scope;
   }
 
@@ -321,14 +346,8 @@ class ScopeBuilder {
     const is_written= (flags16 & 0x400) !== 0;
 
     this._ensureScopeIndex();
-    const references = [];
-    {
-      const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
-      const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
-      for (let j = refStart; j < refEnd; j++) {
-        references.push(this._buildReference(j));
-      }
-    }
+    const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
+    const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
 
     const declNodeIdx = ast._symDeclNodes[symId];
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
@@ -349,32 +368,48 @@ class ScopeBuilder {
     const scope = (symScopeId !== undefined && symScopeId !== NONE32)
       ? this._buildThinScope(symScopeId) : this._stubScope();
 
+    // Compute whether there's a synthetic init-write ref (let/const with initializer)
+    let initWriteRef = null;
     if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && declNodeIdx !== NONE32 && ast._parentData) {
       const declaratorIdx = ast._parentData[declNodeIdx];
       if (declaratorIdx !== undefined && declaratorIdx !== NONE && declaratorIdx !== NONE32 && declaratorIdx < ast.nodeCount) {
         const initNodeIdx = ast.nodeRhs(declaratorIdx);
         if (initNodeIdx !== NONE32 && initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
-          const thin = this._buildThinVariable(symId);
-          references.unshift({
-            identifier: declNode,
-            from: scope,
-            resolved: thin,
-            writeExpr: nodeView(ast, initNodeIdx),
-            init: true,
-            isWrite: () => true,
-            isRead: () => false,
-            isWriteOnly: () => true,
-            isReadOnly: () => false,
-            isReadWrite: () => false,
-          });
+          initWriteRef = { declNode, scope, initNodeIdx };
         }
       }
     }
 
+    let _references = null;
+    const self = this;
+    const getReferences = () => {
+      if (_references !== null) return _references;
+      _references = [];
+      for (let j = refStart; j < refEnd; j++) {
+        _references.push(self._buildReference(j));
+      }
+      if (initWriteRef !== null) {
+        const thin = self._buildThinVariable(symId);
+        _references.unshift({
+          identifier: initWriteRef.declNode,
+          from: initWriteRef.scope,
+          resolved: thin,
+          writeExpr: nodeView(ast, initWriteRef.initNodeIdx),
+          init: true,
+          isWrite: () => true,
+          isRead: () => false,
+          isWriteOnly: () => true,
+          isReadOnly: () => false,
+          isReadWrite: () => false,
+        });
+      }
+      return _references;
+    };
+
     return {
       name,
       defs,
-      references,
+      get references() { return getReferences(); },
       scope,
       identifiers: declNode ? [declNode] : [],
       eslintUsed: false,
