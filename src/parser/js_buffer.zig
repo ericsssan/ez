@@ -55,10 +55,13 @@ pub const BufferHeader = extern struct {
     comment_starts_offset: u32 = 0,
     comment_ends_offset: u32 = 0,
     comment_kinds_offset: u32 = 0,
+    // Added in v7: token end positions (UTF-16), one per token.
+    // Eliminates JS-side effectiveTokEnd() computation.
+    tok_ends_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 104);
+    std.debug.assert(@sizeOf(BufferHeader) == 108);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -300,6 +303,7 @@ pub const HeaderInfo = struct {
     comment_starts_offset: u32 = 0,
     comment_ends_offset: u32 = 0,
     comment_kinds_offset: u32 = 0,
+    tok_ends_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -336,6 +340,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .comment_starts_offset = info.comment_starts_offset,
         .comment_ends_offset = info.comment_ends_offset,
         .comment_kinds_offset = info.comment_kinds_offset,
+        .tok_ends_offset = info.tok_ends_offset,
     };
 }
 

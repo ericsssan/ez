@@ -118,9 +118,16 @@ fn parseImpl(
         comment_kinds_offset = js_buffer.ptrOffsetPub(buf_ptr, ck.ptr);
     }
 
+    // Compute token end positions (UTF-8) before converting starts to UTF-16.
+    const tok_starts = tokens.slice().items(.start);
+    const tok_lens = tokens.slice().items(.len);
+    const tok_ends = try alloc.alloc(u32, tok_starts.len);
+    for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
+    _ = js_buffer.convertSpansToUtf16(source, tok_ends);
+    const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
+
     // Convert token start offsets from UTF-8 bytes to UTF-16 code units.
     // Must happen AFTER semantic analysis which uses byte offsets for tokenText().
-    const tok_starts = tokens.slice().items(.start);
     const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
 
     // Write the header at offset 0.
@@ -140,6 +147,7 @@ fn parseImpl(
         .comment_starts_offset = comment_starts_offset,
         .comment_ends_offset = comment_ends_offset,
         .comment_kinds_offset = comment_kinds_offset,
+        .tok_ends_offset = tok_ends_offset,
     });
 
     return backing.bytesUsed();
@@ -270,8 +278,15 @@ fn parseAndLintImpl(
         comment_kinds_offset  = js_buffer.ptrOffsetPub(buf_ptr, ck.ptr);
     }
 
-    // Convert token starts UTF-8 → UTF-16 (AFTER lint which needs UTF-8).
+    // Compute token end positions (UTF-8) before converting starts to UTF-16.
     const tok_starts = tokens.slice().items(.start);
+    const tok_lens = tokens.slice().items(.len);
+    const tok_ends = try alloc.alloc(u32, tok_starts.len);
+    for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
+    _ = js_buffer.convertSpansToUtf16(source, tok_ends);
+    const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
+
+    // Convert token starts UTF-8 → UTF-16 (AFTER lint which needs UTF-8).
     const utf16_len = js_buffer.convertSpansToUtf16(source, tok_starts);
 
     js_buffer.writeHeader(buf_ptr, &tree, .{
@@ -290,6 +305,7 @@ fn parseAndLintImpl(
         .comment_starts_offset  = comment_starts_offset,
         .comment_ends_offset    = comment_ends_offset,
         .comment_kinds_offset   = comment_kinds_offset,
+        .tok_ends_offset        = tok_ends_offset,
     });
 
     return backing.bytesUsed();
@@ -970,15 +986,13 @@ fn napiReadFileToBuf(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         return null;
     }
 
-    // Decode path string into a small stack/temp allocation.
-    var path_len: usize = 0;
-    _ = n.napi_get_value_string_utf8(env, argv[0], null, 0, &path_len);
-    var path_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer path_arena.deinit();
-    const path_buf_mem = path_arena.allocator().alloc(u8, path_len + 1) catch return null;
+    // Decode path string into a stack buffer (avoids mmap/munmap per call).
+    var path_stack: [4096]u8 = undefined;
     var written: usize = 0;
-    _ = n.napi_get_value_string_utf8(env, argv[0], path_buf_mem.ptr, path_len + 1, &written);
-    const path_z: [:0]const u8 = path_buf_mem[0..written :0];
+    _ = n.napi_get_value_string_utf8(env, argv[0], &path_stack, path_stack.len, &written);
+    if (written == 0 or written >= path_stack.len) return null;
+    path_stack[written] = 0;
+    const path_z: [:0]const u8 = path_stack[0..written :0];
 
     // Get output ArrayBuffer.
     var out_data: ?*anyopaque = null;

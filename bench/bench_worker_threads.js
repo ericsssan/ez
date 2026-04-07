@@ -66,8 +66,17 @@ function discoverFiles(dir, max) {
 
 const searchDirs = [
   path.join(ROOT, "tests/conformance/test262/test/language"),
-  path.join(ROOT, "tests/conformance/babel/packages/babel-parser/test/fixtures"),
+  path.join(ROOT, "tests/conformance/test262/test/built-ins"),
+  path.join(ROOT, "tests/conformance/test262/test/annexB"),
+  path.join(ROOT, "tests/conformance/test262/test/staging"),
+  path.join(ROOT, "tests/conformance/test262/test/intl402"),
+  path.join(ROOT, "tests/conformance/test262-parser-tests"),
+  path.join(ROOT, "tests/conformance/babel/packages"),
   path.join(ROOT, "tests/conformance/typescript/tests/cases/conformance"),
+  path.join(ROOT, "tests/conformance/typescript/tests/cases/compiler"),
+  path.join(ROOT, "tests/conformance/typescript/tests/cases/fourslash"),
+  path.join(ROOT, "tests/conformance/eslint"),
+  path.join(ROOT, "js/node_modules"),
 ];
 
 console.log("Discovering files...");
@@ -157,6 +166,7 @@ function runStream(files, threads) {
     function spawnOne(idx) {
       const worker = new Worker(LINT_WORKER, {
         workerData: { pluginNames, ruleFilters, ruleConfig, applyFix: false, typeAware: false },
+        execArgv: [],
       });
       workers[idx] = worker;
       worker.on("message", (msg) => {
@@ -192,10 +202,6 @@ function runStream(files, threads) {
 
 // ── benchmark ────────────────────────────────────────────────────
 async function bench(threads) {
-  // Warmup: small slice to force JIT compilation before timing
-  const warmupFiles = allFiles.slice(0, Math.min(200, allFiles.length));
-  await runStream(warmupFiles, Math.min(threads, warmupFiles.length));
-
   const t0 = performance.now();
   const { violations, errors } = await runStream(allFiles, threads);
   const elapsed = (performance.now() - t0) / 1000;
@@ -217,6 +223,7 @@ async function main() {
   console.log(`${"threads".padEnd(8)} ${"time(s)".padEnd(10)} ${"files/s".padEnd(10)} ${"MB/s".padEnd(8)} violations`);
   console.log("─".repeat(55));
 
+  const totalStart = performance.now();
   const results = [];
   for (const t of validThreads) {
     process.stdout.write(`${String(t).padEnd(8)} `);
@@ -230,6 +237,7 @@ async function main() {
       console.log(`ERROR: ${e.message}`);
     }
   }
+  const totalElapsed = ((performance.now() - totalStart) / 1000).toFixed(1);
 
   console.log();
   if (results.length >= 2) {
@@ -243,6 +251,7 @@ async function main() {
       console.log(`Peak:    ${best.filesPerSec.toLocaleString()} files/s at ${best.mbPerSec} MB/s`);
     }
   }
+  console.log(`Total:   ${totalElapsed}s (all runs including warmup)`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

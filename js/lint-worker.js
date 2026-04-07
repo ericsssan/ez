@@ -13,7 +13,7 @@
 
 const { workerData, parentPort } = require("worker_threads");
 const fs = require("fs");
-const { parseAndLintSource, parseSource, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parse, parseAndLint, parseAndLintSource, parseSource, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -60,7 +60,7 @@ function applyFixes(src, fixes) {
   return result + src.slice(lastIndex);
 }
 
-/** Convert a UTF-8 byte offset to a 1-based line number. */
+/** Convert a UTF-8 byte offset to a 1-based line number (used only in --fix mode). */
 function offsetToLine(src, offset) {
   let line = 1;
   const end = Math.min(offset, src.length);
@@ -71,6 +71,55 @@ function offsetToLine(src, offset) {
 }
 
 function lintFile(file) {
+  // --fix mode needs the source string for patch application.
+  // Fast path (no fix): Zig reads the file directly — no readFileSync, no TextEncoder.
+  if (applyFix) {
+    return lintFileWithSrc(file);
+  }
+
+  let ast;
+  let nativeViolations = [];
+  if (hasNativeRules && nativeConfig) {
+    try {
+      const result = parseAndLint(file, { config: nativeConfig, noPrivateCopy: true });
+      ast = result.ast;
+      nativeViolations = result.diags.map(d => ({
+        ruleId: d.ruleName,
+        severity: d.severity === 0 ? 2 : 1,
+        message: d.message,
+        loc: { start: { line: d.line, column: d.col } },
+      }));
+    } catch (e) {
+      return { file, parseError: e.message };
+    }
+  } else {
+    try {
+      ast = parse(file, { noPrivateCopy: true });
+    } catch (e) {
+      return { file, parseError: e.message };
+    }
+  }
+
+  // ── JS-only rules via runPlugins ────────────────────────────────
+  let jsReports = [];
+  if (jsOnlyPlugins.length > 0) {
+    try {
+      jsReports = runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames, ruleConfig, typeAware });
+    } catch (e) {
+      return { file, pluginError: e.message };
+    }
+  }
+
+  const violations = [
+    ...nativeViolations,
+    ...jsReports.filter(r => !r.message.startsWith("Plugin error:")),
+  ];
+
+  return { file, violations, fixed: false };
+}
+
+// Slow path for --fix: needs source string for patch application.
+function lintFileWithSrc(file) {
   let src;
   try {
     src = fs.readFileSync(file, "utf8");
@@ -78,7 +127,6 @@ function lintFile(file) {
     return { file, readError: e.message };
   }
 
-  // ── Native rules via parseAndLint (single parse+lint pass) ──────
   let ast;
   let nativeViolations = [];
   if (hasNativeRules && nativeConfig) {
@@ -102,7 +150,6 @@ function lintFile(file) {
     }
   }
 
-  // ── JS-only rules via runPlugins ────────────────────────────────
   let jsReports = [];
   if (jsOnlyPlugins.length > 0) {
     try {
@@ -118,17 +165,15 @@ function lintFile(file) {
   ];
 
   let fixed = false;
-  if (applyFix) {
-    const fixes = violations.flatMap(r => r.fix || []);
-    if (fixes.length > 0) {
-      const patched = applyFixes(src, fixes);
-      if (patched !== src) {
-        try {
-          fs.writeFileSync(file, patched, "utf8");
-          fixed = true;
-        } catch (e) {
-          return { file, violations, writeError: e.message };
-        }
+  const fixes = violations.flatMap(r => r.fix || []);
+  if (fixes.length > 0) {
+    const patched = applyFixes(src, fixes);
+    if (patched !== src) {
+      try {
+        fs.writeFileSync(file, patched, "utf8");
+        fixed = true;
+      } catch (e) {
+        return { file, violations, writeError: e.message };
       }
     }
   }

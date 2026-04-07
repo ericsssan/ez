@@ -80,6 +80,8 @@ const H = {
   COMMENT_STARTS_OFFSET: 92,
   COMMENT_ENDS_OFFSET: 96,
   COMMENT_KINDS_OFFSET: 100,
+  // v7: token end positions (UTF-16)
+  TOK_ENDS_OFFSET: 104,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -196,6 +198,8 @@ class AstView {
     // Token SoA arrays
     this._tokTags = new Uint8Array(buffer, tokTagsOff, this.tokenCount);
     this._tokStarts = new Uint32Array(buffer, tokStartsOff, this.tokenCount);
+    const tokEndsOff = dv.getUint32(H.TOK_ENDS_OFFSET, true);
+    this._tokEnds = tokEndsOff > 0 ? new Uint32Array(buffer, tokEndsOff, this.tokenCount) : null;
 
     // Source text (UTF-8 in buffer, decoded lazily)
     this._sourceBytes = new Uint8Array(buffer, sourceOff, this.sourceLen);
@@ -777,36 +781,8 @@ class AstView {
     const isMainTok = new Uint8Array(tc);
     for (let i = 0; i < n; i++) isMainTok[mt[i]] = 1;
 
-    // Comment positions for boundary-aware token end computation
-    const commentStarts = this._commentStarts;
-    const commentCount = this._commentCount || 0;
-
-    /**
-     * Compute the effective end of token j: trim trailing whitespace from the
-     * gap before the next token, but stop at comment boundaries.
-     * Without this, trimming from the next token's start position walks backwards
-     * through comment text, making the token appear to extend into the comment.
-     */
-    const effectiveTokEnd = (j) => {
-      const tStart = tokStarts[j];
-      let tEnd = j + 1 < tc ? tokStarts[j + 1] : src.length;
-      // Clamp to first comment that starts after this token
-      if (commentCount > 0) {
-        let lo = 0, hi = commentCount;
-        while (lo < hi) { const m = (lo + hi) >> 1; if (commentStarts[m] <= tStart) lo = m + 1; else hi = m; }
-        if (lo < commentCount && commentStarts[lo] < tEnd) tEnd = commentStarts[lo];
-      }
-      // Trim trailing ASCII whitespace (fast path covers most cases)
-      while (tEnd > tStart && src.charCodeAt(tEnd - 1) <= 32) tEnd--;
-      // Also trim trailing Unicode whitespace (e.g. U+3000 ideographic space, U+00A0 NBSP)
-      // that JS's trimEnd() recognizes but our <= 32 check misses. Use JS slice + trimEnd
-      // to get the correctly-trimmed boundary without a per-character lookup table.
-      if (tEnd > tStart && src.charCodeAt(tEnd - 1) > 32) {
-        const trimmed = src.slice(tStart, tEnd).trimEnd();
-        if (trimmed.length < tEnd - tStart) tEnd = tStart + trimmed.length;
-      }
-      return tEnd;
-    };
+    const tokEnds = this._tokEnds;
+    const effectiveTokEnd = (j) => tokEnds[j];
 
     // Compute endPos: extend beyond maxTok to include trailing ; and matched closing brackets
     const nodeTags = this._nodeTags;

@@ -46,7 +46,7 @@ function loadBinding() {
 // ── Buffer management ────────────────────────────────────────────
 
 const DEFAULT_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
-const HEADER_SIZE = 104; // 26 fields × 4 bytes
+const HEADER_SIZE = 108; // 27 fields × 4 bytes
 const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 
 let sharedBuffer = null;
@@ -194,7 +194,15 @@ function parse(filePath, options = {}) {
     throw new Error(`sanz: parse failed: ${filePath}`);
   }
 
-  // Same private-buffer copy logic as parse().
+  getTagNames();
+
+  // noPrivateCopy: caller guarantees it will not hold the AstView past the next
+  // parse/parseAndLint call on this module instance (safe in single-threaded workers
+  // that process files sequentially). Skips the buffer copy — ~25% faster.
+  if (options.noPrivateCopy) {
+    return new AstView(buf);
+  }
+
   const dv0 = new DataView(buf);
   const totalUsed = dv0.getUint32(56, true);
   const semOff = dv0.getUint32(68, true);
@@ -222,7 +230,6 @@ function parse(filePath, options = {}) {
   }
   const magic = pdv.getUint32(0, true);
   if (magic !== MAGIC) throw new Error(`sanz: invalid buffer header: ${filePath}`);
-  getTagNames();
   return new AstView(privateBuf);
 }
 
@@ -500,34 +507,37 @@ function parseAndLint(filePath, options = {}) {
     throw new Error(`sanz: parseAndLint failed: ${filePath}`);
   }
 
-  // Build private AstView (same copy logic as parseAndLint()).
-  const dv0 = new DataView(buf);
-  const totalUsed = dv0.getUint32(56, true);
-  const semOff = dv0.getUint32(68, true);
-  const semEnd = semOff > 0 ? semOff + 96 : 0;
-  const srcStart = Math.max(totalUsed, semEnd);
-  const privateSize = srcStart + sourceLen;
-  const privateArr = new Uint8Array(privateSize);
-  privateArr.set(new Uint8Array(buf, 0, totalUsed));
-  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
-  const privateBuf = privateArr.buffer;
-  const pdv = new DataView(privateBuf);
-  pdv.setUint32(52, srcStart, true);
-  if (semOff > 0) {
-    const symCount = pdv.getUint32(semOff + 4, true);
-    if (symCount > 0) {
-      const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
-      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
-        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-        const shift = totalUsed - sourceStart;
-        for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+  getTagNames();
+
+  // noPrivateCopy: skip buffer copy (safe in sequential single-threaded workers).
+  const ast = options.noPrivateCopy ? new AstView(buf) : (() => {
+    const dv0 = new DataView(buf);
+    const totalUsed = dv0.getUint32(56, true);
+    const semOff = dv0.getUint32(68, true);
+    const semEnd = semOff > 0 ? semOff + 96 : 0;
+    const srcStart = Math.max(totalUsed, semEnd);
+    const privateSize = srcStart + sourceLen;
+    const privateArr = new Uint8Array(privateSize);
+    privateArr.set(new Uint8Array(buf, 0, totalUsed));
+    privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
+    const privateBuf = privateArr.buffer;
+    const pdv = new DataView(privateBuf);
+    pdv.setUint32(52, srcStart, true);
+    if (semOff > 0) {
+      const symCount = pdv.getUint32(semOff + 4, true);
+      if (symCount > 0) {
+        const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
+        if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
+          const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
+          const shift = totalUsed - sourceStart;
+          for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+        }
       }
     }
-  }
-  getTagNames();
-  const ast = new AstView(privateBuf);
+    return new AstView(privateBuf);
+  })();
 
-  // Parse diags — compute line/col from source bytes still in buf (valid until next _loadFile).
+  // Parse diags — source bytes still valid in buf until next _loadFile.
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
   const dv = new DataView(_lintOutBuf);
   const count = dv.getUint32(0, true);
