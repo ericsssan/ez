@@ -63,17 +63,8 @@
           "multiline-comment-style:1",
           "multiline-comment-style:2",
           "new-parens:31",
-          "no-whitespace-before-property:11",
-          "no-whitespace-before-property:15",
-          "no-whitespace-before-property:19",
-          "no-whitespace-before-property:23",
-          "no-whitespace-before-property:27",
-          "no-whitespace-before-property:32",
-          "no-whitespace-before-property:33",
-          "no-whitespace-before-property:34",
           "semi:10",
-          "semi:31",
-          "space-before-blocks:13"
+          "semi:31"
         ]
       }
     },
@@ -425,21 +416,6 @@
           "no-inline-comments:94",
           "no-inline-comments:97",
           "no-unreachable-loop:73",
-          "no-whitespace-before-property:34",
-          "no-whitespace-before-property:40",
-          "no-whitespace-before-property:43",
-          "no-whitespace-before-property:55",
-          "no-whitespace-before-property:58",
-          "no-whitespace-before-property:61",
-          "no-whitespace-before-property:64",
-          "no-whitespace-before-property:67",
-          "no-whitespace-before-property:70",
-          "no-whitespace-before-property:79",
-          "no-whitespace-before-property:82",
-          "no-whitespace-before-property:88",
-          "no-whitespace-before-property:91",
-          "no-whitespace-before-property:95",
-          "no-whitespace-before-property:98",
           "semi:76",
           "space-unary-ops:28",
           "space-unary-ops:31"
@@ -1082,17 +1058,9 @@
           "no-unreachable:187",
           "no-unused-vars:126",
           "no-use-before-define:73",
-          "no-whitespace-before-property:155",
-          "no-whitespace-before-property:164",
-          "no-whitespace-before-property:167",
-          "no-whitespace-before-property:183",
-          "no-whitespace-before-property:187",
-          "no-whitespace-before-property:66",
-          "no-whitespace-before-property:87",
           "semi:110",
           "semi:17",
           "semi:186",
-          "space-before-blocks:24",
           "space-unary-ops:100"
         ]
       }
@@ -2453,7 +2421,7 @@
     },
     "no-empty-static-block": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3507,7 +3475,7 @@
     "no-spaced-func": {
       "runner": {
         "fn": 13,
-        "fp": 12,
+        "fp": 11,
         "crash": 0
       },
       "native": {
@@ -4001,7 +3969,7 @@
     "no-whitespace-before-property": {
       "runner": {
         "fn": 0,
-        "fp": 17,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4533,8 +4501,8 @@
     },
     "space-before-blocks": {
       "runner": {
-        "fn": 4,
-        "fp": 7,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4547,7 +4515,7 @@
     "space-before-function-paren": {
       "runner": {
         "fn": 1,
-        "fp": 3,
+        "fp": 2,
         "crash": 0
       },
       "native": {
