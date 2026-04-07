@@ -112,34 +112,21 @@ fn stmtContainsYield(node: NodeIndex, ctx: *const LintContext) bool {
 
     const data = ctx.nodeData(node);
 
-    // For expression_stmt, check its expression (lhs is the expression).
-    if (tag == .expression_stmt) {
-        return stmtContainsYield(data.lhs, ctx);
-    }
-
-    // For block_stmt, recurse into the block.
-    if (tag == .block_stmt) {
-        return containsYieldInBlock(node, ctx);
-    }
-
-    // For nodes where lhs is a child node (most unary/binary/etc.), check lhs.
-    // Only check data.lhs — we intentionally do NOT check data.rhs because
-    // for many node types (if_else_stmt, for_stmt, try_stmt, etc.) rhs is an
-    // extra-data index, not a child NodeIndex.
-    if (data.lhs != .none) {
-        if (stmtContainsYield(data.lhs, ctx)) return true;
-    }
-
-    // For simple nodes where rhs IS a child (binary ops, assign, etc.),
-    // it's safe to check rhs.  But we limit to known-safe tags.
+    // Only recurse into nodes where we KNOW lhs/rhs are child NodeIndices.
+    // Many node types use lhs/rhs as extra-data indices — treating those as
+    // NodeIndices causes OOB access.
     switch (tag) {
-        .assign, .add, .subtract, .multiply, .divide,
-        .if_stmt, .while_stmt, .do_while_stmt,
-        .return_stmt, .throw_stmt,
-        => {
-            if (data.rhs != .none) {
-                if (stmtContainsYield(data.rhs, ctx)) return true;
-            }
+        .expression_stmt => return stmtContainsYield(data.lhs, ctx),
+        .block_stmt => return containsYieldInBlock(node, ctx),
+        .return_stmt, .throw_stmt => {
+            if (data.lhs != .none and stmtContainsYield(data.lhs, ctx)) return true;
+        },
+        .if_stmt => {
+            if (data.rhs != .none and stmtContainsYield(data.rhs, ctx)) return true;
+        },
+        .if_else_stmt => {
+            if (data.lhs != .none and stmtContainsYield(data.lhs, ctx)) return true;
+            if (data.rhs != .none and stmtContainsYield(data.rhs, ctx)) return true;
         },
         else => {},
     }

@@ -929,8 +929,6 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
     var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer parse_arena.deinit();
 
-    const tl_lint = getLintArena();
-
     for (0..args.file_paths.len) |i| {
         const file_path = args.file_paths[i];
 
@@ -941,7 +939,6 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
         };
 
         defer _ = parse_arena.reset(.retain_capacity);
-        defer _ = tl_lint.reset(.retain_capacity);
 
         const lang      = Language.fromExtension(file_path) orelse .js;
         const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
@@ -957,13 +954,14 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
             continue;
         };
 
-        const la  = tl_lint.allocator();
-        var sem   = if (linter_mod.needsSemantic(args.config))
-            semantic_mod.SemanticAnalyzer.analyze(la, &tree) catch semantic_mod.SemanticResult.initEmpty(la)
+        // Use parse_arena for lint — reset together with parse data per file.
+        // Avoids threadlocal lint arena that grows unboundedly with retain_capacity.
+        var sem = if (linter_mod.needsSemantic(args.config))
+            semantic_mod.SemanticAnalyzer.analyze(bump, &tree) catch semantic_mod.SemanticResult.initEmpty(bump)
         else
-            semantic_mod.SemanticResult.initEmpty(la);
+            semantic_mod.SemanticResult.initEmpty(bump);
 
-        const diagnostics = linter_mod.lint(la, &tree, &sem, args.config) catch &.{};
+        const diagnostics = linter_mod.lint(bump, &tree, &sem, args.config) catch &.{};
 
         // Copy diags into out_alloc (stable across parse_arena/tl_lint resets).
         // Compute line/col from source NOW — source is valid until parse_arena resets at scope exit.

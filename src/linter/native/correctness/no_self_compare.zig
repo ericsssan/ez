@@ -97,11 +97,9 @@ fn nodesEqual(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) bool {
         => return nodesEqual(da.lhs, db.lhs, ctx) and nodesEqual(da.rhs, db.rhs, ctx),
 
         else => {
-            // For unrecognized complex nodes, require exact structural match:
-            // if lhs and rhs both match, consider equal
-            if (!nodesEqual(da.lhs, db.lhs, ctx)) return false;
-            if (!nodesEqual(da.rhs, db.rhs, ctx)) return false;
-            return true;
+            // Unknown node types may use lhs/rhs as extra-data indices.
+            // Don't recurse blindly — conservatively return false.
+            return false;
         },
     }
 }
