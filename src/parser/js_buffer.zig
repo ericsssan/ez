@@ -653,17 +653,32 @@ pub fn computeNodePositions(
 /// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).
 /// Line 1 starts at offset 0. Each `\n` starts a new line.
 pub fn computeLineStarts(source: []const u8, alloc: std.mem.Allocator) ![]u32 {
-    // Count newlines
+    // Count line terminators: \n, \r (not followed by \n), \u2028, \u2029
     var count: u32 = 1; // line 1 always at offset 0
-    for (source) |c| { if (c == '\n') count += 1; }
+    var i: usize = 0;
+    while (i < source.len) : (i += 1) {
+        const c = source[i];
+        if (c == '\n') { count += 1; }
+        else if (c == '\r') { count += 1; if (i + 1 < source.len and source[i + 1] == '\n') i += 1; } // \r\n = 1 line
+        else if (c == 0xE2 and i + 2 < source.len and source[i + 1] == 0x80 and (source[i + 2] == 0xA8 or source[i + 2] == 0xA9)) {
+            count += 1; i += 2; // U+2028 / U+2029 (3-byte UTF-8)
+        }
+    }
 
     const starts = try alloc.alloc(u32, count);
     starts[0] = 0;
     var idx: u32 = 1;
-    for (source, 0..) |c, i| {
-        if (c == '\n' and idx < count) {
-            starts[idx] = @intCast(i + 1);
-            idx += 1;
+    i = 0;
+    while (i < source.len) : (i += 1) {
+        const c = source[i];
+        if (c == '\n') { if (idx < count) { starts[idx] = @intCast(i + 1); idx += 1; } }
+        else if (c == '\r') {
+            const skip_lf = (i + 1 < source.len and source[i + 1] == '\n');
+            if (skip_lf) i += 1;
+            if (idx < count) { starts[idx] = @intCast(i + 1); idx += 1; }
+        } else if (c == 0xE2 and i + 2 < source.len and source[i + 1] == 0x80 and (source[i + 2] == 0xA8 or source[i + 2] == 0xA9)) {
+            i += 2;
+            if (idx < count) { starts[idx] = @intCast(i + 1); idx += 1; }
         }
     }
     return starts[0..idx];
