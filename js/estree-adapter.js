@@ -1299,6 +1299,10 @@ const NodeProto = {
         loc: this.loc, // approximate — line/col computed lazily by SourceCode
         parent: this,
       };
+      // Update each member's parent to point to the synthetic ClassBody instead of the ClassDeclaration
+      for (const member of members) {
+        member._parent = result;
+      }
     } else if (t === T.root) {
       result = ast._nodesFromRange(lhs, rhs);
     }
