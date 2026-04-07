@@ -784,6 +784,10 @@ class SourceCode {
     // Ensure global scope + builtin resolution is done on first access.
     if (!this._globalScope) this._precomputeScopes();
     const nodeIdx = (node._i !== undefined && node._i !== null) ? node._i : -1;
+    // For Program node in script mode, return the module scope (scope 1) not global (scope 0).
+    // The Zig analyzer always creates a module-like scope for top-level decls, even in script mode.
+    // ESLint rules expect getScope(Program) to contain those declarations.
+    if (nodeIdx === 0 && this._sourceType !== 'module') return this._buildScope(1);
     if (nodeIdx === 0) return this._buildScope(0);
     const scopeId = nodeIdx >= 0 ? ast._scopeForNode(nodeIdx) : 0;
     return this._buildScope(scopeId);
@@ -1333,7 +1337,9 @@ class SourceCode {
       scope,
       identifiers: declNode ? [declNode] : [],
       eslintUsed: false,
-      writeable: !is_const && !is_import,
+      // DO NOT set writeable for user-declared vars — writeable is only for ESLint's builtin globals.
+      // The no-implicit-globals rule checks: writeable===false (readonly global), writeable===true
+      // (writable global), writeable===undefined (user-declared variable).
       isRead: () => is_read,
       isWritten: () => is_written || is_let, // let vars are potentially writable
     };
@@ -1405,7 +1411,7 @@ class SourceCode {
       scope,
       identifiers: declNode ? [declNode] : [],
       eslintUsed: false,
-      writeable: !is_const && !is_import,
+      // DO NOT set writeable for user-declared vars — see _buildVariable for details
       isRead: () => is_read,
       isWritten: () => is_written,
     };
