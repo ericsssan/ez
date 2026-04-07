@@ -474,6 +474,7 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "lintBatch", napiLintBatch);
     registerFn(env, exports, "lintFiles", napiLintFiles);
+    registerFn(env, exports, "readFileToBuf", napiReadFileToBuf);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
@@ -685,11 +686,31 @@ fn napiGetNativeRules(env: n.Env, _: n.CallbackInfo) callconv(.c) ?n.Value {
 //   Main thread: joins threads, creates NAPI objects, frees out_arenas.
 
 const DiagRaw = struct {
+    line: u32,
+    col: u32,
     offset: u32,
     severity: u8,
     rule_name: []const u8,
     message: []const u8,
 };
+
+fn lineFromSource(source: []const u8, offset: usize) u32 {
+    var line: u32 = 1;
+    const end = @min(offset, source.len);
+    for (source[0..end]) |c| {
+        if (c == '\n') line += 1;
+    }
+    return line;
+}
+
+fn colFromSource(source: []const u8, offset: usize) u32 {
+    const end = @min(offset, source.len);
+    var i: usize = end;
+    while (i > 0) : (i -= 1) {
+        if (source[i - 1] == '\n') return @intCast(end - i);
+    }
+    return @intCast(end);
+}
 
 const FileRaw = struct {
     file_path: []const u8,
@@ -779,10 +800,14 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
         const diagnostics = linter_mod.lint(la, &tree, &sem, args.config) catch &.{};
 
         // Copy diags into out_alloc (stable across parse_arena/tl_lint resets).
+        // Compute line/col from source NOW — source is valid until parse_arena resets at scope exit.
         if (args.out_alloc.alloc(DiagRaw, diagnostics.len)) |diag_copy| {
             for (diagnostics, 0..) |diag, j| {
+                const byte_offset = diag.span.start;
                 diag_copy[j] = .{
-                    .offset    = diag.span.start,
+                    .line      = lineFromSource(source, byte_offset),
+                    .col       = colFromSource(source, byte_offset),
+                    .offset    = byte_offset,
                     .severity  = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 },
                     .rule_name = args.out_alloc.dupe(u8, diag.rule_name) catch "",
                     .message   = args.out_alloc.dupe(u8, diag.message) catch "",
@@ -913,6 +938,10 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         for (r.diags, 0..) |d, j| {
             var diag_obj: n.Value = undefined;
             if (n.napi_create_object(env, &diag_obj) != n.OK) continue;
+            if (n.napi_create_uint32(env, d.line, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "line", v);
+            if (n.napi_create_uint32(env, d.col, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "col", v);
             if (n.napi_create_uint32(env, d.offset, &v) == n.OK)
                 _ = n.napi_set_named_property(env, diag_obj, "offset", v);
             if (n.napi_create_uint32(env, d.severity, &v) == n.OK)
@@ -1051,6 +1080,10 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         for (r.diags, 0..) |d, j| {
             var diag_obj: n.Value = undefined;
             if (n.napi_create_object(env, &diag_obj) != n.OK) continue;
+            if (n.napi_create_uint32(env, d.line, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "line", v);
+            if (n.napi_create_uint32(env, d.col, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "col", v);
             if (n.napi_create_uint32(env, d.offset, &v) == n.OK)
                 _ = n.napi_set_named_property(env, diag_obj, "offset", v);
             if (n.napi_create_uint32(env, d.severity, &v) == n.OK)
@@ -1065,6 +1098,76 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         _ = n.napi_set_element(env, js_result, @intCast(i), obj);
     }
     return js_result;
+}
+
+// ── readFileToBuf(path, outBuf) → fileSize ───────────────────────────────────
+//
+// Reads the file at `path` into the TAIL of `outBuf`:
+//   outBuf[outBuf.byteLength - fileSize .. outBuf.byteLength]
+//
+// Returns fileSize (from fstat). If fileSize > outBuf.byteLength the buffer is
+// too small — nothing is written; JS should call ensureBuffer(fileSize) and
+// retry. Returns 0 on open/stat error or empty file.
+
+fn napiReadFileToBuf(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 2;
+    var argv: [2]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 2) {
+        _ = n.napi_throw_error(env, null, "readFileToBuf(path, outBuf): 2 args required");
+        return null;
+    }
+
+    // Decode path string into a small stack/temp allocation.
+    var path_len: usize = 0;
+    _ = n.napi_get_value_string_utf8(env, argv[0], null, 0, &path_len);
+    var path_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer path_arena.deinit();
+    const path_buf_mem = path_arena.allocator().alloc(u8, path_len + 1) catch return null;
+    var written: usize = 0;
+    _ = n.napi_get_value_string_utf8(env, argv[0], path_buf_mem.ptr, path_len + 1, &written);
+    const path_z: [:0]const u8 = path_buf_mem[0..written :0];
+
+    // Get output ArrayBuffer.
+    var out_data: ?*anyopaque = null;
+    var out_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[1], &out_data, &out_len) != n.OK) return null;
+
+    // Open file.
+    const fd = std.c.open(path_z.ptr, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) {
+        var js_zero: n.Value = undefined;
+        _ = n.napi_create_uint32(env, 0, &js_zero);
+        return js_zero;
+    }
+    defer _ = std.c.close(fd);
+
+    // Get file size.
+    var stat: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &stat) != 0 or stat.size <= 0) {
+        var js_zero: n.Value = undefined;
+        _ = n.napi_create_uint32(env, 0, &js_zero);
+        return js_zero;
+    }
+    const file_size: usize = @intCast(stat.size);
+
+    // Always return file_size. JS uses it as the sourceLen even when buffer was
+    // too small (it will resize and retry).
+    var js_size: n.Value = undefined;
+    _ = n.napi_create_uint32(env, @intCast(file_size), &js_size);
+
+    if (file_size > out_len) return js_size; // signal: resize needed, nothing written
+
+    const out_ptr: [*]u8 = @ptrCast(out_data orelse return js_size);
+    const write_start = out_len - file_size;
+    var offset: usize = 0;
+    while (offset < file_size) {
+        const nread = std.c.read(fd, out_ptr + write_start + offset, file_size - offset);
+        if (nread <= 0) break;
+        offset += @intCast(nread);
+    }
+
+    return js_size; // = fileSize = sourceLen
 }
 
 // ── tagCount() → u32 ────────────────────────────────────────────

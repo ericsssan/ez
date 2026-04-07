@@ -177,6 +177,56 @@ function parse(source, options = {}) {
 }
 
 /**
+ * Parse a file by path — Zig reads it directly (no TextEncoder overhead).
+ *
+ * @param {string} filePath - Absolute or relative path to the file
+ * @param {object} [options] - { lang?: 'js'|'ts'|'jsx'|'tsx' }
+ * @returns {AstView}
+ */
+function parseFile(filePath, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
+
+  const { buf, sourceLen, sourceStart } = _loadFile(filePath);
+
+  const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
+  if (bytesUsed === 0) {
+    throw new Error(`sanz: parse failed: ${filePath}`);
+  }
+
+  // Same private-buffer copy logic as parse().
+  const dv0 = new DataView(buf);
+  const totalUsed = dv0.getUint32(56, true);
+  const semOff = dv0.getUint32(68, true);
+  const semEnd = semOff > 0 ? semOff + 96 : 0;
+  const srcStart = Math.max(totalUsed, semEnd);
+  const privateSize = srcStart + sourceLen;
+  const privateArr = new Uint8Array(privateSize);
+  privateArr.set(new Uint8Array(buf, 0, totalUsed));
+  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
+  const privateBuf = privateArr.buffer;
+  const pdv = new DataView(privateBuf);
+  pdv.setUint32(52, srcStart, true);
+  if (semOff > 0) {
+    const symCount = pdv.getUint32(semOff + 4, true);
+    if (symCount > 0) {
+      const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
+      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
+        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
+        const shift = srcStart - sourceStart;
+        for (let i = 0; i < symCount; i++) {
+          nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+        }
+      }
+    }
+  }
+  const magic = pdv.getUint32(0, true);
+  if (magic !== MAGIC) throw new Error(`sanz: invalid buffer header: ${filePath}`);
+  getTagNames();
+  return new AstView(privateBuf);
+}
+
+/**
  * Reset all buffer views. Call between files to prevent source text retention.
  */
 function resetBuffer() {
@@ -200,6 +250,54 @@ function getTagNames() {
   }
   setTagNames(_cachedTagNames);
   return _cachedTagNames;
+}
+
+// ── File I/O helpers ─────────────────────────────────────────────
+
+/**
+ * Read a file directly into the tail of the shared parse buffer via Zig libc.
+ * Returns sourceLen. If sourceLen > buf.byteLength, buffer was too small —
+ * caller must resize and retry.
+ */
+function _readFileToBuf(path, buf) {
+  const b = loadBinding();
+  return b.readFileToBuf(path, buf);
+}
+
+/** Count 1-based line number for a UTF-8 byte offset. */
+function _bufOffsetToLine(bytes, offset) {
+  let line = 1;
+  const end = Math.min(offset, bytes.length);
+  for (let i = 0; i < end; i++) {
+    if (bytes[i] === 10) line++;
+  }
+  return line;
+}
+
+/** Count 0-based column for a UTF-8 byte offset. */
+function _bufOffsetToCol(bytes, offset) {
+  const end = Math.min(offset, bytes.length);
+  for (let i = end; i > 0; i--) {
+    if (bytes[i - 1] === 10) return end - i;
+  }
+  return end;
+}
+
+/**
+ * Load a file into the shared buffer, resizing if needed.
+ * Returns { buf, sourceLen, sourceStart }.
+ * Throws on read failure or empty result.
+ */
+function _loadFile(path) {
+  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
+  let sourceLen = _readFileToBuf(path, buf);
+  if (sourceLen === 0) throw new Error(`sanz: cannot read file: ${path}`);
+  if (sourceLen > buf.byteLength) {
+    buf = ensureBuffer(sourceLen);
+    sourceLen = _readFileToBuf(path, buf);
+    if (sourceLen === 0 || sourceLen > buf.byteLength) throw new Error(`sanz: read failed after resize: ${path}`);
+  }
+  return { buf, sourceLen, sourceStart: buf.byteLength - sourceLen };
 }
 
 // ── Lint ─────────────────────────────────────────────────────────
@@ -374,6 +472,83 @@ function parseAndLint(source, options = {}) {
   return { ast, diags };
 }
 
+/**
+ * Parse + lint a file by path — Zig reads it directly.
+ * Diags include {line, col} computed from source bytes (no re-read needed).
+ *
+ * @param {string} filePath
+ * @param {object} [options] - { lang?, config?: Uint8Array }
+ * @returns {{ ast: AstView, diags: Array<{offset, line, col, severity, ruleName, message}> }}
+ */
+function parseAndLintFile(filePath, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
+
+  const { buf, sourceLen, sourceStart } = _loadFile(filePath);
+
+  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
+  if (_lintOutBuf.byteLength < needed) _lintOutBuf = new ArrayBuffer(needed * 2);
+
+  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
+  if (bytesUsed === 0) {
+    throw new Error(`sanz: parseAndLint failed: ${filePath}`);
+  }
+
+  // Build private AstView (same copy logic as parseAndLint()).
+  const dv0 = new DataView(buf);
+  const totalUsed = dv0.getUint32(56, true);
+  const semOff = dv0.getUint32(68, true);
+  const semEnd = semOff > 0 ? semOff + 96 : 0;
+  const srcStart = Math.max(totalUsed, semEnd);
+  const privateSize = srcStart + sourceLen;
+  const privateArr = new Uint8Array(privateSize);
+  privateArr.set(new Uint8Array(buf, 0, totalUsed));
+  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
+  const privateBuf = privateArr.buffer;
+  const pdv = new DataView(privateBuf);
+  pdv.setUint32(52, srcStart, true);
+  if (semOff > 0) {
+    const symCount = pdv.getUint32(semOff + 4, true);
+    if (symCount > 0) {
+      const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
+      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
+        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
+        const shift = totalUsed - sourceStart;
+        for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+      }
+    }
+  }
+  getTagNames();
+  const ast = new AstView(privateBuf);
+
+  // Parse diags — compute line/col from source bytes still in buf (valid until next _loadFile).
+  const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
+  const dv = new DataView(_lintOutBuf);
+  const count = dv.getUint32(0, true);
+  const diags = [];
+  let pos = 4;
+  for (let i = 0; i < count; i++) {
+    if (pos + 8 > _lintOutBuf.byteLength) break;
+    const offset   = dv.getUint32(pos, true); pos += 4;
+    const severity = dv.getUint8(pos);         pos += 1;
+    const ruleLen  = dv.getUint8(pos);          pos += 1;
+    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
+    const msgLen   = dv.getUint16(pos, true);   pos += 2;
+    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
+    diags.push({
+      offset,
+      line: _bufOffsetToLine(srcBytes, offset),
+      col:  _bufOffsetToCol(srcBytes, offset),
+      severity,
+      ruleName,
+      message,
+    });
+  }
+
+  return { ast, diags };
+}
+
 // ── Native rule config ───────────────────────────────────────────
 
 let _nativeRulesMap = null;
@@ -419,4 +594,4 @@ function buildNativeConfig(rulesObj) {
   return buf;
 }
 
-module.exports = { parse, lint, parseAndLint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, parseFile, lint, parseAndLint, parseAndLintFile, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

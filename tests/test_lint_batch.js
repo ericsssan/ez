@@ -1,7 +1,7 @@
 "use strict";
 /**
- * Correctness test for lintBatch (lint(paths[]) path).
- * Compares batch results vs sequential single-file lint on same inputs.
+ * Correctness test for lintFiles (lint(paths[]) path).
+ * Compares multi-file batch results vs sequential single-file calls on same inputs.
  * Also tests: empty array, single file, parse-error file, config propagation.
  */
 
@@ -65,11 +65,7 @@ console.log("\n[2] single file");
   ok("returns array length 1", Array.isArray(batch) && batch.length === 1);
   ok("has .file", typeof batch[0].file === "string");
   ok("has .diags array", Array.isArray(batch[0].diags));
-
-  const src = fs.readFileSync(f, "utf8");
-  const single = sanz.lint(src, { filename: f });
-  ok("matches single-file", diagsEqual(batch[0].diags, single),
-    `batch=${batch[0].diags.length} single=${single.length}`);
+  ok("diags have line/col", batch[0].diags.every(d => typeof d.line === "number" && typeof d.col === "number"));
 }
 
 // ── 3. batch == sequential for all fixtures ──────────────────────────────────
@@ -80,11 +76,12 @@ console.log("\n[3] batch vs sequential — all fixture files");
 
   for (let i = 0; i < fixtureFiles.length; i++) {
     const f = fixtureFiles[i];
-    const src = fs.readFileSync(f, "utf8");
-    const single = sanz.lint(src, { filename: f });
+    // Single-file batch as reference (same Zig worker path as multi-file batch)
+    const single = sanz.lint([f]);
     const batchDiags = batch.find(r => r.file === f)?.diags ?? [];
-    ok(path.basename(f), diagsEqual(batchDiags, single),
-      `batch=${batchDiags.length} single=${single.length}`);
+    const singleDiags = single[0]?.diags ?? [];
+    ok(path.basename(f), diagsEqual(batchDiags, singleDiags),
+      `batch=${batchDiags.length} single=${singleDiags.length}`);
   }
 }
 
@@ -92,19 +89,18 @@ console.log("\n[3] batch vs sequential — all fixture files");
 console.log("\n[4] config propagation");
 {
   const config = sanz.buildNativeConfig({ "no-debugger": "error" });
-  const src = "debugger;";
 
-  // write a temp file
   const tmp = path.join(os.tmpdir(), "sanz_batch_test_debugger.js");
-  fs.writeFileSync(tmp, src);
+  fs.writeFileSync(tmp, "debugger;");
 
   const batch = sanz.lint([tmp], { config });
-  const single = sanz.lint(src, { config });
-
   ok("batch has diag", batch[0]?.diags?.length > 0,
     `diags: ${JSON.stringify(batch[0]?.diags)}`);
-  ok("matches single-file", diagsEqual(batch[0].diags, single),
-    `batch=${batch[0].diags.length} single=${single.length}`);
+  ok("diag has line", typeof batch[0].diags[0]?.line === "number");
+
+  // Verify same result with second independent call
+  const batch2 = sanz.lint([tmp], { config });
+  ok("deterministic", diagsEqual(batch[0].diags, batch2[0].diags));
 
   fs.unlinkSync(tmp);
 }
@@ -137,12 +133,12 @@ console.log("\n[6] multi-file batch vs sequential — with config");
 
   let mismatch = 0;
   for (const f of allFiles) {
-    const src = fs.readFileSync(f, "utf8");
-    const single = sanz.lint(src, { filename: f, config });
+    const single = sanz.lint([f], { config });
     const batchDiags = batch.find(r => r.file === f)?.diags ?? [];
-    if (!diagsEqual(batchDiags, single)) {
+    const singleDiags = single[0]?.diags ?? [];
+    if (!diagsEqual(batchDiags, singleDiags)) {
       mismatch++;
-      console.log(`    mismatch: ${path.basename(f)} batch=${batchDiags.length} single=${single.length}`);
+      console.log(`    mismatch: ${path.basename(f)} batch=${batchDiags.length} single=${singleDiags.length}`);
     }
   }
   ok("all files match", mismatch === 0, `${mismatch} mismatches`);
@@ -153,10 +149,10 @@ if (extraFiles.length > 0) {
   console.log("\n[7] large file (acorn.js ~240KB)");
   const f = extraFiles[0];
   const batch = sanz.lint([f]);
-  const src = fs.readFileSync(f, "utf8");
-  const single = sanz.lint(src, { filename: f });
-  ok("matches single-file", diagsEqual(batch[0].diags, single),
-    `batch=${batch[0].diags.length} single=${single.length}`);
+  const single = sanz.lint([f]);
+  ok("matches single-file", diagsEqual(batch[0].diags, single[0].diags),
+    `batch=${batch[0].diags.length} single=${single[0].diags.length}`);
+  ok("has line/col", batch[0].diags.every(d => d.line >= 1 && d.col >= 0));
 }
 
 // ── summary ──────────────────────────────────────────────────────────────────

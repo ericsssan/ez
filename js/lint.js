@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
-const { parseAndLint, parse, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLint, parseAndLintFile, parse, parseFile, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -231,22 +231,12 @@ const hasNativeRules = Object.keys(nativeRuleObj).length > 0;
 const nativeConfig = hasNativeRules ? buildNativeConfig(nativeRuleObj) : null;
 const jsOnlyPlugins = allPlugins.filter(p => !nativeRules.has(p.meta?.name));
 
-/** Convert UTF-8 byte offset to 1-based line number (string source). */
+/** Convert UTF-8 byte offset to 1-based line number (string source). Used only for --fix path. */
 function offsetToLine(src, offset) {
   let line = 1;
   const end = Math.min(offset, src.length);
   for (let i = 0; i < end; i++) {
     if (src.charCodeAt(i) === 10) line++;
-  }
-  return line;
-}
-
-/** Convert UTF-8 byte offset to 1-based line number (Buffer/Uint8Array). */
-function bufferOffsetToLine(buf, offset) {
-  let line = 1;
-  const end = Math.min(offset, buf.length);
-  for (let i = 0; i < end; i++) {
-    if (buf[i] === 10) line++;
   }
   return line;
 }
@@ -487,27 +477,19 @@ async function main() {
   const useWorkers = !useNativeBatch && numThreads > 1 && allFiles.length > 1;
 
   if (useNativeBatch) {
-    // ── Native batch path (lintBatch → Zig OS threads) ─────────
+    // ── Native batch path (lintFiles → Zig OS threads) ─────────
+    // Zig workers read files and compute line/col before arena reset — no JS I/O needed.
     const batchResults = lintFiles(allFiles, { config: nativeConfig, sizes: allFileSizes });
-
-    // Build a file→buffer map only for files that have violations (for offsetToLine).
-    // Files with no diags need no I/O.
-    const bufCache = new Map();
-    const getBuf = (file) => {
-      if (!bufCache.has(file)) bufCache.set(file, fs.readFileSync(file));
-      return bufCache.get(file);
-    };
 
     for (const { file, diags } of batchResults) {
       totalFiles++;
       if (diags.length === 0) continue;
 
-      const buf = getBuf(file);
       const violations = diags.map(d => ({
         ruleId: d.ruleName,
         severity: d.severity === 0 ? 2 : 1,
         message: d.message,
-        loc: { start: { line: bufferOffsetToLine(buf, d.offset), column: 0 } },
+        loc: { start: { line: d.line, column: d.col } },
       }));
 
       totalViolations += violations.length;
@@ -594,13 +576,17 @@ async function main() {
   } else {
     // ── Sequential path ────────────────────────────────────────
     for (const file of allFiles) {
-      let src;
-      try {
-        src = fs.readFileSync(file, "utf8");
-      } catch (e) {
-        console.error(`error reading ${file}: ${e.message}`);
-        errorFiles++;
-        continue;
+      // Only read source string when applying fixes (needs string for applyFixes()).
+      // For the common !applyFix case, Zig reads the file directly (no TextEncoder overhead).
+      let src = null;
+      if (applyFix) {
+        try {
+          src = fs.readFileSync(file, "utf8");
+        } catch (e) {
+          console.error(`error reading ${file}: ${e.message}`);
+          errorFiles++;
+          continue;
+        }
       }
 
       // ── Native rules via parseAndLint (single parse+lint pass) ──
@@ -608,13 +594,21 @@ async function main() {
       let nativeViolations = [];
       if (hasNativeRules && nativeConfig) {
         try {
-          const result = parseAndLint(src, { config: nativeConfig, filename: file });
+          let result;
+          if (applyFix) {
+            result = parseAndLint(src, { config: nativeConfig, filename: file });
+          } else {
+            result = parseAndLintFile(file, { config: nativeConfig });
+          }
           ast = result.ast;
           nativeViolations = result.diags.map(d => ({
             ruleId: d.ruleName,
             severity: d.severity === 0 ? 2 : 1,
             message: d.message,
-            loc: { start: { line: offsetToLine(src, d.offset), column: 0 } },
+            loc: { start: {
+              line: applyFix ? offsetToLine(src, d.offset) : d.line,
+              column: applyFix ? 0 : d.col,
+            }},
           }));
         } catch (e) {
           if (formatJson) {
@@ -627,7 +621,7 @@ async function main() {
         }
       } else {
         try {
-          ast = parse(src, { filename: file });
+          ast = applyFix ? parse(src, { filename: file }) : parseFile(file);
         } catch (e) {
           if (formatJson) {
             jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
