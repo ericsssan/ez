@@ -2,6 +2,7 @@ const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
+const SubRange = ast.SubRange;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
@@ -12,23 +13,77 @@ pub const meta = RuleMeta{
     .description = "Require use of isNaN() when checking for NaN",
 };
 
-pub const relevant_tags = [_]Node.Tag{ .equal, .not_equal, .strict_equal, .strict_not_equal };
+pub const relevant_tags = [_]Node.Tag{
+    // Equality
+    .equal, .not_equal, .strict_equal, .strict_not_equal,
+    // Ordering (NaN comparisons are always false/true but still a bug)
+    .less_than, .greater_than, .less_equal, .greater_equal,
+    // switch discriminant and case values
+    .switch_stmt, .switch_case,
+};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
 
-    if (isNaN(data.lhs, ctx) or isNaN(data.rhs, ctx)) {
-        ctx.report(
-            node,
-            meta.name,
-            "Use Number.isNaN() instead of comparison with NaN",
-            meta.default_severity,
-        );
+    switch (tag) {
+        .equal, .not_equal, .strict_equal, .strict_not_equal,
+        .less_than, .greater_than, .less_equal, .greater_equal => {
+            if (isNaN(data.lhs, ctx) or isNaN(data.rhs, ctx)) {
+                ctx.report(node, meta.name,
+                    "Use the isNaN function to compare with NaN",
+                    meta.default_severity);
+            }
+        },
+        .switch_stmt => {
+            // Check discriminant: switch(NaN) { ... }
+            if (isNaN(data.lhs, ctx)) {
+                ctx.report(node, meta.name,
+                    "'switch(NaN)' can never match a case clause. Use Number.isNaN instead of the switch.",
+                    meta.default_severity);
+            }
+        },
+        .switch_case => {
+            // Check case test: case NaN:
+            if (isNaN(data.lhs, ctx)) {
+                ctx.report(node, meta.name,
+                    "'case NaN' can never match. Use Number.isNaN before the switch.",
+                    meta.default_severity);
+            }
+        },
+        else => {},
     }
 }
 
+/// Returns true if `idx` is a NaN reference: bare `NaN`, `Number.NaN`, or `Number?.NaN`.
+/// Also unwraps grouping_expr (parenthesized expressions).
 fn isNaN(idx: NodeIndex, ctx: *const LintContext) bool {
     if (idx == .none) return false;
-    if (ctx.nodeTag(idx) != .identifier) return false;
-    return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(idx)), "NaN");
+    const tag = ctx.nodeTag(idx);
+
+    // Unwrap grouping: (NaN)
+    if (tag == .grouping_expr) {
+        return isNaN(ctx.nodeData(idx).lhs, ctx);
+    }
+
+    // Bare `NaN` identifier
+    if (tag == .identifier) {
+        return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(idx)), "NaN");
+    }
+
+    // `Number.NaN` or `Number?.NaN`
+    // For member_expr: lhs = object node, main_token = property name token
+    if (tag == .member_expr or tag == .optional_member_expr) {
+        const data = ctx.nodeData(idx);
+        const obj = data.lhs;
+        if (obj == .none) return false;
+        if (ctx.nodeTag(obj) != .identifier) return false;
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(obj)), "Number")) return false;
+        // Property name is the main token of the member_expr node itself
+        return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(idx)), "NaN");
+    }
+
+    return false;
 }
+
+pub fn runOnSymbols(_: *const LintContext) void {}

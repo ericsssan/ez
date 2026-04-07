@@ -796,7 +796,15 @@ class AstView {
         while (lo < hi) { const m = (lo + hi) >> 1; if (commentStarts[m] <= tStart) lo = m + 1; else hi = m; }
         if (lo < commentCount && commentStarts[lo] < tEnd) tEnd = commentStarts[lo];
       }
+      // Trim trailing ASCII whitespace (fast path covers most cases)
       while (tEnd > tStart && src.charCodeAt(tEnd - 1) <= 32) tEnd--;
+      // Also trim trailing Unicode whitespace (e.g. U+3000 ideographic space, U+00A0 NBSP)
+      // that JS's trimEnd() recognizes but our <= 32 check misses. Use JS slice + trimEnd
+      // to get the correctly-trimmed boundary without a per-character lookup table.
+      if (tEnd > tStart && src.charCodeAt(tEnd - 1) > 32) {
+        const trimmed = src.slice(tStart, tEnd).trimEnd();
+        if (trimmed.length < tEnd - tStart) tEnd = tStart + trimmed.length;
+      }
       return tEnd;
     };
 
@@ -810,6 +818,14 @@ class AstView {
       // SequenceExpression (tag 133): sanz uses '(' as main token but ESTree range
       // excludes the outer parens — just use the last-expression end, no extension.
       if (nodeTags[i] === T.sequence_expr) {
+        endPos[i] = extEnd;
+        continue;
+      }
+
+      // TemplateElement: use the trimmed token end only (the closing ` / } delimiter).
+      // Don't extend with the EOF token that follows — that would pull in trailing
+      // Unicode whitespace that is outside the template literal.
+      if (nodeTags[i] === T.template_element) {
         endPos[i] = extEnd;
         continue;
       }
@@ -922,7 +938,8 @@ const NodeProto = {
     const t = this._ast._nodeTags[this._i];
     if (t === T.tagged_template) {
       const idx = this._ast.nodeLhs(this._i);
-      return idx === NONE ? null : nodeView(this._ast, idx);
+      // Use nodeViewChain: (obj?.fn)`template` — the tag may be an optional chain.
+      return idx === NONE ? null : nodeViewChain(this._ast, idx);
     }
     return t;
   },
@@ -1292,7 +1309,8 @@ const NodeProto = {
     }
     if (t === T.conditional) {
       const d = ast.extraConditional(rhs);
-      return d.consequent === NONE ? null : nodeView(ast, d.consequent);
+      // Use nodeViewChain: (a ? obj?.b : c)() — consequent may be optional chain.
+      return d.consequent === NONE ? null : nodeViewChain(ast, d.consequent);
     }
     if (t === T.switch_case || t === T.switch_default) {
       const sub = ast.extraSubRange(rhs);
@@ -1316,7 +1334,8 @@ const NodeProto = {
     }
     if (t === T.conditional) {
       const d = ast.extraConditional(rhs);
-      return d.alternate === NONE ? null : nodeView(ast, d.alternate);
+      // Use nodeViewChain: (a ? b : obj?.c)() — alternate may be optional chain.
+      return d.alternate === NONE ? null : nodeViewChain(ast, d.alternate);
     }
     return null;
   },
@@ -1387,8 +1406,15 @@ const NodeProto = {
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
-    // Binary/logical/assignment expressions
     if (t >= T.add && t <= T.nullish_assign) {
+      // Logical/nullish: left may be optional chain.
+      if (t === T.logical_and || t === T.logical_or || t === T.nullish_coalesce) {
+        return lhs === NONE ? null : nodeViewChain(ast, lhs);
+      }
+      // Arithmetic binary: disallowArithmeticOperators checks left too.
+      if (t >= T.add && t <= T.exponentiate) {
+        return lhs === NONE ? null : nodeViewChain(ast, lhs);
+      }
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
     // for-in/of: binding (left side)
@@ -1414,18 +1440,37 @@ const NodeProto = {
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
-    // Binary/logical/assignment expressions
     if (t >= T.add && t <= T.nullish_assign) {
+      // Logical/nullish: right may be optional chain propagating undefined.
+      if (t === T.logical_and || t === T.logical_or || t === T.nullish_coalesce) {
+        return rhs === NONE ? null : nodeViewChain(ast, rhs);
+      }
+      // Arithmetic binary (+,-,*,/,%,**): disallowArithmeticOperators checks right.
+      if (t >= T.add && t <= T.exponentiate) {
+        return rhs === NONE ? null : nodeViewChain(ast, rhs);
+      }
+      // in / instanceof: checkUnsafeUsage(node.right)
+      if (t === T.instanceof_expr || t === T.in_expr) {
+        return rhs === NONE ? null : nodeViewChain(ast, rhs);
+      }
+      // Arithmetic compound assignment (+=,-=,*=,/=,%=,**=): checkUnsafeArithmetic(node.right)
+      if (t >= T.add_assign && t <= T.exp_assign) {
+        return rhs === NONE ? null : nodeViewChain(ast, rhs);
+      }
+      // Plain assignment: ([foo] = obj?.bar) — right may be optional chain when left is pattern.
+      if (t === T.assign) {
+        return rhs === NONE ? null : nodeViewChain(ast, rhs);
+      }
       return rhs === NONE ? null : nodeView(ast, rhs);
     }
-    // for-in/of: iterable (right side)
+    // for-in/of: iterable may be optional chain (undefined iterator → TypeError)
     if (t === T.for_in_stmt || t === T.for_of_stmt || t === T.for_await_of_stmt) {
       const d = ast.extraForInOfData(lhs);
-      return d.expr === NONE ? null : nodeView(ast, d.expr);
+      return d.expr === NONE ? null : nodeViewChain(ast, d.expr);
     }
-    // AssignmentPattern
+    // AssignmentPattern: right may be optional chain (destructuring default)
     if (t === T.assignment_pattern) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
+      return rhs === NONE ? null : nodeViewChain(ast, rhs);
     }
     return null;
   },
@@ -1437,14 +1482,22 @@ const NodeProto = {
     const t = this._tag;
     const lhs = ast => ast.nodeLhs(this._i);
     const a = this._ast;
-    if (t === T.unary_plus || t === T.unary_minus || t === T.logical_not ||
-        t === T.bitwise_not || t === T.typeof_expr || t === T.void_expr ||
+    // await/unary-arithmetic: argument may be optional chain.
+    // (await obj?.foo)() or +(await obj?.foo) — checkUndefinedShortCircuit traverses into argument.
+    if (t === T.await_expr || t === T.unary_plus || t === T.unary_minus) {
+      const idx = lhs(a);
+      return idx === NONE ? null : nodeViewChain(a, idx);
+    }
+    if (t === T.logical_not || t === T.bitwise_not || t === T.typeof_expr || t === T.void_expr ||
         t === T.delete_expr || t === T.prefix_inc || t === T.prefix_dec ||
-        t === T.postfix_inc || t === T.postfix_dec || t === T.await_expr ||
-        t === T.spread_element || t === T.rest_element ||
-        t === T.ts_non_null_expr) {
+        t === T.postfix_inc || t === T.postfix_dec || t === T.ts_non_null_expr) {
       const idx = lhs(a);
       return idx === NONE ? null : nodeView(a, idx);
+    }
+    // spread/rest: [...a?.b] and {...a?.b} — undefined spread → TypeError
+    if (t === T.spread_element || t === T.rest_element) {
+      const idx = lhs(a);
+      return idx === NONE ? null : nodeViewChain(a, idx);
     }
     if (t === T.yield_expr || t === T.yield_delegate) {
       const idx = lhs(a);
@@ -1465,7 +1518,10 @@ const NodeProto = {
     const t = this._tag;
     if (t === T.call_expr || t === T.optional_call_expr || t === T.new_expr) {
       const idx = this._ast.nodeLhs(this._i);
-      return idx === NONE ? null : nodeView(this._ast, idx);
+      // Use nodeViewChain so optional chain callees are wrapped in ChainExpression.
+      // ESLint rules (no-unsafe-optional-chaining, no-prototype-builtins, etc.) use
+      // astUtils.skipChainExpression(node.callee) to handle ChainExpression.
+      return idx === NONE ? null : nodeViewChain(this._ast, idx);
     }
     return undefined;
   },
@@ -1500,7 +1556,8 @@ const NodeProto = {
         t === T.optional_member_expr || t === T.optional_computed_member_expr ||
         t === T.with_stmt) {
       const idx = this._ast.nodeLhs(this._i);
-      return idx === NONE ? null : nodeView(this._ast, idx);
+      // Use nodeViewChain to expose ChainExpression for optional chain objects.
+      return idx === NONE ? null : nodeViewChain(this._ast, idx);
     }
     return undefined;
   },
@@ -1731,7 +1788,8 @@ const NodeProto = {
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
     if (t === T.declarator) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
+      // Use nodeViewChain: `const {x} = obj?.foo` — init may be optional chain.
+      return rhs === NONE ? null : nodeViewChain(ast, rhs);
     }
     if (t === T.for_stmt) {
       const d = ast.extraForData(lhs);
@@ -1758,7 +1816,8 @@ const NodeProto = {
     if (t !== T.class_decl && t !== T.class_expr) return null;
     const ast = this._ast;
     const d = ast.extraClassData(ast.nodeLhs(this._i));
-    return d.super_class === NONE ? null : nodeView(ast, d.super_class);
+    // Use nodeViewChain: `class A extends obj?.foo {}` — superClass may be optional chain.
+    return d.super_class === NONE ? null : nodeViewChain(ast, d.super_class);
   },
 
   /**
@@ -1788,7 +1847,15 @@ const NodeProto = {
   get expressions() {
     const t = this._tag;
     if (t === T.sequence_expr) {
-      return this._ast._nodesFromRange(this._ast.nodeLhs(this._i), this._ast.nodeRhs(this._i));
+      // Use nodeViewChain: (foo, obj?.bar)() — last element may be optional chain.
+      const ast = this._ast;
+      const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
+      const result = [];
+      for (let i = lhs; i < rhs; i++) {
+        const idx = ast._extraData[i];
+        if (idx !== NONE) result.push(nodeViewChain(ast, idx));
+      }
+      return result;
     }
     if (t === T.template_literal) {
       // Children are interleaved: quasi, expr, quasi, expr, quasi
@@ -2275,12 +2342,87 @@ const NodeProto = {
  * Automatically unwraps grouping_expr (ParenthesizedExpression) since
  * ESTree-compliant parsers don't emit separate nodes for parentheses.
  */
-function nodeView(ast, index) {
-  // Unwrap grouping_expr transparently (ESTree doesn't have ParenthesizedExpression)
-  while (index !== NONE && ast._nodeTags[index] === T.grouping_expr) {
-    index = ast.nodeLhs(index);
+// ── ChainExpression synthesis ────────────────────────────────────
+// ESTree wraps the outermost node of an optional chain in a ChainExpression.
+// e.g. `a?.b` → ChainExpression { expression: MemberExpression(optional=true) }
+//      `a?.b.c` → ChainExpression { expression: MemberExpression { object: ME(opt=true), optional=false } }
+//      `(a?.b)()` → CallExpression { callee: ChainExpression { expression: ME(opt=true) } }
+// ESLint rules (no-unsafe-optional-chaining) rely on ChainExpression to detect
+// optional chain results used in mandatory contexts.
+
+/** Tags that are "optional chain nodes" — always start a chain. */
+function _isOptionalTag(tag) {
+  return tag === T.optional_member_expr || tag === T.optional_computed_member_expr ||
+         tag === T.optional_call_expr;
+}
+
+/** Tags that can be chain "middles" — non-optional member/call on top of an optional chain. */
+function _isChainMiddleTag(tag) {
+  return tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr;
+}
+
+/**
+ * Return true if node `idx` is the LHS (object/callee) of a chain-continuation parent.
+ * If so, idx is not the outermost of its chain, so we should NOT wrap it in ChainExpression.
+ */
+function _isChainChild(ast, idx) {
+  const pd = ast._parentData;
+  if (!pd) return false;
+  let parentIdx = pd[idx];
+  // Skip grouping_expr parents (they're transparent)
+  while (parentIdx !== NONE && ast._nodeTags[parentIdx] === T.grouping_expr) {
+    parentIdx = pd[parentIdx];
   }
-  if (index === NONE) return null;
+  if (parentIdx === NONE) return false;
+  const pt = ast._nodeTags[parentIdx];
+  if (!(_isOptionalTag(pt) || _isChainMiddleTag(pt))) return false;
+  // Must be the LHS (object/callee), not the RHS (property/argument)
+  return ast.nodeLhs(parentIdx) === idx;
+}
+
+/**
+ * Return true if node `idx` belongs to an optional chain (i.e., is optional itself,
+ * or is a non-optional member/call whose lhs transitively leads to an optional chain node).
+ */
+function _isChainNode(ast, idx) {
+  // Iterative traversal to avoid call stack depth issues on deep chains.
+  let cur = idx;
+  while (cur !== NONE) {
+    const tag = ast._nodeTags[cur];
+    if (_isOptionalTag(tag)) return true;
+    if (!_isChainMiddleTag(tag)) return false;
+    // Walk the lhs, unwrapping grouping_expr
+    let lhsIdx = ast.nodeLhs(cur);
+    while (lhsIdx !== NONE && ast._nodeTags[lhsIdx] === T.grouping_expr) {
+      lhsIdx = ast.nodeLhs(lhsIdx);
+    }
+    cur = lhsIdx;
+  }
+  return false;
+}
+
+/** Build (and cache) a synthetic ChainExpression wrapper for node `idx`. */
+function _getChainExpr(ast, idx) {
+  if (!ast._chainCache) ast._chainCache = new Array(ast.nodeCount);
+  let c = ast._chainCache[idx];
+  if (c) return c;
+  const inner = _nodeViewRaw(ast, idx); // get the NodeProto without chain wrapping
+  c = Object.create(null);
+  c.type = 'ChainExpression';
+  c.expression = inner;
+  c._i = idx;           // identity: same as inner node
+  c._isChainExpr = true;
+  Object.defineProperty(c, 'start',  { get: () => inner.start,  configurable: true });
+  Object.defineProperty(c, 'end',    { get: () => inner.end,    configurable: true });
+  Object.defineProperty(c, 'range',  { get: () => inner.range,  configurable: true });
+  Object.defineProperty(c, 'loc',    { get: () => inner.loc,    configurable: true });
+  Object.defineProperty(c, 'parent', { get: () => inner.parent, set: (v) => { inner._parent = v; }, configurable: true });
+  ast._chainCache[idx] = c;
+  return c;
+}
+
+/** Raw nodeView — returns the NodeProto directly, no ChainExpression wrapping. */
+function _nodeViewRaw(ast, index) {
   let cache = ast._nodeCache;
   if (cache === null) {
     cache = new Array(ast.nodeCount);
@@ -2291,15 +2433,52 @@ function nodeView(ast, index) {
     n = Object.create(NodeProto);
     n._ast = ast;
     n._i = index;
-    n._parent = _PARENT_UNSET; // pre-set → stable hidden class
-    n._type = null;            // pre-allocated cache slot for get type()
-    n._loc  = null;            // pre-allocated cache slot for get loc()
-    n._range = null;           // pre-allocated cache slot for get range()
-    n._body = _BODY_UNSET;     // pre-allocated cache slot for get body()
-    n._value = _VALUE_UNSET;   // pre-allocated cache slot for get value()
+    n._parent = _PARENT_UNSET;
+    n._type = null;
+    n._loc  = null;
+    n._range = null;
+    n._body = _BODY_UNSET;
+    n._value = _VALUE_UNSET;
     cache[index] = n;
   }
   return n;
+}
+
+function nodeView(ast, index) {
+  // Unwrap grouping_expr transparently (ESTree doesn't have ParenthesizedExpression)
+  while (index !== NONE && ast._nodeTags[index] === T.grouping_expr) {
+    index = ast.nodeLhs(index);
+  }
+  if (index === NONE) return null;
+  return _nodeViewRaw(ast, index);
+}
+
+/**
+ * nodeViewChain — like nodeView, but wraps the result in a ChainExpression when the
+ * node is the outermost of an optional chain. Used by getters (callee, object, tag, etc.)
+ * that need to expose ChainExpression to rules like no-unsafe-optional-chaining.
+ *
+ * In ESTree, a ChainExpression wraps the outermost node of `?.` chains:
+ *   `a?.b`     → ChainExpression { expression: MemberExpression(optional=true) }
+ *   `a?.b.c`   → ChainExpression { expression: MemberExpression { object: ME(opt), optional=false } }
+ *   `(a?.b)()` → CallExpression { callee: ChainExpression { expression: ME(optional=true) } }
+ *
+ * By calling nodeViewChain in callee/object/tag/argument getters, the chain wrapper is
+ * only added when the optional chain is the TOP-LEVEL value in a mandatory context.
+ * The node dispatched to visitors via DFS remains unwrapped (they use _nodeViewRaw).
+ */
+function nodeViewChain(ast, index) {
+  // Unwrap grouping_expr
+  while (index !== NONE && ast._nodeTags[index] === T.grouping_expr) {
+    index = ast.nodeLhs(index);
+  }
+  if (index === NONE) return null;
+  // Wrap in ChainExpression if this is the outermost optional chain node.
+  // A node is NOT outermost if its parent (skipping grouping) uses it as object/callee.
+  if (_isChainNode(ast, index) && !_isChainChild(ast, index)) {
+    return _getChainExpr(ast, index);
+  }
+  return _nodeViewRaw(ast, index);
 }
 
 // ── Method flag helpers ──────────────────────────────────────────

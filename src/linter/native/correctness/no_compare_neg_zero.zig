@@ -5,7 +5,10 @@ const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
-pub const relevant_tags = [_]Node.Tag{ .equal, .not_equal, .strict_equal, .strict_not_equal };
+pub const relevant_tags = [_]Node.Tag{
+    .equal, .not_equal, .strict_equal, .strict_not_equal,
+    .less_than, .greater_than, .less_equal, .greater_equal,
+};
 
 pub const meta = RuleMeta{
     .name = "no-compare-neg-zero",

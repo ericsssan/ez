@@ -111,6 +111,8 @@ const _BUILTIN_GLOBALS = [
   'crypto', 'performance', 'navigator',
 ];
 
+const _BUILTIN_GLOBALS_SET = new Set(_BUILTIN_GLOBALS);
+
 // ── Interned String Table ────────────────────────────────────────
 // Pre-intern all ESTree type name strings so identity comparisons (===)
 // on node.type are O(1) pointer checks, not string byte comparisons.
@@ -181,8 +183,11 @@ function _findDefNode(declNode, defType) {
       while (cur) { if (_CLASS_TAG_SET.has(cur._tag)) return cur; cur = cur.parent; }
       break;
     case 'ImportBinding':
-      while (cur) { if (cur._tag === T.import_decl) return cur; cur = cur.parent; }
-      break;
+      // declNode IS the specifier (ImportSpecifier / ImportDefaultSpecifier /
+      // ImportNamespaceSpecifier). Return it directly so def.node.type is the
+      // specifier type (e.g. "ImportNamespaceSpecifier"), matching ESLint's
+      // eslint-scope behaviour. def.parent will be set to specifier.parent = ImportDeclaration.
+      return declNode;
     case 'Parameter':
       while (cur) { if (_FN_TAGS.has(cur._tag)) return cur; cur = cur.parent; }
       break;
@@ -751,9 +756,35 @@ class SourceCode {
     return this._getAllTokens();
   }
 
-  /** Stub for getNodeByRangeIndex. */
-  getNodeByRangeIndex() {
-    return null;
+  /**
+   * getNodeByRangeIndex — returns the deepest AST node whose range contains pos.
+   * Uses the preorder traversal order: the last node with start ≤ pos is the
+   * deepest enclosing node (since preorder visits parent before children and
+   * children before the next sibling, the last node with start ≤ pos that also
+   * has end > pos is the innermost match).
+   */
+  getNodeByRangeIndex(pos) {
+    const ast = this._ast;
+    if (!ast._startPosCache || !ast._endPosCache) {
+      ast._nodeStartPos(0);
+      ast._nodeEndPos(0);
+    }
+    const starts = ast._startPosCache;
+    const ends = ast._endPosCache;
+    if (!starts || !ends) return null;
+    const n = ast.nodeCount;
+    let best = -1;
+    // Scan all nodes: find the innermost (smallest span) that contains pos.
+    // For performance, track the smallest matching span.
+    let bestSpan = Infinity;
+    for (let i = 0; i < n; i++) {
+      const s = starts[i], e = ends[i];
+      if (s <= pos && pos < e) {
+        const span = e - s;
+        if (span < bestSpan) { best = i; bestSpan = span; }
+      }
+    }
+    return best >= 0 ? nodeView(ast, best) : null;
   }
 
   /**
@@ -965,9 +996,83 @@ class SourceCode {
         if (!set.has(name)) {
           const globalVar = { name, defs: [], references: [], identifiers: [],
             scope, eslintUsed: false, writeable: false,
+            eslintImplicitGlobalSetting: 'writable',
             isRead: () => false, isWritten: () => false };
           set.set(name, globalVar);
           variables.push(globalVar);
+        } else {
+          // Mark user-declared variable that shadows a builtin
+          set.get(name).eslintImplicitGlobalSetting = 'writable';
+        }
+      }
+    }
+
+    // Process /*global X, Y */ and /*globals X: writable */ directive comments.
+    // ESLint's scope analysis exposes these via variable.eslintExplicitGlobalComments
+    // so rules like no-redeclare can flag double-declarations.
+    if (kind === 0) {
+      const comments = ast.commentsInRange(0, ast.sourceLen);
+      for (const comment of comments) {
+        if (comment.type !== 'Block') continue;
+        const val = comment.value;
+        if (!/^\s*globals?\b/.test(val)) continue;
+        // Parse: "globals a, b: readonly, c: off" etc.
+        const body = val.replace(/^\s*globals?\s*/, '').replace(/\s*$/, '');
+        for (const entry of body.split(',')) {
+          const trimmed = entry.trim();
+          if (!trimmed) continue;
+          const [rawName, rawValue] = trimmed.split(':').map(s => s.trim());
+          const name = rawName;
+          if (!name || !/^[$_a-zA-Z][\w$]*$/.test(name)) continue;
+          const valueStr = (rawValue || 'writable').toLowerCase();
+          if (valueStr === 'off') continue; // disabled (false = readonly, not disabled)
+          if (set.has(name)) {
+            const v = set.get(name);
+            if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
+            v.eslintExplicitGlobalComments.push(comment);
+          } else {
+            const globalVar = { name, defs: [], references: [], identifiers: [],
+              scope, eslintUsed: false, writeable: false,
+              eslintExplicitGlobalComments: [comment],
+              isRead: () => false, isWritten: () => false };
+            set.set(name, globalVar);
+            variables.push(globalVar);
+          }
+        }
+      }
+    }
+
+    // In script mode, mark module-scope variables that shadow built-in globals with
+    // eslintImplicitGlobalSetting so no-redeclare can detect the redeclaration.
+    // ESLint in script mode has a single global scope; we split into global(0)+module(1),
+    // so the builtin marker must be on the module-scope var.
+    // Also propagate eslintExplicitGlobalComments from global scope to module scope
+    // so that /*global b:false*/ var b = 1 is detected as a redeclaration.
+    if (kind === 1 && this._sourceType === 'script') {
+      const ecmaVersion = this._ecmaVersion;
+      // Lazily get global scope set for comment propagation (avoid infinite recursion)
+      let globalSet = null;
+      const getGlobalSet = () => {
+        if (globalSet === null) {
+          // Access the already-cached global scope if available
+          const globalScope = this._scopeCache ? this._scopeCache[0] : null;
+          globalSet = globalScope ? globalScope.set : new Map();
+        }
+        return globalSet;
+      };
+      for (const v of variables) {
+        if (!v.eslintImplicitGlobalSetting && _BUILTIN_GLOBALS_SET.has(v.name)) {
+          const minVer = _GLOBAL_MIN_VERSION[v.name];
+          if (minVer === undefined || ecmaVersion >= minVer) {
+            v.eslintImplicitGlobalSetting = 'writable';
+          }
+        }
+        // Propagate /*global X:false*/ comment declarations from global scope
+        const gSet = getGlobalSet();
+        const gVar = gSet.get(v.name);
+        if (gVar && gVar.eslintExplicitGlobalComments) {
+          if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
+          v.eslintExplicitGlobalComments.push(...gVar.eslintExplicitGlobalComments);
         }
       }
     }
@@ -1105,24 +1210,44 @@ class SourceCode {
         const curTag = ast._nodeTags[curIdx];
         if (curTag === T.declarator) {
           const initNodeIdx = ast.nodeRhs(curIdx);
-          if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+          // Check if this declarator is in a for-in/for-of statement (no initializer,
+          // but the loop itself provides the write each iteration).
+          const declParentIdx = ast._parentData ? ast._parentData[curIdx] : NONE;
+          const declParentTag = (declParentIdx !== undefined && declParentIdx !== NONE)
+            ? ast._nodeTags[ast._parentData[declParentIdx]] : undefined; // grandparent = for-in/of
+          const isForInOf = declParentTag === T.for_in_stmt || declParentTag === T.for_of_stmt ||
+                            declParentTag === T.for_await_of_stmt;
+          if ((initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) || isForInOf) {
             const thin = this._buildThinVariable(symId);
-            // Append (push) the init-write so that Zig-tracked refs (in source order)
-            // come first. This ensures reads that precede the declaration in source order
-            // appear before the init-write, allowing the prefer-const rule's
-            // ignoreReadBeforeAssign option to see the read-before-write ordering.
-            references.push({
+            // Insert the init-write in source order relative to other references.
+            // Most reads come after the declaration, but class static blocks can reference
+            // variables that are declared later (read before init in source order).
+            // ESLint's prefer-const with ignoreReadBeforeAssign:true returns null if it
+            // sees a read (writer===null) before the write, so source order matters.
+            const initRef = {
               identifier: declNode,
               from: scope, // same object as variable.scope — required for prefer-const
               resolved: thin,
-              writeExpr: nodeView(ast, initNodeIdx),
+              writeExpr: initNodeIdx !== NONE ? nodeView(ast, initNodeIdx) : null,
               init: true,
               isWrite: () => true,
               isRead: () => false,
               isWriteOnly: () => true,
               isReadOnly: () => false,
               isReadWrite: () => false,
-            });
+            };
+            // Insert in source order: find first ref whose start > declNode.start.
+            // This handles class static blocks that can reference outer `let` variables
+            // declared later in the source — those reads must precede the init-write.
+            const declStart = ast._nodeStartPos(declNodeIdx);
+            let insertIdx = 0;
+            while (insertIdx < references.length) {
+              const rId = references[insertIdx].identifier;
+              const rStart = rId && rId.range ? rId.range[0] : (rId ? ast._nodeStartPos(rId._i) : Infinity);
+              if (rStart > declStart) break;
+              insertIdx++;
+            }
+            references.splice(insertIdx, 0, initRef);
           }
           initAdded = true; // found declarator; stop regardless of whether init exists
         } else if (curTag === T.property || curTag === T.shorthand_property ||
@@ -1255,13 +1380,30 @@ class SourceCode {
     const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
       ? nodeView(ast, scopeNodeIdx) : null;
     const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const set = new Map();
     const s = {
       type: KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
-      set: new Map(), through: [], childScopes: [], implicit: { variables: [] },
+      set, through: [], childScopes: [], implicit: { variables: [] },
       block, upper, lookup: () => null,
     };
     s.variableScope = isVarScope ? s : (upper ? upper.variableScope || upper : s);
+    // Cache before populating set to avoid infinite recursion (thin vars back-ref this scope).
     this._thinScopeCache[scopeId] = s;
+    // Populate set with symbol names so getVariableByName(scope, name) lookups work.
+    // Required by prefer-const's isOuterVariableInDestructing check and similar rule patterns
+    // that walk the scope chain looking for variables by name.
+    this._ensureScopeIndex();
+    const symIds = this._scopeSymIndex ? this._scopeSymIndex[scopeId] : null;
+    if (symIds) {
+      for (let i = 0; i < symIds.length; i++) {
+        const symId = symIds[i];
+        const symName = ast._symName(symId);
+        if (symName) {
+          const thinVar = this._buildThinVariable(symId);
+          set.set(symName, thinVar);
+        }
+      }
+    }
     return s;
   }
 
@@ -1281,9 +1423,19 @@ class SourceCode {
   }
 
   /**
-   * Stub for isGlobalReference — returns false (no real scope analysis).
+   * isGlobalReference — returns true if the identifier resolves to a variable
+   * with no definitions (i.e., a built-in global).
    */
-  isGlobalReference() {
+  isGlobalReference(node) {
+    if (!node || node.type !== 'Identifier') return false;
+    const name = node.name;
+    let s = this.getScope(node);
+    while (s) {
+      if (s.set && s.set.has(name)) {
+        return s.set.get(name).defs.length === 0;
+      }
+      s = s.upper;
+    }
     return false;
   }
 
@@ -2996,7 +3148,8 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
       (sh.isExit ? universalExit : universalEnter).push(sh);
       continue;
     }
-    const types = Array.isArray(rootType) ? rootType : [rootType];
+    const rawTypes = Array.isArray(rootType) ? rootType : [rootType];
+    const types = rawTypes.length > 1 ? [...new Set(rawTypes)] : rawTypes;
     for (const rt of types) {
       // sanz uses variant tags: populate ALL tag indices for this type name.
       const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;

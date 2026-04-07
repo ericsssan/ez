@@ -20,12 +20,19 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // String literal includes quotes, scan the content for "${"
     if (text.len < 3) return; // at minimum: "X"
 
-    // Search within the string content (skip opening quote)
+    // Search within the string content (skip opening quote) for "${...}" pattern
     var i: usize = 1;
     while (i + 1 < text.len) : (i += 1) {
         if (text[i] == '$' and text[i + 1] == '{') {
-            ctx.report(node, meta.name, "Unexpected template string expression in a regular string", meta.default_severity);
-            return;
+            // Require a closing '}' somewhere after the '${'
+            var j: usize = i + 2;
+            while (j < text.len) : (j += 1) {
+                if (text[j] == '}') {
+                    ctx.report(node, meta.name, "Unexpected template string expression in a regular string", meta.default_severity);
+                    return;
+                }
+            }
+            return; // no closing brace found, not a template expression
         }
     }
 }

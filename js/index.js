@@ -156,7 +156,7 @@ function parse(source, options = {}) {
       const nameStartsArrOff = pdv.getUint32(semOff + 60 /* SH.SYMBOL_NAME_STARTS */, true);
       if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
         const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-        const shift = totalUsed - sourceStart; // negative: sourceStart >> totalUsed
+        const shift = srcStart - sourceStart; // negative: sourceStart >> srcStart
         for (let i = 0; i < symCount; i++) {
           nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
         }
@@ -210,15 +210,27 @@ const _decoder = new TextDecoder();
 let _lintOutBuf = new ArrayBuffer(64 * 1024);
 
 /**
- * Lint source code in-process using the native Zig lint rules.
- * No subprocess, no disk I/O — source is passed as a string.
+ * Lint source code or multiple files using the native Zig lint rules.
  *
- * @param {string} source
- * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
- * @returns {Array<{offset: number, severity: number, ruleName: string, message: string}>}
- *   severity: 0 = error, 1 = warning
+ * Single-file form:
+ *   lint(source: string, options?) → Array<{offset, severity, ruleName, message}>
+ *
+ * Batch form (parallel via Zig OS threads):
+ *   lint(filePaths: string[], options?) → Array<{file: string, diags: Array<{offset, severity, ruleName, message}>}>
+ *   JS reads files as Buffers (no encoding overhead), Zig parses+lints in parallel.
+ *
+ * @param {string|string[]} source  Source string or array of file paths
+ * @param {object} [options]        { filename?, lang?, config?: Uint8Array }
  */
 function lint(source, options = {}) {
+  if (Array.isArray(source)) {
+    const b = loadBinding();
+    const fs = require("fs");
+    const paths = source;
+    const buffers = paths.map(p => fs.readFileSync(p)); // Buffer (no encoding = raw bytes)
+    const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+    return b.lintBatch(paths, buffers, configBuf);
+  }
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
@@ -364,57 +376,6 @@ function parseAndLint(source, options = {}) {
   return { ast, diags };
 }
 
-/**
- * Lint source code using an already-parsed AstView (output of parse()).
- *
- * Avoids re-encoding the source string — reads source bytes directly from
- * the AstView's underlying buffer. Use this in the hybrid routing scenario:
- *
- *   const ast  = sanz.parse(source, { filename });   // parse once (for JS rules)
- *   const diags = sanz.lintBuffer(ast, { filename }); // lint from same buffer (native rules)
- *
- * @param {AstView} astView - Result of a previous parse() call
- * @param {object} [options] - { lang?: 'js'|'ts'|'jsx'|'tsx', filename?: string }
- * @returns {Array<{offset: number, severity: number, ruleName: string, message: string}>}
- */
-function lintBuffer(astView, options = {}) {
-  const b = loadBinding();
-  const lang = options.lang
-    ? LANG[options.lang] ?? LANG.js
-    : options.filename
-      ? detectLang(options.filename)
-      : LANG.js;
-
-  const buf = astView.buffer;
-
-  // Ensure output buffer is large enough (use source_len from header as proxy).
-  const dv = new DataView(buf);
-  const sourceLen = dv.getUint32(20 /* H.SOURCE_LEN */, true);
-  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
-  if (_lintOutBuf.byteLength < needed) {
-    _lintOutBuf = new ArrayBuffer(needed * 2);
-  }
-
-  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-  const bytesWritten = b.lintBuffer(buf, lang, _lintOutBuf, configBuf);
-  if (bytesWritten < 4) return [];
-
-  const dvOut = new DataView(_lintOutBuf);
-  const count = dvOut.getUint32(0, true);
-  const diags = [];
-  let pos = 4;
-  for (let i = 0; i < count && pos < bytesWritten; i++) {
-    const offset   = dvOut.getUint32(pos, true); pos += 4;
-    const severity = dvOut.getUint8(pos);         pos += 1;
-    const ruleLen  = dvOut.getUint8(pos);          pos += 1;
-    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
-    const msgLen   = dvOut.getUint16(pos, true);   pos += 2;
-    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
-    diags.push({ offset, severity, ruleName, message });
-  }
-  return diags;
-}
-
 // ── Native rule config ───────────────────────────────────────────
 
 let _nativeRulesMap = null;
@@ -460,4 +421,4 @@ function buildNativeConfig(rulesObj) {
   return buf;
 }
 
-module.exports = { parse, lint, lintBuffer, parseAndLint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, lint, parseAndLint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

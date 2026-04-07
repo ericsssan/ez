@@ -38,7 +38,8 @@ pub const SymbolFlags = packed struct(u16) {
     is_read: bool = false,
     is_type_of: bool = false,
     is_implicit_global: bool = false,
-    _padding: u2 = 0,
+    is_member_written: bool = false, // a member of this symbol was written (e.g. ns.prop = 0)
+    _padding: u1 = 0,
 
     pub const EMPTY: SymbolFlags = .{};
 
@@ -264,6 +265,11 @@ pub const SymbolTable = struct {
     /// Mark a symbol as used in a typeof expression.
     pub fn markTypeOf(self: *SymbolTable, id: SymbolId) void {
         self.flags.items[id.toInt()].is_type_of = true;
+    }
+
+    /// Mark a symbol as having a member written (e.g. `ns.prop = 0` marks `ns`).
+    pub fn markMemberWritten(self: *SymbolTable, id: SymbolId) void {
+        self.flags.items[id.toInt()].is_member_written = true;
     }
 
     /// Mark a symbol as exported.

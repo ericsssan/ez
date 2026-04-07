@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
-const { parse, getTagNames } = require("./index");
+const { parseAndLint, parse, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -216,6 +216,29 @@ for (const name of pluginNames) {
 if (allPlugins.length === 0) {
   console.error("error: no rules loaded");
   process.exit(1);
+}
+
+// ── Hybrid routing setup ─────────────────────────────────────────
+const nativeRules = getNativeRules();
+const nativeRuleObj = {};
+for (const plugin of allPlugins) {
+  const name = plugin.meta?.name;
+  if (!name) continue;
+  const info = nativeRules.get(name);
+  if (info) nativeRuleObj[name] = info.defaultSeverity;
+}
+const hasNativeRules = Object.keys(nativeRuleObj).length > 0;
+const nativeConfig = hasNativeRules ? buildNativeConfig(nativeRuleObj) : null;
+const jsOnlyPlugins = allPlugins.filter(p => !nativeRules.has(p.meta?.name));
+
+/** Convert UTF-8 byte offset to 1-based line number. */
+function offsetToLine(src, offset) {
+  let line = 1;
+  const end = Math.min(offset, src.length);
+  for (let i = 0; i < end; i++) {
+    if (src.charCodeAt(i) === 10) line++;
+  }
+  return line;
 }
 
 // Discover files
@@ -523,34 +546,62 @@ async function main() {
         continue;
       }
 
+      // ── Native rules via parseAndLint (single parse+lint pass) ──
       let ast;
-      try {
-        ast = parse(src, { filename: file });
-      } catch (e) {
-        if (formatJson) {
-          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
-        } else {
-          console.error(`${file}: parse error: ${e.message}`);
+      let nativeViolations = [];
+      if (hasNativeRules && nativeConfig) {
+        try {
+          const result = parseAndLint(src, { config: nativeConfig, filename: file });
+          ast = result.ast;
+          nativeViolations = result.diags.map(d => ({
+            ruleId: d.ruleName,
+            severity: d.severity === 0 ? 2 : 1,
+            message: d.message,
+            loc: { start: { line: offsetToLine(src, d.offset), column: 0 } },
+          }));
+        } catch (e) {
+          if (formatJson) {
+            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
+          } else {
+            console.error(`${file}: parse error: ${e.message}`);
+          }
+          errorFiles++;
+          continue;
         }
-        errorFiles++;
-        continue;
+      } else {
+        try {
+          ast = parse(src, { filename: file });
+        } catch (e) {
+          if (formatJson) {
+            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
+          } else {
+            console.error(`${file}: parse error: ${e.message}`);
+          }
+          errorFiles++;
+          continue;
+        }
       }
 
-      // ── JS lint ──
-      let reports;
-      try {
-        reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig, typeAware });
-      } catch (e) {
-        if (formatJson) {
-          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });
-        } else {
-          console.error(`${file}: plugin error: ${e.message}`);
+      // ── JS-only rules ────────────────────────────────────────────
+      let jsReports = [];
+      if (jsOnlyPlugins.length > 0) {
+        try {
+          jsReports = runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames, ruleConfig, typeAware });
+        } catch (e) {
+          if (formatJson) {
+            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });
+          } else {
+            console.error(`${file}: plugin error: ${e.message}`);
+          }
+          errorFiles++;
+          continue;
         }
-        errorFiles++;
-        continue;
       }
 
-      const violations = reports.filter(r => !r.message.startsWith("Plugin error:"));
+      const violations = [
+        ...nativeViolations,
+        ...jsReports.filter(r => !r.message.startsWith("Plugin error:")),
+      ];
       totalViolations += violations.length;
       totalFiles++;
 

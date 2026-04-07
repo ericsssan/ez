@@ -26,15 +26,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const cons_is_bool = ctx.nodeTag(consequent) == .boolean_literal;
     const alt_is_bool = ctx.nodeTag(alternate) == .boolean_literal;
 
+    // Any ternary where both branches are boolean literals is unneeded
     if (cons_is_bool and alt_is_bool) {
-        const cons_text = ctx.tokenText(ctx.nodeMainToken(consequent));
-        const alt_text = ctx.tokenText(ctx.nodeMainToken(alternate));
-
-        // x ? true : false  or  x ? false : true
-        if ((std.mem.eql(u8, cons_text, "true") and std.mem.eql(u8, alt_text, "false")) or
-            (std.mem.eql(u8, cons_text, "false") and std.mem.eql(u8, alt_text, "true")))
-        {
-            ctx.report(node, meta.name, "Unnecessary ternary; use the condition directly or negate it", meta.default_severity);
-        }
+        ctx.report(node, meta.name, "Unnecessary ternary; use the condition directly or negate it", meta.default_severity);
     }
 }

@@ -23,6 +23,8 @@
     "tests/differential/fixtures/more_rules.js": {
       "native": {
         "fn": [
+          "no-extra-semi:44",
+          "no-label-var:110",
           "no-redeclare:127",
           "no-redeclare:21",
           "no-unreachable:143",
@@ -34,6 +36,7 @@
           "no-unreachable:93"
         ],
         "fp": [
+          "no-extra-semi:45",
           "no-implied-eval:106",
           "no-useless-escape:120",
           "no-useless-escape:176"
@@ -68,7 +71,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 5
@@ -120,8 +123,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -172,7 +175,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 13
@@ -250,8 +253,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -315,7 +318,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -341,8 +344,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -446,7 +449,7 @@
       },
       "native": {
         "fn": 36,
-        "fp": 19,
+        "fp": 18,
         "crash": 0,
         "skip": 125
       }
@@ -459,7 +462,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -511,7 +514,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -523,8 +526,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -589,7 +592,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -628,7 +631,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -667,7 +670,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 5,
+        "fp": 1,
         "crash": 0,
         "skip": 0
       }
@@ -822,8 +825,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -848,8 +851,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 14
       }
@@ -1030,7 +1033,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1082,8 +1085,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 5,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -1135,7 +1138,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -1186,7 +1189,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1212,7 +1215,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 19

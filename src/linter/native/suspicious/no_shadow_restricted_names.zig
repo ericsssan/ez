@@ -15,7 +15,45 @@ pub const meta = RuleMeta{
     .description = "Disallow identifiers from shadowing restricted names",
 };
 
-const restricted_names = [_][]const u8{ "undefined", "NaN", "Infinity", "eval", "arguments" };
+const restricted_names = [_][]const u8{ "undefined", "NaN", "Infinity", "eval", "arguments", "globalThis" };
+
+/// Returns true if the symbol safely shadows `undefined`:
+/// bound by a variable declarator without an initializer and never written after declaration.
+/// This matches ESLint's safelyShadowsUndefined behavior.
+/// Note: getDeclNode returns the IDENTIFIER node, so we check the parent declarator via the
+/// symbol's binding kind (var/let/const) and its write flag.
+fn safelyShadowsUndefined(id: SymbolId, ctx: *const LintContext) bool {
+    const syms = ctx.symbols();
+    const kind = syms.getBindingKind(id);
+    // Only var/let declarations can safely shadow undefined (const requires an init → not safe)
+    switch (kind) {
+        .@"var", .let => {},
+        else => return false,
+    }
+    // The identifier's parent is a declarator. Check if it has an init by seeing if
+    // the symbol was ever written (init counts as a write in semantic analysis).
+    // We rely on is_written being false when there's no init AND no assignment.
+    const flags = syms.getFlags(id);
+    if (flags.is_written) return false;
+
+    // `is_written` is false for both `var undefined;` (truly no init) AND
+    // `var [undefined] = [1]` (destructuring: semantic doesn't mark writes for destructuring init).
+    // We must distinguish them: scan declarator nodes to find one where
+    //   lhs == decl_node (identifier is the direct binding, not inside a pattern)
+    //   rhs == .none     (no init expression)
+    // If such a declarator exists, it's truly `var undefined;` — safe shadow.
+    // If not (identifier is nested inside a pattern), it's not safe.
+    const decl_node = syms.getDeclNode(id);
+    const n = ctx.nodeCount();
+    var i: u32 = 0;
+    while (i < n) : (i += 1) {
+        const ni: NodeIndex = @enumFromInt(i);
+        if (ctx.nodeTag(ni) != .declarator) continue;
+        const d = ctx.nodeData(ni);
+        if (d.lhs == decl_node and d.rhs == .none) return true;
+    }
+    return false;
+}
 
 pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
@@ -33,6 +71,8 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const name = syms.getName(id);
         for (restricted_names) |restricted| {
             if (std.mem.eql(u8, name, restricted)) {
+                // Special case: `undefined` declared without init and never written is a safe shadow
+                if (std.mem.eql(u8, name, "undefined") and safelyShadowsUndefined(id, ctx)) break;
                 const decl_node = syms.getDeclNode(id);
                 ctx.report(decl_node, meta.name, "Shadowing of global restricted name is not allowed", meta.default_severity);
                 break;

@@ -494,7 +494,26 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(cond.consequent);
                 try self.visitNode(cond.alternate);
             },
-            .call_expr, .new_expr, .optional_call_expr => {
+            .call_expr, .optional_call_expr => {
+                try self.visitNode(data.lhs);
+                if (data.rhs != .none) {
+                    const args_range = self.readSubRange(@intFromEnum(data.rhs));
+                    const items = self.ast.extraSlice(args_range);
+                    // For Object.assign / Object.defineProperty / Reflect.* calls,
+                    // the first argument is a write target — mark it is_member_written.
+                    // Skip if the base name (Object/Reflect) is locally shadowed.
+                    const is_mutating = self.ast.isMutatingCall(data.lhs) and
+                        !self.calleeBaseIsLocallyShadowed(data.lhs);
+                    if (is_mutating and items.len > 0) {
+                        const first_arg: NodeIndex = @enumFromInt(items[0]);
+                        if (first_arg != .none) try self.visitLValueBase(first_arg);
+                        for (items[1..]) |raw| try self.visitNode(@enumFromInt(raw));
+                    } else {
+                        for (items) |raw| try self.visitNode(@enumFromInt(raw));
+                    }
+                }
+            },
+            .new_expr => {
                 try self.visitNode(data.lhs);
                 if (data.rhs != .none) {
                     const args_range = self.readSubRange(@intFromEnum(data.rhs));
@@ -548,8 +567,21 @@ pub const SemanticAnalyzer = struct {
 
             // ── Unary expressions ──────────────────────────
             .unary_plus, .unary_minus, .bitwise_not, .logical_not,
-            .void_expr, .delete_expr, .await_expr, .yield_expr, .yield_delegate,
+            .void_expr, .await_expr, .yield_expr, .yield_delegate,
             => try self.visitNode(data.lhs),
+            // delete marks a member write on the base symbol (e.g. `delete ns.prop`).
+            .delete_expr => {
+                if (data.lhs != .none) {
+                    const operand_tag = self.ast.nodeTag(data.lhs);
+                    if (operand_tag == .member_expr or operand_tag == .optional_member_expr or
+                        operand_tag == .computed_member_expr or operand_tag == .optional_computed_member_expr)
+                    {
+                        try self.visitLValueExpr(data.lhs);
+                    } else {
+                        try self.visitNode(data.lhs);
+                    }
+                }
+            },
 
             // ── Binary expressions ─────────────────────────
             .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
@@ -819,7 +851,14 @@ pub const SemanticAnalyzer = struct {
         const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, fiof_data.body);
         const alive_pre = self.cfg_alive;
-        try self.visitNode(fiof_data.binding);
+        // For-in/of binding: declarations (var/let/const) create new symbols;
+        // bare identifiers/patterns are assignment targets — visit as write refs.
+        const binding_tag = self.ast.nodeTag(fiof_data.binding);
+        if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
+            try self.visitNode(fiof_data.binding);
+        } else {
+            try self.visitLValueExpr(fiof_data.binding);
+        }
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
         self.cfg_alive = alive_pre;
@@ -1117,17 +1156,22 @@ pub const SemanticAnalyzer = struct {
     // ── Assignments ────────────────────────────────────────
 
     fn visitAssignment(self: *SemanticAnalyzer, data: Node.Data, kind: ReferenceKind) !void {
-        // If the LHS is a simple identifier, create a write (or read_write) reference.
-        if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
-            const ref_id = try self.references.addReference(
-                kind,
-                data.lhs,
-                self.current_scope,
-            );
-            self.resolveReference(name, ref_id);
-        } else {
-            try self.visitNode(data.lhs);
+        // LHS is an assignment target — identifiers and destructuring patterns
+        // should produce write (or read_write) references, not read references.
+        if (data.lhs != .none) {
+            if (self.ast.nodeTag(data.lhs) == .identifier) {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+                const ref_id = try self.references.addReference(
+                    kind,
+                    data.lhs,
+                    self.current_scope,
+                );
+                self.resolveReference(name, ref_id);
+            } else {
+                // Destructuring pattern: [a, b] = ... or { a, b } = ...
+                // Inner identifiers are assignment targets → write references.
+                try self.visitLValueExpr(data.lhs);
+            }
         }
         try self.visitNode(data.rhs);
     }
@@ -1143,8 +1187,150 @@ pub const SemanticAnalyzer = struct {
                 self.current_scope,
             );
             self.resolveReference(name, ref_id);
+        } else if (data.lhs != .none) {
+            // For member expressions like `obj.prop++`, visit as an lvalue base
+            // so is_member_written gets set on the base symbol.
+            try self.visitLValueExpr(data.lhs);
+        }
+    }
+
+    // ── LValue patterns (assignment targets) ───────────────
+
+    /// Visit an lvalue expression — any node that appears as an assignment target,
+    /// for-in/of binding, or destructuring target. Identifiers produce write
+    /// references; patterns recurse; member expressions are visited normally
+    /// (their object is a read, the property is not a reference).
+    fn visitLValueExpr(self: *SemanticAnalyzer, node: NodeIndex) !void {
+        if (node == .none) return;
+        const tag = self.ast.nodeTag(node);
+        const data = self.ast.nodeData(node);
+        switch (tag) {
+            .identifier => {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+                const ref_id = try self.references.addReference(.write, node, self.current_scope);
+                self.resolveReference(name, ref_id);
+            },
+            .array_pattern => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const items = self.ast.extraSlice(range);
+                for (items) |raw| {
+                    const elem: NodeIndex = @enumFromInt(raw);
+                    try self.visitLValueExpr(elem);
+                }
+            },
+            .object_pattern => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const items = self.ast.extraSlice(range);
+                for (items) |raw| {
+                    const prop: NodeIndex = @enumFromInt(raw);
+                    const prop_tag = self.ast.nodeTag(prop);
+                    const prop_data = self.ast.nodeData(prop);
+                    switch (prop_tag) {
+                        .property => try self.visitLValueExpr(prop_data.rhs),
+                        .shorthand_property => try self.visitLValueExpr(prop_data.lhs),
+                        .computed_property => {
+                            try self.visitNode(prop_data.lhs); // computed key is a read
+                            try self.visitLValueExpr(prop_data.rhs);
+                        },
+                        .rest_element => try self.visitLValueExpr(prop_data.lhs),
+                        else => try self.visitLValueExpr(prop),
+                    }
+                }
+            },
+            // array_literal and object_literal may appear as LHS of assignment expressions
+            // (e.g. `[a, b] = x` or `({ a, b } = x)`).  The parser validates them as
+            // assignment targets but keeps the original literal tag — handle them just
+            // like their pattern equivalents.
+            .array_literal => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const items = self.ast.extraSlice(range);
+                for (items) |raw| {
+                    const elem: NodeIndex = @enumFromInt(raw);
+                    try self.visitLValueExpr(elem);
+                }
+            },
+            .object_literal => {
+                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+                const items = self.ast.extraSlice(range);
+                for (items) |raw| {
+                    const prop: NodeIndex = @enumFromInt(raw);
+                    const prop_tag = self.ast.nodeTag(prop);
+                    const prop_data = self.ast.nodeData(prop);
+                    switch (prop_tag) {
+                        .property => try self.visitLValueExpr(prop_data.rhs),
+                        .shorthand_property => try self.visitLValueExpr(prop_data.lhs),
+                        .computed_property => {
+                            try self.visitNode(prop_data.lhs); // computed key is a read
+                            try self.visitLValueExpr(prop_data.rhs);
+                        },
+                        .spread_element => try self.visitLValueExpr(prop_data.lhs),
+                        else => try self.visitLValueExpr(prop),
+                    }
+                }
+            },
+            // Grouping: strip parens and recurse — `(x) = y` is valid when x is an lvalue.
+            .grouping_expr => try self.visitLValueExpr(data.lhs),
+            .rest_element, .spread_element => {
+                try self.visitLValueExpr(data.lhs);
+            },
+            // Default value in a pattern: `a = defaultVal` — lhs is lvalue, rhs is read.
+            // .assign = AssignmentExpression; .assignment_pattern = `a = default` inside patterns.
+            .assign, .assignment_pattern => {
+                try self.visitLValueExpr(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            // Member expression target: obj.prop = ... — obj is a read reference.
+            // Also mark the base symbol as is_member_written (needed for no-import-assign
+            // to detect `import * as ns; ns.prop = 0` without a direct write to ns).
+            .member_expr, .optional_member_expr => {
+                try self.visitLValueBase(data.lhs);
+            },
+            .computed_member_expr, .optional_computed_member_expr => {
+                try self.visitLValueBase(data.lhs);
+                try self.visitNode(data.rhs);
+            },
+            else => try self.visitNode(node),
+        }
+    }
+
+    /// Returns true if the base identifier of a callee like `Object.assign` is locally
+    /// bound (shadowed), meaning the call is NOT to the global Object/Reflect.
+    fn calleeBaseIsLocallyShadowed(self: *const SemanticAnalyzer, callee: NodeIndex) bool {
+        if (callee == .none) return false;
+        var node = callee;
+        while (self.ast.nodeTag(node) == .grouping_expr) {
+            node = self.ast.nodeData(node).lhs;
+            if (node == .none) return false;
+        }
+        const tag = self.ast.nodeTag(node);
+        if (tag != .member_expr and tag != .optional_member_expr) return false;
+        const base = self.ast.nodeData(node).lhs;
+        if (base == .none or self.ast.nodeTag(base) != .identifier) return false;
+        const name = self.ast.tokenText(self.ast.nodeMainToken(base));
+        const name_hash = std.hash.Wyhash.hash(0, name);
+        var scope = self.current_scope;
+        while (scope.isValid()) {
+            const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
+            if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |_| return true;
+            scope = self.scopes.parent(scope);
+        }
+        return false;
+    }
+
+    /// Visit the base of a member-expression assignment target (e.g. `obj` in `obj.prop = x`).
+    /// Emits a READ reference for the base and marks its symbol as is_member_written so
+    /// rules like no-import-assign can detect `ns.prop = 0` for namespace imports.
+    fn visitLValueBase(self: *SemanticAnalyzer, node: NodeIndex) !void {
+        if (node == .none) return;
+        if (self.ast.nodeTag(node) == .identifier) {
+            const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+            const ref_id = try self.references.addReference(.read, node, self.current_scope);
+            self.resolveReference(name, ref_id);
+            // Mark the resolved symbol as having a member written.
+            const sym_id = self.references.getSymbol(ref_id);
+            if (sym_id != .none) self.symbols.markMemberWritten(sym_id);
         } else {
-            try self.visitNode(data.lhs);
+            try self.visitNode(node);
         }
     }
 

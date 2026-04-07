@@ -17,6 +17,7 @@ pub const relevant_tags = [_]Node.Tag{
     .try_stmt,
     .catch_clause,
     .with_stmt,
+    .switch_stmt,
 };
 
 pub const meta = RuleMeta{
@@ -45,6 +46,45 @@ fn isEmptyBlock(node: NodeIndex, ctx: *const LintContext) bool {
             '/' => {
                 if (i + 1 < src.len and (src[i + 1] == '/' or src[i + 1] == '*')) {
                     return false; // has comment — not considered empty by ESLint
+                }
+            },
+            else => {},
+        }
+    }
+    return true;
+}
+
+/// Check if the switch body (between { and }) has no comments.
+/// Returns true if the body is truly empty (no comments), false if it has comments.
+fn isSwitchBodyEmpty(switch_node: NodeIndex, ctx: *const LintContext) bool {
+    const main_tok = ctx.nodeMainToken(switch_node);
+    const src = ctx.source();
+    // Scan forward from the switch keyword to find the '{' of the switch body.
+    // Need to skip past the '(discriminant)' — track paren depth.
+    const start_pos = ctx.tokenStart(main_tok);
+    var i: usize = start_pos;
+    // Find opening '(' of discriminant
+    while (i < src.len and src[i] != '(') : (i += 1) {}
+    // Skip past the discriminant with balanced parens
+    var depth: u32 = 0;
+    while (i < src.len) : (i += 1) {
+        if (src[i] == '(') depth += 1
+        else if (src[i] == ')') {
+            depth -= 1;
+            if (depth == 0) { i += 1; break; }
+        }
+    }
+    // Now find '{'
+    while (i < src.len and src[i] != '{') : (i += 1) {}
+    if (i >= src.len or src[i] != '{') return true;
+    i += 1;
+    // Scan between '{' and '}' for comments or case/default
+    while (i < src.len) : (i += 1) {
+        switch (src[i]) {
+            '}' => return true,
+            '/' => {
+                if (i + 1 < src.len and (src[i + 1] == '/' or src[i + 1] == '*')) {
+                    return false; // has comment
                 }
             },
             else => {},
@@ -111,6 +151,16 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .with_stmt => {
             const body: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
             checkBlock(body, ctx);
+        },
+        // switch (expr) { } — flag if no cases and no comments
+        .switch_stmt => {
+            const has_cases = data.rhs != .none and blk: {
+                const sub_range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
+                break :blk sub_range.start != sub_range.end;
+            };
+            if (!has_cases and isSwitchBodyEmpty(node, ctx)) {
+                ctx.report(node, meta.name, "Empty switch statement", meta.default_severity);
+            }
         },
         else => {},
     }

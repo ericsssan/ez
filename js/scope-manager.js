@@ -123,27 +123,15 @@ class ScopeBuilder {
     this._scopeCache = new Map();
     this._thinScopeCache = new Map();
     this._varCache = new Map();
-    this._scopeSymIndex = null;
     this._scopeRefIndex = null;
     this._scopeChildIndex = null;
-    this._symRefIndex = null;
     this._nodeDeclIndex = null;
   }
 
   _ensureScopeIndex() {
-    if (this._scopeSymIndex) return;
+    if (this._scopeRefIndex) return;
     const ast = this._ast;
     const scopeCount = ast._semScopeCount || 0;
-
-    const symIndex = new Array(scopeCount);
-    for (let i = 0; i < scopeCount; i++) symIndex[i] = [];
-    if (ast._symScopeIds) {
-      for (let i = 0; i < (ast._semSymbolCount || 0); i++) {
-        const s = ast._symScopeIds[i];
-        if (s < scopeCount) symIndex[s].push(i);
-      }
-    }
-    this._scopeSymIndex = symIndex;
 
     const refIndex = new Array(scopeCount);
     for (let i = 0; i < scopeCount; i++) refIndex[i] = [];
@@ -164,16 +152,6 @@ class ScopeBuilder {
       }
     }
     this._scopeChildIndex = childIndex;
-
-    const symRefIndex = new Array(ast._semSymbolCount || 0);
-    for (let i = 0; i < symRefIndex.length; i++) symRefIndex[i] = [];
-    if (ast._refSymbolIds) {
-      for (let i = 0; i < (ast._semRefCount || 0); i++) {
-        const s = ast._refSymbolIds[i];
-        if (s !== NONE32 && s < symRefIndex.length) symRefIndex[s].push(i);
-      }
-    }
-    this._symRefIndex = symRefIndex;
 
     // Precompute node → [symIds] for O(1) getDeclaredVariables() lookups.
     // For each symbol, walk up from its decl node; at each ancestor add the
@@ -228,10 +206,11 @@ class ScopeBuilder {
     this._ensureScopeIndex();
 
     const varMap = new Map();
-    const symIds = this._scopeSymIndex[scopeId];
-    if (symIds) {
-      for (let j = 0; j < symIds.length; j++) {
-        const v = this._buildVariable(symIds[j]);
+    {
+      const start = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
+      const end = start + (ast._scopeBindCount ? ast._scopeBindCount[scopeId] : 0);
+      for (let j = start; j < end; j++) {
+        const v = this._buildVariable(j);
         if (varMap.has(v.name)) {
           const existing = varMap.get(v.name);
           existing.identifiers.push(...v.identifiers);
@@ -343,10 +322,11 @@ class ScopeBuilder {
 
     this._ensureScopeIndex();
     const references = [];
-    const symRefs = this._symRefIndex ? this._symRefIndex[symId] : null;
-    if (symRefs) {
-      for (let j = 0; j < symRefs.length; j++) {
-        references.push(this._buildReference(symRefs[j]));
+    {
+      const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
+      const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
+      for (let j = refStart; j < refEnd; j++) {
+        references.push(this._buildReference(j));
       }
     }
 
@@ -577,7 +557,6 @@ class ScopeBuilder {
     let globalScope = null;     // phase 1: cheap stub, phase 2: full scope
     let fullBuilt = false;
     let scopes = null;
-    let nodeToScope = null;
 
     const self = this;
 
@@ -634,15 +613,6 @@ class ScopeBuilder {
         for (const child of scope.childScopes) collect(child);
       };
       collect(globalScope);
-
-      // Build node → scope[] map for acquire().
-      nodeToScope = new Map();
-      for (const scope of scopes) {
-        if (!scope.block) continue;
-        const existing = nodeToScope.get(scope.block);
-        if (existing) existing.push(scope);
-        else nodeToScope.set(scope.block, [scope]);
-      }
     }
 
     return {
@@ -650,13 +620,18 @@ class ScopeBuilder {
       get scopes() { ensureGlobalScope(); return scopes || [globalScope]; },
       acquire(node, inner = false) {
         ensureFullBuild();
-        const list = nodeToScope.get(node);
-        if (!list || list.length === 0) return null;
-        return inner ? list[list.length - 1] : list[0];
+        if (!node || node._i === undefined || node._i === null) return null;
+        const scopeId = ast._nodeScopeIds?.[node._i];
+        if (scopeId === undefined || scopeId === NONE32) return null;
+        return scopes[scopeId] || null;
       },
       acquireAll(node) {
         ensureFullBuild();
-        return nodeToScope.get(node) || [];
+        if (!node || node._i === undefined || node._i === null) return [];
+        const scopeId = ast._nodeScopeIds?.[node._i];
+        if (scopeId === undefined || scopeId === NONE32) return [];
+        const scope = scopes[scopeId];
+        return scope ? [scope] : [];
       },
       addGlobals(names) {
         ensureGlobalScope();

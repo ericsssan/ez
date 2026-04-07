@@ -6,11 +6,14 @@
  * 1. One-shot (legacy): workerData.files is set → process all files, post results, exit.
  * 2. Pool mode: workerData.files is absent → load plugins, signal ready, then
  *    process file batches received via messages. Stays alive until 'exit' message.
+ *
+ * Hybrid routing: native Zig rules run via parseAndLint(); JS-only rules run via
+ * runPlugins(). This avoids double parse+lex for files where both apply.
  */
 
 const { workerData, parentPort } = require("worker_threads");
 const fs = require("fs");
-const { parse, getTagNames } = require("./index");
+const { parseAndLint, parse, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -29,6 +32,21 @@ for (const name of pluginNames) {
   }
 }
 
+// ── Hybrid routing setup ─────────────────────────────────────────────────────
+// Split loaded plugins into native (handled by Zig) and JS-only.
+// Native rules are run via parseAndLint() to avoid a redundant parse.
+const nativeRules = getNativeRules(); // Map<name, { name, index, defaultSeverity }>
+const nativeRuleObj = {}; // { ruleName: defaultSeverity } for each native plugin loaded
+for (const plugin of allPlugins) {
+  const name = plugin.meta?.name;
+  if (!name) continue;
+  const info = nativeRules.get(name);
+  if (info) nativeRuleObj[name] = info.defaultSeverity;
+}
+const hasNativeRules = Object.keys(nativeRuleObj).length > 0;
+const nativeConfig = hasNativeRules ? buildNativeConfig(nativeRuleObj) : null;
+const jsOnlyPlugins = allPlugins.filter(p => !nativeRules.has(p.meta?.name));
+
 function applyFixes(src, fixes) {
   if (!fixes || fixes.length === 0) return src;
   const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
@@ -42,6 +60,16 @@ function applyFixes(src, fixes) {
   return result + src.slice(lastIndex);
 }
 
+/** Convert a UTF-8 byte offset to a 1-based line number. */
+function offsetToLine(src, offset) {
+  let line = 1;
+  const end = Math.min(offset, src.length);
+  for (let i = 0; i < end; i++) {
+    if (src.charCodeAt(i) === 10) line++;
+  }
+  return line;
+}
+
 function lintFile(file) {
   let src;
   try {
@@ -50,21 +78,44 @@ function lintFile(file) {
     return { file, readError: e.message };
   }
 
+  // ── Native rules via parseAndLint (single parse+lint pass) ──────
   let ast;
-  try {
-    ast = parse(src, { filename: file });
-  } catch (e) {
-    return { file, parseError: e.message };
+  let nativeViolations = [];
+  if (hasNativeRules && nativeConfig) {
+    try {
+      const result = parseAndLint(src, { config: nativeConfig, filename: file });
+      ast = result.ast;
+      nativeViolations = result.diags.map(d => ({
+        ruleId: d.ruleName,
+        severity: d.severity === 0 ? 2 : 1,
+        message: d.message,
+        loc: { start: { line: offsetToLine(src, d.offset), column: 0 } },
+      }));
+    } catch (e) {
+      return { file, parseError: e.message };
+    }
+  } else {
+    try {
+      ast = parse(src, { filename: file });
+    } catch (e) {
+      return { file, parseError: e.message };
+    }
   }
 
-  let reports;
-  try {
-    reports = runPlugins(ast, allPlugins, { filename: file, tagNames, ruleConfig, typeAware });
-  } catch (e) {
-    return { file, pluginError: e.message };
+  // ── JS-only rules via runPlugins ────────────────────────────────
+  let jsReports = [];
+  if (jsOnlyPlugins.length > 0) {
+    try {
+      jsReports = runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames, ruleConfig, typeAware });
+    } catch (e) {
+      return { file, pluginError: e.message };
+    }
   }
 
-  const violations = reports.filter(r => !r.message.startsWith("Plugin error:"));
+  const violations = [
+    ...nativeViolations,
+    ...jsReports.filter(r => !r.message.startsWith("Plugin error:")),
+  ];
 
   let fixed = false;
   if (applyFix) {

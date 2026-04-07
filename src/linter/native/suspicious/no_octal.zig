@@ -34,11 +34,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
 
-    // Check remaining chars are octal digits (0-7) - this is a legacy octal
-    for (text[1..]) |c| {
-        if (c < '0' or c > '7') return;
-    }
+    // ESLint no-octal: flag any numeric literal starting with `0` followed by
+    // a digit (matches /^0\d/). This includes 010, 07, 08, 09.1, 09e1, etc.
+    if (text[1] < '0' or text[1] > '9') return;
 
-    // It's a legacy octal literal like 010
-    ctx.report(node, meta.name, "Legacy octal literal. Use '0o' prefix for octal notation", meta.default_severity);
+    ctx.report(node, meta.name, "Octal literals should not be used.", meta.default_severity);
 }

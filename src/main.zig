@@ -37,8 +37,11 @@ pub fn main(init: std.process.Init) !void {
     var no_config = false;
     var eslint_compat_mode = false;
     var profile_phases = false;
+    var rule_filter: ?[]const u8 = null;
 
-    for (args[1..]) |arg| {
+    var arg_i: usize = 1;
+    while (arg_i < args.len) : (arg_i += 1) {
+        const arg = args[arg_i];
         if (std.mem.eql(u8, arg, "--dump-tokens")) {
             dump_tokens = true;
             dump_ast = false;
@@ -58,10 +61,17 @@ pub fn main(init: std.process.Init) !void {
         } else if (std.mem.startsWith(u8, arg, "--config=")) {
             config_path = arg["--config=".len..];
         } else if (std.mem.eql(u8, arg, "--config")) {
-            // Next arg is the path — but we don't have lookahead here.
-            // Accept --config=path form only for simplicity.
             try stdout.print("Use --config=<path> (with =)\n", .{});
             std.process.exit(1);
+        } else if (std.mem.startsWith(u8, arg, "--rule=")) {
+            rule_filter = arg["--rule=".len..];
+        } else if (std.mem.eql(u8, arg, "--rule")) {
+            arg_i += 1;
+            if (arg_i >= args.len) {
+                try stdout.print("--rule: expected rule name\n", .{});
+                std.process.exit(1);
+            }
+            rule_filter = args[arg_i];
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
             try stdout.print(usage_text, .{});
             try stdout.flush();
@@ -90,7 +100,24 @@ pub fn main(init: std.process.Init) !void {
         var config_resolver = ConfigResolver.init(allocator);
         defer config_resolver.deinit();
 
-        if (!no_config) {
+        // --rule: build a config with only the named rule enabled; all others off.
+        var single_rule_config: ?Config = null;
+        defer if (single_rule_config) |*c| c.deinit();
+        if (rule_filter) |name| {
+            var cfg = Config.initDefault(allocator);
+            // Turn every rule off, then re-enable the named one.
+            for (&cfg.rule_severity_table) |*sev| sev.* = .off;
+            const registry = @import("linter/native/registry.zig");
+            inline for (registry.all_rules, 0..) |Rule, i| {
+                if (std.mem.eql(u8, Rule.meta.name, name)) {
+                    cfg.rule_severity_table[i] = linter_root.config.RuleSeverity.fromSeverity(Rule.meta.default_severity);
+                }
+            }
+            single_rule_config = cfg;
+            resolved_config = &single_rule_config.?;
+        }
+
+        if (!no_config and rule_filter == null) {
             if (config_path) |cp| {
                 resolved_config = config_resolver.resolveFromPath(io, cp) catch null;
             } else if (eslint_compat_mode) {
@@ -329,6 +356,7 @@ const usage_text =
     \\
     \\Options:
     \\  --lint             Run lint rules
+    \\  --rule <name>      Run only this rule (overrides config)
     \\  --config=<path>    Path to sanz.config.json
     \\  --no-config        Disable config file loading (all rules on)
     \\  --eslint-compat    Read .eslintrc.json and map rules

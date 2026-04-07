@@ -32,7 +32,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     if (args.len == 0) return;
 
-    const first_arg: NodeIndex = @enumFromInt(args[0]);
+    // Unwrap grouping expressions
+    var first_arg: NodeIndex = @enumFromInt(args[0]);
+    while (ctx.nodeTag(first_arg) == .grouping_expr) {
+        first_arg = ctx.nodeData(first_arg).lhs;
+        if (first_arg == .none) return;
+    }
     const arg_tag = ctx.nodeTag(first_arg);
 
     if (arg_tag == .async_fn_expr or arg_tag == .async_arrow_fn) {

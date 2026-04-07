@@ -24,15 +24,12 @@
  *      make test-differential
  */
 
-const { execSync } = require("child_process");
 const fs     = require("fs");
-const os     = require("os");
 const path   = require("path");
 const Module = require("module");
 
 // ── Paths ────────────────────────────────────────────────────
 
-const SANZ_BIN     = path.resolve(__dirname, "../../zig-out/bin/sanz");
 const JS_ROOT      = path.resolve(__dirname, "../../js");
 const ESLINT_ROOT  = path.resolve(__dirname, "../conformance/eslint");
 const FIXTURES_DIR = path.resolve(__dirname, "fixtures");
@@ -49,6 +46,8 @@ const showFails    = args.includes("--fails") || args.includes("--show-fails");
 const verboseAll   = args.includes("--verbose") || args.includes("-v");
 const _ruleIdx     = args.indexOf("--rule");
 const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
+
+const ESPREE_SKIP = Symbol("espree-parse-skip"); // espree couldn't parse → count as skip
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -89,6 +88,16 @@ function printCaseDiff(label, code, espreeLines, ourLines, indent = "  ") {
   if (fn.length) console.log(`${indent}  ESLint fires at line(s): ${fn.join(", ")} — we MISS`);
   if (fp.length) console.log(`${indent}  We fire at line(s):      ${fp.join(", ")} — ESLint doesn't`);
   printCodeSnippet(code, [...fn, ...fp], indent + "  ");
+}
+
+/** Convert a byte offset to a 1-based line number. */
+function offsetToLine(source, offset) {
+  let line = 1;
+  const end = Math.min(offset, source.length);
+  for (let i = 0; i < end; i++) {
+    if (source.charCodeAt(i) === 10) line++;
+  }
+  return line;
 }
 
 // ── Rules ─────────────────────────────────────────────────────
@@ -132,7 +141,7 @@ const COMPARABLE_RULES = new Set([
 // ── ESLint + Sanz runner setup ────────────────────────────────
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
-const { parse, getTagNames }    = require(path.join(JS_ROOT, "index"));
+const { parse, getTagNames, lint: sanzLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
 const { runPlugins }            = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
@@ -179,35 +188,44 @@ function runEspreeForRule(src, ruleName, ruleOptions, sourceType, tcLanguageOpti
     const messages = eslintLinter.verify(src, [{
       languageOptions: langOpts,
       rules: { [ruleName]: ruleEntry },
-    }], { filename: jsxEnabled ? "test.jsx" : "test.js" });
+    // Always use test.js — ESLint flat config doesn't apply rules to .jsx by default,
+    // which would cause "No matching configuration found" and empty results.
+    // The JSX parser feature is set via parserOptions, not the filename.
+    }], { filename: "test.js" });
+    // If espree had a fatal parse error the case is unparseable by espree; skip it
+    // rather than treating our output as FP (sanz can parse TS/JSX that espree can't).
+    if (messages.some(m => m.fatal)) return ESPREE_SKIP;
     return messages
-      .filter(m => m.ruleId === ruleName && !m.fatal)
+      .filter(m => m.ruleId === ruleName)
       .map(m => ({ rule: m.ruleId, line: m.line }));
   } catch {
     return null;
   }
 }
 
-// ── Native binary ─────────────────────────────────────────────
+// ── Native (NAPI) ─────────────────────────────────────────────
 
 function runNative(filePath) {
+  const source = fs.readFileSync(filePath, "utf-8");
   try {
-    const out = execSync(`"${SANZ_BIN}" --lint "${filePath}"`,
-      { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] });
-    return parseNativeOutput(out);
-  } catch (e) {
-    return parseNativeOutput(e.stdout || e.stderr || "");
-  }
+    const diags = sanzLint(source, {});
+    return diags
+      .filter(d => COMPARABLE_RULES.has(d.ruleName))
+      .map(d => ({ rule: d.ruleName, line: offsetToLine(source, d.offset) }));
+  } catch { return []; }
 }
 
-function parseNativeOutput(output) {
-  const results = [];
-  for (const line of output.split("\n")) {
-    const m = line.match(/:(\d+):\d+: \w+\(([^)]+)\): (.+)/);
-    if (m && COMPARABLE_RULES.has(m[2]))
-      results.push({ rule: m[2], line: parseInt(m[1]) });
-  }
-  return results;
+// Run native for a single corpus test case (in-process, no subprocess).
+// ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
+// Returns [{rule,line}] on success, "skip" if case is unsupported, null on crash.
+function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions) {
+  if (hasCustomParser || hasOptions) return "skip";
+  try {
+    const diags = sanzLint(code, { config: ruleConfig });
+    return diags
+      .filter(d => d.ruleName === ruleName)
+      .map(d => ({ rule: d.ruleName, line: offsetToLine(code, d.offset) }));
+  } catch { return null; }
 }
 
 // ── ESLint-runner (JS path) ───────────────────────────────────
@@ -254,84 +272,6 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
   }
 }
 
-// Run native across ALL rules in one binary invocation.
-// Layout: <tmpDir>/<ruleName>/c<idx>.(js|mjs)
-// Each rule name is the subdirectory name, so we can recover it from the output path.
-// rulesCaseMap: { ruleName → allCases[] }
-// defaultSTMap:  { ruleName → sourceType }
-// Returns: { results, fileWriteMs, execMs, fileCount, totalBytes }
-//   results: { ruleName → results[] } where each entry is
-//     [] or [{rule,line}] on success, "skip" (options>0 or hasCustomParser), null (timeout).
-function runNativeAllRules(rulesCaseMap, defaultSTMap) {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sanz_diff_"));
-  try {
-    const writtenMap = {};
-    let fileCount = 0, totalBytes = 0;
-    const t0 = Date.now();
-    for (const [ruleName, allCases] of Object.entries(rulesCaseMap)) {
-      const ruleDir = path.join(tmpDir, ruleName);
-      fs.mkdirSync(ruleDir);
-      const written = new Array(allCases.length).fill(false);
-      const defST = defaultSTMap[ruleName];
-      for (let i = 0; i < allCases.length; i++) {
-        const tc = allCases[i];
-        if (tc.hasCustomParser || tc.options.length > 0) continue;
-        const st = tc.languageOptions?.sourceType || defST;
-        const content = tc.code;
-        fs.writeFileSync(path.join(ruleDir, `c${i}${st === "module" ? ".mjs" : ".js"}`), content, "utf-8");
-        written[i] = true;
-        fileCount++;
-        totalBytes += Buffer.byteLength(content, "utf-8");
-      }
-      writtenMap[ruleName] = written;
-    }
-    const fileWriteMs = Date.now() - t0;
-
-    let rawOut = "";
-    let timedOut = false;
-    const t1 = Date.now();
-    try {
-      rawOut = execSync(`"${SANZ_BIN}" --lint --no-config "${tmpDir}"`, {
-        encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"],
-        timeout: 120000, maxBuffer: 256 * 1024 * 1024,
-      });
-    } catch (e) {
-      timedOut = !!e.killed;
-      rawOut = (e.stdout || "") + (e.stderr || "");
-    }
-    const execMs = Date.now() - t1;
-
-    // Parse lines: .../sanz_diff_XXX/<ruleName>/c<idx>.<ext>:<line>:<col>: sev(<ruleId>): msg
-    // Filter: only record hits where ruleId matches the subdirectory (target rule).
-    const hitsByRule = {}; // ruleName → { idx → [{rule,line}] }
-    if (!timedOut) {
-      for (const line of rawOut.split("\n")) {
-        const m = line.match(/[/\\]([^/\\]+)[/\\]c(\d+)\.[a-z]+:(\d+):\d+: \w+\(([^)]+)\)/);
-        if (!m) continue;
-        const [, ruleDir, rawIdx, rawLine, ruleId] = m;
-        if (ruleId !== ruleDir) continue; // ignore cross-rule noise
-        const idx = parseInt(rawIdx), lineNum = parseInt(rawLine);
-        if (!hitsByRule[ruleDir]) hitsByRule[ruleDir] = {};
-        if (!hitsByRule[ruleDir][idx]) hitsByRule[ruleDir][idx] = [];
-        hitsByRule[ruleDir][idx].push({ rule: ruleId, line: lineNum });
-      }
-    }
-
-    const out = {};
-    for (const [ruleName, allCases] of Object.entries(rulesCaseMap)) {
-      const written = writtenMap[ruleName];
-      const hits    = hitsByRule[ruleName] || {};
-      out[ruleName] = allCases.map((_, i) => {
-        if (!written[i]) return "skip";
-        if (timedOut)    return null;
-        return hits[i] ?? [];
-      });
-    }
-    return { results: out, fileWriteMs, execMs, fileCount, totalBytes };
-  } finally {
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
-  }
-}
 
 // ── Diff helper ───────────────────────────────────────────────
 
@@ -453,11 +393,7 @@ function loadBaseline() {
 
 // ── Main ──────────────────────────────────────────────────────
 
-const nativeBinAvailable = fs.existsSync(SANZ_BIN);
-if (!corpusOnly && !nativeBinAvailable) {
-  console.error(`sanz binary not found at ${SANZ_BIN} — run 'make build' first`);
-  process.exit(1);
-}
+const nativeAvailable = typeof sanzLint === "function";
 
 const baseline = loadBaseline();
 const newBaseline = { files: {}, corpus: {} };
@@ -497,7 +433,7 @@ if (!corpusOnly) {
     };
 
     const basefile  = baseline?.files?.[rel];
-    const nativeOk  = nativeDiff.fn.length === 0 && nativeDiff.fp.length === 0 && nativeDiff.crashes.length === 0;
+    const nativeOk  = !nativeAvailable || (nativeDiff.fn.length === 0 && nativeDiff.fp.length === 0 && nativeDiff.crashes.length === 0);
     const runnerOk  = runnerDiff.fn.length === 0 && runnerDiff.fp.length === 0 && runnerDiff.crashes.length === 0;
 
     let fileRegression = false;
@@ -543,7 +479,7 @@ if (!corpusOnly) {
 // ── Source 2: ESLint submodule corpus — espree + runner + native ──
 
 if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
-  const nativeLabel = nativeBinAvailable ? "espree + runner + native" : "espree + runner";
+  const nativeLabel = nativeAvailable ? "espree + runner + native" : "espree + runner";
   console.log(`\nESLint corpus (${COMPARABLE_RULES.size} rules, ${nativeLabel})\n`);
 
   const { TESTS_DIR, restore } = installCorpusIntercept();
@@ -563,36 +499,23 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     allRuleData.push({ ruleName, ruleModule, defaultSourceType, allCases });
   }
 
-  // Phase 2: Single native binary invocation for all rules.
-  let nativeAllResults = null;
-  let nativeExecMs = 0, nativeFileWriteMs = 0, nativeFileCount = 0, nativeTotalBytes = 0;
-  if (nativeBinAvailable) {
-    const rulesCaseMap = {}, defaultSTMap = {};
-    for (const { ruleName, allCases, defaultSourceType } of allRuleData) {
-      rulesCaseMap[ruleName] = allCases;
-      defaultSTMap[ruleName] = defaultSourceType;
-    }
-    const r = runNativeAllRules(rulesCaseMap, defaultSTMap);
-    nativeAllResults   = r.results;
-    nativeExecMs       = r.execMs;
-    nativeFileWriteMs  = r.fileWriteMs;
-    nativeFileCount    = r.fileCount;
-    nativeTotalBytes   = r.totalBytes;
-  }
-
-  // Phase 3: Per-rule analysis.
+  // Phase 2: Per-rule analysis (native runs in-process via NAPI, same loop as runner).
   const runnerT0 = Date.now();
   let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
   let totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
       totalNativeSkip = 0, totalNativeCrash = 0;
-  let runnerOnlyMs = 0; // time spent in runRunnerForRule only (excludes espree)
+  let runnerOnlyMs = 0, nativeOnlyMs = 0;
 
   const _showCases = showFails || verboseAll || filterRule !== null;
   let _processed = 0, _total = allRuleData.reduce((s, r) => s + r.allCases.length, 0);
 
   for (const { ruleName, ruleModule, defaultSourceType, allCases } of allRuleData) {
     if (filterRule && ruleName !== filterRule) continue;
-    const nativeBatch = nativeAllResults ? nativeAllResults[ruleName] : null;
+
+    // Pre-build native config for this rule (one per rule, reused across cases).
+    const nativeRuleConfig = nativeAvailable
+      ? buildNativeConfig({ [ruleName]: "warn" })
+      : null;
 
     let fn = 0, fp = 0, crash = 0, pass = 0, skip = 0;
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkip = 0;
@@ -611,6 +534,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       _processed++;
 
       const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType, tc.languageOptions);
+      if (espreeResult === ESPREE_SKIP) { skip++; continue; }
       if (espreeResult === null) { crash++; continue; }
 
       const _rt0 = Date.now();
@@ -644,8 +568,10 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
         }
       }
 
-      // Native comparison (pre-computed, single-spawn results).
-      const nativeResult = nativeBatch ? nativeBatch[tcIdx] : "skip";
+      // Native comparison (in-process NAPI call).
+      const _nt0 = Date.now();
+      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0);
+      nativeOnlyMs += Date.now() - _nt0;
       if (nativeResult === "skip") {
         nativeSkip++;
       } else if (nativeResult === null) {
@@ -684,17 +610,17 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     if (!strict && (baseRunner || baseNative)) {
       if (baseRunner)
         ruleRegression = fn > baseRunner.fn || fp > baseRunner.fp || crash > baseRunner.crash;
-      if (nativeBinAvailable && baseNative)
+      if (nativeAvailable && baseNative)
         ruleRegression = ruleRegression || nativeFn > baseNative.fn || nativeFp > baseNative.fp;
     } else if (strict) {
       ruleRegression = fn > 0 || fp > 0 || crash > 0 ||
-                       (nativeBinAvailable && (nativeFn > 0 || nativeFp > 0));
+                       (nativeAvailable && (nativeFn > 0 || nativeFp > 0));
     }
 
     if (ruleRegression) anyRegression = true;
 
     const allClean = (fn + fp + crash) === 0 &&
-                     (!nativeBinAvailable || (nativeFn + nativeFp + nativeCrash) === 0);
+                     (!nativeAvailable || (nativeFn + nativeFp + nativeCrash) === 0);
     const status = allClean ? "✓" : ruleRegression ? "✗" : "~";
 
     const runnerDetail = [
@@ -704,16 +630,15 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       skip  > 0 ? `${skip} skip`   : "",
     ].filter(Boolean).join(", ");
 
-    if (nativeBinAvailable) {
+    if (nativeAvailable) {
       const nativeDetail = [
         nativeFn    > 0 ? `${nativeFn} FN`       : "",
         nativeFp    > 0 ? `${nativeFp} FP`       : "",
         nativeCrash > 0 ? `${nativeCrash} crash` : "",
         nativeSkip  > 0 ? `${nativeSkip} skip`   : "",
       ].filter(Boolean).join(", ");
-      const runnerStr = `runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`;
       const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
-      console.log(`  ${status} ${ruleName}: ${runnerStr}  ${nativeStr}`);
+      console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}`);
     } else {
       console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
     }
@@ -740,15 +665,14 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   restore();
   const runnerMs = Date.now() - runnerT0;
 
-  if (nativeBinAvailable) {
+  if (nativeAvailable) {
     const nativeTotal    = totalNativePass + totalNativeFn + totalNativeFp + totalNativeCrash;
-    const runnerCasesSec = Math.round(totalCases / (runnerOnlyMs / 1000)).toLocaleString();
-    const nativeCasesSec = Math.round(nativeFileCount / (nativeExecMs / 1000)).toLocaleString();
-    // Note: native runs all rules per file; runner runs one rule per case.
+    const runnerCasesSec = runnerOnlyMs > 0 ? Math.round(totalCases / (runnerOnlyMs / 1000)).toLocaleString() : "∞";
+    const nativeCasesSec = nativeOnlyMs > 0 ? Math.round(nativeTotal / (nativeOnlyMs / 1000)).toLocaleString() : "∞";
     console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes`);
-    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s, 1 rule/case)`);
+    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)`);
     console.log(`Corpus native:  ${totalNativePass}/${nativeTotal} pass, ${totalNativeSkip} skipped, ${totalNativeCrash} crashes`);
-    console.log(`  linting: ${(nativeExecMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s, ${COMPARABLE_RULES.size} rules/case)  file I/O: ${(nativeFileWriteMs/1000).toFixed(2)}s`);
+    console.log(`  linting: ${(nativeOnlyMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s)`);
   } else {
     console.log(`\nCorpus: ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes  (${(runnerMs/1000).toFixed(2)}s)`);
   }

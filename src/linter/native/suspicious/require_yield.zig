@@ -9,6 +9,8 @@ pub const relevant_tags = [_]Node.Tag{
     .async_generator_fn_decl,
     .generator_fn_expr,
     .async_generator_fn_expr,
+    .method_def,
+    .computed_method_def,
 };
 
 pub const meta = RuleMeta{
@@ -20,10 +22,38 @@ pub const meta = RuleMeta{
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
+    const tag = ctx.nodeTag(node);
+
+    // For method_def / computed_method_def, only flag generator methods.
+    // Object-literal generator methods: main_token IS the `*`.
+    // Class generator methods: main_token is the key identifier; `*` is the token before it.
+    if (tag == .method_def or tag == .computed_method_def) {
+        const main_tok = ctx.nodeMainToken(node);
+        const token_pkg = @import("../../../parser/token.zig");
+        const is_generator = ctx.tokenTag(main_tok) == token_pkg.Tag.asterisk or
+            (main_tok > 0 and ctx.tokenTag(main_tok - 1) == token_pkg.Tag.asterisk);
+        if (!is_generator) return;
+        const method_data = ctx.extraData(ast.MethodData, @intFromEnum(data.rhs));
+        const body = method_data.body;
+        if (body == .none) return;
+        const body_data = ctx.nodeData(body);
+        const body_range = ast.SubRange{ .start = @intFromEnum(body_data.lhs), .end = @intFromEnum(body_data.rhs) };
+        if (ctx.extraSlice(body_range).len == 0) return;
+        if (!containsYieldInBlock(body, ctx)) {
+            ctx.report(node, meta.name, "Generator function does not contain a yield expression", meta.default_severity);
+        }
+        return;
+    }
+
     const fn_data = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
 
     const body = fn_data.body;
     if (body == .none) return;
+
+    // Empty body is valid (no yield needed)
+    const body_data = ctx.nodeData(body);
+    const body_range = ast.SubRange{ .start = @intFromEnum(body_data.lhs), .end = @intFromEnum(body_data.rhs) };
+    if (ctx.extraSlice(body_range).len == 0) return;
 
     // Instead of recursively walking children (which is unsafe because
     // data.rhs is not always a NodeIndex), scan all AST nodes between
