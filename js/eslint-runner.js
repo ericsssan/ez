@@ -3253,6 +3253,7 @@ let _cachedIfStmtTagSet = null; // Set of ALL tag indices whose name is 'IfState
 let _cachedIfStmtTag = -1; // first IfStatement tag (used for elseStartNodes only)
 let _cachedTryStmtTagSet = null; // Set of ALL tag indices whose name is 'TryStatement'
 let _cachedDoWhileStmtTagSet = null; // Set of ALL tag indices whose name is 'DoWhileStatement'
+let _cachedLoopTagSet = null, _cachedSwitchTagSet = null, _cachedBreakTagSet = null;
 let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
 let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> — last occurrence, for O(1) reverse lookup
 let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL variant tag indices
@@ -3280,6 +3281,11 @@ function _ensureTagCaches(tagNames) {
     if (_tn === 'DoWhileStatement')  _cachedDoWhileStmtTagSet.add(_t);
   }
   _cachedIfStmtTag = tagNames.indexOf('IfStatement');
+  const _LOOP_TYPES = new Set(['WhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement', 'DoWhileStatement']);
+  _cachedLoopTagSet = new Set();
+  for (let _t2 = 0; _t2 < tagNames.length; _t2++) {
+    if (_LOOP_TYPES.has(tagNames[_t2])) _cachedLoopTagSet.add(_t2);
+  }
   _cachedExitKeys = tagNames.map(t => t ? t + ':exit' : null);
   const m = new Map();
   const allTags = new Map(); // typeName → Array<int>
@@ -4246,8 +4252,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
             (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
           const seg = cpTracker.exitBranch(hasAllBranches);
-          // Consult Zig reachability for next sibling.
-          if (seg && seg.reachable && ast._nodeReachable) {
+          if (seg && seg.reachable && ast._nodeReachable &&
+              _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
             const nextEvI2 = i + 1;
             if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
               if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
@@ -4503,14 +4509,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
           (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
         const seg2 = cpTracker.exitBranch(hasAllBranches);
-        // Consult Zig-computed reachability: if Zig says the next statement after
-        // this branch is unreachable (e.g. infinite loop), override the segment.
-        if (seg2 && seg2.reachable && ast._nodeReachable) {
-          // Find the next sibling: the DFS event after this exit should be the next node.
+        // Consult Zig reachability only for LOOP exits (infinite loop detection).
+        // Don't override for switch/if/try — those have different branch semantics.
+        if (seg2 && seg2.reachable && ast._nodeReachable &&
+            _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
           const nextEvIdx = i + 1;
           if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
-            const nextNode = dfsEvents[nextEvIdx];
-            if (!ast._nodeReachable[nextNode]) {
+            if (!ast._nodeReachable[dfsEvents[nextEvIdx]]) {
               seg2.reachable = false;
             }
           }
