@@ -111,7 +111,7 @@ for (const f of allFiles) {
   let src;
   try { src = fs.readFileSync(f, "utf8"); } catch { continue; }
   if (TS_IMPORT_ASSIGN.test(src)) continue;
-  try { sanz.parse(src, { filename: f }); } catch { continue; }
+  try { sanz.parseSource(src, { filename: f }); } catch { continue; }
   sources.push({ file: f, src });
 }
 
@@ -205,7 +205,7 @@ function runEslintDirect(src, filename) {
 // ── Run our runner ────────────────────────────────────────────────
 function runOurs(src, filename) {
   try {
-    const ast = sanz.parse(src, { filename });
+    const ast = sanz.parseSource(src, { filename });
     const reports = runPlugins(ast, ourPlugins, { filename, tagNames });
     return reports.map(r => ({
       ruleId: r.ruleId,

@@ -40,7 +40,7 @@ const files = corpusArg === "A"
   : collectFiles(CORPUS_DIR);
 const N = files.length;
 
-const { parse, getTagNames } = require(path.join(JS_DIR, "index"));
+const { parseSource: parse, getTagNames } = require(path.join(JS_DIR, "index"));
 const { runPlugins }         = require(path.join(JS_DIR, "eslint-runner"));
 const { loadPlugin }         = require(path.join(JS_DIR, "load-plugin"));
 const tagNames = getTagNames();

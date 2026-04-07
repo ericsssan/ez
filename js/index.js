@@ -84,7 +84,7 @@ function detectLang(filename) {
  * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
  * @returns {AstView} - Zero-copy AST view over the shared buffer
  */
-function parse(source, options = {}) {
+function parseSource(source, options = {}) {
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
@@ -183,7 +183,7 @@ function parse(source, options = {}) {
  * @param {object} [options] - { lang?: 'js'|'ts'|'jsx'|'tsx' }
  * @returns {AstView}
  */
-function parseFile(filePath, options = {}) {
+function parse(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
@@ -308,25 +308,13 @@ const _decoder = new TextDecoder();
 let _lintOutBuf = new ArrayBuffer(64 * 1024);
 
 /**
- * Lint source code or multiple files using the native Zig lint rules.
+ * Lint a source string using the native Zig lint rules.
  *
- * Single-file form:
- *   lint(source: string, options?) → Array<{offset, severity, ruleName, message}>
- *
- * Batch form (parallel via Zig OS threads):
- *   lint(filePaths: string[], options?) → Array<{file: string, diags: Array<{offset, severity, ruleName, message}>}>
- *   Zig workers read files and parse+lint in parallel (no JS-side I/O).
- *
- * @param {string|string[]} source  Source string or array of file paths
- * @param {object} [options]        { filename?, lang?, config?: Uint8Array }
+ * @param {string} source  Source string
+ * @param {object} [options]  { filename?, lang?, config?: Uint8Array }
+ * @returns {Array<{offset, severity, ruleName, message}>}
  */
-function lint(source, options = {}) {
-  if (Array.isArray(source)) {
-    const b = loadBinding();
-    const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-    const sizes = options.sizes instanceof Uint32Array ? options.sizes : undefined;
-    return b.lintFiles(source, sizes, configBuf);
-  }
+function lintSource(source, options = {}) {
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
@@ -334,7 +322,7 @@ function lint(source, options = {}) {
       ? detectLang(options.filename)
       : LANG.js;
 
-  // Encode source into the shared parse buffer (same path as parse()).
+  // Encode source into the shared parse buffer (same path as parseSource()).
   let sourceLen, buf, sourceStart;
   const reservedLen = source.length + 128;
   buf = ensureBuffer(reservedLen);
@@ -378,9 +366,26 @@ function lint(source, options = {}) {
 }
 
 /**
+ * Lint multiple files using the native Zig lint rules (parallel via Zig OS threads).
+ *
+ * Batch form:
+ *   lint(filePaths: string[], options?) → Array<{file: string, diags: Array<{offset, severity, ruleName, message}>}>
+ *   Zig workers read files and parse+lint in parallel (no JS-side I/O).
+ *
+ * @param {string[]} paths  Array of file paths
+ * @param {object} [options]  { config?: Uint8Array, sizes?: Uint32Array }
+ */
+function lint(paths, options = {}) {
+  const b = loadBinding();
+  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  const sizes = options.sizes instanceof Uint32Array ? options.sizes : undefined;
+  return b.lintFiles(paths, sizes, configBuf);
+}
+
+/**
  * Parse + lint in a single pipeline pass — avoids double lex/parse/semantic.
  *
- * Equivalent to calling parse() and lint() separately, but the native side
+ * Equivalent to calling parseSource() and lint() separately, but the native side
  * reuses the live AST and SemanticResult for both, cutting pipeline cost
  * from 2× to 1×.
  *
@@ -388,7 +393,7 @@ function lint(source, options = {}) {
  * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
  * @returns {{ ast: AstView, diags: Array<{offset, severity, ruleName, message}> }}
  */
-function parseAndLint(source, options = {}) {
+function parseAndLintSource(source, options = {}) {
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
@@ -480,7 +485,7 @@ function parseAndLint(source, options = {}) {
  * @param {object} [options] - { lang?, config?: Uint8Array }
  * @returns {{ ast: AstView, diags: Array<{offset, line, col, severity, ruleName, message}> }}
  */
-function parseAndLintFile(filePath, options = {}) {
+function parseAndLint(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
@@ -594,4 +599,4 @@ function buildNativeConfig(rulesObj) {
   return buf;
 }
 
-module.exports = { parse, parseFile, lint, parseAndLint, parseAndLintFile, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, parseSource, parseAndLint, parseAndLintSource, lintSource, lint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

@@ -90,7 +90,7 @@ for (let i = 0; i < rawSources.length; i += BATCH) {
 const sanz = require('./js/index.js');
 const fs = require('fs');
 const files = ${JSON.stringify(batch)};
-for (const f of files) { try { sanz.parseAndLint(fs.readFileSync(f,'utf8'),{filename:f}); } catch {} }
+for (const f of files) { try { sanz.parseAndLintSource(fs.readFileSync(f,'utf8'),{filename:f}); } catch {} }
 `], { timeout: 20000, cwd: process.cwd() });
   } catch (e) {
     if (e.status === 138 || e.status === 139 || e.signal) {
@@ -100,7 +100,7 @@ for (const f of files) { try { sanz.parseAndLint(fs.readFileSync(f,'utf8'),{file
           execFileSync(process.execPath, ["-e", `
 const sanz = require('./js/index.js');
 const fs = require('fs');
-sanz.parseAndLint(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.stringify(f)}});
+sanz.parseAndLintSource(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.stringify(f)}});
 `], { timeout: 5000, cwd: process.cwd() });
         } catch (e2) {
           if (e2.status === 138 || e2.status === 139 || e2.signal) crashSet.add(f);
@@ -111,7 +111,7 @@ sanz.parseAndLint(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.
 }
 const sources = rawSources.filter(({ file, src }) => {
   if (crashSet.has(file)) return false;
-  try { sanz.parse(src, { filename: file }); return true; }
+  try { sanz.parseSource(src, { filename: file }); return true; }
   catch { return false; }
 });
 console.error(` ${sources.length} ok, ${rawSources.length - sources.length} skipped (${crashSet.size} native crashes)`);
@@ -200,26 +200,26 @@ function bench(label, fn) {
 // ── Paths ────────────────────────────────────────────────────────
 
 // D: parse only (baseline)
-const pathD = bench("D  parse() only", (src, file) => {
-  sanz.parse(src, { filename: file });
+const pathD = bench("D  parseSource() only", (src, file) => {
+  sanz.parseSource(src, { filename: file });
 });
 
-// A: parse + runPlugins (all rules via JS)
+// A: parseSource + runPlugins (all rules via JS)
 const pathA = allPlugins.length > 0
-  ? bench("A  parse + runPlugins (all JS)", (src, file) => {
-      const ast = sanz.parse(src, { filename: file });
+  ? bench("A  parseSource + runPlugins (all JS)", (src, file) => {
+      const ast = sanz.parseSource(src, { filename: file });
       runPlugins(ast, allPlugins, { filename: file, tagNames });
     })
   : null;
 
-// C: parseAndLint (all native, no JS runner)
-const pathC = bench("C  parseAndLint (all native)", (src, file) => {
-  sanz.parseAndLint(src, { filename: file });
+// C: parseAndLintSource (all native, no JS runner)
+const pathC = bench("C  parseAndLintSource (all native)", (src, file) => {
+  sanz.parseAndLintSource(src, { filename: file });
 });
 
-// B: hybrid — parseAndLint(nativeConfig) + runPlugins(jsOnly)
-const pathB = bench("B  hybrid: parseAndLint(cfg) + runPlugins(jsOnly)", (src, file) => {
-  const { ast } = sanz.parseAndLint(src, { filename: file, config: nativeConfig });
+// B: hybrid — parseAndLintSource(nativeConfig) + runPlugins(jsOnly)
+const pathB = bench("B  hybrid: parseAndLintSource(cfg) + runPlugins(jsOnly)", (src, file) => {
+  const { ast } = sanz.parseAndLintSource(src, { filename: file, config: nativeConfig });
   if (jsOnlyPlugins.length > 0) {
     runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames });
   }

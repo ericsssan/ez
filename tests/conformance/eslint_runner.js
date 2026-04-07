@@ -29,7 +29,7 @@ Module.globalPaths.push(path.join(JS_ROOT, "node_modules"));
 const RULES_DIR    = path.join(ESLINT_ROOT, "lib/rules");
 const TESTS_DIR    = path.join(ESLINT_ROOT, "tests/lib/rules");
 
-const { parse, getTagNames } = require(path.join(JS_ROOT, "index"));
+const { parseSource: parse, getTagNames } = require(path.join(JS_ROOT, "index"));
 const { runPlugins }         = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames               = getTagNames();
 

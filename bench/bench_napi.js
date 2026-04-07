@@ -6,7 +6,7 @@
  * Or:       bun bench/bench_napi.js [file.js]
  */
 
-const { parse, reset, getTagNames } = require("../js/index");
+const { parseSource: parse, reset, getTagNames } = require("../js/index");
 const { runPlugins } = require("../js/eslint-runner");
 const fs = require("fs");
 const path = require("path");

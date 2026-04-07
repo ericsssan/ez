@@ -12,7 +12,7 @@ const ROOT    = path.join(__dirname, "..");
 const JS_DIR  = path.join(ROOT, "js");
 const CORPUS  = path.join(ROOT, "tests/conformance/test262-parser-tests/pass");
 
-const { parse, getTagNames } = require(path.join(JS_DIR, "index"));
+const { parseSource: parse, getTagNames } = require(path.join(JS_DIR, "index"));
 const { runPlugins }         = require(path.join(JS_DIR, "eslint-runner"));
 const { loadPlugin }         = require(path.join(JS_DIR, "load-plugin"));
 

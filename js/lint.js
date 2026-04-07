@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
-const { parseAndLint, parseAndLintFile, parse, parseFile, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLint, parseAndLintSource, parse, parseSource, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -596,9 +596,9 @@ async function main() {
         try {
           let result;
           if (applyFix) {
-            result = parseAndLint(src, { config: nativeConfig, filename: file });
+            result = parseAndLintSource(src, { config: nativeConfig, filename: file });
           } else {
-            result = parseAndLintFile(file, { config: nativeConfig });
+            result = parseAndLint(file, { config: nativeConfig });
           }
           ast = result.ast;
           nativeViolations = result.diags.map(d => ({
@@ -621,7 +621,7 @@ async function main() {
         }
       } else {
         try {
-          ast = applyFix ? parse(src, { filename: file }) : parseFile(file);
+          ast = applyFix ? parseSource(src, { filename: file }) : parse(file);
         } catch (e) {
           if (formatJson) {
             jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });

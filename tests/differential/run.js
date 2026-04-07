@@ -141,7 +141,7 @@ const COMPARABLE_RULES = new Set([
 // ── ESLint + Sanz runner setup ────────────────────────────────
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
-const { parse, getTagNames, lint: sanzLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
+const { parseSource: parse, getTagNames, lintSource: sanzLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
 const { runPlugins }            = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");

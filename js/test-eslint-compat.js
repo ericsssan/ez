@@ -16,7 +16,7 @@
 
 const path = require("path");
 const fs = require("fs");
-const { parse, getTagNames } = require("./index");
+const { parseSource: parse, getTagNames } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { Linter } = require("eslint");
 

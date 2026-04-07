@@ -13,7 +13,7 @@
 
 const { workerData, parentPort } = require("worker_threads");
 const fs = require("fs");
-const { parseAndLint, parse, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLintSource, parseSource, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -83,7 +83,7 @@ function lintFile(file) {
   let nativeViolations = [];
   if (hasNativeRules && nativeConfig) {
     try {
-      const result = parseAndLint(src, { config: nativeConfig, filename: file });
+      const result = parseAndLintSource(src, { config: nativeConfig, filename: file });
       ast = result.ast;
       nativeViolations = result.diags.map(d => ({
         ruleId: d.ruleName,
@@ -96,7 +96,7 @@ function lintFile(file) {
     }
   } else {
     try {
-      ast = parse(src, { filename: file });
+      ast = parseSource(src, { filename: file });
     } catch (e) {
       return { file, parseError: e.message };
     }

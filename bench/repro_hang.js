@@ -1,7 +1,7 @@
 "use strict";
 const fs = require("fs"), path = require("path");
 const ROOT = path.join(__dirname, "..");
-const { parse, getTagNames } = require(path.join(ROOT, "js/index"));
+const { parseSource: parse, getTagNames } = require(path.join(ROOT, "js/index"));
 const { runPlugins } = require(path.join(ROOT, "js/eslint-runner"));
 const { loadPlugin } = require(path.join(ROOT, "js/load-plugin"));
 const tagNames = getTagNames();

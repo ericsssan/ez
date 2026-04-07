@@ -57,7 +57,7 @@ const N = files.length;
 const codes = files.map(f => fs.readFileSync(f, "utf8"));
 
 // ── Load modules ─────────────────────────────────────────────────
-const { parse, getTagNames } = require(path.join(JS_DIR, "index"));
+const { parseSource: parse, getTagNames } = require(path.join(JS_DIR, "index"));
 const { runPlugins }         = require(path.join(JS_DIR, "eslint-runner"));
 const { loadPlugin }         = require(path.join(JS_DIR, "load-plugin"));
 
