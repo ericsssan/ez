@@ -700,21 +700,18 @@ const FileRaw = struct {
 const SourceView = struct { ptr: [*]const u8, len: usize };
 
 const BatchWorkerArgs = struct {
-    file_paths: []const []const u8,
-    sources: ?[]const SourceView,  // non-null → pre-loaded buffers from JS
-    file_sizes: ?[]const u32,      // non-null → known sizes, skip fstat
+    file_paths: []const [:0]const u8, // null-terminated — no dupeZ needed for open()
+    sources: ?[]const SourceView,     // non-null → pre-loaded buffers from JS
+    file_sizes: ?[]const u32,         // non-null → known sizes, skip fstat
     config: ?*const linter_root.config.Config,
     results: []FileRaw,
     out_alloc: std.mem.Allocator,
 };
 
 /// Read a file into allocator-owned memory using libc primitives.
-/// known_size: if non-null, skip fstat (caller already has size from stat during discovery).
-fn readFilePosix(path: []const u8, known_size: ?u32, allocator: std.mem.Allocator) ![]u8 {
-    const path_z = try allocator.dupeZ(u8, path);
-    defer allocator.free(path_z);
-
-    const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+/// path must be null-terminated. known_size skips fstat when non-null.
+fn readFilePosix(path: [:0]const u8, known_size: ?u32, allocator: std.mem.Allocator) ![]u8 {
+    const fd = std.c.open(path.ptr, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
     if (fd < 0) return error.FileOpenFailed;
     defer _ = std.c.close(fd);
 
@@ -831,7 +828,7 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     const tmp = tmp_arena.allocator();
 
     // Read all file paths + source buffer pointers on main thread (NAPI constraint).
-    const file_paths = tmp.alloc([]const u8, file_count) catch return null;
+    const file_paths = tmp.alloc([:0]const u8, file_count) catch return null;
     const sources    = tmp.alloc(SourceView, file_count) catch return null;
 
     for (0..file_count) |i| {
@@ -842,7 +839,7 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         const path_buf = tmp.alloc(u8, path_len + 1) catch return null;
         var written: usize = 0;
         _ = n.napi_get_value_string_utf8(env, path_val, path_buf.ptr, path_len + 1, &written);
-        file_paths[i] = path_buf[0..written];
+        file_paths[i] = path_buf[0..written :0];
 
         var src_val: n.Value = undefined;
         _ = n.napi_get_element(env, argv[1], @intCast(i), &src_val);
@@ -982,7 +979,7 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     const tmp = tmp_arena.allocator();
 
     // Read all file paths on main thread (NAPI constraint) — no source reads.
-    const file_paths = tmp.alloc([]const u8, file_count) catch return null;
+    const file_paths = tmp.alloc([:0]const u8, file_count) catch return null;
     for (0..file_count) |i| {
         var path_val: n.Value = undefined;
         _ = n.napi_get_element(env, argv[0], @intCast(i), &path_val);
@@ -991,7 +988,7 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         const path_buf = tmp.alloc(u8, path_len + 1) catch return null;
         var written: usize = 0;
         _ = n.napi_get_value_string_utf8(env, path_val, path_buf.ptr, path_len + 1, &written);
-        file_paths[i] = path_buf[0..written];
+        file_paths[i] = path_buf[0..written :0];
     }
 
     const results = tmp.alloc(FileRaw, file_count) catch return null;
