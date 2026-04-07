@@ -267,7 +267,6 @@
       },
       "runner": {
         "fn": [
-          "no-new-func:55",
           "no-undef:34",
           "no-undef:40",
           "no-undef:43",
@@ -799,16 +798,11 @@
           "indent:25",
           "indent:26",
           "line-comment-position:139",
-          "no-extend-native:164",
           "no-global-assign:54",
           "no-implicit-globals:54",
           "no-native-reassign:54",
-          "no-new-native-nonconstructor:60",
-          "no-new-symbol:60",
-          "no-obj-calls:63",
           "no-undef:106",
           "no-undef:187",
-          "no-undefined:54",
           "no-unreachable:143",
           "no-unreachable:161",
           "no-unreachable:167",
@@ -1543,8 +1537,8 @@
     },
     "id-blacklist": {
       "runner": {
-        "fn": 31,
-        "fp": 9,
+        "fn": 32,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1556,8 +1550,8 @@
     },
     "id-denylist": {
       "runner": {
-        "fn": 35,
-        "fp": 9,
+        "fn": 37,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1583,7 +1577,7 @@
     "id-match": {
       "runner": {
         "fn": 17,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2427,7 +2421,7 @@
     },
     "no-extend-native": {
       "runner": {
-        "fn": 21,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -2778,7 +2772,7 @@
     },
     "no-misleading-character-class": {
       "runner": {
-        "fn": 80,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -2934,7 +2928,7 @@
     },
     "no-new-func": {
       "runner": {
-        "fn": 10,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -2947,7 +2941,7 @@
     },
     "no-new-native-nonconstructor": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2986,7 +2980,7 @@
     },
     "no-new-symbol": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3038,7 +3032,7 @@
     },
     "no-obj-calls": {
       "runner": {
-        "fn": 56,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -3558,7 +3552,7 @@
     },
     "no-undefined": {
       "runner": {
-        "fn": 16,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3766,7 +3760,7 @@
     },
     "no-useless-backreference": {
       "runner": {
-        "fn": 11,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -4104,7 +4098,7 @@
     },
     "prefer-exponentiation-operator": {
       "runner": {
-        "fn": 139,
+        "fn": 5,
         "fp": 0,
         "crash": 0
       },
@@ -4117,7 +4111,7 @@
     },
     "prefer-named-capture-group": {
       "runner": {
-        "fn": 22,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -4156,7 +4150,7 @@
     },
     "prefer-object-spread": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -4195,7 +4189,7 @@
     },
     "prefer-regex-literals": {
       "runner": {
-        "fn": 181,
+        "fn": 24,
         "fp": 0,
         "crash": 0
       },
@@ -4325,8 +4319,8 @@
     },
     "require-unicode-regexp": {
       "runner": {
-        "fn": 31,
-        "fp": 0,
+        "fn": 1,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -4611,7 +4605,7 @@
     },
     "valid-typeof": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },

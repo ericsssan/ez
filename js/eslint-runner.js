@@ -787,10 +787,43 @@ class SourceCode {
     // For Program node in script mode, return the module scope (scope 1) not global (scope 0).
     // The Zig analyzer always creates a module-like scope for top-level decls, even in script mode.
     // ESLint rules expect getScope(Program) to contain those declarations.
-    if (nodeIdx === 0 && this._sourceType !== 'module') return this._buildScope(1);
+    if (nodeIdx === 0 && this._sourceType !== 'module') {
+      const moduleScope = this._buildScope(1);
+      // Wrap scope to make global variables accessible for ReferenceTracker compatibility
+      // (ReferenceTracker looks in globalScope.set for built-in globals like Math)
+      return this._wrapScopeWithGlobals(moduleScope);
+    }
     if (nodeIdx === 0) return this._buildScope(0);
     const scopeId = nodeIdx >= 0 ? ast._scopeForNode(nodeIdx) : 0;
     return this._buildScope(scopeId);
+  }
+
+  // Wrap a module-scope so that ReferenceTracker can find global variables.
+  // ReferenceTracker expects all globals to be in globalScope.set, but in script mode
+  // we split into global(0) + module(1). This wrapper delegates to parent scope when needed.
+  _wrapScopeWithGlobals(moduleScope) {
+    if (!moduleScope.upper) return moduleScope;
+    const globalScope = moduleScope.upper;
+    // Return a wrapped scope where 'set' delegates to global scope for missing variables
+    return new Proxy(moduleScope, {
+      get(target, prop) {
+        if (prop === 'set') {
+          // Return a proxy Map that delegates to global scope's set
+          return new Proxy(target.set, {
+            get(setTarget, mapProp) {
+              if (mapProp === 'get') {
+                return (key) => setTarget.get(key) || globalScope.set.get(key);
+              }
+              if (mapProp === 'has') {
+                return (key) => setTarget.has(key) || globalScope.set.has(key);
+              }
+              return Reflect.get(setTarget, mapProp);
+            }
+          });
+        }
+        return Reflect.get(target, prop);
+      }
+    });
   }
 
   /**
