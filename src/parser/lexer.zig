@@ -2108,32 +2108,88 @@ pub const Lexer = struct {
                                 if (self.body[self.pos] == '>') return .invalid;
                                 // Check for digit at start
                                 if (self.body[self.pos] >= '0' and self.body[self.pos] <= '9') return .invalid;
-                                // Check for backslash (like (?<a\>))
-                                if (self.body[self.pos] == '\\') return .invalid;
-                                // Check first char for ASCII: must be letter or $/_
-                                const fc = self.body[self.pos];
-                                if (fc < 0x80) {
-                                    const valid_start = (fc >= 'a' and fc <= 'z') or
-                                                       (fc >= 'A' and fc <= 'Z') or
-                                                       fc == '_' or fc == '$';
-                                    if (!valid_start) return .invalid;
+                                // Check first character: handle Unicode escapes like \u{...}
+                                if (self.body[self.pos] == '\\') {
+                                    // Backslash at start should be a Unicode escape
+                                    self.pos += 1;
+                                    if (self.pos >= self.body.len) return .invalid;
+                                    const esc = self.body[self.pos];
+                                    if (esc == 'u') {
+                                        self.pos += 1;
+                                        if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                                            // \u{HHHH} — skip to closing }
+                                            self.pos += 1;
+                                            while (self.pos < self.body.len and self.body[self.pos] != '}') {
+                                                self.pos += 1;
+                                            }
+                                            if (self.pos >= self.body.len) return .invalid;
+                                            self.pos += 1; // skip }
+                                        } else {
+                                            // \uXXXX — must have 4 hex digits
+                                            var j: usize = 0;
+                                            while (j < 4 and self.pos < self.body.len and isHex(self.body[self.pos])) : (j += 1) {
+                                                self.pos += 1;
+                                            }
+                                            if (j < 4) return .invalid;
+                                        }
+                                    } else {
+                                        return .invalid; // unsupported escape in group name
+                                    }
+                                } else {
+                                    // Check first char for ASCII: must be letter or $/_
+                                    const fc = self.body[self.pos];
+                                    if (fc < 0x80) {
+                                        const valid_start = (fc >= 'a' and fc <= 'z') or
+                                                           (fc >= 'A' and fc <= 'Z') or
+                                                           fc == '_' or fc == '$';
+                                        if (!valid_start) return .invalid;
+                                    }
+                                    self.pos += 1;
                                 }
-                                // Scan name until '>' — also checking for backslash or invalid chars
+                                // Scan rest of name until '>' — also checking for invalid chars
                                 while (self.pos < self.body.len and self.body[self.pos] != '>') {
                                     const nc = self.body[self.pos];
-                                    if (nc == '\\') return .invalid; // backslash in name invalid
-                                    if (nc == ')') return .invalid; // unterminated group name
-                                    // Check for ':' which is invalid in group name
-                                    if (nc == ':') return .invalid;
-                                    // Handle multi-byte
-                                    if (nc & 0x80 != 0) {
-                                        const blen: usize = if (nc & 0xE0 == 0xC0) 2
-                                                            else if (nc & 0xF0 == 0xE0) 3
-                                                            else if (nc & 0xF8 == 0xF0) 4
-                                                            else 1;
-                                        self.pos += @min(blen, self.body.len - self.pos);
-                                    } else {
+                                    if (nc == '\\') {
+                                        // Handle Unicode escapes in name
                                         self.pos += 1;
+                                        if (self.pos >= self.body.len) return .invalid;
+                                        const esc = self.body[self.pos];
+                                        if (esc == 'u') {
+                                            self.pos += 1;
+                                            if (self.pos < self.body.len and self.body[self.pos] == '{') {
+                                                // \u{HHHH} — skip to closing }
+                                                self.pos += 1;
+                                                while (self.pos < self.body.len and self.body[self.pos] != '}') {
+                                                    self.pos += 1;
+                                                }
+                                                if (self.pos >= self.body.len) return .invalid;
+                                                self.pos += 1; // skip }
+                                            } else {
+                                                // \uXXXX — must have 4 hex digits
+                                                var j: usize = 0;
+                                                while (j < 4 and self.pos < self.body.len and isHex(self.body[self.pos])) : (j += 1) {
+                                                    self.pos += 1;
+                                                }
+                                                if (j < 4) return .invalid;
+                                            }
+                                        } else {
+                                            return .invalid; // unsupported escape in group name
+                                        }
+                                    } else if (nc == ')') {
+                                        return .invalid; // unterminated group name
+                                    } else if (nc == ':') {
+                                        return .invalid; // invalid char in group name
+                                    } else {
+                                        // Handle multi-byte
+                                        if (nc & 0x80 != 0) {
+                                            const blen: usize = if (nc & 0xE0 == 0xC0) 2
+                                                                else if (nc & 0xF0 == 0xE0) 3
+                                                                else if (nc & 0xF8 == 0xF0) 4
+                                                                else 1;
+                                            self.pos += @min(blen, self.body.len - self.pos);
+                                        } else {
+                                            self.pos += 1;
+                                        }
                                     }
                                 }
                                 if (self.pos >= self.body.len) return .invalid; // unterminated (no >)
