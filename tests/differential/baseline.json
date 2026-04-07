@@ -82,8 +82,8 @@
     },
     "no-extra-semi": {
       "runner": {
-        "fn": 5,
-        "fp": 1,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -134,8 +134,8 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 15,
-        "fp": 2,
+        "fn": 13,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -420,8 +420,8 @@
     },
     "no-global-assign": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
