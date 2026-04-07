@@ -100,7 +100,7 @@ const _BUILTIN_GLOBALS = [
   'Float32Array', 'Float64Array', 'BigInt64Array', 'BigUint64Array',
   'Map', 'Set', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry',
   'ArrayBuffer', 'SharedArrayBuffer', 'DataView', 'Atomics',
-  'JSON', 'Promise', 'Proxy', 'Reflect',
+  'JSON', 'Intl', 'Promise', 'Proxy', 'Reflect',
   'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError',
   'SyntaxError', 'TypeError', 'URIError',
   'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
