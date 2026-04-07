@@ -869,23 +869,51 @@ const DiagRaw = struct {
     message: []const u8,
 };
 
-fn lineFromSource(source: []const u8, offset: usize) u32 {
-    var line: u32 = 1;
-    const end = @min(offset, source.len);
-    for (source[0..end]) |c| {
-        if (c == '\n') line += 1;
-    }
-    return line;
-}
+/// Pre-computed line start offsets for O(log n) line/col lookup.
+const LineIndex = struct {
+    starts: []const u32, // byte offset of each line's first char
 
-fn colFromSource(source: []const u8, offset: usize) u32 {
-    const end = @min(offset, source.len);
-    var i: usize = end;
-    while (i > 0) : (i -= 1) {
-        if (source[i - 1] == '\n') return @intCast(end - i);
+    fn build(source: []const u8, allocator: std.mem.Allocator) LineIndex {
+        // Count newlines first
+        var count: u32 = 1;
+        for (source) |c| { if (c == '\n') count += 1; }
+
+        const starts = allocator.alloc(u32, count) catch return .{ .starts = &.{} };
+        starts[0] = 0;
+        var idx: u32 = 1;
+        for (source, 0..) |c, i| {
+            if (c == '\n' and idx < count) {
+                starts[idx] = @intCast(i + 1);
+                idx += 1;
+            }
+        }
+        return .{ .starts = starts[0..idx] };
     }
-    return @intCast(end);
-}
+
+    fn lineAt(self: LineIndex, offset: usize) u32 {
+        if (self.starts.len == 0) return 1;
+        // Binary search for the last line start <= offset
+        var lo: usize = 0;
+        var hi: usize = self.starts.len;
+        while (lo < hi) {
+            const mid = (lo + hi) / 2;
+            if (self.starts[mid] <= offset) lo = mid + 1 else hi = mid;
+        }
+        return @intCast(lo); // 1-based
+    }
+
+    fn colAt(self: LineIndex, offset: usize) u32 {
+        if (self.starts.len == 0) return @intCast(offset);
+        var lo: usize = 0;
+        var hi: usize = self.starts.len;
+        while (lo < hi) {
+            const mid = (lo + hi) / 2;
+            if (self.starts[mid] <= offset) lo = mid + 1 else hi = mid;
+        }
+        const line_start = self.starts[lo - 1];
+        return @intCast(offset - line_start);
+    }
+};
 
 const FileRaw = struct {
     file_path: []const u8,
@@ -963,14 +991,16 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
 
         const diagnostics = linter_mod.lint(bump, &tree, &sem, args.config) catch &.{};
 
-        // Copy diags into out_alloc (stable across parse_arena/tl_lint resets).
-        // Compute line/col from source NOW — source is valid until parse_arena resets at scope exit.
+        // Build line index once, then O(log n) per diagnostic.
+        // Without this, lineFromSource scans from byte 0 per diagnostic = O(diags × filesize).
+        const line_idx = if (diagnostics.len > 0) LineIndex.build(source, bump) else LineIndex{ .starts = &.{} };
+
         if (args.out_alloc.alloc(DiagRaw, diagnostics.len)) |diag_copy| {
             for (diagnostics, 0..) |diag, j| {
                 const byte_offset = diag.span.start;
                 diag_copy[j] = .{
-                    .line      = lineFromSource(source, byte_offset),
-                    .col       = colFromSource(source, byte_offset),
+                    .line      = line_idx.lineAt(byte_offset),
+                    .col       = line_idx.colAt(byte_offset),
                     .offset    = byte_offset,
                     .severity  = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 },
                     .rule_name = args.out_alloc.dupe(u8, diag.rule_name) catch "",

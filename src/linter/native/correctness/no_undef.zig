@@ -84,13 +84,23 @@ const test_globals = [_][]const u8{
     "assert",
 };
 
-fn isKnownGlobal(name: []const u8) bool {
-    inline for (.{ es_globals, browser_globals, node_globals, test_globals }) |list| {
+const known_globals = std.StaticStringMap(void).initComptime(blk: {
+    const lists = .{ es_globals, browser_globals, node_globals, test_globals };
+    var count: usize = 0;
+    for (lists) |list| count += list.len;
+    var entries: [count]struct { []const u8, void } = undefined;
+    var i: usize = 0;
+    for (lists) |list| {
         for (list) |g| {
-            if (std.mem.eql(u8, name, g)) return true;
+            entries[i] = .{ g, {} };
+            i += 1;
         }
     }
-    return false;
+    break :blk entries;
+});
+
+fn isKnownGlobal(name: []const u8) bool {
+    return known_globals.has(name);
 }
 
 pub fn run(_: NodeIndex, _: *const LintContext) void {}
@@ -107,7 +117,6 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const node_idx = refs.getNode(ref_id);
         const name = ctx.tokenText(ctx.nodeMainToken(node_idx));
         if (isKnownGlobal(name)) continue;
-
         ctx.report(node_idx, meta.name, "Variable is not defined", meta.default_severity);
     }
 }

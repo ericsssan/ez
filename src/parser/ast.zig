@@ -660,29 +660,29 @@ pub const Ast = struct {
         return self.tokens.items(.start)[index];
     }
 
-    /// Get the source text of a token by re-scanning from its start position.
+    /// Get the source text of a token. O(1) using stored token length.
     pub fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
         const start = self.tokenStart(index);
-        const tag = self.tokenTag(index);
+        const len = self.tokens.items(.len)[index];
+        if (len > 0) return self.source[start..start + len];
 
-        // For tokens with known lexemes, return the lexeme
+        // Fallback for tokens with zero len (shouldn't happen in practice).
+        const tag = self.tokenTag(index);
         if (tag.lexeme()) |lex| return lex;
 
-        // For variable-length tokens, scan to find the end
+        // Re-scan (legacy path — only for edge cases with missing len)
         var end: u32 = start;
         switch (tag) {
             .identifier => {
                 while (end < self.source.len and (isIdentChar(self.source[end]) or self.source[end] >= 0x80 or self.source[end] == '\\')) {
                     if (self.source[end] == '\\') {
-                        // Unicode escape: \uXXXX or \u{XXXX}
                         end += 1;
                         if (end < self.source.len and self.source[end] == 'u') {
                             end += 1;
                             if (end < self.source.len and self.source[end] == '{') {
                                 while (end < self.source.len and self.source[end] != '}') end += 1;
-                                if (end < self.source.len) end += 1; // skip '}'
+                                if (end < self.source.len) end += 1;
                             } else {
-                                // \uXXXX — 4 hex digits
                                 var j: u32 = 0;
                                 while (j < 4 and end < self.source.len) : (j += 1) end += 1;
                             }
@@ -693,22 +693,17 @@ pub const Ast = struct {
                 }
             },
             .number_literal, .bigint_literal => {
-                while (end < self.source.len and isNumericChar(self.source[end])) {
-                    end += 1;
-                }
+                while (end < self.source.len and isNumericChar(self.source[end])) end += 1;
             },
             .string_literal => {
                 if (end >= self.source.len) return self.source[start..end];
                 const quote = self.source[end];
                 end += 1;
                 while (end < self.source.len and self.source[end] != quote) {
-                    if (self.source[end] == '\\') {
-                        end += 1;
-                        if (end >= self.source.len) break;
-                    }
+                    if (self.source[end] == '\\') { end += 1; if (end >= self.source.len) break; }
                     end += 1;
                 }
-                if (end < self.source.len) end += 1; // closing quote
+                if (end < self.source.len) end += 1;
             },
             .regex_literal => {
                 if (end >= self.source.len) return self.source[start..end];
