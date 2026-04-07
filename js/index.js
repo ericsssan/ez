@@ -210,6 +210,7 @@ function parseSource(source, options = {}) {
   if (bytesUsed === 0) throw new Error("sanz: parse failed (buffer too small or invalid source)");
 
   getTagNames();
+  if (options.noPrivateCopy) return new AstView(buf);
   return new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
 }
 
@@ -278,7 +279,9 @@ function parseAndLintSource(source, options = {}) {
   if (bytesUsed === 0) throw new Error("sanz: parseAndLint failed (buffer too small or invalid source)");
 
   getTagNames();
-  const ast = new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
+  const ast = options.noPrivateCopy
+    ? new AstView(buf)
+    : new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
   const diags = _parseDiags(bytesUsed);
   return { ast, diags };
 }

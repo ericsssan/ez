@@ -13,7 +13,7 @@
 
 const { workerData, parentPort } = require("worker_threads");
 const fs = require("fs");
-const { parse, parseAndLint, parseAndLintSource, parseSource, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLintSource, parseSource, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -71,17 +71,16 @@ function offsetToLine(src, offset) {
 }
 
 function lintFile(file) {
-  // --fix mode needs the source string for patch application.
-  // Fast path (no fix): Zig reads the file directly — no readFileSync, no TextEncoder.
-  if (applyFix) {
-    return lintFileWithSrc(file);
-  }
+  if (applyFix) return lintFileWithSrc(file);
+  return lintFileFromSrc(file, fs.readFileSync(file, "utf8"));
+}
 
+function lintFileFromSrc(file, src) {
   let ast;
   let nativeViolations = [];
   if (hasNativeRules && nativeConfig) {
     try {
-      const result = parseAndLint(file, { config: nativeConfig, noPrivateCopy: true });
+      const result = parseAndLintSource(src, { config: nativeConfig, noPrivateCopy: true, filename: file });
       ast = result.ast;
       nativeViolations = result.diags.map(d => ({
         ruleId: d.ruleName,
@@ -94,13 +93,12 @@ function lintFile(file) {
     }
   } else {
     try {
-      ast = parse(file, { noPrivateCopy: true });
+      ast = parseSource(src, { noPrivateCopy: true, filename: file });
     } catch (e) {
       return { file, parseError: e.message };
     }
   }
 
-  // ── JS-only rules via runPlugins ────────────────────────────────
   let jsReports = [];
   if (jsOnlyPlugins.length > 0) {
     try {
@@ -116,6 +114,32 @@ function lintFile(file) {
   ];
 
   return { file, violations, fixed: false };
+}
+
+/**
+ * Batch-lint: read all files first (tight I/O loop), then parse+lint each.
+ * Separates I/O from compute — OS readahead prefetches subsequent files.
+ */
+function lintBatch(files) {
+  if (applyFix) return files.map(lintFile);
+
+  const len = files.length;
+  const sources = new Array(len);
+  for (let i = 0; i < len; i++) {
+    try { sources[i] = fs.readFileSync(files[i], "utf8"); }
+    catch { sources[i] = null; }
+  }
+
+  const results = new Array(len);
+  for (let i = 0; i < len; i++) {
+    if (sources[i] === null) {
+      results[i] = { file: files[i], readError: "cannot read file" };
+    } else {
+      results[i] = lintFileFromSrc(files[i], sources[i]);
+      sources[i] = null;
+    }
+  }
+  return results;
 }
 
 // Slow path for --fix: needs source string for patch application.
@@ -182,19 +206,15 @@ function lintFileWithSrc(file) {
 }
 
 if (workerData.files) {
-  // One-shot mode: process all files and exit
-  const results = workerData.files.map(lintFile);
-  parentPort.postMessage(results);
+  parentPort.postMessage(lintBatch(workerData.files));
 } else {
-  // Pool mode: signal ready, then process file batches on demand
   parentPort.postMessage({ ready: true });
   parentPort.on("message", (msg) => {
     if (msg.exit) {
       process.exit(0);
     }
     if (msg.files) {
-      const results = msg.files.map(lintFile);
-      parentPort.postMessage({ batchId: msg.batchId, results });
+      parentPort.postMessage({ batchId: msg.batchId, results: lintBatch(msg.files) });
     }
   });
 }
