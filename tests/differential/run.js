@@ -488,14 +488,14 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       ? buildNativeConfig({ [ruleName]: "warn" })
       : null;
 
-    let fn = 0, fp = 0, crash = 0, pass = 0, skip = 0;
-    let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkip = 0;
+    let fn = 0, fp = 0, crash = 0, pass = 0, skipCustomParser = 0, skipEspreeParse = 0;
+    let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkipOptions = 0;
     // Collect failing cases for --fails / --verbose output
     const failedCases = [];  // { tcIdx, kind:"runner"|"native", espreeLines, ourLines, code }
 
     for (let tcIdx = 0; tcIdx < allCases.length; tcIdx++) {
       const tc = allCases[tcIdx];
-      if (tc.hasCustomParser) { skip++; continue; }
+      if (tc.hasCustomParser) { skipCustomParser++; continue; }
       const sourceType = tc.languageOptions?.sourceType || defaultSourceType;
 
       // Progress indicator when running all rules (no filter)
@@ -505,7 +505,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       _processed++;
 
       const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType, tc.languageOptions);
-      if (espreeResult === ESPREE_SKIP) { skip++; continue; }
+      if (espreeResult === ESPREE_SKIP) { skipEspreeParse++; continue; }
       if (espreeResult === null) { crash++; continue; }
 
       const _rt0 = Date.now();
@@ -544,7 +544,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0);
       nativeOnlyMs += Date.now() - _nt0;
       if (nativeResult === "skip") {
-        nativeSkip++;
+        nativeSkipOptions++;
       } else if (nativeResult === null) {
         nativeCrash++;
       } else {
@@ -556,6 +556,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       }
     }
 
+    const skip = skipCustomParser + skipEspreeParse;
     const total = pass + fn + fp + crash;
     const nativeTotal = nativePass + nativeFn + nativeFp + nativeCrash;
     totalCases       += total;
@@ -565,13 +566,13 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     totalNativePass  += nativePass;
     totalNativeFn    += nativeFn;
     totalNativeFp    += nativeFp;
-    totalNativeSkip  += nativeSkip;
+    totalNativeSkip  += nativeSkipOptions;
     totalNativeCrash += nativeCrash;
 
     // Baseline — supports old flat format {fn,fp,crash} and new nested format.
     newBaseline.corpus[ruleName] = {
       runner: { fn, fp, crash },
-      native: { fn: nativeFn, fp: nativeFp, crash: nativeCrash, skip: nativeSkip },
+      native: { fn: nativeFn, fp: nativeFp, crash: nativeCrash, skip: nativeSkipOptions },
     };
     const baseRule   = baseline?.corpus?.[ruleName];
     const baseRunner = baseRule?.runner ?? baseRule ?? null;  // old: flat, new: nested
@@ -594,19 +595,22 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
                      (!nativeAvailable || (nativeFn + nativeFp + nativeCrash) === 0);
     const status = allClean ? "✓" : ruleRegression ? "✗" : "~";
 
+    const skipDetail = [];
+    if (skipCustomParser > 0) skipDetail.push(`${skipCustomParser} custom-parser`);
+    if (skipEspreeParse > 0) skipDetail.push(`${skipEspreeParse} espree-parse`);
     const runnerDetail = [
       fn    > 0 ? `${fn} FN`       : "",
       fp    > 0 ? `${fp} FP`       : "",
       crash > 0 ? `${crash} crash` : "",
-      skip  > 0 ? `${skip} skip`   : "",
+      skipDetail.length > 0 ? `skip: ${skipDetail.join(", ")}` : "",
     ].filter(Boolean).join(", ");
 
     if (nativeAvailable) {
       const nativeDetail = [
-        nativeFn    > 0 ? `${nativeFn} FN`       : "",
-        nativeFp    > 0 ? `${nativeFp} FP`       : "",
-        nativeCrash > 0 ? `${nativeCrash} crash` : "",
-        nativeSkip  > 0 ? `${nativeSkip} skip`   : "",
+        nativeFn       > 0 ? `${nativeFn} FN`             : "",
+        nativeFp       > 0 ? `${nativeFp} FP`             : "",
+        nativeCrash    > 0 ? `${nativeCrash} crash`       : "",
+        nativeSkipOptions > 0 ? `${nativeSkipOptions} skip` : "",
       ].filter(Boolean).join(", ");
       const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
       console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}`);
