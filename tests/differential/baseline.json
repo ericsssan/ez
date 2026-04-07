@@ -7,9 +7,7 @@
       },
       "runner": {
         "fn": [],
-        "fp": [
-          "no-extra-semi:27"
-        ]
+        "fp": []
       }
     },
     "tests/differential/fixtures/mixed_rules.js": {
