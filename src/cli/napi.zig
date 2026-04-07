@@ -529,7 +529,6 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "parseAndLintFile", napiParseAndLintFile);
     registerFn(env, exports, "lintFiles", napiLintFiles);
-    registerFn(env, exports, "readFileToBuf", napiReadFileToBuf);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
@@ -1133,74 +1132,6 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         out_idx += 1;
     }
     return js_result;
-}
-
-// ── readFileToBuf(path, outBuf) → fileSize ───────────────────────────────────
-//
-// Reads the file at `path` into the TAIL of `outBuf`:
-//   outBuf[outBuf.byteLength - fileSize .. outBuf.byteLength]
-//
-// Returns fileSize (from fstat). If fileSize > outBuf.byteLength the buffer is
-// too small — nothing is written; JS should call ensureBuffer(fileSize) and
-// retry. Returns 0 on open/stat error or empty file.
-
-fn napiReadFileToBuf(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 2;
-    var argv: [2]n.Value = undefined;
-    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
-    if (argc < 2) {
-        _ = n.napi_throw_error(env, null, "readFileToBuf(path, outBuf): 2 args required");
-        return null;
-    }
-
-    // Decode path string into a stack buffer (avoids mmap/munmap per call).
-    var path_stack: [4096]u8 = undefined;
-    var written: usize = 0;
-    _ = n.napi_get_value_string_utf8(env, argv[0], &path_stack, path_stack.len, &written);
-    if (written == 0 or written >= path_stack.len) return null;
-    path_stack[written] = 0;
-    const path_z: [:0]const u8 = path_stack[0..written :0];
-
-    // Get output ArrayBuffer.
-    var out_data: ?*anyopaque = null;
-    var out_len: usize = 0;
-    if (n.napi_get_arraybuffer_info(env, argv[1], &out_data, &out_len) != n.OK) return null;
-
-    // Open file.
-    const fd = std.c.open(path_z.ptr, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
-    if (fd < 0) {
-        var js_zero: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_zero);
-        return js_zero;
-    }
-    defer _ = std.c.close(fd);
-
-    // Get file size.
-    var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0 or stat.size <= 0) {
-        var js_zero: n.Value = undefined;
-        _ = n.napi_create_uint32(env, 0, &js_zero);
-        return js_zero;
-    }
-    const file_size: usize = @intCast(stat.size);
-
-    // Always return file_size. JS uses it as the sourceLen even when buffer was
-    // too small (it will resize and retry).
-    var js_size: n.Value = undefined;
-    _ = n.napi_create_uint32(env, @intCast(file_size), &js_size);
-
-    if (file_size > out_len) return js_size; // signal: resize needed, nothing written
-
-    const out_ptr: [*]u8 = @ptrCast(out_data orelse return js_size);
-    const write_start = out_len - file_size;
-    var offset: usize = 0;
-    while (offset < file_size) {
-        const nread = std.c.read(fd, out_ptr + write_start + offset, file_size - offset);
-        if (nread <= 0) break;
-        offset += @intCast(nread);
-    }
-
-    return js_size; // = fileSize = sourceLen
 }
 
 // ── tagCount() → u32 ────────────────────────────────────────────

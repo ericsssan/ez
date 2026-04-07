@@ -6,15 +6,9 @@ const { AstView, setTagNames, reset: resetView } = require("./estree-adapter");
 
 let binding;
 
-/**
- * Auto-detect runtime and load the native binding:
- * - Bun FFI (fastest, optional)
- * - NAPI (Node.js + Bun fallback)
- */
 function loadBinding() {
   if (binding) return binding;
 
-  // Try Bun FFI fast path first
   if (typeof Bun !== "undefined") {
     try {
       binding = require("./bun-ffi");
@@ -24,7 +18,6 @@ function loadBinding() {
     }
   }
 
-  // NAPI path (works in Node.js and Bun)
   try {
     binding = require("../zig-out/lib/sanz.node");
   } catch {
@@ -52,13 +45,12 @@ const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 let sharedBuffer = null;
 
 function ensureBuffer(sourceLen) {
-  const needed = HEADER_SIZE + sourceLen * 30; // heuristic: 30x source size (minified files need ~25x)
+  const needed = HEADER_SIZE + sourceLen * 30;
   const minSize = Math.max(needed, DEFAULT_BUFFER_SIZE);
 
   if (!sharedBuffer || sharedBuffer.byteLength < minSize) {
     sharedBuffer = new ArrayBuffer(minSize);
   } else if (sharedBuffer.byteLength > minSize * 4) {
-    // Shrink if buffer is >4x what's needed (prevents permanent high-water-mark)
     sharedBuffer = new ArrayBuffer(minSize);
   }
   return sharedBuffer;
@@ -75,142 +67,42 @@ function detectLang(filename) {
   return LANG.js;
 }
 
-// ── Public API ───────────────────────────────────────────────────
+// ── Shared helpers ──────────────────────────────────────────────
+
+const _encoder = new TextEncoder();
+const _decoder = new TextDecoder();
+let _cachedTagNames = null;
+
+// Persistent output buffer — grown as needed, never shrunk (high-water-mark).
+let _lintOutBuf = new ArrayBuffer(64 * 1024);
 
 /**
- * Parse source code into an AST accessible via typed array views.
- *
- * @param {string} source - Source code string
- * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
- * @returns {AstView} - Zero-copy AST view over the shared buffer
+ * Encode a source string into the shared parse buffer.
+ * Returns { buf, sourceStart, sourceLen }.
  */
-function parseSource(source, options = {}) {
-  const b = loadBinding();
-  const lang = options.lang
-    ? LANG[options.lang] ?? LANG.js
-    : options.filename
-      ? detectLang(options.filename)
-      : LANG.js;
-
-  // Fast path: encode directly into the buffer tail using encodeInto() (zero allocation).
-  // We reserve source.length + 128 bytes — enough for files that are mostly ASCII
-  // (each non-ASCII BMP char adds at most 2 extra bytes; 128 bytes covers ~64 such chars).
-  // For files with more non-ASCII we fall back to encode().
-  let sourceLen, buf, sourceStart;
+function _encodeSource(source) {
   const reservedLen = source.length + 128;
-  buf = ensureBuffer(reservedLen);
-  sourceStart = buf.byteLength - reservedLen;
+  let buf = ensureBuffer(reservedLen);
+  let sourceStart = buf.byteLength - reservedLen;
   const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
   if (read === source.length) {
-    // Fast path: all chars encoded in-place — no allocation.
-    sourceLen = written;
-  } else {
-    // Source has too many non-ASCII chars for the reserved space.
-    // Fall back to encode() which allocates but handles all Unicode correctly.
-    const encoded = _encoder.encode(source);
-    sourceLen = encoded.byteLength;
-    buf = ensureBuffer(sourceLen);
-    sourceStart = buf.byteLength - sourceLen;
-    new Uint8Array(buf).set(encoded, sourceStart);
+    return { buf, sourceStart, sourceLen: written };
   }
-
-  // Call native parse
-  const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
-  if (bytesUsed === 0) {
-    throw new Error("sanz: parse failed (buffer too small or invalid source)");
-  }
-
-  // Copy the AST output into a private buffer so that subsequent parse() calls
-  // (which reuse sharedBuffer) don't corrupt this AstView's typed array views.
-  //
-  // Layout of privateBuf:
-  //   [0 .. totalUsed)         compact AST data (header + nodes + tokens + semantic + ...)
-  //   [totalUsed .. srcStart)  zero padding — covers semantic header fields that may extend
-  //                            past totalUsed (e.g. NODE_REACHABLE at semOff+88 can equal
-  //                            totalUsed; in the original 4MB buffer those bytes are zero,
-  //                            but without padding they'd alias source text in privateBuf)
-  //   [srcStart .. srcStart+sourceLen)  source bytes
-  //
-  // After copy we must update:
-  //   H.SOURCE_OFFSET (byte 52): old value = sourceStart (~4MB); new value = srcStart
-  //   _symNameStarts[i]: old values = sourceStart + byte_offset; new = srcStart + byte_offset
-  const dv0 = new DataView(buf);
-  const totalUsed = dv0.getUint32(56 /* H.TOTAL_USED */, true);
-  const semOff = dv0.getUint32(68 /* H.SEMANTIC_DATA_OFFSET */, true);
-  // Semantic header occupies semOff .. semOff+96 (NODE_REACHABLE at +88, +4 bytes, +4 padding).
-  // srcStart must be >= semOff+96 so the zero-filled gap keeps all header reads returning 0.
-  const semEnd = semOff > 0 ? semOff + 96 : 0;
-  const srcStart = Math.max(totalUsed, semEnd);
-  const privateSize = srcStart + sourceLen;
-  const privateArr = new Uint8Array(privateSize); // zero-initialized
-  privateArr.set(new Uint8Array(buf, 0, totalUsed));             // compact data
-  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart); // source bytes
-  const privateBuf = privateArr.buffer;
-  const pdv = new DataView(privateBuf);
-
-  // Fix SOURCE_OFFSET
-  pdv.setUint32(52 /* H.SOURCE_OFFSET */, srcStart, true);
-  if (semOff > 0) {
-    const symCount = pdv.getUint32(semOff + 4 /* SH.SYMBOL_COUNT */, true);
-    if (symCount > 0) {
-      const nameStartsArrOff = pdv.getUint32(semOff + 60 /* SH.SYMBOL_NAME_STARTS */, true);
-      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
-        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-        const shift = srcStart - sourceStart; // negative: sourceStart >> srcStart
-        for (let i = 0; i < symCount; i++) {
-          nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
-        }
-      }
-    }
-  }
-
-  // Verify magic
-  const magic = pdv.getUint32(0, true);
-  if (magic !== MAGIC) {
-    throw new Error("sanz: invalid buffer header (magic mismatch)");
-  }
-
-  // Ensure tag names are loaded for NodeProto.type
-  getTagNames();
-
-  return new AstView(privateBuf);
+  const encoded = _encoder.encode(source);
+  buf = ensureBuffer(encoded.byteLength);
+  sourceStart = buf.byteLength - encoded.byteLength;
+  new Uint8Array(buf).set(encoded, sourceStart);
+  return { buf, sourceStart, sourceLen: encoded.byteLength };
 }
 
 /**
- * Parse a file by path — single NAPI call: Zig reads + parses in one shot.
- *
- * @param {string} filePath - Absolute or relative path to the file
- * @param {object} [options] - { lang?, noPrivateCopy? }
- * @returns {AstView}
+ * Copy AST data from shared buffer into a private buffer.
+ * Adjusts SOURCE_OFFSET and symbol name pointers.
+ * Returns the private ArrayBuffer.
  */
-function parse(filePath, options = {}) {
-  const b = loadBinding();
-  const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
-
-  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
-  let bytesUsed = b.parseFile(buf, filePath, lang);
-  if (bytesUsed === 0) {
-    // Check if "buffer too small" — Zig writes needed file size at buf[0..4]
-    const needed = new DataView(buf).getUint32(0, true);
-    if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
-      buf = ensureBuffer(needed);
-      sharedBuffer = buf;
-      bytesUsed = b.parseFile(buf, filePath, lang);
-    }
-    if (bytesUsed === 0) throw new Error(`sanz: parse failed: ${filePath}`);
-  }
-  sharedBuffer = buf;
-
-  getTagNames();
-
-  if (options.noPrivateCopy) {
-    return new AstView(buf);
-  }
-
+function _makePrivateBuf(buf, sourceStart, sourceLen) {
   const dv0 = new DataView(buf);
   const totalUsed = dv0.getUint32(56, true);
-  const sourceLen = dv0.getUint32(20, true);
-  const sourceStart = dv0.getUint32(52, true);
   const semOff = dv0.getUint32(68, true);
   const semEnd = semOff > 0 ? semOff + 96 : 0;
   const srcStart = Math.max(totalUsed, semEnd);
@@ -235,46 +127,36 @@ function parse(filePath, options = {}) {
     }
   }
   const magic = pdv.getUint32(0, true);
-  if (magic !== MAGIC) throw new Error(`sanz: invalid buffer header: ${filePath}`);
-  return new AstView(privateBuf);
+  if (magic !== MAGIC) throw new Error("sanz: invalid buffer header (magic mismatch)");
+  return privateBuf;
 }
 
 /**
- * Reset all buffer views. Call between files to prevent source text retention.
+ * Parse packed binary diagnostics from the lint output buffer.
+ * If srcBytes is provided, each diag includes line/col.
  */
-function resetBuffer() {
-  resetView();
-}
-
-const _encoder = new TextEncoder();
-let _cachedTagNames = null;
-
-/**
- * Get the tag name table (ESTree-compatible type names).
- * Cached after first call. Also initializes estree-adapter.js TAG_NAMES.
- */
-function getTagNames() {
-  if (_cachedTagNames) return _cachedTagNames;
-  const b = loadBinding();
-  const count = b.tagCount();
-  _cachedTagNames = new Array(count);
+function _parseDiags(bytesWritten, srcBytes) {
+  if (bytesWritten < 4) return [];
+  const dv = new DataView(_lintOutBuf);
+  const count = dv.getUint32(0, true);
+  const diags = [];
+  let pos = 4;
   for (let i = 0; i < count; i++) {
-    _cachedTagNames[i] = b.tagName(i);
+    if (pos + 8 > bytesWritten) break;
+    const offset   = dv.getUint32(pos, true); pos += 4;
+    const severity = dv.getUint8(pos);         pos += 1;
+    const ruleLen  = dv.getUint8(pos);          pos += 1;
+    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
+    const msgLen   = dv.getUint16(pos, true);   pos += 2;
+    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
+    const diag = { offset, severity, ruleName, message };
+    if (srcBytes) {
+      diag.line = _bufOffsetToLine(srcBytes, offset);
+      diag.col = _bufOffsetToCol(srcBytes, offset);
+    }
+    diags.push(diag);
   }
-  setTagNames(_cachedTagNames);
-  return _cachedTagNames;
-}
-
-// ── File I/O helpers ─────────────────────────────────────────────
-
-/**
- * Read a file directly into the tail of the shared parse buffer via Zig libc.
- * Returns sourceLen. If sourceLen > buf.byteLength, buffer was too small —
- * caller must resize and retry.
- */
-function _readFileToBuf(path, buf) {
-  const b = loadBinding();
-  return b.readFileToBuf(path, buf);
+  return diags;
 }
 
 /** Count 1-based line number for a UTF-8 byte offset. */
@@ -296,98 +178,85 @@ function _bufOffsetToCol(bytes, offset) {
   return end;
 }
 
-/**
- * Load a file into the shared buffer, resizing if needed.
- * Returns { buf, sourceLen, sourceStart }.
- * Throws on read failure or empty result.
- */
-function _loadFile(path) {
-  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
-  let sourceLen = _readFileToBuf(path, buf);
-  if (sourceLen === 0) throw new Error(`sanz: cannot read file: ${path}`);
-  if (sourceLen > buf.byteLength) {
-    buf = ensureBuffer(sourceLen);
-    sourceLen = _readFileToBuf(path, buf);
-    if (sourceLen === 0 || sourceLen > buf.byteLength) throw new Error(`sanz: read failed after resize: ${path}`);
-  }
-  return { buf, sourceLen, sourceStart: buf.byteLength - sourceLen };
-}
-
-// ── Lint ─────────────────────────────────────────────────────────
-
-const _decoder = new TextDecoder();
-
-// Persistent output buffer — grown as needed, never shrunk (high-water-mark).
-let _lintOutBuf = new ArrayBuffer(64 * 1024);
-
-/**
- * Lint a source string using the native Zig lint rules.
- *
- * @param {string} source  Source string
- * @param {object} [options]  { filename?, lang?, config?: Uint8Array }
- * @returns {Array<{offset, severity, ruleName, message}>}
- */
-function lintSource(source, options = {}) {
-  const b = loadBinding();
-  const lang = options.lang
-    ? LANG[options.lang] ?? LANG.js
-    : options.filename
-      ? detectLang(options.filename)
-      : LANG.js;
-
-  // Encode source into the shared parse buffer (same path as parseSource()).
-  let sourceLen, buf, sourceStart;
-  const reservedLen = source.length + 128;
-  buf = ensureBuffer(reservedLen);
-  sourceStart = buf.byteLength - reservedLen;
-  const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
-  if (read === source.length) {
-    sourceLen = written;
-  } else {
-    const encoded = _encoder.encode(source);
-    sourceLen = encoded.byteLength;
-    buf = ensureBuffer(sourceLen);
-    sourceStart = buf.byteLength - sourceLen;
-    new Uint8Array(buf).set(encoded, sourceStart);
-  }
-
-  // Ensure output buffer is large enough (heuristic: source * 4 + 4KB minimum).
+function _ensureLintOutBuf(sourceLen) {
   const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
   if (_lintOutBuf.byteLength < needed) {
     _lintOutBuf = new ArrayBuffer(needed * 2);
   }
+}
+
+function getTagNames() {
+  if (_cachedTagNames) return _cachedTagNames;
+  const b = loadBinding();
+  const count = b.tagCount();
+  _cachedTagNames = new Array(count);
+  for (let i = 0; i < count; i++) {
+    _cachedTagNames[i] = b.tagName(i);
+  }
+  setTagNames(_cachedTagNames);
+  return _cachedTagNames;
+}
+
+// ── Public API ───────────────────────────────────────────────────
+
+function parseSource(source, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename ? detectLang(options.filename) : LANG.js;
+
+  const { buf, sourceStart, sourceLen } = _encodeSource(source);
+  const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
+  if (bytesUsed === 0) throw new Error("sanz: parse failed (buffer too small or invalid source)");
+
+  getTagNames();
+  return new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
+}
+
+function parse(filePath, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
+
+  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
+  let bytesUsed = b.parseFile(buf, filePath, lang);
+  if (bytesUsed === 0) {
+    const needed = new DataView(buf).getUint32(0, true);
+    if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
+      buf = ensureBuffer(needed);
+      sharedBuffer = buf;
+      bytesUsed = b.parseFile(buf, filePath, lang);
+    }
+    if (bytesUsed === 0) throw new Error(`sanz: parse failed: ${filePath}`);
+  }
+  sharedBuffer = buf;
+  getTagNames();
+
+  if (options.noPrivateCopy) return new AstView(buf);
+
+  const dv0 = new DataView(buf);
+  const sourceLen = dv0.getUint32(20, true);
+  const sourceStart = dv0.getUint32(52, true);
+  return new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
+}
+
+function resetBuffer() {
+  resetView();
+}
+
+function lintSource(source, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename ? detectLang(options.filename) : LANG.js;
+
+  const { buf, sourceStart, sourceLen } = _encodeSource(source);
+  _ensureLintOutBuf(sourceLen);
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
   const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
-  if (bytesWritten < 4) return [];
-
-  // Parse packed binary output.
-  const dv = new DataView(_lintOutBuf);
-  const count = dv.getUint32(0, true);
-  const diags = [];
-  let pos = 4;
-  for (let i = 0; i < count && pos < bytesWritten; i++) {
-    const offset   = dv.getUint32(pos, true); pos += 4;
-    const severity = dv.getUint8(pos);         pos += 1;
-    const ruleLen  = dv.getUint8(pos);          pos += 1;
-    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
-    const msgLen   = dv.getUint16(pos, true);   pos += 2;
-    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
-    diags.push({ offset, severity, ruleName, message });
-  }
-  return diags;
+  return _parseDiags(bytesWritten);
 }
 
-/**
- * Lint multiple files using the native Zig lint rules (parallel via Zig OS threads).
- *
- * Batch form:
- *   lint(filePaths: string[], options?) → Array<{file: string, diags: Array<{offset, severity, ruleName, message}>}>
- *   Zig workers read files and parse+lint in parallel (no JS-side I/O).
- *
- * @param {string[]} paths  Array of file paths
- * @param {object} [options]  { config?: Uint8Array, sizes?: Uint32Array }
- */
 function lint(paths, options = {}) {
   const b = loadBinding();
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
@@ -395,114 +264,29 @@ function lint(paths, options = {}) {
   return b.lintFiles(paths, sizes, configBuf);
 }
 
-/**
- * Parse + lint in a single pipeline pass — avoids double lex/parse/semantic.
- *
- * Equivalent to calling parseSource() and lint() separately, but the native side
- * reuses the live AST and SemanticResult for both, cutting pipeline cost
- * from 2× to 1×.
- *
- * @param {string} source
- * @param {object} [options] - { filename?: string, lang?: 'js'|'ts'|'jsx'|'tsx' }
- * @returns {{ ast: AstView, diags: Array<{offset, severity, ruleName, message}> }}
- */
 function parseAndLintSource(source, options = {}) {
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
-    : options.filename
-      ? detectLang(options.filename)
-      : LANG.js;
+    : options.filename ? detectLang(options.filename) : LANG.js;
 
-  // Encode source into shared buffer (same as parse()).
-  let sourceLen, buf, sourceStart;
-  const reservedLen = source.length + 128;
-  buf = ensureBuffer(reservedLen);
-  sourceStart = buf.byteLength - reservedLen;
-  const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
-  if (read === source.length) {
-    sourceLen = written;
-  } else {
-    const encoded = _encoder.encode(source);
-    sourceLen = encoded.byteLength;
-    buf = ensureBuffer(sourceLen);
-    sourceStart = buf.byteLength - sourceLen;
-    new Uint8Array(buf).set(encoded, sourceStart);
-  }
+  const { buf, sourceStart, sourceLen } = _encodeSource(source);
+  _ensureLintOutBuf(sourceLen);
 
-  // Ensure lint output buffer.
-  const needed = Math.max(sourceLen * 4 + 4096, 64 * 1024);
-  if (_lintOutBuf.byteLength < needed) {
-    _lintOutBuf = new ArrayBuffer(needed * 2);
-  }
-
-  // Single native call — returns AST bytesUsed; diags written to _lintOutBuf.
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
   const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
-  if (bytesUsed === 0) {
-    throw new Error("sanz: parseAndLint failed (buffer too small or invalid source)");
-  }
-
-  // Build AstView from the buffer (same copy logic as parse()).
-  const dv0 = new DataView(buf);
-  const totalUsed = dv0.getUint32(56 /* H.TOTAL_USED */, true);
-  const semOff = dv0.getUint32(68 /* H.SEMANTIC_DATA_OFFSET */, true);
-  const semEnd = semOff > 0 ? semOff + 96 : 0;
-  const srcStart = Math.max(totalUsed, semEnd);
-  const privateSize = srcStart + sourceLen;
-  const privateArr = new Uint8Array(privateSize);
-  privateArr.set(new Uint8Array(buf, 0, totalUsed));
-  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
-  const privateBuf = privateArr.buffer;
-  const pdv = new DataView(privateBuf);
-  pdv.setUint32(52 /* H.SOURCE_OFFSET */, srcStart, true);
-  if (semOff > 0) {
-    const symCount = pdv.getUint32(semOff + 4, true);
-    if (symCount > 0) {
-      const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
-      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
-        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-        const shift = totalUsed - sourceStart;
-        for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
-      }
-    }
-  }
+  if (bytesUsed === 0) throw new Error("sanz: parseAndLint failed (buffer too small or invalid source)");
 
   getTagNames();
-  const ast = new AstView(privateBuf);
-
-  // Parse diagnostics from _lintOutBuf.
-  const dv = new DataView(_lintOutBuf);
-  const count = dv.getUint32(0, true);
-  const diags = [];
-  let pos = 4;
-  for (let i = 0; i < count; i++) {
-    if (pos + 8 > _lintOutBuf.byteLength) break;
-    const offset   = dv.getUint32(pos, true); pos += 4;
-    const severity = dv.getUint8(pos);         pos += 1;
-    const ruleLen  = dv.getUint8(pos);          pos += 1;
-    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
-    const msgLen   = dv.getUint16(pos, true);   pos += 2;
-    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
-    diags.push({ offset, severity, ruleName, message });
-  }
-
+  const ast = new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
+  const diags = _parseDiags(bytesUsed);
   return { ast, diags };
 }
 
-/**
- * Parse + lint a file by path — Zig reads it directly.
- * Diags include {line, col} computed from source bytes (no re-read needed).
- *
- * @param {string} filePath
- * @param {object} [options] - { lang?, config?: Uint8Array }
- * @returns {{ ast: AstView, diags: Array<{offset, line, col, severity, ruleName, message}> }}
- */
 function parseAndLint(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
-  // Ensure lint output buffer (use a conservative estimate — we don't know file size yet).
   if (_lintOutBuf.byteLength < 64 * 1024) _lintOutBuf = new ArrayBuffer(128 * 1024);
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
@@ -518,64 +302,18 @@ function parseAndLint(filePath, options = {}) {
     if (bytesUsed === 0) throw new Error(`sanz: parseAndLint failed: ${filePath}`);
   }
   sharedBuffer = buf;
-
   getTagNames();
 
   const dv0 = new DataView(buf);
   const sourceLen = dv0.getUint32(20, true);
   const sourceStart = dv0.getUint32(52, true);
 
-  // noPrivateCopy: skip buffer copy (safe in sequential single-threaded workers).
-  const ast = options.noPrivateCopy ? new AstView(buf) : (() => {
-    const totalUsed = dv0.getUint32(56, true);
-    const semOff = dv0.getUint32(68, true);
-    const semEnd = semOff > 0 ? semOff + 96 : 0;
-    const srcStart = Math.max(totalUsed, semEnd);
-    const privateSize = srcStart + sourceLen;
-    const privateArr = new Uint8Array(privateSize);
-    privateArr.set(new Uint8Array(buf, 0, totalUsed));
-    privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
-    const privateBuf = privateArr.buffer;
-    const pdv = new DataView(privateBuf);
-    pdv.setUint32(52, srcStart, true);
-    if (semOff > 0) {
-      const symCount = pdv.getUint32(semOff + 4, true);
-      if (symCount > 0) {
-        const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
-        if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
-          const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-          const shift = srcStart - sourceStart;
-          for (let i = 0; i < symCount; i++) nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
-        }
-      }
-    }
-    return new AstView(privateBuf);
-  })();
+  const ast = options.noPrivateCopy
+    ? new AstView(buf)
+    : new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
 
-  // Parse diags — source bytes still valid in buf until next parseFile call.
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
-  const dv = new DataView(_lintOutBuf);
-  const count = dv.getUint32(0, true);
-  const diags = [];
-  let pos = 4;
-  for (let i = 0; i < count; i++) {
-    if (pos + 8 > _lintOutBuf.byteLength) break;
-    const offset   = dv.getUint32(pos, true); pos += 4;
-    const severity = dv.getUint8(pos);         pos += 1;
-    const ruleLen  = dv.getUint8(pos);          pos += 1;
-    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
-    const msgLen   = dv.getUint16(pos, true);   pos += 2;
-    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
-    diags.push({
-      offset,
-      line: _bufOffsetToLine(srcBytes, offset),
-      col:  _bufOffsetToCol(srcBytes, offset),
-      severity,
-      ruleName,
-      message,
-    });
-  }
-
+  const diags = _parseDiags(bytesUsed, srcBytes);
   return { ast, diags };
 }
 
@@ -583,11 +321,6 @@ function parseAndLint(filePath, options = {}) {
 
 let _nativeRulesMap = null;
 
-/**
- * Get metadata for all natively-implemented lint rules.
- * Returns a Map<name, {name, index, category, defaultSeverity}>.
- * Cached after first call.
- */
 function getNativeRules() {
   if (_nativeRulesMap === null) {
     const b = loadBinding();
@@ -597,20 +330,9 @@ function getNativeRules() {
   return _nativeRulesMap;
 }
 
-/**
- * Build a severity config buffer for the native linter from an ESLint rules object.
- *
- * Only rules with a native Zig implementation are included; all others are ignored.
- * Rules not present in rulesObj default to OFF (not the rule's own default severity).
- * This lets callers route only their explicitly-configured native rules to Zig, and
- * send the rest to the JS runner.
- *
- * @param {Object} rulesObj - ESLint-style rules: { "no-debugger": "error", "no-var": 1 }
- * @returns {Uint8Array} Severity table — pass as options.config to lint/parseAndLint/lintBuffer
- */
 function buildNativeConfig(rulesObj) {
   const nativeRules = getNativeRules();
-  const buf = new Uint8Array(nativeRules.size); // all off by default
+  const buf = new Uint8Array(nativeRules.size);
   for (const [ruleName, severity] of Object.entries(rulesObj)) {
     const info = nativeRules.get(ruleName);
     if (!info) continue;
