@@ -107,10 +107,10 @@ pub fn main(init: std.process.Init) !void {
             var cfg = Config.initDefault(allocator);
             // Turn every rule off, then re-enable the named one.
             for (&cfg.rule_severity_table) |*sev| sev.* = .off;
-            const registry = @import("linter/native/registry.zig");
-            inline for (registry.all_rules, 0..) |Rule, i| {
-                if (std.mem.eql(u8, Rule.meta.name, name)) {
-                    cfg.rule_severity_table[i] = linter_root.config.RuleSeverity.fromSeverity(Rule.meta.default_severity);
+            const linter_mod = @import("linter/linter.zig");
+            for (0..linter_root.rules.count) |i| {
+                if (std.mem.eql(u8, linter_mod.rule_names[i], name)) {
+                    cfg.rule_severity_table[i] = linter_mod.default_severities[i];
                 }
             }
             single_rule_config = cfg;

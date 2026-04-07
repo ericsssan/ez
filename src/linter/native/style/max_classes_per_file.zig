@@ -16,6 +16,7 @@ const MAX_CLASSES: usize = 1;
 pub const relevant_tags = [_]Node.Tag{.root};
 
 fn countClasses(node: NodeIndex, ctx: *const LintContext) usize {
+    if (node == .none or node.toInt() >= ctx.ast.nodes.len) return 0;
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
     switch (tag) {
@@ -25,7 +26,9 @@ fn countClasses(node: NodeIndex, ctx: *const LintContext) usize {
             const stmts = ctx.extraSlice(.{ .start = start, .end = end });
             var count: usize = 0;
             for (stmts) |s| {
-                count += countClasses(@enumFromInt(s), ctx);
+                const child: NodeIndex = @enumFromInt(s);
+                if (child == .none) continue;
+                count += countClasses(child, ctx);
             }
             return count;
         },

@@ -19,8 +19,10 @@ pub const relevant_tags = [_]Node.Tag{
     .async_fn_decl, .async_fn_expr, .async_arrow_fn,
 };
 
+const MAX_RECURSION: u8 = 32;
+
 fn measureDepth(node: NodeIndex, ctx: *const LintContext, current: u8) u8 {
-    if (node == .none) return current;
+    if (node == .none or current >= MAX_RECURSION) return current;
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
     var max_depth = current;
@@ -34,8 +36,7 @@ fn measureDepth(node: NodeIndex, ctx: *const LintContext, current: u8) u8 {
         .for_stmt, .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
         .switch_stmt, .try_stmt,
         => {
-            const new_depth = current + 1;
-            // Recurse into body
+            const new_depth = current +| 1; // saturating add
             const d = measureDepthStmt(node, ctx, new_depth);
             if (d > max_depth) max_depth = d;
         },
@@ -56,7 +57,7 @@ fn measureDepth(node: NodeIndex, ctx: *const LintContext, current: u8) u8 {
 }
 
 fn measureDepthStmt(node: NodeIndex, ctx: *const LintContext, depth: u8) u8 {
-    if (node == .none) return depth;
+    if (node == .none or depth >= MAX_RECURSION) return depth;
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
     var max_depth = depth;

@@ -30,6 +30,7 @@ fn isLoopOrSwitch(tag: Node.Tag) bool {
 
 fn hasNestedLoopOrSwitch(node: NodeIndex, ctx: *const LintContext, depth: u8) bool {
     if (node == .none or depth == 0) return false;
+    if (node.toInt() >= ctx.ast.nodes.len) return false;
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
 

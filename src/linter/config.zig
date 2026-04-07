@@ -2,6 +2,7 @@ const std = @import("std");
 const Severity = @import("../parser/diagnostic.zig").Severity;
 const registry = @import("native/registry.zig");
 const Category = @import("native/rule.zig").Category;
+const linter = @import("linter.zig");
 const globMatch = @import("gitignore.zig").globMatch;
 
 // ── Rule Severity ──────────────────────────────────────────────────
@@ -135,14 +136,12 @@ pub const Config = struct {
     /// and rule default severities.  Uses comptime iteration so the table
     /// is indexed by the same comptime index as `registry.all_rules`.
     pub fn buildSeverityTable(self: *Config) void {
-        comptime var i: usize = 0;
-        inline for (registry.all_rules) |Rule| {
-            if (self.rule_severities.get(Rule.meta.name)) |sev| {
+        for (0..rule_count) |i| {
+            if (self.rule_severities.get(linter.rule_names[i])) |sev| {
                 self.rule_severity_table[i] = sev;
             } else {
-                self.rule_severity_table[i] = RuleSeverity.fromSeverity(Rule.meta.default_severity);
+                self.rule_severity_table[i] = linter.default_severities[i];
             }
-            i += 1;
         }
     }
 };
@@ -152,22 +151,21 @@ pub const Config = struct {
 /// Apply a named preset to a config, setting rule severities by category.
 pub fn applyPreset(config: *Config, name: []const u8) void {
     if (std.mem.eql(u8, name, "recommended")) {
-        inline for (registry.all_rules) |Rule| {
-            const sev: RuleSeverity = switch (Rule.meta.category) {
+        for (0..registry.count) |i| {
+            const sev: RuleSeverity = switch (linter.rule_categories[i]) {
                 .correctness => .@"error",
                 .suspicious => .warning,
                 .style, .performance => .off,
             };
-            config.rule_severities.put(config.allocator, Rule.meta.name, sev) catch {};
+            config.rule_severities.put(config.allocator, linter.rule_names[i], sev) catch {};
         }
     } else if (std.mem.eql(u8, name, "all")) {
-        inline for (registry.all_rules) |Rule| {
-            const sev = RuleSeverity.fromSeverity(Rule.meta.default_severity);
-            config.rule_severities.put(config.allocator, Rule.meta.name, sev) catch {};
+        for (0..registry.count) |i| {
+            config.rule_severities.put(config.allocator, linter.rule_names[i], linter.default_severities[i]) catch {};
         }
     } else if (std.mem.eql(u8, name, "strict")) {
-        inline for (registry.all_rules) |Rule| {
-            config.rule_severities.put(config.allocator, Rule.meta.name, .@"error") catch {};
+        for (0..registry.count) |i| {
+            config.rule_severities.put(config.allocator, linter.rule_names[i], .@"error") catch {};
         }
     }
 }
@@ -267,9 +265,9 @@ fn parseCategoryName(name: []const u8) ?Category {
 }
 
 fn applyCategorySeverity(config: *Config, category: Category, sev: RuleSeverity) void {
-    inline for (registry.all_rules) |Rule| {
-        if (Rule.meta.category == category) {
-            config.rule_severities.put(config.allocator, Rule.meta.name, sev) catch {};
+    for (0..registry.count) |i| {
+        if (linter.rule_categories[i] == category) {
+            config.rule_severities.put(config.allocator, linter.rule_names[i], sev) catch {};
         }
     }
 }

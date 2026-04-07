@@ -112,40 +112,61 @@ fn buildDispatch() DispatchTable {
     return d;
 }
 
-// ── Comptime Run Function Pointer Table ───────────────────────────
+// ── Comptime Metadata Arrays ─────────────────────────────────────
 //
-// Optimization #2 (dispatch): O(1) indirect call per rule instead of
-// 212 inlined `inline for` bodies bloating the hot loop's icache footprint.
+// All rule metadata is materialized into flat arrays at comptime.
+// Runtime code uses plain `for` loops over these arrays — no `inline for`,
+// no binary bloat, better icache behavior.
 
 const RunFn = fn (NodeIndex, *const LintContext) void;
+const SymbolFn = fn (*const LintContext) void;
+const Category = @import("native/rule.zig").Category;
 
-const run_fns: [registry.count]*const RunFn = buildRunFns();
-
-fn buildRunFns() [registry.count]*const RunFn {
+const run_fns: [registry.count]*const RunFn = blk: {
     @setEvalBranchQuota(10_000);
     var arr: [registry.count]*const RunFn = undefined;
-    inline for (registry.all_rules, 0..) |Rule, i| {
-        arr[i] = &Rule.run;
-    }
-    return arr;
-}
+    for (registry.all_rules, 0..) |Rule, i| arr[i] = &Rule.run;
+    break :blk arr;
+};
 
-// ── Comptime Default Severity Table ──────────────────────────────
-//
-// Pre-materialized default severity for each rule index so the "no config"
-// path avoids a branch-heavy `RuleSeverity.fromSeverity(Rule.meta.default_severity)`
-// call per-node per-rule.
-
-const default_severities: [registry.count]RuleSeverity = buildDefaultSeverities();
-
-fn buildDefaultSeverities() [registry.count]RuleSeverity {
+pub const default_severities: [registry.count]RuleSeverity = blk: {
     @setEvalBranchQuota(10_000);
     var arr: [registry.count]RuleSeverity = undefined;
-    inline for (registry.all_rules, 0..) |Rule, i| {
+    for (registry.all_rules, 0..) |Rule, i|
         arr[i] = RuleSeverity.fromSeverity(Rule.meta.default_severity);
-    }
-    return arr;
-}
+    break :blk arr;
+};
+
+const symbol_fns: [registry.count]?*const SymbolFn = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count]?*const SymbolFn = undefined;
+    for (registry.all_rules, 0..) |Rule, i|
+        arr[i] = if (@hasDecl(Rule, "runOnSymbols")) &Rule.runOnSymbols else null;
+    break :blk arr;
+};
+
+const needs_semantic_flags: [registry.count]bool = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count]bool = undefined;
+    for (registry.all_rules, 0..) |Rule, i|
+        arr[i] = @hasDecl(Rule, "runOnSymbols") or
+            (@hasDecl(Rule, "needs_semantic") and Rule.needs_semantic);
+    break :blk arr;
+};
+
+pub const rule_names: [registry.count][]const u8 = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count][]const u8 = undefined;
+    for (registry.all_rules, 0..) |Rule, i| arr[i] = Rule.meta.name;
+    break :blk arr;
+};
+
+pub const rule_categories: [registry.count]Category = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count]Category = undefined;
+    for (registry.all_rules, 0..) |Rule, i| arr[i] = Rule.meta.category;
+    break :blk arr;
+};
 
 // ── Public API ────────────────────────────────────────────────────
 
@@ -198,21 +219,16 @@ pub fn lint(
     }
 
     // ── Phase 2: Symbol-phase rules ───────────────────────────
-    //
-    // These rules operate on the symbol table, not individual nodes.
-    // We still use inline for here since there are only ~19 such rules
-    // and they each run once per file (not per node).
-    inline for (registry.all_rules, 0..) |Rule, rule_idx| {
-        if (@hasDecl(Rule, "runOnSymbols")) {
-            const sev = if (config) |cfg|
-                cfg.rule_severity_table[rule_idx]
-            else
-                default_severities[rule_idx];
+    for (0..registry.count) |rule_idx| {
+        const fn_ptr = symbol_fns[rule_idx] orelse continue;
+        const sev = if (config) |cfg|
+            cfg.rule_severity_table[rule_idx]
+        else
+            default_severities[rule_idx];
 
-            if (sev != .off) {
-                ctx.severity_override = sev.toSeverity();
-                Rule.runOnSymbols(&ctx);
-            }
+        if (sev != .off) {
+            ctx.severity_override = sev.toSeverity();
+            fn_ptr(&ctx);
         }
     }
     ctx.severity_override = null;
@@ -229,16 +245,13 @@ pub fn lint(
 /// When false, callers may skip SemanticAnalyzer.analyze() and pass
 /// SemanticResult.initEmpty() instead, saving ~10% of per-file time.
 pub fn needsSemantic(config: ?*const Config) bool {
-    inline for (registry.all_rules, 0..) |Rule, rule_idx| {
-        const requires = @hasDecl(Rule, "runOnSymbols") or
-            (@hasDecl(Rule, "needs_semantic") and Rule.needs_semantic);
-        if (requires) {
-            const sev = if (config) |cfg|
-                cfg.rule_severity_table[rule_idx]
-            else
-                default_severities[rule_idx];
-            if (sev != .off) return true;
-        }
+    for (0..registry.count) |rule_idx| {
+        if (!needs_semantic_flags[rule_idx]) continue;
+        const sev = if (config) |cfg|
+            cfg.rule_severity_table[rule_idx]
+        else
+            default_severities[rule_idx];
+        if (sev != .off) return true;
     }
     return false;
 }

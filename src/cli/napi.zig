@@ -488,7 +488,6 @@ const n = struct {
 /// Rules beyond bytes.len default to off.
 fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
     const RuleSeverity = linter_root.config.RuleSeverity;
-    const reg = linter_root.rules;
     var config: linter_root.config.Config = .{
         .rule_severities = .{},
         .include_patterns = &.{},
@@ -497,7 +496,7 @@ fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
         .rule_severity_table = undefined,
         .allocator = std.heap.page_allocator,
     };
-    inline for (reg.all_rules, 0..) |_, i| {
+    for (0..linter_root.rules.count) |i| {
         const byte: u8 = if (i < bytes.len) bytes[i] else 0;
         config.rule_severity_table[i] = switch (byte) {
             0 => RuleSeverity.off,
@@ -818,33 +817,28 @@ fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 // ── getNativeRules() → Array<{name,index,category,defaultSeverity}> ─
 
 fn napiGetNativeRules(env: n.Env, _: n.CallbackInfo) callconv(.c) ?n.Value {
-    const reg = linter_root.rules;
+    const count = linter_root.rules.count;
     var result: n.Value = undefined;
-    if (n.napi_create_array_with_length(env, reg.count, &result) != n.OK) return null;
+    if (n.napi_create_array_with_length(env, count, &result) != n.OK) return null;
 
-    inline for (reg.all_rules, 0..) |Rule, i| {
+    const cat_names = [_][]const u8{ "correctness", "suspicious", "style", "performance" };
+    // RuleSeverity: off=0, warning=1, error=2
+    const sev_names = [_][]const u8{ "off", "warning", "error" };
+
+    for (0..count) |i| {
         var obj: n.Value = undefined;
         if (n.napi_create_object(env, &obj) == n.OK) {
             var v: n.Value = undefined;
-            // name
-            const rule_name = Rule.meta.name;
+            const rule_name = linter_mod.rule_names[i];
             if (n.napi_create_string_utf8(env, rule_name.ptr, rule_name.len, &v) == n.OK)
                 _ = n.napi_set_named_property(env, obj, "name", v);
-            // index
             if (n.napi_create_uint32(env, @intCast(i), &v) == n.OK)
                 _ = n.napi_set_named_property(env, obj, "index", v);
-            // category
-            const cat_name = @tagName(Rule.meta.category);
-            if (n.napi_create_string_utf8(env, cat_name.ptr, cat_name.len, &v) == n.OK)
+            const cat = cat_names[@intFromEnum(linter_mod.rule_categories[i])];
+            if (n.napi_create_string_utf8(env, cat.ptr, cat.len, &v) == n.OK)
                 _ = n.napi_set_named_property(env, obj, "category", v);
-            // defaultSeverity
-            const sev_str: []const u8 = switch (Rule.meta.default_severity) {
-                .@"error" => "error",
-                .warning  => "warning",
-                .info     => "warning",
-                .hint     => "off",
-            };
-            if (n.napi_create_string_utf8(env, sev_str.ptr, sev_str.len, &v) == n.OK)
+            const sev = sev_names[@intFromEnum(linter_mod.default_severities[i])];
+            if (n.napi_create_string_utf8(env, sev.ptr, sev.len, &v) == n.OK)
                 _ = n.napi_set_named_property(env, obj, "defaultSeverity", v);
             _ = n.napi_set_element(env, result, @intCast(i), obj);
         }
@@ -1088,7 +1082,7 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
                 .results    = results[start..end],
                 .out_alloc  = out_arenas[t].allocator(),
             };
-            threads[t] = std.Thread.spawn(.{}, lintBatchWorker, .{&worker_args[t]}) catch {
+            threads[t] = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, lintBatchWorker, .{&worker_args[t]}) catch {
                 lintBatchWorker(&worker_args[t]);
                 continue;
             };
