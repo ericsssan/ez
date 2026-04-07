@@ -17,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { Worker } = require("worker_threads");
-const { parseAndLint, parse, lint: lintBatch, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLint, parse, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin } = require("./load-plugin");
 
@@ -486,7 +486,7 @@ async function main() {
 
   if (useNativeBatch) {
     // ── Native batch path (lintBatch → Zig OS threads) ─────────
-    const batchResults = lintBatch(allFiles, { config: nativeConfig });
+    const batchResults = lintFiles(allFiles, { config: nativeConfig });
 
     // Build a file→buffer map only for files that have violations (for offsetToLine).
     // Files with no diags need no I/O.

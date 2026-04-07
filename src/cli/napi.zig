@@ -473,6 +473,7 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "lint", napiLint);
     registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "lintBatch", napiLintBatch);
+    registerFn(env, exports, "lintFiles", napiLintFiles);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
@@ -700,11 +701,38 @@ const SourceView = struct { ptr: [*]const u8, len: usize };
 
 const BatchWorkerArgs = struct {
     file_paths: []const []const u8,
-    sources: []const SourceView,
+    sources: ?[]const SourceView, // null → workers read files themselves
     config: ?*const linter_root.config.Config,
     results: []FileRaw,
     out_alloc: std.mem.Allocator,
 };
+
+/// Read a file into allocator-owned memory using libc primitives.
+/// Avoids std.Io abstraction overhead — suitable for background threads
+/// that don't have an Io runtime instance.
+fn readFilePosix(path: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    // Null-terminate path for libc.
+    const path_z = try allocator.dupeZ(u8, path);
+    defer allocator.free(path_z);
+
+    const fd = std.c.open(path_z, .{ .ACCMODE = .RDONLY }, @as(std.c.mode_t, 0));
+    if (fd < 0) return error.FileOpenFailed;
+    defer _ = std.c.close(fd);
+
+    var stat: std.c.Stat = undefined;
+    if (std.c.fstat(fd, &stat) != 0) return error.FileStatFailed;
+    const size: usize = @intCast(stat.size);
+    if (size == 0) return &.{};
+
+    const buf = try allocator.alloc(u8, size);
+    var offset: usize = 0;
+    while (offset < size) {
+        const nread = std.c.read(fd, buf[offset..].ptr, size - offset);
+        if (nread <= 0) break;
+        offset += @intCast(nread);
+    }
+    return buf[0..offset];
+}
 
 fn lintBatchWorker(args: *BatchWorkerArgs) void {
     var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -714,8 +742,17 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
 
     for (0..args.file_paths.len) |i| {
         const file_path = args.file_paths[i];
-        const src_view  = args.sources[i];
-        const source    = src_view.ptr[0..src_view.len];
+
+        // Resolve source: either pre-loaded buffer or read from disk.
+        const source: []const u8 = if (args.sources) |srcs| blk: {
+            const sv = srcs[i];
+            break :blk sv.ptr[0..sv.len];
+        } else blk: {
+            break :blk readFilePosix(file_path, parse_arena.allocator()) catch {
+                args.results[i] = .{ .file_path = file_path, .diags = &.{}, .had_error = true };
+                continue;
+            };
+        };
 
         defer _ = parse_arena.reset(.retain_capacity);
         defer _ = tl_lint.reset(.retain_capacity);
@@ -889,6 +926,128 @@ fn napiLintBatch(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         _ = n.napi_set_element(env, js_result, @intCast(i), obj);
     }
 
+    return js_result;
+}
+
+// ── lintFiles(paths[], config?) → {file, diags[]}[] ─────────────────────────
+//
+// Like lintBatch but workers read files from disk themselves — no JS-side
+// fs.readFileSync loop. Eliminates serial I/O bottleneck before Zig starts.
+
+fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 2;
+    var argv: [2]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 1) {
+        _ = n.napi_throw_error(env, null, "lintFiles(paths[], config?): 1 arg required");
+        return null;
+    }
+
+    var file_count: u32 = 0;
+    if (n.napi_get_array_length(env, argv[0], &file_count) != n.OK) return null;
+
+    var empty_result: n.Value = undefined;
+    if (file_count == 0) {
+        _ = n.napi_create_array_with_length(env, 0, &empty_result);
+        return empty_result;
+    }
+
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 2) {
+        if (getOptionalConfigBytes(env, argv[1])) |bytes| {
+            config_val = configFromSeverityBytes(bytes);
+        }
+    }
+    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
+
+    var tmp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer tmp_arena.deinit();
+    const tmp = tmp_arena.allocator();
+
+    // Read all file paths on main thread (NAPI constraint) — no source reads.
+    const file_paths = tmp.alloc([]const u8, file_count) catch return null;
+    for (0..file_count) |i| {
+        var path_val: n.Value = undefined;
+        _ = n.napi_get_element(env, argv[0], @intCast(i), &path_val);
+        var path_len: usize = 0;
+        _ = n.napi_get_value_string_utf8(env, path_val, null, 0, &path_len);
+        const path_buf = tmp.alloc(u8, path_len + 1) catch return null;
+        var written: usize = 0;
+        _ = n.napi_get_value_string_utf8(env, path_val, path_buf.ptr, path_len + 1, &written);
+        file_paths[i] = path_buf[0..written];
+    }
+
+    const results = tmp.alloc(FileRaw, file_count) catch return null;
+
+    const cpu_count    = std.Thread.getCpuCount() catch 1;
+    const thread_count = @min(@as(usize, file_count), cpu_count);
+
+    const out_arenas = tmp.alloc(std.heap.ArenaAllocator, thread_count) catch return null;
+    for (out_arenas) |*a| a.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer for (out_arenas) |*a| a.deinit();
+
+    if (thread_count <= 1) {
+        var args = BatchWorkerArgs{
+            .file_paths = file_paths,
+            .sources    = null, // workers read files
+            .config     = config_ptr,
+            .results    = results,
+            .out_alloc  = out_arenas[0].allocator(),
+        };
+        lintBatchWorker(&args);
+    } else {
+        const threads     = tmp.alloc(std.Thread, thread_count) catch return null;
+        const worker_args = tmp.alloc(BatchWorkerArgs, thread_count) catch return null;
+        const chunk_size  = (file_count + thread_count - 1) / thread_count;
+        var spawned: usize = 0;
+
+        for (0..thread_count) |t| {
+            const start: usize = t * chunk_size;
+            if (start >= file_count) break;
+            const end = @min(start + chunk_size, @as(usize, file_count));
+            worker_args[t] = .{
+                .file_paths = file_paths[start..end],
+                .sources    = null, // workers read files
+                .config     = config_ptr,
+                .results    = results[start..end],
+                .out_alloc  = out_arenas[t].allocator(),
+            };
+            threads[t] = std.Thread.spawn(.{}, lintBatchWorker, .{&worker_args[t]}) catch {
+                lintBatchWorker(&worker_args[t]);
+                continue;
+            };
+            spawned += 1;
+        }
+        for (threads[0..spawned]) |thread| thread.join();
+    }
+
+    // Build NAPI return array on main thread (reuse same shape as lintBatch).
+    var js_result: n.Value = undefined;
+    if (n.napi_create_array_with_length(env, file_count, &js_result) != n.OK) return null;
+    for (results, 0..) |r, i| {
+        var obj: n.Value = undefined;
+        if (n.napi_create_object(env, &obj) != n.OK) continue;
+        var v: n.Value = undefined;
+        if (n.napi_create_string_utf8(env, r.file_path.ptr, r.file_path.len, &v) == n.OK)
+            _ = n.napi_set_named_property(env, obj, "file", v);
+        var diags_arr: n.Value = undefined;
+        _ = n.napi_create_array_with_length(env, r.diags.len, &diags_arr);
+        for (r.diags, 0..) |d, j| {
+            var diag_obj: n.Value = undefined;
+            if (n.napi_create_object(env, &diag_obj) != n.OK) continue;
+            if (n.napi_create_uint32(env, d.offset, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "offset", v);
+            if (n.napi_create_uint32(env, d.severity, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "severity", v);
+            if (n.napi_create_string_utf8(env, d.rule_name.ptr, d.rule_name.len, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "ruleName", v);
+            if (n.napi_create_string_utf8(env, d.message.ptr, d.message.len, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "message", v);
+            _ = n.napi_set_element(env, diags_arr, @intCast(j), diag_obj);
+        }
+        _ = n.napi_set_named_property(env, obj, "diags", diags_arr);
+        _ = n.napi_set_element(env, js_result, @intCast(i), obj);
+    }
     return js_result;
 }
 

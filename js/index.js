@@ -217,7 +217,7 @@ let _lintOutBuf = new ArrayBuffer(64 * 1024);
  *
  * Batch form (parallel via Zig OS threads):
  *   lint(filePaths: string[], options?) → Array<{file: string, diags: Array<{offset, severity, ruleName, message}>}>
- *   JS reads files as Buffers (no encoding overhead), Zig parses+lints in parallel.
+ *   Zig workers read files and parse+lint in parallel (no JS-side I/O).
  *
  * @param {string|string[]} source  Source string or array of file paths
  * @param {object} [options]        { filename?, lang?, config?: Uint8Array }
@@ -225,11 +225,8 @@ let _lintOutBuf = new ArrayBuffer(64 * 1024);
 function lint(source, options = {}) {
   if (Array.isArray(source)) {
     const b = loadBinding();
-    const fs = require("fs");
-    const paths = source;
-    const buffers = paths.map(p => fs.readFileSync(p)); // Buffer (no encoding = raw bytes)
     const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-    return b.lintBatch(paths, buffers, configBuf);
+    return b.lintFiles(source, configBuf);
   }
   const b = loadBinding();
   const lang = options.lang
