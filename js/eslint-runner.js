@@ -650,8 +650,6 @@ class SourceCode {
       // For real AST nodes: check if the subtree has tokens beyond mainToken
       // (i.e., it's a multi-token node like UnaryExpression `!a`). If so, use
       // range[1] to find the first token strictly after the entire node.
-      // We detect multi-token via maxTok: if maxTok > mainTok, the subtree
-      // extends past mainToken and mainToken+1 lands inside the node.
       if (!ast._maxTokCache) ast._ensureMaxTokCache();
       const maxTok = ast._maxTokCache[node._i];
       if (maxTok !== undefined && maxTok > mainTok && node.range) {
