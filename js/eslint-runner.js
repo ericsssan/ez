@@ -658,7 +658,7 @@ class SourceCode {
       // range[1] to find the first token strictly after the entire node.
       if (!ast._maxTokCache) ast._ensureMaxTokCache();
       const maxTok = ast._maxTokCache[node._i];
-      if (maxTok !== undefined && maxTok > mainTok && node.range) {
+      if (maxTok !== undefined && node.range && (maxTok > mainTok || node.range[1] > (ast._tokEnds ? ast._tokEnds[mainTok] : 0))) {
         const nodeEnd = node.range[1];
         const starts = ast._tokStarts;
         let lo = 0, hi = ast.tokenCount - 1;

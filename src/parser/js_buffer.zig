@@ -594,17 +594,48 @@ pub fn computeNodePositions(
             continue;
         }
 
+        // MethodDefinition / StaticBlock: extend through closing brackets but
+        // stop including non-bracket tokens after the outermost `}`.
+        // In ESTree, the `;` after `a() {}` is NOT part of the MethodDefinition.
+        if (tag == .method_def or tag == .computed_method_def or tag == .static_block) {
+            const sp = tok_starts[minTok[i]];
+            var found_outer_brace = false;
+            var j2 = base + 1;
+            while (j2 < tc) {
+                if (isMainTok[j2] == 1) break;
+                const tt2 = tok_tags[j2];
+                if (tt2 == .r_brace or tt2 == .r_bracket or tt2 == .r_paren or
+                    tt2 == .template_middle or tt2 == .template_tail)
+                {
+                    const opener2 = closeOpen[j2];
+                    if (opener2 != NONE and tok_starts[opener2] >= sp) {
+                        const te2 = tok_ends[j2];
+                        if (te2 > ext_end) ext_end = te2;
+                        // Track outermost `}` — once we close the method body,
+                        // stop including further non-bracket tokens (like `;`).
+                        if (tt2 == .r_brace) found_outer_brace = true;
+                    } else break;
+                } else if (found_outer_brace) {
+                    break; // After method body `}`, don't include `;`
+                } else {
+                    const te2 = tok_ends[j2];
+                    if (te2 > ext_end) ext_end = te2;
+                }
+                j2 += 1;
+            }
+            node_ends[i] = ext_end;
+            continue;
+        }
+
         // Determine if this node is a statement/declaration (owns trailing `;`)
         // vs an expression/identifier (should NOT include trailing operators).
         const is_stmt = switch (tag) {
-            // Statements that own their terminating `;`
             .expression_stmt, .var_decl, .empty_stmt, .debugger_stmt,
             .return_stmt, .throw_stmt, .break_stmt, .continue_stmt,
             .do_while_stmt, .import_decl, .export_named,
             .export_default_expr, .export_default_fn, .export_default_class,
             .property_def, .computed_property_def,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
-            // Block-level constructs that include closing `}` + possible `;`
             .root, .block_stmt, .class_decl, .class_expr,
             .fn_decl, .fn_expr, .async_fn_decl, .async_fn_expr,
             .generator_fn_decl, .generator_fn_expr,
@@ -614,7 +645,6 @@ pub fn computeNodePositions(
             .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
             .switch_stmt, .try_stmt, .with_stmt, .labeled_stmt,
             .catch_clause, .switch_case, .switch_default,
-            .static_block, .method_def, .computed_method_def,
             => true,
             else => false,
         };
