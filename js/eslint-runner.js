@@ -4246,6 +4246,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
             (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
           const seg = cpTracker.exitBranch(hasAllBranches);
+          // Consult Zig reachability for next sibling.
+          if (seg && seg.reachable && ast._nodeReachable) {
+            const nextEvI2 = i + 1;
+            if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
+              if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
+            }
+          }
           _segStartOrUnreachEvent(seg);
         }
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
@@ -4496,6 +4503,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
           (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
         const seg2 = cpTracker.exitBranch(hasAllBranches);
+        // Consult Zig-computed reachability: if Zig says the next statement after
+        // this branch is unreachable (e.g. infinite loop), override the segment.
+        if (seg2 && seg2.reachable && ast._nodeReachable) {
+          // Find the next sibling: the DFS event after this exit should be the next node.
+          const nextEvIdx = i + 1;
+          if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
+            const nextNode = dfsEvents[nextEvIdx];
+            if (!ast._nodeReachable[nextNode]) {
+              seg2.reachable = false;
+            }
+          }
+        }
         _segStartOrUnreachEvent(seg2);
       }
       if (flags & FLAG_CODEPATH_EXIT) {

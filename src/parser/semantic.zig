@@ -127,6 +127,13 @@ pub const SemanticAnalyzer = struct {
     /// Reset to true on entering each function body.
     cfg_alive: bool = true,
 
+    /// Breakable statement stack for infinite loop detection.
+    /// Tracks depth of nested loops/switches. An unlabeled break sets
+    /// break_hit[depth-1] = true. At loop exit, if the loop is infinite
+    /// and break_hit is false, cfg_alive stays false.
+    breakable_depth: u32 = 0,
+    break_hit: [64]bool = [_]bool{false} ** 64,
+
     /// Global (scope_id, name) → SymbolId map for O(1) binding lookup.
     /// Single allocation replaces one StringHashMapUnmanaged per scope.
     scope_binding_map: ScopeBindingMap,
@@ -545,15 +552,41 @@ pub const SemanticAnalyzer = struct {
             .while_stmt => {
                 const alive_pre = self.cfg_alive;
                 try self.visitNode(data.lhs); // condition
+                // Track breaks targeting this loop.
+                const depth = self.breakable_depth;
+                if (depth < self.break_hit.len) {
+                    self.break_hit[depth] = false;
+                    self.breakable_depth = depth + 1;
+                }
                 try self.visitNode(data.rhs); // body
-                // Loop may not execute; path after = alive_pre (conservative)
-                self.cfg_alive = alive_pre;
+                const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
+                if (depth < self.break_hit.len) self.breakable_depth = depth;
+                // Infinite loop: while(true) with no break → code after is dead.
+                const is_infinite = data.lhs != .none and self.isLiteralTrue(data.lhs);
+                if (is_infinite and !had_break) {
+                    self.cfg_alive = false;
+                } else {
+                    self.cfg_alive = alive_pre;
+                }
             },
             .do_while_stmt => {
                 const alive_pre = self.cfg_alive;
+                const depth = self.breakable_depth;
+                if (depth < self.break_hit.len) {
+                    self.break_hit[depth] = false;
+                    self.breakable_depth = depth + 1;
+                }
                 try self.visitNode(data.lhs); // body (runs at least once)
                 try self.visitNode(data.rhs); // condition
-                self.cfg_alive = alive_pre;
+                const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
+                if (depth < self.break_hit.len) self.breakable_depth = depth;
+                // do {} while(true) with no break → infinite
+                const is_infinite = data.rhs != .none and self.isLiteralTrue(data.rhs);
+                if (is_infinite and !had_break) {
+                    self.cfg_alive = false;
+                } else {
+                    self.cfg_alive = alive_pre;
+                }
             },
             .try_stmt => try self.visitTryStmt(data),
             .labeled_stmt => try self.visitNode(data.lhs),
@@ -787,8 +820,15 @@ pub const SemanticAnalyzer = struct {
             .jsx_text_node => {},
 
             // ── Leaf nodes / no-ops ────────────────────────
-            .break_stmt, .break_label, .continue_stmt, .continue_label => {
-                self.cfg_alive = false; // code after jump is dead
+            .break_stmt => {
+                // Unlabeled break targets the innermost loop/switch.
+                if (self.breakable_depth > 0) {
+                    self.break_hit[self.breakable_depth - 1] = true;
+                }
+                self.cfg_alive = false;
+            },
+            .break_label, .continue_stmt, .continue_label => {
+                self.cfg_alive = false;
             },
             .empty_stmt, .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal,
@@ -924,18 +964,40 @@ pub const SemanticAnalyzer = struct {
         self.leaveScope();
     }
 
+    /// Check if a node is the literal `true` (boolean_literal with text "true").
+    fn isLiteralTrue(self: *const SemanticAnalyzer, idx: NodeIndex) bool {
+        if (idx == .none) return false;
+        if (self.ast.nodeTag(idx) != .boolean_literal) return false;
+        const tok = self.ast.nodeMainToken(idx);
+        const start = self.ast.tokenStart(tok);
+        return start + 4 <= self.ast.source.len and
+            std.mem.eql(u8, self.ast.source[start..start + 4], "true");
+    }
+
     fn visitForStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
         // for (init; cond; update) body
-        // Create a block scope for let/const in the init clause.
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
         const alive_pre = self.cfg_alive;
         try self.visitNode(for_data.init);
         try self.visitNode(for_data.condition);
         try self.visitNode(for_data.update);
+        // Track breaks targeting this loop.
+        const depth = self.breakable_depth;
+        if (depth < self.break_hit.len) {
+            self.break_hit[depth] = false;
+            self.breakable_depth = depth + 1;
+        }
         try self.visitNode(data.rhs);
-        // Loop may not execute; code after is alive if pre-loop path was alive.
-        self.cfg_alive = alive_pre;
+        const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
+        if (depth < self.break_hit.len) self.breakable_depth = depth;
+        // for(;;) with no break → infinite loop → code after is dead.
+        const is_infinite = (for_data.condition == .none);
+        if (is_infinite and !had_break) {
+            self.cfg_alive = false;
+        } else {
+            self.cfg_alive = alive_pre;
+        }
         self.leaveScope();
     }
 
@@ -960,8 +1022,15 @@ pub const SemanticAnalyzer = struct {
     fn visitSwitchStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         try self.visitNode(data.lhs); // discriminant — visited in outer scope
         _ = try self.enterScope(.switch_stmt, idx);
+        // Push breakable so break inside switch doesn't count as breaking enclosing loop.
+        const depth = self.breakable_depth;
+        if (depth < self.break_hit.len) {
+            self.break_hit[depth] = false;
+            self.breakable_depth = depth + 1;
+        }
         const cases_range = self.readSubRange(@intFromEnum(data.rhs));
         try self.visitSubRange(cases_range);
+        if (depth < self.break_hit.len) self.breakable_depth = depth;
         self.leaveScope();
     }
 
