@@ -1383,7 +1383,14 @@ const NodeProto = {
     } else if (t === T.class_decl || t === T.class_expr) {
       const d = ast.extraClassData(lhs);
       const members = ast._nodesFromRange(d.body_start, d.body_end);
-      const cbStart = members.length > 0 ? members[0].start : this.start;
+      // Find the '{' token that opens the class body
+      const mt = ast._mainTokens[this._i];
+      const tokTags = ast._tokTags;
+      let bodyOpenTok = mt;
+      for (let j = mt + 1; j < ast.tokenCount; j++) {
+        if (tokTags[j] === 74 /* l_brace */) { bodyOpenTok = j; break; }
+      }
+      const cbStart = ast._tokStarts[bodyOpenTok];
       const cbEnd = this.end;
       result = {
         type: 'ClassBody',
@@ -1391,7 +1398,7 @@ const NodeProto = {
         start: cbStart,
         end: cbEnd,
         range: [cbStart, cbEnd],
-        loc: this.loc,
+        loc: this.loc, // approximate — line/col computed lazily by SourceCode
         parent: this,
       };
     } else if (t === T.root) {

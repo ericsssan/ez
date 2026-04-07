@@ -1649,6 +1649,31 @@ class SourceCode {
   getTokenOrCommentAfter(node, filterOrOpts) {
     return this.getTokenAfter(node, filterOrOpts);
   }
+
+  /**
+   * Returns the innermost AST node whose range contains the given index.
+   * Used by rules like no-extra-semi to find which node a token belongs to.
+   */
+  getNodeByRangeIndex(index) {
+    const ast = this._ast;
+    const n = ast.nodeCount;
+    const startArr = ast._nodeStartPosArr;
+    const endArr = ast._nodeEndPosArr;
+    if (!startArr || !endArr) return null;
+    let best = null;
+    let bestSize = Infinity;
+    for (let i = 0; i < n; i++) {
+      const s = startArr[i], e = endArr[i];
+      if (index >= s && index < e) {
+        const size = e - s;
+        if (size < bestSize) {
+          bestSize = size;
+          best = i;
+        }
+      }
+    }
+    return best !== null ? nodeView(ast, best) : null;
+  }
 }
 
 // ── Fixer ────────────────────────────────────────────────────────
@@ -3654,22 +3679,24 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Synthetic ClassBody node (passed to ClassBody/ClassBody:exit handlers).
   // We reuse a single object and update the class node reference each time.
   // _i and _ast are set so getFirstToken/getLastToken work correctly.
-  const syntheticClassBody = { type: 'ClassBody', body: null, parent: null, mainToken: 0, _ast: ast, _i: 0 };
+  const syntheticClassBody = { type: 'ClassBody', body: null, parent: null, mainToken: 0, _ast: ast };
 
   function invokeClassBodyHandlers(classNodeIdx, isExit) {
     const classBodyKey = isExit ? 'ClassBody:exit' : 'ClassBody';
     if (!visitorMap.has(classBodyKey)) return;
-    // Build the synthetic ClassBody node pointing to this class
+    // Build the synthetic ClassBody node from the class's body property.
+    // classNode.body is a synthetic ClassBody object with correct range
+    // (starts at '{', not 'class').
     const classNode = nodeView(ast, classNodeIdx);
-    syntheticClassBody.body = classNode.body?.body || [];
+    const cb = classNode.body;
+    syntheticClassBody.body = cb?.body || [];
     syntheticClassBody.parent = classNode;
+    // Use ClassBody's range (from '{' to '}'), not ClassDeclaration's.
+    syntheticClassBody.start = cb?.start ?? classNode.start;
+    syntheticClassBody.end = cb?.end ?? classNode.end;
+    syntheticClassBody.range = cb?.range ?? classNode.range;
+    syntheticClassBody.loc = cb?.loc ?? classNode.loc;
     syntheticClassBody.mainToken = classNode.mainToken;
-    syntheticClassBody._i = classNodeIdx;
-    // Copy loc/range/start/end from class node so layout rules work
-    syntheticClassBody.start = classNode.start;
-    syntheticClassBody.end = classNode.end;
-    syntheticClassBody.range = classNode.range;
-    syntheticClassBody.loc = classNode.loc;
     const handlers = visitorMap.get(classBodyKey);
     context._currentNodeIdx = classNodeIdx;
     for (let h = 0; h < handlers.length; h++) {
