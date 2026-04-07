@@ -528,17 +528,20 @@ class SourceCode {
     const startTok = ast._minTokCache[node._i];
     // Fast path: no filter, no skip — just return the first token
     if (!fn && skip === 0) return this._makeToken(startTok);
-    // Slow path: filter/skip required — iterate forward from startTok
-    if (!ast._maxTokCache) ast._ensureMaxTokCache();
-    const maxTok = ast._maxTokCache[node._i];
-    const tags = ast._tokTags;
+    // Slow path: filter/skip required — find end token from node.range[1]
     const tc = ast.tokenCount;
-    let endTok = maxTok;
-    for (let t = maxTok + 1; t < tc; t++) {
-      const tag = tags[t];
-      if (tag === 131) break;
-      if (SCAN_CONTINUE_TAGS.has(tag)) endTok = t;
-      else break;
+    let endTok;
+    if (node.range) {
+      const nodeEnd = node.range[1];
+      const starts = ast._tokStarts;
+      endTok = startTok;
+      for (let t = startTok; t < tc; t++) {
+        if (starts[t] >= nodeEnd) break;
+        endTok = t;
+      }
+    } else {
+      if (!ast._maxTokCache) ast._ensureMaxTokCache();
+      endTok = ast._maxTokCache[node._i];
     }
     let skipped = 0;
     for (let t = startTok; t <= endTok; t++) {
