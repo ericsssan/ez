@@ -19,3 +19,7 @@ node_modules/
 
 # V8 isolate logs
 isolate-*.log
+
+# Profiling artifacts
+*.cpuprofile
+sanz.node
