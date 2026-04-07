@@ -21,8 +21,7 @@ test-fuzz:
 	$(ZIG) test --dep sanz -Mroot=tests/fuzz_test.zig -Msanz=src/root.zig $(LINK_FLAGS) -ffuzz
 
 test-js: napi
-	node js/test/test.js
-	node js/test/plugin-contract.js
+	node tests/test_lint_batch.js
 
 build-conformance:
 	@mkdir -p zig-out/bin
