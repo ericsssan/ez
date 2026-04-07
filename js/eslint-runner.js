@@ -4241,8 +4241,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (hasCodePath && _branchEnterTagSet.has(tag)) {
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
-          const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
-            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
+          const nv4 = nodeView(ast, idx);
+          const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nv4.alternate != null) ||
+            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
             (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
           const seg = cpTracker.exitBranch(hasAllBranches);
           _segStartOrUnreachEvent(seg);
