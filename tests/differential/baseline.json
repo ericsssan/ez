@@ -3636,7 +3636,7 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 4,
+        "fn": 5,
         "fp": 6,
         "crash": 0
       },

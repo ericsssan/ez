@@ -900,6 +900,19 @@ const NodeProto = {
       parentIdx = pd[parentIdx];
     }
     let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
+
+    // Class body members (MethodDefinition, PropertyDefinition) should parent to synthetic ClassBody.
+    // Only route these specific tags to avoid breaking scope detection for other node types.
+    if (result && (result._tag === T.class_decl || result._tag === T.class_expr)) {
+      const t = this._tag;
+      if (t === T.method_def || t === T.property_def) {
+        const body = result.body; // Returns the synthetic ClassBody
+        if (body && body.body && body.body.includes(this)) {
+          result = body;
+        }
+      }
+    }
+
     // Method/getter/setter bodies: the block's parent in ez is the method_def,
     // but ESTree has FunctionExpression between them. Synthesize it so
     // `isFunction(node.parent)` works for rules like no-empty.
