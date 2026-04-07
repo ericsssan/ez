@@ -1641,13 +1641,38 @@ class SourceCode {
   isSpaceBetween(nodeA, nodeB) {
     if (!nodeA || !nodeB) return false;
     const ast = this._ast;
-    const endTok = (nodeA.mainToken !== undefined) ? nodeA.mainToken : -1;
-    const startTok = (nodeB.mainToken !== undefined) ? nodeB.mainToken : -1;
-    if (endTok < 0 || startTok < 0 || endTok >= startTok) return false;
-    // Check if there's any whitespace between end of endTok and start of startTok
-    const endPos = this._makeToken(endTok).range[1];
-    const startPos = ast._tokStarts[startTok];
-    return startPos > endPos;
+    const aEnd = nodeA.range ? nodeA.range[1] : (nodeA.mainToken !== undefined ? ast._tokEnds[nodeA.mainToken] : -1);
+    const bStart = nodeB.range ? nodeB.range[0] : (nodeB.mainToken !== undefined ? ast._tokStarts[nodeB.mainToken] : -1);
+    if (aEnd < 0 || bStart < 0 || aEnd >= bStart) return false;
+    // Walk tokens between A and B; check for whitespace gaps between consecutive tokens.
+    const starts = ast._tokStarts;
+    const ends = ast._tokEnds;
+    const tc = ast.tokenCount;
+    // Find first token at or after aEnd
+    let t = 0;
+    while (t < tc && starts[t] < aEnd) t++;
+    let prev = aEnd;
+    while (t < tc && starts[t] < bStart) {
+      if (starts[t] > prev) {
+        // Gap between prev and this token — check for whitespace
+        const src = ast.source;
+        for (let i = prev; i < starts[t]; i++) {
+          const c = src.charCodeAt(i);
+          if (c === 32 || c === 9 || c === 10 || c === 13) return true;
+        }
+      }
+      prev = ends[t];
+      t++;
+    }
+    // Check gap between last intermediate token and bStart
+    if (bStart > prev) {
+      const src = ast.source;
+      for (let i = prev; i < bStart; i++) {
+        const c = src.charCodeAt(i);
+        if (c === 32 || c === 9 || c === 10 || c === 13) return true;
+      }
+    }
+    return false;
   }
 
   /**
