@@ -4,7 +4,7 @@
  * ESLint rule conformance test.
  *
  * Runs ESLint's own rule test suite (tests/conformance/eslint/tests/lib/rules/)
- * against the sanz eslint-runner, checking that sanz produces the correct
+ * against the ez eslint-runner, checking that ez produces the correct
  * number of violations for each valid/invalid test case.
  *
  * For invalid cases: violation count must match errors.length.
@@ -168,7 +168,7 @@ function loadRuleCases(ruleName) {
   return _captured;
 }
 
-// ── Run one test case through sanz ───────────────────────────────
+// ── Run one test case through ez ───────────────────────────────
 
 function runCase(ruleName, ruleModule, testCase, sourceType) {
   const src = testCase.code;

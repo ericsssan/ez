@@ -6,7 +6,7 @@ const applyPreset = @import("config.zig").applyPreset;
 // ── ESLint Rule Name Mapping ──────────────────────────────────────
 //
 // Maps ESLint rule names (including @typescript-eslint/ prefixed ones)
-// to Sanz rule names.  Most rules share the same name in both
+// to Ez rule names.  Most rules share the same name in both
 // linters; the TypeScript rules additionally accept the namespaced
 // ESLint form.
 
@@ -141,7 +141,7 @@ pub const eslint_rule_map = std.StaticStringMap([]const u8).initComptime(.{
 
 // ── ESLint Config Parsing ─────────────────────────────────────────
 
-/// Parse an `.eslintrc.json` file and convert it to an Sanz `Config`.
+/// Parse an `.eslintrc.json` file and convert it to an Ez `Config`.
 ///
 /// Supported ESLint config fields:
 ///   - `"extends"`: array of strings — recognises `"eslint:recommended"`
@@ -193,16 +193,16 @@ pub fn parseEslintConfig(allocator: std.mem.Allocator, json_source: []const u8) 
         }
     }
 
-    // 2. Handle "rules" — map ESLint rule names to Sanz and parse severities
+    // 2. Handle "rules" — map ESLint rule names to Ez and parse severities
     if (root.object.get("rules")) |rules_val| {
         if (rules_val == .object) {
             var rule_iter = rules_val.object.iterator();
             while (rule_iter.next()) |entry| {
                 const eslint_name = entry.key_ptr.*;
-                const sanz_name = eslint_rule_map.get(eslint_name) orelse continue;
+                const ez_name = eslint_rule_map.get(eslint_name) orelse continue;
 
                 const severity = parseSeverityValue(entry.value_ptr.*) orelse continue;
-                config.rule_severities.put(allocator, sanz_name, severity) catch {};
+                config.rule_severities.put(allocator, ez_name, severity) catch {};
             }
         }
     }

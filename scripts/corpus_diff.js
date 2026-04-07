@@ -1,40 +1,40 @@
 "use strict";
 /**
- * Corpus differential: sanz eslint-compat vs ESLint, per-rule breakdown.
- * Only compares rules that sanz successfully loaded.
+ * Corpus differential: ez eslint-compat vs ESLint, per-rule breakdown.
+ * Only compares rules that ez successfully loaded.
  */
 const { execSync, spawnSync } = require("child_process");
 const { ESLint } = require("../js/node_modules/eslint");
 const fs = require("fs");
 const path = require("path");
 
-const SANZ = path.resolve(__dirname, "../zig-out/bin/sanz");
+const SANZ = path.resolve(__dirname, "../zig-out/bin/ez");
 const RULES_DIR = path.resolve(__dirname, "../js/node_modules/eslint/lib/rules");
 const CORPUS = process.argv[2] || path.resolve(__dirname, "../tests/conformance/test262-parser-tests/pass");
 
 async function main() {
-  // Step 1: Run sanz, capture per-rule counts and which rules loaded
-  console.error("Running sanz...");
-  let sanzOut = "";
+  // Step 1: Run ez, capture per-rule counts and which rules loaded
+  console.error("Running ez...");
+  let ezOut = "";
   try {
-    sanzOut = execSync(`"${SANZ}" --lint --eslint-rules="${RULES_DIR}" "${CORPUS}"`, {
+    ezOut = execSync(`"${SANZ}" --lint --eslint-rules="${RULES_DIR}" "${CORPUS}"`, {
       encoding: "utf-8", maxBuffer: 50 * 1024 * 1024,
     });
-  } catch (e) { sanzOut = e.stdout || ""; }
+  } catch (e) { ezOut = e.stdout || ""; }
 
-  const sanzByRule = {};
+  const ezByRule = {};
   const loadedRules = new Set();
-  for (const line of sanzOut.split("\n")) {
+  for (const line of ezOut.split("\n")) {
     const m = line.match(/:(\d+):\d+: \w+\(([^)]+)\):/);
     if (m) {
       const rule = m[2];
       loadedRules.add(rule);
-      sanzByRule[rule] = (sanzByRule[rule] || 0) + 1;
+      ezByRule[rule] = (ezByRule[rule] || 0) + 1;
     }
   }
 
   // Step 2: Run ESLint with only those rules
-  console.error(`Running ESLint with ${loadedRules.size} rules sanz loaded...`);
+  console.error(`Running ESLint with ${loadedRules.size} rules ez loaded...`);
   const rules = {};
   for (const r of loadedRules) rules[r] = "error";
 
@@ -59,15 +59,15 @@ async function main() {
   }
 
   // Step 3: Compare
-  const allRules = new Set([...Object.keys(sanzByRule), ...Object.keys(eslintByRule)]);
+  const allRules = new Set([...Object.keys(ezByRule), ...Object.keys(eslintByRule)]);
   const rows = [];
-  let totalSanz = 0, totalEslint = 0;
+  let totalEz = 0, totalEslint = 0;
   for (const rule of allRules) {
-    const s = sanzByRule[rule] || 0;
+    const s = ezByRule[rule] || 0;
     const e = eslintByRule[rule] || 0;
-    totalSanz += s;
+    totalEz += s;
     totalEslint += e;
-    rows.push({ rule, sanz: s, eslint: e, diff: s - e });
+    rows.push({ rule, ez: s, eslint: e, diff: s - e });
   }
 
   // Sort by absolute gap descending
@@ -75,13 +75,13 @@ async function main() {
 
   console.log(`\nCorpus: ${CORPUS}`);
   console.log(`Rules compared: ${allRules.size}`);
-  console.log(`Total — Sanz: ${totalSanz}  ESLint: ${totalEslint}  Gap: ${totalEslint - totalSanz} missing\n`);
-  console.log(`${"Rule".padEnd(40)} ${"Sanz".padStart(6)} ${"ESLint".padStart(6)} ${"Diff".padStart(7)}`);
+  console.log(`Total — Ez: ${totalEz}  ESLint: ${totalEslint}  Gap: ${totalEslint - totalEz} missing\n`);
+  console.log(`${"Rule".padEnd(40)} ${"Ez".padStart(6)} ${"ESLint".padStart(6)} ${"Diff".padStart(7)}`);
   console.log("-".repeat(62));
   for (const r of rows) {
-    if (r.sanz === r.eslint) continue; // skip exact matches
-    const flag = r.sanz > r.eslint ? "FP+" : "FN-";
-    console.log(`${r.rule.padEnd(40)} ${String(r.sanz).padStart(6)} ${String(r.eslint).padStart(6)} ${String(r.diff).padStart(6)} ${flag}`);
+    if (r.ez === r.eslint) continue; // skip exact matches
+    const flag = r.ez > r.eslint ? "FP+" : "FN-";
+    console.log(`${r.rule.padEnd(40)} ${String(r.ez).padStart(6)} ${String(r.eslint).padStart(6)} ${String(r.diff).padStart(6)} ${flag}`);
   }
 }
 

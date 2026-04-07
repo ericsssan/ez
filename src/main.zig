@@ -130,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
                     } else |_| {}
                 } else |_| {}
             } else {
-                // Auto-detect sanz.config.json from first file path
+                // Auto-detect ez.config.json from first file path
                 const paths_for_resolve = file_paths.items;
                 if (paths_for_resolve.len > 0) {
                     resolved_config = config_resolver.resolveForFile(io, paths_for_resolve[0]);
@@ -174,7 +174,7 @@ pub fn main(init: std.process.Init) !void {
         const files = discovery.getFiles();
 
         if (files.len == 0) {
-            try stdout.print("sanz: no source files found\n", .{});
+            try stdout.print("ez: no source files found\n", .{});
             try stdout.flush();
             return;
         }
@@ -352,12 +352,12 @@ const InlineDisables = linter_root.inline_disable.InlineDisables;
 const eslint_compat = linter_root.eslint_compat;
 
 const usage_text =
-    \\Usage: sanz [options] <file|directory>...
+    \\Usage: ez [options] <file|directory>...
     \\
     \\Options:
     \\  --lint             Run lint rules
     \\  --rule <name>      Run only this rule (overrides config)
-    \\  --config=<path>    Path to sanz.config.json
+    \\  --config=<path>    Path to ez.config.json
     \\  --no-config        Disable config file loading (all rules on)
     \\  --eslint-compat    Read .eslintrc.json and map rules
     \\  --dump-tokens      Tokenize and print tokens
@@ -368,7 +368,7 @@ const usage_text =
     \\When --lint is used with directories, all .js/.mjs/.cjs/.ts/.mts/.cts/.tsx/.jsx
     \\files are discovered recursively and linted in parallel.
     \\
-    \\Configuration: Place sanz.config.json in your project root.
-    \\Inline disable: // sanz-disable-next-line [rule-name]
+    \\Configuration: Place ez.config.json in your project root.
+    \\Inline disable: // ez-disable-next-line [rule-name]
     \\
 ;

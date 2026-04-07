@@ -1,9 +1,9 @@
 const std = @import("std");
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
 const Io = std.Io;
-const Token = sanz.token;
+const Token = ez.token;
 
 /// TypeScript parser conformance runner.
 ///
@@ -143,7 +143,7 @@ pub fn main(init: std.process.Init) !void {
             // Run semantic analysis for must-reject tests only.
             // TS allows redeclarations/patterns that JS doesn't, so skip for must-parse.
             if (kind == .must_reject) {
-                var sem = sanz.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :parse_blk true;
+                var sem = ez.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :parse_blk true;
                 defer sem.deinit(file_alloc);
                 if (sem.diagnostics.len > 0) {
                     first_error = "semantic error";

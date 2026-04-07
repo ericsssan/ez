@@ -1,7 +1,7 @@
 const std = @import("std");
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
 const Io = std.Io;
 
 /// Fast in-process runner for Babel parser test fixtures.
@@ -87,13 +87,13 @@ pub fn main(init: std.process.Init) !void {
             if (tree.errors.len > 0) break :blk ParseResult{ .has_error = true, .first_error = tree.errors[0].message };
 
             // Run semantic analysis to catch early errors (duplicate bindings, etc.)
-            var sem = sanz.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
+            var sem = ez.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
             defer sem.deinit(file_alloc);
             if (sem.diagnostics.len > 0) break :blk ParseResult{ .has_error = true, .first_error = "semantic error" };
 
             // Run lint rules for must-reject tests to catch early errors via lint rules
             if (is_error_test) {
-                const lint_diags = sanz.linter.lint(file_alloc, &tree, &sem, null) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
+                const lint_diags = ez.linter.lint(file_alloc, &tree, &sem, null) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
                 if (lint_diags.len > 0) {
                     file_alloc.free(lint_diags);
                     break :blk ParseResult{ .has_error = true, .first_error = "lint error" };

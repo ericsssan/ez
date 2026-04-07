@@ -1,10 +1,10 @@
 const std = @import("std");
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
-const js_buffer = sanz.js_buffer;
-const semantic_mod = sanz.semantic;
-const parent_builder = sanz.parent_builder;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
+const js_buffer = ez.js_buffer;
+const semantic_mod = ez.semantic;
+const parent_builder = ez.parent_builder;
 
 // Pre-allocated working buffer replaces per-iteration GPA allocations.
 // Reset between iterations is a single pointer store — no syscalls, no page faults.

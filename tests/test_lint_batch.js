@@ -5,7 +5,7 @@
  * Also tests: empty array, single file, parse-error file, config propagation.
  */
 
-const sanz = require("../js/index.js");
+const ez = require("../js/index.js");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -52,7 +52,7 @@ console.log(`\nTest files: ${fixtureFiles.length} fixtures + ${extraFiles.length
 // ── 1. empty array ───────────────────────────────────────────────────────────
 console.log("\n[1] empty array");
 {
-  const result = sanz.lint([]);
+  const result = ez.lint([]);
   ok("returns array", Array.isArray(result));
   ok("length 0", result.length === 0);
 }
@@ -61,7 +61,7 @@ console.log("\n[1] empty array");
 console.log("\n[2] single file");
 {
   const f = fixtureFiles[0];
-  const batch = sanz.lint([f]);
+  const batch = ez.lint([f]);
   ok("returns array length 1", Array.isArray(batch) && batch.length === 1);
   ok("has .file", typeof batch[0].file === "string");
   ok("has .diags array", Array.isArray(batch[0].diags));
@@ -71,13 +71,13 @@ console.log("\n[2] single file");
 // ── 3. batch == sequential for all fixtures ──────────────────────────────────
 console.log("\n[3] batch vs sequential — all fixture files");
 {
-  const batch = sanz.lint(fixtureFiles);
+  const batch = ez.lint(fixtureFiles);
   ok("result length <= file count", batch.length <= fixtureFiles.length);
   ok("no clean files in results", batch.every(r => r.diags.length > 0));
 
   for (let i = 0; i < fixtureFiles.length; i++) {
     const f = fixtureFiles[i];
-    const single = sanz.lint([f]);
+    const single = ez.lint([f]);
     // Both batch and single omit clean files — use ?? [] for missing entries
     const batchDiags = batch.find(r => r.file === f)?.diags ?? [];
     const singleDiags = single[0]?.diags ?? [];
@@ -89,18 +89,18 @@ console.log("\n[3] batch vs sequential — all fixture files");
 // ── 4. config propagation ────────────────────────────────────────────────────
 console.log("\n[4] config propagation");
 {
-  const config = sanz.buildNativeConfig({ "no-debugger": "error" });
+  const config = ez.buildNativeConfig({ "no-debugger": "error" });
 
-  const tmp = path.join(os.tmpdir(), "sanz_batch_test_debugger.js");
+  const tmp = path.join(os.tmpdir(), "ez_batch_test_debugger.js");
   fs.writeFileSync(tmp, "debugger;");
 
-  const batch = sanz.lint([tmp], { config });
+  const batch = ez.lint([tmp], { config });
   ok("batch has diag", batch[0]?.diags?.length > 0,
     `diags: ${JSON.stringify(batch[0]?.diags)}`);
   ok("diag has line", typeof batch[0].diags[0]?.line === "number");
 
   // Verify same result with second independent call
-  const batch2 = sanz.lint([tmp], { config });
+  const batch2 = ez.lint([tmp], { config });
   ok("deterministic", diagsEqual(batch[0].diags, batch2[0].diags));
 
   fs.unlinkSync(tmp);
@@ -109,12 +109,12 @@ console.log("\n[4] config propagation");
 // ── 5. parse-error file doesn't crash batch ──────────────────────────────────
 console.log("\n[5] parse-error file");
 {
-  const tmp = path.join(os.tmpdir(), "sanz_batch_test_syntax_error.js");
+  const tmp = path.join(os.tmpdir(), "ez_batch_test_syntax_error.js");
   fs.writeFileSync(tmp, "function (){ {{ invalid syntax *** }");
 
   let result;
   try {
-    result = sanz.lint([tmp]);
+    result = ez.lint([tmp]);
     ok("no throw", true);
     ok("returns entry for errored file", result.length === 1);
     ok("diags is array", Array.isArray(result[0].diags));
@@ -128,13 +128,13 @@ console.log("\n[5] parse-error file");
 // ── 6. multi-file with config ────────────────────────────────────────────────
 console.log("\n[6] multi-file batch vs sequential — with config");
 {
-  const config = sanz.buildNativeConfig({ "no-debugger": "error", "no-var": "warn" });
-  const batch = sanz.lint(allFiles, { config });
+  const config = ez.buildNativeConfig({ "no-debugger": "error", "no-var": "warn" });
+  const batch = ez.lint(allFiles, { config });
   ok("no clean files in results", batch.every(r => r.diags.length > 0));
 
   let mismatch = 0;
   for (const f of allFiles) {
-    const single = sanz.lint([f], { config });
+    const single = ez.lint([f], { config });
     const batchDiags = batch.find(r => r.file === f)?.diags ?? [];
     const singleDiags = single[0]?.diags ?? [];
     if (!diagsEqual(batchDiags, singleDiags)) {
@@ -149,8 +149,8 @@ console.log("\n[6] multi-file batch vs sequential — with config");
 if (extraFiles.length > 0) {
   console.log("\n[7] large file (acorn.js ~240KB)");
   const f = extraFiles[0];
-  const batch = sanz.lint([f]);
-  const single = sanz.lint([f]);
+  const batch = ez.lint([f]);
+  const single = ez.lint([f]);
   ok("matches single-file", diagsEqual(batch[0].diags, single[0].diags),
     `batch=${batch[0].diags.length} single=${single[0].diags.length}`);
   ok("has line/col", batch[0].diags.every(d => d.line >= 1 && d.col >= 0));

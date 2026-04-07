@@ -1,5 +1,5 @@
 // ── src/parser/jsx.zig ──────────────────────────────────────────────
-// JSX parser module for Sanz.
+// JSX parser module for Ez.
 //
 // Parses JSX elements, fragments, attributes, and expression containers
 // according to the JSX specification.  All public functions take a

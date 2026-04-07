@@ -1,6 +1,6 @@
-# Sanz — A High-Performance JavaScript/TypeScript Linter in Zig
+# Ez — A High-Performance JavaScript/TypeScript Linter in Zig
 
-> Inspired by and indebted to the [Oxc project](https://github.com/oxc-project/oxc) and the work of Boshen Chen and the Oxc team. Oxlint proved that a linter can be 50-100x faster than ESLint through data-oriented design, arena allocation, and systems-language implementation. Sanz aims to explore whether Zig's unique strengths — first-class SIMD, comptime metaprogramming, native allocator interfaces, and MultiArrayList — can push these ideas further.
+> Inspired by and indebted to the [Oxc project](https://github.com/oxc-project/oxc) and the work of Boshen Chen and the Oxc team. Oxlint proved that a linter can be 50-100x faster than ESLint through data-oriented design, arena allocation, and systems-language implementation. Ez aims to explore whether Zig's unique strengths — first-class SIMD, comptime metaprogramming, native allocator interfaces, and MultiArrayList — can push these ideas further.
 >
 > This project stands on the shoulders of the Oxc team's research, benchmarks, and open documentation of their architectural decisions.
 
@@ -56,7 +56,7 @@ Each file gets its own arena allocator. Parse, analyze, lint, report, then free 
 
 ### 1. AST Representation: MultiArrayList
 
-This is Sanz's key structural advantage over Oxc.
+This is Ez's key structural advantage over Oxc.
 
 **The Oxc problem**: Rust enums are sized to their largest variant. An `Expression` enum with 45 variants is 200+ bytes unboxed. Oxc mitigates this by boxing every variant (`Box<'a, T>`) reducing the enum to 16 bytes (pointer + tag), but every field access is now a pointer chase.
 
@@ -447,7 +447,7 @@ No hack. No UB. No pinned dependency. The allocator interface does exactly what 
 
 #### JS-Side: comptime-Generated Layout Descriptors
 
-Oxlint uses `oxc_ast_tools` (a separate Rust crate) to analyze types and generate JS deserializer code. Sanz uses `comptime`:
+Oxlint uses `oxc_ast_tools` (a separate Rust crate) to analyze types and generate JS deserializer code. Ez uses `comptime`:
 
 ```zig
 // At compile time, generate a layout descriptor for each AST type
@@ -502,7 +502,7 @@ Lazy — JS only materializes a `NodeView` when a rule accesses that node. The `
 
 #### 32-Bit Pointer Advantage
 
-Sanz's MultiArrayList AST already uses **u32 indices** for all node references (not 64-bit pointers). This means:
+Ez's MultiArrayList AST already uses **u32 indices** for all node references (not 64-bit pointers). This means:
 
 - Every node reference fits in a JS `Number` with no precision loss
 - No need for Oxlint's 4 GiB alignment trick to truncate 64-bit pointers
@@ -511,7 +511,7 @@ Sanz's MultiArrayList AST already uses **u32 indices** for all node references (
 
 #### Summary: Zig's Raw Transfer vs Oxlint's
 
-| | Oxlint (Rust) | Sanz (Zig) |
+| | Oxlint (Rust) | Ez (Zig) |
 |---|---|---|
 | Allocate into external buffer | Hack on bumpalo internals (UB) | Standard `Allocator` interface (designed for this) |
 | Deterministic memory layout | Opt-in `#[repr(C)]` on every type | Default for `extern struct` |
@@ -613,7 +613,7 @@ if (isMemberExpression(ast, node, "console", "log")) { ... }
 
 ## Platform: macOS-Only Target
 
-iOS/mobile development happens on macOS. Sanz targets macOS exclusively.
+iOS/mobile development happens on macOS. Ez targets macOS exclusively.
 
 **macOS APIs used:**
 | Need | macOS API | Notes |
@@ -629,7 +629,7 @@ iOS/mobile development happens on macOS. Sanz targets macOS exclusively.
 
 ## Performance Targets
 
-| Metric | ESLint | Oxlint (Rust) | Sanz (Target) |
+| Metric | ESLint | Oxlint (Rust) | Ez (Target) |
 |---|---|---|---|
 | VSCode codebase lint | ~20s | ~100ms | ~100ms (parity) |
 | Parse time vs SWC | baseline | 3x faster | 3-4x faster (MultiArrayList advantage) |
@@ -659,14 +659,14 @@ typescript       P3         no-explicit-any, no-non-null-assertion
 react            P3         rules-of-hooks, no-direct-mutation-state
 ```
 
-Phase 2: ESLint config compatibility — read `.eslintrc` / `eslint.config.js` and map known rules to Sanz equivalents.
+Phase 2: ESLint config compatibility — read `.eslintrc` / `eslint.config.js` and map known rules to Ez equivalents.
 
 Phase 3: Plugin system — comptime-loaded rule modules that conform to the rule interface.
 
 ## Project Structure
 
 ```
-sanz/
+ez/
 ├── build.zig
 ├── src/
 │   ├── main.zig              # CLI entry point
@@ -729,9 +729,9 @@ sanz/
 - `.tsx` / JSX support
 
 ### v0.6 — Configuration
-- `sanz.config.json` / `sanz.config.zig` configuration
+- `ez.config.json` / `ez.config.zig` configuration
 - ESLint config compatibility layer (read `.eslintrc`, map rules)
-- `// sanz-disable` inline comments
+- `// ez-disable` inline comments
 - Per-directory config inheritance
 
 ### v0.7 — JS Plugin Support (Zero-Copy Raw Transfer)
@@ -754,8 +754,8 @@ sanz/
 
 This project is directly inspired by and would not exist without:
 
-- **[Oxc](https://github.com/oxc-project/oxc)** — Boshen Chen, @overlookmotel, and the Oxc team's architectural documentation, performance research, and open benchmarks form the foundation of Sanz's design. Their work on arena allocation, enum size optimization, SIMD lexing, SoA symbol tables, parallel linting architecture, and the raw transfer mechanism for zero-copy JS plugin support ([PR #9516](https://github.com/oxc-project/oxc/pull/9516)) informed every major decision in this document.
-- **[Bun](https://github.com/oven-sh/bun)** — Jarred Sumner and the Bun team proved that a production-quality JS parser can be written in Zig. Bun's `js_parser.zig` and its MultiArrayList-based AST design are direct inspirations for Sanz's AST representation.
+- **[Oxc](https://github.com/oxc-project/oxc)** — Boshen Chen, @overlookmotel, and the Oxc team's architectural documentation, performance research, and open benchmarks form the foundation of Ez's design. Their work on arena allocation, enum size optimization, SIMD lexing, SoA symbol tables, parallel linting architecture, and the raw transfer mechanism for zero-copy JS plugin support ([PR #9516](https://github.com/oxc-project/oxc/pull/9516)) informed every major decision in this document.
+- **[Bun](https://github.com/oven-sh/bun)** — Jarred Sumner and the Bun team proved that a production-quality JS parser can be written in Zig. Bun's `js_parser.zig` and its MultiArrayList-based AST design are direct inspirations for Ez's AST representation.
 - **[Jam](https://github.com/srijan-paul/jam)** — Srijan Paul's work on a Zig JS parser/linter demonstrates the feasibility of this approach and provided early reference for Zig-specific patterns.
 - **The Zig self-hosted compiler** — Andrew Kelley's MultiArrayList-based AST, which achieves 37.5% memory savings, is the canonical example of data-oriented AST design in Zig.
 

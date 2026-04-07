@@ -138,7 +138,7 @@ let TAG_NAMES = null;
 const NONE = 0xFFFFFFFF;
 
 // ── TypeScript keyword type remapping ───────────────────────────
-// Sanz emits TSTypeReference for TS built-in keyword types.
+// Ez emits TSTypeReference for TS built-in keyword types.
 // ESLint/typescript-eslint rules expect TSAnyKeyword etc.
 // When TSTypeReference has no type arguments (rhs === NONE) and its
 // main token text is a TypeScript keyword type, remap to the ESTree name.
@@ -454,7 +454,7 @@ class AstView {
 
   /**
    * Create a synthetic Identifier-like object for a token index.
-   * Used by the `property` getter on MemberExpression nodes, where sanz stores
+   * Used by the `property` getter on MemberExpression nodes, where ez stores
    * the property name as a token index rather than a full AST node.
    */
   _syntheticId(tokIdx) {
@@ -745,9 +745,9 @@ const _emptyArray = Object.freeze([]);
  * Shared prototype for all NodeView objects.
  * Getters compute values lazily from the AstView typed arrays.
  *
- * Provides both the low-level sanz API (lhs, rhs) and ESTree-compatible
+ * Provides both the low-level ez API (lhs, rhs) and ESTree-compatible
  * named field getters (test, consequent, body, operator, etc.) so that
- * real ESLint rules can run against sanz's zero-copy AST buffer.
+ * real ESLint rules can run against ez's zero-copy AST buffer.
  */
 // Sentinel for "parent not yet computed". Using a unique object (not undefined/null)
 // lets nodeView pre-set _parent as an own property on every new node so all nodes
@@ -762,7 +762,7 @@ const _BODY_UNSET = Object.create(null);
 const _VALUE_UNSET = Object.create(null);
 
 const NodeProto = {
-  // ── Low-level sanz accessors (existing) ──────────────────────
+  // ── Low-level ez accessors (existing) ──────────────────────
 
   get type() {
     // Fast path: return cached value from pre-allocated own field.
@@ -826,7 +826,7 @@ const NodeProto = {
   },
   get start() {
     const ast = this._ast;
-    // SequenceExpression: sanz assigns '(' as main token, but ESTree requires
+    // SequenceExpression: ez assigns '(' as main token, but ESTree requires
     // start at the first expression (the paren is not part of the node's range).
     if (ast._nodeTags[this._i] === T.sequence_expr) {
       const lhs = ast.nodeLhs(this._i);
@@ -876,7 +876,7 @@ const NodeProto = {
 
   // ── ESTree-compatible field getters ──────────────────────────
   //
-  // These map ESTree named fields to the underlying sanz flat buffer,
+  // These map ESTree named fields to the underlying ez flat buffer,
   // enabling real ESLint rules to run without modification.
   //
   // Field access pattern (from ast.zig comments):
@@ -900,7 +900,7 @@ const NodeProto = {
       parentIdx = pd[parentIdx];
     }
     let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
-    // Method/getter/setter bodies: the block's parent in sanz is the method_def,
+    // Method/getter/setter bodies: the block's parent in ez is the method_def,
     // but ESTree has FunctionExpression between them. Synthesize it so
     // `isFunction(node.parent)` works for rules like no-empty.
     if (result && this._tag === T.block_stmt) {
@@ -912,7 +912,7 @@ const NodeProto = {
       }
     }
     // ESTree requires ObjectPattern children to be wrapped in Property nodes.
-    // Sanz stores AssignmentPattern/Identifier directly under ObjectPattern
+    // Ez stores AssignmentPattern/Identifier directly under ObjectPattern
     // for destructuring defaults ({a=1}) and shorthand-less patterns.
     // Synthesize a Property wrapper so parent-chain checks like
     // `node.parent.parent.type === "ObjectPattern"` work correctly.
@@ -2238,7 +2238,7 @@ const NodeProto = {
     return undefined;
   },
 
-  /** node.comments — empty array (sanz doesn't track comments yet). Writable so rules can set it. */
+  /** node.comments — empty array (ez doesn't track comments yet). Writable so rules can set it. */
   get comments() {
     return this._comments || _emptyArray;
   },

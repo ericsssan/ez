@@ -54,12 +54,6 @@
           "padded-blocks:28"
         ],
         "fp": [
-          "indent-legacy:15",
-          "indent-legacy:19",
-          "indent-legacy:23",
-          "indent-legacy:27",
-          "indent-legacy:6",
-          "indent-legacy:7",
           "multiline-comment-style:1",
           "multiline-comment-style:2",
           "new-parens:31",
@@ -310,7 +304,8 @@
           "no-undef:88",
           "no-undef:91",
           "no-undef:95",
-          "no-undef:98"
+          "no-undef:98",
+          "no-unreachable-loop:76"
         ],
         "fp": [
           "multiline-comment-style:1",
@@ -415,7 +410,6 @@
           "no-inline-comments:93",
           "no-inline-comments:94",
           "no-inline-comments:97",
-          "no-unreachable-loop:73",
           "semi:76",
           "space-unary-ops:28",
           "space-unary-ops:31"
@@ -874,6 +868,12 @@
           "no-implicit-globals:99",
           "no-undef:106",
           "no-undef:187",
+          "no-unreachable:143",
+          "no-unreachable:161",
+          "no-unreachable:167",
+          "no-unreachable:170",
+          "no-unreachable:173",
+          "no-unreachable:182",
           "no-unused-vars:127",
           "no-useless-assignment:70"
         ],
@@ -1054,8 +1054,8 @@
           "no-inline-comments:92",
           "no-inline-comments:95",
           "no-inline-comments:98",
-          "no-unreachable-loop:4",
-          "no-unreachable:187",
+          "no-unreachable:34",
+          "no-unreachable:47",
           "no-unused-vars:126",
           "no-use-before-define:73",
           "semi:110",
@@ -1109,7 +1109,7 @@
     "array-callback-return": {
       "runner": {
         "fn": 0,
-        "fp": 6,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -1343,7 +1343,7 @@
     "curly": {
       "runner": {
         "fn": 0,
-        "fp": 45,
+        "fp": 29,
         "crash": 0
       },
       "native": {
@@ -1654,8 +1654,8 @@
     },
     "indent-legacy": {
       "runner": {
-        "fn": 74,
-        "fp": 654,
+        "fn": 39,
+        "fp": 18,
         "crash": 0
       },
       "native": {
@@ -2187,7 +2187,7 @@
     },
     "no-constant-binary-expression": {
       "runner": {
-        "fn": 42,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2200,7 +2200,7 @@
     },
     "no-constant-condition": {
       "runner": {
-        "fn": 7,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2564,8 +2564,8 @@
     },
     "no-fallthrough": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 2,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -2877,7 +2877,7 @@
     "no-mixed-spaces-and-tabs": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -2903,7 +2903,7 @@
     "no-multi-spaces": {
       "runner": {
         "fn": 13,
-        "fp": 3,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -3110,7 +3110,7 @@
     },
     "no-object-constructor": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3682,8 +3682,8 @@
     },
     "no-unreachable-loop": {
       "runner": {
-        "fn": 0,
-        "fp": 792,
+        "fn": 113,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3695,8 +3695,8 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 13,
-        "fp": 1,
+        "fn": 12,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -4423,7 +4423,7 @@
     },
     "semi-spacing": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 8,
         "crash": 0
       },
@@ -4450,7 +4450,7 @@
     "semi": {
       "runner": {
         "fn": 28,
-        "fp": 17,
+        "fp": 16,
         "crash": 0
       },
       "native": {
@@ -4541,7 +4541,7 @@
     "space-infix-ops": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {

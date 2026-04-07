@@ -9,26 +9,26 @@ test-unit:
 	$(ZIG) test src/root.zig $(LINK_FLAGS)
 
 test-linter:
-	$(ZIG) test --dep sanz -Mroot=tests/linter_test.zig -Msanz=src/root.zig $(LINK_FLAGS)
+	$(ZIG) test --dep ez -Mroot=tests/linter_test.zig -Mez=src/root.zig $(LINK_FLAGS)
 
 test-recovery:
-	$(ZIG) test --dep sanz -Mroot=tests/error_recovery_test.zig -Msanz=src/root.zig $(LINK_FLAGS)
+	$(ZIG) test --dep ez -Mroot=tests/error_recovery_test.zig -Mez=src/root.zig $(LINK_FLAGS)
 
 test-config:
-	$(ZIG) test --dep sanz -Mroot=tests/config_integration_test.zig -Msanz=src/root.zig $(LINK_FLAGS)
+	$(ZIG) test --dep ez -Mroot=tests/config_integration_test.zig -Mez=src/root.zig $(LINK_FLAGS)
 
 test-fuzz:
-	$(ZIG) test --dep sanz -Mroot=tests/fuzz_test.zig -Msanz=src/root.zig $(LINK_FLAGS) -ffuzz
+	$(ZIG) test --dep ez -Mroot=tests/fuzz_test.zig -Mez=src/root.zig $(LINK_FLAGS) -ffuzz
 
 test-js: napi
 	node tests/test_lint_batch.js
 
 build-conformance:
 	@mkdir -p zig-out/bin
-	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/parser_tests_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
-	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/test262_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
-	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/babel_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/babel_runner $(LINK_FLAGS)
-	@$(ZIG) build-exe --dep sanz -Mroot=tests/conformance/typescript_runner.zig -Msanz=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep ez -Mroot=tests/conformance/parser_tests_runner.zig -Mez=src/root.zig -femit-bin=zig-out/bin/parser_tests_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep ez -Mroot=tests/conformance/test262_runner.zig -Mez=src/root.zig -femit-bin=zig-out/bin/test262_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep ez -Mroot=tests/conformance/babel_runner.zig -Mez=src/root.zig -femit-bin=zig-out/bin/babel_runner $(LINK_FLAGS)
+	@$(ZIG) build-exe --dep ez -Mroot=tests/conformance/typescript_runner.zig -Mez=src/root.zig -femit-bin=zig-out/bin/typescript_runner $(LINK_FLAGS)
 
 test-conformance: build-conformance napi
 	@echo ""
@@ -57,7 +57,7 @@ test-all: test test-fuzz test-js test-e2e test-differential test-conformance
 
 build:
 	@mkdir -p zig-out/bin
-	$(ZIG) build-exe src/main.zig -O ReleaseFast -femit-bin=zig-out/bin/sanz $(LINK_FLAGS)
+	$(ZIG) build-exe src/main.zig -O ReleaseFast -femit-bin=zig-out/bin/ez $(LINK_FLAGS)
 
 napi:
 	zig build napi
@@ -66,4 +66,4 @@ submodules:
 	git submodule update --init --depth 1
 
 run: build
-	./zig-out/bin/sanz $(ARGS)
+	./zig-out/bin/ez $(ARGS)

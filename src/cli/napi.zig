@@ -34,7 +34,7 @@ fn getLintArena() *std.heap.ArenaAllocator {
 ///
 /// Returns total bytes used (header + bump region), or 0 on error.
 /// On success, the BufferHeader at offset 0 contains all SoA array offsets.
-pub export fn sanz_parse(
+pub export fn ez_parse(
     buf_ptr: [*]u8,
     buf_len: u32,
     source_start: u32,
@@ -181,20 +181,20 @@ fn parseImpl(
 // ── parseAndLint C ABI ───────────────────────────────────────────
 //
 // Single call that runs the full pipeline ONCE and produces both:
-//   (a) the compact JS AST buffer  (same format as sanz_parse)
-//   (b) native lint diagnostics    (same format as sanz_lint)
+//   (a) the compact JS AST buffer  (same format as ez_parse)
+//   (b) native lint diagnostics    (same format as ez_lint)
 //
 // Avoids double lex+parse+semantic: the live AST and SemanticResult are
 // reused for lint before being serialized into the JS buffer format.
 //
 // Layout:
-//   buf[0..return_value)  → AST buffer (same as sanz_parse output)
-//   out_ptr[0..N)         → diagnostics (same as sanz_lint output)
+//   buf[0..return_value)  → AST buffer (same as ez_parse output)
+//   out_ptr[0..N)         → diagnostics (same as ez_lint output)
 //
-// Returns bytes used in buf (same as sanz_parse), or 0 on error.
+// Returns bytes used in buf (same as ez_parse), or 0 on error.
 // On error out_ptr is undefined; on success out_ptr[0..4] holds diag count.
 
-pub export fn sanz_parse_and_lint(
+pub export fn ez_parse_and_lint(
     buf_ptr: [*]u8,
     buf_len: u32,
     source_start: u32,
@@ -263,7 +263,7 @@ fn parseAndLintImpl(
 
     const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, config) catch &.{};
 
-    // Serialize diagnostics into out_ptr (same format as sanz_lint).
+    // Serialize diagnostics into out_ptr (same format as ez_lint).
     if (out_len >= 4) {
         const out = out_ptr[0..out_len];
         std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
@@ -360,7 +360,7 @@ fn parseAndLintImpl(
     return backing.bytesUsed();
 }
 
-// sanz_tag_count and sanz_tag_name are exported from layout.zig.
+// ez_tag_count and ez_tag_name are exported from layout.zig.
 
 
 // ── Lint C ABI ───────────────────────────────────────────────────
@@ -381,7 +381,7 @@ fn parseAndLintImpl(
 //
 // Returns bytes written to out_ptr, or 0 on error / buffer too small.
 
-pub export fn sanz_lint(
+pub export fn ez_lint(
     buf_ptr: [*]u8,
     buf_len: u32,
     source_start: u32,
@@ -583,7 +583,7 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     _ = n.napi_get_value_uint32(env, argv[2], &source_len);
     _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
 
-    const result = sanz_parse(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val));
+    const result = ez_parse(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val));
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
@@ -1190,7 +1190,7 @@ fn napiTagName(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     var index: u32 = 0;
     _ = n.napi_get_value_uint32(env, argv[0], &index);
 
-    const name: [*:0]const u8 = layout.sanz_tag_name(@intCast(index));
+    const name: [*:0]const u8 = layout.ez_tag_name(@intCast(index));
 
     var result: n.Value = undefined;
     if (n.napi_create_string_utf8(env, name, n.AUTO_LENGTH, &result) != n.OK) return null;

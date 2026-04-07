@@ -11,7 +11,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const exe = b.addExecutable(.{
-        .name = "sanz",
+        .name = "ez",
         .root_module = exe_mod,
     });
     b.installArtifact(exe);
@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-    const run_step = b.step("run", "Run sanz");
+    const run_step = b.step("run", "Run ez");
     run_step.dependOn(&run_cmd.step);
 
     // ── Unit tests ───────────────────────────────────────────
@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    linter_test_mod.addImport("sanz", test_mod);
+    linter_test_mod.addImport("ez", test_mod);
     const linter_tests = b.addTest(.{
         .root_module = linter_test_mod,
     });
@@ -57,7 +57,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    recovery_test_mod.addImport("sanz", test_mod);
+    recovery_test_mod.addImport("ez", test_mod);
     const recovery_tests = b.addTest(.{ .root_module = recovery_test_mod });
     test_step.dependOn(&b.addRunArtifact(recovery_tests).step);
 
@@ -67,7 +67,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    config_test_mod.addImport("sanz", test_mod);
+    config_test_mod.addImport("ez", test_mod);
     const config_tests = b.addTest(.{ .root_module = config_test_mod });
     test_step.dependOn(&b.addRunArtifact(config_tests).step);
 
@@ -77,7 +77,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    fuzz_test_mod.addImport("sanz", test_mod);
+    fuzz_test_mod.addImport("ez", test_mod);
     const fuzz_tests = b.addTest(.{ .root_module = fuzz_test_mod });
     const fuzz_step = b.step("fuzz", "Run fuzz tests");
     fuzz_step.dependOn(&b.addRunArtifact(fuzz_tests).step);
@@ -91,14 +91,14 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
     });
     const napi_lib = b.addLibrary(.{
-        .name = "sanz",
+        .name = "ez",
         .root_module = napi_mod,
         .linkage = .dynamic,
     });
     // NAPI symbols are resolved at load time by the JS runtime.
     napi_lib.linker_allow_shlib_undefined = true;
-    // Install as sanz.node (Node.js requires .node extension) in addition to the native lib name.
-    const napi_install_node = b.addInstallLibFile(napi_lib.getEmittedBin(), "sanz.node");
+    // Install as ez.node (Node.js requires .node extension) in addition to the native lib name.
+    const napi_install_node = b.addInstallLibFile(napi_lib.getEmittedBin(), "ez.node");
     const napi_step = b.step("napi", "Build NAPI shared library for JS plugins");
     napi_step.dependOn(&napi_install_node.step);
 
@@ -110,7 +110,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = .ReleaseFast,
     });
-    bench_mod.addImport("sanz", test_mod);
+    bench_mod.addImport("ez", test_mod);
     const bench = b.addExecutable(.{
         .name = "bench_parser",
         .root_module = bench_mod,

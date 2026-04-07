@@ -15,7 +15,7 @@
 const fs   = require("fs");
 const path = require("path");
 
-const sanz = require("./index");
+const ez = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadPlugin }  = require("./load-plugin");
 
@@ -62,7 +62,7 @@ const files = collectFiles(
 );
 
 if (files.length === 0) {
-  console.error("No files found — run from the Sanz repo root.");
+  console.error("No files found — run from the Ez repo root.");
   process.exit(1);
 }
 
@@ -87,10 +87,10 @@ for (let i = 0; i < rawSources.length; i += BATCH) {
   const batch = rawSources.slice(i, i + BATCH).map(x => x.file);
   try {
     execFileSync(process.execPath, ["-e", `
-const sanz = require('./js/index.js');
+const ez = require('./js/index.js');
 const fs = require('fs');
 const files = ${JSON.stringify(batch)};
-for (const f of files) { try { sanz.parseAndLintSource(fs.readFileSync(f,'utf8'),{filename:f}); } catch {} }
+for (const f of files) { try { ez.parseAndLintSource(fs.readFileSync(f,'utf8'),{filename:f}); } catch {} }
 `], { timeout: 20000, cwd: process.cwd() });
   } catch (e) {
     if (e.status === 138 || e.status === 139 || e.signal) {
@@ -98,9 +98,9 @@ for (const f of files) { try { sanz.parseAndLintSource(fs.readFileSync(f,'utf8')
       for (const f of batch) {
         try {
           execFileSync(process.execPath, ["-e", `
-const sanz = require('./js/index.js');
+const ez = require('./js/index.js');
 const fs = require('fs');
-sanz.parseAndLintSource(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.stringify(f)}});
+ez.parseAndLintSource(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.stringify(f)}});
 `], { timeout: 5000, cwd: process.cwd() });
         } catch (e2) {
           if (e2.status === 138 || e2.status === 139 || e2.signal) crashSet.add(f);
@@ -111,7 +111,7 @@ sanz.parseAndLintSource(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:$
 }
 const sources = rawSources.filter(({ file, src }) => {
   if (crashSet.has(file)) return false;
-  try { sanz.parseSource(src, { filename: file }); return true; }
+  try { ez.parseSource(src, { filename: file }); return true; }
   catch { return false; }
 });
 console.error(` ${sources.length} ok, ${rawSources.length - sources.length} skipped (${crashSet.size} native crashes)`);
@@ -130,8 +130,8 @@ try {
   } catch {}
 }
 
-const tagNames      = sanz.getTagNames();
-const nativeRules   = sanz.getNativeRules();
+const tagNames      = ez.getTagNames();
+const nativeRules   = ez.getNativeRules();
 const nativeNames   = new Set(nativeRules.keys());
 
 // Partition plugin rules: native-covered vs JS-only
@@ -153,7 +153,7 @@ for (const p of nativeCoveredRules) {
   const name = (p.meta?.name ?? p.id ?? "").replace(/^eslint\//, "");
   if (nativeNames.has(name)) nativeRuleConfig[name] = "warn";
 }
-const nativeConfig = sanz.buildNativeConfig(nativeRuleConfig);
+const nativeConfig = ez.buildNativeConfig(nativeRuleConfig);
 
 console.log(`ESLint plugin rules: ${allPlugins.length} total`);
 console.log(`  → native-covered:  ${nativeCoveredRules.length} (will run via Zig in hybrid path)`);
@@ -201,25 +201,25 @@ function bench(label, fn) {
 
 // D: parse only (baseline)
 const pathD = bench("D  parseSource() only", (src, file) => {
-  sanz.parseSource(src, { filename: file });
+  ez.parseSource(src, { filename: file });
 });
 
 // A: parseSource + runPlugins (all rules via JS)
 const pathA = allPlugins.length > 0
   ? bench("A  parseSource + runPlugins (all JS)", (src, file) => {
-      const ast = sanz.parseSource(src, { filename: file });
+      const ast = ez.parseSource(src, { filename: file });
       runPlugins(ast, allPlugins, { filename: file, tagNames });
     })
   : null;
 
 // C: parseAndLintSource (all native, no JS runner)
 const pathC = bench("C  parseAndLintSource (all native)", (src, file) => {
-  sanz.parseAndLintSource(src, { filename: file });
+  ez.parseAndLintSource(src, { filename: file });
 });
 
 // B: hybrid — parseAndLintSource(nativeConfig) + runPlugins(jsOnly)
 const pathB = bench("B  hybrid: parseAndLintSource(cfg) + runPlugins(jsOnly)", (src, file) => {
-  const { ast } = sanz.parseAndLintSource(src, { filename: file, config: nativeConfig });
+  const { ast } = ez.parseAndLintSource(src, { filename: file, config: nativeConfig });
   if (jsOnlyPlugins.length > 0) {
     runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames });
   }

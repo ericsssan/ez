@@ -45,8 +45,8 @@ const REPO_ROOT    = path.resolve(__dirname, "../..");
 const JS_ROOT      = path.join(REPO_ROOT, "js");
 const CORPUS_DIR   = path.join(REPO_ROOT, "tests", "conformance");
 
-// ── Load sanz ────────────────────────────────────────────────────
-const sanz         = require(path.join(JS_ROOT, "index"));
+// ── Load ez ────────────────────────────────────────────────────
+const ez         = require(path.join(JS_ROOT, "index"));
 const { runPlugins } = require(path.join(JS_ROOT, "eslint-runner"));
 const { loadPlugin }  = require(path.join(JS_ROOT, "load-plugin"));
 
@@ -71,7 +71,7 @@ if (ourPlugins.length === 0) {
   process.exit(1);
 }
 
-const tagNames = sanz.getTagNames();
+const tagNames = ez.getTagNames();
 
 // ── Collect corpus files ──────────────────────────────────────────
 function collectFiles(dir, exts, limit) {
@@ -111,7 +111,7 @@ for (const f of allFiles) {
   let src;
   try { src = fs.readFileSync(f, "utf8"); } catch { continue; }
   if (TS_IMPORT_ASSIGN.test(src)) continue;
-  try { sanz.parseSource(src, { filename: f }); } catch { continue; }
+  try { ez.parseSource(src, { filename: f }); } catch { continue; }
   sources.push({ file: f, src });
 }
 
@@ -205,7 +205,7 @@ function runEslintDirect(src, filename) {
 // ── Run our runner ────────────────────────────────────────────────
 function runOurs(src, filename) {
   try {
-    const ast = sanz.parseSource(src, { filename });
+    const ast = ez.parseSource(src, { filename });
     const reports = runPlugins(ast, ourPlugins, { filename, tagNames });
     return reports.map(r => ({
       ruleId: r.ruleId,

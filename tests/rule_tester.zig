@@ -1,12 +1,12 @@
 const std = @import("std");
 const testing = std.testing;
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
-const SemanticAnalyzer = sanz.semantic.SemanticAnalyzer;
-const linter = sanz.linter;
-const LintDiagnostic = sanz.lint_context.LintDiagnostic;
-const Language = sanz.token.Language;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
+const SemanticAnalyzer = ez.semantic.SemanticAnalyzer;
+const linter = ez.linter;
+const LintDiagnostic = ez.lint_context.LintDiagnostic;
+const Language = ez.token.Language;
 
 // ── Types ────────────────────────────────────────────────────
 

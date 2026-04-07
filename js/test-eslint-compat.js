@@ -4,12 +4,12 @@
  *
  * For each fixture file, runs all ESLint core rules two ways:
  *   Espree  — ESLint's own Linter (Espree parser, authoritative reference)
- *   Sanz    — sanz parse → eslint-runner visitor dispatch
+ *   Ez    — ez parse → eslint-runner visitor dispatch
  *
  * Reports per-rule:
  *   ✓  same violation lines as Espree
  *   ~  different lines (false negatives / false positives)
- *   ✗  crashed in sanz
+ *   ✗  crashed in ez
  *
  * Run: node js/test-eslint-compat.js [fixture-dir-or-file]
  */
@@ -54,10 +54,10 @@ function runEspreeAll(source, sourceType) {
   return result;
 }
 
-// ── Sanz eslint-runner ───────────────────────────────────────────
+// ── Ez eslint-runner ───────────────────────────────────────────
 
-/** Run all rules through sanz eslint-runner. Returns Map<ruleName, number[]|{crash}> */
-function runSanzAll(source) {
+/** Run all rules through ez eslint-runner. Returns Map<ruleName, number[]|{crash}> */
+function runEzAll(source) {
   const ast = parse(source, { filename: "test.js" });
   const plugins = [];
   for (const [name, mod] of allRules) {
@@ -113,29 +113,29 @@ for (const file of files) {
   const sourceType = detectSourceType(file);
 
   const espreeMap = runEspreeAll(source, sourceType);
-  const sanzMap   = runSanzAll(source);
+  const ezMap   = runEzAll(source);
 
   // Merge all rule names that either side reported
-  const ruleNames = new Set([...espreeMap.keys(), ...sanzMap.keys(), ...allRules.keys()]);
+  const ruleNames = new Set([...espreeMap.keys(), ...ezMap.keys(), ...allRules.keys()]);
 
   let fileCrash = 0, fileDiff = 0, fileMatch = 0;
 
   for (const rule of [...ruleNames].sort()) {
-    const sanzVal = sanzMap.get(rule);
+    const ezVal = ezMap.get(rule);
 
-    if (sanzVal?.crash) {
+    if (ezVal?.crash) {
       fileCrash++;
-      allCrashes.push({ file: rel, rule, error: sanzVal.crash });
+      allCrashes.push({ file: rel, rule, error: ezVal.crash });
       continue;
     }
 
     const espreeLines = espreeMap.get(rule) ?? [];
-    const sanzLines   = sanzVal   ?? [];
+    const ezLines   = ezVal   ?? [];
 
     const espreeSet = new Set(espreeLines);
-    const sanzSet   = new Set(sanzLines);
-    const fn = espreeLines.filter(l => !sanzSet.has(l));
-    const fp = sanzLines.filter(l => !espreeSet.has(l));
+    const ezSet   = new Set(ezLines);
+    const fn = espreeLines.filter(l => !ezSet.has(l));
+    const fp = ezLines.filter(l => !espreeSet.has(l));
 
     if (fn.length === 0 && fp.length === 0) {
       fileMatch++;

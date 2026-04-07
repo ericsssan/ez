@@ -181,12 +181,12 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
 // ── C ABI Exports ────────────────────────────────────────────────
 
 /// Returns the total number of AST node tag variants.
-pub export fn sanz_tag_count() u32 {
+pub export fn ez_tag_count() u32 {
     return tag_count;
 }
 
 /// Returns the ESTree-compatible type name for a given tag index.
-pub export fn sanz_tag_name(index: u8) [*:0]const u8 {
+pub export fn ez_tag_name(index: u8) [*:0]const u8 {
     if (index >= tag_count) return "Unknown";
     return tag_names[index];
 }
@@ -209,10 +209,10 @@ test "known tag names" {
     try std.testing.expectEqualStrings("TSInterfaceDeclaration", std.mem.span(tag_names[@intFromEnum(NodeTag.ts_interface_decl)]));
 }
 
-test "sanz_tag_count matches enum" {
+test "ez_tag_count matches enum" {
     try std.testing.expectEqual(tag_count, @as(u32, @typeInfo(NodeTag).@"enum".fields.len));
 }
 
-test "sanz_tag_name out of bounds" {
-    try std.testing.expectEqualStrings("Unknown", std.mem.span(sanz_tag_name(255)));
+test "ez_tag_name out of bounds" {
+    try std.testing.expectEqualStrings("Unknown", std.mem.span(ez_tag_name(255)));
 }

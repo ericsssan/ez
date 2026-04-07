@@ -1,4 +1,4 @@
-//! AST pretty-printer for Sanz.
+//! AST pretty-printer for Ez.
 //!
 //! Usage:
 //!     try debug.dumpAst(&tree, writer);

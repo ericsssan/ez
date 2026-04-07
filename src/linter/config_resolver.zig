@@ -3,7 +3,7 @@ const Io = std.Io;
 const Config = @import("config.zig").Config;
 const parseConfigJson = @import("config.zig").parseConfigJson;
 
-const config_filename = "sanz.config.json";
+const config_filename = "ez.config.json";
 const max_file_size = 1 * 1024 * 1024; // 1 MiB
 
 // ── ConfigResolver ────────────────────────────────────────────────
@@ -38,7 +38,7 @@ pub const ConfigResolver = struct {
     }
 
     /// Resolve the effective configuration for a given file path.
-    /// Walks parent directories looking for `sanz.config.json`.
+    /// Walks parent directories looking for `ez.config.json`.
     /// Caches results by directory so repeated lookups are fast.
     pub fn resolveForFile(self: *ConfigResolver, io: Io, file_path: []const u8) *const Config {
         const dir = directoryOf(file_path);
@@ -170,8 +170,8 @@ pub fn parentDirectory(dir: []const u8) []const u8 {
 }
 
 /// Build the full path to a config file in the given directory.
-/// e.g. "/foo/bar" -> "/foo/bar/sanz.config.json"
-///      "."        -> "sanz.config.json"
+/// e.g. "/foo/bar" -> "/foo/bar/ez.config.json"
+///      "."        -> "ez.config.json"
 fn buildConfigPath(allocator: std.mem.Allocator, dir: []const u8) ![]const u8 {
     if (std.mem.eql(u8, dir, ".")) {
         return try allocator.dupe(u8, config_filename);
@@ -210,15 +210,15 @@ test "buildConfigPath" {
 
     const p1 = try buildConfigPath(allocator, "/home/user/project/src");
     defer allocator.free(p1);
-    try std.testing.expect(eql(u8, p1, "/home/user/project/src/sanz.config.json"));
+    try std.testing.expect(eql(u8, p1, "/home/user/project/src/ez.config.json"));
 
     const p2 = try buildConfigPath(allocator, ".");
     defer allocator.free(p2);
-    try std.testing.expect(eql(u8, p2, "sanz.config.json"));
+    try std.testing.expect(eql(u8, p2, "ez.config.json"));
 
     const p3 = try buildConfigPath(allocator, "/");
     defer allocator.free(p3);
-    try std.testing.expect(eql(u8, p3, "//sanz.config.json"));
+    try std.testing.expect(eql(u8, p3, "//ez.config.json"));
 }
 
 test "ConfigResolver.init" {
@@ -234,7 +234,7 @@ test "ConfigResolver.init" {
 }
 
 test "resolveForFile returns default when no config exists" {
-    // This test verifies that when no sanz.config.json is found,
+    // This test verifies that when no ez.config.json is found,
     // the resolver returns its default config. We test this by using
     // a path where no config file could possibly exist.
     var resolver = ConfigResolver.init(std.testing.allocator);

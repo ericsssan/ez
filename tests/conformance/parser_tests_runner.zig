@@ -1,7 +1,7 @@
 const std = @import("std");
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
 const Io = std.Io;
 
 /// Fast runner for tc39/test262-parser-tests (directory-based classification).

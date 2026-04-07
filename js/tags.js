@@ -1,6 +1,6 @@
 "use strict";
 
-// ── Sanz AST Tag Constants ───────────────────────────────────────
+// ── Ez AST Tag Constants ───────────────────────────────────────
 //
 // Ordinals matching the Node.Tag enum in src/parser/ast.zig.
 // These are part of the buffer ABI — stable unless the enum changes.

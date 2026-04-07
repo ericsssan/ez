@@ -1,7 +1,7 @@
 {
-  "name": "@sanz/node",
+  "name": "@ez/node",
   "version": "0.7.0",
-  "description": "Sanz native bindings for Node.js and Bun",
+  "description": "Ez native bindings for Node.js and Bun",
   "main": "index.js",
   "exports": {
     ".": "./index.js",

@@ -1,9 +1,9 @@
 .{
-    .name = .sanz,
+    .name = .ez,
     .version = "0.0.1",
     .dependencies = .{},
     .minimum_zig_version = "0.16.0-dev.2637+6a9510c0e",
-    .fingerprint = 0x5a75af72cec19230,
+    .fingerprint = 0xe983153fc28c38f3,
     .paths = .{
         "build.zig",
         "build.zig.zon",

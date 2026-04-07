@@ -1,11 +1,11 @@
 const std = @import("std");
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
-const SemanticAnalyzer = sanz.semantic.SemanticAnalyzer;
-const linter = sanz.linter;
-const parent_builder = sanz.parent_builder;
-const Language = sanz.token.Language;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
+const SemanticAnalyzer = ez.semantic.SemanticAnalyzer;
+const linter = ez.linter;
+const parent_builder = ez.parent_builder;
+const Language = ez.token.Language;
 
 // ── Fuzz targets ─────────────────────────────────────────────
 // Run with: zig build fuzz

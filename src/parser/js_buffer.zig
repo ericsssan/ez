@@ -662,10 +662,13 @@ pub fn computeNodePositions(
 
         // Determine if this node is a statement/declaration (owns trailing `;`)
         // vs an expression/identifier (should NOT include trailing operators).
+        // expression_stmt stops at `;` to prevent consuming sibling tokens
+        // like `else` in `if (cond) expr; else ...`.
+        const is_expr_stmt = tag == .expression_stmt;
         const is_stmt = switch (tag) {
             .expression_stmt, .var_decl, .empty_stmt, .debugger_stmt,
             .return_stmt, .throw_stmt, .break_stmt, .continue_stmt,
-            .do_while_stmt, .import_decl, .export_named,
+            .do_while_stmt, .import_decl, .export_named, .export_all,
             .export_default_expr, .export_default_fn, .export_default_class,
             .property_def, .computed_property_def,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
@@ -698,9 +701,12 @@ pub fn computeNodePositions(
                     break;
                 }
             } else if (is_stmt) {
-                // Statement/declaration: include trailing `;` and other tokens
+                // Statement/declaration: include trailing `;` and other tokens.
+                // For expression statements specifically, stop after `;` to prevent
+                // consuming sibling tokens (e.g., `else` after `if (cond) expr;`).
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
+                if (is_expr_stmt and tt == .semicolon) break;
             } else {
                 // Expression/identifier: stop at non-bracket tokens
                 break;

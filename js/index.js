@@ -19,16 +19,16 @@ function loadBinding() {
   }
 
   try {
-    binding = require("../zig-out/lib/sanz.node");
+    binding = require("../zig-out/lib/ez.node");
   } catch {
     try {
-      binding = require("../zig-out/lib/libsanz.dylib");
+      binding = require("../zig-out/lib/libez.dylib");
     } catch {
       try {
-        binding = require("../zig-out/lib/libsanz.so");
+        binding = require("../zig-out/lib/libez.so");
       } catch {
         throw new Error(
-          "sanz: could not load native binding. Run `make napi` first."
+          "ez: could not load native binding. Run `make napi` first."
         );
       }
     }
@@ -127,7 +127,7 @@ function _makePrivateBuf(buf, sourceStart, sourceLen) {
     }
   }
   const magic = pdv.getUint32(0, true);
-  if (magic !== MAGIC) throw new Error("sanz: invalid buffer header (magic mismatch)");
+  if (magic !== MAGIC) throw new Error("ez: invalid buffer header (magic mismatch)");
   return privateBuf;
 }
 
@@ -207,7 +207,7 @@ function parseSource(source, options = {}) {
 
   const { buf, sourceStart, sourceLen } = _encodeSource(source);
   const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
-  if (bytesUsed === 0) throw new Error("sanz: parse failed (buffer too small or invalid source)");
+  if (bytesUsed === 0) throw new Error("ez: parse failed (buffer too small or invalid source)");
 
   getTagNames();
   if (options.noPrivateCopy) return new AstView(buf);
@@ -227,7 +227,7 @@ function parse(filePath, options = {}) {
       sharedBuffer = buf;
       bytesUsed = b.parseFile(buf, filePath, lang);
     }
-    if (bytesUsed === 0) throw new Error(`sanz: parse failed: ${filePath}`);
+    if (bytesUsed === 0) throw new Error(`ez: parse failed: ${filePath}`);
   }
   sharedBuffer = buf;
   getTagNames();
@@ -276,7 +276,7 @@ function parseAndLintSource(source, options = {}) {
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
   const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
-  if (bytesUsed === 0) throw new Error("sanz: parseAndLint failed (buffer too small or invalid source)");
+  if (bytesUsed === 0) throw new Error("ez: parseAndLint failed (buffer too small or invalid source)");
 
   getTagNames();
   const ast = options.noPrivateCopy
@@ -302,7 +302,7 @@ function parseAndLint(filePath, options = {}) {
       sharedBuffer = buf;
       bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
     }
-    if (bytesUsed === 0) throw new Error(`sanz: parseAndLint failed: ${filePath}`);
+    if (bytesUsed === 0) throw new Error(`ez: parseAndLint failed: ${filePath}`);
   }
   sharedBuffer = buf;
   getTagNames();

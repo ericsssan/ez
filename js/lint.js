@@ -1,6 +1,6 @@
 "use strict";
 /**
- * sanz ESLint plugin runner CLI
+ * ez ESLint plugin runner CLI
  *
  * Usage:
  *   node js/lint.js --eslint-plugin <pkg> [--rule <name>] [--format=json] <paths...>

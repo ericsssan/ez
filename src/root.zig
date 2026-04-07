@@ -1,4 +1,4 @@
-//! Sanz library root — re-exports all modules.
+//! Ez library root — re-exports all modules.
 
 // ── Parser module ─────────────────────────────────────────
 pub const ast = @import("parser/root.zig").ast;

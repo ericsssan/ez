@@ -1,4 +1,4 @@
-// This file should produce zero diagnostics from both ESLint and Sanz.
+// This file should produce zero diagnostics from both ESLint and Ez.
 
 "use strict";
 

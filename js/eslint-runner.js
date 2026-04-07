@@ -217,7 +217,7 @@ function _findLine(ls, pos) {
 }
 
 /**
- * Map sanz token tag to ESLint token type string.
+ * Map ez token tag to ESLint token type string.
  * Token tag enum (from token.zig):
  *   0-1  = number/bigint literals  → Numeric
  *   2    = string literal           → String
@@ -369,6 +369,11 @@ class SourceCode {
     this._symRefIndex = null;
     this._declSymIndex = null;
     this._allComments = undefined;
+    // _globalScope guards _precomputeScopes — must be cleared so it reruns for new AST.
+    // Without this, getScope() skips _precomputeScopes() on subsequent files, causing
+    // _buildScope(funcScope) to trigger a recursive top-down cascade that visits scopes
+    // out of order and leaves child.through mutated before the intended parent sees it.
+    this._globalScope = null;
   }
 
   /**
@@ -451,19 +456,26 @@ class SourceCode {
    * Get source text for a node.
    * Start is accurate; end is approximated via the next token.
    */
-  getText(node) {
+  getText(node, beforeCount, afterCount) {
     if (!node) return this.text;
-    const start = node.start;
-    // Approximate end: find the next token that starts after node's main token
-    const ast = this._ast;
-    const mainTok = node.mainToken;
-    let end = this.text.length;
-    if (mainTok + 1 < ast.tokenCount) {
-      end = ast._tokStarts[mainTok + 1];
+    const src = this.text;
+    // Determine start/end from range (preferred) or token heuristics.
+    let start, end;
+    if (node.range) {
+      [start, end] = node.range;
+    } else {
+      start = node.start !== undefined ? node.start : 0;
+      const ast = this._ast;
+      const mainTok = node.mainToken;
+      end = src.length;
+      if (mainTok !== undefined && mainTok + 1 < ast.tokenCount) {
+        end = ast._tokStarts[mainTok + 1];
+      }
+      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
     }
-    // Remove trailing whitespace
-    while (end > start && this.text.charCodeAt(end - 1) <= 32) end--;
-    return this.text.slice(start, end);
+    const lo = beforeCount > 0 ? Math.max(0, start - beforeCount) : start;
+    const hi = afterCount  > 0 ? Math.min(src.length, end + afterCount) : end;
+    return src.slice(lo, hi);
   }
 
   /**
@@ -1115,9 +1127,14 @@ class SourceCode {
     // list, matching ESLint's eslint-scope behavior. A reference that is
     // unresolved in a child scope and also not resolved in this scope should
     // appear in through (so no-undef sees it on the global scope).
+    // IMPORTANT: eslint-scope removes resolved refs from child.through so that
+    // child.through only ever contains truly unresolved refs. Failing to do this
+    // causes no-undef FP when scope 1 is returned for getScope(Program): it would
+    // see builtin refs (resolved by scope 0) still listed in scope 1's through.
     for (const child of childScopes) {
+      const keep = [];
       for (const ref of child.through) {
-        if (ref.identifier?.type === 'PrivateIdentifier') continue;
+        if (ref.identifier?.type === 'PrivateIdentifier') { keep.push(ref); continue; }
         const name = ref.identifier?.name;
         const variable = name ? set.get(name) : undefined;
         if (variable) {
@@ -1125,7 +1142,13 @@ class SourceCode {
           ref.resolved = variable;
         } else {
           through.push(ref);
+          keep.push(ref);
         }
+      }
+      if (keep.length < child.through.length) {
+        child.through.length = 0;
+        for (let k = 0; k < keep.length; k++) child.through[k] = keep[k];
+        child.through.length = keep.length;
       }
     }
 
@@ -1617,7 +1640,7 @@ class SourceCode {
     const obj = Object.create(Object.getPrototypeOf(root));
     obj._ast = root._ast;
     obj._i = root._i;
-    obj.comments = []; // no comments in sanz yet
+    obj.comments = []; // no comments in ez yet
     Object.defineProperty(obj, 'tokens', {
       get() { return sc._getAllTokens(); },
       configurable: true, enumerable: true,
@@ -1733,7 +1756,7 @@ class SourceCode {
       const s = startArr[i], e = endArr[i];
       if (index >= s && index < e) {
         const size = e - s;
-        if (size < bestSize) {
+        if (size <= bestSize) {
           bestSize = size;
           best = i;
         }
@@ -2134,7 +2157,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
 
 /**
  * Build DFS pre-order and post-order traversal sequences from parent pointers.
- * Parents have higher node indices than children in the sanz AST, except for
+ * Parents have higher node indices than children in the ez AST, except for
  * Program (index 0) which is the root. Using parent data gives correct DFS order.
  */
 function buildDFSOrders(ast) {
@@ -2247,6 +2270,8 @@ class CodePathTracker {
     this._currentSegment = null;
     this._codePath = null;
     this._branchStack = []; // { savedReachable, anyBranchReachable }
+    this._loopStack = []; // { targetSeg, loopIdx } for onCodePathSegmentLoop
+    this._breakableStack = []; // 'loop' | 'switch' — for break target disambiguation
   }
 
   enterFunction(node) {
@@ -2324,6 +2349,47 @@ class CodePathTracker {
     this._currentSegment = seg;
     if (this._codePath) this._codePath.currentSegments = [seg];
     return seg;
+  }
+
+  // Push breakable context ('loop' or 'switch') for break target disambiguation.
+  // Record branchIdx so markSwitchBranchReachable() can find the exact switch entry
+  // even when nested if/try branches have been pushed on top of it.
+  pushBreakable(kind) { this._breakableStack.push({ kind, branchIdx: this._branchStack.length - 1 }); }
+  popBreakable() { this._breakableStack.pop(); }
+  get breakTarget() { return this._breakableStack.length > 0 ? this._breakableStack[this._breakableStack.length - 1].kind : null; }
+
+  // When break targets a switch, mark THAT switch's branchStack entry as reachable.
+  // Must use the stored branchIdx — the topmost entry may be a nested if/try, not the switch.
+  markSwitchBranchReachable() {
+    for (let i = this._breakableStack.length - 1; i >= 0; i--) {
+      if (this._breakableStack[i].kind === 'switch') {
+        const entry = this._branchStack[this._breakableStack[i].branchIdx];
+        if (entry) entry.anyBranchReachable = true;
+        return;
+      }
+    }
+  }
+
+  // Enter a loop: create a target segment for the loop back-edge and push to loop stack.
+  // Returns the target segment (caller should fire onCodePathSegmentStart with the looping target node).
+  enterLoop(loopIdx) {
+    const targetSeg = _makeSegment(this.reachable);
+    this._loopStack.push({ targetSeg, loopIdx });
+    // Also end old segment and start target as the "loop condition" segment
+    const old = this._currentSegment;
+    this._currentSegment = targetSeg;
+    if (this._codePath) this._codePath.currentSegments = [targetSeg];
+    return { oldSeg: old, targetSeg };
+  }
+
+  // Exit a loop: returns the loop info for onCodePathSegmentLoop dispatch.
+  exitLoop() {
+    return this._loopStack.pop() || null;
+  }
+
+  // Get the nearest enclosing loop's target segment (for ContinueStatement).
+  get nearestLoopTarget() {
+    return this._loopStack.length > 0 ? this._loopStack[this._loopStack.length - 1] : null;
   }
 
   get segment() { return this._currentSegment; }
@@ -3244,7 +3310,7 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
     const rawTypes = Array.isArray(rootType) ? rootType : [rootType];
     const types = rawTypes.length > 1 ? [...new Set(rawTypes)] : rawTypes;
     for (const rt of types) {
-      // sanz uses variant tags: populate ALL tag indices for this type name.
+      // ez uses variant tags: populate ALL tag indices for this type name.
       const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;
       const indices = allTags ? allTags : (tagNames.indexOf(rt) >= 0 ? [tagNames.indexOf(rt)] : []);
       for (let ki = 0; ki < indices.length; ki++) {
@@ -3287,6 +3353,16 @@ function _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, h
 const _BRANCH_STMT_TYPES = new Set(['IfStatement', 'TryStatement', 'SwitchStatement',
   'WhileStatement', 'DoWhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement']);
 const _CATCH_CASE_TYPES = new Set(['CatchClause', 'SwitchCase']);
+
+// Check if a SwitchStatement has a default case (all branches covered).
+function _switchHasDefault(node) {
+  const cases = node.cases;
+  if (!cases) return false;
+  for (let i = 0; i < cases.length; i++) {
+    if (cases[i].test === null) return true;
+  }
+  return false;
+}
 const _TERMINATOR_TYPES = new Set(['ReturnStatement', 'ThrowStatement', 'BreakStatement', 'ContinueStatement']);
 
 // Tag index sets and exit keys cached by tagNames identity — computed once per session,
@@ -3306,7 +3382,7 @@ function _ensureTagCaches(tagNames) {
   if (_tagSetCacheRef === tagNames) return;
   _tagSetCacheRef = tagNames;
   // Build tag sets by iterating ALL tags (not indexOf which only finds first occurrence).
-  // This handles sanz variants like if_stmt (tag 4) and if_else_stmt (tag 5) that share
+  // This handles ez variants like if_stmt (tag 4) and if_else_stmt (tag 5) that share
   // the same ESTree type name 'IfStatement'.
   _cachedBranchTagSet    = new Set();
   _cachedCatchTagSet     = new Set();
@@ -3323,7 +3399,9 @@ function _ensureTagCaches(tagNames) {
     if (_tn === 'IfStatement')       _cachedIfStmtTagSet.add(_t);
     if (_tn === 'TryStatement')      _cachedTryStmtTagSet.add(_t);
     if (_tn === 'DoWhileStatement')  _cachedDoWhileStmtTagSet.add(_t);
+    if (_tn === 'SwitchStatement')   { if (!_cachedSwitchTagSet) _cachedSwitchTagSet = new Set(); _cachedSwitchTagSet.add(_t); }
   }
+  if (!_cachedSwitchTagSet) _cachedSwitchTagSet = new Set();
   _cachedIfStmtTag = tagNames.indexOf('IfStatement');
   const _LOOP_TYPES = new Set(['WhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement', 'DoWhileStatement']);
   _cachedLoopTagSet = new Set();
@@ -3358,7 +3436,7 @@ function _getTagHandlerArrays(visitorMap, tagCount) {
   if (visitorMap._tagHandlers) return visitorMap._tagHandlers;
   const enter = new Array(tagCount).fill(null);
   const exit  = new Array(tagCount).fill(null);
-  // sanz uses variant tags: multiple tag indices per ESTree type name (e.g. BinaryExpression
+  // ez uses variant tags: multiple tag indices per ESTree type name (e.g. BinaryExpression
   // has one tag per operator, Literal has one per literal kind). We must populate ALL variant
   // tags with the same handler array so that any variant fires the right visitors.
   for (const [key, handlers] of visitorMap) {
@@ -3443,7 +3521,7 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
         if (allTags) { for (let ki = 0; ki < allTags.length; ki++) selectorRelevantTags[allTags[ki]] = 1; }
         else { const i = tagNames.indexOf(rt); if (i >= 0) selectorRelevantTags[i] = 1; }
       }
-      // unknown tag name (e.g. TSModuleDeclaration not in sanz's tagNames): selector won't fire, skip
+      // unknown tag name (e.g. TSModuleDeclaration not in ez's tagNames): selector won't fire, skip
     }
   }
 
@@ -3640,7 +3718,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _ancestorsBuf = [];
 
   // Pre-compute node depths for O(1) ancestor buffer pre-sizing.
-  // sanz AST: children have LOWER indices than parents (root=0 is the unique exception).
+  // ez AST: children have LOWER indices than parents (root=0 is the unique exception).
   // Use pre-order (parent-before-child guaranteed) for a single correct O(n) pass:
   // when processing node preOrder[j], its parent has already been processed.
   // _parentData is Uint32Array: values are always plain JS numbers, no undefined.
@@ -3786,7 +3864,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   // ── FunctionExpression synthesis for class methods ───────────────
-  // sanz has no FunctionExpression node in the AST for class methods.
+  // ez has no FunctionExpression node in the AST for class methods.
   // Synthesize FunctionExpression enter/exit and onCodePathStart/End events
   // so rules like no-constructor-return and getter-return work correctly.
 
@@ -3810,25 +3888,37 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   // Reused second arg for segment events — rules that use onCodePathSegmentStart(seg, node)
-  // receive this as `node`; all observed rules ignore it so we avoid allocating {} per call.
+  // receive this as `node`; most rules ignore it, but no-unreachable-loop uses isLoopingTarget(node).
   const _segEventNode = {};
   // Pre-cache segment event handler arrays — eliminates visitorMap.get() on every branch point.
   const _segStartH    = visitorMap.get('onCodePathSegmentStart') || null;
   const _segEndH      = visitorMap.get('onCodePathSegmentEnd') || null;
   const _unreachStartH = visitorMap.get('onUnreachableCodePathSegmentStart') || null;
   const _unreachEndH  = visitorMap.get('onUnreachableCodePathSegmentEnd') || null;
+  const _segLoopH     = visitorMap.get('onCodePathSegmentLoop') || null;
 
-  function _dispatchSeg(handlers, seg) {
+  function _dispatchSeg(handlers, seg, node) {
+    const nd = node || _segEventNode;
     const hn = handlers.length;
     let h = 0;
     try {
-      for (; h < hn; h++) handlers[h]._state.inner(seg, _segEventNode);
+      for (; h < hn; h++) handlers[h]._state.inner(seg, nd);
     } catch (err) {
       context._reports.push({ ruleId: handlers[h].ruleId, message: `Plugin error: ${err.message}` });
       for (let k = h + 1; k < hn; k++) {
-        try { handlers[k]._state.inner(seg, _segEventNode); }
+        try { handlers[k]._state.inner(seg, nd); }
         catch (e) { context._reports.push({ ruleId: handlers[k].ruleId, message: `Plugin error: ${e.message}` }); }
       }
+    }
+  }
+
+  // Dispatch onCodePathSegmentLoop(fromSeg, toSeg, node)
+  function _dispatchSegLoop(fromSeg, toSeg, node) {
+    if (!_segLoopH) return;
+    const hn = _segLoopH.length;
+    for (let h = 0; h < hn; h++) {
+      try { _segLoopH[h]._state.inner(fromSeg, toSeg, node); }
+      catch (e) { context._reports.push({ ruleId: _segLoopH[h].ruleId, message: `Plugin error: ${e.message}` }); }
     }
   }
 
@@ -3848,9 +3938,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const h = seg.reachable ? _segEndH : _unreachEndH;
     if (h) _dispatchSeg(h, seg);
   }
-  function _segStartOrUnreachEvent(seg) {
+  function _segStartOrUnreachEvent(seg, node) {
     const h = seg.reachable ? _segStartH : _unreachStartH;
-    if (h) _dispatchSeg(h, seg);
+    if (h) _dispatchSeg(h, seg, node);
   }
 
   function invokeHandlersWithNode(mapKey, node, nodeIdx) {
@@ -4155,7 +4245,30 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // Branch points (integer tag checks — no string comparisons)
         if (hasCodePath) {
           if (_branchEnterTagSet.has(tag)) {
-            cpTracker.enterBranch();
+            // For loops, create a target segment so onCodePathSegmentLoop can reference it
+            if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+              const oldSeg = cpTracker.segment;
+              if (oldSeg) _segEndEvent(oldSeg);
+              const { targetSeg } = cpTracker.enterLoop(idx);
+              // Fire onCodePathSegmentStart with the "looping target" node
+              // (test for while, body for do-while, update||test||body for for, left for for-in/of)
+              const loopNode = nodeView(ast, idx);
+              const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
+                : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
+                : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
+                : loopNode.test; // WhileStatement
+              _segStartOrUnreachEvent(targetSeg, targetNode || loopNode);
+              cpTracker.enterBranch();
+              cpTracker.pushBreakable('loop');
+            } else {
+              cpTracker.enterBranch();
+              if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+                cpTracker.pushBreakable('switch');
+                cpTracker.markUnreachable();
+              } else {
+                // if/try: not breakable targets
+              }
+            }
           }
           if (_catchCaseTagSet.has(tag)) {
             const oldSeg = cpTracker.segment;
@@ -4243,8 +4356,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // Code-path: terminators mark subsequent code unreachable (integer tag checks)
         if (hasCodePath) {
           if (_terminatorTagSet.has(tag)) {
-            // Labeled break/continue just exit to the label — don't mark unreachable.
             const nv2 = nodeView(ast, idx);
+            // ContinueStatement → fire onCodePathSegmentLoop before marking unreachable
+            if (_segLoopH && nv2.type === 'ContinueStatement') {
+              const fromSeg = cpTracker.segment;
+              const loopInfo = cpTracker.nearestLoopTarget;
+              if (fromSeg && fromSeg.reachable && loopInfo) {
+                _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv2);
+              }
+            }
+            // BreakStatement targeting a switch: the break means this branch reached
+            // a viable exit → mark the switch's branch as reachable so exitBranch
+            // correctly computes anyBranchReachable.
+            if (nv2.type === 'BreakStatement' && !nv2.label && cpTracker.breakTarget === 'switch') {
+              cpTracker.markSwitchBranchReachable();
+            }
+            // Labeled break/continue just exit to the label — don't mark unreachable.
             const isLbl = (nv2.type === 'BreakStatement' || nv2.type === 'ContinueStatement') && nv2.label != null;
             if (!isLbl) {
               const oldSeg = cpTracker.segment;
@@ -4289,12 +4416,27 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
         // Exit branching statements — merge reachability
         if (hasCodePath && _branchEnterTagSet.has(tag)) {
+          // Fire onCodePathSegmentLoop BEFORE exitBranch for loops
+          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+            const fromSeg = cpTracker.segment;
+            if (fromSeg && fromSeg.reachable) {
+              const loopInfo = cpTracker.nearestLoopTarget;
+              if (loopInfo && loopInfo.loopIdx === idx) {
+                _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
+              }
+            }
+            cpTracker.exitLoop();
+            cpTracker.popBreakable();
+          } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+            cpTracker.popBreakable();
+          }
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
           const nv4 = nodeView(ast, idx);
           const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nv4.alternate != null) ||
             (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
-            (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
+            (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
+            (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nv4));
           const seg = cpTracker.exitBranch(hasAllBranches);
           if (seg && seg.reachable && ast._nodeReachable &&
               _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
@@ -4392,7 +4534,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   // Pre-compute MethodDefinition → Property remap for object literal methods.
-  // sanz uses the same tags (getter_def, setter_def, method_def) for both class
+  // ez uses the same tags (getter_def, setter_def, method_def) for both class
   // methods (→ MethodDefinition) and object literal methods (→ Property).
   // The adapter's .type getter does the remap, but the runner dispatches by raw
   // tag → we need to intercept and use Property handlers for object-context nodes.
@@ -4463,7 +4605,28 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (_segStartH) _dispatchSeg(_segStartH, segment);
       }
       // Branch enter (flag-based: no string lookups in hot path)
-      if (flags & FLAG_BRANCH_ENTER) cpTracker.enterBranch();
+      if (flags & FLAG_BRANCH_ENTER) {
+        if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+          const oldSeg3 = cpTracker.segment;
+          if (oldSeg3) _segEndEvent(oldSeg3);
+          const { targetSeg } = cpTracker.enterLoop(idx);
+          if (_segStartH) {
+            const loopNode = nodeView(ast, idx);
+            const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
+              : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
+              : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
+              : loopNode.test;
+            _dispatchSeg(_segStartH, targetSeg, targetNode || loopNode);
+          }
+        }
+        cpTracker.enterBranch();
+        if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+          cpTracker.pushBreakable('loop');
+        } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+          cpTracker.pushBreakable('switch');
+          cpTracker.markUnreachable();
+        }
+      }
       if (flags & FLAG_CATCH_CASE) {
         const oldSeg2 = cpTracker.segment;
         if (oldSeg2) _segEndEvent(oldSeg2);
@@ -4534,10 +4697,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
       // Terminators and branch exit (flag-based: no string lookups in hot path)
       if (flags & FLAG_TERMINATOR) {
+        const nv = nodeView(ast, idx);
+        // ContinueStatement → fire onCodePathSegmentLoop before marking unreachable
+        if (_segLoopH && nv.type === 'ContinueStatement') {
+          const fromSeg = cpTracker.segment;
+          const loopInfo = cpTracker.nearestLoopTarget;
+          if (fromSeg && fromSeg.reachable && loopInfo) {
+            _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv);
+          }
+        }
+        // BreakStatement targeting a switch: mark switch branch as reachable
+        if (nv.type === 'BreakStatement' && !nv.label && cpTracker.breakTarget === 'switch') {
+          cpTracker.markSwitchBranchReachable();
+        }
         // Labeled break/continue just exit to the label — code after the labeled
         // statement IS reachable. Only mark unreachable for return/throw and
         // unlabeled break/continue (which terminate within their loop/switch).
-        const nv = nodeView(ast, idx);
         const isLabeled = (nv.type === 'BreakStatement' || nv.type === 'ContinueStatement') && nv.label != null;
         if (!isLabeled) {
           const oldSeg = cpTracker.segment;
@@ -4547,11 +4722,26 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_BRANCH_EXIT) {
+        // Fire onCodePathSegmentLoop BEFORE exitBranch for loops
+        if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+          const fromSeg = cpTracker.segment;
+          if (fromSeg && fromSeg.reachable) {
+            const loopInfo = cpTracker.nearestLoopTarget;
+            if (loopInfo && loopInfo.loopIdx === idx) {
+              _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
+            }
+          }
+          cpTracker.exitLoop();
+          cpTracker.popBreakable();
+        } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+          cpTracker.popBreakable();
+        }
         const oldSeg = cpTracker.segment;
         if (oldSeg) _segEndEvent(oldSeg);
         const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
           (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
-          (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag));
+          (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
+          (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nodeView(ast, idx)));
         const seg2 = cpTracker.exitBranch(hasAllBranches);
         // Consult Zig reachability only for LOOP exits (infinite loop detection).
         // Don't override for switch/if/try — those have different branch semantics.
@@ -4591,7 +4781,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 /**
  * Run ESLint-compatible plugins against a parsed AST.
  *
- * @param {AstView} ast - Parsed AST from sanz.parse()
+ * @param {AstView} ast - Parsed AST from ez.parse()
  * @param {Array} plugins - Array of { meta?: { name }, create(context) => visitors }
  * @param {object} [options] - { filename?: string, tagNames?: string[] }
  * @returns {Array} - Array of { ruleId, message, node?, loc? }

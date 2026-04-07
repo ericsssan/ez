@@ -1,7 +1,7 @@
 const std = @import("std");
-const sanz = @import("sanz");
-const Lexer = sanz.Lexer;
-const Parser = sanz.Parser;
+const ez = @import("ez");
+const Lexer = ez.Lexer;
+const Parser = ez.Parser;
 const Io = std.Io;
 
 /// tc39/test262 conformance runner.
@@ -206,7 +206,7 @@ fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module:
     if (tree.errors.len > 0) return .{ .has_error = true, .detail = .{ .kind = .parse, .count = @intCast(tree.errors.len) } };
 
     // Run semantic analysis to catch early errors (duplicate bindings, etc.)
-    var sem = sanz.semantic.SemanticAnalyzer.analyzeModule(allocator, &tree, is_module) catch return .{ .has_error = false, .detail = .{ .kind = .semantic, .count = 0 } };
+    var sem = ez.semantic.SemanticAnalyzer.analyzeModule(allocator, &tree, is_module) catch return .{ .has_error = false, .detail = .{ .kind = .semantic, .count = 0 } };
     defer sem.deinit(allocator);
 
     if (sem.diagnostics.len > 0) return .{ .has_error = true, .detail = .{ .kind = .semantic, .count = @intCast(sem.diagnostics.len) } };
@@ -214,7 +214,7 @@ fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module:
     if (!run_lint) return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
 
     // Run lint rules for must-reject tests to catch early errors via lint rules.
-    const lint_diags = sanz.linter.lint(allocator, &tree, &sem, null) catch return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
+    const lint_diags = ez.linter.lint(allocator, &tree, &sem, null) catch return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
     if (lint_diags.len > 0) {
         allocator.free(lint_diags);
         return .{ .has_error = true, .detail = .{ .kind = .lint, .count = @intCast(lint_diags.len) } };

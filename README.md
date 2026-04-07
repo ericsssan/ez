@@ -1,4 +1,4 @@
-# Sanz
+# Ez
 
 A high-performance JavaScript/TypeScript parser and linter written in Zig, with a zero-copy ESLint plugin runner that lets you run any ESLint plugin without reimplementing its rules.
 
@@ -10,14 +10,14 @@ A high-performance JavaScript/TypeScript parser and linter written in Zig, with 
 | TypeScript | 3,466/3,466 (100%) | 583/1,009 (57.8%) | 1,432 skipped (decorators etc.) |
 | Babel (JS) | 3,911/4,122 (94.9%) | 1,583/1,587 (99.7%) | 2,871 skipped (JSX/TS/proposals) |
 
-Must-reject measures whether the parser correctly reports a parse error on invalid code. TypeScript's low must-reject score (57.8%) reflects missing TS-specific error detection — sanz parses the code without crashing but doesn't yet diagnose all TypeScript semantic/syntax violations.
+Must-reject measures whether the parser correctly reports a parse error on invalid code. TypeScript's low must-reject score (57.8%) reflects missing TS-specific error detection — ez parses the code without crashing but doesn't yet diagnose all TypeScript semantic/syntax violations.
 
 ## Features
 
 - **Zig-native parser** — SIMD-accelerated lexer, arena allocation, MultiArrayList AST (struct-of-arrays layout)
 - **Semantic analysis** — scope tree, symbol table, reference tracking
 - **Zero-copy JS bridge** — AST is shared as a raw `ArrayBuffer`; Node.js reads it without copying or marshalling
-- **ESLint plugin runner** — load any ESLint plugin via `require()` and run its rules against the sanz AST
+- **ESLint plugin runner** — load any ESLint plugin via `require()` and run its rules against the ez AST
 - **ESTree-compatible node views** — named field getters (`node.test`, `node.consequent`, `node.body`, etc.), `node.parent`, `node.range`, `node.loc`
 - **AST selectors** — `esquery`-style selectors in visitor keys (`"IfStatement > BlockStatement"`, `"CallExpression[callee.name='require']"`)
 - **Autofix** — `--fix` applies rule-provided fixes in-place
@@ -39,7 +39,7 @@ Tested against current versions:
 ### Build the native module
 
 ```sh
-zig build          # builds zig-out/lib/libsanz.{dylib,so,dll}
+zig build          # builds zig-out/lib/libez.{dylib,so,dll}
 ```
 
 ### Install JS dependencies
@@ -89,7 +89,7 @@ node js/lint.js --eslint-plugin eslint --config .eslintrc.json src/
 
 ## How It Works
 
-Sanz serializes its AST into a flat `ArrayBuffer` that is shared directly with Node.js — no JSON, no copying. The JS side reads node tags, tokens, and extra data via typed array views on the same memory. ESLint plugin rules call `context.report()` as normal; sanz collects the reports and formats them.
+Ez serializes its AST into a flat `ArrayBuffer` that is shared directly with Node.js — no JSON, no copying. The JS side reads node tags, tokens, and extra data via typed array views on the same memory. ESLint plugin rules call `context.report()` as normal; ez collects the reports and formats them.
 
 See [DESIGN.md](DESIGN.md) for the full architecture: MultiArrayList AST layout, SIMD lexer, arena allocation, and the JS bridge protocol.
 

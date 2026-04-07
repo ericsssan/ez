@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Differential test — compares Sanz backends against ESLint+Espree.
+ * Differential test — compares Ez backends against ESLint+Espree.
  *
  * Two input sources:
  *   1. Fixture files (tests/differential/fixtures/) — all 3 backends
@@ -109,10 +109,10 @@ const COMPARABLE_RULES = new Set(
     .map(f => f.replace(/\.js$/, ""))
 );
 
-// ── ESLint + Sanz runner setup ────────────────────────────────
+// ── ESLint + Ez runner setup ────────────────────────────────
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
-const { parseSource: parse, getTagNames, lintSource: sanzLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
+const { parseSource: parse, getTagNames, lintSource: ezLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
 const { runPlugins }            = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
@@ -164,7 +164,7 @@ function runEspreeForRule(src, ruleName, ruleOptions, sourceType, tcLanguageOpti
     // The JSX parser feature is set via parserOptions, not the filename.
     }], { filename: "test.js" });
     // If espree had a fatal parse error the case is unparseable by espree; skip it
-    // rather than treating our output as FP (sanz can parse TS/JSX that espree can't).
+    // rather than treating our output as FP (ez can parse TS/JSX that espree can't).
     if (messages.some(m => m.fatal)) return ESPREE_SKIP;
     return messages
       .filter(m => m.ruleId === ruleName)
@@ -179,7 +179,7 @@ function runEspreeForRule(src, ruleName, ruleOptions, sourceType, tcLanguageOpti
 function runNative(filePath) {
   const source = fs.readFileSync(filePath, "utf-8");
   try {
-    const diags = sanzLint(source, {});
+    const diags = ezLint(source, {});
     return diags
       .filter(d => COMPARABLE_RULES.has(d.ruleName))
       .map(d => ({ rule: d.ruleName, line: offsetToLine(source, d.offset) }));
@@ -192,7 +192,7 @@ function runNative(filePath) {
 function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions) {
   if (hasCustomParser || hasOptions) return "skip";
   try {
-    const diags = sanzLint(code, { config: ruleConfig });
+    const diags = ezLint(code, { config: ruleConfig });
     return diags
       .filter(d => d.ruleName === ruleName)
       .map(d => ({ rule: d.ruleName, line: offsetToLine(code, d.offset) }));
@@ -364,7 +364,7 @@ function loadBaseline() {
 
 // ── Main ──────────────────────────────────────────────────────
 
-const nativeAvailable = typeof sanzLint === "function";
+const nativeAvailable = typeof ezLint === "function";
 
 const baseline = loadBaseline();
 const newBaseline = { files: {}, corpus: {} };

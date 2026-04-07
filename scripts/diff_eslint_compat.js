@@ -1,32 +1,32 @@
 "use strict";
 /**
- * Differential: sanz --eslint-rules vs ESLint directly.
+ * Differential: ez --eslint-rules vs ESLint directly.
  * Compares rule-by-rule, line-by-line on the same file.
- * Only compares rules that sanz successfully loaded.
+ * Only compares rules that ez successfully loaded.
  */
 const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const SANZ = path.resolve(__dirname, "../zig-out/bin/sanz");
+const SANZ = path.resolve(__dirname, "../zig-out/bin/ez");
 const RULES_DIR = path.resolve(__dirname, "../js/node_modules/eslint/lib/rules");
 const FILE = process.argv[2] || path.resolve(__dirname, "../tests/fixtures/expressions.js");
 
-// ── Step 1: Run sanz and collect loaded rules + diagnostics ──
-let sanzOut = "";
+// ── Step 1: Run ez and collect loaded rules + diagnostics ──
+let ezOut = "";
 try {
-  sanzOut = execSync(
+  ezOut = execSync(
     `"${SANZ}" --lint --eslint-rules="${RULES_DIR}" "${FILE}"`,
     { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
   );
 } catch (e) {
-  sanzOut = e.stdout || "";
+  ezOut = e.stdout || "";
 }
 
 const loadedRules = new Set();
-const sanzDiags = new Map(); // "rule:line" -> count
+const ezDiags = new Map(); // "rule:line" -> count
 
-for (const line of sanzOut.split("\n")) {
+for (const line of ezOut.split("\n")) {
   // per-line diagnostic: file:line:col: error(rule): message
   const m = line.match(/:(\d+):\d+: \w+\(([^)]+)\):/);
   if (m) {
@@ -34,13 +34,13 @@ for (const line of sanzOut.split("\n")) {
     const rule = m[2];
     loadedRules.add(rule);
     const key = `${rule}:${lineNo}`;
-    sanzDiags.set(key, (sanzDiags.get(key) || 0) + 1);
+    ezDiags.set(key, (ezDiags.get(key) || 0) + 1);
   }
 }
 
 // Also capture rules from "N rules loaded" line — we'll use the ones that appear in diagnostics
 // For rules with zero hits, we can't tell if they loaded successfully without more info.
-// Focus only on rules that appear in sanz output.
+// Focus only on rules that appear in ez output.
 
 // ── Step 2: Run ESLint with the same rules ──
 const rules = {};
@@ -78,13 +78,13 @@ try {
 } catch {}
 
 // ── Step 3: Compare ──
-const allKeys = new Set([...sanzDiags.keys(), ...eslintDiags.keys()]);
-const fps = []; // sanz has, ESLint doesn't
-const fns = []; // ESLint has, sanz doesn't
+const allKeys = new Set([...ezDiags.keys(), ...eslintDiags.keys()]);
+const fps = []; // ez has, ESLint doesn't
+const fns = []; // ESLint has, ez doesn't
 
 for (const key of allKeys) {
   const [rule, line] = key.split(":");
-  const s = sanzDiags.get(key) || 0;
+  const s = ezDiags.get(key) || 0;
   const e = eslintDiags.get(key) || 0;
   if (s > 0 && e === 0) fps.push({ rule, line: parseInt(line) });
   if (e > 0 && s === 0) fns.push({ rule, line: parseInt(line) });
@@ -95,12 +95,12 @@ fns.sort((a, b) => a.rule.localeCompare(b.rule) || a.line - b.line);
 
 console.log(`File: ${path.basename(FILE)}`);
 console.log(`Rules compared: ${loadedRules.size}`);
-console.log(`Sanz diags: ${sanzDiags.size}  ESLint diags: ${eslintDiags.size}`);
-console.log(`False positives (sanz extra): ${fps.length}`);
-console.log(`False negatives (sanz missing): ${fns.length}`);
+console.log(`Ez diags: ${ezDiags.size}  ESLint diags: ${eslintDiags.size}`);
+console.log(`False positives (ez extra): ${fps.length}`);
+console.log(`False negatives (ez missing): ${fns.length}`);
 
 if (fps.length > 0) {
-  console.log("\nFALSE POSITIVES (sanz flags, ESLint doesn't):");
+  console.log("\nFALSE POSITIVES (ez flags, ESLint doesn't):");
   // Group by rule
   const byRule = {};
   for (const { rule, line } of fps) {
@@ -113,7 +113,7 @@ if (fps.length > 0) {
 }
 
 if (fns.length > 0) {
-  console.log("\nFALSE NEGATIVES (ESLint flags, sanz doesn't):");
+  console.log("\nFALSE NEGATIVES (ESLint flags, ez doesn't):");
   const byRule = {};
   for (const { rule, line } of fns) {
     if (!byRule[rule]) byRule[rule] = [];
