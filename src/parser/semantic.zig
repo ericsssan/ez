@@ -194,6 +194,7 @@ pub const SemanticAnalyzer = struct {
         try self.visitRoot(.root, root_data);
         self.resolveUnresolved();
         try self.buildRefRanges();
+        try self.buildScopeBindings();
         try self.validateExports();
 
         return .{
@@ -338,7 +339,98 @@ pub const SemanticAnalyzer = struct {
         }
     }
 
-    // ── Visitor dispatch ──────────────────────────────��────
+    /// Sort symbols by scope_id (counting sort, O(sym+scope)) so that each
+    /// scope's symbols form a contiguous range in the symbol table.  Populates
+    /// ScopeTree.bindings_start/count so JS can use _scopeBindStart/_scopeBindCount
+    /// directly instead of rebuilding the index from _symScopeIds.
+    /// Also remaps reference symbol_ids to the new positions.
+    fn buildScopeBindings(self: *SemanticAnalyzer) !void {
+        const sym_count: u32   = @intCast(self.symbols.names.items.len);
+        const scope_count: u32 = @intCast(self.scopes.kinds.items.len);
+        if (sym_count == 0) return;
+
+        const alloc = self.allocator;
+
+        // Step 1: count symbols per scope.
+        const counts = try alloc.alloc(u32, scope_count);
+        defer alloc.free(counts);
+        @memset(counts, 0);
+        for (self.symbols.scope_ids.items) |sid| {
+            const s = sid.toInt();
+            if (s < scope_count) counts[s] += 1;
+        }
+
+        // Step 2: prefix-sum → bindings_start for each scope.
+        const starts = try alloc.alloc(u32, scope_count);
+        defer alloc.free(starts);
+        var total: u32 = 0;
+        for (0..scope_count) |i| {
+            starts[i] = total;
+            self.scopes.setBindings(@enumFromInt(i), total, counts[i]);
+            total += counts[i];
+        }
+
+        // Step 3: build perm[new_pos] = old_sym_id (counting sort placement).
+        const perm = try alloc.alloc(u32, sym_count);
+        defer alloc.free(perm);
+        const cursor = try alloc.alloc(u32, scope_count);
+        defer alloc.free(cursor);
+        @memcpy(cursor, starts);
+        for (0..sym_count) |old_id| {
+            const s = self.symbols.scope_ids.items[old_id].toInt();
+            if (s < scope_count) {
+                perm[cursor[s]] = @intCast(old_id);
+                cursor[s] += 1;
+            }
+        }
+
+        // Step 4: build inverse permutation inv_perm[old_id] = new_id.
+        const inv_perm = try alloc.alloc(u32, sym_count);
+        defer alloc.free(inv_perm);
+        for (0..sym_count) |new_id| {
+            inv_perm[perm[new_id]] = @intCast(new_id);
+        }
+
+        // Step 5: reorder all symbol arrays according to perm.
+        const new_names  = try alloc.alloc([]const u8,    sym_count);
+        defer alloc.free(new_names);
+        const new_flags  = try alloc.alloc(SymbolFlags,   sym_count);
+        defer alloc.free(new_flags);
+        const new_bkinds = try alloc.alloc(BindingKind,   sym_count);
+        defer alloc.free(new_bkinds);
+        const new_scopes = try alloc.alloc(ScopeId,       sym_count);
+        defer alloc.free(new_scopes);
+        const new_decls  = try alloc.alloc(NodeIndex,     sym_count);
+        defer alloc.free(new_decls);
+        const new_refs   = try alloc.alloc(symbol_mod.RefRange, sym_count);
+        defer alloc.free(new_refs);
+
+        for (0..sym_count) |new_id| {
+            const old_id = perm[new_id];
+            new_names [new_id] = self.symbols.names.items        [old_id];
+            new_flags [new_id] = self.symbols.flags.items        [old_id];
+            new_bkinds[new_id] = self.symbols.binding_kinds.items[old_id];
+            new_scopes[new_id] = self.symbols.scope_ids.items    [old_id];
+            new_decls [new_id] = self.symbols.decl_nodes.items   [old_id];
+            new_refs  [new_id] = self.symbols.references.items   [old_id];
+        }
+        @memcpy(self.symbols.names.items,         new_names);
+        @memcpy(self.symbols.flags.items,         new_flags);
+        @memcpy(self.symbols.binding_kinds.items, new_bkinds);
+        @memcpy(self.symbols.scope_ids.items,     new_scopes);
+        @memcpy(self.symbols.decl_nodes.items,    new_decls);
+        @memcpy(self.symbols.references.items,    new_refs);
+
+        // Step 6: remap reference symbol_ids to new positions.
+        for (self.references.symbol_ids.items) |*sym| {
+            if (sym.* != .none) {
+                const old_id = sym.*.toInt();
+                if (old_id < sym_count) sym.* = SymbolId.fromInt(inv_perm[old_id]);
+            }
+        }
+    }
+
+    // ── Visitor dispatch ──────────────────────────────────────────
 
     fn visitNode(self: *SemanticAnalyzer, idx: NodeIndex) std.mem.Allocator.Error!void {
         if (idx == .none or idx == .root) return;
