@@ -262,7 +262,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     };
     const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
     const reports = runPlugins(ast, [plugin], {
-      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion,
+      tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,
     });
     return reports
       .filter(r => r.ruleId === ruleName && !r.message?.startsWith("Plugin error:"))

@@ -103,6 +103,11 @@ const _BUILTIN_GLOBALS = [
   'JSON', 'Intl', 'Promise', 'Proxy', 'Reflect',
   'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError',
   'SyntaxError', 'TypeError', 'URIError',
+];
+
+// Environment globals — only added when explicitly configured or in default mode.
+// Not part of ECMAScript spec; provided by browser/Node.js/web APIs.
+const _ENV_GLOBALS = [
   'console', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval',
   'queueMicrotask', 'structuredClone', 'atob', 'btoa',
   'URL', 'URLSearchParams', 'TextEncoder', 'TextDecoder',
@@ -324,11 +329,12 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
  * Provides getText(), getTokens(), getFirstToken(), getLastToken().
  */
 class SourceCode {
-  constructor(ast, sourceText, sourceType, ecmaVersion) {
+  constructor(ast, sourceText, sourceType, ecmaVersion, envGlobals = true) {
     this._ast = ast;
     this.text = sourceText;
     this._sourceType = sourceType || 'module';
     this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
+    this._envGlobals = envGlobals;
     // Expose runtime sourceType on the AST so node.sourceType returns correctly.
     // Zig always parses in module mode, so the buffer always says 'module'.
     ast._runtimeSourceType = this._sourceType;
@@ -969,6 +975,19 @@ class SourceCode {
         } else {
           // Mark user-declared variable that shadows a builtin
           set.get(name).eslintImplicitGlobalSetting = 'writable';
+        }
+      }
+      // Add environment globals (setTimeout, console, fetch, etc.) only when configured.
+      if (this._envGlobals) {
+        for (const name of _ENV_GLOBALS) {
+          if (!set.has(name)) {
+            const globalVar = { name, defs: [], references: [], identifiers: [],
+              scope, eslintUsed: false, writeable: false,
+              eslintImplicitGlobalSetting: 'writable',
+              isRead: () => false, isWritten: () => false };
+            set.set(name, globalVar);
+            variables.push(globalVar);
+          }
         }
       }
     }
@@ -1843,7 +1862,7 @@ class RuleContext {
     this.settings = {};
     // Satisfy ESLint v8 parserPath check used by getParserServices
     this.parserPath = '@typescript-eslint/parser';
-    const sc = new SourceCode(ast, sourceText, options.sourceType, options.ecmaVersion);
+    const sc = new SourceCode(ast, sourceText, options.sourceType, options.ecmaVersion, options.envGlobals);
     this.sourceCode = sc;
     // Attach TypeScript parserServices for .ts/.tsx files
     if (options.parserServices) {
@@ -1869,6 +1888,7 @@ class RuleContext {
     this._currentRule = null;
     this._currentRuleMeta = null;
     this.sourceCode.reset(ast, sourceText, options.sourceType, options.ecmaVersion);
+    this.sourceCode._envGlobals = options.envGlobals !== undefined ? options.envGlobals : true;
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
     if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
@@ -4511,7 +4531,7 @@ let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion, envGlobals = true } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
@@ -4548,10 +4568,10 @@ function runPlugins(ast, plugins, options = {}) {
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;
   if (_cachedContext) {
-    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion });
+    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals });
     context = _cachedContext;
   } else {
-    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion });
+    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals });
     _cachedContext = context;
   }
 
