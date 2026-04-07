@@ -1010,7 +1010,15 @@ class SourceCode {
           const name = rawName;
           if (!name || !/^[$_a-zA-Z][\w$]*$/.test(name)) continue;
           const valueStr = (rawValue || 'writable').toLowerCase();
-          if (valueStr === 'off') continue; // disabled (false = readonly, not disabled)
+          if (valueStr === 'off') {
+            // Remove the global variable so rules don't see it as a global reference.
+            if (set.has(name)) {
+              const idx = variables.indexOf(set.get(name));
+              if (idx >= 0) variables.splice(idx, 1);
+              set.delete(name);
+            }
+            continue;
+          }
           if (set.has(name)) {
             const v = set.get(name);
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
