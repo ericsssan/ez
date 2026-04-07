@@ -689,6 +689,8 @@ pub fn computeNodePositions(
         var j = base + 1;
         // For arrays, continue through trailing commas to find the closing bracket
         var is_array = tag == .array_literal or tag == .array_pattern;
+        // For class properties, stop after the first semicolon (don't include extras)
+        const is_property = tag == .property_def or tag == .computed_property_def;
         while (j < tc) {
             if (isMainTok[j] == 1) break;
             const tt = tok_tags[j];
@@ -708,9 +710,10 @@ pub fn computeNodePositions(
                 // Statement/declaration: include trailing `;` and other tokens.
                 // For expression statements specifically, stop after `;` to prevent
                 // consuming sibling tokens (e.g., `else` after `if (cond) expr;`).
+                // For property definitions in class bodies, only include the first `;`
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
-                if (is_expr_stmt and tt == .semicolon) break;
+                if ((is_expr_stmt or is_property) and tt == .semicolon) break;
             } else if (is_array and tt == .comma) {
                 // For arrays: include trailing commas until we find the closing bracket
                 const te = tok_ends[j];
