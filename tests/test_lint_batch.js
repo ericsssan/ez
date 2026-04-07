@@ -72,12 +72,13 @@ console.log("\n[2] single file");
 console.log("\n[3] batch vs sequential — all fixture files");
 {
   const batch = sanz.lint(fixtureFiles);
-  ok("result length matches", batch.length === fixtureFiles.length);
+  ok("result length <= file count", batch.length <= fixtureFiles.length);
+  ok("no clean files in results", batch.every(r => r.diags.length > 0));
 
   for (let i = 0; i < fixtureFiles.length; i++) {
     const f = fixtureFiles[i];
-    // Single-file batch as reference (same Zig worker path as multi-file batch)
     const single = sanz.lint([f]);
+    // Both batch and single omit clean files — use ?? [] for missing entries
     const batchDiags = batch.find(r => r.file === f)?.diags ?? [];
     const singleDiags = single[0]?.diags ?? [];
     ok(path.basename(f), diagsEqual(batchDiags, singleDiags),
@@ -129,7 +130,7 @@ console.log("\n[6] multi-file batch vs sequential — with config");
 {
   const config = sanz.buildNativeConfig({ "no-debugger": "error", "no-var": "warn" });
   const batch = sanz.lint(allFiles, { config });
-  ok("result length matches", batch.length === allFiles.length);
+  ok("no clean files in results", batch.every(r => r.diags.length > 0));
 
   let mismatch = 0;
   for (const f of allFiles) {

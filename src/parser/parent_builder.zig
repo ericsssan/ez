@@ -211,8 +211,11 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
 
             // ── Imports ───────────────────────────────────────
             .import_decl => {
-                const ed = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
-                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.specifiers_start, .end = ed.specifiers_end }, p) catch return error.OutOfMemory;
+                // lhs is .none for TS import alias (`import X = require(...)`)
+                if (lhs != .none) {
+                    const ed = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
+                    pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.specifiers_start, .end = ed.specifiers_end }, p) catch return error.OutOfMemory;
+                }
             },
             .import_specifier, .import_default_specifier, .import_namespace_specifier => {},
 

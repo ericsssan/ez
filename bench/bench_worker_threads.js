@@ -8,41 +8,35 @@
  * Native Zig rules bypass this entirely (they use Zig OS threads in lintFiles),
  * so we must use JS-only rules to exercise the worker path.
  *
+ * Uses the same streaming pool pattern as lint.js _runFileParallel: workers get
+ * MINI_BATCH files at a time, results are counted immediately (not accumulated),
+ * memory is bounded to workerCount × MINI_BATCH × avg_result_size.
+ *
  * Usage:
  *   node bench/bench_worker_threads.js [--threads 1,2,4,8,12] [--files N] [--rule <name>]
- *
- * Defaults: threads=[1,2,4,8,12], files=all in conformance dirs, rule=no-magic-numbers
  */
 
-"use strict";
-const { execFileSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
+const { Worker } = require("worker_threads");
 
 const ROOT = path.join(__dirname, "..");
+const LINT_WORKER = path.join(ROOT, "js/lint-worker.js");
 
 // ── arg parsing ──────────────────────────────────────────────────
 let threadCounts = [1, 2, 4, 8, 12];
 let maxFiles = Infinity;
 let ruleName = "no-magic-numbers"; // guaranteed JS-only
-let warmupRuns = 1;
 
 for (let i = 2; i < process.argv.length; i++) {
   const arg = process.argv[i];
-  if (arg.startsWith("--threads=")) {
-    threadCounts = arg.slice("--threads=".length).split(",").map(Number);
-  } else if (arg === "--threads") {
-    threadCounts = process.argv[++i].split(",").map(Number);
-  } else if (arg.startsWith("--files=")) {
-    maxFiles = parseInt(arg.slice("--files=".length), 10);
-  } else if (arg === "--files") {
-    maxFiles = parseInt(process.argv[++i], 10);
-  } else if (arg.startsWith("--rule=")) {
-    ruleName = arg.slice("--rule=".length);
-  } else if (arg === "--rule") {
-    ruleName = process.argv[++i];
-  }
+  if (arg.startsWith("--threads=")) threadCounts = arg.slice(10).split(",").map(Number);
+  else if (arg === "--threads") threadCounts = process.argv[++i].split(",").map(Number);
+  else if (arg.startsWith("--files=")) maxFiles = parseInt(arg.slice(8), 10);
+  else if (arg === "--files") maxFiles = parseInt(process.argv[++i], 10);
+  else if (arg.startsWith("--rule=")) ruleName = arg.slice(7);
+  else if (arg === "--rule") ruleName = process.argv[++i];
 }
 
 // ── file discovery ───────────────────────────────────────────────
@@ -70,7 +64,6 @@ function discoverFiles(dir, max) {
   return results;
 }
 
-// Collect from conformance dirs (small files — most representative of real-world load)
 const searchDirs = [
   path.join(ROOT, "tests/conformance/test262/test/language"),
   path.join(ROOT, "tests/conformance/babel/packages/babel-parser/test/fixtures"),
@@ -81,8 +74,7 @@ console.log("Discovering files...");
 const allFiles = [];
 for (const dir of searchDirs) {
   if (!fs.existsSync(dir)) continue;
-  const found = discoverFiles(dir, maxFiles - allFiles.length);
-  allFiles.push(...found);
+  allFiles.push(...discoverFiles(dir, maxFiles - allFiles.length));
   if (allFiles.length >= maxFiles) break;
 }
 
@@ -91,177 +83,149 @@ if (allFiles.length === 0) {
   process.exit(1);
 }
 
-const fileCount = allFiles.length;
 const totalBytes = allFiles.reduce((s, f) => {
   try { return s + fs.statSync(f).size; } catch { return s; }
 }, 0);
 
-console.log(`Files: ${fileCount.toLocaleString()} | Total: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
+console.log(`Files: ${allFiles.length.toLocaleString()} | Total: ${(totalBytes / 1024 / 1024).toFixed(1)} MB`);
 console.log(`Rule:  ${ruleName} (JS-only — forces worker path)`);
 console.log(`CPUs:  ${os.cpus().length}`);
 console.log();
 
-// Write file list to a temp file so lint.js can consume it via xargs-style
-// Actually we call lint.js directly via execFileSync with the file list.
-// To avoid ARG_MAX limits with 100k files, write paths to a temp response file
-// and pass them via stdin or a file list.
-// Lint.js accepts directories — collect unique parent dirs. But that re-discovers.
-// Better: write a wrapper that calls the internal API directly.
-
-// ── Direct API benchmark (bypasses CLI overhead) ─────────────────
-
-// We invoke lint.js logic directly via require to avoid process spawn overhead.
-// This gives cleaner numbers.
-
-// Write file list to temp file
-const tmpList = path.join(os.tmpdir(), "sanz_bench_files.txt");
-fs.writeFileSync(tmpList, allFiles.join("\n"));
-
-// Build a minimal lint.js-equivalent harness using the worker thread machinery
-const LINT_WORKER = path.join(ROOT, "js/lint-worker.js");
-const { Worker } = require("worker_threads");
-
-const { getNativeRules, buildNativeConfig } = require(path.join(ROOT, "js/index"));
+// ── load plugin ──────────────────────────────────────────────────
+const { getNativeRules } = require(path.join(ROOT, "js/index"));
 const { loadPlugin } = require(path.join(ROOT, "js/load-plugin"));
 
-// Load eslint plugin
 let plugins;
 try {
   plugins = loadPlugin("eslint", new Set([ruleName]));
 } catch (e) {
-  console.error(`Cannot load eslint plugin: ${e.message}`);
-  console.error("Run: cd js && npm install eslint");
+  console.error(`Cannot load eslint plugin: ${e.message}\nRun: cd js && npm install eslint`);
   process.exit(1);
 }
+if (plugins.length === 0) { console.error(`Rule '${ruleName}' not found`); process.exit(1); }
 
-if (plugins.length === 0) {
-  console.error(`Rule '${ruleName}' not found in eslint plugin`);
-  process.exit(1);
-}
-
-// Verify it's JS-only
 const nativeRules = getNativeRules();
 if (nativeRules.has(ruleName)) {
-  console.error(`WARNING: '${ruleName}' is a NATIVE rule — workers won't be used. Results won't show worker benefit.`);
+  console.error(`WARNING: '${ruleName}' is a NATIVE rule — workers won't be used.`);
 }
 
-const ruleConfig = {};
 const pluginNames = ["eslint"];
 const ruleFilters = [ruleName];
-const typeAware = false;
-const applyFix = false;
+const ruleConfig = {};
 
-function splitChunks(arr, n) {
-  const size = Math.ceil(arr.length / n);
-  const chunks = [];
-  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
-  return chunks;
-}
+// ── streaming pool (mirrors lint.js _runFileParallel) ────────────
+// Workers get MINI_BATCH files at a time; results are counted immediately
+// without accumulation. Memory = workerCount × MINI_BATCH × avg_result_size.
 
-function runWithThreads(files, threads) {
+const MINI_BATCH = 50;
+
+function runStream(files, threads) {
+  const workerCount = Math.min(threads, files.length);
+  let violations = 0;
+  let errors = 0;
+
   return new Promise((resolve, reject) => {
-    if (threads === 1) {
-      // Sequential: one-shot worker (or inline)
-      const w = new Worker(LINT_WORKER, {
-        workerData: { files, pluginNames, ruleFilters, ruleConfig, applyFix, typeAware },
-      });
-      w.once("message", (results) => {
-        if (results && results.fatalError) return reject(new Error(results.fatalError));
-        resolve(results);
-      });
-      w.once("error", reject);
-      return;
-    }
-
-    // Multi-threaded pool mode with wave warmup (mirrors lint.js _runFileParallel)
-    const chunks = splitChunks(files, threads);
-    const allResults = new Array(chunks.length);
-    const workers = [];
-    let done = 0;
+    let cursor = 0;
+    let doneWorkers = 0;
     let rejected = false;
     const warmupFile = files[0];
-    const WAVE_SIZE = 3;
+    const workers = new Array(workerCount);
     let spawned = 0;
     let warmedUp = 0;
+    const WAVE_SIZE = 3;
 
     function onReject(err) { if (!rejected) { rejected = true; reject(err); } }
 
+    function dispatchNext(worker) {
+      if (rejected) return;
+      if (cursor >= files.length) {
+        worker.postMessage({ exit: true });
+        if (++doneWorkers === workerCount) resolve({ violations, errors });
+        return;
+      }
+      const end = Math.min(cursor + MINI_BATCH, files.length);
+      worker.postMessage({ files: files.slice(cursor, end), batchId: cursor });
+      cursor = end;
+    }
+
     function spawnWave() {
-      const end = Math.min(spawned + WAVE_SIZE, chunks.length);
+      const end = Math.min(spawned + WAVE_SIZE, workerCount);
       while (spawned < end) spawnOne(spawned++);
     }
 
     function spawnOne(idx) {
-      const w = new Worker(LINT_WORKER, {
-        workerData: { pluginNames, ruleFilters, ruleConfig, applyFix, typeAware },
+      const worker = new Worker(LINT_WORKER, {
+        workerData: { pluginNames, ruleFilters, ruleConfig, applyFix: false, typeAware: false },
       });
-      workers[idx] = w;
-      w.on("message", (msg) => {
+      workers[idx] = worker;
+      worker.on("message", (msg) => {
         if (msg.fatalError) { onReject(new Error(msg.fatalError)); return; }
-        if (msg.ready) { w.postMessage({ files: [warmupFile], batchId: -1 }); return; }
+        if (msg.ready) { worker.postMessage({ files: [warmupFile], batchId: -1 }); return; }
         if (msg.batchId === -1) {
-          if (++warmedUp % WAVE_SIZE === 0 || warmedUp === chunks.length) {
-            if (spawned < chunks.length) spawnWave();
+          if (++warmedUp % WAVE_SIZE === 0 || warmedUp === workerCount) {
+            if (spawned < workerCount) spawnWave();
           }
-          if (warmedUp === chunks.length) {
-            for (let i = 0; i < workers.length; i++) workers[i].postMessage({ files: chunks[i], batchId: i });
+          if (warmedUp === workerCount) {
+            for (let i = 0; i < workerCount; i++) dispatchNext(workers[i]);
           }
           return;
         }
         if (msg.results !== undefined && msg.batchId >= 0) {
-          allResults[msg.batchId] = msg.results;
-          w.postMessage({ exit: true });
-          if (++done === chunks.length) resolve(allResults.flat());
+          // Count immediately — never store
+          for (const r of msg.results) {
+            if (r.violations) violations += r.violations.length;
+            else if (r.readError || r.parseError) errors++;
+          }
+          dispatchNext(worker);
         }
       });
-      w.on("error", onReject);
-      w.on("exit", (code) => { if (code !== 0 && !rejected && done < chunks.length) onReject(new Error(`Worker ${idx} exited ${code}`)); });
+      worker.on("error", onReject);
+      worker.on("exit", (code) => {
+        if (code !== 0 && !rejected && doneWorkers < workerCount)
+          onReject(new Error(`Worker ${idx} exited ${code}`));
+      });
     }
     spawnWave();
   });
 }
 
-// ── run benchmark ────────────────────────────────────────────────
-
+// ── benchmark ────────────────────────────────────────────────────
 async function bench(threads) {
-  // Warmup run (not timed)
-  const warmupFiles = allFiles.slice(0, Math.min(500, allFiles.length));
-  await runWithThreads(warmupFiles, Math.min(threads, warmupFiles.length));
+  // Warmup: small slice to force JIT compilation before timing
+  const warmupFiles = allFiles.slice(0, Math.min(200, allFiles.length));
+  await runStream(warmupFiles, Math.min(threads, warmupFiles.length));
 
   const t0 = performance.now();
-  const results = await runWithThreads(allFiles, threads);
+  const { violations, errors } = await runStream(allFiles, threads);
   const elapsed = (performance.now() - t0) / 1000;
 
-  const violations = results.reduce((s, r) => s + (r.violations?.length ?? 0), 0);
-  const errors = results.filter(r => r.readError || r.parseError).length;
-  const filesPerSec = (fileCount / elapsed).toFixed(0);
-  const mbPerSec = (totalBytes / 1024 / 1024 / elapsed).toFixed(1);
-
-  return { threads, elapsed, filesPerSec, mbPerSec, violations, errors };
+  return {
+    threads,
+    elapsed,
+    filesPerSec: Math.round(allFiles.length / elapsed),
+    mbPerSec: (totalBytes / 1024 / 1024 / elapsed).toFixed(1),
+    violations,
+    errors,
+  };
 }
 
 async function main() {
-  const results = [];
-
-  // Filter thread counts to not exceed file count or CPU count
   const cpus = os.cpus().length;
-  const validThreads = threadCounts.filter(t => t >= 1 && t <= Math.max(fileCount, cpus));
+  const validThreads = threadCounts.filter(t => t >= 1 && t <= Math.max(allFiles.length, cpus));
 
-  console.log(`${"threads".padEnd(8)} ${"time(s)".padEnd(10)} ${"files/s".padEnd(10)} ${"MB/s".padEnd(8)} ${"violations".padEnd(12)} notes`);
-  console.log("─".repeat(70));
+  console.log(`${"threads".padEnd(8)} ${"time(s)".padEnd(10)} ${"files/s".padEnd(10)} ${"MB/s".padEnd(8)} violations`);
+  console.log("─".repeat(55));
 
-  let baseline = null;
-
+  const results = [];
   for (const t of validThreads) {
     process.stdout.write(`${String(t).padEnd(8)} `);
     try {
       const r = await bench(t);
       results.push(r);
-      if (!baseline) baseline = r;
-      const speedup = baseline ? (baseline.elapsed / r.elapsed).toFixed(2) + "x" : "1.00x";
-      console.log(
-        `${r.elapsed.toFixed(2).padEnd(10)} ${r.filesPerSec.padEnd(10)} ${r.mbPerSec.padEnd(8)} ${String(r.violations).padEnd(12)} ${t === 1 ? "(baseline)" : speedup}`
-      );
+      const baseline = results[0];
+      const speedup = t === 1 ? "(baseline)" : `${(baseline.elapsed / r.elapsed).toFixed(2)}x`;
+      console.log(`${r.elapsed.toFixed(2).padEnd(10)} ${String(r.filesPerSec).padEnd(10)} ${r.mbPerSec.padEnd(8)} ${r.violations}  ${speedup}`);
     } catch (e) {
       console.log(`ERROR: ${e.message}`);
     }
@@ -271,17 +235,14 @@ async function main() {
   if (results.length >= 2) {
     const best = results.reduce((a, b) => b.elapsed < a.elapsed ? b : a);
     const seq = results[0];
-    console.log(`Best:     ${best.threads} threads — ${(seq.elapsed / best.elapsed).toFixed(2)}x speedup over sequential`);
-    console.log(`Peak:     ${best.filesPerSec} files/s at ${best.mbPerSec} MB/s`);
     if (best.threads === 1) {
-      console.log("Verdict:  Worker threads do NOT improve throughput (overhead dominates).");
+      console.log("Verdict: Worker threads do NOT improve throughput (overhead dominates).");
     } else {
       const pct = (((seq.elapsed - best.elapsed) / seq.elapsed) * 100).toFixed(0);
-      console.log(`Verdict:  Worker threads save ~${pct}% wall time at ${best.threads} threads.`);
+      console.log(`Best:    ${best.threads} threads — ${(seq.elapsed / best.elapsed).toFixed(2)}x speedup, saves ~${pct}% wall time`);
+      console.log(`Peak:    ${best.filesPerSec.toLocaleString()} files/s at ${best.mbPerSec} MB/s`);
     }
   }
-
-  fs.unlinkSync(tmpList);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

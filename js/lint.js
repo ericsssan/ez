@@ -283,76 +283,72 @@ function splitChunks(arr, n) {
 }
 
 /**
- * Run workers and collect results in original file order.
- * Returns array of { file, violations?, fixed?, readError?, parseError?, pluginError? }
+ * Run workers, streaming results through onResult(result) as each mini-batch
+ * completes. Returns Promise<void> that resolves when all files are processed.
  *
  * Worker partitioning strategy:
- * - When files >> rules: split files across workers (file-parallel, default)
- * - When rules >> files: split rules across workers (rule-parallel)
- *   Each worker runs a subset of rules on ALL files, results are merged.
+ * - When files >> rules: streaming pool (file-parallel, default)
+ * - When rules >> files: split rules across workers (rule-parallel, few files only)
  */
-function runParallel(files, threads) {
-  // Heuristic: use rule-parallel when there are many rules relative to files
-  // and enough workers to benefit from splitting rules.
+function runParallel(files, threads, onResult) {
   const ruleCount = allPlugins.length;
   const useRuleParallel = ruleCount >= threads * 2 && files.length <= threads;
-
-  if (useRuleParallel) {
-    return _runRuleParallel(files, threads, ruleCount);
-  }
-  return _runFileParallel(files, threads);
+  if (useRuleParallel) return _runRuleParallel(files, threads, ruleCount, onResult);
+  return _runFileParallel(files, threads, onResult);
 }
 
 /**
- * File-parallel: pool of workers with staggered startup + JIT warmup.
+ * File-parallel streaming pool.
  *
- * V8 worker threads share a platform-level JIT compile queue. Spawning N
- * workers that all hit runPlugins (292 rules) concurrently for the first
- * time starves some workers indefinitely — they wait for JIT compilation
- * that never completes because other workers hold the compile threads.
+ * Workers are pooled and fed mini-batches (MINI_BATCH files each). Results are
+ * passed to onResult() immediately — no accumulation. Memory at any time is
+ * bounded to workerCount × MINI_BATCH × avg_result_size regardless of total
+ * file count.
  *
- * Fix: spawn workers one at a time in pool mode. Each worker loads plugins
- * and signals ready. Then we send it a warmup file (forces JIT compilation
- * of all rule handlers). Only after the warmup completes do we spawn the
- * next worker. Once all workers are warmed up, send real file batches.
+ * JIT warmup: workers are spawned in waves of WAVE_SIZE. Each wave warmup-parses
+ * one file to force JIT compilation before the next wave starts, preventing V8's
+ * JIT compile queue from being saturated by concurrent first-parse storms.
  */
-function _runFileParallel(files, threads) {
+function _runFileParallel(files, threads, onResult) {
+  // Mini-batch size: small enough to bound memory, large enough to amortize
+  // worker message overhead. 500 files ≈ 12 workers × 500 = 6k in-flight at once.
+  const MINI_BATCH = 500;
+  const workerCount = Math.min(threads, files.length);
+
   return new Promise((resolve, reject) => {
-    const chunks = splitChunks(files, threads);
-    const workers = [];
-    const allResults = new Array(chunks.length);
-    let done = 0;
+    let cursor = 0;       // next file index to dispatch (main-thread only — safe, no races)
+    let doneWorkers = 0;  // workers that have signalled exit
     let rejected = false;
-    // Use the first real file as warmup input
     const warmupFile = files[0];
-
-    function onReject(err) {
-      if (!rejected) { rejected = true; reject(err); }
-    }
-
-    // Spawn workers in small waves (WAVE_SIZE at a time) to avoid saturating
-    // V8's JIT compile queue. Each wave's workers load plugins + run one
-    // warmup file before the next wave starts.
-    const WAVE_SIZE = 3;
+    const workers = new Array(workerCount);
     let spawned = 0;
     let warmedUp = 0;
 
-    function spawnWave() {
-      const waveEnd = Math.min(spawned + WAVE_SIZE, chunks.length);
-      while (spawned < waveEnd) {
-        spawnOne(spawned++);
+    function onReject(err) { if (!rejected) { rejected = true; reject(err); } }
+
+    // Send the next mini-batch to worker, or exit it if no more files.
+    function dispatchNext(worker) {
+      if (rejected) return;
+      if (cursor >= files.length) {
+        worker.postMessage({ exit: true });
+        if (++doneWorkers === workerCount) resolve();
+        return;
       }
+      const end = Math.min(cursor + MINI_BATCH, files.length);
+      worker.postMessage({ files: files.slice(cursor, end), batchId: cursor });
+      cursor = end;
+    }
+
+    const WAVE_SIZE = 3;
+
+    function spawnWave() {
+      const end = Math.min(spawned + WAVE_SIZE, workerCount);
+      while (spawned < end) spawnOne(spawned++);
     }
 
     function spawnOne(idx) {
       const worker = new Worker(path.join(__dirname, "lint-worker.js"), {
-        workerData: {
-          pluginNames,
-          ruleFilters: [...ruleFilters],
-          ruleConfig,
-          applyFix: false,
-          typeAware,
-        },
+        workerData: { pluginNames, ruleFilters: [...ruleFilters], ruleConfig, applyFix, typeAware },
       });
       workers[idx] = worker;
       worker.on("message", (msg) => {
@@ -362,33 +358,25 @@ function _runFileParallel(files, threads) {
           return;
         }
         if (msg.batchId === -1) {
-          // Warmup done — check if wave complete
-          if (++warmedUp % WAVE_SIZE === 0 || warmedUp === chunks.length) {
-            if (spawned < chunks.length) {
-              spawnWave();
-            }
+          // Warmup done — advance wave, then dispatch when all warm
+          if (++warmedUp % WAVE_SIZE === 0 || warmedUp === workerCount) {
+            if (spawned < workerCount) spawnWave();
           }
-          if (warmedUp === chunks.length) {
-            // All workers ready — dispatch real work
-            for (let i = 0; i < workers.length; i++) {
-              workers[i].postMessage({ files: chunks[i], batchId: i });
-            }
+          if (warmedUp === workerCount) {
+            for (let i = 0; i < workerCount; i++) dispatchNext(workers[i]);
           }
           return;
         }
         if (msg.results !== undefined && msg.batchId >= 0) {
-          allResults[msg.batchId] = msg.results;
-          worker.postMessage({ exit: true });
-          if (++done === chunks.length) {
-            resolve(allResults.flat());
-          }
+          // Stream: process results immediately, never accumulate
+          for (const r of msg.results) onResult(r);
+          dispatchNext(worker); // worker is free — give it more work
         }
       });
       worker.on("error", onReject);
       worker.on("exit", (code) => {
-        if (code !== 0 && !rejected && done < chunks.length) {
+        if (code !== 0 && !rejected && doneWorkers < workerCount)
           onReject(new Error(`Worker ${idx} exited with code ${code}`));
-        }
       });
     }
     spawnWave();
@@ -401,7 +389,7 @@ function _runFileParallel(files, threads) {
  * Useful when few files but many rules (e.g., linting a single file
  * with 200+ ESLint rules).
  */
-function _runRuleParallel(files, threads, ruleCount) {
+function _runRuleParallel(files, threads, ruleCount, onResult) {
   return new Promise((resolve, reject) => {
     // Split rule names into chunks for each worker
     const allRuleNames = [...ruleFilters];
@@ -409,7 +397,7 @@ function _runRuleParallel(files, threads, ruleCount) {
     // For simplicity, split the ruleFilters set. If it's empty (all rules),
     // fall back to file-parallel since we can't easily partition without filters.
     if (allRuleNames.length === 0) {
-      return _runFileParallel(files, threads).then(resolve, reject);
+      return _runFileParallel(files, threads, onResult).then(resolve, reject);
     }
     const ruleChunks = splitChunks(allRuleNames, threads);
     const allResults = new Array(ruleChunks.length);
@@ -449,8 +437,9 @@ function _runRuleParallel(files, threads, ruleCount) {
               }
             }
           }
-          // Return in original file order
-          resolve(files.map(f => merged.get(f) || { file: f, violations: [] }));
+          // Emit merged results per file
+          for (const f of files) onResult(merged.get(f) || { file: f, violations: [] });
+          resolve();
         }
       });
       worker.once("error", reject);
@@ -471,8 +460,8 @@ async function main() {
   let totalFixed = 0;
 
   // Native batch: all rules handled by Zig, JS workers not needed.
-  // lintBatch reads files and parallelizes internally using OS threads.
-  // Falls back to sequential when --fix is set (lintBatch has no fix ranges).
+  // lintFiles reads files and parallelizes internally using OS threads.
+  // Falls back to sequential when --fix is set (lintFiles has no fix ranges).
   const useNativeBatch = jsOnlyPlugins.length === 0 && hasNativeRules && allFiles.length > 1 && !applyFix;
   const useWorkers = !useNativeBatch && numThreads > 1 && allFiles.length > 1;
 
@@ -481,10 +470,9 @@ async function main() {
     // Zig workers read files and compute line/col before arena reset — no JS I/O needed.
     const batchResults = lintFiles(allFiles, { config: nativeConfig, sizes: allFileSizes });
 
+    // Zig only returns entries for files with violations — clean files are omitted.
+    totalFiles = allFiles.length;
     for (const { file, diags } of batchResults) {
-      totalFiles++;
-      if (diags.length === 0) continue;
-
       const violations = diags.map(d => ({
         ruleId: d.ruleName,
         severity: d.severity === 0 ? 2 : 1,
@@ -511,67 +499,64 @@ async function main() {
     }
   } else if (useWorkers) {
     // ── Worker parallel path (JS-only rules or --fix) ──────────
-    let workerResults;
+    // Results stream through the callback — no accumulation, bounded memory.
+    totalFiles = allFiles.length;
     try {
-      workerResults = await runParallel(allFiles, Math.min(numThreads, allFiles.length));
+      await runParallel(allFiles, Math.min(numThreads, allFiles.length), (result) => {
+        const { file, violations, fixed, readError, parseError, pluginError, writeError } = result;
+
+        if (readError) {
+          console.error(`error reading ${file}: ${readError}`);
+          errorFiles++;
+          totalFiles--;
+          return;
+        }
+        if (parseError) {
+          if (formatJson) {
+            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${parseError}` }] });
+          } else {
+            console.error(`${file}: parse error: ${parseError}`);
+          }
+          errorFiles++;
+          totalFiles--;
+          return;
+        }
+        if (pluginError) {
+          if (formatJson) {
+            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${pluginError}` }] });
+          } else {
+            console.error(`${file}: plugin error: ${pluginError}`);
+          }
+          errorFiles++;
+          totalFiles--;
+          return;
+        }
+
+        totalViolations += violations.length;
+        if (fixed) totalFixed++;
+
+        if (applyFix && fixed && !formatJson) console.log(`${file}: fixed issues`);
+        if (writeError) console.error(`error writing ${file}: ${writeError}`);
+
+        if (formatJson) {
+          jsonResults.push({
+            filePath: file,
+            messages: violations.map(r => ({
+              ruleId: r.ruleId || null,
+              severity: 2,
+              message: r.message,
+              line: r.loc?.start?.line ?? null,
+              column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
+              fix: r.fix ? r.fix : undefined,
+            })),
+          });
+        } else {
+          printViolations(file, violations);
+        }
+      });
     } catch (e) {
       console.error(`error: ${e.message}`);
       process.exit(1);
-    }
-
-    for (const result of workerResults) {
-      const { file, violations, fixed, readError, parseError, pluginError, writeError } = result;
-
-      if (readError) {
-        console.error(`error reading ${file}: ${readError}`);
-        errorFiles++;
-        continue;
-      }
-      if (parseError) {
-        if (formatJson) {
-          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${parseError}` }] });
-        } else {
-          console.error(`${file}: parse error: ${parseError}`);
-        }
-        errorFiles++;
-        continue;
-      }
-      if (pluginError) {
-        if (formatJson) {
-          jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${pluginError}` }] });
-        } else {
-          console.error(`${file}: plugin error: ${pluginError}`);
-        }
-        errorFiles++;
-        continue;
-      }
-
-      totalViolations += violations.length;
-      totalFiles++;
-      if (fixed) totalFixed++;
-
-      if (applyFix && fixed && !formatJson) {
-        console.log(`${file}: fixed issues`);
-      }
-      if (writeError) {
-        console.error(`error writing ${file}: ${writeError}`);
-      }
-
-      if (formatJson) {
-        jsonResults.push({
-          filePath: file,
-          messages: violations.map(r => ({
-            ruleId: r.ruleId || null,
-            severity: 2,
-            message: r.message,
-            line: r.loc?.start?.line ?? null,
-            column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
-            fix: r.fix ? r.fix : undefined,
-          })),
-        });
-      } else {
-        printViolations(file, violations);
-      }
     }
   } else {
     // ── Sequential path ────────────────────────────────────────
