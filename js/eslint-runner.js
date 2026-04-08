@@ -70,6 +70,9 @@ const _GLOBAL_MIN_VERSION = {
   BigInt: 2020, BigInt64Array: 2020, BigUint64Array: 2020, globalThis: 2020,
   // ES2021
   WeakRef: 2021, FinalizationRegistry: 2021, AggregateError: 2021,
+  // ES2025
+  Iterator: 2025, AsyncIterator: 2025, Float16Array: 2025,
+  AsyncDisposableStack: 2025, DisposableStack: 2025, SuppressedError: 2025,
 };
 
 // ── Reference prototype ─────────────────────────────────────────
@@ -103,6 +106,9 @@ const _BUILTIN_GLOBALS = [
   'JSON', 'Intl', 'Promise', 'Proxy', 'Reflect',
   'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError',
   'SyntaxError', 'TypeError', 'URIError',
+  // ES2024+
+  'Iterator', 'AsyncIterator', 'Float16Array',
+  'AsyncDisposableStack', 'DisposableStack', 'SuppressedError',
 ];
 
 // Environment globals — only added when explicitly configured or in default mode.
@@ -340,6 +346,7 @@ class SourceCode {
     ast._runtimeSourceType = this._sourceType;
     this._linesCache = null;
     this._tokensCache = null;
+    this._mergedCache = null;
     this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
     this._thinScopeCache = null; // lazily allocated Array[scopeCount]
     this._thinVarCache = null;   // lazily allocated Array[symCount]
@@ -354,6 +361,7 @@ class SourceCode {
     ast._runtimeSourceType = this._sourceType;
     this._linesCache = null;
     this._tokensCache = null;
+    this._mergedCache = null;
     this._scopeCache = null;
     this._thinScopeCache = null;
     this._thinVarCache = null;
@@ -486,14 +494,27 @@ class SourceCode {
   getTokens(node, filterOrOpts) {
     if (!node) return [];
     const ast = this._ast;
+    const ic = filterOrOpts && typeof filterOrOpts === 'object' && filterOrOpts.includeComments;
+    // includeComments: use merged token+comment array with binary search on range
+    if (ic && node.range) {
+      const merged = this._getTokensAndCommentsMerged();
+      const [rStart, rEnd] = node.range;
+      const fn = typeof filterOrOpts.filter === 'function' ? filterOrOpts.filter : null;
+      // Binary search: first item at or after rStart
+      let lo = 0, hi = merged.length;
+      while (lo < hi) { const m = (lo + hi) >> 1; if (merged[m].range[0] < rStart) lo = m + 1; else hi = m; }
+      const result = [];
+      for (let i = lo; i < merged.length && merged[i].range[0] < rEnd; i++) {
+        if (!fn || fn(merged[i])) result.push(merged[i]);
+      }
+      return result;
+    }
     // Synthetic node (e.g. property identifier): only one token
     if (node._i === undefined || node._i === null) {
       if (node.mainToken !== undefined) return [this._makeToken(node.mainToken)];
       return [];
     }
     // Use strict range: only tokens within [startTok, maxTok] — no forward-scan extension.
-    // collectSubtreeTokens extends past maxTok to include trailing ); etc., which breaks
-    // token-comparison rules like no-self-compare.
     if (!ast._maxTokCache) ast._ensureMaxTokCache();
     if (!ast._minTokCache) _computeMinTok(ast);
     const startTok = ast._minTokCache[node._i];
@@ -537,7 +558,17 @@ class SourceCode {
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
     const ast = this._ast;
     if (!ast._minTokCache) _computeMinTok(ast);
-    const startTok = ast._minTokCache[node._i];
+    let startTok = ast._minTokCache[node._i];
+    // Adjust startTok if node.range starts before minTok (e.g. MethodDefinition
+    // with modifier keywords like * / get / set / static / async).
+    if (node.range) {
+      const nodeStart = node.range[0];
+      if (ast._tokStarts[startTok] > nodeStart) {
+        let lo = 0, hi = startTok;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (ast._tokStarts[m] < nodeStart) lo = m + 1; else hi = m; }
+        startTok = lo;
+      }
+    }
     // Fast path: no filter, no skip — just return the first token
     if (!fn && skip === 0) return this._makeToken(startTok);
     // Slow path: filter/skip required — find end token from node.range[1]
@@ -569,6 +600,39 @@ class SourceCode {
   getLastToken(node, filterOrOpts) {
     if (!node) return null;
     if (node._i === undefined || node._i === null) {
+      // Synthetic node: use range to find last token via binary search
+      if (node.range) {
+        const { fn, skip } = this._normalizeFilter(filterOrOpts);
+        const ast = this._ast;
+        const starts = ast._tokStarts;
+        const tc = ast.tokenCount;
+        const nodeEnd = node.range[1];
+        const nodeStart = node.range[0];
+        // Binary search: last token whose start is strictly before nodeEnd
+        let endTok = 0;
+        let lo = 0, hi = tc - 1;
+        while (lo <= hi) {
+          const mid = (lo + hi) >> 1;
+          if (starts[mid] < nodeEnd) { endTok = mid; lo = mid + 1; }
+          else hi = mid - 1;
+        }
+        while (endTok > 0 && ast._tokTags[endTok] === 131) endTok--;
+        if (!fn && skip === 0) return this._makeToken(endTok);
+        // Find startTok via binary search
+        let startTok = 0;
+        lo = 0; hi = tc - 1;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (starts[m] < nodeStart) lo = m + 1; else hi = m; }
+        startTok = lo;
+        let skipped = 0;
+        for (let t = endTok; t >= startTok; t--) {
+          const tok = this._makeToken(t);
+          if (!fn || fn(tok)) {
+            if (skipped >= skip) return tok;
+            skipped++;
+          }
+        }
+        return null;
+      }
       if (node.mainToken !== undefined) {
         const tok = this._makeToken(node.mainToken);
         const { fn, skip } = this._normalizeFilter(filterOrOpts);
@@ -619,25 +683,39 @@ class SourceCode {
    * and skip = N tokens to skip from start/end.
    */
   _normalizeFilter(filterOrOpts) {
-    if (!filterOrOpts && filterOrOpts !== 0) return { fn: null, skip: 0 };
-    if (typeof filterOrOpts === 'function') return { fn: filterOrOpts, skip: 0 };
-    if (typeof filterOrOpts === 'number') return { fn: null, skip: filterOrOpts };
+    if (!filterOrOpts && filterOrOpts !== 0) return { fn: null, skip: 0, ic: false };
+    if (typeof filterOrOpts === 'function') return { fn: filterOrOpts, skip: 0, ic: false };
+    if (typeof filterOrOpts === 'number') return { fn: null, skip: filterOrOpts, ic: false };
     // Options object: ESLint uses {filter?, skip?, count?, includeComments?}
     return {
       fn: (typeof filterOrOpts.filter === 'function') ? filterOrOpts.filter : null,
       skip: filterOrOpts.skip || filterOrOpts.count || 0,
+      ic: !!filterOrOpts.includeComments,
     };
   }
 
   getTokenBefore(node, filterOrOpts) {
     if (!node) return null;
+    const { fn, skip, ic } = this._normalizeFilter(filterOrOpts);
+    // includeComments path: binary search on merged token+comment array
+    if (ic) {
+      const nodeStart = node.range ? node.range[0] : (node.mainToken != null ? this._ast._tokStarts[node.mainToken] : null);
+      if (nodeStart == null) return null;
+      const merged = this._getTokensAndCommentsMerged();
+      // Binary search: last item whose range[0] < nodeStart
+      let lo = 0, hi = merged.length - 1, best = -1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (merged[m].range[0] < nodeStart) { best = m; lo = m + 1; } else hi = m - 1; }
+      if (best < 0) return null;
+      let skipped = 0;
+      for (let i = best; i >= 0; i--) {
+        if (!fn || fn(merged[i])) { if (skipped >= skip) return merged[i]; skipped++; }
+      }
+      return null;
+    }
+    // Token-only path (default)
     const ast = this._ast;
     const mainTok = node.mainToken;
     if (mainTok === undefined || mainTok === null) return null;
-    const { fn, skip } = this._normalizeFilter(filterOrOpts);
-    // Range-based fallback: when node.range[0] differs from mainToken start
-    // (e.g. SequenceExpression whose mainToken is '('), binary-search for the
-    // last token strictly before node.range[0].
     let anchorTok = mainTok - 1;
     if (node.range) {
       const nodeStart = node.range[0];
@@ -650,10 +728,7 @@ class SourceCode {
     let skipped = 0;
     for (let i = anchorTok; i >= 0; i--) {
       const tok = this._makeToken(i);
-      if (!fn || fn(tok)) {
-        if (skipped >= skip) return tok;
-        skipped++;
-      }
+      if (!fn || fn(tok)) { if (skipped >= skip) return tok; skipped++; }
     }
     return null;
   }
@@ -661,16 +736,27 @@ class SourceCode {
   getTokenAfter(node, filterOrOpts) {
     if (!node) return null;
     const ast = this._ast;
+    const { fn, skip, ic } = this._normalizeFilter(filterOrOpts);
+    // includeComments path: binary search on merged token+comment array
+    if (ic) {
+      const nodeEnd = node.range ? node.range[1] : (node.mainToken != null ? (ast._tokEnds ? ast._tokEnds[node.mainToken] : ast._tokStarts[node.mainToken] + 1) : null);
+      if (nodeEnd == null) return null;
+      const merged = this._getTokensAndCommentsMerged();
+      // Binary search: first item whose range[0] >= nodeEnd
+      let lo = 0, hi = merged.length - 1, best = merged.length;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (merged[m].range[0] >= nodeEnd) { best = m; hi = m - 1; } else lo = m + 1; }
+      if (best >= merged.length) return null;
+      let skipped = 0;
+      for (let i = best; i < merged.length; i++) {
+        if (!fn || fn(merged[i])) { if (skipped >= skip) return merged[i]; skipped++; }
+      }
+      return null;
+    }
+    // Token-only path (default)
     const mainTok = node.mainToken;
     if (mainTok === undefined || mainTok === null) return null;
-    const { fn, skip } = this._normalizeFilter(filterOrOpts);
-    // Default: one past the main token.
     let anchorTok = mainTok + 1;
-
     if (node._i !== undefined && node._i !== null) {
-      // For real AST nodes: check if the subtree has tokens beyond mainToken
-      // (i.e., it's a multi-token node like UnaryExpression `!a`). If so, use
-      // range[1] to find the first token strictly after the entire node.
       if (!ast._maxTokCache) ast._ensureMaxTokCache();
       const maxTok = ast._maxTokCache[node._i];
       if (maxTok !== undefined && node.range && (maxTok > mainTok || node.range[1] > (ast._tokEnds ? ast._tokEnds[mainTok] : 0))) {
@@ -678,36 +764,28 @@ class SourceCode {
         const starts = ast._tokStarts;
         let lo = 0, hi = ast.tokenCount - 1;
         anchorTok = ast.tokenCount;
-        while (lo <= hi) {
-          const mid = (lo + hi) >> 1;
-          if (starts[mid] >= nodeEnd) { anchorTok = mid; hi = mid - 1; }
-          else lo = mid + 1;
-        }
+        while (lo <= hi) { const mid = (lo + hi) >> 1; if (starts[mid] >= nodeEnd) { anchorTok = mid; hi = mid - 1; } else lo = mid + 1; }
       }
     } else if (node.range) {
-      // Synthetic node or fallback: use range[1] if mainToken start != node start
       const nodeStart = node.range[0];
       if (ast._tokStarts[mainTok] !== nodeStart) {
         const nodeEnd = node.range[1];
         const starts = ast._tokStarts;
         let lo = 0, hi = ast.tokenCount - 1;
         anchorTok = ast.tokenCount;
-        while (lo <= hi) {
-          const mid = (lo + hi) >> 1;
-          if (starts[mid] >= nodeEnd) { anchorTok = mid; hi = mid - 1; }
-          else lo = mid + 1;
-        }
+        while (lo <= hi) { const mid = (lo + hi) >> 1; if (starts[mid] >= nodeEnd) { anchorTok = mid; hi = mid - 1; } else lo = mid + 1; }
       }
     }
+    if (anchorTok >= ast.tokenCount) return null;
+    // Skip EOF token (tag 131)
+    while (anchorTok < ast.tokenCount && ast._tokTags[anchorTok] === 131) anchorTok++;
     if (anchorTok >= ast.tokenCount) return null;
     if (!fn && skip === 0) return this._makeToken(anchorTok);
     let skipped = 0;
     for (let i = anchorTok; i < ast.tokenCount; i++) {
+      if (ast._tokTags[i] === 131) continue;
       const tok = this._makeToken(i);
-      if (!fn || fn(tok)) {
-        if (skipped >= skip) return tok;
-        skipped++;
-      }
+      if (!fn || fn(tok)) { if (skipped >= skip) return tok; skipped++; }
     }
     return null;
   }
@@ -768,6 +846,28 @@ class SourceCode {
   }
 
   /**
+   * Merged token+comment array sorted by position. Used for includeComments
+   * lookups in getTokenBefore/getTokenAfter. Lazily built and cached.
+   */
+  _getTokensAndCommentsMerged() {
+    if (this._mergedCache) return this._mergedCache;
+    const tokens = this._getAllTokens();
+    const comments = this.getAllComments();
+    if (comments.length === 0) { this._mergedCache = tokens; return tokens; }
+    // Merge two sorted arrays by range[0]
+    const merged = new Array(tokens.length + comments.length);
+    let ti = 0, ci = 0, mi = 0;
+    while (ti < tokens.length && ci < comments.length) {
+      if (tokens[ti].range[0] <= comments[ci].range[0]) merged[mi++] = tokens[ti++];
+      else merged[mi++] = comments[ci++];
+    }
+    while (ti < tokens.length) merged[mi++] = tokens[ti++];
+    while (ci < comments.length) merged[mi++] = comments[ci++];
+    this._mergedCache = merged;
+    return merged;
+  }
+
+  /**
    * tokensAndComments — all tokens (no real comments, stub includes only tokens).
    * Used by rules like no-multi-spaces, space-in-parens.
    */
@@ -804,7 +904,9 @@ class SourceCode {
   _wrapScopeWithGlobals(moduleScope) {
     if (!moduleScope.upper) return moduleScope;
     const globalScope = moduleScope.upper;
-    // Return a wrapped scope where 'set' delegates to global scope for missing variables
+    // Merge variables from module scope (user decls) and global scope (builtins).
+    // Rules like no-global-assign iterate `variables`, while ReferenceTracker uses `set`.
+    let _mergedVars;
     return new Proxy(moduleScope, {
       get(target, prop) {
         if (prop === 'set') {
@@ -820,6 +922,17 @@ class SourceCode {
               return Reflect.get(setTarget, mapProp);
             }
           });
+        }
+        if (prop === 'variables') {
+          if (!_mergedVars) {
+            // Merge: module scope variables first, then globals not already present
+            const seen = new Set(target.variables.map(v => v.name));
+            _mergedVars = [...target.variables];
+            for (const gv of globalScope.variables) {
+              if (!seen.has(gv.name)) _mergedVars.push(gv);
+            }
+          }
+          return _mergedVars;
         }
         return Reflect.get(target, prop);
       }
@@ -1399,9 +1512,28 @@ class SourceCode {
     ref.identifier = refNode;
     ref.from = from;
     ref.resolved = resolved;
-    ref.writeExpr = null;
     ref.init = false;
     ref._kind = kind;
+    // Infer writeExpr: for write references, the RHS of the assignment/declarator
+    if (kind === 1 || kind === 2) { // write or read_write
+      const parent = refNode?.parent;
+      if (parent) {
+        if (parent.type === 'AssignmentExpression' || parent.type === 'AssignmentPattern') {
+          ref.writeExpr = parent.right || null;
+        } else if (parent.type === 'VariableDeclarator') {
+          ref.writeExpr = parent.init || null;
+          ref.init = true;
+        } else if (parent.type === 'ForInStatement' || parent.type === 'ForOfStatement') {
+          ref.writeExpr = parent.right || null;
+        } else {
+          ref.writeExpr = null;
+        }
+      } else {
+        ref.writeExpr = null;
+      }
+    } else {
+      ref.writeExpr = null;
+    }
     return ref;
   }
 
@@ -1607,9 +1739,18 @@ class SourceCode {
     return ast.commentsInRange(prevEnd, start);
   }
 
-  /** Stub for getCommentsAfter — returns empty array. */
-  getCommentsAfter() {
-    return [];
+  /** getCommentsAfter — comments in the gap after a node/token. */
+  getCommentsAfter(node) {
+    if (!node || !node.range) return [];
+    const end = node.range[1];
+    const ast = this._ast;
+    const starts = ast._tokStarts;
+    const tc = ast.tokenCount;
+    // Find the first token that starts at or after end
+    let lo = 0, hi = tc - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (starts[m] < end) lo = m + 1; else hi = m; }
+    const nextStart = lo < tc ? starts[lo] : ast.sourceUtf16Len;
+    return ast.commentsInRange(end, nextStart);
   }
 
   /**
@@ -2279,6 +2420,8 @@ const CODE_PATH_TYPES = new Set([
   'FunctionDeclaration',
   'FunctionExpression',
   'ArrowFunctionExpression',
+  'PropertyDefinition',
+  'StaticBlock',
 ]);
 
 const CLASS_TYPES = new Set(['ClassDeclaration', 'ClassExpression']);
@@ -2317,15 +2460,38 @@ class CodePathTracker {
     const seg = _makeSegment(true);
     const codePath = {
       id: 'cp' + (_cpIdCounter++),
-      origin: node.type === 'Program' ? 'program' : 'function',
+      origin: node.type === 'Program' ? 'program'
+        : node.type === 'PropertyDefinition' ? 'class-field-initializer'
+        : node.type === 'StaticBlock' ? 'class-static-block'
+        : 'function',
       upper: this._codePath,
       childCodePaths: [],
       currentSegments: [seg],
       initialSegment: seg,
       finalSegments: [],
+      returnedSegments: [],
       thrownSegments: [],
       returnedForkContext: [],
       internal: {},
+      traverseSegments(optionsOrCb, maybeCb) {
+        // ESLint signature: traverseSegments(cb) or traverseSegments({first, last}, cb)
+        const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+        const opts = typeof optionsOrCb === 'object' ? optionsOrCb : null;
+        const startSeg = opts?.first || this.initialSegment;
+        // Walk segments. Only visit segments we know about (don't follow links
+        // to segments the rule hasn't seen via onCodePathSegmentStart).
+        const visited = new Set();
+        const queue = [startSeg];
+        let stopped = false;
+        while (queue.length > 0 && !stopped) {
+          const s = queue.shift();
+          if (!s || visited.has(s.id)) continue;
+          visited.add(s.id);
+          let skipped = false;
+          cb(s, { skip() { skipped = true; }, break() { stopped = true; } });
+          if (stopped || skipped) continue;
+        }
+      },
     };
     if (this._codePath) this._codePath.childCodePaths.push(codePath);
     this._stack.push({ codePath: this._codePath, segment: this._currentSegment, returned: false });
@@ -2345,38 +2511,69 @@ class CodePathTracker {
 
   // Called after return/throw/break/continue — subsequent code is unreachable
   markUnreachable() {
-    if (this._currentSegment) this._currentSegment.reachable = false;
+    const prev = this._currentSegment;
+    if (prev) prev.reachable = false;
     const unreachSeg = _makeSegment(false);
+    if (prev) { prev.nextSegments.push(unreachSeg); prev.allNextSegments.push(unreachSeg); }
+    unreachSeg.prevSegments = prev ? [prev] : [];
+    unreachSeg.allPrevSegments = prev ? [prev] : [];
     this._currentSegment = unreachSeg;
     if (this._codePath) this._codePath.currentSegments = [unreachSeg];
   }
 
-  // Enter a branching statement (if/try/switch/loop). Saves current reachability.
-  enterBranch() {
-    this._branchStack.push({ savedReachable: this.reachable, anyBranchReachable: false });
+  // Enter a branching statement (if/try/switch/loop). Saves current segment.
+  enterBranch(isSwitch = false) {
+    this._branchStack.push({
+      savedSegment: this._currentSegment,  // segment at entry
+      savedReachable: this.reachable,
+      branchEndSegments: [],               // collect ending segments from each branch
+      anyBranchReachable: false,
+      _isSwitch: isSwitch,
+    });
   }
 
-  // Enter alternate path (else/catch/case). Records previous branch result, restores.
+  // Enter alternate path (else/catch/case). Saves the ending segment of the
+  // previous branch and starts a new segment from entry reachability.
   nextBranch() {
     const top = this._branchStack[this._branchStack.length - 1];
     if (!top) return _makeSegment(true);
-    if (this.reachable) top.anyBranchReachable = true;
+    // Save the current (ending) segment of the previous branch
+    if (this._currentSegment) top.branchEndSegments.push(this._currentSegment);
+    // For non-switch: record if the previous branch was reachable at its end
+    if (this.reachable && !top._isSwitch) top.anyBranchReachable = true;
+    // Start new segment for the alternate path
     const seg = _makeSegment(top.savedReachable);
     this._currentSegment = seg;
     if (this._codePath) this._codePath.currentSegments = [seg];
     return seg;
   }
 
-  // Exit branching statement. Merge: reachable if any branch was, or if implicit path exists.
-  // hasAllBranches=true (if-else, try-catch): all paths go through branch → reachable = anyBranchReachable
-  // hasAllBranches=false (switch-no-default, if-no-else, loops): implicit bypass path exists →
-  //   reachable = anyBranchReachable || savedReachable (bypass inherits entry reachability)
+  // Exit branching statement. Collects all branch-ending segments and merges.
   exitBranch(hasAllBranches = false) {
     const top = this._branchStack.pop();
     if (!top) return _makeSegment(true);
+    // Save the ending segment of the last branch
+    if (this._currentSegment) top.branchEndSegments.push(this._currentSegment);
     if (this.reachable) top.anyBranchReachable = true;
     const reachable = hasAllBranches ? top.anyBranchReachable : (top.anyBranchReachable || top.savedReachable);
     const seg = _makeSegment(reachable);
+    seg._bodyCompleted = top.anyBranchReachable;
+    // Connect the segment graph
+    seg.prevSegments = top.branchEndSegments.filter(s => s.reachable);
+    seg.allPrevSegments = [...top.branchEndSegments];
+    if (!hasAllBranches && top.savedSegment) {
+      seg.prevSegments.push(top.savedSegment);
+      seg.allPrevSegments.push(top.savedSegment);
+    }
+    // Wire up nextSegments from branch endings to the merge segment
+    for (const bs of top.branchEndSegments) {
+      bs.nextSegments.push(seg);
+      bs.allNextSegments.push(seg);
+    }
+    if (!hasAllBranches && top.savedSegment) {
+      top.savedSegment.nextSegments.push(seg);
+      top.savedSegment.allNextSegments.push(seg);
+    }
     this._currentSegment = seg;
     if (this._codePath) this._codePath.currentSegments = [seg];
     return seg;
@@ -2400,6 +2597,11 @@ class CodePathTracker {
   // When break targets a switch, mark THAT switch's branchStack entry as reachable.
   // Must use the stored branchIdx — the topmost entry may be a nested if/try, not the switch.
   markSwitchBranchReachable() {
+    // Only mark the switch branch reachable if the break itself is on a
+    // reachable path.  When the switch entered on unreachable code (e.g.
+    // after try{throw}catch{throw}), the case bodies are also unreachable,
+    // so a break inside them should NOT restore reachability.
+    if (!this.reachable) return;
     for (let i = this._breakableStack.length - 1; i >= 0; i--) {
       if (this._breakableStack[i].kind === 'switch') {
         const entry = this._branchStack[this._breakableStack[i].branchIdx];
@@ -4230,6 +4432,33 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const hasMemberPrivate = hasPrivateId && (visitorMap.has('MemberExpression') || visitorMap.has('PrivateIdentifier'));
     const memberExprTag = tagNames.indexOf('MemberExpression');
 
+    // Synthesize Identifier visits for label identifiers in LabeledStatement,
+    // BreakStatement, and ContinueStatement — these are synthetic nodes not in
+    // the DFS tree, but rules like camelcase/id-length need to visit them.
+    const hasIdentEnter = visitorMap.has('Identifier');
+    const hasIdentExit  = visitorMap.has('Identifier:exit');
+    const labeledStmtTag = tagNames.indexOf('LabeledStatement');
+    const breakStmtTags  = [tagNames.indexOf('BreakStatement')].filter(t => t >= 0);
+    const contStmtTags   = [tagNames.indexOf('ContinueStatement')].filter(t => t >= 0);
+    // Include both break and break_label tags
+    for (let ti = 0; ti < tagNames.length; ti++) {
+      if (tagNames[ti] === 'BreakStatement' && !breakStmtTags.includes(ti)) breakStmtTags.push(ti);
+      if (tagNames[ti] === 'ContinueStatement' && !contStmtTags.includes(ti)) contStmtTags.push(ti);
+    }
+    const needsLabelSynth = hasIdentEnter || hasIdentExit;
+    // Specifier tags: ImportSpecifier, ImportDefaultSpecifier, ImportNamespaceSpecifier,
+    // ExportSpecifier — their local/imported/exported are synthetic Identifiers.
+    const _specifierTagSet = new Set();
+    // Non-computed MemberExpression tags — property Identifier is synthetic
+    const _memberExprTagSet = new Set();
+    for (let ti = 0; ti < tagNames.length; ti++) {
+      const tn = tagNames[ti];
+      if (tn === 'ImportSpecifier' || tn === 'ImportDefaultSpecifier' ||
+          tn === 'ImportNamespaceSpecifier' || tn === 'ExportSpecifier') {
+        _specifierTagSet.add(ti);
+      }
+    }
+
     // Use interleaved DFS to ensure enter/exit events fire in correct order.
     const { events, count: evCount } = getDFSEvents();
     // Pre-index handler arrays by tag int — replaces Map.get(string) per node with array[int].
@@ -4300,10 +4529,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               cpTracker.enterBranch();
               cpTracker.pushBreakable('loop');
             } else {
-              cpTracker.enterBranch();
-              if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+              const _isSwitchBranch = _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag);
+              cpTracker.enterBranch(_isSwitchBranch);
+              if (_isSwitchBranch) {
                 cpTracker.pushBreakable('switch');
-                cpTracker.markUnreachable();
+                // Defer markUnreachable until AFTER handler dispatch so that
+                // rules like no-unreachable see the pre-switch reachable segment
+                // when their SwitchStatement handler runs.
               } else {
                 // if/try: not breakable targets
               }
@@ -4335,6 +4567,72 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             for (let _ek = _eh + 1; _ek < enter.length; _ek++) {
               try { _invokeFusedItem(enter[_ek], node, context); }
               catch (e) { context._reports.push({ ruleId: enter[_ek].ruleId, message: `Plugin error: ${e.message}` }); }
+            }
+          }
+        }
+        // Deferred switch markUnreachable: now that handlers have seen the
+        // pre-switch reachable segment, mark the switch body unreachable.
+        if (hasCodePath && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+          const oldSegSwitch = cpTracker.segment;
+          if (oldSegSwitch) _segEndEvent(oldSegSwitch);
+          cpTracker.markUnreachable();
+          _segStartOrUnreachEvent(cpTracker.segment);
+        }
+        // Synthesize Identifier visits for synthetic children not in the DFS tree:
+        // labels (LabeledStatement/BreakStatement/ContinueStatement) and
+        // import/export specifier identifiers (local/imported/exported).
+        if (needsLabelSynth) {
+          let synthNodes;
+          if (tag === labeledStmtTag || breakStmtTags.includes(tag) || contStmtTags.includes(tag)) {
+            const pn = nodeView(ast, idx);
+            const lbl = pn.label;
+            if (lbl) synthNodes = [lbl];
+          } else if (_specifierTagSet.has(tag)) {
+            const pn = nodeView(ast, idx);
+            synthNodes = [];
+            if (pn.local && pn.local.type === 'Identifier') synthNodes.push(pn.local);
+            if (pn.imported && pn.imported.type === 'Identifier' && pn.imported !== pn.local) synthNodes.push(pn.imported);
+            if (pn.exported && pn.exported.type === 'Identifier') synthNodes.push(pn.exported);
+          } else if (tn === 'MemberExpression') {
+            // Non-computed MemberExpression: property is synthetic Identifier
+            const pn = nodeView(ast, idx);
+            if (!pn.computed && pn.property && pn.property.type === 'Identifier' && pn.property._i === undefined) {
+              synthNodes = [pn.property];
+            }
+          }
+          if (synthNodes) {
+            const identEnter = visitorMap.get('Identifier');
+            for (const synthId of synthNodes) {
+              if (identEnter) {
+                for (let h = 0; h < identEnter.length; h++) {
+                  try { identEnter[h]._state.inner(synthId); }
+                  catch (e) { context._reports.push({ ruleId: identEnter[h].ruleId, message: `Plugin error: ${e.message}` }); }
+                }
+              }
+              if (hasSelectors && selectorsByTagEnter) {
+                const selHandlers = selectorsByTagEnter[identTag];
+                const lists = [selHandlers, _universalEnter].filter(Boolean);
+                const parentAncestors = [nodeView(ast, idx)];
+                let p = pd ? pd[idx] : NONE;
+                while (p !== NONE && p < ast.nodeCount) { parentAncestors.push(nodeView(ast, p)); p = pd[p]; }
+                const _esq = esquery();
+                for (const list of lists) {
+                  for (let h = 0; h < list.length; h++) {
+                    const sh = list[h];
+                    try {
+                      const fm = sh._fastMatcher;
+                      if (fm) {
+                        const matched = fm.fn(synthId, parentAncestors);
+                        if (matched && fm.complete) { sh.handler(synthId); continue; }
+                        if (!matched) continue;
+                      }
+                      if (_esq && sh.parsedSelector && _esq.matches(synthId, sh.parsedSelector, parentAncestors)) {
+                        sh.handler(synthId);
+                      }
+                    } catch (e) { context._reports.push({ ruleId: sh.ruleId, message: `Plugin error: ${e.message}` }); }
+                  }
+                }
+              }
             }
           }
         }
@@ -4410,9 +4708,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             if (nv2.type === 'BreakStatement' && !nv2.label && cpTracker.breakTarget === 'switch') {
               cpTracker.markSwitchBranchReachable();
             }
-            // Labeled break/continue just exit to the label — don't mark unreachable.
-            const isLbl = (nv2.type === 'BreakStatement' || nv2.type === 'ContinueStatement') && nv2.label != null;
-            if (!isLbl) {
+            // Track returned/thrown segments for codePath.returnedSegments/thrownSegments
+            if (nv2.type === 'ReturnStatement') {
+              const seg = cpTracker.segment;
+              if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
+            } else if (nv2.type === 'ThrowStatement') {
+              const seg = cpTracker.segment;
+              if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
+            }
+            // All terminators (break, continue, return, throw) mark subsequent
+            // code unreachable — including labeled break/continue.
+            {
               const oldSeg = cpTracker.segment;
               if (oldSeg) _segEndEvent(oldSeg);
               cpTracker.markUnreachable();
@@ -4455,10 +4761,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
         // Exit branching statements — merge reachability
         if (hasCodePath && _branchEnterTagSet.has(tag)) {
-          // Fire onCodePathSegmentLoop BEFORE exitBranch for loops
+          // Fire onCodePathSegmentLoop BEFORE exitBranch for loops.
+          // Use Zig's precomputed loop exit reachability to suppress the loop
+          // event for loops whose body never completes (infinite inner loops,
+          // all paths return/throw in switch, etc).
           if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
             const fromSeg = cpTracker.segment;
-            if (fromSeg && fromSeg.reachable) {
+            const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
+            if (fromSeg && fromSeg.reachable && loopExitAlive) {
               const loopInfo = cpTracker.nearestLoopTarget;
               if (loopInfo && loopInfo.loopIdx === idx) {
                 _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
@@ -4477,11 +4787,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
             (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nv4));
           const seg = cpTracker.exitBranch(hasAllBranches);
-          if (seg && seg.reachable && ast._nodeReachable &&
-              _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            const nextEvI2 = i + 1;
-            if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
-              if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
+          if (seg && seg.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+            // Also use the precomputed reachability from the Zig parser
+            if (seg.reachable && ast._nodeReachable) {
+              const nextEvI2 = i + 1;
+              if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
+                if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
+              }
             }
           }
           _segStartOrUnreachEvent(seg);
@@ -4604,6 +4916,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const hasPrivateIdExitOpt = visitorMap.has('PrivateIdentifier:exit');
   const identTagOpt = tagNames.indexOf('Identifier');
   const memberExprTagOpt = tagNames.indexOf('MemberExpression');
+  // Label + specifier synthesis for optimized path
+  const needsLabelSynthOpt = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
+  const labeledStmtTagOpt = tagNames.indexOf('LabeledStatement');
+  const _labelStmtTagSet = new Set();
+  const _specifierTagSetOpt = new Set();
+  for (let _ti = 0; _ti < tagNames.length; _ti++) {
+    const _tn = tagNames[_ti];
+    if (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement') _labelStmtTagSet.add(_ti);
+    if (_tn === 'ImportSpecifier' || _tn === 'ImportDefaultSpecifier' || _tn === 'ImportNamespaceSpecifier' || _tn === 'ExportSpecifier') _specifierTagSetOpt.add(_ti);
+  }
 
   const { events: dfsEvents, count: dfsCount } = getDFSEvents();
   for (let i = 0; i < dfsCount; i++) {
@@ -4658,12 +4980,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             _dispatchSeg(_segStartH, targetSeg, targetNode || loopNode);
           }
         }
-        cpTracker.enterBranch();
+        const _isSwitchOpt = _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag);
+        cpTracker.enterBranch(_isSwitchOpt);
         if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
           cpTracker.pushBreakable('loop');
-        } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+        } else if (_isSwitchOpt) {
           cpTracker.pushBreakable('switch');
-          cpTracker.markUnreachable();
+          // Defer markUnreachable until after handler dispatch (see fast path)
         }
       }
       if (flags & FLAG_CATCH_CASE) {
@@ -4680,6 +5003,67 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      // Deferred switch markUnreachable (optimized path)
+      if (hasCodePath && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+        const oldSegSwitch = cpTracker.segment;
+        if (oldSegSwitch) _segEndEvent(oldSegSwitch);
+        cpTracker.markUnreachable();
+        _segStartOrUnreachEvent(cpTracker.segment);
+      }
+      // Synthesize Identifier visits for synthetic children (optimized path)
+      const _tn = tagNames[tag];
+      if (needsLabelSynthOpt && (_labelStmtTagSet.has(tag) || _specifierTagSetOpt.has(tag) || _tn === 'MemberExpression')) {
+        let synthNodes;
+        const pn = nodeView(ast, idx);
+        if (_labelStmtTagSet.has(tag)) {
+          const lbl = pn.label;
+          if (lbl) synthNodes = [lbl];
+        } else if (_tn === 'MemberExpression') {
+          if (!pn.computed && pn.property && pn.property.type === 'Identifier' && pn.property._i === undefined) {
+            synthNodes = [pn.property];
+          }
+        } else {
+          synthNodes = [];
+          if (pn.local && pn.local.type === 'Identifier') synthNodes.push(pn.local);
+          if (pn.imported && pn.imported.type === 'Identifier' && pn.imported !== pn.local) synthNodes.push(pn.imported);
+          if (pn.exported && pn.exported.type === 'Identifier') synthNodes.push(pn.exported);
+        }
+        if (synthNodes && synthNodes.length > 0) {
+          const identEnter = visitorMap.get('Identifier');
+          for (const synthId of synthNodes) {
+            if (identEnter) {
+              for (let h = 0; h < identEnter.length; h++) {
+                try { identEnter[h]._state.inner(synthId); }
+                catch (e) { context._reports.push({ ruleId: identEnter[h].ruleId, message: `Plugin error: ${e.message}` }); }
+              }
+            }
+            if (hasSelectors && selectorsByTagEnter) {
+              const selHandlers = selectorsByTagEnter[identTagOpt];
+              const lists = [selHandlers, _universalEnter].filter(Boolean);
+              const parentAncestors = [pn];
+              let _p = pd ? pd[idx] : NONE;
+              while (_p !== NONE && _p < ast.nodeCount) { parentAncestors.push(nodeView(ast, _p)); _p = pd[_p]; }
+              const _esq = esquery();
+              for (const list of lists) {
+                for (let h = 0; h < list.length; h++) {
+                  const sh = list[h];
+                  try {
+                    const fm = sh._fastMatcher;
+                    if (fm) {
+                      const matched = fm.fn(synthId, parentAncestors);
+                      if (matched && fm.complete) { sh.handler(synthId); continue; }
+                      if (!matched) continue;
+                    }
+                    if (_esq && sh.parsedSelector && _esq.matches(synthId, sh.parsedSelector, parentAncestors)) {
+                      sh.handler(synthId);
+                    }
+                  } catch (e) { context._reports.push({ ruleId: sh.ruleId, message: `Plugin error: ${e.message}` }); }
+                }
+              }
+            }
+          }
+        }
       }
       // PrivateIdentifier dispatch for Identifier nodes with # prefix
       if (hasPrivateIdOpt && tag === identTagOpt) {
@@ -4749,11 +5133,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (nv.type === 'BreakStatement' && !nv.label && cpTracker.breakTarget === 'switch') {
           cpTracker.markSwitchBranchReachable();
         }
-        // Labeled break/continue just exit to the label — code after the labeled
-        // statement IS reachable. Only mark unreachable for return/throw and
-        // unlabeled break/continue (which terminate within their loop/switch).
-        const isLabeled = (nv.type === 'BreakStatement' || nv.type === 'ContinueStatement') && nv.label != null;
-        if (!isLabeled) {
+        // Track returned/thrown segments for codePath.returnedSegments/thrownSegments
+        if (nv.type === 'ReturnStatement') {
+          const seg = cpTracker.segment;
+          if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
+        } else if (nv.type === 'ThrowStatement') {
+          const seg = cpTracker.segment;
+          if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
+        }
+        // All terminators mark subsequent code unreachable — including labeled break/continue.
+        {
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
           cpTracker.markUnreachable();
@@ -4764,7 +5153,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         // Fire onCodePathSegmentLoop BEFORE exitBranch for loops
         if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
           const fromSeg = cpTracker.segment;
-          if (fromSeg && fromSeg.reachable) {
+          const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
+          if (fromSeg && fromSeg.reachable && loopExitAlive) {
             const loopInfo = cpTracker.nearestLoopTarget;
             if (loopInfo && loopInfo.loopIdx === idx) {
               _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
@@ -4782,14 +5172,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
           (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nodeView(ast, idx)));
         const seg2 = cpTracker.exitBranch(hasAllBranches);
-        // Consult Zig reachability only for LOOP exits (infinite loop detection).
-        // Don't override for switch/if/try — those have different branch semantics.
-        if (seg2 && seg2.reachable && ast._nodeReachable &&
-            _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-          const nextEvIdx = i + 1;
-          if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
-            if (!ast._nodeReachable[dfsEvents[nextEvIdx]]) {
-              seg2.reachable = false;
+        if (seg2 && seg2.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+          if (seg2.reachable && ast._nodeReachable) {
+            const nextEvIdx = i + 1;
+            if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
+              if (!ast._nodeReachable[dfsEvents[nextEvIdx]]) seg2.reachable = false;
             }
           }
         }

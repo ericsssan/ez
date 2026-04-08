@@ -169,6 +169,7 @@ const SH = {
   REF_SCOPE_IDS: 80,
   NODE_SCOPE_IDS: 84,
   NODE_REACHABLE: 88,   // u8[] per-node reachability: 1=live, 0=dead
+  LOOP_EXIT_REACHABLE: 92,  // u8[] per-loop exit reachability: 1=exit alive, 0=exit dead
 };
 
 const FLAG_HAS_BOM = 1;
@@ -381,6 +382,8 @@ class AstView {
       this._nodeScopeIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.NODE_SCOPE_IDS, true),  this.nodeCount);
       const reachOff = dv.getUint32(semOff + SH.NODE_REACHABLE, true);
       this._nodeReachable   = reachOff > 0 ? new Uint8Array(buffer, reachOff, this.nodeCount) : null;
+      const loopExitOff = dv.getUint32(semOff + SH.LOOP_EXIT_REACHABLE, true);
+      this._loopExitReachable = loopExitOff > 0 ? new Uint8Array(buffer, loopExitOff, this.nodeCount) : null;
     } else {
       this._semScopeCount = 0;
       this._semSymbolCount = 0;
@@ -448,18 +451,25 @@ class AstView {
       const cStart = cs[i];
       const cEnd = ce[i];
       const kind = ck[i] === 0 ? 'Line' : 'Block';
-      // Strip the // or /* */ delimiters for the value
-      const valStart = kind === 'Line' ? cStart + 2 : cStart + 2;
-      const valEnd = kind === 'Block' ? cEnd - 2 : cEnd;
+      // Strip the // or /* */ delimiters for the value.
+      // For Line comments, the parser includes the trailing newline in cEnd —
+      // ESLint/Espree expects it excluded from range, value, and loc.
+      const valStart = cStart + 2; // skip `//` or `/*`
+      let adjEnd = cEnd;
+      if (kind === 'Line') {
+        // Strip trailing \n, \r\n, \r from range
+        while (adjEnd > valStart && (src.charCodeAt(adjEnd - 1) === 10 || src.charCodeAt(adjEnd - 1) === 13)) adjEnd--;
+      }
+      const valEnd = kind === 'Block' ? adjEnd - 2 : adjEnd;
       const startLine = this._findLineIdx(cStart);
-      const endLine   = this._findLineIdx(cEnd);
+      const endLine   = this._findLineIdx(adjEnd > cStart ? adjEnd - 1 : cStart);
       results.push({
         type: kind, value: src.slice(valStart, valEnd),
-        start: cStart, end: cEnd,
-        range: [cStart, cEnd],
+        start: cStart, end: adjEnd,
+        range: [cStart, adjEnd],
         loc: {
           start: { line: startLine + 1, column: cStart - ls[startLine] },
-          end:   { line: endLine + 1,   column: cEnd   - ls[endLine]   },
+          end:   { line: endLine + 1,   column: adjEnd - ls[endLine]   },
         },
       });
     }
@@ -1179,6 +1189,28 @@ const NodeProto = {
         // lookups (getFirstToken, getTokenBefore) work on this synthetic node.
         const myRange = this.range;
         const myLoc = this.loc;
+        // Wrap TS parameter properties (public/private/protected/readonly params)
+        // in TSParameterProperty nodes so rules like no-empty-function can detect them.
+        if (params && (t === T.constructor_def || t === T.method_def || t === T.computed_method_def)) {
+          for (let pi = 0; pi < params.length; pi++) {
+            const p = params[pi];
+            if (!p || p.mainToken === undefined) continue;
+            // Check if the token before the param's mainToken is an access modifier
+            const prevTok = p.mainToken > 0 ? ast._tokTags[p.mainToken - 1] : 0;
+            // kw_public, kw_private, kw_protected, kw_readonly — check tag names
+            const prevVal = prevTok > 0 ? ast.source.slice(ast._tokStarts[p.mainToken - 1], ast._tokEnds[p.mainToken - 1]) : '';
+            if (prevVal === 'public' || prevVal === 'private' || prevVal === 'protected' || prevVal === 'readonly') {
+              params[pi] = {
+                type: 'TSParameterProperty',
+                parameter: p,
+                accessibility: prevVal === 'readonly' ? undefined : prevVal,
+                readonly: prevVal === 'readonly',
+                start: p.start, end: p.end, range: p.range, loc: p.loc,
+                parent: null, // set below
+              };
+            }
+          }
+        }
         const synth = {
           type: 'FunctionExpression',
           id: null,
@@ -1193,6 +1225,15 @@ const NodeProto = {
           loc: myLoc,
           parent: this, // parent = the Property/MethodDefinition node
         };
+        // Update param parents to point to the FunctionExpression, not the
+        // Property/MethodDefinition. Rules like id-length check `node.parent.type`
+        // and expect function parameters to have FunctionExpression as parent.
+        if (params) {
+          for (let pi = 0; pi < params.length; pi++) {
+            if (params[pi]) params[pi]._parent = synth;
+          }
+        }
+        if (body) body._parent = synth;
         this._syntheticFn = synth;
         v = synth;
       }
@@ -1631,6 +1672,87 @@ const NodeProto = {
   },
 
   /**
+   * node.override — true for TS override methods/properties.
+   * Detected by checking if 'override' keyword precedes the method name.
+   */
+  get override() {
+    const t = this._tag;
+    if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
+        t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
+        t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def) return undefined;
+    const mt = this.mainToken;
+    const ast = this._ast;
+    // Scan backwards for 'override' keyword before the method name
+    for (let i = mt - 1; i >= 0 && i >= mt - 4; i--) {
+      const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
+      if (val === 'override') return true;
+      if (val !== 'static' && val !== 'async' && val !== 'get' && val !== 'set' && val !== '*' &&
+          val !== 'public' && val !== 'private' && val !== 'protected' && val !== 'readonly' &&
+          val !== 'abstract' && val !== 'declare') break;
+    }
+    return false;
+  },
+
+  /**
+   * node.accessibility — TS access modifier ('public'|'private'|'protected').
+   */
+  get accessibility() {
+    const t = this._tag;
+    if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
+        t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
+        t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def) return undefined;
+    const mt = this.mainToken;
+    const ast = this._ast;
+    for (let i = mt - 1; i >= 0 && i >= mt - 4; i--) {
+      const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
+      if (val === 'public' || val === 'private' || val === 'protected') return val;
+      if (val !== 'static' && val !== 'async' && val !== 'override' && val !== 'readonly' &&
+          val !== 'abstract' && val !== 'declare' && val !== '*') break;
+    }
+    return null;
+  },
+
+  /**
+   * node.decorators — TS/proposal decorators array.
+   * Detected by scanning backward from the method/property for @ tokens.
+   */
+  get decorators() {
+    const t = this._tag;
+    if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
+        t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
+        t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def &&
+        t !== T.class_decl && t !== T.class_expr) return undefined;
+    const ast = this._ast;
+    const mt = this.mainToken;
+    // Scan backward for @ tokens
+    const decorators = [];
+    for (let i = mt - 1; i >= 0; i--) {
+      const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
+      if (val === '@') {
+        decorators.push({ type: 'Decorator', start: ast._tokStarts[i], end: ast._tokEnds[i + 1] || ast._tokEnds[i] });
+      } else if (val === ')') {
+        // Skip decorator arguments: @dec(args)
+        let depth = 1;
+        i--;
+        while (i >= 0 && depth > 0) {
+          const c = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
+          if (c === ')') depth++;
+          else if (c === '(') depth--;
+          i--;
+        }
+        // i now points before '(' — next iteration checks for @
+      } else if (val === 'static' || val === 'async' || val === 'get' || val === 'set' || val === '*' ||
+                 val === 'public' || val === 'private' || val === 'protected' || val === 'readonly' ||
+                 val === 'abstract' || val === 'declare' || val === 'override') {
+        continue; // skip modifiers between decorator and method name
+      } else {
+        break; // not a decorator or modifier
+      }
+    }
+    return decorators.length > 0 ? decorators : undefined;
+  },
+
+  /**
    * node.optional — true for optional chaining.
    */
   get optional() {
@@ -1646,6 +1768,9 @@ const NodeProto = {
     const t = this._tag;
     if (t === T.prefix_inc || t === T.prefix_dec) return true;
     if (t === T.postfix_inc || t === T.postfix_dec) return false;
+    // All UnaryExpression operators (void, typeof, delete, !, -, +, ~) are prefix
+    if (t === T.typeof_expr || t === T.void_expr || t === T.delete_expr ||
+        t === T.logical_not || t === T.bitwise_not || t === T.unary_minus || t === T.unary_plus) return true;
     return null;
   },
 
@@ -1801,6 +1926,81 @@ const NodeProto = {
     }
     if (t === T.property || t === T.shorthand_property || t === T.computed_property) return 'init';
     return undefined;
+  },
+
+  /**
+   * node.typeAnnotation — TS type annotation on identifiers, params, etc.
+   */
+  get typeAnnotation() {
+    const ast = this._ast;
+    const pd = ast._parentData;
+    if (!pd) return undefined;
+    // Find a TSTypeAnnotation child of this node
+    const myIdx = this._i;
+    for (let c = myIdx + 1; c < ast.nodeCount; c++) {
+      if (pd[c] !== myIdx) continue;
+      if (ast._nodeTags[c] === T.ts_type_annotation) return nodeView(ast, c);
+      // Only check direct children (not grandchildren)
+    }
+    return undefined;
+  },
+
+  /**
+   * node.declare — true for TS `declare` declarations.
+   */
+  get declare() {
+    const t = this._tag;
+    if (t !== T.var_decl && t !== T.let_decl && t !== T.const_decl &&
+        t !== T.fn_decl && t !== T.async_fn_decl && t !== T.class_decl) return undefined;
+    const mt = this.mainToken;
+    if (mt > 0) {
+      const ast = this._ast;
+      const prev = ast.source.slice(ast._tokStarts[mt - 1], ast._tokEnds[mt - 1]);
+      if (prev === 'declare') return true;
+    }
+    return false;
+  },
+
+  /**
+   * node.importKind — 'type' for `import type`, 'value' otherwise.
+   */
+  get importKind() {
+    const t = this._tag;
+    if (t !== T.import_decl && t !== T.import_specifier) return undefined;
+    const ast = this._ast;
+    const mt = this.mainToken;
+    // For ImportDeclaration: check if token after 'import' is 'type'
+    if (t === T.import_decl) {
+      if (mt + 1 < ast.tokenCount) {
+        const next = ast.source.slice(ast._tokStarts[mt + 1], ast._tokEnds[mt + 1]);
+        if (next === 'type') return 'type';
+      }
+      return 'value';
+    }
+    // For ImportSpecifier: check if token before name is 'type'
+    if (mt > 0) {
+      const prev = ast.source.slice(ast._tokStarts[mt - 1], ast._tokEnds[mt - 1]);
+      if (prev === 'type') return 'type';
+    }
+    return 'value';
+  },
+
+  /**
+   * node.exportKind — 'type' for `export type`, 'value' otherwise.
+   */
+  get exportKind() {
+    const t = this._tag;
+    if (t !== T.export_named && t !== T.export_all && t !== T.export_specifier) return undefined;
+    const ast = this._ast;
+    const mt = this.mainToken;
+    if (t === T.export_named || t === T.export_all) {
+      if (mt + 1 < ast.tokenCount) {
+        const next = ast.source.slice(ast._tokStarts[mt + 1], ast._tokEnds[mt + 1]);
+        if (next === 'type') return 'type';
+      }
+      return 'value';
+    }
+    return 'value';
   },
 
   /**
@@ -1966,7 +2166,14 @@ const NodeProto = {
     if (t === T.property || t === T.shorthand_property ||
         t === T.property_def || t === T.method_def ||
         t === T.getter_def || t === T.setter_def || t === T.constructor_def) {
-      return lhs === NONE ? null : nodeView(ast, lhs);
+      if (lhs === NONE) return null;
+      const child = nodeView(ast, lhs);
+      // For shorthand destructuring with default: { x = 1 } → key should be
+      // the Identifier, not the AssignmentPattern
+      if (t === T.shorthand_property && child.type === 'AssignmentPattern') {
+        return child.left;
+      }
+      return child;
     }
     if (t === T.computed_property || t === T.computed_method_def ||
         t === T.computed_property_def || t === T.computed_getter_def ||
@@ -2014,6 +2221,7 @@ const NodeProto = {
    * LabeledStatement, BreakStatement (with label), ContinueStatement (with label)
    */
   get label() {
+    if (this._label !== undefined) return this._label;
     const t = this._tag;
     const ast = this._ast;
     let tokIdx = null;
@@ -2021,10 +2229,10 @@ const NodeProto = {
       tokIdx = this.mainToken;
     } else if (t === T.break_label || t === T.continue_label) {
       const tokAbsIdx = ast.nodeLhs(this._i);
-      if (tokAbsIdx === NONE) return null;
+      if (tokAbsIdx === NONE) { this._label = null; return null; }
       tokIdx = tokAbsIdx; // nodeLhs stores absolute token index for break/continue label
     }
-    if (tokIdx === null) return null;
+    if (tokIdx === null) { this._label = null; return null; }
     // Return an Identifier-like object with name, range, loc, type.
     const name = ast._identAt(tokIdx);
     const start = ast._tokStarts[tokIdx];
@@ -2034,12 +2242,13 @@ const NodeProto = {
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ls[m] <= start) lo = m; else hi = m - 1; }
     let elo = 0, ehi = ls.length - 1;
     while (elo < ehi) { const m = (elo + ehi + 1) >> 1; if (ls[m] <= end) elo = m; else ehi = m - 1; }
-    return {
+    this._label = {
       type: 'Identifier', name, start, end,
       range: [start, end],
       loc: { start: { line: lo + 1, column: start - ls[lo] }, end: { line: elo + 1, column: end - ls[elo] } },
       parent: this,
     };
+    return this._label;
   },
 
   /**
@@ -2170,6 +2379,12 @@ const NodeProto = {
       const lit = ast._syntheticLiteral(tokIdx);
       lit.parent = this;
       return lit;
+    }
+    // ImportExpression (dynamic import): source = the argument expression
+    if (t === T.import_expr) {
+      const argIdx = ast.nodeLhs(this._i);
+      if (argIdx === NONE) return null;
+      return nodeView(ast, argIdx);
     }
     return undefined;
   },
@@ -2518,6 +2733,7 @@ function _getChainExpr(ast, idx) {
   c.expression = inner;
   c._i = idx;           // identity: same as inner node
   c._isChainExpr = true;
+  c.mainToken = ast._mainTokens[idx]; // needed for getTokenBefore/After
   Object.defineProperty(c, 'start',  { get: () => inner.start,  configurable: true });
   Object.defineProperty(c, 'end',    { get: () => inner.end,    configurable: true });
   Object.defineProperty(c, 'range',  { get: () => inner.range,  configurable: true });

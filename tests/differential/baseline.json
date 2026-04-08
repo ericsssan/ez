@@ -1,1010 +1,9 @@
 {
-  "files": {
-    "tests/differential/fixtures/clean.js": {
-      "native": {
-        "fn": [
-          "curly:6",
-          "func-style:5",
-          "function-call-argument-newline:11",
-          "function-call-argument-newline:34",
-          "id-length:5",
-          "newline-after-var:10",
-          "newline-after-var:31",
-          "newline-before-return:7",
-          "no-implicit-globals:5",
-          "no-magic-numbers:10",
-          "no-magic-numbers:32",
-          "no-magic-numbers:33",
-          "no-magic-numbers:6",
-          "no-magic-numbers:7",
-          "no-undef:11",
-          "no-undef:34",
-          "one-var:31",
-          "padded-blocks:13",
-          "padded-blocks:14",
-          "padded-blocks:15",
-          "padded-blocks:18",
-          "padded-blocks:19",
-          "padded-blocks:22",
-          "padded-blocks:23",
-          "padded-blocks:26",
-          "padded-blocks:27",
-          "padded-blocks:28",
-          "padded-blocks:5",
-          "padded-blocks:7",
-          "space-before-function-paren:14",
-          "space-before-function-paren:18",
-          "space-before-function-paren:22",
-          "space-before-function-paren:26",
-          "space-before-function-paren:5",
-          "strict:3",
-          "strict:5"
-        ],
-        "fp": [
-          "no-shadow:13",
-          "no-unused-vars:13"
-        ]
-      },
-      "runner": {
-        "fn": [
-          "no-undef:11",
-          "no-undef:34",
-          "padded-blocks:23",
-          "padded-blocks:28"
-        ],
-        "fp": [
-          "multiline-comment-style:1",
-          "multiline-comment-style:2",
-          "new-parens:31",
-          "semi:10",
-          "semi:31"
-        ]
-      }
-    },
-    "tests/differential/fixtures/mixed_rules.js": {
-      "native": {
-        "fn": [
-          "brace-style:34",
-          "brace-style:40",
-          "brace-style:73",
-          "brace-style:76",
-          "brace-style:82",
-          "brace-style:85",
-          "brace-style:98",
-          "capitalized-comments:12",
-          "capitalized-comments:15",
-          "capitalized-comments:18",
-          "capitalized-comments:21",
-          "capitalized-comments:24",
-          "capitalized-comments:27",
-          "capitalized-comments:3",
-          "capitalized-comments:30",
-          "capitalized-comments:33",
-          "capitalized-comments:36",
-          "capitalized-comments:39",
-          "capitalized-comments:42",
-          "capitalized-comments:45",
-          "capitalized-comments:48",
-          "capitalized-comments:51",
-          "capitalized-comments:54",
-          "capitalized-comments:57",
-          "capitalized-comments:6",
-          "capitalized-comments:60",
-          "capitalized-comments:63",
-          "capitalized-comments:66",
-          "capitalized-comments:69",
-          "capitalized-comments:72",
-          "capitalized-comments:75",
-          "capitalized-comments:78",
-          "capitalized-comments:81",
-          "capitalized-comments:84",
-          "capitalized-comments:87",
-          "capitalized-comments:9",
-          "capitalized-comments:90",
-          "capitalized-comments:93",
-          "capitalized-comments:94",
-          "capitalized-comments:97",
-          "func-style:85",
-          "func-style:98",
-          "function-call-argument-newline:55",
-          "function-call-argument-newline:79",
-          "id-length:10",
-          "id-length:22",
-          "id-length:34",
-          "id-length:67",
-          "id-length:73",
-          "id-length:76",
-          "init-declarations:40",
-          "init-declarations:79",
-          "keyword-spacing:34",
-          "max-len:93",
-          "max-statements-per-line:34",
-          "max-statements-per-line:40",
-          "max-statements-per-line:43",
-          "max-statements-per-line:46",
-          "max-statements-per-line:55",
-          "max-statements-per-line:58",
-          "max-statements-per-line:61",
-          "max-statements-per-line:64",
-          "max-statements-per-line:67",
-          "max-statements-per-line:70",
-          "max-statements-per-line:73",
-          "max-statements-per-line:76",
-          "max-statements-per-line:79",
-          "max-statements-per-line:82",
-          "max-statements-per-line:85",
-          "max-statements-per-line:88",
-          "max-statements-per-line:91",
-          "max-statements-per-line:95",
-          "max-statements-per-line:98",
-          "multiline-comment-style:93",
-          "multiline-ternary:67",
-          "multiline-ternary:88",
-          "newline-after-var:40",
-          "newline-after-var:43",
-          "newline-after-var:46",
-          "newline-after-var:55",
-          "newline-after-var:58",
-          "newline-after-var:61",
-          "newline-after-var:64",
-          "newline-after-var:67",
-          "newline-after-var:70",
-          "newline-after-var:79",
-          "newline-after-var:82",
-          "newline-after-var:85",
-          "newline-after-var:88",
-          "newline-after-var:91",
-          "newline-after-var:95",
-          "no-implicit-globals:10",
-          "no-implicit-globals:19",
-          "no-implicit-globals:22",
-          "no-implicit-globals:40",
-          "no-implicit-globals:43",
-          "no-implicit-globals:46",
-          "no-implicit-globals:49",
-          "no-implicit-globals:55",
-          "no-implicit-globals:58",
-          "no-implicit-globals:61",
-          "no-implicit-globals:64",
-          "no-implicit-globals:67",
-          "no-implicit-globals:70",
-          "no-implicit-globals:73",
-          "no-implicit-globals:76",
-          "no-implicit-globals:79",
-          "no-implicit-globals:82",
-          "no-implicit-globals:85",
-          "no-implicit-globals:88",
-          "no-implicit-globals:91",
-          "no-implicit-globals:95",
-          "no-implicit-globals:98",
-          "no-magic-numbers:13",
-          "no-magic-numbers:19",
-          "no-magic-numbers:28",
-          "no-magic-numbers:61",
-          "no-magic-numbers:67",
-          "no-magic-numbers:73",
-          "no-magic-numbers:76",
-          "no-magic-numbers:79",
-          "no-magic-numbers:82",
-          "no-magic-numbers:85",
-          "no-magic-numbers:98",
-          "no-undef:34",
-          "no-undef:40",
-          "no-undef:43",
-          "no-undef:55",
-          "no-undef:58",
-          "no-undef:61",
-          "no-undef:64",
-          "no-undef:67",
-          "no-undef:70",
-          "no-undef:79",
-          "no-undef:82",
-          "no-undef:88",
-          "no-undef:91",
-          "no-undef:95",
-          "no-undef:98",
-          "no-unused-vars:85",
-          "object-curly-spacing:22",
-          "object-property-newline:22",
-          "one-var-declaration-per-line:67",
-          "one-var:19",
-          "one-var:22",
-          "one-var:40",
-          "one-var:43",
-          "one-var:46",
-          "one-var:49",
-          "one-var:55",
-          "one-var:58",
-          "one-var:61",
-          "one-var:64",
-          "one-var:67",
-          "one-var:70",
-          "one-var:73",
-          "one-var:76",
-          "one-var:79",
-          "one-var:82",
-          "one-var:85",
-          "one-var:88",
-          "one-var:91",
-          "one-var:95",
-          "padded-blocks:34",
-          "padded-blocks:40",
-          "padded-blocks:73",
-          "padded-blocks:76",
-          "padded-blocks:82",
-          "padded-blocks:85",
-          "padded-blocks:98",
-          "quote-props:22",
-          "space-before-function-paren:85",
-          "space-before-function-paren:98",
-          "strict:85",
-          "strict:98",
-          "vars-on-top:10",
-          "vars-on-top:19",
-          "vars-on-top:22",
-          "vars-on-top:40",
-          "vars-on-top:43",
-          "vars-on-top:46",
-          "vars-on-top:49",
-          "vars-on-top:55",
-          "vars-on-top:58",
-          "vars-on-top:61",
-          "vars-on-top:64",
-          "vars-on-top:67",
-          "vars-on-top:70",
-          "vars-on-top:73",
-          "vars-on-top:76",
-          "vars-on-top:79",
-          "vars-on-top:82",
-          "vars-on-top:85",
-          "vars-on-top:88",
-          "vars-on-top:91",
-          "vars-on-top:95"
-        ],
-        "fp": [
-          "no-unused-expressions:28"
-        ]
-      },
-      "runner": {
-        "fn": [
-          "no-undef:34",
-          "no-undef:40",
-          "no-undef:43",
-          "no-undef:55",
-          "no-undef:58",
-          "no-undef:61",
-          "no-undef:64",
-          "no-undef:67",
-          "no-undef:70",
-          "no-undef:79",
-          "no-undef:82",
-          "no-undef:88",
-          "no-undef:91",
-          "no-undef:95",
-          "no-undef:98",
-          "no-unreachable-loop:76"
-        ],
-        "fp": [
-          "multiline-comment-style:1",
-          "multiline-comment-style:10",
-          "multiline-comment-style:12",
-          "multiline-comment-style:13",
-          "multiline-comment-style:15",
-          "multiline-comment-style:16",
-          "multiline-comment-style:18",
-          "multiline-comment-style:19",
-          "multiline-comment-style:2",
-          "multiline-comment-style:21",
-          "multiline-comment-style:22",
-          "multiline-comment-style:24",
-          "multiline-comment-style:25",
-          "multiline-comment-style:27",
-          "multiline-comment-style:28",
-          "multiline-comment-style:3",
-          "multiline-comment-style:30",
-          "multiline-comment-style:31",
-          "multiline-comment-style:33",
-          "multiline-comment-style:34",
-          "multiline-comment-style:36",
-          "multiline-comment-style:37",
-          "multiline-comment-style:39",
-          "multiline-comment-style:4",
-          "multiline-comment-style:40",
-          "multiline-comment-style:42",
-          "multiline-comment-style:43",
-          "multiline-comment-style:45",
-          "multiline-comment-style:46",
-          "multiline-comment-style:48",
-          "multiline-comment-style:49",
-          "multiline-comment-style:51",
-          "multiline-comment-style:52",
-          "multiline-comment-style:54",
-          "multiline-comment-style:55",
-          "multiline-comment-style:57",
-          "multiline-comment-style:58",
-          "multiline-comment-style:6",
-          "multiline-comment-style:60",
-          "multiline-comment-style:61",
-          "multiline-comment-style:63",
-          "multiline-comment-style:64",
-          "multiline-comment-style:66",
-          "multiline-comment-style:67",
-          "multiline-comment-style:69",
-          "multiline-comment-style:7",
-          "multiline-comment-style:70",
-          "multiline-comment-style:72",
-          "multiline-comment-style:73",
-          "multiline-comment-style:75",
-          "multiline-comment-style:76",
-          "multiline-comment-style:78",
-          "multiline-comment-style:79",
-          "multiline-comment-style:81",
-          "multiline-comment-style:82",
-          "multiline-comment-style:84",
-          "multiline-comment-style:85",
-          "multiline-comment-style:87",
-          "multiline-comment-style:88",
-          "multiline-comment-style:9",
-          "multiline-comment-style:90",
-          "multiline-comment-style:91",
-          "multiline-comment-style:94",
-          "multiline-comment-style:95",
-          "multiline-comment-style:97",
-          "multiline-comment-style:98",
-          "new-parens:52",
-          "new-parens:58",
-          "new-parens:70",
-          "no-inline-comments:12",
-          "no-inline-comments:15",
-          "no-inline-comments:18",
-          "no-inline-comments:21",
-          "no-inline-comments:24",
-          "no-inline-comments:27",
-          "no-inline-comments:3",
-          "no-inline-comments:30",
-          "no-inline-comments:33",
-          "no-inline-comments:36",
-          "no-inline-comments:39",
-          "no-inline-comments:42",
-          "no-inline-comments:45",
-          "no-inline-comments:48",
-          "no-inline-comments:51",
-          "no-inline-comments:54",
-          "no-inline-comments:57",
-          "no-inline-comments:6",
-          "no-inline-comments:60",
-          "no-inline-comments:63",
-          "no-inline-comments:66",
-          "no-inline-comments:69",
-          "no-inline-comments:72",
-          "no-inline-comments:75",
-          "no-inline-comments:78",
-          "no-inline-comments:81",
-          "no-inline-comments:84",
-          "no-inline-comments:87",
-          "no-inline-comments:9",
-          "no-inline-comments:90",
-          "no-inline-comments:93",
-          "no-inline-comments:94",
-          "no-inline-comments:97",
-          "semi:76",
-          "space-unary-ops:28",
-          "space-unary-ops:31"
-        ]
-      }
-    },
-    "tests/differential/fixtures/more_rules.js": {
-      "native": {
-        "fn": [
-          "array-element-newline:82",
-          "brace-style:10",
-          "brace-style:110",
-          "brace-style:140",
-          "brace-style:152",
-          "brace-style:155",
-          "brace-style:158",
-          "brace-style:167",
-          "brace-style:173",
-          "brace-style:179",
-          "brace-style:21",
-          "brace-style:25",
-          "brace-style:26",
-          "brace-style:34",
-          "brace-style:41",
-          "brace-style:47",
-          "brace-style:57",
-          "brace-style:7",
-          "brace-style:73",
-          "brace-style:79",
-          "brace-style:90",
-          "brace-style:93",
-          "camelcase:143",
-          "capitalized-comments:102",
-          "capitalized-comments:105",
-          "capitalized-comments:108",
-          "capitalized-comments:112",
-          "capitalized-comments:115",
-          "capitalized-comments:119",
-          "capitalized-comments:12",
-          "capitalized-comments:122",
-          "capitalized-comments:125",
-          "capitalized-comments:129",
-          "capitalized-comments:132",
-          "capitalized-comments:135",
-          "capitalized-comments:138",
-          "capitalized-comments:139",
-          "capitalized-comments:142",
-          "capitalized-comments:145",
-          "capitalized-comments:148",
-          "capitalized-comments:151",
-          "capitalized-comments:154",
-          "capitalized-comments:157",
-          "capitalized-comments:16",
-          "capitalized-comments:160",
-          "capitalized-comments:163",
-          "capitalized-comments:166",
-          "capitalized-comments:169",
-          "capitalized-comments:172",
-          "capitalized-comments:175",
-          "capitalized-comments:178",
-          "capitalized-comments:181",
-          "capitalized-comments:185",
-          "capitalized-comments:20",
-          "capitalized-comments:23",
-          "capitalized-comments:29",
-          "capitalized-comments:3",
-          "capitalized-comments:33",
-          "capitalized-comments:36",
-          "capitalized-comments:40",
-          "capitalized-comments:43",
-          "capitalized-comments:46",
-          "capitalized-comments:49",
-          "capitalized-comments:53",
-          "capitalized-comments:56",
-          "capitalized-comments:59",
-          "capitalized-comments:6",
-          "capitalized-comments:62",
-          "capitalized-comments:65",
-          "capitalized-comments:68",
-          "capitalized-comments:72",
-          "capitalized-comments:75",
-          "capitalized-comments:78",
-          "capitalized-comments:81",
-          "capitalized-comments:85",
-          "capitalized-comments:89",
-          "capitalized-comments:9",
-          "capitalized-comments:92",
-          "capitalized-comments:95",
-          "capitalized-comments:98",
-          "class-methods-use-this:25",
-          "class-methods-use-this:26",
-          "consistent-return:7",
-          "curly:7",
-          "func-names:10",
-          "func-names:164",
-          "func-names:167",
-          "func-names:170",
-          "func-style:140",
-          "func-style:152",
-          "func-style:155",
-          "func-style:158",
-          "func-style:179",
-          "func-style:21",
-          "func-style:50",
-          "func-style:57",
-          "func-style:79",
-          "function-call-argument-newline:106",
-          "generator-star-spacing:152",
-          "id-length:110",
-          "id-length:13",
-          "id-length:158",
-          "id-length:179",
-          "id-length:21",
-          "id-length:4",
-          "id-length:41",
-          "id-length:73",
-          "indent-legacy:25",
-          "indent-legacy:26",
-          "indent:25",
-          "indent:26",
-          "init-declarations:139",
-          "line-comment-position:139",
-          "lines-between-class-members:26",
-          "max-statements-per-line:10",
-          "max-statements-per-line:110",
-          "max-statements-per-line:139",
-          "max-statements-per-line:140",
-          "max-statements-per-line:152",
-          "max-statements-per-line:155",
-          "max-statements-per-line:158",
-          "max-statements-per-line:167",
-          "max-statements-per-line:173",
-          "max-statements-per-line:179",
-          "max-statements-per-line:21",
-          "max-statements-per-line:31",
-          "max-statements-per-line:34",
-          "max-statements-per-line:41",
-          "max-statements-per-line:47",
-          "max-statements-per-line:57",
-          "max-statements-per-line:7",
-          "max-statements-per-line:73",
-          "max-statements-per-line:79",
-          "max-statements-per-line:90",
-          "max-statements-per-line:93",
-          "new-cap:63",
-          "newline-after-var:109",
-          "newline-after-var:13",
-          "newline-after-var:139",
-          "newline-after-var:17",
-          "newline-after-var:186",
-          "newline-after-var:30",
-          "newline-after-var:69",
-          "newline-after-var:82",
-          "newline-after-var:93",
-          "newline-after-var:99",
-          "newline-before-return:179",
-          "no-extra-semi:44",
-          "no-implicit-globals:10",
-          "no-implicit-globals:103",
-          "no-implicit-globals:109",
-          "no-implicit-globals:110",
-          "no-implicit-globals:113",
-          "no-implicit-globals:116",
-          "no-implicit-globals:120",
-          "no-implicit-globals:123",
-          "no-implicit-globals:126",
-          "no-implicit-globals:127",
-          "no-implicit-globals:13",
-          "no-implicit-globals:130",
-          "no-implicit-globals:133",
-          "no-implicit-globals:136",
-          "no-implicit-globals:139",
-          "no-implicit-globals:140",
-          "no-implicit-globals:143",
-          "no-implicit-globals:146",
-          "no-implicit-globals:152",
-          "no-implicit-globals:155",
-          "no-implicit-globals:158",
-          "no-implicit-globals:167",
-          "no-implicit-globals:170",
-          "no-implicit-globals:176",
-          "no-implicit-globals:179",
-          "no-implicit-globals:182",
-          "no-implicit-globals:183",
-          "no-implicit-globals:21",
-          "no-implicit-globals:30",
-          "no-implicit-globals:4",
-          "no-implicit-globals:50",
-          "no-implicit-globals:54",
-          "no-implicit-globals:60",
-          "no-implicit-globals:63",
-          "no-implicit-globals:66",
-          "no-implicit-globals:69",
-          "no-implicit-globals:7",
-          "no-implicit-globals:73",
-          "no-implicit-globals:76",
-          "no-implicit-globals:79",
-          "no-implicit-globals:82",
-          "no-implicit-globals:86",
-          "no-implicit-globals:87",
-          "no-implicit-globals:93",
-          "no-implicit-globals:96",
-          "no-implicit-globals:99",
-          "no-inline-comments:139",
-          "no-label-var:110",
-          "no-magic-numbers:10",
-          "no-magic-numbers:106",
-          "no-magic-numbers:110",
-          "no-magic-numbers:136",
-          "no-magic-numbers:14",
-          "no-magic-numbers:152",
-          "no-magic-numbers:158",
-          "no-magic-numbers:167",
-          "no-magic-numbers:179",
-          "no-magic-numbers:18",
-          "no-magic-numbers:25",
-          "no-magic-numbers:26",
-          "no-magic-numbers:34",
-          "no-magic-numbers:4",
-          "no-magic-numbers:41",
-          "no-magic-numbers:47",
-          "no-magic-numbers:51",
-          "no-magic-numbers:54",
-          "no-magic-numbers:7",
-          "no-magic-numbers:79",
-          "no-magic-numbers:82",
-          "no-magic-numbers:83",
-          "no-magic-numbers:87",
-          "no-magic-numbers:93",
-          "no-native-reassign:54",
-          "no-negated-in-lhs:83",
-          "no-redeclare:127",
-          "no-redeclare:21",
-          "no-undef:106",
-          "no-undef:187",
-          "no-undefined:140",
-          "no-undefined:54",
-          "no-unreachable:143",
-          "no-unreachable:161",
-          "no-unreachable:167",
-          "no-unreachable:170",
-          "no-unreachable:173",
-          "no-unreachable:182",
-          "no-unreachable:93",
-          "no-unused-vars:18",
-          "no-unused-vars:41",
-          "no-unused-vars:51",
-          "no-unused-vars:70",
-          "no-useless-assignment:70",
-          "object-curly-spacing:170",
-          "object-curly-spacing:7",
-          "object-curly-spacing:73",
-          "object-shorthand:170",
-          "one-var:10",
-          "one-var:103",
-          "one-var:109",
-          "one-var:110",
-          "one-var:113",
-          "one-var:116",
-          "one-var:120",
-          "one-var:123",
-          "one-var:126",
-          "one-var:127",
-          "one-var:13",
-          "one-var:130",
-          "one-var:133",
-          "one-var:136",
-          "one-var:139",
-          "one-var:143",
-          "one-var:146",
-          "one-var:167",
-          "one-var:170",
-          "one-var:176",
-          "one-var:182",
-          "one-var:183",
-          "one-var:30",
-          "one-var:37",
-          "one-var:38",
-          "one-var:60",
-          "one-var:63",
-          "one-var:66",
-          "one-var:69",
-          "one-var:7",
-          "one-var:73",
-          "one-var:76",
-          "one-var:82",
-          "one-var:86",
-          "one-var:87",
-          "one-var:93",
-          "one-var:96",
-          "one-var:99",
-          "padded-blocks:10",
-          "padded-blocks:110",
-          "padded-blocks:113",
-          "padded-blocks:140",
-          "padded-blocks:152",
-          "padded-blocks:155",
-          "padded-blocks:158",
-          "padded-blocks:167",
-          "padded-blocks:173",
-          "padded-blocks:179",
-          "padded-blocks:21",
-          "padded-blocks:24",
-          "padded-blocks:25",
-          "padded-blocks:26",
-          "padded-blocks:34",
-          "padded-blocks:41",
-          "padded-blocks:47",
-          "padded-blocks:57",
-          "padded-blocks:7",
-          "padded-blocks:73",
-          "padded-blocks:79",
-          "padded-blocks:90",
-          "padded-blocks:93",
-          "prefer-arrow-callback:10",
-          "quote-props:170",
-          "quote-props:7",
-          "quote-props:73",
-          "space-before-function-paren:10",
-          "space-before-function-paren:140",
-          "space-before-function-paren:152",
-          "space-before-function-paren:155",
-          "space-before-function-paren:158",
-          "space-before-function-paren:164",
-          "space-before-function-paren:167",
-          "space-before-function-paren:170",
-          "space-before-function-paren:179",
-          "space-before-function-paren:21",
-          "space-before-function-paren:25",
-          "space-before-function-paren:26",
-          "space-before-function-paren:50",
-          "space-before-function-paren:57",
-          "space-before-function-paren:7",
-          "space-before-function-paren:73",
-          "space-before-function-paren:79",
-          "strict:10",
-          "strict:140",
-          "strict:152",
-          "strict:155",
-          "strict:158",
-          "strict:164",
-          "strict:167",
-          "strict:170",
-          "strict:179",
-          "strict:21",
-          "strict:50",
-          "strict:57",
-          "strict:7",
-          "strict:73",
-          "strict:79",
-          "vars-on-top:10",
-          "vars-on-top:103",
-          "vars-on-top:109",
-          "vars-on-top:110",
-          "vars-on-top:113",
-          "vars-on-top:116",
-          "vars-on-top:120",
-          "vars-on-top:123",
-          "vars-on-top:126",
-          "vars-on-top:127",
-          "vars-on-top:13",
-          "vars-on-top:130",
-          "vars-on-top:133",
-          "vars-on-top:136",
-          "vars-on-top:139",
-          "vars-on-top:143",
-          "vars-on-top:146",
-          "vars-on-top:167",
-          "vars-on-top:170",
-          "vars-on-top:176",
-          "vars-on-top:182",
-          "vars-on-top:183",
-          "vars-on-top:30",
-          "vars-on-top:37",
-          "vars-on-top:38",
-          "vars-on-top:4",
-          "vars-on-top:60",
-          "vars-on-top:63",
-          "vars-on-top:66",
-          "vars-on-top:69",
-          "vars-on-top:7",
-          "vars-on-top:73",
-          "vars-on-top:76",
-          "vars-on-top:82",
-          "vars-on-top:86",
-          "vars-on-top:87",
-          "vars-on-top:93",
-          "vars-on-top:96",
-          "vars-on-top:99"
-        ],
-        "fp": [
-          "no-extra-semi:45",
-          "no-implied-eval:106",
-          "no-shadow:24",
-          "no-undef:155",
-          "no-unreachable-loop:110",
-          "no-unused-vars:126",
-          "no-useless-escape:120",
-          "no-useless-escape:176",
-          "prefer-rest-params:155"
-        ]
-      },
-      "runner": {
-        "fn": [
-          "camelcase:143",
-          "id-length:73",
-          "indent-legacy:25",
-          "indent-legacy:26",
-          "indent:25",
-          "indent:26",
-          "line-comment-position:139",
-          "no-global-assign:54",
-          "no-implicit-globals:54",
-          "no-native-reassign:54",
-          "no-undef:106",
-          "no-undef:187",
-          "no-unreachable:143",
-          "no-unreachable:161",
-          "no-unreachable:167",
-          "no-unreachable:170",
-          "no-unreachable:173",
-          "no-unreachable:182",
-          "no-unused-vars:127",
-          "no-useless-assignment:70"
-        ],
-        "fp": [
-          "brace-style:164",
-          "brace-style:31",
-          "multiline-comment-style:1",
-          "multiline-comment-style:10",
-          "multiline-comment-style:102",
-          "multiline-comment-style:103",
-          "multiline-comment-style:105",
-          "multiline-comment-style:106",
-          "multiline-comment-style:108",
-          "multiline-comment-style:109",
-          "multiline-comment-style:112",
-          "multiline-comment-style:113",
-          "multiline-comment-style:115",
-          "multiline-comment-style:116",
-          "multiline-comment-style:119",
-          "multiline-comment-style:12",
-          "multiline-comment-style:120",
-          "multiline-comment-style:122",
-          "multiline-comment-style:123",
-          "multiline-comment-style:125",
-          "multiline-comment-style:126",
-          "multiline-comment-style:129",
-          "multiline-comment-style:13",
-          "multiline-comment-style:130",
-          "multiline-comment-style:132",
-          "multiline-comment-style:133",
-          "multiline-comment-style:135",
-          "multiline-comment-style:136",
-          "multiline-comment-style:138",
-          "multiline-comment-style:139",
-          "multiline-comment-style:140",
-          "multiline-comment-style:142",
-          "multiline-comment-style:143",
-          "multiline-comment-style:145",
-          "multiline-comment-style:146",
-          "multiline-comment-style:148",
-          "multiline-comment-style:149",
-          "multiline-comment-style:151",
-          "multiline-comment-style:152",
-          "multiline-comment-style:154",
-          "multiline-comment-style:155",
-          "multiline-comment-style:157",
-          "multiline-comment-style:158",
-          "multiline-comment-style:16",
-          "multiline-comment-style:160",
-          "multiline-comment-style:161",
-          "multiline-comment-style:163",
-          "multiline-comment-style:164",
-          "multiline-comment-style:166",
-          "multiline-comment-style:167",
-          "multiline-comment-style:169",
-          "multiline-comment-style:17",
-          "multiline-comment-style:170",
-          "multiline-comment-style:172",
-          "multiline-comment-style:173",
-          "multiline-comment-style:175",
-          "multiline-comment-style:176",
-          "multiline-comment-style:178",
-          "multiline-comment-style:179",
-          "multiline-comment-style:181",
-          "multiline-comment-style:182",
-          "multiline-comment-style:185",
-          "multiline-comment-style:186",
-          "multiline-comment-style:2",
-          "multiline-comment-style:20",
-          "multiline-comment-style:21",
-          "multiline-comment-style:23",
-          "multiline-comment-style:24",
-          "multiline-comment-style:29",
-          "multiline-comment-style:3",
-          "multiline-comment-style:30",
-          "multiline-comment-style:33",
-          "multiline-comment-style:34",
-          "multiline-comment-style:36",
-          "multiline-comment-style:37",
-          "multiline-comment-style:4",
-          "multiline-comment-style:40",
-          "multiline-comment-style:41",
-          "multiline-comment-style:43",
-          "multiline-comment-style:44",
-          "multiline-comment-style:46",
-          "multiline-comment-style:47",
-          "multiline-comment-style:49",
-          "multiline-comment-style:50",
-          "multiline-comment-style:53",
-          "multiline-comment-style:54",
-          "multiline-comment-style:56",
-          "multiline-comment-style:57",
-          "multiline-comment-style:59",
-          "multiline-comment-style:6",
-          "multiline-comment-style:60",
-          "multiline-comment-style:62",
-          "multiline-comment-style:63",
-          "multiline-comment-style:65",
-          "multiline-comment-style:66",
-          "multiline-comment-style:68",
-          "multiline-comment-style:69",
-          "multiline-comment-style:7",
-          "multiline-comment-style:72",
-          "multiline-comment-style:73",
-          "multiline-comment-style:75",
-          "multiline-comment-style:76",
-          "multiline-comment-style:78",
-          "multiline-comment-style:79",
-          "multiline-comment-style:81",
-          "multiline-comment-style:82",
-          "multiline-comment-style:85",
-          "multiline-comment-style:86",
-          "multiline-comment-style:89",
-          "multiline-comment-style:9",
-          "multiline-comment-style:90",
-          "multiline-comment-style:92",
-          "multiline-comment-style:93",
-          "multiline-comment-style:95",
-          "multiline-comment-style:96",
-          "multiline-comment-style:98",
-          "multiline-comment-style:99",
-          "new-parens:41",
-          "new-parens:90",
-          "no-implied-eval:106",
-          "no-inline-comments:102",
-          "no-inline-comments:105",
-          "no-inline-comments:108",
-          "no-inline-comments:112",
-          "no-inline-comments:115",
-          "no-inline-comments:119",
-          "no-inline-comments:12",
-          "no-inline-comments:122",
-          "no-inline-comments:125",
-          "no-inline-comments:129",
-          "no-inline-comments:132",
-          "no-inline-comments:135",
-          "no-inline-comments:138",
-          "no-inline-comments:142",
-          "no-inline-comments:145",
-          "no-inline-comments:148",
-          "no-inline-comments:151",
-          "no-inline-comments:154",
-          "no-inline-comments:157",
-          "no-inline-comments:16",
-          "no-inline-comments:160",
-          "no-inline-comments:163",
-          "no-inline-comments:166",
-          "no-inline-comments:169",
-          "no-inline-comments:172",
-          "no-inline-comments:175",
-          "no-inline-comments:178",
-          "no-inline-comments:181",
-          "no-inline-comments:185",
-          "no-inline-comments:20",
-          "no-inline-comments:23",
-          "no-inline-comments:29",
-          "no-inline-comments:3",
-          "no-inline-comments:33",
-          "no-inline-comments:36",
-          "no-inline-comments:40",
-          "no-inline-comments:43",
-          "no-inline-comments:46",
-          "no-inline-comments:49",
-          "no-inline-comments:53",
-          "no-inline-comments:56",
-          "no-inline-comments:59",
-          "no-inline-comments:6",
-          "no-inline-comments:62",
-          "no-inline-comments:65",
-          "no-inline-comments:68",
-          "no-inline-comments:72",
-          "no-inline-comments:75",
-          "no-inline-comments:78",
-          "no-inline-comments:81",
-          "no-inline-comments:85",
-          "no-inline-comments:89",
-          "no-inline-comments:9",
-          "no-inline-comments:92",
-          "no-inline-comments:95",
-          "no-inline-comments:98",
-          "no-unreachable:34",
-          "no-unreachable:47",
-          "no-unused-vars:126",
-          "no-use-before-define:73",
-          "semi:110",
-          "semi:17",
-          "semi:186",
-          "space-unary-ops:100"
-        ]
-      }
-    }
-  },
+  "files": {},
   "corpus": {
     "accessor-pairs": {
       "runner": {
-        "fn": 0,
+        "fn": 8,
         "fp": 0,
         "crash": 0
       },
@@ -1018,7 +17,7 @@
     "array-bracket-newline": {
       "runner": {
         "fn": 9,
-        "fp": 42,
+        "fp": 12,
         "crash": 0
       },
       "native": {
@@ -1044,7 +43,7 @@
     "array-callback-return": {
       "runner": {
         "fn": 0,
-        "fp": 5,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -1121,8 +120,8 @@
     },
     "block-spacing": {
       "runner": {
-        "fn": 7,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1148,7 +147,7 @@
     "camelcase": {
       "runner": {
         "fn": 26,
-        "fp": 4,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -1161,7 +160,7 @@
     "capitalized-comments": {
       "runner": {
         "fn": 0,
-        "fp": 14,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1174,7 +173,7 @@
     "class-methods-use-this": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -1212,8 +211,8 @@
     },
     "complexity": {
       "runner": {
-        "fn": 25,
-        "fp": 9,
+        "fn": 6,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -1225,8 +224,8 @@
     },
     "computed-property-spacing": {
       "runner": {
-        "fn": 3,
-        "fp": 2,
+        "fn": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1264,8 +263,8 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 27,
-        "fp": 1,
+        "fn": 24,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -1278,7 +277,7 @@
     "curly": {
       "runner": {
         "fn": 0,
-        "fp": 29,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -1304,7 +303,7 @@
     "default-case": {
       "runner": {
         "fn": 0,
-        "fp": 11,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1316,8 +315,8 @@
     },
     "default-param-last": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 20,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -1355,8 +354,8 @@
     },
     "eol-last": {
       "runner": {
-        "fn": 6,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1394,7 +393,7 @@
     },
     "func-call-spacing": {
       "runner": {
-        "fn": 20,
+        "fn": 16,
         "fp": 4,
         "crash": 0
       },
@@ -1434,7 +433,7 @@
     "func-style": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -1459,7 +458,7 @@
     },
     "generator-star-spacing": {
       "runner": {
-        "fn": 26,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -1498,7 +497,7 @@
     },
     "grouped-accessor-pairs": {
       "runner": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
         "crash": 0
       },
@@ -1537,8 +536,8 @@
     },
     "id-blacklist": {
       "runner": {
-        "fn": 32,
-        "fp": 0,
+        "fn": 1,
+        "fp": 10,
         "crash": 0
       },
       "native": {
@@ -1550,8 +549,8 @@
     },
     "id-denylist": {
       "runner": {
-        "fn": 37,
-        "fp": 0,
+        "fn": 6,
+        "fp": 10,
         "crash": 0
       },
       "native": {
@@ -1563,7 +562,7 @@
     },
     "id-length": {
       "runner": {
-        "fn": 5,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -1576,7 +575,7 @@
     },
     "id-match": {
       "runner": {
-        "fn": 17,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -1589,8 +588,8 @@
     },
     "indent-legacy": {
       "runner": {
-        "fn": 39,
-        "fp": 18,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -1603,7 +602,7 @@
     "init-declarations": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -1615,7 +614,7 @@
     },
     "jsx-quotes": {
       "runner": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -1628,8 +627,8 @@
     },
     "key-spacing": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1641,7 +640,7 @@
     },
     "keyword-spacing": {
       "runner": {
-        "fn": 39,
+        "fn": 34,
         "fp": 0,
         "crash": 0
       },
@@ -1654,8 +653,8 @@
     },
     "line-comment-position": {
       "runner": {
-        "fn": 4,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1680,8 +679,8 @@
     },
     "lines-around-directive": {
       "runner": {
-        "fn": 23,
-        "fp": 35,
+        "fn": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1693,8 +692,8 @@
     },
     "lines-between-class-members": {
       "runner": {
-        "fn": 3,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1758,7 +757,7 @@
     },
     "max-lines-per-function": {
       "runner": {
-        "fn": 2,
+        "fn": 1,
         "fp": 1,
         "crash": 0
       },
@@ -1771,8 +770,8 @@
     },
     "max-lines": {
       "runner": {
-        "fn": 5,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1797,8 +796,8 @@
     },
     "max-params": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 2,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -1836,8 +835,8 @@
     },
     "multiline-comment-style": {
       "runner": {
-        "fn": 7,
-        "fp": 53,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1875,8 +874,8 @@
     },
     "new-parens": {
       "runner": {
-        "fn": 9,
-        "fp": 9,
+        "fn": 2,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -1888,8 +887,8 @@
     },
     "newline-after-var": {
       "runner": {
-        "fn": 3,
-        "fp": 10,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1901,7 +900,7 @@
     },
     "newline-before-return": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1941,7 +940,7 @@
     "no-array-constructor": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -2123,7 +1122,7 @@
     "no-constant-binary-expression": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -2240,7 +1239,7 @@
     "no-dupe-class-members": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -2291,7 +1290,7 @@
     },
     "no-duplicate-imports": {
       "runner": {
-        "fn": 0,
+        "fn": 24,
         "fp": 0,
         "crash": 0
       },
@@ -2330,8 +1329,8 @@
     },
     "no-empty-function": {
       "runner": {
-        "fn": 0,
-        "fp": 2,
+        "fn": 28,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2421,7 +1420,7 @@
     },
     "no-extend-native": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2447,7 +1446,7 @@
     },
     "no-extra-boolean-cast": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -2473,8 +1472,8 @@
     },
     "no-extra-parens": {
       "runner": {
-        "fn": 25,
-        "fp": 7,
+        "fn": 17,
+        "fp": 29,
         "crash": 0
       },
       "native": {
@@ -2538,7 +1537,7 @@
     },
     "no-global-assign": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2564,7 +1563,7 @@
     },
     "no-implicit-globals": {
       "runner": {
-        "fn": 43,
+        "fn": 28,
         "fp": 27,
         "crash": 0
       },
@@ -2590,7 +1589,7 @@
     },
     "no-import-assign": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -2604,7 +1603,7 @@
     "no-inline-comments": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -2642,8 +1641,8 @@
     },
     "no-invalid-this": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 3,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -2721,7 +1720,7 @@
     "no-lonely-if": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2733,7 +1732,7 @@
     },
     "no-loop-func": {
       "runner": {
-        "fn": 1,
+        "fn": 5,
         "fp": 0,
         "crash": 0
       },
@@ -2759,8 +1758,8 @@
     },
     "no-magic-numbers": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 53,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -2876,7 +1875,7 @@
     },
     "no-native-reassign": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2928,13 +1927,13 @@
     },
     "no-new-func": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 8,
-        "fp": 2,
+        "fn": 2,
+        "fp": 5,
         "crash": 0,
         "skip": 0
       }
@@ -3188,7 +2187,7 @@
     },
     "no-redeclare": {
       "runner": {
-        "fn": 13,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3240,7 +2239,7 @@
     },
     "no-restricted-imports": {
       "runner": {
-        "fn": 0,
+        "fn": 19,
         "fp": 0,
         "crash": 0
       },
@@ -3279,7 +2278,7 @@
     },
     "no-restricted-syntax": {
       "runner": {
-        "fn": 4,
+        "fn": 5,
         "fp": 0,
         "crash": 0
       },
@@ -3396,8 +2395,8 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 43,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -3409,8 +2408,8 @@
     },
     "no-spaced-func": {
       "runner": {
-        "fn": 13,
-        "fp": 11,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3487,8 +2486,8 @@
     },
     "no-this-before-super": {
       "runner": {
-        "fn": 23,
-        "fp": 0,
+        "fn": 11,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -3540,7 +2539,7 @@
     "no-undef": {
       "runner": {
         "fn": 0,
-        "fp": 8,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -3617,7 +2616,7 @@
     },
     "no-unreachable-loop": {
       "runner": {
-        "fn": 113,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3631,7 +2630,7 @@
     "no-unreachable": {
       "runner": {
         "fn": 5,
-        "fp": 6,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -3682,7 +2681,7 @@
     },
     "no-unused-expressions": {
       "runner": {
-        "fn": 1,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -3721,7 +2720,7 @@
     },
     "no-unused-vars": {
       "runner": {
-        "fn": 30,
+        "fn": 20,
         "fp": 21,
         "crash": 0
       },
@@ -3734,7 +2733,7 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 0,
+        "fn": 23,
         "fp": 0,
         "crash": 0
       },
@@ -3760,7 +2759,7 @@
     },
     "no-useless-backreference": {
       "runner": {
-        "fn": 0,
+        "fn": 10,
         "fp": 0,
         "crash": 0
       },
@@ -3852,7 +2851,7 @@
     "no-useless-return": {
       "runner": {
         "fn": 0,
-        "fp": 15,
+        "fp": 16,
         "crash": 0
       },
       "native": {
@@ -3865,7 +2864,7 @@
     "no-var": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -3942,8 +2941,8 @@
     },
     "object-curly-newline": {
       "runner": {
-        "fn": 18,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3955,8 +2954,8 @@
     },
     "object-curly-spacing": {
       "runner": {
-        "fn": 12,
-        "fp": 9,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4033,8 +3032,8 @@
     },
     "padded-blocks": {
       "runner": {
-        "fn": 30,
-        "fp": 13,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4046,8 +3045,8 @@
     },
     "padding-line-between-statements": {
       "runner": {
-        "fn": 30,
-        "fp": 20,
+        "fn": 15,
+        "fp": 11,
         "crash": 0
       },
       "native": {
@@ -4306,7 +3305,7 @@
     },
     "require-await": {
       "runner": {
-        "fn": 3,
+        "fn": 2,
         "fp": 2,
         "crash": 0
       },
@@ -4338,7 +3337,7 @@
       },
       "native": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0,
         "skip": 0
       }
@@ -4359,7 +3358,7 @@
     "semi-spacing": {
       "runner": {
         "fn": 0,
-        "fp": 8,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4384,8 +3383,8 @@
     },
     "semi": {
       "runner": {
-        "fn": 28,
-        "fp": 12,
+        "fn": 5,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -4488,8 +3487,8 @@
     },
     "space-unary-ops": {
       "runner": {
-        "fn": 11,
-        "fp": 12,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4553,8 +3552,8 @@
     },
     "template-curly-spacing": {
       "runner": {
-        "fn": 15,
-        "fp": 8,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4579,8 +3578,8 @@
     },
     "unicode-bom": {
       "runner": {
-        "fn": 4,
-        "fp": 3,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -4670,7 +3669,7 @@
     },
     "yoda": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },

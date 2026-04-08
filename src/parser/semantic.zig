@@ -78,6 +78,10 @@ pub const SemanticResult = struct {
     /// Length = node count of the analyzed AST.
     node_reachable: []u8 = &.{},
 
+    /// Per-loop exit reachability: 1 = loop exit is reachable, 0 = dead.
+    /// Only meaningful for loop nodes (while/for/do-while). Non-loops default to 1.
+    loop_exit_reachable: []u8 = &.{},
+
     /// Return an empty SemanticResult with no scopes/symbols/references.
     /// Used when the caller determines that no semantic-phase rules are active,
     /// allowing SemanticAnalyzer.analyze() to be skipped entirely.
@@ -89,6 +93,7 @@ pub const SemanticResult = struct {
             .references = ReferenceTable.init(allocator),
             .diagnostics = &.{},
             .node_reachable = &.{},
+            .loop_exit_reachable = &.{},
         };
     }
 
@@ -98,6 +103,7 @@ pub const SemanticResult = struct {
         self.references.deinit();
         allocator.free(self.diagnostics);
         if (self.node_reachable.len > 0) allocator.free(self.node_reachable);
+        if (self.loop_exit_reachable.len > 0) allocator.free(self.loop_exit_reachable);
         self.* = undefined;
     }
 };
@@ -122,6 +128,8 @@ pub const SemanticAnalyzer = struct {
     /// Per-node reachability: 1 = live, 0 = dead code. Length = ast.nodes.len.
     /// Owned by SemanticResult after analysis; freed via SemanticResult.deinit().
     node_reachable: []u8 = &.{},
+    /// Per-loop exit reachability. Owned by SemanticResult.
+    loop_exit_reachable: []u8 = &.{},
 
     /// Whether the current code path is alive (not terminated by return/throw/break/continue).
     /// Reset to true on entering each function body.
@@ -197,6 +205,11 @@ pub const SemanticAnalyzer = struct {
         @memset(node_reachable, 1); // default: all nodes reachable
         self.node_reachable = node_reachable;
 
+        // Per-loop exit reachability (1 = exit alive, 0 = exit dead).
+        const loop_exit_reachable = try allocator.alloc(u8, node_count);
+        @memset(loop_exit_reachable, 1); // default: all exits reachable
+        self.loop_exit_reachable = loop_exit_reachable;
+
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
         self.resolveUnresolved();
@@ -210,6 +223,7 @@ pub const SemanticAnalyzer = struct {
             .references = self.references,
             .diagnostics = try self.diagnostics.toOwnedSlice(self.allocator),
             .node_reachable = node_reachable,
+            .loop_exit_reachable = loop_exit_reachable,
         };
     }
 
@@ -457,8 +471,20 @@ pub const SemanticAnalyzer = struct {
 
             // ── Scope-creating statements ──────────────────
             .block_stmt => try self.visitBlockStmt(idx, data),
-            .for_stmt => try self.visitForStmt(data),
-            .for_in_stmt, .for_of_stmt, .for_await_of_stmt => try self.visitForInOfStmt(data),
+            .for_stmt => {
+                const for_body_alive = try self.visitForStmt(data);
+                const fi = @intFromEnum(idx);
+                if (fi < self.loop_exit_reachable.len) {
+                    self.loop_exit_reachable[fi] = if (for_body_alive) 1 else 0;
+                }
+            },
+            .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
+                const fiof_body_alive = try self.visitForInOfStmt(data);
+                const fiof_i = @intFromEnum(idx);
+                if (fiof_i < self.loop_exit_reachable.len) {
+                    self.loop_exit_reachable[fiof_i] = if (fiof_body_alive) 1 else 0;
+                }
+            },
             .switch_stmt => try self.visitSwitchStmt(idx, data),
             .catch_clause => try self.visitCatchClause(idx, data),
             .with_stmt => try self.visitWithStmt(idx, data),
@@ -561,12 +587,26 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(data.rhs); // body
                 const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
                 if (depth < self.break_hit.len) self.breakable_depth = depth;
+                const body_alive = self.cfg_alive;
                 // Infinite loop: while(true) with no break → code after is dead.
                 const is_infinite = data.lhs != .none and self.isLiteralTrue(data.lhs);
                 if (is_infinite and !had_break) {
                     self.cfg_alive = false;
+                } else if (!body_alive and !had_break) {
+                    // Body always dies (inner infinite loop, all paths return/throw)
+                    // and no break exits → loop can't iterate → dead after.
+                    self.cfg_alive = false;
                 } else {
                     self.cfg_alive = alive_pre;
+                }
+                // Store whether the loop body can complete and iterate again.
+                // This is body_alive, NOT cfg_alive (which is exit reachability).
+                // body_alive=true means the loop can iterate; body_alive=false means
+                // the body always exits (return/throw/inner-infinite), so the loop
+                // can't iterate and no-unreachable-loop should flag it.
+                const wli = @intFromEnum(idx);
+                if (wli < self.loop_exit_reachable.len) {
+                    self.loop_exit_reachable[wli] = if (body_alive) 1 else 0;
                 }
             },
             .do_while_stmt => {
@@ -580,12 +620,19 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(data.rhs); // condition
                 const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
                 if (depth < self.break_hit.len) self.breakable_depth = depth;
+                const body_alive = self.cfg_alive;
                 // do {} while(true) with no break → infinite
                 const is_infinite = data.rhs != .none and self.isLiteralTrue(data.rhs);
                 if (is_infinite and !had_break) {
                     self.cfg_alive = false;
+                } else if (!body_alive and !had_break) {
+                    self.cfg_alive = false;
                 } else {
                     self.cfg_alive = alive_pre;
+                }
+                const dwi = @intFromEnum(idx);
+                if (dwi < self.loop_exit_reachable.len) {
+                    self.loop_exit_reachable[dwi] = if (body_alive) 1 else 0;
                 }
             },
             .try_stmt => try self.visitTryStmt(data),
@@ -974,7 +1021,7 @@ pub const SemanticAnalyzer = struct {
             std.mem.eql(u8, self.ast.source[start..start + 4], "true");
     }
 
-    fn visitForStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
+    fn visitForStmt(self: *SemanticAnalyzer, data: Node.Data) !bool {
         // for (init; cond; update) body
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
@@ -991,22 +1038,24 @@ pub const SemanticAnalyzer = struct {
         try self.visitNode(data.rhs);
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
         if (depth < self.break_hit.len) self.breakable_depth = depth;
+        const body_alive = self.cfg_alive;
         // for(;;) with no break → infinite loop → code after is dead.
         const is_infinite = (for_data.condition == .none);
         if (is_infinite and !had_break) {
+            self.cfg_alive = false;
+        } else if (!body_alive and !had_break) {
             self.cfg_alive = false;
         } else {
             self.cfg_alive = alive_pre;
         }
         self.leaveScope();
+        return body_alive;
     }
 
-    fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
+    fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data) !bool {
         const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, fiof_data.body);
         const alive_pre = self.cfg_alive;
-        // For-in/of binding: declarations (var/let/const) create new symbols;
-        // bare identifiers/patterns are assignment targets — visit as write refs.
         const binding_tag = self.ast.nodeTag(fiof_data.binding);
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
             try self.visitNode(fiof_data.binding);
@@ -1015,8 +1064,10 @@ pub const SemanticAnalyzer = struct {
         }
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
+        const body_alive = self.cfg_alive;
         self.cfg_alive = alive_pre;
         self.leaveScope();
+        return body_alive;
     }
 
     fn visitSwitchStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
@@ -1028,9 +1079,31 @@ pub const SemanticAnalyzer = struct {
             self.break_hit[depth] = false;
             self.breakable_depth = depth + 1;
         }
+        const alive_pre = self.cfg_alive;
         const cases_range = self.readSubRange(@intFromEnum(data.rhs));
-        try self.visitSubRange(cases_range);
+        // Visit each case, tracking if ANY branch exits reachably
+        var any_alive = false;
+        var has_default = false;
+        const items = self.ast.extraSlice(cases_range);
+        for (items) |raw| {
+            const case_idx: NodeIndex = @enumFromInt(raw);
+            const case_tag = self.ast.nodeTag(case_idx);
+            if (case_tag == .switch_default) has_default = true;
+            self.cfg_alive = alive_pre; // each case starts reachable
+            try self.visitNode(case_idx);
+            if (self.cfg_alive) any_alive = true;
+        }
         if (depth < self.break_hit.len) self.breakable_depth = depth;
+        // Merge: if no default, skip path is always alive.
+        // If default, only alive if any branch was alive.
+        if (!has_default) {
+            self.cfg_alive = alive_pre; // skip path
+        } else {
+            self.cfg_alive = any_alive;
+        }
+        // break inside switch also means exit is alive
+        const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else false;
+        if (had_break) self.cfg_alive = true;
         self.leaveScope();
     }
 

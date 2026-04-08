@@ -210,7 +210,7 @@ function runRunner(filePath) {
     const results = [];
     for (const r of reports) {
       if (!r.ruleId || !COMPARABLE_RULES.has(r.ruleId)) continue;
-      const line = r.loc?.start?.line ?? r.line;
+      const line = r.loc?.start?.line ?? r.loc?.line ?? r.line;
       if (r.message?.startsWith("Plugin error:"))
         results.push({ rule: r.ruleId, line, crash: r.message });
       else
@@ -223,10 +223,11 @@ function runRunner(filePath) {
 }
 
 // Per-rule runner call for corpus mode (forwards per-case options, sourceType, JSX mode).
-function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}) {
+function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false) {
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
+  const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
   try {
-    const ast = parse(src, { filename: jsxEnabled ? "test.jsx" : "test.js" });
+    const ast = parse(src, { filename: "test" + ext });
     const plugin = {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions },
       create: ruleModule.create,
@@ -235,11 +236,19 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     const reports = runPlugins(ast, [plugin], {
       tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,
     });
-    return reports
-      .filter(r => r.ruleId === ruleName && !r.message?.startsWith("Plugin error:"))
-      .map(r => ({ rule: r.ruleId, line: r.loc?.start?.line ?? r.line }));
-  } catch {
-    return null;
+    const results = [];
+    for (const r of reports) {
+      if (r.ruleId !== ruleName) continue;
+      const line = r.loc?.start?.line ?? r.loc?.line ?? r.line;
+      if (r.message?.startsWith("Plugin error:")) {
+        results.push({ rule: r.ruleId, line, crash: r.message.slice("Plugin error: ".length) });
+      } else {
+        results.push({ rule: r.ruleId, line });
+      }
+    }
+    return results;
+  } catch (e) {
+    return [{ crash: e.message }];
   }
 }
 
@@ -466,8 +475,10 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     })();
     if (!ruleModule) continue;
     const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
+    const defaultParser = cases.defaultConfig?.languageOptions?.parser;
+    const isTypeScript = defaultParser && typeof defaultParser === 'object';
     const allCases = [...cases.valid, ...cases.invalid];
-    allRuleData.push({ ruleName, ruleModule, defaultSourceType, allCases });
+    allRuleData.push({ ruleName, ruleModule, defaultSourceType, isTypeScript, allCases });
   }
 
   // Phase 2: Per-rule analysis (native runs in-process via NAPI, same loop as runner).
@@ -480,7 +491,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   const _showCases = showFails || verboseAll || filterRule !== null;
   let _processed = 0, _total = allRuleData.reduce((s, r) => s + r.allCases.length, 0);
 
-  for (const { ruleName, ruleModule, defaultSourceType, allCases } of allRuleData) {
+  for (const { ruleName, ruleModule, defaultSourceType, isTypeScript, allCases } of allRuleData) {
     if (filterRule && ruleName !== filterRule) continue;
 
     // Pre-build native config for this rule (one per rule, reused across cases).
@@ -505,20 +516,63 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       _processed++;
 
       const espreeResult = runEspreeForRule(tc.code, ruleName, tc.options, sourceType, tc.languageOptions);
-      if (espreeResult === ESPREE_SKIP) { skipEspreeParse++; continue; }
+      if (espreeResult === ESPREE_SKIP) {
+        // Espree can't parse (TypeScript/experimental syntax) but we might be able to.
+        // Use the test case's expected error count as the oracle instead of Espree.
+        const expectedErrors = tc.errors ? tc.errors.length : 0;
+        const _rt0s = Date.now();
+        const skipResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript);
+        runnerOnlyMs += Date.now() - _rt0s;
+        if (skipResult === null || skipResult.some(r => r.crash)) {
+          // Our parser also can't handle it or rule crashes — skip
+          skipEspreeParse++;
+          continue;
+        }
+        const ourCount = skipResult.filter(r => !r.crash).length;
+        if (ourCount === expectedErrors) {
+          pass++;
+        } else if (ourCount < expectedErrors) {
+          fn += (expectedErrors - ourCount);
+        } else {
+          fp += (ourCount - expectedErrors);
+        }
+        if (verboseAll && _showCases && ourCount === expectedErrors) {
+          console.log(`    [${tcIdx}] PASS (espree-skip, expected=${expectedErrors})  diags=${ourCount}`);
+        } else if (_showCases && ourCount !== expectedErrors) {
+          failedCases.push({
+            tcIdx, kind: "runner",
+            espreeLines: Array(expectedErrors).fill("?"),
+            ourLines: skipResult.filter(r => !r.crash).map(r => r.line),
+            code: tc.code, options: tc.options, sourceType,
+          });
+        }
+        continue;
+      }
       if (espreeResult === null) { crash++; continue; }
 
       const _rt0 = Date.now();
-      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions);
+      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript);
       runnerOnlyMs += Date.now() - _rt0;
       if (runnerResult === null) { crash++; continue; }
 
+      // Separate crashes from normal results
+      const runnerCrashes = runnerResult.filter(r => r.crash);
+      const runnerNormal  = runnerResult.filter(r => !r.crash);
+      if (runnerCrashes.length > 0) {
+        crash += runnerCrashes.length;
+        if (_showCases) {
+          for (const c of runnerCrashes) {
+            failedCases.push({ tcIdx, kind: "crash", crashMsg: c.crash, code: tc.code, options: tc.options, sourceType });
+          }
+        }
+      }
+
       const espreeKeys = new Set(espreeResult.map(r => `${r.rule}:${r.line}`));
-      const runnerKeys = new Set(runnerResult.map(r => `${r.rule}:${r.line}`));
+      const runnerKeys = new Set(runnerNormal.map(r => `${r.rule}:${r.line}`));
       const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
       const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
 
-      if (caseFn === 0 && caseFp === 0) {
+      if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) {
         pass++;
         if (verboseAll && _showCases) {
           const diags = espreeResult.map(r => r.line);
@@ -526,12 +580,12 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
         }
       } else {
         fn += caseFn; fp += caseFp;
-        if (_showCases) {
+        if (_showCases && (caseFn > 0 || caseFp > 0)) {
           failedCases.push({
             tcIdx,
             kind: "runner",
             espreeLines: espreeResult.map(r => r.line),
-            ourLines:    runnerResult.map(r => r.line),
+            ourLines:    runnerNormal.map(r => r.line),
             code: tc.code,
             options: tc.options,
             sourceType,
@@ -623,12 +677,18 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       const maxShow = filterRule ? failedCases.length : 3; // show all for --rule, 3 otherwise
       for (let i = 0; i < Math.min(failedCases.length, maxShow); i++) {
         const c = failedCases[i];
-        const espreeStr = c.espreeLines.length ? `line(s) ${c.espreeLines.join(",")}` : "nothing";
-        const oursStr   = c.ourLines.length    ? `line(s) ${c.ourLines.join(",")}`    : "nothing";
-        const opts = c.options.length ? ` options=${JSON.stringify(c.options)}` : "";
-        const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
-        console.log(`    [case ${c.tcIdx}${opts}${st}]  ESLint: ${espreeStr}  ours: ${oursStr}`);
-        printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
+        if (c.kind === "crash") {
+          const opts = c.options?.length ? ` options=${JSON.stringify(c.options)}` : "";
+          console.log(`    [case ${c.tcIdx}${opts}]  CRASH: ${c.crashMsg}`);
+          printCodeSnippet(c.code, [], "    ");
+        } else {
+          const espreeStr = c.espreeLines.length ? `line(s) ${c.espreeLines.join(",")}` : "nothing";
+          const oursStr   = c.ourLines.length    ? `line(s) ${c.ourLines.join(",")}`    : "nothing";
+          const opts = c.options.length ? ` options=${JSON.stringify(c.options)}` : "";
+          const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
+          console.log(`    [case ${c.tcIdx}${opts}${st}]  ESLint: ${espreeStr}  ours: ${oursStr}`);
+          printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
+        }
       }
       if (failedCases.length > maxShow) {
         console.log(`    ... and ${failedCases.length - maxShow} more failing cases (use --rule ${ruleName} to see all)`);
@@ -640,16 +700,43 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   restore();
   const runnerMs = Date.now() - runnerT0;
 
+  // Top gaps summary — show rules with most remaining failures
+  if (!filterRule) {
+    const ruleGaps = [];
+    for (const [rule, data] of Object.entries(newBaseline.corpus)) {
+      const r = data.runner || data;
+      const total = (r.fn || 0) + (r.fp || 0) + (r.crash || 0);
+      if (total > 0) ruleGaps.push({ rule, fn: r.fn || 0, fp: r.fp || 0, crash: r.crash || 0, total });
+    }
+    ruleGaps.sort((a, b) => b.total - a.total);
+    if (ruleGaps.length > 0) {
+      console.log(`\nTop gaps (runner, ${ruleGaps.length} rules with issues):`);
+      for (const g of ruleGaps.slice(0, 15)) {
+        const parts = [];
+        if (g.fn > 0) parts.push(`${g.fn} FN`);
+        if (g.fp > 0) parts.push(`${g.fp} FP`);
+        if (g.crash > 0) parts.push(`${g.crash} crash`);
+        console.log(`  ${String(g.total).padStart(4)}  ${g.rule.padEnd(35)} ${parts.join(", ")}`);
+      }
+      if (ruleGaps.length > 15) console.log(`  ... and ${ruleGaps.length - 15} more rules`);
+    }
+  }
+
   if (nativeAvailable) {
     const nativeTotal    = totalNativePass + totalNativeFn + totalNativeFp + totalNativeCrash;
     const runnerCasesSec = runnerOnlyMs > 0 ? Math.round(totalCases / (runnerOnlyMs / 1000)).toLocaleString() : "∞";
     const nativeCasesSec = nativeOnlyMs > 0 ? Math.round(nativeTotal / (nativeOnlyMs / 1000)).toLocaleString() : "∞";
-    console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes`);
+    const runnerPct = totalCases > 0 ? (totalPass / totalCases * 100).toFixed(1) : "0";
+    const nativePct = nativeTotal > 0 ? (totalNativePass / nativeTotal * 100).toFixed(1) : "0";
+    const runnerGaps = totalCases - totalPass;
+    const nativeGaps = nativeTotal - totalNativePass;
+    console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass (${runnerPct}%), ${totalSkip} skipped, ${totalCrash} crashes, ${runnerGaps} gaps`);
     console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)`);
-    console.log(`Corpus native:  ${totalNativePass}/${nativeTotal} pass, ${totalNativeSkip} skipped, ${totalNativeCrash} crashes`);
+    console.log(`Corpus native:  ${totalNativePass}/${nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps`);
     console.log(`  linting: ${(nativeOnlyMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s)`);
   } else {
-    console.log(`\nCorpus: ${totalPass}/${totalCases} pass, ${totalSkip} skipped, ${totalCrash} crashes  (${(runnerMs/1000).toFixed(2)}s)`);
+    const pct = totalCases > 0 ? (totalPass / totalCases * 100).toFixed(1) : "0";
+    console.log(`\nCorpus: ${totalPass}/${totalCases} pass (${pct}%), ${totalSkip} skipped, ${totalCrash} crashes  (${(runnerMs/1000).toFixed(2)}s)`);
   }
 } else if (!fixturesOnly) {
   console.log("\n(ESLint submodule not found — skipping corpus. Run: git submodule update --init tests/conformance/eslint)");

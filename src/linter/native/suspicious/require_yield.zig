@@ -50,10 +50,15 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const body = fn_data.body;
     if (body == .none) return;
 
-    // Empty body is valid (no yield needed)
+    // Check body for yield expressions.
     const body_data = ctx.nodeData(body);
     const body_range = ast.SubRange{ .start = @intFromEnum(body_data.lhs), .end = @intFromEnum(body_data.rhs) };
-    if (ctx.extraSlice(body_range).len == 0) return;
+
+    // Empty body means no yield — report immediately.
+    if (ctx.extraSlice(body_range).len == 0) {
+        ctx.report(node, meta.name, "Generator function does not contain a yield expression", meta.default_severity);
+        return;
+    }
 
     // Instead of recursively walking children (which is unsafe because
     // data.rhs is not always a NodeIndex), scan all AST nodes between

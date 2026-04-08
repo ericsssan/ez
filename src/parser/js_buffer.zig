@@ -111,10 +111,15 @@ pub const SemanticHeader = extern struct {
 
     // Per-node reachability (one byte per AST node): 1 = live, 0 = dead code
     node_reachable_offset: u32,        // u8[] — 1 if node is in reachable code path
+
+    // Per-loop exit reachability (one byte per AST node, only meaningful for loops):
+    // 1 = code after the loop is reachable, 0 = loop exit is dead (infinite/all-return body).
+    // Non-loop nodes default to 1.
+    loop_exit_reachable_offset: u32,   // u8[] — 1 if loop exit is reachable
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 92);
+    std.debug.assert(@sizeOf(SemanticHeader) == 96);
 }
 
 // ── Semantic Data Serializer ─────────────────────────────────────
@@ -249,6 +254,14 @@ pub fn writeSemanticData(
             if (sem.node_reachable.len > 0) {
                 const arr = try alloc.alloc(u8, sem.node_reachable.len);
                 @memcpy(arr, sem.node_reachable);
+                break :blk ptrOffsetPub(buf, arr.ptr);
+            }
+            break :blk 0;
+        },
+        .loop_exit_reachable_offset = blk: {
+            if (sem.loop_exit_reachable.len > 0) {
+                const arr = try alloc.alloc(u8, sem.loop_exit_reachable.len);
+                @memcpy(arr, sem.loop_exit_reachable);
                 break :blk ptrOffsetPub(buf, arr.ptr);
             }
             break :blk 0;
@@ -666,8 +679,8 @@ pub fn computeNodePositions(
         // like `else` in `if (cond) expr; else ...`.
         const is_expr_stmt = tag == .expression_stmt;
         const is_stmt = switch (tag) {
-            .expression_stmt, .var_decl, .empty_stmt, .debugger_stmt,
-            .return_stmt, .throw_stmt, .break_stmt, .continue_stmt,
+            .expression_stmt, .var_decl, .let_decl, .const_decl, .empty_stmt, .debugger_stmt,
+            .return_stmt, .throw_stmt, .break_stmt, .break_label, .continue_stmt, .continue_label,
             .do_while_stmt, .import_decl, .export_named, .export_all,
             .export_default_expr, .export_default_fn, .export_default_class,
             .property_def, .computed_property_def,
@@ -681,14 +694,29 @@ pub fn computeNodePositions(
             .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
             .switch_stmt, .try_stmt, .with_stmt, .labeled_stmt,
             .catch_clause, .switch_case, .switch_default,
+            // Import/export specifiers: include `as <name>` trailing tokens
+            .import_specifier, .import_default_specifier, .import_namespace_specifier,
+            .export_specifier,
             => true,
             else => false,
         };
 
         const start_p = tok_starts[minTok[i]];
         var j = base + 1;
-        // For arrays, continue through trailing commas to find the closing bracket
+        // For arrays/objects, continue through interior tokens to find the closing bracket.
+        // Object literals/patterns need this because their maxTok may be inside a
+        // getter/setter body, with non-bracket tokens (`;`) between it and the
+        // object's closing `}`.
         var is_array = tag == .array_literal or tag == .array_pattern;
+        var is_object = tag == .object_literal or tag == .object_pattern;
+        // NewExpression: `new Foo()` — maxTok is the callee, need to include `()`.
+        // The `(` is an opening bracket that the basic scan skips, so treat it
+        // as a container that continues through interior tokens to find `)`.
+        // Only activate if the next token is actually `(` (not for `new Bar;`).
+        var is_call = tag == .new_expr and (base + 1 < tc) and tok_tags[base + 1] == .l_paren;
+        // Import/export specifiers: stop before `,` or `}` (don't consume siblings)
+        const is_specifier = tag == .import_specifier or tag == .import_default_specifier or
+            tag == .import_namespace_specifier or tag == .export_specifier;
         // For class properties, stop after the first semicolon (don't include extras)
         const is_property = tag == .property_def or tag == .computed_property_def;
         while (j < tc) {
@@ -703,6 +731,21 @@ pub fn computeNodePositions(
                     if (te > ext_end) ext_end = te;
                     // For arrays, mark that we found the closing bracket
                     if (is_array and tt == .r_bracket) is_array = false;
+                    // For objects, stop after the matching closing brace
+                    if (is_object and tt == .r_brace and opener == main_tokens[i]) {
+                        is_object = false;
+                        break;
+                    }
+                    // For new expressions, stop after the closing `)` of the arguments
+                    if (is_call and tt == .r_paren) {
+                        is_call = false;
+                        break;
+                    }
+                    // For block statements, stop after the matching closing `}`
+                    // to prevent including `else`, `catch`, `finally` etc.
+                    if (tag == .block_stmt and tt == .r_brace and opener == main_tokens[i]) {
+                        break;
+                    }
                 } else {
                     break;
                 }
@@ -711,11 +754,24 @@ pub fn computeNodePositions(
                 // For expression statements specifically, stop after `;` to prevent
                 // consuming sibling tokens (e.g., `else` after `if (cond) expr;`).
                 // For property definitions in class bodies, only include the first `;`
+                // For specifiers: stop before `,` `}` `)` `from` to not consume siblings or import tail
+                if (is_specifier and (tt == .comma or tt == .r_brace or tt == .r_paren or tt == .kw_from)) break;
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
                 if ((is_expr_stmt or is_property) and tt == .semicolon) break;
             } else if (is_array and tt == .comma) {
                 // For arrays: include trailing commas until we find the closing bracket
+                const te = tok_ends[j];
+                if (te > ext_end) ext_end = te;
+            } else if (is_object) {
+                // For objects: continue past interior tokens (`;` inside method bodies,
+                // commas between properties) to reach the closing `}`.
+                const te = tok_ends[j];
+                if (te > ext_end) ext_end = te;
+            } else if (is_call) {
+                // For new expressions: include the opening `(` and interior tokens
+                // to reach the closing `)`. Stop once we've found the closing paren
+                // (handled by the r_paren branch above which updates ext_end).
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
             } else {
@@ -776,8 +832,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 116 bytes" {
-    try std.testing.expectEqual(@as(usize, 116), @sizeOf(BufferHeader));
+test "BufferHeader is 128 bytes" {
+    try std.testing.expectEqual(@as(usize, 128), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

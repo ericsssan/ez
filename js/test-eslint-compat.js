@@ -57,13 +57,13 @@ function runEspreeAll(source, sourceType) {
 // ── Ez eslint-runner ───────────────────────────────────────────
 
 /** Run all rules through ez eslint-runner. Returns Map<ruleName, number[]|{crash}> */
-function runEzAll(source) {
+function runEzAll(source, sourceType) {
   const ast = parse(source, { filename: "test.js" });
   const plugins = [];
   for (const [name, mod] of allRules) {
     plugins.push({ meta: { name, defaultOptions: mod.meta?.defaultOptions }, create: mod.create });
   }
-  const reports = runPlugins(ast, plugins, { tagNames });
+  const reports = runPlugins(ast, plugins, { tagNames, sourceType, envGlobals: false });
   const result = new Map();
   for (const r of reports) {
     if (!r.ruleId) continue;
@@ -72,7 +72,7 @@ function runEzAll(source) {
     } else {
       if (!result.has(r.ruleId)) result.set(r.ruleId, []);
       const arr = result.get(r.ruleId);
-      if (!arr.crash) arr.push(r.line);
+      if (!arr.crash) arr.push(r.line ?? r.loc?.start?.line);
     }
   }
   return result;
@@ -113,7 +113,7 @@ for (const file of files) {
   const sourceType = detectSourceType(file);
 
   const espreeMap = runEspreeAll(source, sourceType);
-  const ezMap   = runEzAll(source);
+  const ezMap   = runEzAll(source, sourceType);
 
   // Merge all rule names that either side reported
   const ruleNames = new Set([...espreeMap.keys(), ...ezMap.keys(), ...allRules.keys()]);
