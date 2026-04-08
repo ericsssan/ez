@@ -46,6 +46,59 @@ function _cookTemplate(raw) {
   return result;
 }
 
+// ── Statement range extension for trailing semicolons ──────────
+// Parser computes node end positions based on child nodes, which excludes trailing semicolons.
+// ESLint rules like `semi` need the semicolon to be part of the statement range.
+// This workaround extends statement ranges to include the semicolon.
+
+function _isStatementTag(tag) {
+  return tag === T.var_decl || tag === T.let_decl || tag === T.const_decl ||
+         tag === T.expression_stmt || tag === T.return_stmt || tag === T.throw_stmt ||
+         tag === T.break_stmt || tag === T.continue_stmt ||
+         tag === T.import_decl || tag === T.export_decl || tag === T.export_named_decl ||
+         tag === T.export_default_decl;
+}
+
+function _extendRangeToIncludeSemicolon(ast, endPos) {
+  // Look for a semicolon token that starts at or immediately after endPos
+  if (!ast._tokStarts) return endPos;
+
+  const tokStarts = ast._tokStarts;
+  const tokEnds = ast._tokEnds;
+  const tokTags = ast._tokTags;
+  const tokenCount = ast.tokenCount;
+
+  // Binary search for first token at or after endPos
+  let lo = 0, hi = tokenCount - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (tokStarts[mid] < endPos) lo = mid + 1;
+    else hi = mid;
+  }
+
+  // Check if this token is a semicolon
+  if (lo < tokenCount && tokStarts[lo] <= endPos && tokEnds[lo] > endPos) {
+    // Token contains or starts at endPos — check if it's a semicolon
+    const tokenTag = tokTags[lo];
+    // Semicolon token tag = 78
+    if (tokenTag === 78) {
+      return tokEnds[lo];
+    }
+  }
+
+  // Check the next token if current token doesn't fully cover endPos
+  if (lo < tokenCount - 1) {
+    const nextIdx = lo + 1;
+    const nextTag = tokTags[nextIdx];
+    // Semicolon token tag = 78
+    if (nextTag === 78 && tokStarts[nextIdx] === endPos) {
+      return tokEnds[nextIdx];
+    }
+  }
+
+  return endPos;
+}
+
 // ── Header offsets (matches BufferHeader extern struct) ──────────
 
 const H = {
@@ -2158,7 +2211,17 @@ const NodeProto = {
     if (this._ast._nodeTags[this._i] === T.root) {
       this._range = [0, this._ast.sourceUtf16Len];
     } else {
-      this._range = [this.start, this._ast._nodeEndPos(this._i)];
+      let end = this._ast._nodeEndPos(this._i);
+      const tag = this._ast._nodeTags[this._i];
+
+      // For statement nodes, check if a semicolon token follows and extend the range to include it.
+      // Parser computes end positions based on child nodes, which excludes trailing semicolons.
+      // This workaround extends statement ranges to include the semicolon for ESLint rule compatibility.
+      if (_isStatementTag(tag)) {
+        end = _extendRangeToIncludeSemicolon(this._ast, end);
+      }
+
+      this._range = [this.start, end];
     }
     return this._range;
   },
@@ -2170,7 +2233,14 @@ const NodeProto = {
   get loc() {
     if (this._loc !== null) return this._loc;
     const ast = this._ast;
-    const end = ast._nodeEndPos(this._i);
+    let end = ast._nodeEndPos(this._i);
+
+    // For statement nodes, extend end position to include trailing semicolons (see `range` getter)
+    const tag = ast._nodeTags[this._i];
+    if (_isStatementTag(tag)) {
+      end = _extendRangeToIncludeSemicolon(ast, end);
+    }
+
     const ls = ast._lineStarts();
     let startLine, startCol;
     if (ast._nodeTags[this._i] === T.root) {
