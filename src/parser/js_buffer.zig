@@ -1,6 +1,7 @@
 const std = @import("std");
 const Ast = @import("ast.zig").Ast;
 const semantic_mod = @import("semantic.zig");
+const code_path_mod = @import("code_path.zig");
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -121,11 +122,54 @@ pub const SemanticHeader = extern struct {
     // Code path events: triples of u32 (event_type, node_idx, data).
     cfg_events_offset: u32,
     cfg_events_count: u32,             // number of u32 values (= 3 * event_count)
+
+    // Full code path graph offset (points to CfgGraphHeader, 0 = not present).
+    cfg_graph_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 104);
+    std.debug.assert(@sizeOf(SemanticHeader) == 108);
 }
+
+// ── CFG Graph Header ────────────────────────────────────────────
+
+/// Header for the full multi-segment code path graph.
+/// Written into the bump region by writeCfgGraph().
+pub const CfgGraphHeader = extern struct {
+    segment_count: u32,
+    codepath_count: u32,
+    event_count: u32,
+
+    // Per-segment data
+    seg_reachable_offset: u32,         // u8[segment_count]
+    seg_codepath_offset: u32,          // u32[segment_count] — owning codepath
+
+    // Adjacency lists (CSR: starts[N+1] + targets[])
+    seg_next_starts_offset: u32,       // u32[segment_count + 1]
+    seg_next_targets_offset: u32,      // u32[total_next_edges]
+    seg_prev_starts_offset: u32,       // u32[segment_count + 1]
+    seg_prev_targets_offset: u32,      // u32[total_prev_edges]
+    seg_all_next_starts_offset: u32,
+    seg_all_next_targets_offset: u32,
+    seg_all_prev_starts_offset: u32,
+    seg_all_prev_targets_offset: u32,
+    seg_looped_starts_offset: u32,
+    seg_looped_targets_offset: u32,
+
+    // Per-codepath data
+    cp_origin_offset: u32,             // u8[codepath_count]
+    cp_upper_offset: u32,              // u32[codepath_count]
+    cp_initial_seg_offset: u32,        // u32[codepath_count]
+    cp_final_starts_offset: u32,       // u32[codepath_count + 1]
+    cp_final_targets_offset: u32,
+    cp_returned_starts_offset: u32,    // u32[codepath_count + 1]
+    cp_returned_targets_offset: u32,
+    cp_thrown_starts_offset: u32,      // u32[codepath_count + 1]
+    cp_thrown_targets_offset: u32,
+
+    // Event stream (4 u32s per event: type, node_idx, data1, data2)
+    events_offset: u32,                // u32[event_count * 4]
+};
 
 // ── Semantic Data Serializer ─────────────────────────────────────
 
@@ -280,6 +324,150 @@ pub fn writeSemanticData(
             break :blk 0;
         },
         .cfg_events_count = @intCast(sem.cfg_events.len),
+
+        .cfg_graph_offset = blk: {
+            if (sem.code_path_result) |cpr| {
+                break :blk writeCfgGraph(buf, alloc, &cpr) catch 0;
+            }
+            break :blk 0;
+        },
+    };
+
+    return ptrOffsetPub(buf, header_mem.ptr);
+}
+
+// ── CFG Graph Serializer ────────────────────────────────────────
+
+/// Serialize the full code path graph into the bump region.
+/// Returns the byte offset of the CfgGraphHeader.
+fn writeCfgGraph(
+    buf: [*]u8,
+    alloc: std.mem.Allocator,
+    cpr: *const code_path_mod.CodePathBuilder.Result,
+) !u32 {
+    const seg_count: u32 = @intCast(cpr.segments.len);
+    const cp_count: u32 = @intCast(cpr.codepaths.len);
+    const ev_count: u32 = @intCast(cpr.events.len);
+
+    if (seg_count == 0 and cp_count == 0) return 0;
+
+    // ── Per-segment data ────────────────────────────────────
+    const seg_reachable = try alloc.alloc(u8, seg_count);
+    const seg_codepath = try alloc.alloc(u32, seg_count);
+    for (0..seg_count) |i| {
+        seg_reachable[i] = if (cpr.segments[i].reachable) 1 else 0;
+        seg_codepath[i] = cpr.segments[i].codepath;
+    }
+
+    // ── Adjacency lists (CSR format) ────────────────────────
+    // Build CSR starts arrays from segment range fields.
+    // next (reachable only)
+    const seg_next_starts = try alloc.alloc(u32, seg_count + 1);
+    for (0..seg_count) |i| seg_next_starts[i] = cpr.segments[i].next_start;
+    seg_next_starts[seg_count] = @intCast(cpr.next_targets.len);
+    const seg_next_targets = try alloc.alloc(u32, cpr.next_targets.len);
+    @memcpy(seg_next_targets, cpr.next_targets);
+
+    // prev (reachable only)
+    const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
+    for (0..seg_count) |i| seg_prev_starts[i] = cpr.segments[i].prev_start;
+    seg_prev_starts[seg_count] = @intCast(cpr.prev_targets.len);
+    const seg_prev_targets = try alloc.alloc(u32, cpr.prev_targets.len);
+    @memcpy(seg_prev_targets, cpr.prev_targets);
+
+    // allNext
+    const seg_all_next_starts = try alloc.alloc(u32, seg_count + 1);
+    for (0..seg_count) |i| seg_all_next_starts[i] = cpr.segments[i].all_next_start;
+    seg_all_next_starts[seg_count] = @intCast(cpr.all_next_targets.len);
+    const seg_all_next_targets = try alloc.alloc(u32, cpr.all_next_targets.len);
+    @memcpy(seg_all_next_targets, cpr.all_next_targets);
+
+    // allPrev
+    const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
+    for (0..seg_count) |i| seg_all_prev_starts[i] = cpr.segments[i].all_prev_start;
+    seg_all_prev_starts[seg_count] = @intCast(cpr.all_prev_targets.len);
+    const seg_all_prev_targets = try alloc.alloc(u32, cpr.all_prev_targets.len);
+    @memcpy(seg_all_prev_targets, cpr.all_prev_targets);
+
+    // looped
+    const seg_looped_starts = try alloc.alloc(u32, seg_count + 1);
+    for (0..seg_count) |i| seg_looped_starts[i] = cpr.segments[i].looped_prev_start;
+    seg_looped_starts[seg_count] = @intCast(cpr.looped_targets.len);
+    const seg_looped_targets = try alloc.alloc(u32, cpr.looped_targets.len);
+    @memcpy(seg_looped_targets, cpr.looped_targets);
+
+    // ── Per-codepath data ───────────────────────────────────
+    const cp_origin = try alloc.alloc(u8, cp_count);
+    const cp_upper = try alloc.alloc(u32, cp_count);
+    const cp_initial_seg = try alloc.alloc(u32, cp_count);
+
+    // Build CSR for final/returned/thrown segment lists
+    const cp_final_starts = try alloc.alloc(u32, cp_count + 1);
+    const cp_returned_starts = try alloc.alloc(u32, cp_count + 1);
+    const cp_thrown_starts = try alloc.alloc(u32, cp_count + 1);
+
+    for (0..cp_count) |i| {
+        const cp = cpr.codepaths[i];
+        cp_origin[i] = @intFromEnum(cp.origin);
+        cp_upper[i] = cp.upper;
+        cp_initial_seg[i] = cp.initial_segment;
+        cp_final_starts[i] = cp.final_start;
+        cp_returned_starts[i] = cp.returned_start;
+        cp_thrown_starts[i] = cp.thrown_start;
+    }
+    cp_final_starts[cp_count] = @intCast(cpr.cp_final_pool.len);
+    cp_returned_starts[cp_count] = @intCast(cpr.cp_returned_pool.len);
+    cp_thrown_starts[cp_count] = @intCast(cpr.cp_thrown_pool.len);
+
+    const cp_final_targets = try alloc.alloc(u32, cpr.cp_final_pool.len);
+    @memcpy(cp_final_targets, cpr.cp_final_pool);
+    const cp_returned_targets = try alloc.alloc(u32, cpr.cp_returned_pool.len);
+    @memcpy(cp_returned_targets, cpr.cp_returned_pool);
+    const cp_thrown_targets = try alloc.alloc(u32, cpr.cp_thrown_pool.len);
+    @memcpy(cp_thrown_targets, cpr.cp_thrown_pool);
+
+    // ── Event stream ────────────────────────────────────────
+    const events_flat = try alloc.alloc(u32, ev_count * 4);
+    for (0..ev_count) |i| {
+        events_flat[i * 4 + 0] = @intFromEnum(cpr.events[i].type);
+        events_flat[i * 4 + 1] = @intFromEnum(cpr.events[i].node);
+        events_flat[i * 4 + 2] = cpr.events[i].data1;
+        events_flat[i * 4 + 3] = cpr.events[i].data2;
+    }
+
+    // ── Write CfgGraphHeader ────────────────────────────────
+    const header_mem = try alloc.alloc(u8, @sizeOf(CfgGraphHeader));
+    const header: *CfgGraphHeader = @ptrCast(@alignCast(header_mem.ptr));
+    header.* = .{
+        .segment_count = seg_count,
+        .codepath_count = cp_count,
+        .event_count = ev_count,
+
+        .seg_reachable_offset = ptrOffsetPub(buf, seg_reachable.ptr),
+        .seg_codepath_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_codepath.ptr))),
+
+        .seg_next_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_next_starts.ptr))),
+        .seg_next_targets_offset = if (seg_next_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_next_targets.ptr))) else 0,
+        .seg_prev_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_prev_starts.ptr))),
+        .seg_prev_targets_offset = if (seg_prev_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_prev_targets.ptr))) else 0,
+        .seg_all_next_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_next_starts.ptr))),
+        .seg_all_next_targets_offset = if (seg_all_next_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_next_targets.ptr))) else 0,
+        .seg_all_prev_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_prev_starts.ptr))),
+        .seg_all_prev_targets_offset = if (seg_all_prev_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_prev_targets.ptr))) else 0,
+        .seg_looped_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_looped_starts.ptr))),
+        .seg_looped_targets_offset = if (seg_looped_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_looped_targets.ptr))) else 0,
+
+        .cp_origin_offset = ptrOffsetPub(buf, cp_origin.ptr),
+        .cp_upper_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_upper.ptr))),
+        .cp_initial_seg_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_initial_seg.ptr))),
+        .cp_final_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_final_starts.ptr))),
+        .cp_final_targets_offset = if (cp_final_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_final_targets.ptr))) else 0,
+        .cp_returned_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_returned_starts.ptr))),
+        .cp_returned_targets_offset = if (cp_returned_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_returned_targets.ptr))) else 0,
+        .cp_thrown_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_thrown_starts.ptr))),
+        .cp_thrown_targets_offset = if (cp_thrown_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_thrown_targets.ptr))) else 0,
+
+        .events_offset = if (events_flat.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(events_flat.ptr))) else 0,
     };
 
     return ptrOffsetPub(buf, header_mem.ptr);

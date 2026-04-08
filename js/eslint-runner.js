@@ -4171,6 +4171,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
   }
+  // When CfgGraph is active, suppress CPTracker segment events
+  function _dispatchSegGuarded(handlers, seg, node) {
+    if (_useCfgGraph) return;
+    _dispatchSeg(handlers, seg, node);
+  }
 
   // Dispatch onCodePathSegmentLoop(fromSeg, toSeg, node)
   function _dispatchSegLoop(fromSeg, toSeg, node) {
@@ -4180,6 +4185,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       try { _segLoopH[h]._state.inner(fromSeg, toSeg, node); }
       catch (e) { context._reports.push({ ruleId: _segLoopH[h].ruleId, message: `Plugin error: ${e.message}` }); }
     }
+  }
+  function _dispatchSegLoopGuarded(fromSeg, toSeg, node) {
+    if (_useCfgGraph) return; // CfgGraph handles loop events
+    _dispatchSegLoop(fromSeg, toSeg, node);
   }
 
   function invokeSegmentEvent(eventName, segment) {
@@ -4494,6 +4503,109 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
 
+    // ── CfgGraph event replay index ─────────────────────────────
+    // When the full code path graph is available from Zig, build node→events
+    // maps for enter and exit. During DFS, fire events from these maps instead
+    // of using CPTracker.
+    const _cfgGraph = ast._cfgGraph || null;
+    let _cfgEnterEvents = null; // Map<nodeIdx, [{type, data1, data2}]>
+    let _cfgExitEvents = null;
+    let _useCfgGraph = false;
+    if (_cfgGraph && _cfgGraph._events && hasCodePath) {
+      _cfgEnterEvents = new Map();
+      _cfgExitEvents = new Map();
+      const evs = _cfgGraph._events;
+      for (let ei = 0; ei < evs.length; ei += 4) {
+        const evType = evs[ei];
+        const nodeIdx = evs[ei + 1];
+        const d1 = evs[ei + 2];
+        const d2 = evs[ei + 3];
+        // Enter events: CODEPATH_START(0), SEG_START(2), UNREACHABLE_SEG_START(4)
+        // Exit events: CODEPATH_END(1), SEG_END(3), UNREACHABLE_SEG_END(5), SEG_LOOP(6)
+        const isEnter = (evType === 0 || evType === 2 || evType === 4);
+        const map = isEnter ? _cfgEnterEvents : _cfgExitEvents;
+        if (!map.has(nodeIdx)) map.set(nodeIdx, []);
+        map.get(nodeIdx).push({ type: evType, d1, d2 });
+      }
+      _useCfgGraph = true;
+    }
+
+    // CfgGraph state: track current codepath for currentSegments updates
+    let _cfgCurrentCp = null;
+    const _cfgCpStack = [];
+
+    // Fire CfgGraph events for a given node (enter or exit)
+    function _fireCfgEvents(nodeIdx, isExit) {
+      if (!_useCfgGraph) return;
+      const map = isExit ? _cfgExitEvents : _cfgEnterEvents;
+      const evts = map.get(nodeIdx);
+      if (!evts) return;
+      const node = nodeView(ast, nodeIdx);
+      for (let i = 0; i < evts.length; i++) {
+        const ev = evts[i];
+        switch (ev.type) {
+          case 0: { // CODEPATH_START
+            const cp = _cfgGraph.codepath(ev.d1);
+            if (cp) {
+              _cfgCpStack.push(_cfgCurrentCp);
+              _cfgCurrentCp = cp;
+              cp.currentSegments = [cp.initialSegment];
+              const cpStartH = visitorMap.get('onCodePathStart');
+              if (cpStartH) for (let h = 0; h < cpStartH.length; h++) {
+                try { cpStartH[h]._state.inner(cp, node); }
+                catch (e) { context._reports.push({ ruleId: cpStartH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+              }
+            }
+            break;
+          }
+          case 1: { // CODEPATH_END
+            const cp = _cfgGraph.codepath(ev.d1);
+            if (cp) {
+              const cpEndH = visitorMap.get('onCodePathEnd');
+              if (cpEndH) for (let h = 0; h < cpEndH.length; h++) {
+                try { cpEndH[h]._state.inner(cp, node); }
+                catch (e) { context._reports.push({ ruleId: cpEndH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+              }
+              _cfgCurrentCp = _cfgCpStack.pop() || null;
+            }
+            break;
+          }
+          case 2: { // SEG_START
+            const seg = _cfgGraph.segment(ev.d1);
+            if (seg) {
+              if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg];
+              if (_segStartH) _dispatchSeg(_segStartH, seg, node);
+            }
+            break;
+          }
+          case 3: { // SEG_END
+            const seg = _cfgGraph.segment(ev.d1);
+            if (seg && _segEndH) _dispatchSeg(_segEndH, seg, node);
+            break;
+          }
+          case 4: { // UNREACHABLE_SEG_START
+            const seg = _cfgGraph.segment(ev.d1);
+            if (seg) {
+              if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg];
+              if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node);
+            }
+            break;
+          }
+          case 5: { // UNREACHABLE_SEG_END
+            const seg = _cfgGraph.segment(ev.d1);
+            if (seg && _unreachEndH) _dispatchSeg(_unreachEndH, seg, node);
+            break;
+          }
+          case 6: { // SEG_LOOP
+            const fromSeg = _cfgGraph.segment(ev.d1);
+            const toSeg = _cfgGraph.segment(ev.d2);
+            if (fromSeg && toSeg) _dispatchSegLoop(fromSeg, toSeg, node);
+            break;
+          }
+        }
+      }
+    }
+
     // Use interleaved DFS to ensure enter/exit events fire in correct order.
     const { events, count: evCount } = getDFSEvents();
     // Pre-index handler arrays by tag int — replaces Map.get(string) per node with array[int].
@@ -4537,6 +4649,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             }
           }
         }
+        // Fire CfgGraph enter events (multi-segment graph from Zig)
+        if (_useCfgGraph) _fireCfgEvents(idx, false);
         if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
           // End outer segment before starting a new code path
           const outerSeg = cpTracker.segment;
@@ -4843,6 +4957,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           const outerSeg = cpTracker.segment;
           if (outerSeg) _segStartOrUnreachEvent(outerSeg);
         }
+        // Fire CfgGraph exit events (multi-segment graph from Zig)
+        if (_useCfgGraph) _fireCfgEvents(idx, true);
         if ((_selectorTagArr && _selectorTagArr[tag]) || _hasUniversalExit) invokeSelectorHandlers(idx, true);
       }
     }

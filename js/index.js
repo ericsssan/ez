@@ -104,7 +104,7 @@ function _makePrivateBuf(buf, sourceStart, sourceLen) {
   const dv0 = new DataView(buf);
   const totalUsed = dv0.getUint32(56, true);
   const semOff = dv0.getUint32(68, true);
-  const semEnd = semOff > 0 ? semOff + 96 : 0;
+  const semEnd = semOff > 0 ? semOff + 108 : 0; // SemanticHeader = 108 bytes
   const srcStart = Math.max(totalUsed, semEnd);
   const privateSize = srcStart + sourceLen;
   const privateArr = new Uint8Array(privateSize);

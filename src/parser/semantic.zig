@@ -1,4 +1,6 @@
 const std = @import("std");
+const code_path_mod = @import("code_path.zig");
+const CodePathBuilder = code_path_mod.CodePathBuilder;
 const ast_mod = @import("ast.zig");
 const Ast = ast_mod.Ast;
 const Node = ast_mod.Node;
@@ -86,6 +88,9 @@ pub const SemanticResult = struct {
     /// Event types: 0=SEG_START, 1=SEG_END, 2=CODEPATH_START, 3=CODEPATH_END, 4=SEG_LOOP.
     cfg_events: []u32 = &.{},
 
+    /// Full multi-segment code path graph (built by CodePathBuilder).
+    code_path_result: ?CodePathBuilder.Result = null,
+
     /// Return an empty SemanticResult with no scopes/symbols/references.
     /// Used when the caller determines that no semantic-phase rules are active,
     /// allowing SemanticAnalyzer.analyze() to be skipped entirely.
@@ -99,6 +104,7 @@ pub const SemanticResult = struct {
             .node_reachable = &.{},
             .loop_exit_reachable = &.{},
             .cfg_events = &.{},
+            .code_path_result = null,
         };
     }
 
@@ -141,17 +147,13 @@ pub const SemanticAnalyzer = struct {
     /// Reset to true on entering each function body.
     cfg_alive: bool = true,
 
-    /// Code path event recorder.
-    /// Events are pairs of (event_type: u8, node_idx: u32, data: u32).
-    /// Packed as: [type, node_lo, node_hi, data_lo, data_hi, ...]
-    /// Event types:
-    ///   0 = SEG_START (node = trigger node, data = 1 if reachable, 0 if unreachable)
-    ///   1 = SEG_END (node = 0, data = 0)
-    ///   2 = CODEPATH_START (node = function node, data = 0)
-    ///   3 = CODEPATH_END (node = function node, data = 0)
-    ///   4 = SEG_LOOP (node = loop node, data = 1 if loop can iterate, 0 if not)
+    /// Code path event recorder (legacy — kept for backward compat during transition).
     cfg_events: std.ArrayList(u32) = undefined,
     cfg_seg_counter: u32 = 0,
+
+    /// Full multi-segment code path builder.
+    cpb: CodePathBuilder = undefined,
+    cpb_initialized: bool = false,
 
     /// Breakable statement stack for infinite loop detection.
     /// Tracks depth of nested loops/switches. An unlabeled break sets
@@ -227,10 +229,14 @@ pub const SemanticAnalyzer = struct {
         const loop_exit_reachable = try allocator.alloc(u8, node_count);
         @memset(loop_exit_reachable, 1); // default: all exits reachable
 
-        // Code path event recorder
+        // Code path event recorder (legacy)
         self.cfg_events = .empty;
         self.cfg_seg_counter = 0;
         self.loop_exit_reachable = loop_exit_reachable;
+
+        // Full code path builder
+        self.cpb = CodePathBuilder.init(allocator);
+        self.cpb_initialized = true;
 
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
@@ -247,6 +253,7 @@ pub const SemanticAnalyzer = struct {
             .node_reachable = node_reachable,
             .loop_exit_reachable = loop_exit_reachable,
             .cfg_events = try self.cfg_events.toOwnedSlice(self.allocator),
+            .code_path_result = if (self.cpb_initialized) self.cpb.finish() else null,
         };
     }
 
@@ -502,7 +509,7 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
-                const fiof_body_alive = try self.visitForInOfStmt(data);
+                const fiof_body_alive = try self.visitForInOfStmt(data, tag);
                 const fiof_i = @intFromEnum(idx);
                 if (fiof_i < self.loop_exit_reachable.len) {
                     self.loop_exit_reachable[fiof_i] = if (fiof_body_alive) 1 else 0;
@@ -586,10 +593,15 @@ pub const SemanticAnalyzer = struct {
                 const alive_pre = self.cfg_alive;
                 try self.cfgSegEnd();
                 try self.cfgSegStart(idx, alive_pre); // consequent branch
+                if (self.cpb_initialized) {
+                    try self.cpb.pushChoiceContext(.test_kind, false);
+                    try self.cpb.makeIfConsequent(idx);
+                }
                 try self.visitNode(data.rhs);
                 try self.cfgSegEnd();
                 self.cfg_alive = alive_pre or self.cfg_alive;
                 try self.cfgSegStart(idx, self.cfg_alive); // merge
+                if (self.cpb_initialized) try self.cpb.popChoiceContext();
             },
             .if_else_stmt => {
                 try self.visitNode(data.lhs); // condition
@@ -597,18 +609,28 @@ pub const SemanticAnalyzer = struct {
                 const alive_pre = self.cfg_alive;
                 try self.cfgSegEnd();
                 try self.cfgSegStart(idx, alive_pre); // then branch
+                if (self.cpb_initialized) {
+                    try self.cpb.pushChoiceContext(.test_kind, false);
+                    try self.cpb.makeIfConsequent(idx);
+                }
                 try self.visitNode(if_data.consequent);
                 const alive_true = self.cfg_alive;
                 try self.cfgSegEnd();
                 self.cfg_alive = alive_pre;
                 try self.cfgSegStart(idx, alive_pre); // else branch
+                if (self.cpb_initialized) try self.cpb.makeIfAlternate(idx);
                 try self.visitNode(if_data.alternate);
                 try self.cfgSegEnd();
                 self.cfg_alive = alive_true or self.cfg_alive;
                 try self.cfgSegStart(idx, self.cfg_alive); // merge
+                if (self.cpb_initialized) try self.cpb.popChoiceContext();
             },
             .while_stmt => {
                 const alive_pre = self.cfg_alive;
+                if (self.cpb_initialized) {
+                    try self.cpb.pushLoopContext(.while_stmt, null);
+                    self.cpb.setLoopContinueDest();
+                }
                 try self.visitNode(data.lhs); // condition
                 // Track breaks targeting this loop.
                 const depth = self.breakable_depth;
@@ -617,6 +639,7 @@ pub const SemanticAnalyzer = struct {
                     self.breakable_depth = depth + 1;
                 }
                 try self.visitNode(data.rhs); // body
+                if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
                 const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
                 if (depth < self.break_hit.len) self.breakable_depth = depth;
                 const body_alive = self.cfg_alive;
@@ -640,16 +663,23 @@ pub const SemanticAnalyzer = struct {
                 if (wli < self.loop_exit_reachable.len) {
                     self.loop_exit_reachable[wli] = if (body_alive) 1 else 0;
                 }
+                if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
             },
             .do_while_stmt => {
                 const alive_pre = self.cfg_alive;
+                if (self.cpb_initialized) {
+                    try self.cpb.pushLoopContext(.do_while_stmt, null);
+                    self.cpb.setLoopEntrySegments();
+                }
                 const depth = self.breakable_depth;
                 if (depth < self.break_hit.len) {
                     self.break_hit[depth] = false;
                     self.breakable_depth = depth + 1;
                 }
                 try self.visitNode(data.lhs); // body (runs at least once)
+                if (self.cpb_initialized) self.cpb.setLoopContinueDest();
                 try self.visitNode(data.rhs); // condition
+                if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
                 const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
                 if (depth < self.break_hit.len) self.breakable_depth = depth;
                 const body_alive = self.cfg_alive;
@@ -666,17 +696,20 @@ pub const SemanticAnalyzer = struct {
                 if (dwi < self.loop_exit_reachable.len) {
                     self.loop_exit_reachable[dwi] = if (body_alive) 1 else 0;
                 }
+                if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
             },
             .try_stmt => try self.visitTryStmt(data),
             .labeled_stmt => try self.visitNode(data.lhs),
             .return_stmt => {
                 try self.visitNode(data.lhs); // return expression
+                if (self.cpb_initialized) try self.cpb.makeReturn(idx);
                 self.cfg_alive = false;
                 try self.cfgSegEnd();
                 try self.cfgSegStart(idx, false); // unreachable after return
             },
             .throw_stmt => {
                 try self.visitNode(data.lhs); // thrown expression
+                if (self.cpb_initialized) try self.cpb.makeThrow(idx);
                 self.cfg_alive = false;
                 try self.cfgSegEnd();
                 try self.cfgSegStart(idx, false); // unreachable after throw
@@ -908,9 +941,28 @@ pub const SemanticAnalyzer = struct {
                 if (self.breakable_depth > 0) {
                     self.break_hit[self.breakable_depth - 1] = true;
                 }
+                if (self.cpb_initialized) try self.cpb.makeBreak(null, idx);
                 self.cfg_alive = false;
             },
-            .break_label, .continue_stmt, .continue_label => {
+            .break_label => {
+                // Labeled break — extract label text.
+                if (self.cpb_initialized) {
+                    const label_tok = self.ast.nodeMainToken(idx);
+                    const label_text = self.ast.tokenText(label_tok);
+                    try self.cpb.makeBreak(label_text, idx);
+                }
+                self.cfg_alive = false;
+            },
+            .continue_stmt => {
+                if (self.cpb_initialized) try self.cpb.makeContinue(null, idx);
+                self.cfg_alive = false;
+            },
+            .continue_label => {
+                if (self.cpb_initialized) {
+                    const label_tok = self.ast.nodeMainToken(idx);
+                    const label_text = self.ast.tokenText(label_tok);
+                    try self.cpb.makeContinue(label_text, idx);
+                }
                 self.cfg_alive = false;
             },
             .empty_stmt, .debugger_stmt, .this_expr, .super_expr,
@@ -1026,18 +1078,19 @@ pub const SemanticAnalyzer = struct {
 
     fn visitRoot(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         _ = try self.enterScope(.global, idx);
-        // In module mode, ESLint's eslint-scope uses a two-level top:
-        // global (isStrict=false) → module (isStrict=true).
-        // All program-level code lives inside the module scope.
         if (self.is_module) {
             _ = try self.enterScope(.module, idx);
         }
         try self.cfgCodePathStart(idx);
         try self.cfgSegStart(idx, true);
+        // CodePathBuilder: enter program code path
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .program);
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
         try self.cfgSegEnd();
         try self.cfgCodePathEnd(idx);
+        // CodePathBuilder: exit program code path
+        if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         if (self.is_module) {
             self.leaveScope(); // module
         }
@@ -1094,7 +1147,9 @@ pub const SemanticAnalyzer = struct {
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
         const alive_pre = self.cfg_alive;
+        if (self.cpb_initialized) try self.cpb.pushLoopContext(.for_stmt, null);
         try self.visitNode(for_data.init);
+        if (self.cpb_initialized) self.cpb.setLoopContinueDest();
         try self.visitNode(for_data.condition);
         try self.visitNode(for_data.update);
         // Track breaks targeting this loop.
@@ -1104,6 +1159,7 @@ pub const SemanticAnalyzer = struct {
             self.breakable_depth = depth + 1;
         }
         try self.visitNode(data.rhs);
+        if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(data.rhs);
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
         if (depth < self.break_hit.len) self.breakable_depth = depth;
         const body_alive = self.cfg_alive;
@@ -1116,14 +1172,24 @@ pub const SemanticAnalyzer = struct {
         } else {
             self.cfg_alive = alive_pre;
         }
+        if (self.cpb_initialized) try self.cpb.popLoopContext(data.rhs);
         self.leaveScope();
         return body_alive;
     }
 
-    fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data) !bool {
+    fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data, tag: Node.Tag) !bool {
         const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, fiof_data.body);
         const alive_pre = self.cfg_alive;
+        const loop_type: code_path_mod.LoopType = switch (tag) {
+            .for_in_stmt => .for_in_stmt,
+            .for_of_stmt, .for_await_of_stmt => .for_of_stmt,
+            else => .for_in_stmt,
+        };
+        if (self.cpb_initialized) {
+            try self.cpb.pushLoopContext(loop_type, null);
+            self.cpb.setLoopContinueDest();
+        }
         const binding_tag = self.ast.nodeTag(fiof_data.binding);
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
             try self.visitNode(fiof_data.binding);
@@ -1132,8 +1198,10 @@ pub const SemanticAnalyzer = struct {
         }
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
+        if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(fiof_data.body);
         const body_alive = self.cfg_alive;
         self.cfg_alive = alive_pre;
+        if (self.cpb_initialized) try self.cpb.popLoopContext(fiof_data.body);
         self.leaveScope();
         return body_alive;
     }
@@ -1141,6 +1209,7 @@ pub const SemanticAnalyzer = struct {
     fn visitSwitchStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         try self.visitNode(data.lhs); // discriminant — visited in outer scope
         _ = try self.enterScope(.switch_stmt, idx);
+        if (self.cpb_initialized) try self.cpb.pushSwitchContext(true, null);
         // Push breakable so break inside switch doesn't count as breaking enclosing loop.
         const depth = self.breakable_depth;
         if (depth < self.break_hit.len) {
@@ -1156,7 +1225,9 @@ pub const SemanticAnalyzer = struct {
         for (items) |raw| {
             const case_idx: NodeIndex = @enumFromInt(raw);
             const case_tag = self.ast.nodeTag(case_idx);
-            if (case_tag == .switch_default) has_default = true;
+            const is_default = case_tag == .switch_default;
+            if (is_default) has_default = true;
+            if (self.cpb_initialized) try self.cpb.makeSwitchCaseBody(is_default, case_idx);
             self.cfg_alive = alive_pre; // each case starts reachable
             try self.visitNode(case_idx);
             if (self.cfg_alive) any_alive = true;
@@ -1172,6 +1243,7 @@ pub const SemanticAnalyzer = struct {
         // break inside switch also means exit is alive
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else false;
         if (had_break) self.cfg_alive = true;
+        if (self.cpb_initialized) try self.cpb.popSwitchContext();
         self.leaveScope();
     }
 
@@ -1227,9 +1299,11 @@ pub const SemanticAnalyzer = struct {
         self.cfg_alive = true;
         try self.cfgCodePathStart(idx);
         try self.cfgSegStart(idx, true);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(fn_data.body);
         try self.cfgSegEnd();
         try self.cfgCodePathEnd(idx);
+        if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
         self.leaveScope();
@@ -1258,9 +1332,11 @@ pub const SemanticAnalyzer = struct {
         self.cfg_alive = true;
         try self.cfgCodePathStart(idx);
         try self.cfgSegStart(idx, true);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(fn_data.body);
         try self.cfgSegEnd();
         try self.cfgCodePathEnd(idx);
+        if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
         self.leaveScope();
@@ -1281,9 +1357,11 @@ pub const SemanticAnalyzer = struct {
         self.cfg_alive = true;
         try self.cfgCodePathStart(idx);
         try self.cfgSegStart(idx, true);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(arrow_data.body);
         try self.cfgSegEnd();
         try self.cfgCodePathEnd(idx);
+        if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
         self.leaveScope();
@@ -1668,12 +1746,18 @@ pub const SemanticAnalyzer = struct {
 
     fn visitTryStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
         // lhs = try block, rhs = extra index to TryData
+        const try_data = self.ast.extraData(TryData, @intFromEnum(data.rhs));
+        const has_finalizer = try_data.finally_body != .none;
+        if (self.cpb_initialized) try self.cpb.pushTryContext(has_finalizer);
+
         const alive_before = self.cfg_alive;
         try self.visitNode(data.lhs); // try block
         const alive_after_try = self.cfg_alive;
 
-        const try_data = self.ast.extraData(TryData, @intFromEnum(data.rhs));
         // catch: exception may be thrown from any point in try, so start with alive_before
+        if (try_data.catch_node != .none) {
+            if (self.cpb_initialized) try self.cpb.makeCatchBlock(try_data.catch_node);
+        }
         self.cfg_alive = alive_before;
         try self.visitNode(try_data.catch_node);
         const alive_after_catch = self.cfg_alive;
@@ -1682,7 +1766,12 @@ pub const SemanticAnalyzer = struct {
         self.cfg_alive = alive_after_try or alive_after_catch;
 
         // finally: always runs; liveness after = liveness after finally body
-        try self.visitNode(try_data.finally_body);
+        if (has_finalizer) {
+            if (self.cpb_initialized) try self.cpb.makeFinallyBlock(try_data.finally_body);
+            try self.visitNode(try_data.finally_body);
+        }
+
+        if (self.cpb_initialized) try self.cpb.popTryContext();
     }
 
     // ── Binding extraction (handles destructuring) ─────────

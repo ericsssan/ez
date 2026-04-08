@@ -173,6 +173,7 @@ const SH = {
   LOOP_EXIT_REACHABLE: 92,  // u8[] per-loop exit reachability: 1=exit alive, 0=exit dead
   CFG_EVENTS_OFFSET: 96,   // u32[] code path event triples (type, nodeIdx, data)
   CFG_EVENTS_COUNT: 100,   // number of u32 values in cfg_events
+  CFG_GRAPH_OFFSET: 104,   // byte offset to CfgGraphHeader (0 = not present)
 };
 
 const FLAG_HAS_BOM = 1;
@@ -392,6 +393,15 @@ class AstView {
       const cfgEvOff = dv.getUint32(semOff + SH.CFG_EVENTS_OFFSET, true);
       const cfgEvCount = dv.getUint32(semOff + SH.CFG_EVENTS_COUNT, true);
       this._cfgEvents = cfgEvOff > 0 && cfgEvCount > 0 ? new Uint32Array(buffer, cfgEvOff, cfgEvCount) : null;
+
+      // Full code path graph
+      const cfgGraphOff = dv.getUint32(semOff + SH.CFG_GRAPH_OFFSET, true);
+      if (cfgGraphOff > 0 && cfgGraphOff + 100 <= buffer.byteLength) {
+        try { this._cfgGraph = new CfgGraph(buffer, dv, cfgGraphOff); }
+        catch { this._cfgGraph = null; }
+      } else {
+        this._cfgGraph = null;
+      }
     } else {
       this._semScopeCount = 0;
       this._semSymbolCount = 0;
@@ -2883,4 +2893,256 @@ function effectiveTypeName(ast, idx, rawTagName) {
   return rawTagName;
 }
 
-module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T, effectiveTypeName };
+// ── Full Code Path Graph (reads precomputed data from buffer) ────
+
+// CfgGraphHeader field offsets
+const CGH = {
+  SEGMENT_COUNT: 0,
+  CODEPATH_COUNT: 4,
+  EVENT_COUNT: 8,
+  SEG_REACHABLE: 12,
+  SEG_CODEPATH: 16,
+  SEG_NEXT_STARTS: 20,
+  SEG_NEXT_TARGETS: 24,
+  SEG_PREV_STARTS: 28,
+  SEG_PREV_TARGETS: 32,
+  SEG_ALL_NEXT_STARTS: 36,
+  SEG_ALL_NEXT_TARGETS: 40,
+  SEG_ALL_PREV_STARTS: 44,
+  SEG_ALL_PREV_TARGETS: 48,
+  SEG_LOOPED_STARTS: 52,
+  SEG_LOOPED_TARGETS: 56,
+  CP_ORIGIN: 60,
+  CP_UPPER: 64,
+  CP_INITIAL_SEG: 68,
+  CP_FINAL_STARTS: 72,
+  CP_FINAL_TARGETS: 76,
+  CP_RETURNED_STARTS: 80,
+  CP_RETURNED_TARGETS: 84,
+  CP_THROWN_STARTS: 88,
+  CP_THROWN_TARGETS: 92,
+  EVENTS: 96,
+};
+
+const CP_ORIGINS = ['program', 'function', 'class-field-initializer', 'class-static-block'];
+const NONE32 = 0xFFFFFFFF;
+
+class CfgGraph {
+  constructor(buffer, dv, off) {
+    this._buffer = buffer;
+    this._segCount = dv.getUint32(off + CGH.SEGMENT_COUNT, true);
+    this._cpCount = dv.getUint32(off + CGH.CODEPATH_COUNT, true);
+    this._evCount = dv.getUint32(off + CGH.EVENT_COUNT, true);
+
+    if (this._segCount === 0 && this._cpCount === 0) {
+      this._segReachable = null;
+      return;
+    }
+
+    // Per-segment
+    this._segReachable = new Uint8Array(buffer, dv.getUint32(off + CGH.SEG_REACHABLE, true), this._segCount);
+    this._segCp = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_CODEPATH, true), this._segCount);
+
+    // Adjacency CSR — targets need explicit length from starts[N]
+    const sc1 = this._segCount + 1;
+    this._nextStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_NEXT_STARTS, true), sc1);
+    const ntOff = dv.getUint32(off + CGH.SEG_NEXT_TARGETS, true);
+    const ntLen = this._nextStarts[this._segCount];
+    this._nextTargets = ntOff > 0 && ntLen > 0 ? new Uint32Array(buffer, ntOff, ntLen) : null;
+
+    this._prevStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_PREV_STARTS, true), sc1);
+    const ptOff = dv.getUint32(off + CGH.SEG_PREV_TARGETS, true);
+    const ptLen = this._prevStarts[this._segCount];
+    this._prevTargets = ptOff > 0 && ptLen > 0 ? new Uint32Array(buffer, ptOff, ptLen) : null;
+
+    this._allNextStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_ALL_NEXT_STARTS, true), sc1);
+    const antOff = dv.getUint32(off + CGH.SEG_ALL_NEXT_TARGETS, true);
+    const antLen = this._allNextStarts[this._segCount];
+    this._allNextTargets = antOff > 0 && antLen > 0 ? new Uint32Array(buffer, antOff, antLen) : null;
+
+    this._allPrevStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_ALL_PREV_STARTS, true), sc1);
+    const aptOff = dv.getUint32(off + CGH.SEG_ALL_PREV_TARGETS, true);
+    const aptLen = this._allPrevStarts[this._segCount];
+    this._allPrevTargets = aptOff > 0 && aptLen > 0 ? new Uint32Array(buffer, aptOff, aptLen) : null;
+
+    this._loopedStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_LOOPED_STARTS, true), sc1);
+    const ltOff = dv.getUint32(off + CGH.SEG_LOOPED_TARGETS, true);
+    const ltLen = this._loopedStarts[this._segCount];
+    this._loopedTargets = ltOff > 0 && ltLen > 0 ? new Uint32Array(buffer, ltOff, ltLen) : null;
+
+    // Per-codepath
+    this._cpOrigin = new Uint8Array(buffer, dv.getUint32(off + CGH.CP_ORIGIN, true), this._cpCount);
+    this._cpUpper = new Uint32Array(buffer, dv.getUint32(off + CGH.CP_UPPER, true), this._cpCount);
+    this._cpInitialSeg = new Uint32Array(buffer, dv.getUint32(off + CGH.CP_INITIAL_SEG, true), this._cpCount);
+    const cc1 = this._cpCount + 1;
+    this._cpFinalStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.CP_FINAL_STARTS, true), cc1);
+    const cfOff = dv.getUint32(off + CGH.CP_FINAL_TARGETS, true);
+    const cfLen = this._cpFinalStarts[this._cpCount];
+    this._cpFinalTargets = cfOff > 0 && cfLen > 0 ? new Uint32Array(buffer, cfOff, cfLen) : null;
+    this._cpReturnedStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.CP_RETURNED_STARTS, true), cc1);
+    const crOff = dv.getUint32(off + CGH.CP_RETURNED_TARGETS, true);
+    const crLen = this._cpReturnedStarts[this._cpCount];
+    this._cpReturnedTargets = crOff > 0 && crLen > 0 ? new Uint32Array(buffer, crOff, crLen) : null;
+    this._cpThrownStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.CP_THROWN_STARTS, true), cc1);
+    const ctOff = dv.getUint32(off + CGH.CP_THROWN_TARGETS, true);
+    const ctLen = this._cpThrownStarts[this._cpCount];
+    this._cpThrownTargets = ctOff > 0 && ctLen > 0 ? new Uint32Array(buffer, ctOff, ctLen) : null;
+
+    // Events
+    const evOff = dv.getUint32(off + CGH.EVENTS, true);
+    this._events = evOff > 0 && this._evCount > 0 ? new Uint32Array(buffer, evOff, this._evCount * 4) : null;
+
+    // Segment/CodePath caches
+    this._segCache = new Array(this._segCount).fill(null);
+    this._cpCache = new Array(this._cpCount).fill(null);
+  }
+
+  get segmentCount() { return this._segCount; }
+  get codepathCount() { return this._cpCount; }
+  get eventCount() { return this._evCount; }
+
+  segment(idx) {
+    if (idx >= this._segCount || idx === NONE32) return null;
+    if (!this._segCache[idx]) this._segCache[idx] = new CfgSegment(this, idx);
+    return this._segCache[idx];
+  }
+
+  codepath(idx) {
+    if (idx >= this._cpCount || idx === NONE32) return null;
+    if (!this._cpCache[idx]) this._cpCache[idx] = new CfgCodePath(this, idx);
+    return this._cpCache[idx];
+  }
+
+  /** Read CSR range as array of segment wrappers */
+  _csrSegments(starts, targets, idx) {
+    if (!targets) return [];
+    const start = starts[idx];
+    const end = starts[idx + 1];
+    const result = [];
+    for (let i = start; i < end; i++) {
+      const s = this.segment(targets[i]);
+      if (s) result.push(s);
+    }
+    return result;
+  }
+
+  /** Read CSR range as array of segment indices */
+  _csrIds(starts, targets, idx) {
+    if (!targets) return [];
+    const start = starts[idx];
+    const end = starts[idx + 1];
+    const result = [];
+    for (let i = start; i < end; i++) result.push(targets[i]);
+    return result;
+  }
+}
+
+class CfgSegment {
+  constructor(cfg, idx) {
+    this._cfg = cfg;
+    this._idx = idx;
+    const cpIdx = cfg._segCp[idx];
+    this.id = `s${cpIdx + 1}_${idx + 1}`;
+    this.reachable = cfg._segReachable[idx] !== 0;
+    // Lazy cached adjacency
+    this._next = undefined;
+    this._prev = undefined;
+    this._allNext = undefined;
+    this._allPrev = undefined;
+    this._looped = undefined;
+    this.internal = { used: true, loopedPrevSegments: null, nodes: [] };
+  }
+
+  get nextSegments() {
+    if (this._next === undefined) this._next = this._cfg._csrSegments(this._cfg._nextStarts, this._cfg._nextTargets, this._idx);
+    return this._next;
+  }
+  get prevSegments() {
+    if (this._prev === undefined) this._prev = this._cfg._csrSegments(this._cfg._prevStarts, this._cfg._prevTargets, this._idx);
+    return this._prev;
+  }
+  get allNextSegments() {
+    if (this._allNext === undefined) this._allNext = this._cfg._csrSegments(this._cfg._allNextStarts, this._cfg._allNextTargets, this._idx);
+    return this._allNext;
+  }
+  get allPrevSegments() {
+    if (this._allPrev === undefined) this._allPrev = this._cfg._csrSegments(this._cfg._allPrevStarts, this._cfg._allPrevTargets, this._idx);
+    return this._allPrev;
+  }
+
+  isLoopedPrevSegment(segment) {
+    if (this._looped === undefined) {
+      this._looped = new Set(this._cfg._csrIds(this._cfg._loopedStarts, this._cfg._loopedTargets, this._idx));
+    }
+    return this._looped.has(segment._idx);
+  }
+}
+
+class CfgCodePath {
+  constructor(cfg, idx) {
+    this._cfg = cfg;
+    this._idx = idx;
+    this.id = `s${idx + 1}`;
+    this.origin = CP_ORIGINS[cfg._cpOrigin[idx]] || 'function';
+    const upperIdx = cfg._cpUpper[idx];
+    this.upper = upperIdx !== NONE32 ? cfg.codepath(upperIdx) : null;
+    this.childCodePaths = []; // populated during event replay
+    this.internal = {};
+    // Lazy cached segment lists
+    this._initial = undefined;
+    this._final = undefined;
+    this._returned = undefined;
+    this._thrown = undefined;
+  }
+
+  get initialSegment() {
+    if (this._initial === undefined) this._initial = this._cfg.segment(this._cfg._cpInitialSeg[this._idx]);
+    return this._initial;
+  }
+  get finalSegments() {
+    if (this._final === undefined) this._final = this._cfg._csrSegments(this._cfg._cpFinalStarts, this._cfg._cpFinalTargets, this._idx);
+    return this._final;
+  }
+  get returnedSegments() {
+    if (this._returned === undefined) this._returned = this._cfg._csrSegments(this._cfg._cpReturnedStarts, this._cfg._cpReturnedTargets, this._idx);
+    return this._returned;
+  }
+  get thrownSegments() {
+    if (this._thrown === undefined) this._thrown = this._cfg._csrSegments(this._cfg._cpThrownStarts, this._cfg._cpThrownTargets, this._idx);
+    return this._thrown;
+  }
+
+  get currentSegments() {
+    // During event replay, this is set dynamically
+    return this._currentSegments || [this.initialSegment];
+  }
+  set currentSegments(segs) { this._currentSegments = segs; }
+
+  get returnedForkContext() { return []; }
+
+  traverseSegments(optionsOrCb, maybeCb) {
+    const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
+    const opts = typeof optionsOrCb === 'object' ? optionsOrCb : null;
+    const startSeg = opts?.first || this.initialSegment;
+    const lastSeg = opts?.last || null;
+    const visited = new Set();
+    const queue = [startSeg];
+    let stopped = false;
+    while (queue.length > 0 && !stopped) {
+      const s = queue.shift();
+      if (!s || visited.has(s.id)) continue;
+      visited.add(s.id);
+      let skipped = false;
+      cb(s, { skip() { skipped = true; }, break() { stopped = true; } });
+      if (stopped) break;
+      if (lastSeg && s.id === lastSeg.id) continue;
+      if (!skipped) {
+        for (const next of s.nextSegments) {
+          if (!visited.has(next.id)) queue.push(next);
+        }
+      }
+    }
+  }
+}
+
+module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T, effectiveTypeName, CfgGraph, CfgSegment, CfgCodePath };
