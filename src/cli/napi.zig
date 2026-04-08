@@ -511,13 +511,38 @@ fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
         .rule_severity_table = undefined,
         .allocator = std.heap.page_allocator,
     };
+    // Severity bytes: one per rule. If buffer has 0xFF marker, the rest is JSON options.
+    var sev_len = bytes.len;
+    var json_options: ?[]const u8 = null;
+    for (bytes, 0..) |b, bi| {
+        if (b == 0xFF) { sev_len = bi; json_options = bytes[bi + 1 ..]; break; }
+    }
     for (0..linter_root.rules.count) |i| {
-        const byte: u8 = if (i < bytes.len) bytes[i] else 0;
+        const byte: u8 = if (i < sev_len) bytes[i] else 0;
         config.rule_severity_table[i] = switch (byte) {
             0 => RuleSeverity.off,
             1 => RuleSeverity.warning,
             else => RuleSeverity.@"error",
         };
+    }
+    // Parse JSON options if present: {"rule-name": { ... }, ...}
+    if (json_options) |json_str| {
+        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json_str, .{}) catch null;
+        if (parsed) |p| {
+            // Retain the parse tree so pointers stay valid
+            config.json_parsed = p;
+            if (p.value == .object) {
+                var iter = p.value.object.iterator();
+                while (iter.next()) |entry| {
+                    for (linter_mod.rule_names, 0..) |rn, ri| {
+                        if (std.mem.eql(u8, rn, entry.key_ptr.*)) {
+                            config.rule_options[ri] = entry.value_ptr;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
     }
     return config;
 }

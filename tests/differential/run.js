@@ -189,10 +189,17 @@ function runNative(filePath) {
 // Run native for a single corpus test case (in-process, no subprocess).
 // ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
 // Returns [{rule,line}] on success, "skip" if case is unsupported, null on crash.
-function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions) {
-  if (hasCustomParser || hasOptions) return "skip";
+function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions) {
+  if (hasCustomParser) return "skip";
   try {
-    const diags = ezLint(code, { config: ruleConfig });
+    // If the case has options, build a config with options embedded
+    let config = ruleConfig;
+    if (hasOptions && ruleOptions && ruleOptions.length > 0) {
+      const optionsObj = {};
+      optionsObj[ruleName] = ruleOptions[0]; // first option (usually the options object)
+      config = buildNativeConfig({ [ruleName]: "warn" }, optionsObj);
+    }
+    const diags = ezLint(code, { config });
     return diags
       .filter(d => d.ruleName === ruleName)
       .map(d => ({ rule: d.ruleName, line: offsetToLine(code, d.offset) }));
@@ -595,7 +602,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
 
       // Native comparison (in-process NAPI call).
       const _nt0 = Date.now();
-      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0);
+      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options);
       nativeOnlyMs += Date.now() - _nt0;
       if (nativeResult === "skip") {
         nativeSkipOptions++;

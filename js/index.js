@@ -333,9 +333,9 @@ function getNativeRules() {
   return _nativeRulesMap;
 }
 
-function buildNativeConfig(rulesObj) {
+function buildNativeConfig(rulesObj, optionsObj) {
   const nativeRules = getNativeRules();
-  const buf = new Uint8Array(nativeRules.size);
+  const sevBuf = new Uint8Array(nativeRules.size);
   for (const [ruleName, severity] of Object.entries(rulesObj)) {
     const info = nativeRules.get(ruleName);
     if (!info) continue;
@@ -344,9 +344,19 @@ function buildNativeConfig(rulesObj) {
       : severity === 'error' || severity === '2' ? 2
       : (severity === 'warn' || severity === 'warning' || severity === '1') ? 1
       : 0;
-    buf[info.index] = sev;
+    sevBuf[info.index] = sev;
   }
-  return buf;
+  // If options provided, append 0xFF marker + JSON string
+  if (optionsObj && Object.keys(optionsObj).length > 0) {
+    const json = JSON.stringify(optionsObj);
+    const jsonBytes = _encoder.encode(json);
+    const combined = new Uint8Array(sevBuf.length + 1 + jsonBytes.length);
+    combined.set(sevBuf);
+    combined[sevBuf.length] = 0xFF;
+    combined.set(jsonBytes, sevBuf.length + 1);
+    return combined;
+  }
+  return sevBuf;
 }
 
 module.exports = { parse, parseSource, parseAndLint, parseAndLintSource, lintSource, lint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
