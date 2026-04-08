@@ -111,7 +111,7 @@ pub fn main(init: std.process.Init) !void {
             const result: Result = blk: {
                 var tokens = (Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk .crashed).tokens;
                 defer tokens.deinit(file_alloc);
-                var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk .crashed).tokens;
+                var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk .crashed;
                 defer tree.deinit(file_alloc);
                 break :blk if (tree.errors.len > 0) .has_errors else .ok;
             };

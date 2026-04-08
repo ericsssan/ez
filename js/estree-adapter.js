@@ -958,6 +958,30 @@ const NodeProto = {
     }
     let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
 
+    // If this node is the outermost of an optional chain (i.e., it's optional itself, not a non-optional
+    // chain middle), wrap it in a ChainExpression and return that as the parent.
+    // This ensures the parent chain matches ESTree structure where ChainExpression wraps the
+    // outermost optional node:
+    //   buffer: parentNode -> optionalNode
+    //   ESTree: parentNode -> ChainExpression { expression: optionalNode }
+    // Example: (Object?.prototype).p = 0
+    //   buffer: MemberExpression(.p) -> MemberExpression(.prototype, optional)
+    //   ESTree: MemberExpression(.p) -> ChainExpression -> MemberExpression(.prototype, optional)
+    const thisTag = this._ast._nodeTags[this._i];
+    if (result && _isOptionalTag(thisTag)) {
+      // This node is optional. Wrap it in a ChainExpression.
+      const chainExpr = _getChainExpr(this._ast, this._i);
+      // Store the actual parent so that chainExpr.parent returns the right value
+      Object.defineProperty(chainExpr, '_realParent', {
+        value: result,
+        writable: true,
+        enumerable: false,
+        configurable: true
+      });
+      this._parent = chainExpr;
+      return chainExpr;
+    }
+
     // Class body members (MethodDefinition, PropertyDefinition) should parent to synthetic ClassBody.
     // Only route these specific tags to avoid breaking scope detection for other node types.
     if (result && (result._tag === T.class_decl || result._tag === T.class_expr)) {
@@ -1521,12 +1545,27 @@ const NodeProto = {
     const rhs = ast.nodeRhs(this._i);
     if (t === T.call_expr || t === T.optional_call_expr) {
       const sub = ast.extraSubRange(rhs);
-      return ast._nodesFromRange(sub.start, sub.end);
+      // Use nodeViewChain for arguments that are optional chain nodes,
+      // so ChainExpression wrappers are properly created.
+      const result = [];
+      const e = ast._extraData;
+      for (let i = sub.start; i < sub.end; i++) {
+        const idx = e[i];
+        if (idx !== NONE) result.push(nodeViewChain(ast, idx));
+      }
+      return result;
     }
     if (t === T.new_expr) {
       if (rhs === NONE) return [];
       const sub = ast.extraSubRange(rhs);
-      return ast._nodesFromRange(sub.start, sub.end);
+      // Use nodeViewChain for arguments
+      const result = [];
+      const e = ast._extraData;
+      for (let i = sub.start; i < sub.end; i++) {
+        const idx = e[i];
+        if (idx !== NONE) result.push(nodeViewChain(ast, idx));
+      }
+      return result;
     }
     return undefined;
   },
@@ -2483,7 +2522,11 @@ function _getChainExpr(ast, idx) {
   Object.defineProperty(c, 'end',    { get: () => inner.end,    configurable: true });
   Object.defineProperty(c, 'range',  { get: () => inner.range,  configurable: true });
   Object.defineProperty(c, 'loc',    { get: () => inner.loc,    configurable: true });
-  Object.defineProperty(c, 'parent', { get: () => inner.parent, set: (v) => { inner._parent = v; }, configurable: true });
+  Object.defineProperty(c, 'parent', {
+    get: () => c._realParent !== undefined ? c._realParent : inner.parent,
+    set: (v) => { c._realParent = v; },
+    configurable: true
+  });
   ast._chainCache[idx] = c;
   return c;
 }
