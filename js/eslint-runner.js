@@ -4478,6 +4478,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
 
+    // ── Zig CFG event replay ────────────────────────────────────
+    // Build per-node event index from Zig-precomputed code path events.
+    // Events fire BEFORE the node's enter/exit handler during DFS.
+    const _zigCfgEvents = ast._cfgEvents;
+    let _zigCfgNodeEnter = null; // Map<nodeIdx, [{type, data}, ...]>
+    if (_zigCfgEvents && hasCodePath) {
+      _zigCfgNodeEnter = new Map();
+      for (let ei = 0; ei < _zigCfgEvents.length; ei += 3) {
+        const evType = _zigCfgEvents[ei];
+        const nodeIdx = _zigCfgEvents[ei + 1];
+        const data = _zigCfgEvents[ei + 2];
+        if (!_zigCfgNodeEnter.has(nodeIdx)) _zigCfgNodeEnter.set(nodeIdx, []);
+        _zigCfgNodeEnter.get(nodeIdx).push({ type: evType, data });
+      }
+    }
+
     // Use interleaved DFS to ensure enter/exit events fire in correct order.
     const { events, count: evCount } = getDFSEvents();
     // Pre-index handler arrays by tag int — replaces Map.get(string) per node with array[int].
