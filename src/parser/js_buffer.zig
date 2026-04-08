@@ -117,10 +117,14 @@ pub const SemanticHeader = extern struct {
     // 1 = code after the loop is reachable, 0 = loop exit is dead (infinite/all-return body).
     // Non-loop nodes default to 1.
     loop_exit_reachable_offset: u32,   // u8[] — 1 if loop exit is reachable
+
+    // Code path events: triples of u32 (event_type, node_idx, data).
+    cfg_events_offset: u32,
+    cfg_events_count: u32,             // number of u32 values (= 3 * event_count)
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 96);
+    std.debug.assert(@sizeOf(SemanticHeader) == 104);
 }
 
 // ── Semantic Data Serializer ─────────────────────────────────────
@@ -267,6 +271,15 @@ pub fn writeSemanticData(
             }
             break :blk 0;
         },
+        .cfg_events_offset = blk: {
+            if (sem.cfg_events.len > 0) {
+                const arr = try alloc.alloc(u32, sem.cfg_events.len);
+                @memcpy(arr, sem.cfg_events);
+                break :blk ptrOffsetPub(buf, @as([*]u8, @ptrCast(arr.ptr)));
+            }
+            break :blk 0;
+        },
+        .cfg_events_count = @intCast(sem.cfg_events.len),
     };
 
     return ptrOffsetPub(buf, header_mem.ptr);

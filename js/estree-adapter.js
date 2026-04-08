@@ -171,6 +171,8 @@ const SH = {
   NODE_SCOPE_IDS: 84,
   NODE_REACHABLE: 88,   // u8[] per-node reachability: 1=live, 0=dead
   LOOP_EXIT_REACHABLE: 92,  // u8[] per-loop exit reachability: 1=exit alive, 0=exit dead
+  CFG_EVENTS_OFFSET: 96,   // u32[] code path event triples (type, nodeIdx, data)
+  CFG_EVENTS_COUNT: 100,   // number of u32 values in cfg_events
 };
 
 const FLAG_HAS_BOM = 1;
@@ -387,6 +389,9 @@ class AstView {
       this._nodeReachable   = reachOff > 0 ? new Uint8Array(buffer, reachOff, this.nodeCount) : null;
       const loopExitOff = dv.getUint32(semOff + SH.LOOP_EXIT_REACHABLE, true);
       this._loopExitReachable = loopExitOff > 0 ? new Uint8Array(buffer, loopExitOff, this.nodeCount) : null;
+      const cfgEvOff = dv.getUint32(semOff + SH.CFG_EVENTS_OFFSET, true);
+      const cfgEvCount = dv.getUint32(semOff + SH.CFG_EVENTS_COUNT, true);
+      this._cfgEvents = cfgEvOff > 0 && cfgEvCount > 0 ? new Uint32Array(buffer, cfgEvOff, cfgEvCount) : null;
     } else {
       this._semScopeCount = 0;
       this._semSymbolCount = 0;
