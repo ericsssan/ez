@@ -1850,9 +1850,50 @@ pub const Parser = struct {
 
     /// Parse `var/let/const declarators` with trailing semicolon.
     pub fn parseVariableDeclaration(self: *Parser) Error!NodeIndex {
-        const node = try self.parseVariableDeclarationNoSemicolon();
+        const decl_tok = self.advance(); // eat var/let/const
+        const decl_tag: TokenTag = self.tokenTagAt(decl_tok);
+        const is_const = decl_tag == .kw_const;
+
+        const tag: Node.Tag = switch (decl_tag) {
+            .kw_var => .var_decl,
+            .kw_let => .let_decl,
+            .kw_const => .const_decl,
+            else => unreachable,
+        };
+
+        // "let" as a binding name in let/const declaration is always invalid
+        if ((decl_tag == .kw_let or decl_tag == .kw_const) and self.peek() == .kw_let) {
+            try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a variable name in lexical declarations", .{});
+            return error.ParseError;
+        }
+
+        const scratch_top = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        // Parse first declarator (required)
+        const first = try self.parseDeclaratorConst(is_const);
+        try self.scratch.append(self.gpa, @intFromEnum(first));
+
+        // Parse additional declarators separated by commas
+        while (self.eat(.comma) != null) {
+            const decl = try self.parseDeclaratorConst(is_const);
+            try self.scratch.append(self.gpa, @intFromEnum(decl));
+        }
+
+        // Consume semicolon BEFORE creating the node so the range includes it
         try self.expectSemicolon();
-        return node;
+
+        const decls = self.scratch.items[scratch_top..];
+        const range = try self.listToSubRange(decls);
+
+        return self.addNode(.{
+            .tag = tag,
+            .main_token = decl_tok,
+            .data = .{
+                .lhs = NodeIndex.fromInt(range.start),
+                .rhs = NodeIndex.fromInt(range.end),
+            },
+        });
     }
 
     /// Parse `var/let/const declarators` without consuming trailing semicolon.
