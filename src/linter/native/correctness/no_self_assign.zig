@@ -23,10 +23,11 @@ const MSG = "'{s}' is assigned to itself";
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
-    checkAssignment(data.lhs, data.rhs, ctx);
+    const check_props = ctx.getOptionBool("props", true);
+    checkAssignment(data.lhs, data.rhs, ctx, check_props);
 }
 
-fn checkAssignment(lhs: NodeIndex, rhs: NodeIndex, ctx: *const LintContext) void {
+fn checkAssignment(lhs: NodeIndex, rhs: NodeIndex, ctx: *const LintContext, check_props: bool) void {
     if (lhs == .none or rhs == .none) return;
 
     const lhs_tag = ctx.nodeTag(lhs);
@@ -49,17 +50,18 @@ fn checkAssignment(lhs: NodeIndex, rhs: NodeIndex, ctx: *const LintContext) void
 
     // array_pattern = array_literal: [a, b] = [a, b]
     if (lhs_tag == .array_pattern and rhs_tag == .array_literal) {
-        compareArrayPatternToArray(lhs, rhs, ctx);
+        compareArrayPatternToArray(lhs, rhs, ctx, check_props);
         return;
     }
 
     // object_pattern = object_literal: ({a} = {a})
     if (lhs_tag == .object_pattern and rhs_tag == .object_literal) {
-        compareObjectPatternToObject(lhs, rhs, ctx);
+        compareObjectPatternToObject(lhs, rhs, ctx, check_props);
         return;
     }
 
     // Member expressions: a.b = a.b, a[b] = a[b]
+    if (!check_props) return; // props: false → skip property self-assignment
     const is_lhs_member = lhs_tag == .member_expr or lhs_tag == .optional_member_expr;
     const is_rhs_member = rhs_tag == .member_expr or rhs_tag == .optional_member_expr;
     const is_lhs_computed = lhs_tag == .computed_member_expr or lhs_tag == .optional_computed_member_expr;
@@ -140,7 +142,7 @@ fn areSameNode(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) bool {
     }
 }
 
-fn compareArrayPatternToArray(lhs_pat: NodeIndex, rhs_arr: NodeIndex, ctx: *const LintContext) void {
+fn compareArrayPatternToArray(lhs_pat: NodeIndex, rhs_arr: NodeIndex, ctx: *const LintContext, check_props: bool) void {
     const lhs_data = ctx.nodeData(lhs_pat);
     const rhs_data = ctx.nodeData(rhs_arr);
 
@@ -181,16 +183,16 @@ fn compareArrayPatternToArray(lhs_pat: NodeIndex, rhs_arr: NodeIndex, ctx: *cons
         const lhs_t = ctx.nodeTag(lhs_actual);
         const rhs_t = ctx.nodeTag(rhs_elem);
         if (lhs_t == .array_pattern and rhs_t == .array_literal) {
-            compareArrayPatternToArray(lhs_actual, rhs_elem, ctx);
+            compareArrayPatternToArray(lhs_actual, rhs_elem, ctx, check_props);
         } else if (lhs_t == .object_pattern and rhs_t == .object_literal) {
-            compareObjectPatternToObject(lhs_actual, rhs_elem, ctx);
+            compareObjectPatternToObject(lhs_actual, rhs_elem, ctx, check_props);
         } else {
-            checkAssignment(lhs_actual, rhs_elem, ctx);
+            checkAssignment(lhs_actual, rhs_elem, ctx, check_props);
         }
     }
 }
 
-fn compareObjectPatternToObject(lhs_pat: NodeIndex, rhs_obj: NodeIndex, ctx: *const LintContext) void {
+fn compareObjectPatternToObject(lhs_pat: NodeIndex, rhs_obj: NodeIndex, ctx: *const LintContext, check_props: bool) void {
     // For object patterns, match properties by key
     // This is complex for computed keys; focus on simple shorthand properties
     // For now, check shorthand properties: {a, b} = {a, b}
@@ -236,7 +238,7 @@ fn compareObjectPatternToObject(lhs_pat: NodeIndex, rhs_obj: NodeIndex, ctx: *co
                     if (rhs_prop == .none) continue;
                     if (ctx.nodeTag(rhs_prop) != .spread_element) continue;
                     const rhs_spread_arg = ctx.nodeData(rhs_prop).lhs;
-                    checkAssignment(lhs_rest_arg, rhs_spread_arg, ctx);
+                    checkAssignment(lhs_rest_arg, rhs_spread_arg, ctx, check_props);
                     break;
                 }
                 continue;
@@ -275,11 +277,11 @@ fn compareObjectPatternToObject(lhs_pat: NodeIndex, rhs_obj: NodeIndex, ctx: *co
                 const lhs_v_tag = ctx.nodeTag(lhs_val);
                 const rhs_v_tag = ctx.nodeTag(rhs_val);
                 if (lhs_v_tag == .array_pattern and rhs_v_tag == .array_literal) {
-                    compareArrayPatternToArray(lhs_val, rhs_val, ctx);
+                    compareArrayPatternToArray(lhs_val, rhs_val, ctx, check_props);
                 } else if (lhs_v_tag == .object_pattern and rhs_v_tag == .object_literal) {
-                    compareObjectPatternToObject(lhs_val, rhs_val, ctx);
+                    compareObjectPatternToObject(lhs_val, rhs_val, ctx, check_props);
                 } else {
-                    checkAssignment(lhs_val, rhs_val, ctx);
+                    checkAssignment(lhs_val, rhs_val, ctx, check_props);
                 }
                 break;
             }

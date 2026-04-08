@@ -22,12 +22,17 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // "use strict"; "use client"; etc.
     if (ctx.nodeTag(expr) == .string_literal) return;
 
-    if (!hasSideEffect(expr, ctx)) {
+    // Options: allowShortCircuit, allowTernary, allowTaggedTemplates
+    const allow_short = ctx.getOptionBool("allowShortCircuit", false);
+    const allow_ternary = ctx.getOptionBool("allowTernary", false);
+    const allow_tagged = ctx.getOptionBool("allowTaggedTemplates", false);
+
+    if (!hasSideEffect(expr, ctx, allow_short, allow_ternary, allow_tagged)) {
         ctx.report(node, meta.name, "This expression has no effect", meta.default_severity);
     }
 }
 
-fn hasSideEffect(node: NodeIndex, ctx: *const LintContext) bool {
+fn hasSideEffect(node: NodeIndex, ctx: *const LintContext, allow_short: bool, allow_ternary: bool, allow_tagged: bool) bool {
     if (node == .none) return false;
     return switch (ctx.nodeTag(node)) {
         // Always have side effects
@@ -79,26 +84,30 @@ fn hasSideEffect(node: NodeIndex, ctx: *const LintContext) bool {
             };
             const parts = ctx.extraSlice(range);
             for (parts) |p| {
-                if (hasSideEffect(@enumFromInt(p), ctx)) return true;
+                if (hasSideEffect(@enumFromInt(p), ctx, allow_short, allow_ternary, allow_tagged)) return true;
             }
             return false;
         },
 
         // Grouping: check inner
-        .grouping_expr => hasSideEffect(ctx.nodeData(node).lhs, ctx),
+        .grouping_expr => hasSideEffect(ctx.nodeData(node).lhs, ctx, allow_short, allow_ternary, allow_tagged),
 
-        // Tagged templates may have side effects (template tag is called)
-        .tagged_template => true,
+        // Tagged templates: side effect, or allowed by option
+        .tagged_template => if (allow_tagged) true else true, // always side-effectful (tag is called)
 
-        // Logical/ternary: side effect if any branch has side effect
+        // Logical/ternary: side effect if any branch has side effect, or allowed by option
         .logical_and, .logical_or, .nullish_coalesce => {
+            if (allow_short) return true; // allowShortCircuit treats && || as having side effects
             const d = ctx.nodeData(node);
-            return hasSideEffect(d.lhs, ctx) or hasSideEffect(d.rhs, ctx);
+            return hasSideEffect(d.lhs, ctx, allow_short, allow_ternary, allow_tagged) or
+                hasSideEffect(d.rhs, ctx, allow_short, allow_ternary, allow_tagged);
         },
         .conditional => {
+            if (allow_ternary) return true; // allowTernary treats ?: as having side effects
             const d = ctx.nodeData(node);
             const cond_data = ctx.extraData(ast.Conditional, @intFromEnum(d.rhs));
-            return hasSideEffect(cond_data.consequent, ctx) or hasSideEffect(cond_data.alternate, ctx);
+            return hasSideEffect(cond_data.consequent, ctx, allow_short, allow_ternary, allow_tagged) or
+                hasSideEffect(cond_data.alternate, ctx, allow_short, allow_ternary, allow_tagged);
         },
 
         // Everything else (literals, identifiers, binary ops, member access) has no side effects

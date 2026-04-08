@@ -372,8 +372,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
-        "fp": 15,
+        "fn": 7,
+        "fp": 8,
         "crash": 0,
         "skip": 0
       }
@@ -2336,7 +2336,7 @@
       },
       "native": {
         "fn": 6,
-        "fp": 13,
+        "fp": 7,
         "crash": 0,
         "skip": 0
       }
@@ -2686,8 +2686,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 4,
-        "fp": 17,
+        "fn": 6,
+        "fp": 15,
         "crash": 0,
         "skip": 0
       }
