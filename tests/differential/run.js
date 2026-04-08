@@ -553,6 +553,20 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
             code: tc.code, options: tc.options, sourceType,
           });
         }
+        // Also run native for espree-skip cases (same as normal path below)
+        const _ntSkip = Date.now();
+        const nativeSkipResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options);
+        nativeOnlyMs += Date.now() - _ntSkip;
+        if (nativeSkipResult === "skip") {
+          nativeSkipOptions++;
+        } else if (nativeSkipResult === null) {
+          nativeCrash++;
+        } else {
+          // Compare native against expected error count
+          const nativeCount = nativeSkipResult.length;
+          if (nativeCount === expectedErrors) nativePass++;
+          else { nativeFn += Math.max(0, expectedErrors - nativeCount); nativeFp += Math.max(0, nativeCount - expectedErrors); }
+        }
         continue;
       }
       if (espreeResult === null) { crash++; continue; }
