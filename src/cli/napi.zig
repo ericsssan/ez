@@ -149,6 +149,7 @@ fn parseImpl(
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
+    const min_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.min_tok.ptr) else 0;
 
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
@@ -173,6 +174,7 @@ fn parseImpl(
         .line_starts_offset = line_starts_offset,
         .line_starts_count = @intCast(line_starts.len),
         .max_tok_offset = max_tok_offset,
+        .min_tok_offset = min_tok_offset,
     });
 
     return backing.bytesUsed();
@@ -332,6 +334,7 @@ fn parseAndLintImpl(
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
+    const min_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.min_tok.ptr) else 0;
 
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start        = if (bom.has_bom) source_start + 3 else source_start,
@@ -355,6 +358,7 @@ fn parseAndLintImpl(
         .line_starts_offset     = line_starts_offset,
         .line_starts_count      = @intCast(line_starts.len),
         .max_tok_offset         = max_tok_offset,
+        .min_tok_offset         = min_tok_offset,
     });
 
     return backing.bytesUsed();

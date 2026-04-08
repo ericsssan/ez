@@ -285,6 +285,12 @@ const SCAN_CONTINUE_TAGS = new Set([73, 75, 77, 78, 84]);
  */
 /** Build minTok cache: minimum main_token index in each node's subtree. */
 function _computeMinTok(ast) {
+  // Use Zig-precomputed minTok from buffer if available
+  if (ast._minTokFromBuffer) {
+    ast._minTokCache = ast._minTokFromBuffer;
+    return;
+  }
+  // Fallback: compute in JS (for old buffer versions)
   const n = ast.nodeCount;
   const pd = ast._parentData;
   const mt = ast._mainTokens;

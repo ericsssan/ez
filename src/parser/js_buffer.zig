@@ -66,10 +66,11 @@ pub const BufferHeader = extern struct {
     line_starts_offset: u32 = 0,
     line_starts_count: u32 = 0,
     max_tok_offset: u32 = 0,
+    min_tok_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 128);
+    std.debug.assert(@sizeOf(BufferHeader) == 132);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -330,6 +331,7 @@ pub const HeaderInfo = struct {
     line_starts_offset: u32 = 0,
     line_starts_count: u32 = 0,
     max_tok_offset: u32 = 0,
+    min_tok_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -372,6 +374,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .line_starts_offset = info.line_starts_offset,
         .line_starts_count = info.line_starts_count,
         .max_tok_offset = info.max_tok_offset,
+        .min_tok_offset = info.min_tok_offset,
     };
 }
 
@@ -534,7 +537,7 @@ pub fn computeNodePositions(
     tok_ends: []const u32,
     node_count: u32,
     token_count: u32,
-) !struct { starts: []u32, ends: []u32, max_tok: []u32 } {
+) !struct { starts: []u32, ends: []u32, max_tok: []u32, min_tok: []u32 } {
     const n: usize = node_count;
     const tc: usize = token_count;
     const NONE: u32 = 0xFFFFFFFF;
@@ -549,7 +552,6 @@ pub fn computeNodePositions(
 
     // minMainTok[i] = lowest main_token index in node i's subtree
     const minTok = try alloc.alloc(u32, n);
-    defer alloc.free(minTok);
     @memcpy(minTok, main_tokens[0..n]);
     for (1..n) |i| {
         const p = parent_indices[i];
@@ -783,7 +785,7 @@ pub fn computeNodePositions(
         node_ends[i] = ext_end;
     }
 
-    return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok };
+    return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok, .min_tok = minTok };
 }
 
 /// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).
@@ -832,8 +834,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 128 bytes" {
-    try std.testing.expectEqual(@as(usize, 128), @sizeOf(BufferHeader));
+test "BufferHeader is 132 bytes" {
+    try std.testing.expectEqual(@as(usize, 132), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {
