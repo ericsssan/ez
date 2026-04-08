@@ -1616,7 +1616,7 @@
     "no-inner-declarations": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1707,7 +1707,7 @@
     "no-lone-blocks": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {

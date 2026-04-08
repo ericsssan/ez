@@ -1097,7 +1097,20 @@ class SourceCode {
     const isAlwaysStrict = kind === 4 || kind === 7;
     // Detect 'use strict' directive by checking the function body's first statement,
     // since Zig's analyze() always uses module mode so SF_HAS_USE_STRICT is never set.
-    const hasUseStrict = kind === 2 && block !== null && _fnHasUseStrict(block);
+    // Check 'use strict' directive: in function bodies (kind 2) and in program/module (kind 0/1)
+    let hasUseStrict = false;
+    if (kind === 2 && block !== null) {
+      hasUseStrict = _fnHasUseStrict(block);
+    } else if ((kind === 0 || kind === 1) && block !== null) {
+      // Program node: check first statement in body
+      const stmts = block.body;
+      if (stmts && stmts.length > 0) {
+        const first = stmts[0];
+        hasUseStrict = first.type === 'ExpressionStatement' &&
+          first.expression?.type === 'Literal' &&
+          first.expression?.value === 'use strict';
+      }
+    }
     // Function expressions in a class extends clause are always strict per spec
     // (class heritage is evaluated in strict mode). Zig's scope parent for these
     // functions points to the module scope rather than the class scope, so we
