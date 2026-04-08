@@ -213,10 +213,12 @@ pub fn lint(
 
             if (sev != .off) {
                 ctx.severity_override = sev.toSeverity();
+                ctx.rule_options = if (config) |cfg| cfg.rule_options[rule_idx] else null;
                 run_fns[rule_idx](idx, &ctx);
             }
         }
         ctx.severity_override = null;
+        ctx.rule_options = null;
     }
 
     // ── Phase 2: Symbol-phase rules ───────────────────────────
@@ -229,10 +231,12 @@ pub fn lint(
 
         if (sev != .off) {
             ctx.severity_override = sev.toSeverity();
+            ctx.rule_options = if (config) |cfg| cfg.rule_options[rule_idx] else null;
             fn_ptr(&ctx);
         }
     }
     ctx.severity_override = null;
+    ctx.rule_options = null;
 
     return diagnostics.toOwnedSlice(allocator);
 }

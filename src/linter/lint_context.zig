@@ -54,6 +54,10 @@ pub const LintContext = struct {
     diagnostics: *std.ArrayList(LintDiagnostic),
     allocator: std.mem.Allocator,
     severity_override: ?Severity = null,
+    /// Per-rule JSON options value, set by the linter before calling run().
+    /// null when no options are configured for the current rule.
+    /// Points into the config's retained JSON parse tree.
+    rule_options: ?*const std.json.Value = null,
 
     // ── AST accessors ─────────────────────────────────────
 
@@ -120,6 +124,41 @@ pub const LintContext = struct {
         const i = @intFromEnum(loop_index);
         if (i >= self.semantic.loop_exit_reachable.len) return true;
         return self.semantic.loop_exit_reachable[i] != 0;
+    }
+
+    // ── Rule options ──────────────────────────────────────
+
+    /// Get the rule's JSON options value, or null if none configured.
+    pub fn getOptions(self: *const LintContext) ?*const std.json.Value {
+        return self.rule_options;
+    }
+
+    /// Get a string field from the rule's JSON options object.
+    pub fn getOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
+        const opts = self.rule_options orelse return null;
+        if (opts.* != .object) return null;
+        const val = opts.object.get(key) orelse return null;
+        return if (val == .string) val.string else null;
+    }
+
+    /// Get a boolean field from the rule's JSON options object.
+    pub fn getOptionBool(self: *const LintContext, key: []const u8, default: bool) bool {
+        const opts = self.rule_options orelse return default;
+        if (opts.* != .object) return default;
+        const val = opts.object.get(key) orelse return default;
+        return if (val == .bool) val.bool else default;
+    }
+
+    /// Check if the rule's JSON options (string or object) contain a value in an array.
+    pub fn optionArrayContains(self: *const LintContext, key: []const u8, needle: []const u8) bool {
+        const opts = self.rule_options orelse return false;
+        if (opts.* != .object) return false;
+        const arr = opts.object.get(key) orelse return false;
+        if (arr != .array) return false;
+        for (arr.array.items) |item| {
+            if (item == .string and std.mem.eql(u8, item.string, needle)) return true;
+        }
+        return false;
     }
 
     // ── Source access ─────────────────────────────────────

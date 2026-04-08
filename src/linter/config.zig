@@ -56,6 +56,9 @@ pub const Config = struct {
     exclude_patterns: []const []const u8,
     overrides: []const Override,
     rule_severity_table: [rule_count]RuleSeverity,
+    /// Per-rule JSON options value. null = no options configured.
+    /// Points into the retained json_parsed tree — valid for the config's lifetime.
+    rule_options: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
     allocator: std.mem.Allocator,
     /// Retained JSON parse tree — keeps string pointers alive when config
     /// was loaded from JSON.  Null for programmatically constructed configs.
@@ -223,8 +226,29 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
             var rule_iter = rules_val.object.iterator();
             while (rule_iter.next()) |entry| {
                 const rule_name = entry.key_ptr.*;
-                const sev_str = if (entry.value_ptr.* == .string) entry.value_ptr.string else continue;
-                const sev = RuleSeverity.fromString(sev_str) orelse continue;
+                var sev: RuleSeverity = .off;
+                if (entry.value_ptr.* == .string) {
+                    sev = RuleSeverity.fromString(entry.value_ptr.string) orelse continue;
+                } else if (entry.value_ptr.* == .array) {
+                    // ESLint format: ["error", { options... }] or ["warn", "option"]
+                    const items = entry.value_ptr.array.items;
+                    if (items.len > 0 and items[0] == .string) {
+                        sev = RuleSeverity.fromString(items[0].string) orelse continue;
+                    }
+                    // Store pointer to the first options value (after severity).
+                    // The pointer is into the retained json_parsed tree.
+                    if (items.len > 1) {
+                        for (linter.rule_names, 0..) |rn, ri| {
+                            if (std.mem.eql(u8, rn, rule_name)) {
+                                config.rule_options[ri] = &items[1];
+                                break;
+                            }
+                        }
+                    }
+                } else if (entry.value_ptr.* == .integer) {
+                    const n = entry.value_ptr.integer;
+                    sev = if (n == 0) .off else if (n == 1) .warning else .@"error";
+                } else continue;
 
                 config.rule_severities.put(allocator, rule_name, sev) catch {};
             }
