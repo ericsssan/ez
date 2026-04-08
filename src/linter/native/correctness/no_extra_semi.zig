@@ -14,5 +14,5 @@ pub const meta = RuleMeta{
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node, meta.name, "Unnecessary semicolon", meta.default_severity);
+    ctx.report(node, meta.name, "Unnecessary semicolon.", meta.default_severity);
 }

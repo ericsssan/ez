@@ -27,14 +27,14 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const next = i + 1;
         if (next >= text.len) break;
         if (text[next] == '\n' or text[next] == '\r') {
-            ctx.report(node, meta.name, "Multiline string using backslash continuation is not recommended", meta.default_severity);
+            ctx.report(node, meta.name, "Multiline support is limited to browsers supporting ES5 only.", meta.default_severity);
             return;
         }
         // U+2028 LINE SEPARATOR (UTF-8: E2 80 A8) or U+2029 PARAGRAPH SEPARATOR (E2 80 A9)
         if (next + 2 < text.len and text[next] == 0xE2 and text[next + 1] == 0x80 and
             (text[next + 2] == 0xA8 or text[next + 2] == 0xA9))
         {
-            ctx.report(node, meta.name, "Multiline string using backslash continuation is not recommended", meta.default_severity);
+            ctx.report(node, meta.name, "Multiline support is limited to browsers supporting ES5 only.", meta.default_severity);
             return;
         }
     }

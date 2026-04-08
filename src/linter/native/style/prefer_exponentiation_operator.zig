@@ -32,6 +32,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const prop_name = ctx.tokenText(@intFromEnum(member_data.rhs));
     if (std.mem.eql(u8, prop_name, "pow")) {
-        ctx.report(node, meta.name, "Use the `**` operator instead of `Math.pow`", meta.default_severity);
+        ctx.report(node, meta.name, "Use the '**' operator instead of 'Math.pow'.", meta.default_severity);
     }
 }

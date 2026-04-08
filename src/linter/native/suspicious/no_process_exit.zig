@@ -33,6 +33,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const prop_text = ctx.tokenText(@intFromEnum(member_data.rhs));
 
     if (std.mem.eql(u8, obj_text, "process") and std.mem.eql(u8, prop_text, "exit")) {
-        ctx.report(node, meta.name, "Don't use `process.exit()`; throw an error instead", meta.default_severity);
+        ctx.report(node, meta.name, "Don't use process.exit(); throw an error instead.", meta.default_severity);
     }
 }

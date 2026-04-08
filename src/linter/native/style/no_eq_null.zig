@@ -20,6 +20,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const lhs_is_null = lhs != .none and ctx.nodeTag(lhs) == .null_literal;
     const rhs_is_null = rhs != .none and ctx.nodeTag(rhs) == .null_literal;
     if (lhs_is_null or rhs_is_null) {
-        ctx.report(node, meta.name, "Use '===' or '!==' to compare with null", meta.default_severity);
+        ctx.report(node, meta.name, "Use '===' to compare with null.", meta.default_severity);
     }
 }

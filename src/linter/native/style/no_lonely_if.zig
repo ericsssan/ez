@@ -36,6 +36,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const only_stmt: NodeIndex = @enumFromInt(stmts[0]);
     const stmt_tag = ctx.nodeTag(only_stmt);
     if (stmt_tag == .if_stmt or stmt_tag == .if_else_stmt) {
-        ctx.report(only_stmt, meta.name, "Unexpected lonely 'if' inside 'else'; use 'else if' instead", meta.default_severity);
+        ctx.report(only_stmt, meta.name, "Unexpected if as the only statement in an else block.", meta.default_severity);
     }
 }

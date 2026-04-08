@@ -49,6 +49,6 @@ fn checkLine(source: []const u8, start: usize, end: usize, node: NodeIndex, ctx:
     }
 
     if (has_space and has_tab) {
-        ctx.report(node, meta.name, "Line contains mixed spaces and tabs for indentation", meta.default_severity);
+        ctx.report(node, meta.name, "Mixed spaces and tabs.", meta.default_severity);
     }
 }

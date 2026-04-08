@@ -26,7 +26,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const arg_tag = ctx.nodeTag(arg);
         // Flag anonymous function expressions as callbacks
         if (arg_tag == .fn_expr or arg_tag == .async_fn_expr) {
-            ctx.report(arg, meta.name, "Prefer an arrow function instead of a function expression as callback", meta.default_severity);
+            ctx.report(arg, meta.name, "Unexpected function expression.", meta.default_severity);
         }
     }
 }

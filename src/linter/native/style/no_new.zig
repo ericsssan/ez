@@ -19,6 +19,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (expr == .none) return;
 
     if (ctx.nodeTag(expr) == .new_expr) {
-        ctx.report(node, meta.name, "Do not use 'new' for side effects; store the result or use a function call", meta.default_severity);
+        ctx.report(node, meta.name, "Do not use 'new' for side effects.", meta.default_severity);
     }
 }

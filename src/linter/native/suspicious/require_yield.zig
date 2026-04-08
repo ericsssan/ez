@@ -40,7 +40,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const body_range = ast.SubRange{ .start = @intFromEnum(body_data.lhs), .end = @intFromEnum(body_data.rhs) };
         if (ctx.extraSlice(body_range).len == 0) return;
         if (!containsYieldInBlock(body, ctx)) {
-            ctx.report(node, meta.name, "Generator function does not contain a yield expression", meta.default_severity);
+            ctx.report(node, meta.name, "This generator function does not have 'yield'.", meta.default_severity);
         }
         return;
     }
@@ -56,7 +56,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Empty body means no yield — report immediately.
     if (ctx.extraSlice(body_range).len == 0) {
-        ctx.report(node, meta.name, "Generator function does not contain a yield expression", meta.default_severity);
+        ctx.report(node, meta.name, "This generator function does not have 'yield'.", meta.default_severity);
         return;
     }
 
@@ -69,7 +69,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Simplified approach: walk the body block's direct statements and
     // check one level of nesting.
     if (!containsYieldInBlock(body, ctx)) {
-        ctx.report(node, meta.name, "Generator function does not contain a yield expression", meta.default_severity);
+        ctx.report(node, meta.name, "This generator function does not have 'yield'.", meta.default_severity);
     }
 }
 

@@ -36,12 +36,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         // Found the reference for this callee identifier.
         if (!refs.isResolved(ref_id)) {
             // Unresolved = implicit global (the built-in Symbol) → flag
-            ctx.report(callee, meta.name, "`Symbol` cannot be called as a constructor", meta.default_severity);
+            ctx.report(callee, meta.name, "`Symbol` cannot be called as a constructor.", meta.default_severity);
         }
         // Resolved = locally defined → don't flag
         return;
     }
 
     // No reference found — treat as implicit global → flag
-    ctx.report(callee, meta.name, "`Symbol` cannot be called as a constructor", meta.default_severity);
+    ctx.report(callee, meta.name, "`Symbol` cannot be called as a constructor.", meta.default_severity);
 }

@@ -83,7 +83,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const open_tok = ctx.nodeMainToken(node);
     const open_pos = ctx.tokenStart(open_tok);
     if (open_pos >= src.len or src[open_pos] != '[') {
-        ctx.report(node, meta.name, "Unexpected comma in middle of array", meta.default_severity);
+        ctx.report(node, meta.name, "Unexpected comma in middle of array.", meta.default_severity);
         return;
     }
 
@@ -122,7 +122,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             ctx.reportSpan(
                 .{ .start = @intCast(cp), .end = @intCast(cp + 1) },
                 meta.name,
-                "Unexpected comma in middle of array",
+                "Unexpected comma in middle of array.",
                 meta.default_severity,
             );
         }

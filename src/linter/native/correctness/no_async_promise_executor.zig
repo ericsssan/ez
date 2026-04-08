@@ -41,7 +41,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const arg_tag = ctx.nodeTag(first_arg);
 
     if (arg_tag == .async_fn_expr or arg_tag == .async_arrow_fn) {
-        ctx.report(node, meta.name, "Promise executor should not be an async function", meta.default_severity);
+        ctx.report(node, meta.name, "Promise executor functions should not be async.", meta.default_severity);
     }
 }
 

@@ -23,7 +23,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const cp = decodeUtf8(source[i..]);
             if (cp) |result| {
                 if (isIrregularWhitespace(result.codepoint)) {
-                    ctx.report(node, meta.name, "Irregular whitespace character found", meta.default_severity);
+                    ctx.report(node, meta.name, "Irregular whitespace not allowed.", meta.default_severity);
                     return; // Report once per file
                 }
                 i += result.len;

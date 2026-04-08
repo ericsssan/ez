@@ -22,6 +22,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const rhs_is_string = rhs != .none and ctx.nodeTag(rhs) == .string_literal;
 
     if (lhs_is_string or rhs_is_string) {
-        ctx.report(node, meta.name, "Unexpected string concatenation; prefer template literals", meta.default_severity);
+        ctx.report(node, meta.name, "Unexpected string concatenation.", meta.default_severity);
     }
 }

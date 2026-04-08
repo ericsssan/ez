@@ -66,6 +66,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (callee == .none) return;
 
     if (isHasOwnPropertyCall(callee, ctx) or isObjectLiteralHasOwn(callee, ctx)) {
-        ctx.report(node, meta.name, "Prefer 'Object.hasOwn()' over 'Object.prototype.hasOwnProperty.call()'", meta.default_severity);
+        ctx.report(node, meta.name, "Use 'Object.hasOwn()' instead of 'Object.prototype.hasOwnProperty.call()'.", meta.default_severity);
     }
 }

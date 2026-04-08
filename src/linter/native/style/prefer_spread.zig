@@ -29,5 +29,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const prop_text = ctx.tokenText(@intFromEnum(member_data.rhs));
     if (!std.mem.eql(u8, prop_text, "apply")) return;
 
-    ctx.report(node, meta.name, "Use the spread operator instead of `.apply()`", meta.default_severity);
+    ctx.report(node, meta.name, "Use the spread operator instead of '.apply()'.", meta.default_severity);
 }

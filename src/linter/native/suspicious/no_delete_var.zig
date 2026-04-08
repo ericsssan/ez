@@ -20,6 +20,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (operand == .none) return;
 
     if (ctx.nodeTag(operand) == .identifier) {
-        ctx.report(node, meta.name, "Unexpected 'delete' on a variable. Use 'delete' only on object properties", meta.default_severity);
+        ctx.report(node, meta.name, "Variables should not be deleted.", meta.default_severity);
     }
 }

@@ -44,7 +44,7 @@ fn walkForAwait(node: NodeIndex, ctx: *const LintContext, depth: u8) void {
     const tag = ctx.nodeTag(node);
 
     if (tag == .await_expr) {
-        ctx.report(node, meta.name, "`await` inside a loop may not run in parallel", meta.default_severity);
+        ctx.report(node, meta.name, "Unexpected `await` inside a loop.", meta.default_severity);
         return;
     }
 

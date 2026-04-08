@@ -56,7 +56,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (prev_key) |pk| {
             // Compare: if current key < previous key, keys are not sorted
             if (std.mem.order(u8, key, pk) == .lt) {
-                ctx.report(prop, meta.name, "Object keys should be sorted alphabetically", meta.default_severity);
+                ctx.report(prop, meta.name, "Imports should be sorted alphabetically.", meta.default_severity);
                 return;
             }
         }

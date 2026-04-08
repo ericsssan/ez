@@ -60,7 +60,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             '/' => break,
             '[' => {
                 i = scanClass(text, i, v_mode) orelse {
-                    ctx.report(node, meta.name, "Empty character class '[]' will never match anything", meta.default_severity);
+                    ctx.report(node, meta.name, "Empty class.", meta.default_severity);
                     return;
                 };
             },

@@ -59,7 +59,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (is_rest) break; // rest param is always last — stop checking
 
         if (seen_default and !is_default) {
-            ctx.report(param, meta.name, "Default parameters should be last", meta.default_severity);
+            ctx.report(param, meta.name, "Default parameters should be last.", meta.default_severity);
         }
 
         if (is_default) seen_default = true;

@@ -23,6 +23,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (text.len < 2) return;
     if (text[0] != '/') return;
     if (text[1] == '=') {
-        ctx.report(node, meta.name, "Add a space before '=' to avoid /= being interpreted as division assignment", meta.default_severity);
+        ctx.report(node, meta.name, "A regular expression literal can be confused with '/='.", meta.default_severity);
     }
 }

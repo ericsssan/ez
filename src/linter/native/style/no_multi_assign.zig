@@ -19,6 +19,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (rhs == .none) return;
 
     if (ctx.nodeTag(rhs) == .assign) {
-        ctx.report(node, meta.name, "Unexpected chained assignment; use separate statements", meta.default_severity);
+        ctx.report(node, meta.name, "Unexpected chained assignment.", meta.default_severity);
     }
 }

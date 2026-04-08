@@ -28,7 +28,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             var j: usize = i + 2;
             while (j < text.len) : (j += 1) {
                 if (text[j] == '}') {
-                    ctx.report(node, meta.name, "Unexpected template string expression in a regular string", meta.default_severity);
+                    ctx.report(node, meta.name, "Unexpected template string expression.", meta.default_severity);
                     return;
                 }
             }

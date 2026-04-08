@@ -28,6 +28,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // (all paths return/throw, nested infinite loops, switch with all cases returning).
     // body_alive = true means the body CAN complete and loop back for another iteration.
     if (!ctx.loopBodyCanIterate(node)) {
-        ctx.report(node, meta.name, "Loop body always exits on first iteration", meta.default_severity);
+        ctx.report(node, meta.name, "Invalid loop. Its body allows only one iteration.", meta.default_severity);
     }
 }

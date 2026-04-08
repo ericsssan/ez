@@ -26,7 +26,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // - enum member values (handled separately)
     // - array indices in declarators
     // For now: flag all non-trivial number literals
-    ctx.report(node, meta.name, "No magic number; consider using a named constant", meta.default_severity);
+    ctx.report(node, meta.name, "Number constants declarations must use 'const'.", meta.default_severity);
 }
 
 fn isAllowedNumber(text: []const u8) bool {
