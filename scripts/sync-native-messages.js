@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const msgs = require('./eslint-messages.json');
+const msgs = require('./eslint-message-templates.json');
 const dryRun = process.argv.includes('--dry-run');
 
 let fixed = 0, skipped = 0, files = 0;
