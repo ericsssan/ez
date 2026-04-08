@@ -107,6 +107,21 @@ pub const LintContext = struct {
         return &self.semantic.references;
     }
 
+    /// Returns whether a node is reachable (entry reachability).
+    pub fn nodeReachable(self: *const LintContext, index: NodeIndex) bool {
+        const i = @intFromEnum(index);
+        if (i >= self.semantic.node_reachable.len) return true;
+        return self.semantic.node_reachable[i] != 0;
+    }
+
+    /// Returns whether a loop's body can complete and iterate again.
+    /// true = body can iterate, false = body always exits (all paths return/throw/infinite).
+    pub fn loopBodyCanIterate(self: *const LintContext, loop_index: NodeIndex) bool {
+        const i = @intFromEnum(loop_index);
+        if (i >= self.semantic.loop_exit_reachable.len) return true;
+        return self.semantic.loop_exit_reachable[i] != 0;
+    }
+
     // ── Source access ─────────────────────────────────────
 
     /// Return the raw source text for source-level rules (e.g.

@@ -12,6 +12,8 @@ pub const meta = RuleMeta{
     .description = "Disallow unreachable code after return, throw, break, or continue",
 };
 
+pub const needs_semantic = true;
+
 pub const relevant_tags = [_]Node.Tag{.block_stmt};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
@@ -22,32 +24,29 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     };
     const stmts = ctx.extraSlice(range);
 
-    var found_terminator = false;
+    // Use Zig semantic analyzer's precomputed node reachability.
+    // This handles all control flow: if-else, try-catch, switch, loops.
+    var reported_start = false;
     for (stmts) |raw| {
         const stmt: NodeIndex = @enumFromInt(raw);
         if (stmt == .none) continue;
 
-        if (found_terminator) {
-            ctx.report(stmt, meta.name, "Unreachable code detected after control flow statement", meta.default_severity);
-            return;
-        }
-
-        const tag = ctx.nodeTag(stmt);
-        if (isTerminator(tag)) {
-            found_terminator = true;
+        if (!ctx.nodeReachable(stmt)) {
+            // Skip function/class declarations — they're hoisted and always "reachable"
+            const tag = ctx.nodeTag(stmt);
+            if (tag == .fn_decl or tag == .async_fn_decl or
+                tag == .generator_fn_decl or tag == .async_generator_fn_decl or
+                tag == .class_decl)
+            {
+                continue;
+            }
+            // Only report the first unreachable statement in a consecutive run
+            if (!reported_start) {
+                ctx.report(stmt, meta.name, "Unreachable code detected", meta.default_severity);
+                reported_start = true;
+            }
+        } else {
+            reported_start = false;
         }
     }
-}
-
-fn isTerminator(tag: Node.Tag) bool {
-    return switch (tag) {
-        .return_stmt,
-        .throw_stmt,
-        .break_stmt,
-        .break_label,
-        .continue_stmt,
-        .continue_label,
-        => true,
-        else => false,
-    };
 }
