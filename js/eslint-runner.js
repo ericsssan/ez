@@ -375,12 +375,7 @@ class SourceCode {
     this._tokenObjCache = null;
     this._nodesByType = null;
     this.parserServices = null;
-    // Scope indices are file-specific — must be cleared so _ensureScopeIndex rebuilds
-    // for the new AST instead of returning stale data from the previous file.
-    this._scopeSymIndex = null;
-    this._scopeRefIndex = null;
-    this._scopeChildIndex = null;
-    this._symRefIndex = null;
+    // _declSymIndex is file-specific — must be cleared so it rebuilds for the new AST.
     this._declSymIndex = null;
     this._allComments = undefined;
     // _globalScope guards _precomputeScopes — must be cleared so it reruns for new AST.
@@ -946,54 +941,13 @@ class SourceCode {
   }
 
   /**
-   * Build the scope-to-symbols and scope-to-refs indices once, so _buildScope
-   * doesn't scan all symbols/refs for every scope (O(scopes × data) → O(data)).
+   * Build the declNode→[symId,...] index once (for getDeclaredVariables).
+   * Scope→symbol, scope→ref, and scope→children indices are now precomputed
+   * in the Zig buffer as CSR arrays.
    */
-  _ensureScopeIndex() {
-    if (this._scopeSymIndex) return;
+  _ensureDeclSymIndex() {
+    if (this._declSymIndex) return;
     const ast = this._ast;
-    const scopeCount = ast._semScopeCount || 0;
-
-    // scope → [symId, symId, ...] index
-    const symIndex = new Array(scopeCount);
-    for (let i = 0; i < scopeCount; i++) symIndex[i] = [];
-    if (ast._symScopeIds) {
-      for (let i = 0; i < ast._semSymbolCount; i++) {
-        const s = ast._symScopeIds[i];
-        if (s < scopeCount) symIndex[s].push(i);
-      }
-    }
-    this._scopeSymIndex = symIndex;
-
-    // scope → [refIdx, refIdx, ...] index
-    const refIndex = new Array(scopeCount);
-    for (let i = 0; i < scopeCount; i++) refIndex[i] = [];
-    if (ast._refScopeIds) {
-      for (let i = 0; i < ast._semRefCount; i++) {
-        const s = ast._refScopeIds[i];
-        if (s < scopeCount) refIndex[s].push(i);
-      }
-    }
-    this._scopeRefIndex = refIndex;
-
-    // scope → [childScopeId, ...] index
-    const childIndex = new Array(scopeCount);
-    for (let i = 0; i < scopeCount; i++) childIndex[i] = [];
-    if (ast._scopeParents) {
-      const NONE32 = 0xFFFFFFFF;
-      for (let i = 0; i < scopeCount; i++) {
-        const p = ast._scopeParents[i];
-        if (p !== NONE32 && p < scopeCount) childIndex[p].push(i);
-      }
-    }
-    this._scopeChildIndex = childIndex;
-
-    // symbol → ref range is already in the Zig buffer as _symRefStarts/_symRefEnds.
-    // No JS-side index needed — use those directly.
-
-    // declNode ancestor → [symId, ...] index for O(1) getDeclaredVariables lookups.
-    // For each symbol, index it under its decl node AND all ancestor nodes up to the
-    // nearest scope boundary (covers VariableDeclaration → Declarator → Identifier pattern).
     const declSymIndex = new Map();
     if (ast._symDeclNodes && ast._parentData) {
       const pd2 = ast._parentData;
@@ -1002,7 +956,6 @@ class SourceCode {
       for (let i = 0; i < (ast._semSymbolCount || 0); i++) {
         const declNodeIdx = ast._symDeclNodes[i];
         if (declNodeIdx === NONE32b || declNodeIdx >= ast.nodeCount) continue;
-        // Register at decl node itself and walk up to scope boundary
         let cur = declNodeIdx;
         while (cur !== NONE && cur !== NONE32b && cur < ast.nodeCount) {
           let arr = declSymIndex.get(cur);
@@ -1038,39 +991,37 @@ class SourceCode {
     const flags16 = ast._scopeFlags[scopeId];
     const parentId = ast._scopeParents[scopeId];
 
-    // Ensure scope→symbol/ref/child indices are built (once per SourceCode).
-    this._ensureScopeIndex();
+    // Ensure _declSymIndex is built (once per SourceCode).
+    this._ensureDeclSymIndex();
 
-    // Build variables: only symbols belonging to THIS scope (via precomputed index).
-    // Use `set` directly as the dedup map — avoids varMap + Array.from() + new Map(varMap).
+    // Build variables: use Zig-precomputed scope→symbol CSR (scopeBindStart/Count).
     const set = new Map();
     const variables = [];
-    const symIds = this._scopeSymIndex[scopeId];
-    if (symIds) {
-      for (let j = 0; j < symIds.length; j++) {
-        const v = this._buildVariable(symIds[j]);
-        const existing = set.get(v.name);
-        if (existing) {
-          existing.identifiers.push(...v.identifiers);
-          existing.defs.push(...v.defs);
-          existing.references.push(...v.references);
-        } else {
-          set.set(v.name, v);
-          variables.push(v);
-        }
+    const symStart = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
+    const symCount = ast._scopeBindCount ? ast._scopeBindCount[scopeId] : 0;
+    for (let j = 0; j < symCount; j++) {
+      const v = this._buildVariable(symStart + j);
+      const existing = set.get(v.name);
+      if (existing) {
+        existing.identifiers.push(...v.identifiers);
+        existing.defs.push(...v.defs);
+        existing.references.push(...v.references);
+      } else {
+        set.set(v.name, v);
+        variables.push(v);
       }
     }
 
-    // Build references: only refs from THIS scope (via precomputed index).
+    // Build references: use Zig-precomputed scope→ref CSR.
     const references = [];
     const through = [];
-    const refIds = this._scopeRefIndex[scopeId];
-    if (refIds) {
-      for (let j = 0; j < refIds.length; j++) {
-        const ref = this._buildReference(refIds[j]);
-        references.push(ref);
-        if (!ref.resolved) through.push(ref);
-      }
+    const refStart = ast._scopeRefStarts ? ast._scopeRefStarts[scopeId] : 0;
+    const refCount = ast._scopeRefCounts ? ast._scopeRefCounts[scopeId] : 0;
+    const refIds = ast._scopeRefIds;
+    for (let j = 0; j < refCount; j++) {
+      const ref = this._buildReference(refIds ? refIds[refStart + j] : j);
+      references.push(ref);
+      if (!ref.resolved) through.push(ref);
     }
 
     const upper = parentId === NONE32 ? null : this._buildScope(parentId);
@@ -1275,12 +1226,12 @@ class SourceCode {
     // Cache before building children to break the parent←→child cycle.
     this._scopeCache[scopeId] = scope;
 
-    // Populate childScopes via precomputed index (not full scan).
-    const childIds = this._scopeChildIndex[scopeId];
-    if (childIds) {
-      for (let j = 0; j < childIds.length; j++) {
-        childScopes.push(this._buildScope(childIds[j]));
-      }
+    // Populate childScopes via Zig-precomputed scope→children CSR.
+    const childStart = ast._scopeChildStarts ? ast._scopeChildStarts[scopeId] : 0;
+    const childCount = ast._scopeChildCounts ? ast._scopeChildCounts[scopeId] : 0;
+    const childIdsArr = ast._scopeChildIds;
+    for (let j = 0; j < childCount; j++) {
+      childScopes.push(this._buildScope(childIdsArr ? childIdsArr[childStart + j] : j));
     }
 
     // Bubble unresolved references from child scopes into this scope's through
@@ -1650,16 +1601,15 @@ class SourceCode {
     // Populate set with symbol names so getVariableByName(scope, name) lookups work.
     // Required by prefer-const's isOuterVariableInDestructing check and similar rule patterns
     // that walk the scope chain looking for variables by name.
-    this._ensureScopeIndex();
-    const symIds = this._scopeSymIndex ? this._scopeSymIndex[scopeId] : null;
-    if (symIds) {
-      for (let i = 0; i < symIds.length; i++) {
-        const symId = symIds[i];
-        const symName = ast._symName(symId);
-        if (symName) {
-          const thinVar = this._buildThinVariable(symId);
-          set.set(symName, thinVar);
-        }
+    this._ensureDeclSymIndex();
+    const symStart = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
+    const symCount = ast._scopeBindCount ? ast._scopeBindCount[scopeId] : 0;
+    for (let i = 0; i < symCount; i++) {
+      const symId = symStart + i;
+      const symName = ast._symName(symId);
+      if (symName) {
+        const thinVar = this._buildThinVariable(symId);
+        set.set(symName, thinVar);
       }
     }
     return s;
@@ -1707,7 +1657,7 @@ class SourceCode {
 
     // Use real semantic data if available — O(1) via precomputed _declSymIndex.
     if (ast._symDeclNodes && node._i !== undefined && node._i !== null) {
-      this._ensureScopeIndex();
+      this._ensureDeclSymIndex();
       const symIds = this._declSymIndex ? this._declSymIndex.get(node._i) : null;
       if (symIds && symIds.length > 0) {
         // Merge variables with the same name (e.g. duplicate params `function f(a,b,a)`).

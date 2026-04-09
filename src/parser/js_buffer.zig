@@ -125,10 +125,27 @@ pub const SemanticHeader = extern struct {
 
     // Full code path graph offset (points to CfgGraphHeader, 0 = not present).
     cfg_graph_offset: u32 = 0,
+
+    // Scope → refs CSR (refs sorted by scope via counting sort)
+    scope_ref_starts_offset: u32 = 0,  // u32[scope_count] — first index in scope_ref_ids
+    scope_ref_counts_offset: u32 = 0,  // u32[scope_count] — number of refs per scope
+    scope_ref_ids_offset: u32 = 0,     // u32[ref_count]   — ref indices sorted by scope
+
+    // Scope → children CSR (child scopes sorted by parent)
+    scope_child_starts_offset: u32 = 0, // u32[scope_count]     — first index in scope_child_ids
+    scope_child_counts_offset: u32 = 0, // u32[scope_count]     — number of children per scope
+    scope_child_ids_offset: u32 = 0,    // u32[total_children]  — child scope IDs sorted by parent
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 108);
+    std.debug.assert(@sizeOf(SemanticHeader) == 132);
+    std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 104);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 108);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 112);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_ids_offset") == 116);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_starts_offset") == 120);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_counts_offset") == 124);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_ids_offset") == 128);
 }
 
 // ── CFG Graph Header ────────────────────────────────────────────
@@ -269,6 +286,83 @@ pub fn writeSemanticData(
         }
     }
 
+    // ── Scope → refs CSR (counting sort of refs by scope) ──────────
+    const scope_ref_starts = try alloc.alloc(u32, scope_count);
+    const scope_ref_counts = try alloc.alloc(u32, scope_count);
+    const scope_ref_ids = try alloc.alloc(u32, ref_count);
+
+    if (scope_count > 0 and ref_count > 0) {
+        // Step 1: count refs per scope
+        @memset(scope_ref_counts, 0);
+        for (0..ref_count) |i| {
+            const rsc = sem.references.scope_ids.items[i];
+            const s = if (rsc == .none) none32 else @intFromEnum(rsc);
+            if (s < scope_count) scope_ref_counts[s] += 1;
+        }
+        // Step 2: prefix-sum → starts
+        var total_refs: u32 = 0;
+        for (0..scope_count) |i| {
+            scope_ref_starts[i] = total_refs;
+            total_refs += scope_ref_counts[i];
+        }
+        // Step 3: place ref indices into sorted order
+        const cursor = try alloc.alloc(u32, scope_count);
+        defer alloc.free(cursor);
+        @memcpy(cursor, scope_ref_starts);
+        for (0..ref_count) |i| {
+            const rsc = sem.references.scope_ids.items[i];
+            const s = if (rsc == .none) none32 else @intFromEnum(rsc);
+            if (s < scope_count) {
+                scope_ref_ids[cursor[s]] = @intCast(i);
+                cursor[s] += 1;
+            }
+        }
+    } else {
+        @memset(scope_ref_starts, 0);
+        @memset(scope_ref_counts, 0);
+    }
+
+    // ── Scope → children CSR (counting sort of scopes by parent) ──
+    // Count children per scope
+    var total_children: u32 = 0;
+    const scope_child_counts = try alloc.alloc(u32, scope_count);
+    @memset(scope_child_counts, 0);
+    if (scope_count > 0) {
+        for (0..scope_count) |i| {
+            const p = sem.scopes.parents.items[i];
+            const pid = if (p == .none) none32 else @intFromEnum(p);
+            if (pid < scope_count) {
+                scope_child_counts[pid] += 1;
+                total_children += 1;
+            }
+        }
+    }
+    const scope_child_starts = try alloc.alloc(u32, scope_count);
+    const scope_child_ids = try alloc.alloc(u32, total_children);
+
+    if (scope_count > 0 and total_children > 0) {
+        // Prefix-sum → starts
+        var cs: u32 = 0;
+        for (0..scope_count) |i| {
+            scope_child_starts[i] = cs;
+            cs += scope_child_counts[i];
+        }
+        // Place child scope IDs
+        const ccursor = try alloc.alloc(u32, scope_count);
+        defer alloc.free(ccursor);
+        @memcpy(ccursor, scope_child_starts);
+        for (0..scope_count) |i| {
+            const p = sem.scopes.parents.items[i];
+            const pid = if (p == .none) none32 else @intFromEnum(p);
+            if (pid < scope_count) {
+                scope_child_ids[ccursor[pid]] = @intCast(i);
+                ccursor[pid] += 1;
+            }
+        }
+    } else {
+        @memset(scope_child_starts, 0);
+    }
+
     // ── SemanticHeader ────────────────────────────────────────────
     const header_mem = try alloc.alloc(u8, @sizeOf(SemanticHeader));
     const sem_header: *SemanticHeader = @ptrCast(@alignCast(header_mem.ptr));
@@ -320,6 +414,15 @@ pub fn writeSemanticData(
 
         .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr) catch 0; } break :blk 0; },
     };
+
+    // Set new fields AFTER struct write to avoid bump-allocator interactions
+    // from blk: blocks (node_reachable, writeCfgGraph) during struct literal eval.
+    sem_header.scope_ref_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_ref_starts.ptr) else 0;
+    sem_header.scope_ref_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_ref_counts.ptr) else 0;
+    sem_header.scope_ref_ids_offset = if (ref_count > 0) ptrOffsetPub(buf, scope_ref_ids.ptr) else 0;
+    sem_header.scope_child_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_child_starts.ptr) else 0;
+    sem_header.scope_child_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_child_counts.ptr) else 0;
+    sem_header.scope_child_ids_offset = if (total_children > 0) ptrOffsetPub(buf, scope_child_ids.ptr) else 0;
 
     return ptrOffsetPub(buf, header_mem.ptr);
 }

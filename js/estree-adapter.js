@@ -174,6 +174,12 @@ const SH = {
   _RESERVED_96: 96,        // legacy cfg_events_offset (unused)
   _RESERVED_100: 100,      // legacy cfg_events_count (unused)
   CFG_GRAPH_OFFSET: 104,   // byte offset to CfgGraphHeader (0 = not present)
+  SCOPE_REF_STARTS: 108,   // u32[scope_count] — first index in scope_ref_ids per scope
+  SCOPE_REF_COUNTS: 112,   // u32[scope_count] — number of refs per scope
+  SCOPE_REF_IDS: 116,      // u32[ref_count]   — ref indices sorted by scope
+  SCOPE_CHILD_STARTS: 120, // u32[scope_count] — first index in scope_child_ids per scope
+  SCOPE_CHILD_COUNTS: 124, // u32[scope_count] — number of child scopes per scope
+  SCOPE_CHILD_IDS: 128,    // u32[total_children] — child scope IDs sorted by parent
 };
 
 const FLAG_HAS_BOM = 1;
@@ -397,6 +403,29 @@ class AstView {
         catch { this._cfgGraph = null; }
       } else {
         this._cfgGraph = null;
+      }
+
+      // Scope → refs CSR (precomputed in Zig)
+      const srOff = dv.getUint32(semOff + SH.SCOPE_REF_STARTS, true);
+      if (srOff > 0) {
+        this._scopeRefStarts = new Uint32Array(buffer, srOff, this._semScopeCount);
+        this._scopeRefCounts = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_REF_COUNTS, true), this._semScopeCount);
+        const sriOff = dv.getUint32(semOff + SH.SCOPE_REF_IDS, true);
+        this._scopeRefIds = sriOff > 0 ? new Uint32Array(buffer, sriOff, this._semRefCount) : null;
+      }
+
+      // Scope → children CSR (precomputed in Zig)
+      const scOff = dv.getUint32(semOff + SH.SCOPE_CHILD_STARTS, true);
+      if (scOff > 0) {
+        this._scopeChildStarts = new Uint32Array(buffer, scOff, this._semScopeCount);
+        this._scopeChildCounts = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_CHILD_COUNTS, true), this._semScopeCount);
+        const sciOff = dv.getUint32(semOff + SH.SCOPE_CHILD_IDS, true);
+        // Total children = sum of counts, but we can derive it from the last start + count
+        if (sciOff > 0 && this._semScopeCount > 0) {
+          const lastScope = this._semScopeCount - 1;
+          const totalChildren = this._scopeChildStarts[lastScope] + this._scopeChildCounts[lastScope];
+          this._scopeChildIds = new Uint32Array(buffer, sciOff, totalChildren);
+        }
       }
     } else {
       this._semScopeCount = 0;

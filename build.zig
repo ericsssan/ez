@@ -101,6 +101,8 @@ pub fn build(b: *std.Build) void {
     const napi_install_node = b.addInstallLibFile(napi_lib.getEmittedBin(), "ez.node");
     const napi_step = b.step("napi", "Build NAPI shared library for JS plugins");
     napi_step.dependOn(&napi_install_node.step);
+    // Include NAPI build in default install step so `zig build` builds everything.
+    b.getInstallStep().dependOn(&napi_install_node.step);
 
     // QuickJS removed — pure Zig interpreter for ESLint rules
 
