@@ -146,8 +146,10 @@ function _parseDiags(bytesWritten, srcBytes) {
     const offset   = dv.getUint32(pos, true); pos += 4;
     const severity = dv.getUint8(pos);         pos += 1;
     const ruleLen  = dv.getUint8(pos);          pos += 1;
+    if (pos + ruleLen + 2 > bytesWritten) break;
     const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
     const msgLen   = dv.getUint16(pos, true);   pos += 2;
+    if (pos + msgLen > bytesWritten) break;
     const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
     const diag = { offset, severity, ruleName, message };
     if (srcBytes) {
@@ -255,7 +257,8 @@ function lintSource(source, options = {}) {
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
   const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
-  return _parseDiags(bytesWritten);
+  const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
+  return _parseDiags(bytesWritten, srcBytes);
 }
 
 function lint(paths, options = {}) {
@@ -282,7 +285,8 @@ function parseAndLintSource(source, options = {}) {
   const ast = options.noPrivateCopy
     ? new AstView(buf)
     : new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
-  const diags = _parseDiags(bytesUsed);
+  const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
+  const diags = _parseDiags(bytesUsed, srcBytes);
   return { ast, diags };
 }
 

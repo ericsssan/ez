@@ -330,9 +330,9 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
     }
   }
 
-  // Collect all token indices [startTok..endTok] into result
+  // Collect all token indices [startTok..endTok] into result (deduplicate via last element)
   for (let t = startTok; t <= endTok; t++) {
-    if (!result.includes(t)) result.push(t);
+    if (result.length === 0 || result[result.length - 1] < t) result.push(t);
   }
 }
 
@@ -383,6 +383,8 @@ class SourceCode {
     // _buildScope(funcScope) to trigger a recursive top-down cascade that visits scopes
     // out of order and leaves child.through mutated before the intended parent sees it.
     this._globalScope = null;
+    this._astObj = null;
+    this._stubScopeCached = null;
   }
 
   /**
@@ -690,7 +692,8 @@ class SourceCode {
     // Options object: ESLint uses {filter?, skip?, count?, includeComments?}
     return {
       fn: (typeof filterOrOpts.filter === 'function') ? filterOrOpts.filter : null,
-      skip: filterOrOpts.skip || filterOrOpts.count || 0,
+      skip: filterOrOpts.skip || 0,
+      count: filterOrOpts.count || 0,
       ic: !!filterOrOpts.includeComments,
     };
   }
@@ -1816,7 +1819,7 @@ class SourceCode {
   isSpaceBetween(nodeA, nodeB) {
     if (!nodeA || !nodeB) return false;
     const ast = this._ast;
-    const aEnd = nodeA.range ? nodeA.range[1] : (nodeA.mainToken !== undefined ? ast._tokEnds[nodeA.mainToken] : -1);
+    const aEnd = nodeA.range ? nodeA.range[1] : (nodeA.mainToken !== undefined && ast._tokEnds ? ast._tokEnds[nodeA.mainToken] : -1);
     const bStart = nodeB.range ? nodeB.range[0] : (nodeB.mainToken !== undefined ? ast._tokStarts[nodeB.mainToken] : -1);
     if (aEnd < 0 || bStart < 0 || aEnd >= bStart) return false;
     // Walk tokens between A and B; check for whitespace gaps between consecutive tokens.
@@ -2539,13 +2542,6 @@ function _fuseHandlers(handlers, typeName) {
 }
 
 /**
- * Hot path: invoke handler without try/catch.
- * V8 can fully optimize this since there's no exception handling.
- */
-function _callHandler(handler, node) {
-  handler(node);
-}
-
 /**
  * SQL compiled-query technique: generate a direct-call dispatch function.
  *
@@ -2565,13 +2561,7 @@ function _callHandler(handler, node) {
  *
  * Max 512 handlers to keep generated code size reasonable.
  */
-/**
- * Cold path: handle errors from handler invocation.
- * Separated from the hot path so V8 doesn't deoptimize the caller.
- */
-function _handleError(err, ruleId, context) {
-  context._reports.push({ ruleId, message: `Plugin error: ${err.message}` });
-}
+// _handleError removed — unused dead code (error handling is inlined in _invokeFused)
 
 /**
  * Invoke a fused handler descriptor against a node.
@@ -3360,7 +3350,7 @@ let _cachedIfStmtTagSet = null; // Set of ALL tag indices whose name is 'IfState
 let _cachedIfStmtTag = -1; // first IfStatement tag
 let _cachedTryStmtTagSet = null; // Set of ALL tag indices whose name is 'TryStatement'
 let _cachedDoWhileStmtTagSet = null; // Set of ALL tag indices whose name is 'DoWhileStatement'
-let _cachedLoopTagSet = null, _cachedSwitchTagSet = null, _cachedBreakTagSet = null;
+let _cachedLoopTagSet = null, _cachedSwitchTagSet = null;
 let _cachedExitKeys = null; // indexed by tag int → 'TypeName:exit' pre-interned string
 let _cachedTypeNameToTag = null; // Map<typeName, tagIndex> — last occurrence, for O(1) reverse lookup
 let _cachedTypeNameToAllTags = null; // Map<typeName, Int32Array> — ALL variant tag indices
@@ -3613,11 +3603,11 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
     tagExitHandlers[t] = remapSlot(_template.exitTemplates[t], tn + ':exit');
   }
 
-  const fileLevelEnter = _remapList(_template.fileLevelEnterIds, 'Program', handlerByKey, handlerByRule);
-  const fileLevelExit = _remapList(_template.fileLevelExitIds, 'Program:exit', handlerByKey, handlerByRule);
+  const fileLevelEnter = _remapList(_template.fileLevelEnterIds, 'Program', handlerByKey);
+  const fileLevelExit = _remapList(_template.fileLevelExitIds, 'Program:exit', handlerByKey);
   const batchScannable = new Map();
   for (const [tn, ruleIds] of _template.batchScannableIds) {
-    const hs = _remapList(ruleIds, tn, handlerByKey, handlerByRule);
+    const hs = _remapList(ruleIds, tn, handlerByKey);
     if (hs.length > 0) batchScannable.set(tn, hs);
   }
 
@@ -3625,10 +3615,10 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
            fileLevelEnter, fileLevelExit, batchScannable, _template };
 }
 
-function _remapList(ruleIds, key, handlerByKey, handlerByRule) {
+function _remapList(ruleIds, key, handlerByKey) {
   const result = [];
   for (let i = 0; i < ruleIds.length; i++) {
-    const fresh = handlerByKey.get(ruleIds[i] + '|' + key) || handlerByRule.get(ruleIds[i]);
+    const fresh = handlerByKey.get(ruleIds[i] + '|' + key);
     if (fresh) result.push(fresh);
   }
   return result;
@@ -4236,7 +4226,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   if (fileLevelEnter.length > 0) {
     const rootNode = nodeView(ast, 0);
     context._currentNodeIdx = 0;
-    for (const hd of fileLevelEnter) hd.handler(rootNode);
+    for (const hd of fileLevelEnter) {
+      try { hd.handler(rootNode); }
+      catch (e) { context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${e.message}` }); }
+    }
   }
 
   // Pre-compute MethodDefinition → Property remap for object literal methods.
@@ -4489,7 +4482,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   if (fileLevelExit.length > 0) {
     const rootNode = nodeView(ast, 0);
     context._currentNodeIdx = 0;
-    for (const hd of fileLevelExit) hd.handler(rootNode);
+    for (const hd of fileLevelExit) {
+      try { hd.handler(rootNode); }
+      catch (e) { context._reports.push({ ruleId: hd.ruleId, message: `Plugin error: ${e.message}` }); }
+    }
   }
 }
 
