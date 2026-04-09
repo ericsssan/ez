@@ -43,7 +43,7 @@
     "array-callback-return": {
       "runner": {
         "fn": 2,
-        "fp": 9,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -1498,8 +1498,8 @@
     },
     "no-fallthrough": {
       "runner": {
-        "fn": 5,
-        "fp": 18,
+        "fn": 3,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -2616,8 +2616,8 @@
     },
     "no-unreachable-loop": {
       "runner": {
-        "fn": 1,
-        "fp": 232,
+        "fn": 27,
+        "fp": 180,
         "crash": 0
       },
       "native": {
@@ -2629,8 +2629,8 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 18,
-        "fp": 6,
+        "fn": 11,
+        "fp": 9,
         "crash": 0
       },
       "native": {
