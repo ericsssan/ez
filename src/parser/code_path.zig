@@ -961,6 +961,7 @@ pub const CodePathBuilder = struct {
         try self.leaveFromCurrentSegment(node, .enter);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
+
         try self.forwardCurrentToHead(node, .enter);
     }
 

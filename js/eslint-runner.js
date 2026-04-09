@@ -4608,9 +4608,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               if (!fromNext.includes(toSeg)) fromNext.push(toSeg);
               const fromAllNext = fromSeg.allNextSegments;
               if (!fromAllNext.includes(toSeg)) fromAllNext.push(toSeg);
-              // Only dispatch the onCodePathSegmentLoop handler for real loops
-              const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[nodeIdx] !== 0;
-              if (fromSeg.reachable && loopExitAlive) {
+              if (fromSeg.reachable) {
                 _dispatchSegLoop(fromSeg, toSeg, node);
               }
             }
