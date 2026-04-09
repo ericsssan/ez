@@ -550,7 +550,10 @@ pub const CodePathBuilder = struct {
     // ── CodePath management ──────────────────────────────────
 
     /// Enter a new code path (function, program, class field, static block).
-    pub fn enterCodePath(self: *CodePathBuilder, node: NodeIndex, origin: Origin) !void {
+    /// Enter a new code path. `node` = the function/program node. `body_node` = the body
+    /// (BlockStatement) — initial segment events fire at body_node so they're after the
+    /// function node's enter handler (rules set up state in MethodDefinition handler first).
+    pub fn enterCodePath(self: *CodePathBuilder, node: NodeIndex, origin: Origin, body_node: NodeIndex) !void {
         const cp_id: CodePathId = @intCast(self.codepaths.items.len);
         const upper = self.current_codepath;
         self.current_codepath = cp_id;
@@ -588,9 +591,10 @@ pub const CodePathBuilder = struct {
             .phase = .enter,
         });
 
-        // Mark initial segment used and emit segment start
+        // Mark initial segment used and emit segment start at body_node
+        // (fires at body enter, after the function node's enter handler)
         try self.markUsed(initial_seg);
-        try self.emitSegStart(initial_seg, node, .enter);
+        try self.emitSegStart(initial_seg, body_node, .enter);
     }
 
     /// Exit the current code path.
@@ -612,6 +616,19 @@ pub const CodePathBuilder = struct {
             try self.cp_final_pool.append(self.allocator, seg_id);
         }
         cp.final_end = @intCast(self.cp_final_pool.items.len);
+
+        // Final segments are also returned segments for functions (implicit return)
+        // ESLint adds them to returnedSegments in CodePathState.makeFinal()
+        // Only for function origins — program doesn't have implicit return
+        if (cp.origin != .program) {
+            if (cp.returned_end == 0 and cp.returned_start == 0) {
+                cp.returned_start = @intCast(self.cp_returned_pool.items.len);
+            }
+            for (head) |seg_id| {
+                try self.cp_returned_pool.append(self.allocator, seg_id);
+            }
+            cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+        }
 
         // Emit codepath end (post phase — fires AFTER exit handlers)
         try self.events.append(self.allocator, .{

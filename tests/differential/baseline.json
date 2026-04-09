@@ -263,9 +263,9 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 40,
-        "fp": 0,
-        "crash": 0
+        "fn": 16,
+        "fp": 6,
+        "crash": 6
       },
       "native": {
         "fn": 40,
@@ -471,8 +471,8 @@
     },
     "getter-return": {
       "runner": {
-        "fn": 15,
-        "fp": 0,
+        "fn": 9,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -1147,7 +1147,7 @@
     },
     "no-constructor-return": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1642,7 +1642,7 @@
     "no-invalid-this": {
       "runner": {
         "fn": 6,
-        "fp": 6,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2486,7 +2486,7 @@
     },
     "no-this-before-super": {
       "runner": {
-        "fn": 23,
+        "fn": 10,
         "fp": 0,
         "crash": 0
       },

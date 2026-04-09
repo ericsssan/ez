@@ -1075,7 +1075,7 @@ pub const SemanticAnalyzer = struct {
             _ = try self.enterScope(.module, idx);
         }
         // CodePathBuilder: enter program code path
-        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .program);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .program, idx);
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
         // CodePathBuilder: exit program code path
@@ -1263,7 +1263,7 @@ pub const SemanticAnalyzer = struct {
         // Each function body starts with a fresh live path; restore outer state after.
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, fn_data.body);
         try self.visitNode(fn_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
@@ -1292,7 +1292,7 @@ pub const SemanticAnalyzer = struct {
         try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, fn_data.body);
         try self.visitNode(fn_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
@@ -1313,7 +1313,7 @@ pub const SemanticAnalyzer = struct {
         try self.visitParams(SubRange{ .start = arrow_data.params_start, .end = arrow_data.params_end });
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, arrow_data.body);
         try self.visitNode(arrow_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
@@ -1417,7 +1417,7 @@ pub const SemanticAnalyzer = struct {
         try self.visitParams(SubRange{ .start = method_data.params_start, .end = method_data.params_end });
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, method_data.body);
         try self.visitNode(method_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
