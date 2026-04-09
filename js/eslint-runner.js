@@ -4517,9 +4517,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Clean-cut mode: CfgGraph fully replaces CPTracker. Disabled pending Zig event tuning.
       // _useCfgGraph = true;
       // Additive mode: CfgGraph events fire alongside CPTracker (+2 tests).
-      // Clean-cut mode disabled: CodePathBuilder needs more segment events
-      // (if/else fork, loop condition, switch case segments) to match ESLint.
-      // Currently only emits root + loop back-edge segments.
+      // Clean-cut disabled: CfgGraph events fire at enter/exit boundaries but ESLint
+      // interleaves them with AST events. Rules depend on exact timing — loop events
+      // must fire BEFORE the loop node's exit handler, not at the same time.
       // _useCfgGraph = true;
     }
 
@@ -4592,7 +4592,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           case 6: { // SEG_LOOP
             const fromSeg = _cfgGraph.segment(ev.d1);
             const toSeg = _cfgGraph.segment(ev.d2);
-            if (fromSeg && toSeg) _dispatchSegLoop(fromSeg, toSeg, node);
+            // Only fire loop event if from-segment is reachable AND loop can iterate
+            const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[nodeIdx] !== 0;
+            if (fromSeg && toSeg && fromSeg.reachable && loopExitAlive) {
+              _dispatchSegLoop(fromSeg, toSeg, node);
+            }
             break;
           }
         }

@@ -837,7 +837,7 @@ pub const CodePathBuilder = struct {
 
     // ── Loops ────────────────────────────────────────────────
 
-    pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8) !void {
+    pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, node: NodeIndex) !void {
         try self.pushBreakContext(true, label);
         const break_ctx = self.break_context orelse unreachable;
 
@@ -852,6 +852,11 @@ pub const CodePathBuilder = struct {
         self.loop_context = ctx;
 
         try self.pushChoiceContext(.loop, false);
+        // Emit segment transition: end current, start loop body segment
+        try self.leaveFromCurrentSegment(node);
+        const new_segs = try self.fork_context.makeNext(-1, -1, self);
+        try self.fork_context.replaceHead(new_segs, self);
+        try self.forwardCurrentToHead(node);
     }
 
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -859,7 +864,11 @@ pub const CodePathBuilder = struct {
         self.loop_context = ctx.upper;
         try self.popChoiceContext();
         self.popBreakContext();
-        _ = node;
+        // Emit segment transition: end loop, start after-loop segment
+        try self.leaveFromCurrentSegment(node);
+        const new_segs = try self.fork_context.makeNext(-1, -1, self);
+        try self.fork_context.replaceHead(new_segs, self);
+        try self.forwardCurrentToHead(node);
     }
 
     pub fn makeLoopBackEdge(self: *CodePathBuilder, node: NodeIndex) !void {

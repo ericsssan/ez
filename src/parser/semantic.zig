@@ -608,7 +608,7 @@ pub const SemanticAnalyzer = struct {
             .while_stmt => {
                 const alive_pre = self.cfg_alive;
                 if (self.cpb_initialized) {
-                    try self.cpb.pushLoopContext(.while_stmt, null);
+                    try self.cpb.pushLoopContext(.while_stmt, null, idx);
                     self.cpb.setLoopContinueDest();
                 }
                 try self.visitNode(data.lhs); // condition
@@ -648,7 +648,7 @@ pub const SemanticAnalyzer = struct {
             .do_while_stmt => {
                 const alive_pre = self.cfg_alive;
                 if (self.cpb_initialized) {
-                    try self.cpb.pushLoopContext(.do_while_stmt, null);
+                    try self.cpb.pushLoopContext(.do_while_stmt, null, idx);
                     self.cpb.setLoopEntrySegments();
                 }
                 const depth = self.breakable_depth;
@@ -1092,7 +1092,7 @@ pub const SemanticAnalyzer = struct {
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
         const alive_pre = self.cfg_alive;
-        if (self.cpb_initialized) try self.cpb.pushLoopContext(.for_stmt, null);
+        if (self.cpb_initialized) try self.cpb.pushLoopContext(.for_stmt, null, idx);
         try self.visitNode(for_data.init);
         if (self.cpb_initialized) self.cpb.setLoopContinueDest();
         try self.visitNode(for_data.condition);
@@ -1132,7 +1132,7 @@ pub const SemanticAnalyzer = struct {
             else => .for_in_stmt,
         };
         if (self.cpb_initialized) {
-            try self.cpb.pushLoopContext(loop_type, null);
+            try self.cpb.pushLoopContext(loop_type, null, idx);
             self.cpb.setLoopContinueDest();
         }
         const binding_tag = self.ast.nodeTag(fiof_data.binding);
