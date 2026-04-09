@@ -923,6 +923,13 @@ pub const CodePathBuilder = struct {
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.loop_context orelse return;
         self.loop_context = ctx.upper;
+        // Merge continue segments into choice context — these flow back to loop head
+        // and indicate the loop CAN iterate (preventing false unreachable-loop reports)
+        if (!ctx.continue_fork.empty()) {
+            if (self.choice_context) |cc| {
+                try cc.true_fork.addAll(&ctx.continue_fork);
+            }
+        }
         // Save break context's broken_fork BEFORE popping
         const break_ctx = self.break_context;
         try self.popChoiceContext(node);
