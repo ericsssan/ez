@@ -817,6 +817,20 @@ pub const CodePathBuilder = struct {
             }
         }
         try self.popChoiceContext(node);
+
+        // If the switch has a default case, all branches are covered.
+        // Remove the initial discriminant entry from the fork context so
+        // the merge reflects only case-body exits (not the reachable discriminant).
+        // Without default, the discriminant path flows to after the switch.
+        if (ctx.default_segments != null) {
+            const fc = self.fork_context;
+            if (fc.segments_list.items.len > 1) {
+                const last = fc.segments_list.items[fc.segments_list.items.len - 1];
+                fc.segments_list.clearRetainingCapacity();
+                try fc.segments_list.append(fc.allocator, last);
+            }
+        }
+
         try self.popForkContext(node);
         self.popBreakContext();
     }
@@ -992,9 +1006,13 @@ pub const CodePathBuilder = struct {
         const dest = ctx.continue_dest_segments orelse ctx.entry_segments;
         if (dest) |d| {
             for (head) |from_seg| {
-                for (d) |to_seg| {
-                    if (from_seg != NONE_SEG and to_seg != NONE_SEG) {
-                        try self.markLooped(to_seg, from_seg);
+                // Only create back-edges from reachable segments.
+                // If the loop body always exits (return/throw/break), no back-edge.
+                if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                    for (d) |to_seg| {
+                        if (to_seg != NONE_SEG) {
+                            try self.markLooped(to_seg, from_seg);
+                        }
                     }
                 }
             }
@@ -1005,9 +1023,11 @@ pub const CodePathBuilder = struct {
         const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
         if (entry) |e| {
             for (head) |from_seg| {
-                for (e) |to_seg| {
-                    if (from_seg != NONE_SEG and to_seg != NONE_SEG) {
-                        try self.emitSegLoop(from_seg, to_seg, node);
+                if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                    for (e) |to_seg| {
+                        if (to_seg != NONE_SEG) {
+                            try self.emitSegLoop(from_seg, to_seg, node);
+                        }
                     }
                 }
             }
@@ -1100,8 +1120,37 @@ pub const CodePathBuilder = struct {
         }
 
         if (target_loop) |ctx| {
-            const head = try self.allocator.dupe(SegmentId, self.fork_context.head());
-            try ctx.continue_fork.add(head, self);
+            const head = self.fork_context.head();
+            const head_copy = try self.allocator.dupe(SegmentId, head);
+            try ctx.continue_fork.add(head_copy, self);
+
+            // Create graph back-edges and emit LOOP events for the continue.
+            // Graph edge targets the continue destination (test/update).
+            const dest = ctx.continue_dest_segments orelse ctx.entry_segments;
+            if (dest) |d| {
+                for (head) |from_seg| {
+                    if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                        for (d) |to_seg| {
+                            if (to_seg != NONE_SEG) {
+                                try self.markLooped(to_seg, from_seg);
+                            }
+                        }
+                    }
+                }
+            }
+            // LOOP event uses entry_segments (isLoopingTarget mapping).
+            const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
+            if (entry) |e| {
+                for (head) |from_seg| {
+                    if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                        for (e) |to_seg| {
+                            if (to_seg != NONE_SEG) {
+                                try self.emitSegLoop(from_seg, to_seg, node);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Make subsequent code unreachable
@@ -1128,6 +1177,14 @@ pub const CodePathBuilder = struct {
         cp.returned_end = @intCast(self.cp_returned_pool.items.len);
 
         // Make subsequent code unreachable
+        try self.leaveFromCurrentSegment(node, .exit);
+        const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
+        try self.fork_context.replaceHead(unreachable_segs, self);
+        try self.forwardCurrentToHead(node, .exit);
+    }
+
+    /// Mark current head as unreachable (e.g., after infinite loop with no break).
+    pub fn makeUnreachable(self: *CodePathBuilder, node: NodeIndex) !void {
         try self.leaveFromCurrentSegment(node, .exit);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);

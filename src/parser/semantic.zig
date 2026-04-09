@@ -644,6 +644,10 @@ pub const SemanticAnalyzer = struct {
                     self.loop_exit_reachable[wli] = if (body_alive) 1 else 0;
                 }
                 if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
+                // Infinite loop with no exit: mark code path segments unreachable
+                if (!self.cfg_alive and self.cpb_initialized) {
+                    try self.cpb.makeUnreachable(idx);
+                }
             },
             .do_while_stmt => {
                 const alive_pre = self.cfg_alive;
@@ -677,6 +681,9 @@ pub const SemanticAnalyzer = struct {
                     self.loop_exit_reachable[dwi] = if (body_alive) 1 else 0;
                 }
                 if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
+                if (!self.cfg_alive and self.cpb_initialized) {
+                    try self.cpb.makeUnreachable(idx);
+                }
             },
             .try_stmt => try self.visitTryStmt(data),
             .labeled_stmt => {
@@ -1139,6 +1146,9 @@ pub const SemanticAnalyzer = struct {
             self.cfg_alive = alive_pre;
         }
         if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
+        if (!self.cfg_alive and self.cpb_initialized) {
+            try self.cpb.makeUnreachable(idx);
+        }
         self.leaveScope();
         return body_alive;
     }
