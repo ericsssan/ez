@@ -872,7 +872,17 @@ pub const CodePathBuilder = struct {
 
     // ── Try/catch/finally ────────────────────────────────────
 
-    pub fn pushTryContext(self: *CodePathBuilder, has_finalizer: bool, _: NodeIndex) !void {
+    pub fn pushTryContext(self: *CodePathBuilder, has_finalizer: bool, try_body_node: NodeIndex) !void {
+        // Save pre-try head BEFORE creating try-body segment.
+        const pre_try = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null;
+
+        // Create a new segment for the try body so it's separate from pre-try.
+        // Catch predecessor must be pre-try (before any try-body code ran).
+        try self.leaveFromCurrentSegment(try_body_node, .enter);
+        const try_body_segs = try self.fork_context.makeNext(-1, -1, self);
+        try self.fork_context.replaceHead(try_body_segs, self);
+        try self.forwardCurrentToHead(try_body_node, .enter);
+
         const ctx = try self.allocator.create(TryContext);
         ctx.* = .{
             .upper = self.try_context,
@@ -881,7 +891,7 @@ pub const CodePathBuilder = struct {
             .returned_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .thrown_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .try_end_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
-            .pre_try_segments = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null,
+            .pre_try_segments = pre_try,
             .last_of_try_reachable = false,
             .last_of_catch_reachable = false,
         };
@@ -926,13 +936,13 @@ pub const CodePathBuilder = struct {
         try ctx.try_end_fork.add(try_end_head, self);
         ctx.position = .catch_body;
 
-        // End try body segments, start catch segments
+        // End try body segments, start catch segments.
+        // Catch predecessor is pre-try state ONLY — exception can throw before
+        // any try-body code, so catch must not inherit try-body-end state.
         try self.leaveFromCurrentSegment(node, .enter);
-        // Catch is reachable from pre-try state (exceptions can be thrown at any point)
-        // Use pre-try segments as predecessors so catch starts reachable
         if (ctx.pre_try_segments) |pre_try| {
-            const catch_seg_slice = try self.allocator.dupe(SegmentId, pre_try);
-            try self.fork_context.add(catch_seg_slice, self);
+            const pre_copy = try self.allocator.dupe(SegmentId, pre_try);
+            try self.fork_context.replaceHead(pre_copy, self);
         }
         const catch_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(catch_segs, self);

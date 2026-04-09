@@ -348,67 +348,94 @@ fn writeCfgGraph(
     }
 
     // ── Adjacency lists (CSR format) ────────────────────────
-    // Reorder targets into segment-ID order for valid CSR (monotonic starts).
-    // Targets are appended in markUsed() order which may differ from segment order.
-    const seg_next_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_next_targets = try alloc.alloc(u32, cpr.next_targets.len);
-    const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_prev_targets = try alloc.alloc(u32, cpr.prev_targets.len);
-    const seg_all_next_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_all_next_targets = try alloc.alloc(u32, cpr.all_next_targets.len);
-    const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_all_prev_targets = try alloc.alloc(u32, cpr.all_prev_targets.len);
-    const seg_looped_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_looped_targets = try alloc.alloc(u32, cpr.looped_targets.len);
+    // Rebuild adjacency from scratch: copy each segment's pool slice into
+    // a fresh contiguous array in segment-ID order. This guarantees monotonic
+    // starts regardless of the order segments were created or pools were appended to.
+    //
+    // We must copy ALL source data to a temp buffer FIRST, then allocate the
+    // output arrays. The bump allocator may place output arrays adjacent to
+    // source data, so allocating output arrays before copying would be safe,
+    // but copying from source slices AFTER allocating new memory from the same
+    // bump region risks reading stale data if the allocator reuses pages.
+    // Using a two-pass approach (count, then copy) avoids this entirely.
+
+    // Pass 1: count total entries per list type
+    var total_next: u32 = 0;
+    var total_prev: u32 = 0;
+    var total_all_next: u32 = 0;
+    var total_all_prev: u32 = 0;
+    var total_looped: u32 = 0;
+    for (0..seg_count) |i| {
+        const s = cpr.segments[i];
+        if (s.next_end > s.next_start) total_next += s.next_end - s.next_start;
+        if (s.prev_end > s.prev_start) total_prev += s.prev_end - s.prev_start;
+        if (s.all_next_end > s.all_next_start) total_all_next += s.all_next_end - s.all_next_start;
+        if (s.all_prev_end > s.all_prev_start) total_all_prev += s.all_prev_end - s.all_prev_start;
+        if (s.looped_prev_end > s.looped_prev_start) total_looped += s.looped_prev_end - s.looped_prev_start;
+    }
+
+    // Pass 2: copy source pool data to temp buffers (before allocating output)
+    const tmp_next = try alloc.alloc(u32, total_next);
+    const tmp_prev = try alloc.alloc(u32, total_prev);
+    const tmp_all_next = try alloc.alloc(u32, total_all_next);
+    const tmp_all_prev = try alloc.alloc(u32, total_all_prev);
+    const tmp_looped = try alloc.alloc(u32, total_looped);
     {
-        var n_off: u32 = 0;
-        var p_off: u32 = 0;
-        var an_off: u32 = 0;
-        var ap_off: u32 = 0;
-        var l_off: u32 = 0;
+        var n: u32 = 0;
+        var p: u32 = 0;
+        var an: u32 = 0;
+        var ap: u32 = 0;
+        var lo: u32 = 0;
         for (0..seg_count) |i| {
             const s = cpr.segments[i];
-
-            seg_next_starts[i] = n_off;
-            if (s.next_end > s.next_start) {
-                const n_len = s.next_end - s.next_start;
-                @memcpy(seg_next_targets[n_off..][0..n_len], cpr.next_targets[s.next_start..s.next_end]);
-                n_off += n_len;
-            }
-
-            seg_prev_starts[i] = p_off;
-            if (s.prev_end > s.prev_start) {
-                const p_len = s.prev_end - s.prev_start;
-                @memcpy(seg_prev_targets[p_off..][0..p_len], cpr.prev_targets[s.prev_start..s.prev_end]);
-                p_off += p_len;
-            }
-
-            seg_all_next_starts[i] = an_off;
-            if (s.all_next_end > s.all_next_start) {
-                const an_len = s.all_next_end - s.all_next_start;
-                @memcpy(seg_all_next_targets[an_off..][0..an_len], cpr.all_next_targets[s.all_next_start..s.all_next_end]);
-                an_off += an_len;
-            }
-
-            seg_all_prev_starts[i] = ap_off;
-            if (s.all_prev_end > s.all_prev_start) {
-                const ap_len = s.all_prev_end - s.all_prev_start;
-                @memcpy(seg_all_prev_targets[ap_off..][0..ap_len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]);
-                ap_off += ap_len;
-            }
-
-            seg_looped_starts[i] = l_off;
-            if (s.looped_prev_end > s.looped_prev_start) {
-                const l_len = s.looped_prev_end - s.looped_prev_start;
-                @memcpy(seg_looped_targets[l_off..][0..l_len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]);
-                l_off += l_len;
-            }
+            if (s.next_end > s.next_start) { const len = s.next_end - s.next_start; @memcpy(tmp_next[n..][0..len], cpr.next_targets[s.next_start..s.next_end]); n += len; }
+            if (s.prev_end > s.prev_start) { const len = s.prev_end - s.prev_start; @memcpy(tmp_prev[p..][0..len], cpr.prev_targets[s.prev_start..s.prev_end]); p += len; }
+            if (s.all_next_end > s.all_next_start) { const len = s.all_next_end - s.all_next_start; @memcpy(tmp_all_next[an..][0..len], cpr.all_next_targets[s.all_next_start..s.all_next_end]); an += len; }
+            if (s.all_prev_end > s.all_prev_start) { const len = s.all_prev_end - s.all_prev_start; @memcpy(tmp_all_prev[ap..][0..len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]); ap += len; }
+            if (s.looped_prev_end > s.looped_prev_start) { const len = s.looped_prev_end - s.looped_prev_start; @memcpy(tmp_looped[lo..][0..len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]); lo += len; }
         }
-        seg_next_starts[seg_count] = n_off;
-        seg_prev_starts[seg_count] = p_off;
-        seg_all_next_starts[seg_count] = an_off;
-        seg_all_prev_starts[seg_count] = ap_off;
-        seg_looped_starts[seg_count] = l_off;
+    }
+
+    // Pass 3: allocate output arrays and build CSR starts from temp data
+    const seg_next_starts = try alloc.alloc(u32, seg_count + 1);
+    const seg_next_targets = try alloc.alloc(u32, total_next);
+    const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
+    const seg_prev_targets = try alloc.alloc(u32, total_prev);
+    const seg_all_next_starts = try alloc.alloc(u32, seg_count + 1);
+    const seg_all_next_targets = try alloc.alloc(u32, total_all_next);
+    const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
+    const seg_all_prev_targets = try alloc.alloc(u32, total_all_prev);
+    const seg_looped_starts = try alloc.alloc(u32, seg_count + 1);
+    const seg_looped_targets = try alloc.alloc(u32, total_looped);
+    @memcpy(seg_next_targets, tmp_next);
+    @memcpy(seg_prev_targets, tmp_prev);
+    @memcpy(seg_all_next_targets, tmp_all_next);
+    @memcpy(seg_all_prev_targets, tmp_all_prev);
+    @memcpy(seg_looped_targets, tmp_looped);
+    {
+        var n: u32 = 0;
+        var p: u32 = 0;
+        var an: u32 = 0;
+        var ap: u32 = 0;
+        var lo: u32 = 0;
+        for (0..seg_count) |i| {
+            const s = cpr.segments[i];
+            seg_next_starts[i] = n;
+            if (s.next_end > s.next_start) n += s.next_end - s.next_start;
+            seg_prev_starts[i] = p;
+            if (s.prev_end > s.prev_start) p += s.prev_end - s.prev_start;
+            seg_all_next_starts[i] = an;
+            if (s.all_next_end > s.all_next_start) an += s.all_next_end - s.all_next_start;
+            seg_all_prev_starts[i] = ap;
+            if (s.all_prev_end > s.all_prev_start) ap += s.all_prev_end - s.all_prev_start;
+            seg_looped_starts[i] = lo;
+            if (s.looped_prev_end > s.looped_prev_start) lo += s.looped_prev_end - s.looped_prev_start;
+        }
+        seg_next_starts[seg_count] = n;
+        seg_prev_starts[seg_count] = p;
+        seg_all_next_starts[seg_count] = an;
+        seg_all_prev_starts[seg_count] = ap;
+        seg_looped_starts[seg_count] = lo;
     }
 
     // ── Per-codepath data ───────────────────────────────────
