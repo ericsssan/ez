@@ -855,7 +855,7 @@ pub const CodePathBuilder = struct {
         }
 
         try self.popForkContext(node);
-        self.popBreakContext();
+        _ = self.popBreakContext();
     }
 
     pub fn makeSwitchCaseBody(self: *CodePathBuilder, is_default: bool, node: NodeIndex) !void {
@@ -1082,7 +1082,7 @@ pub const CodePathBuilder = struct {
         // Save break context's broken_fork BEFORE popping
         const break_ctx = self.break_context;
         try self.popChoiceContext(node);
-        self.popBreakContext();
+        _ = self.popBreakContext();
         // After both pops: merge break exits as reachable post-loop paths.
         // Break exits the loop, so they flow AFTER the loop (not through back-edge).
         if (break_ctx) |bc| {
@@ -1166,13 +1166,15 @@ pub const CodePathBuilder = struct {
         self.break_context = ctx;
     }
 
-    pub fn popBreakContext(self: *CodePathBuilder) void {
-        const ctx = self.break_context orelse return;
+    /// Returns true if any `break` targeted this context.
+    pub fn popBreakContext(self: *CodePathBuilder) bool {
+        const ctx = self.break_context orelse return false;
+        const had_break = !ctx.broken_fork.empty();
         self.break_context = ctx.upper;
         // For non-loop break contexts (labels, switches handled by popSwitchContext),
         // merge broken segments as reachable continuation after the statement.
-        if (!ctx.breakable and !ctx.broken_fork.empty()) {
-            const broken_segs = ctx.broken_fork.makeNext(0, -1, self) catch return;
+        if (!ctx.breakable and had_break) {
+            const broken_segs = ctx.broken_fork.makeNext(0, -1, self) catch return had_break;
             // Replace head if it's all unreachable, otherwise add alongside
             const head = self.fork_context.head();
             var any_reachable = false;
@@ -1185,6 +1187,7 @@ pub const CodePathBuilder = struct {
                 self.fork_context.add(broken_segs, self) catch {};
             }
         }
+        return had_break;
     }
 
     pub fn makeBreak(self: *CodePathBuilder, label: ?[]const u8, node: NodeIndex) !void {

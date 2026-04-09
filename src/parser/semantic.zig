@@ -710,10 +710,10 @@ pub const SemanticAnalyzer = struct {
                 }
                 const alive_before_label = self.cfg_alive;
                 try self.visitNode(data.lhs);
-                if (self.cpb_initialized) self.cpb.popBreakContext();
-                // `break label` sets cfg_alive=false, but code after the label is reachable
-                // if it was reachable before (the break only exits the label block)
-                if (!self.cfg_alive and alive_before_label) {
+                const had_break = if (self.cpb_initialized) self.cpb.popBreakContext() else false;
+                // Only restore liveness if `break label` was used (not return/throw).
+                // return/throw inside a labeled block should keep code after dead.
+                if (!self.cfg_alive and alive_before_label and had_break) {
                     self.cfg_alive = true;
                 }
             },
@@ -852,6 +852,10 @@ pub const SemanticAnalyzer = struct {
             .instanceof_expr, .in_expr,
             .bitwise_and, .bitwise_or, .bitwise_xor,
             .shift_left, .shift_right, .unsigned_shift_right,
+            => {
+                try self.visitNode(data.lhs);
+                try self.visitNode(data.rhs);
+            },
             .logical_and => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_and, false);
                 try self.visitNode(data.lhs);
@@ -1008,10 +1012,13 @@ pub const SemanticAnalyzer = struct {
             .break_label => {
                 // Labeled break — extract label text.
                 if (self.cpb_initialized) {
-                    // data.lhs is the label token index for break_label
                     const label_tok: TokenIndex = @intFromEnum(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeBreak(label_text, idx);
+                }
+                // Labeled break still exits a breakable context.
+                if (self.breakable_depth > 0) {
+                    self.break_hit[self.breakable_depth - 1] = true;
                 }
                 self.cfg_alive = false;
             },
@@ -1176,7 +1183,7 @@ pub const SemanticAnalyzer = struct {
     fn visitForStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !bool {
         // for (init; cond; update) body
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
-        _ = try self.enterScope(.block, data.rhs);
+        _ = try self.enterScope(.block, idx);
         const alive_pre = self.cfg_alive;
         if (self.cpb_initialized) {
             // target = update || condition || body
@@ -1217,7 +1224,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitForInOfStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data, tag: Node.Tag) !bool {
         const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
-        _ = try self.enterScope(.block, fiof_data.body);
+        _ = try self.enterScope(.block, idx);
         const alive_pre = self.cfg_alive;
         const loop_type: code_path_mod.LoopType = switch (tag) {
             .for_in_stmt => .for_in_stmt,
@@ -1227,6 +1234,12 @@ pub const SemanticAnalyzer = struct {
         if (self.cpb_initialized) {
             try self.cpb.pushLoopContext(loop_type, null, idx, fiof_data.binding); // target = left
             self.cpb.setLoopContinueDest();
+        }
+        // Track break_hit for for-in/of (same as while/for loops)
+        const depth = self.breakable_depth;
+        if (depth < self.break_hit.len) {
+            self.break_hit[depth] = false;
+            self.breakable_depth = depth + 1;
         }
         const binding_tag = self.ast.nodeTag(fiof_data.binding);
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
@@ -1238,6 +1251,9 @@ pub const SemanticAnalyzer = struct {
         try self.visitNode(fiof_data.body);
         if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
         const body_alive = self.cfg_alive;
+        const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
+        if (depth < self.break_hit.len) self.breakable_depth = depth;
+        _ = had_break;
         self.cfg_alive = alive_pre;
         if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
         self.leaveScope();
