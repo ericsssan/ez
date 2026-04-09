@@ -978,6 +978,17 @@ pub const CodePathBuilder = struct {
         self.loop_context = ctx;
 
         try self.pushChoiceContext(.loop, false);
+
+        // For while/for loops, save current head as the "loop skipped" path.
+        // If the condition is false initially, control skips the body entirely.
+        // do-while always executes the body at least once, so no skip path.
+        if (loop_type != .do_while_stmt) {
+            const skip_path = try self.allocator.dupe(SegmentId, self.fork_context.head());
+            if (self.choice_context) |cc| {
+                try cc.true_fork.add(skip_path, self);
+            }
+        }
+
         // Emit segment transition: end current, start loop body segment
         // Use target_node (test/body/update child) so isLoopingTarget matches
         try self.leaveFromCurrentSegment(target_node, .enter);
