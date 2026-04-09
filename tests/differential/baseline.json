@@ -263,7 +263,7 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 6,
+        "fn": 2,
         "fp": 1,
         "crash": 0
       },
@@ -2486,7 +2486,7 @@
     },
     "no-this-before-super": {
       "runner": {
-        "fn": 3,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -2630,7 +2630,7 @@
     "no-unreachable": {
       "runner": {
         "fn": 4,
-        "fp": 6,
+        "fp": 5,
         "crash": 0
       },
       "native": {
