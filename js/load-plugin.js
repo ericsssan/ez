@@ -48,16 +48,19 @@ function loadPlugin(pkgName, ruleFilters) {
   // ── ESLint core: scan lib/rules/*.js ────────────────────────
   // Try installed eslint first, fall back to bundled rules.
   if (pkgName === "eslint") {
+    // Use bundled rules shipped with the package.
+    // Falls back to installed eslint if bundled dir is missing.
+    const bundledDir = path.join(path.dirname(__filename), "rules");
     let rulesDir;
-    try {
-      const eslintMain = require.resolve("eslint", resolveOpts);
-      rulesDir = path.join(path.dirname(eslintMain), "..", "lib", "rules");
-    } catch {
-      // No eslint installed — use bundled rules
-      rulesDir = path.join(path.dirname(__filename), "..", "tests", "conformance", "eslint", "lib", "rules");
-    }
-    if (!fs.existsSync(rulesDir)) {
-      rulesDir = path.join(path.dirname(__filename), "..", "tests", "conformance", "eslint", "lib", "rules");
+    if (fs.existsSync(bundledDir)) {
+      rulesDir = bundledDir;
+    } else {
+      try {
+        const eslintMain = require.resolve("eslint", resolveOpts);
+        rulesDir = path.join(path.dirname(eslintMain), "..", "lib", "rules");
+      } catch {
+        throw new Error("ez: bundled rules not found and eslint not installed");
+      }
     }
     const plugins = [];
     for (const file of fs.readdirSync(rulesDir)) {
