@@ -368,30 +368,41 @@ fn writeCfgGraph(
         var l_off: u32 = 0;
         for (0..seg_count) |i| {
             const s = cpr.segments[i];
-            const n_len = s.next_end - s.next_start;
+
             seg_next_starts[i] = n_off;
-            if (n_len > 0) @memcpy(seg_next_targets[n_off..][0..n_len], cpr.next_targets[s.next_start..s.next_end]);
-            n_off += n_len;
+            if (s.next_end > s.next_start) {
+                const n_len = s.next_end - s.next_start;
+                @memcpy(seg_next_targets[n_off..][0..n_len], cpr.next_targets[s.next_start..s.next_end]);
+                n_off += n_len;
+            }
 
-            const p_len = s.prev_end - s.prev_start;
             seg_prev_starts[i] = p_off;
-            if (p_len > 0) @memcpy(seg_prev_targets[p_off..][0..p_len], cpr.prev_targets[s.prev_start..s.prev_end]);
-            p_off += p_len;
+            if (s.prev_end > s.prev_start) {
+                const p_len = s.prev_end - s.prev_start;
+                @memcpy(seg_prev_targets[p_off..][0..p_len], cpr.prev_targets[s.prev_start..s.prev_end]);
+                p_off += p_len;
+            }
 
-            const an_len = s.all_next_end - s.all_next_start;
             seg_all_next_starts[i] = an_off;
-            if (an_len > 0) @memcpy(seg_all_next_targets[an_off..][0..an_len], cpr.all_next_targets[s.all_next_start..s.all_next_end]);
-            an_off += an_len;
+            if (s.all_next_end > s.all_next_start) {
+                const an_len = s.all_next_end - s.all_next_start;
+                @memcpy(seg_all_next_targets[an_off..][0..an_len], cpr.all_next_targets[s.all_next_start..s.all_next_end]);
+                an_off += an_len;
+            }
 
-            const ap_len = s.all_prev_end - s.all_prev_start;
             seg_all_prev_starts[i] = ap_off;
-            if (ap_len > 0) @memcpy(seg_all_prev_targets[ap_off..][0..ap_len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]);
-            ap_off += ap_len;
+            if (s.all_prev_end > s.all_prev_start) {
+                const ap_len = s.all_prev_end - s.all_prev_start;
+                @memcpy(seg_all_prev_targets[ap_off..][0..ap_len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]);
+                ap_off += ap_len;
+            }
 
-            const l_len = s.looped_prev_end - s.looped_prev_start;
             seg_looped_starts[i] = l_off;
-            if (l_len > 0) @memcpy(seg_looped_targets[l_off..][0..l_len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]);
-            l_off += l_len;
+            if (s.looped_prev_end > s.looped_prev_start) {
+                const l_len = s.looped_prev_end - s.looped_prev_start;
+                @memcpy(seg_looped_targets[l_off..][0..l_len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]);
+                l_off += l_len;
+            }
         }
         seg_next_starts[seg_count] = n_off;
         seg_prev_starts[seg_count] = p_off;
