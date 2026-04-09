@@ -2533,7 +2533,7 @@ function _fuseHandlers(handlers, typeName) {
     });
   }
   items.sort((a, b) => a.cost - b.cost);
-  const desc = { items, length: items.length, _fused: true, _compiled: null };
+  const desc = { items, length: items.length, _fused: true };
   // Compiled dispatch is attached lazily after coalescing (see _buildPlan)
   return desc;
 }
@@ -2565,21 +2565,6 @@ function _callHandler(handler, node) {
  *
  * Max 512 handlers to keep generated code size reasonable.
  */
-const _COMPILED_DISPATCH_MAX = 512;
-
-function _buildCompiledDispatch(items) {
-  if (items.length === 0 || items.length > _COMPILED_DISPATCH_MAX) return null;
-  // Only compile when all items have no parent guards (pure dispatch, no predicates)
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].parentGuard) return null;
-  }
-  const stateRefs = items.map(item => item._state);
-  const lines = items.map((_, i) => `s[${i}].inner(nd);`).join('');
-  // new Function captures stateRefs as 's', returns an (node) → void function
-  const fn = new Function('s', `return function(nd){${lines}};`)(stateRefs);
-  return fn;
-}
-
 /**
  * Cold path: handle errors from handler invocation.
  * Separated from the hot path so V8 doesn't deoptimize the caller.
@@ -3539,7 +3524,6 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
       const fused = _fuseHandlers(enter, tn);
       _sortByDependency(fused.items);
       fused.items = _coalesceByParentGuard(fused.items);
-      fused._compiled = _buildCompiledDispatch(fused.items);
       tagEnterHandlers[t] = fused;
     }
     const exit = tagExitHandlers[t];
@@ -3547,7 +3531,6 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
       const fused = _fuseHandlers(exit, tn + ':exit');
       _sortByDependency(fused.items);
       fused.items = _coalesceByParentGuard(fused.items);
-      fused._compiled = _buildCompiledDispatch(fused.items);
       tagExitHandlers[t] = fused;
     }
   }
@@ -3916,7 +3899,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
   }
 
-  const hasCodePath  = visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
+  const hasCodePath  = visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd') ||
+    visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
+    visitorMap.has('onCodePathSegmentLoop') ||
+    visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
   const hasClassBody = visitorMap.has('ClassBody') || visitorMap.has('ClassBody:exit');
   const hasMethodFn  = visitorMap.has('FunctionExpression') || visitorMap.has('FunctionExpression:exit') ||
                        visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
@@ -3953,36 +3939,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _universalExit      = _selPlan && _selPlan.universalExit.length  > 0 ? _selPlan.universalExit  : null;
 
   // ── Interleaved DFS traversal ──────────────────────────────────
-  // Build a single event sequence that interleaves enter (pre-order)
-  // and exit (post-order) events in correct DFS order. This ensures
-  // rules that maintain state across enter/exit (e.g., block-scoped-var's
-  // scope stack) see events in the right order.
-  // Event format: positive index = enter, ~index (bitwise NOT) = exit.
-  function buildInterleavedDFS() {
-    const n = ast.nodeCount;
-    const events = new Int32Array(n * 2);
-    let ei = 0, pi = 0, qi = 0;
-    while (pi < n || qi < n) {
-      // If we still have pre-order entries and the next pre comes before
-      // (or at same position as) the next post, emit enter.
-      // Strategy: pre[pi] < post[qi] means enter first.
-      // We use the pre/post indices directly — in a correct DFS,
-      // a node's enter always comes before its exit.
-      if (pi < n && (qi >= n || preOrder[pi] !== postOrder[qi])) {
-        events[ei++] = preOrder[pi++];
-      } else if (qi < n) {
-        events[ei++] = ~postOrder[qi++];
-        // After emitting an exit, check if the next pre is also ready
-      }
-      // Advance post while the next post matches what we've already entered
-      while (qi < n && pi < n && postOrder[qi] === preOrder[pi - 1]) {
-        // This shouldn't happen in normal DFS — break to avoid infinite loop
-        break;
-      }
-    }
-    return { events, count: ei };
-  }
-
   // Use Zig-precomputed DFS events if available (v5 buffer), else compute in JS.
   function getDFSEvents() {
     if (ast._dfsEvents) {
@@ -4063,11 +4019,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   let _cfgEnterEvents = null;
   let _cfgExitEvents = null;
   let _cfgPostEvents = null;
-  const _hasAnyCodePathHandler = hasCodePath ||
-    visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
-    visitorMap.has('onCodePathSegmentLoop') ||
-    visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
-  if (_cfgGraph && _cfgGraph._events && _hasAnyCodePathHandler) {
+  if (_cfgGraph && _cfgGraph._events && hasCodePath) {
     _cfgEnterEvents = new Map();
     _cfgExitEvents = new Map();
     _cfgPostEvents = new Map();
@@ -4081,6 +4033,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (!map.has(nodeIdx)) map.set(nodeIdx, []);
       map.get(nodeIdx).push({ type: evType, d1, d2 });
     }
+  }
+  // Build per-node bitfield of nodes that have CfgGraph events.
+  // Used to selectively protect these nodes from skip/prune instead of
+  // blanket-disabling all optimizations when hasCodePath is true.
+  const _cfgNodeBits = _cfgEnterEvents ? new Uint8Array(ast.nodeCount) : null;
+  if (_cfgNodeBits) {
+    for (const idx of _cfgEnterEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
+    for (const idx of _cfgExitEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
+    for (const idx of _cfgPostEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
   }
   let _cfgCurrentCp = null;
   const _cfgCpStack = [];
@@ -4175,14 +4136,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   let _relevantCount = 0;
   for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
-  const usePruning = canSkip && !hasCodePath && _relevantCount < tagCount * 0.5 && pd;
+  const usePruning = canSkip && _relevantCount < tagCount * 0.5 && pd;
   if (usePruning) {
+    // Seed CfgGraph event nodes into subtreeRelevant so they aren't pruned.
+    if (_cfgNodeBits) {
+      for (let i = 0; i < ast.nodeCount; i++) {
+        if (_cfgNodeBits[i]) subtreeRelevant[i] = 1;
+      }
+    }
     for (let i = 0; i < postOrder.length; i++) {
       const idx = postOrder[i];
-      if (relevantTag[nodeTags[idx]]) {
+      if (relevantTag[nodeTags[idx]] || subtreeRelevant[idx]) {
         subtreeRelevant[idx] = 1;
-        const p = pd[idx]; if (p !== NONE) subtreeRelevant[p] = 1;
-      } else if (subtreeRelevant[idx]) {
         const p = pd[idx]; if (p !== NONE) subtreeRelevant[p] = 1;
       }
     }
@@ -4222,6 +4187,21 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // Execute batch-scannable rules before the DFS walk.
   // Columnar scan: iterate tag→node CSR ranges directly from buffer.
+  // If CSR data is missing, restore batch handlers into DFS tag arrays so they're not lost.
+  if (!_tagNodeStarts && batchScannable.size > 0) {
+    for (const [typeName, handlers] of batchScannable) {
+      const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(typeName) : null;
+      if (!allTags) continue;
+      for (let ti = 0; ti < allTags.length; ti++) {
+        const t = allTags[ti];
+        if (t < tagEnterHandlers.length) {
+          tagEnterHandlers[t] = tagEnterHandlers[t]
+            ? { _fused: true, items: [...(tagEnterHandlers[t]._fused ? tagEnterHandlers[t].items : tagEnterHandlers[t]), ...handlers] }
+            : handlers;
+        }
+      }
+    }
+  }
   for (const [typeName, handlers] of batchScannable) {
     const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(typeName) : null;
     if (!allTags) continue;
@@ -4318,7 +4298,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const tag = nodeTags[idx];
       const handlers = _resolveHandlers(tagEnterHandlers, tag, idx);
       const flags = tagFlags[tag];
-      if (canSkip && !hasCodePath && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag])) continue;
+      if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag]) && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Catch stack: bookkeep CatchClause/function-boundary for ThrowStatement pre-warming
       if (catchStack !== null) {
         if (tag === _catchClauseTag) {
@@ -4439,7 +4419,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const tag = nodeTags[idx];
       const handlers = _resolveHandlers(tagExitHandlers, tag, idx);
       const flags = tagFlags[tag];
-      if (canSkip && !hasCodePath && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag])) continue;
+      if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag]) && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Catch stack: pop CatchClause/function-boundary on exit
       if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
         catchStack.pop();
@@ -4449,6 +4429,35 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _fireCfgEvents(idx, 1);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      // Synthesize Identifier:exit for synthetic children (labels, specifiers, MemberExpression)
+      if (needsLabelSynthOpt && (_labelStmtTagSet.has(tag) || _specifierTagSetOpt.has(tag) || tagNames[tag] === 'MemberExpression')) {
+        const identExit = visitorMap.get('Identifier:exit');
+        if (identExit) {
+          let synthNodes;
+          const pn = nodeView(ast, idx);
+          if (_labelStmtTagSet.has(tag)) {
+            const lbl = pn.label;
+            if (lbl) synthNodes = [lbl];
+          } else if (tagNames[tag] === 'MemberExpression') {
+            if (!pn.computed && pn.property && pn.property.type === 'Identifier' && pn.property._i === undefined) {
+              synthNodes = [pn.property];
+            }
+          } else {
+            synthNodes = [];
+            if (pn.local && pn.local.type === 'Identifier') synthNodes.push(pn.local);
+            if (pn.imported && pn.imported.type === 'Identifier' && pn.imported !== pn.local) synthNodes.push(pn.imported);
+            if (pn.exported && pn.exported.type === 'Identifier') synthNodes.push(pn.exported);
+          }
+          if (synthNodes) {
+            for (const synthId of synthNodes) {
+              for (let h = 0; h < identExit.length; h++) {
+                try { identExit[h]._state.inner(synthId); }
+                catch (e) { context._reports.push({ ruleId: identExit[h].ruleId, message: `Plugin error: ${e.message}` }); }
+              }
+            }
+          }
+        }
       }
       // PrivateIdentifier:exit dispatch for Identifier nodes with # prefix
       if (_needsPrivateSynth && tagNames[tag] === 'Identifier') {
