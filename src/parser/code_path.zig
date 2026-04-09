@@ -965,9 +965,24 @@ pub const CodePathBuilder = struct {
         self.break_context = ctx;
     }
 
-    fn popBreakContext(self: *CodePathBuilder) void {
-        if (self.break_context) |ctx| {
-            self.break_context = ctx.upper;
+    pub fn popBreakContext(self: *CodePathBuilder) void {
+        const ctx = self.break_context orelse return;
+        self.break_context = ctx.upper;
+        // For non-loop break contexts (labels, switches handled by popSwitchContext),
+        // merge broken segments as reachable continuation after the statement.
+        if (!ctx.breakable and !ctx.broken_fork.empty()) {
+            const broken_segs = ctx.broken_fork.makeNext(0, -1, self) catch return;
+            // Replace head if it's all unreachable, otherwise add alongside
+            const head = self.fork_context.head();
+            var any_reachable = false;
+            for (head) |s| {
+                if (s != NONE_SEG and self.segments.items[s].reachable) any_reachable = true;
+            }
+            if (!any_reachable) {
+                self.fork_context.replaceHead(broken_segs, self) catch {};
+            } else {
+                self.fork_context.add(broken_segs, self) catch {};
+            }
         }
     }
 

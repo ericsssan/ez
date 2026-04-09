@@ -679,7 +679,23 @@ pub const SemanticAnalyzer = struct {
                 if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
             },
             .try_stmt => try self.visitTryStmt(data),
-            .labeled_stmt => try self.visitNode(data.lhs),
+            .labeled_stmt => {
+                // Push a non-breakable break context with the label name
+                // so `break label` finds this context, not the enclosing loop/switch
+                if (self.cpb_initialized) {
+                    const label_tok = self.ast.nodeMainToken(idx);
+                    const label_text = self.ast.tokenText(label_tok);
+                    try self.cpb.pushBreakContext(false, label_text);
+                }
+                const alive_before_label = self.cfg_alive;
+                try self.visitNode(data.lhs);
+                if (self.cpb_initialized) self.cpb.popBreakContext();
+                // `break label` sets cfg_alive=false, but code after the label is reachable
+                // if it was reachable before (the break only exits the label block)
+                if (!self.cfg_alive and alive_before_label) {
+                    self.cfg_alive = true;
+                }
+            },
             .return_stmt => {
                 try self.visitNode(data.lhs); // return expression
                 if (self.cpb_initialized) try self.cpb.makeReturn(idx);
@@ -923,7 +939,8 @@ pub const SemanticAnalyzer = struct {
             .break_label => {
                 // Labeled break — extract label text.
                 if (self.cpb_initialized) {
-                    const label_tok = self.ast.nodeMainToken(idx);
+                    // data.lhs is the label token index for break_label
+                    const label_tok: TokenIndex = @intFromEnum(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeBreak(label_text, idx);
                 }
@@ -935,7 +952,7 @@ pub const SemanticAnalyzer = struct {
             },
             .continue_label => {
                 if (self.cpb_initialized) {
-                    const label_tok = self.ast.nodeMainToken(idx);
+                    const label_tok: TokenIndex = @intFromEnum(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeContinue(label_text, idx);
                 }
