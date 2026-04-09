@@ -9,15 +9,6 @@ let binding;
 function loadBinding() {
   if (binding) return binding;
 
-  if (typeof Bun !== "undefined") {
-    try {
-      binding = require("./bun-ffi");
-      return binding;
-    } catch {
-      // Fall through to NAPI
-    }
-  }
-
   try {
     binding = require("../zig-out/lib/ez.node");
   } catch {

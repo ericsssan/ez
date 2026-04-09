@@ -8,7 +8,8 @@
   },
   "exports": {
     ".": "./api.js",
-    "./internal": "./index.js"
+    "./internal": "./index.js",
+    "./runner": "./eslint-runner.js"
   },
   "files": [
     "api.js",
