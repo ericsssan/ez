@@ -2386,229 +2386,7 @@ function buildDFSOrders(ast) {
   return { preOrder, postOrder };
 }
 
-// Node types that trigger onCodePathStart/onCodePathEnd.
-const CODE_PATH_TYPES = new Set([
-  'Program',
-  'FunctionDeclaration',
-  'FunctionExpression',
-  'ArrowFunctionExpression',
-  'PropertyDefinition',
-  'StaticBlock',
-]);
-
 const CLASS_TYPES = new Set(['ClassDeclaration', 'ClassExpression']);
-
-// ── Lightweight Code Path Tracker ────────────────────────────────
-// Tracks reachability through control flow for rules like no-unreachable,
-// getter-return, consistent-return, no-fallthrough. Not a full CFG — just
-// tracks whether code is reachable at each point in the DFS.
-
-let _cpIdCounter = 0;
-let _segIdCounter = 0;
-
-function _makeSegment(reachable = true) {
-  return {
-    id: 's' + (_segIdCounter++),
-    reachable,
-    nextSegments: [],
-    prevSegments: [],
-    allNextSegments: [],
-    allPrevSegments: [],
-    internal: {},
-  };
-}
-
-class CodePathTracker {
-  constructor() {
-    this._stack = []; // stack of { codePath, segment, returned }
-    this._currentSegment = null;
-    this._codePath = null;
-    this._branchStack = []; // { savedReachable, anyBranchReachable }
-    this._loopStack = []; // { targetSeg, loopIdx } for onCodePathSegmentLoop
-    this._breakableStack = []; // 'loop' | 'switch' — for break target disambiguation
-  }
-
-  enterFunction(node) {
-    const seg = _makeSegment(true);
-    const codePath = {
-      id: 'cp' + (_cpIdCounter++),
-      origin: node.type === 'Program' ? 'program'
-        : node.type === 'PropertyDefinition' ? 'class-field-initializer'
-        : node.type === 'StaticBlock' ? 'class-static-block'
-        : 'function',
-      upper: this._codePath,
-      childCodePaths: [],
-      currentSegments: [seg],
-      initialSegment: seg,
-      finalSegments: [],
-      returnedSegments: [],
-      thrownSegments: [],
-      returnedForkContext: [],
-      internal: {},
-      traverseSegments(optionsOrCb, maybeCb) {
-        // ESLint signature: traverseSegments(cb) or traverseSegments({first, last}, cb)
-        const cb = typeof optionsOrCb === 'function' ? optionsOrCb : maybeCb;
-        const opts = typeof optionsOrCb === 'object' ? optionsOrCb : null;
-        const startSeg = opts?.first || this.initialSegment;
-        // Walk segments. Only visit segments we know about (don't follow links
-        // to segments the rule hasn't seen via onCodePathSegmentStart).
-        const visited = new Set();
-        const queue = [startSeg];
-        let stopped = false;
-        while (queue.length > 0 && !stopped) {
-          const s = queue.shift();
-          if (!s || visited.has(s.id)) continue;
-          visited.add(s.id);
-          let skipped = false;
-          cb(s, { skip() { skipped = true; }, break() { stopped = true; } });
-          if (stopped || skipped) continue;
-        }
-      },
-    };
-    if (this._codePath) this._codePath.childCodePaths.push(codePath);
-    this._stack.push({ codePath: this._codePath, segment: this._currentSegment, returned: false });
-    this._codePath = codePath;
-    this._currentSegment = seg;
-    return { codePath, segment: seg };
-  }
-
-  exitFunction() {
-    const codePath = this._codePath;
-    if (this._currentSegment) codePath.finalSegments.push(this._currentSegment);
-    const prev = this._stack.pop();
-    this._codePath = prev ? prev.codePath : null;
-    this._currentSegment = prev ? prev.segment : null;
-    return codePath;
-  }
-
-  // Called after return/throw/break/continue — subsequent code is unreachable
-  markUnreachable() {
-    const prev = this._currentSegment;
-    if (prev) prev.reachable = false;
-    const unreachSeg = _makeSegment(false);
-    if (prev) { prev.nextSegments.push(unreachSeg); prev.allNextSegments.push(unreachSeg); }
-    unreachSeg.prevSegments = prev ? [prev] : [];
-    unreachSeg.allPrevSegments = prev ? [prev] : [];
-    this._currentSegment = unreachSeg;
-    if (this._codePath) this._codePath.currentSegments = [unreachSeg];
-  }
-
-  // Enter a branching statement (if/try/switch/loop). Saves current segment.
-  enterBranch(isSwitch = false) {
-    this._branchStack.push({
-      savedSegment: this._currentSegment,  // segment at entry
-      savedReachable: this.reachable,
-      branchEndSegments: [],               // collect ending segments from each branch
-      anyBranchReachable: false,
-      _isSwitch: isSwitch,
-    });
-  }
-
-  // Enter alternate path (else/catch/case). Saves the ending segment of the
-  // previous branch and starts a new segment from entry reachability.
-  nextBranch() {
-    const top = this._branchStack[this._branchStack.length - 1];
-    if (!top) return _makeSegment(true);
-    // Save the current (ending) segment of the previous branch
-    if (this._currentSegment) top.branchEndSegments.push(this._currentSegment);
-    // For non-switch: record if the previous branch was reachable at its end
-    if (this.reachable && !top._isSwitch) top.anyBranchReachable = true;
-    // Start new segment for the alternate path
-    const seg = _makeSegment(top.savedReachable);
-    this._currentSegment = seg;
-    if (this._codePath) this._codePath.currentSegments = [seg];
-    return seg;
-  }
-
-  // Exit branching statement. Collects all branch-ending segments and merges.
-  exitBranch(hasAllBranches = false) {
-    const top = this._branchStack.pop();
-    if (!top) return _makeSegment(true);
-    // Save the ending segment of the last branch
-    if (this._currentSegment) top.branchEndSegments.push(this._currentSegment);
-    if (this.reachable) top.anyBranchReachable = true;
-    const reachable = hasAllBranches ? top.anyBranchReachable : (top.anyBranchReachable || top.savedReachable);
-    const seg = _makeSegment(reachable);
-    seg._bodyCompleted = top.anyBranchReachable;
-    // Connect the segment graph
-    seg.prevSegments = top.branchEndSegments.filter(s => s.reachable);
-    seg.allPrevSegments = [...top.branchEndSegments];
-    if (!hasAllBranches && top.savedSegment) {
-      seg.prevSegments.push(top.savedSegment);
-      seg.allPrevSegments.push(top.savedSegment);
-    }
-    // Wire up nextSegments from branch endings to the merge segment
-    for (const bs of top.branchEndSegments) {
-      bs.nextSegments.push(seg);
-      bs.allNextSegments.push(seg);
-    }
-    if (!hasAllBranches && top.savedSegment) {
-      top.savedSegment.nextSegments.push(seg);
-      top.savedSegment.allNextSegments.push(seg);
-    }
-    this._currentSegment = seg;
-    if (this._codePath) this._codePath.currentSegments = [seg];
-    return seg;
-  }
-
-  // Called when entering a new block that restores reachability (else, catch, finally, case)
-  forkReachable() {
-    const seg = _makeSegment(true);
-    this._currentSegment = seg;
-    if (this._codePath) this._codePath.currentSegments = [seg];
-    return seg;
-  }
-
-  // Push breakable context ('loop' or 'switch') for break target disambiguation.
-  // Record branchIdx so markSwitchBranchReachable() can find the exact switch entry
-  // even when nested if/try branches have been pushed on top of it.
-  pushBreakable(kind) { this._breakableStack.push({ kind, branchIdx: this._branchStack.length - 1 }); }
-  popBreakable() { this._breakableStack.pop(); }
-  get breakTarget() { return this._breakableStack.length > 0 ? this._breakableStack[this._breakableStack.length - 1].kind : null; }
-
-  // When break targets a switch, mark THAT switch's branchStack entry as reachable.
-  // Must use the stored branchIdx — the topmost entry may be a nested if/try, not the switch.
-  markSwitchBranchReachable() {
-    // Only mark the switch branch reachable if the break itself is on a
-    // reachable path.  When the switch entered on unreachable code (e.g.
-    // after try{throw}catch{throw}), the case bodies are also unreachable,
-    // so a break inside them should NOT restore reachability.
-    if (!this.reachable) return;
-    for (let i = this._breakableStack.length - 1; i >= 0; i--) {
-      if (this._breakableStack[i].kind === 'switch') {
-        const entry = this._branchStack[this._breakableStack[i].branchIdx];
-        if (entry) entry.anyBranchReachable = true;
-        return;
-      }
-    }
-  }
-
-  // Enter a loop: create a target segment for the loop back-edge and push to loop stack.
-  // Returns the target segment (caller should fire onCodePathSegmentStart with the looping target node).
-  enterLoop(loopIdx) {
-    const targetSeg = _makeSegment(this.reachable);
-    this._loopStack.push({ targetSeg, loopIdx });
-    // Also end old segment and start target as the "loop condition" segment
-    const old = this._currentSegment;
-    this._currentSegment = targetSeg;
-    if (this._codePath) this._codePath.currentSegments = [targetSeg];
-    return { oldSeg: old, targetSeg };
-  }
-
-  // Exit a loop: returns the loop info for onCodePathSegmentLoop dispatch.
-  exitLoop() {
-    return this._loopStack.pop() || null;
-  }
-
-  // Get the nearest enclosing loop's target segment (for ContinueStatement).
-  get nearestLoopTarget() {
-    return this._loopStack.length > 0 ? this._loopStack[this._loopStack.length - 1] : null;
-  }
-
-  get segment() { return this._currentSegment; }
-  get codePath() { return this._codePath; }
-  get reachable() { return this._currentSegment ? this._currentSegment.reachable : true; }
-}
 
 // ── Rule Query Optimizer: handler analysis & fusion ─────────────
 
@@ -3583,7 +3361,7 @@ const _TERMINATOR_TYPES = new Set(['ReturnStatement', 'ThrowStatement', 'BreakSt
 let _tagSetCacheRef = null;
 let _cachedBranchTagSet = null, _cachedCatchTagSet = null, _cachedTerminatorTagSet = null;
 let _cachedIfStmtTagSet = null; // Set of ALL tag indices whose name is 'IfStatement'
-let _cachedIfStmtTag = -1; // first IfStatement tag (used for elseStartNodes only)
+let _cachedIfStmtTag = -1; // first IfStatement tag
 let _cachedTryStmtTagSet = null; // Set of ALL tag indices whose name is 'TryStatement'
 let _cachedDoWhileStmtTagSet = null; // Set of ALL tag indices whose name is 'DoWhileStatement'
 let _cachedLoopTagSet = null, _cachedSwitchTagSet = null, _cachedBreakTagSet = null;
@@ -3743,7 +3521,6 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
     if (!tn) continue;
     tagEnterHandlers[t] = visitorMap.get(tn) || null;
     tagExitHandlers[t]  = visitorMap.get(tn + ':exit') || null;
-    if (hasCodePath && CODE_PATH_TYPES.has(tn)) tagFlags[t] |= FLAG_CODEPATH_ENTER | FLAG_CODEPATH_EXIT;
     if (hasClassBody && CLASS_TYPES.has(tn))    tagFlags[t] |= FLAG_CLASS_BODY;
     if (hasMethodFn && tn === 'MethodDefinition') tagFlags[t] |= FLAG_METHOD_FN;
     if (hasCodePath) {
@@ -4023,24 +3800,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (universal && universal.length > 0) _runSelectorList(universal);
   }
 
-  function invokeCodePathHandlers(mapKey, nodeIdx) {
-    const handlers = visitorMap.get(mapKey);
-    if (!handlers) return;
-    const node = nodeView(ast, nodeIdx);
-    const cp = cpTracker.codePath;
-    const hn = handlers.length;
-    let h = 0;
-    try {
-      for (; h < hn; h++) handlers[h]._state.inner(cp, node);
-    } catch (err) {
-      context._reports.push({ ruleId: handlers[h].ruleId, message: `Plugin error: ${err.message}` });
-      for (let k = h + 1; k < hn; k++) {
-        try { handlers[k]._state.inner(cp, node); }
-        catch (e) { context._reports.push({ ruleId: handlers[k].ruleId, message: `Plugin error: ${e.message}` }); }
-      }
-    }
-  }
-
   // Synthetic ClassBody node (passed to ClassBody/ClassBody:exit handlers).
   // We reuse a single object and update the class node reference each time.
   // _i and _ast are set so getFirstToken/getLastToken work correctly.
@@ -4078,28 +3837,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // ── FunctionExpression synthesis for class methods ───────────────
   // ez has no FunctionExpression node in the AST for class methods.
-  // Synthesize FunctionExpression enter/exit and onCodePathStart/End events
+  // Synthesize FunctionExpression enter/exit events
   // so rules like no-constructor-return and getter-return work correctly.
-
-  const cpTracker = new CodePathTracker();
-  let _useCfgGraph = false; // true = CfgGraph replaces CPTracker; false = CPTracker active
-
-  function invokeCodePathHandlersWithNode(mapKey, node) {
-    const handlers = visitorMap.get(mapKey);
-    if (!handlers) return;
-    const cp = cpTracker.codePath;
-    const hn = handlers.length;
-    let h = 0;
-    try {
-      for (; h < hn; h++) handlers[h]._state.inner(cp, node);
-    } catch (err) {
-      context._reports.push({ ruleId: handlers[h].ruleId, message: `Plugin error: ${err.message}` });
-      for (let k = h + 1; k < hn; k++) {
-        try { handlers[k]._state.inner(cp, node); }
-        catch (e) { context._reports.push({ ruleId: handlers[k].ruleId, message: `Plugin error: ${e.message}` }); }
-      }
-    }
-  }
 
   // Reused second arg for segment events — rules that use onCodePathSegmentStart(seg, node)
   // receive this as `node`; most rules ignore it, but no-unreachable-loop uses isLoopingTarget(node).
@@ -4176,10 +3915,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   function invokeMethodFnHandlers(methodNodeIdx, isExit) {
     const fnKey = isExit ? 'FunctionExpression:exit' : 'FunctionExpression';
-    const hasFn = visitorMap.has(fnKey);
-    const hasCP = visitorMap.has(isExit ? 'onCodePathEnd' : 'onCodePathStart');
-    if (!hasFn && !hasCP) return;
-
+    if (!visitorMap.has(fnKey)) return;
     const methodNode = nodeView(ast, methodNodeIdx);
     const fnExpr = methodNode.value;
     if (!fnExpr || fnExpr.type !== 'FunctionExpression') return;
@@ -4189,30 +3925,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     fnExpr.loc = methodNode.loc;
     fnExpr._ast = ast;
     fnExpr._i = methodNodeIdx;
-
-    if (!isExit) {
-      // CfgGraph handles code path events; CPTracker handles them when no CfgGraph
-      if (!_useCfgGraph) {
-        const outerSeg = cpTracker.segment;
-        if (outerSeg) _segEndEvent(outerSeg);
-        const { segment } = cpTracker.enterFunction(fnExpr);
-        invokeCodePathHandlersWithNode('onCodePathStart', fnExpr);
-        if (_segStartH) _dispatchSeg(_segStartH, segment);
-      }
-      // AST event always fires
-      if (hasFn) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
-    } else {
-      // AST event always fires
-      if (hasFn) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
-      if (!_useCfgGraph) {
-        const oldSeg = cpTracker.segment;
-        if (oldSeg) _segEndEvent(oldSeg);
-        invokeCodePathHandlersWithNode('onCodePathEnd', fnExpr);
-        cpTracker.exitFunction();
-        const outerSeg = cpTracker.segment;
-        if (outerSeg) _segStartOrUnreachEvent(outerSeg);
-      }
-    }
+    invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
   }
 
   const hasCodePath  = visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
@@ -4342,19 +4055,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     return { events, count: ei };
   }
 
-  // Pre-compute else-branch starters — marks nodes that are the `alternate` child of an
-  // IfStatement. Eliminates per-node parent check in the DFS hot path (both paths).
-  const elseStartNodes = hasCodePath && pd ? (() => {
-    const arr = new Uint8Array(ast.nodeCount);
-    for (let i = 0; i < ast.nodeCount; i++) {
-      if (_ifStmtTagSet && _ifStmtTagSet.has(nodeTags[i])) {
-        const ifN = nodeView(ast, i);
-        if (ifN.alternate) arr[ifN.alternate._i] = 1;
-      }
-    }
-    return arr;
-  })() : null;
-
   // ── Catch stack: transparent parent pre-warming for findParentCatch ──
   // preserve-caught-error calls node.parent in a loop up to the nearest CatchClause.
   // During DFS we maintain a stack of CatchClause/function-boundary indices so that
@@ -4378,6 +4078,90 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     for (let _t = 0; _t < tagCount; _t++) if (_catchBarrierTagArr[_t]) a[_t] = 1;
     return a;
   })() : null;
+
+  // ── Zig CfgGraph event replay ─────────────────────────────
+  const _cfgGraph = ast._cfgGraph || null;
+  let _cfgEnterEvents = null;
+  let _cfgExitEvents = null;
+  let _cfgPostEvents = null;
+  const _hasAnyCodePathHandler = hasCodePath ||
+    visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
+    visitorMap.has('onCodePathSegmentLoop') ||
+    visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
+  if (_cfgGraph && _cfgGraph._events && _hasAnyCodePathHandler) {
+    _cfgEnterEvents = new Map();
+    _cfgExitEvents = new Map();
+    _cfgPostEvents = new Map();
+    const evs = _cfgGraph._events;
+    const EXIT_FLAG = 0x40000000, POST_FLAG = 0x80000000, NODE_MASK = 0x3FFFFFFF;
+    for (let ei = 0; ei < evs.length; ei += 4) {
+      const evType = evs[ei], nodeRaw = evs[ei + 1], d1 = evs[ei + 2], d2 = evs[ei + 3];
+      const isPost = (nodeRaw & POST_FLAG) !== 0, isExit = (nodeRaw & EXIT_FLAG) !== 0;
+      const nodeIdx = nodeRaw & NODE_MASK;
+      const map = isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
+      if (!map.has(nodeIdx)) map.set(nodeIdx, []);
+      map.get(nodeIdx).push({ type: evType, d1, d2 });
+    }
+  }
+  let _cfgCurrentCp = null;
+  const _cfgCpStack = [];
+
+  function _fireCfgEvents(nodeIdx, phase) {
+    if (!_cfgEnterEvents) return;
+    const map = phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
+    const evts = map.get(nodeIdx);
+    if (!evts) return;
+    const node = nodeView(ast, nodeIdx);
+    for (let i = 0; i < evts.length; i++) {
+      const ev = evts[i];
+      switch (ev.type) {
+        case 0: { // CODEPATH_START
+          const cp = _cfgGraph.codepath(ev.d1);
+          if (cp) {
+            _cfgCpStack.push(_cfgCurrentCp); _cfgCurrentCp = cp;
+            cp.currentSegments = [cp.initialSegment];
+            const nt = node.type;
+            const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+            const cpStartH = visitorMap.get('onCodePathStart');
+            if (cpStartH) for (let h = 0; h < cpStartH.length; h++) {
+              try { cpStartH[h]._state.inner(cp, cpNode); }
+              catch (e) { context._reports.push({ ruleId: cpStartH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+            }
+          }
+          break;
+        }
+        case 1: { // CODEPATH_END
+          const cp = _cfgGraph.codepath(ev.d1);
+          if (cp) {
+            const nt2 = node.type;
+            const cpNode = (nt2 === 'MethodDefinition' || nt2 === 'Property') ? (node.value || node) : node;
+            const cpEndH = visitorMap.get('onCodePathEnd');
+            if (cpEndH) for (let h = 0; h < cpEndH.length; h++) {
+              try { cpEndH[h]._state.inner(cp, cpNode); }
+              catch (e) { context._reports.push({ ruleId: cpEndH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+            }
+            _cfgCurrentCp = _cfgCpStack.pop() || null;
+          }
+          break;
+        }
+        case 2: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_segStartH) _dispatchSeg(_segStartH, seg, node); } break; }
+        case 3: { const seg = _cfgGraph.segment(ev.d1); if (seg && _segEndH) _dispatchSeg(_segEndH, seg, node); break; }
+        case 4: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node); } break; }
+        case 5: { const seg = _cfgGraph.segment(ev.d1); if (seg && _unreachEndH) _dispatchSeg(_unreachEndH, seg, node); break; }
+        case 6: {
+          const fromSeg = _cfgGraph.segment(ev.d1), toSeg = _cfgGraph.segment(ev.d2);
+          if (fromSeg && toSeg) {
+            if (!toSeg.prevSegments.includes(fromSeg)) toSeg.prevSegments.push(fromSeg);
+            if (!toSeg.allPrevSegments.includes(fromSeg)) toSeg.allPrevSegments.push(fromSeg);
+            if (!fromSeg.nextSegments.includes(toSeg)) fromSeg.nextSegments.push(toSeg);
+            if (!fromSeg.allNextSegments.includes(toSeg)) fromSeg.allNextSegments.push(toSeg);
+            if (fromSeg.reachable) _dispatchSegLoop(fromSeg, toSeg, node);
+          }
+          break;
+        }
+      }
+    }
+  }
 
   if (ast.nodeCount < 100) {
     context._skipSet = null;
@@ -4437,140 +4221,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
 
-    // ── Zig CFG event replay ────────────────────────────────────
-    // Build per-node event index from Zig-precomputed code path events.
-    // Events fire BEFORE the node's enter/exit handler during DFS.
-    // ── CfgGraph event replay index ─────────────────────────────
-    // When the full code path graph is available from Zig, build node→events
-    // maps for enter and exit. During DFS, fire events from these maps instead
-    // of using CPTracker.
-    const _cfgGraph = ast._cfgGraph || null;
-    let _cfgEnterEvents = null; // Map<nodeIdx, [{type, data1, data2}]>
-    let _cfgExitEvents = null;
-    let _cfgPostEvents = null;
-    const _hasAnyCodePathHandler = hasCodePath ||
-      visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
-      visitorMap.has('onCodePathSegmentLoop') ||
-      visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
-    if (_cfgGraph && _cfgGraph._events && _hasAnyCodePathHandler) {
-      _cfgEnterEvents = new Map();
-      _cfgExitEvents = new Map();
-      const evs = _cfgGraph._events;
-      const EXIT_FLAG = 0x40000000;
-      const POST_FLAG = 0x80000000;
-      const NODE_MASK = 0x3FFFFFFF;
-      _cfgPostEvents = new Map();
-      for (let ei = 0; ei < evs.length; ei += 4) {
-        const evType = evs[ei];
-        const nodeRaw = evs[ei + 1];
-        const d1 = evs[ei + 2];
-        const d2 = evs[ei + 3];
-        const isPost = (nodeRaw & POST_FLAG) !== 0;
-        const isExit = (nodeRaw & EXIT_FLAG) !== 0;
-        const nodeIdx = nodeRaw & NODE_MASK;
-        const map = isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
-        if (!map.has(nodeIdx)) map.set(nodeIdx, []);
-        map.get(nodeIdx).push({ type: evType, d1, d2 });
-      }
-      _useCfgGraph = true;
-    }
-
-    // CfgGraph state: track current codepath for currentSegments updates
-    let _cfgCurrentCp = null;
-    const _cfgCpStack = [];
-
-    // Fire CfgGraph events for a given node (enter or exit)
-    function _fireCfgEvents(nodeIdx, phase) {
-      // phase: 0=enter, 1=exit (before handler), 2=post (after handler)
-      if (!_useCfgGraph) return;
-      const map = phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
-      const evts = map.get(nodeIdx);
-      if (!evts) return;
-      const node = nodeView(ast, nodeIdx);
-      for (let i = 0; i < evts.length; i++) {
-        const ev = evts[i];
-        switch (ev.type) {
-          case 0: { // CODEPATH_START
-            const cp = _cfgGraph.codepath(ev.d1);
-            if (cp) {
-              _cfgCpStack.push(_cfgCurrentCp);
-              _cfgCurrentCp = cp;
-              cp.currentSegments = [cp.initialSegment];
-              // For methods/getters/setters, pass the synthesized FunctionExpression
-              const nt = node.type;
-              const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
-              const cpStartH = visitorMap.get('onCodePathStart');
-              if (cpStartH) for (let h = 0; h < cpStartH.length; h++) {
-                try { cpStartH[h]._state.inner(cp, cpNode); }
-                catch (e) { context._reports.push({ ruleId: cpStartH[h].ruleId, message: `Plugin error: ${e.message}` }); }
-              }
-            }
-            break;
-          }
-          case 1: { // CODEPATH_END
-            const cp = _cfgGraph.codepath(ev.d1);
-            if (cp) {
-              const nt2 = node.type;
-              const cpNode = (nt2 === 'MethodDefinition' || nt2 === 'Property') ? (node.value || node) : node;
-              const cpEndH = visitorMap.get('onCodePathEnd');
-              if (cpEndH) for (let h = 0; h < cpEndH.length; h++) {
-                try { cpEndH[h]._state.inner(cp, cpNode); }
-                catch (e) { context._reports.push({ ruleId: cpEndH[h].ruleId, message: `Plugin error: ${e.message}` }); }
-              }
-              _cfgCurrentCp = _cfgCpStack.pop() || null;
-            }
-            break;
-          }
-          case 2: { // SEG_START
-            const seg = _cfgGraph.segment(ev.d1);
-            if (seg) {
-              if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg];
-              if (_segStartH) _dispatchSeg(_segStartH, seg, node);
-            }
-            break;
-          }
-          case 3: { // SEG_END
-            const seg = _cfgGraph.segment(ev.d1);
-            if (seg && _segEndH) _dispatchSeg(_segEndH, seg, node);
-            break;
-          }
-          case 4: { // UNREACHABLE_SEG_START
-            const seg = _cfgGraph.segment(ev.d1);
-            if (seg) {
-              if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg];
-              if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node);
-            }
-            break;
-          }
-          case 5: { // UNREACHABLE_SEG_END
-            const seg = _cfgGraph.segment(ev.d1);
-            if (seg && _unreachEndH) _dispatchSeg(_unreachEndH, seg, node);
-            break;
-          }
-          case 6: { // SEG_LOOP
-            const fromSeg = _cfgGraph.segment(ev.d1);
-            const toSeg = _cfgGraph.segment(ev.d2);
-            if (fromSeg && toSeg) {
-              // ESLint's makeLooped mutates prevSegments/nextSegments.
-              // Always mutate (for both real loops and synthetic finally edges).
-              const toPrev = toSeg.prevSegments;
-              if (!toPrev.includes(fromSeg)) toPrev.push(fromSeg);
-              const toAllPrev = toSeg.allPrevSegments;
-              if (!toAllPrev.includes(fromSeg)) toAllPrev.push(fromSeg);
-              const fromNext = fromSeg.nextSegments;
-              if (!fromNext.includes(toSeg)) fromNext.push(toSeg);
-              const fromAllNext = fromSeg.allNextSegments;
-              if (!fromAllNext.includes(toSeg)) fromAllNext.push(toSeg);
-              if (fromSeg.reachable) {
-                _dispatchSegLoop(fromSeg, toSeg, node);
-              }
-            }
-            break;
-          }
-        }
-      }
-    }
-
     // Use interleaved DFS to ensure enter/exit events fire in correct order.
     const { events, count: evCount } = getDFSEvents();
     // Pre-index handler arrays by tag int — replaces Map.get(string) per node with array[int].
@@ -4614,50 +4264,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             }
           }
         }
-        // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-        if (_useCfgGraph) _fireCfgEvents(idx, 0);
-        if (!_useCfgGraph && hasCodePath) {
-          if (CODE_PATH_TYPES.has(tn)) {
-            const outerSeg = cpTracker.segment;
-            if (outerSeg) _segEndEvent(outerSeg);
-            const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
-            invokeCodePathHandlers('onCodePathStart', idx);
-            if (_segStartH) _dispatchSeg(_segStartH, segment);
-          }
-          if (_branchEnterTagSet.has(tag)) {
-            if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-              const oldSeg = cpTracker.segment;
-              if (oldSeg) _segEndEvent(oldSeg);
-              const { targetSeg } = cpTracker.enterLoop(idx);
-              const loopNode = nodeView(ast, idx);
-              const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
-                : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
-                : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
-                : loopNode.test;
-              _segStartOrUnreachEvent(targetSeg, targetNode || loopNode);
-              cpTracker.enterBranch();
-              cpTracker.pushBreakable('loop');
-            } else {
-              const _isSwitchBranch = _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag);
-              cpTracker.enterBranch(_isSwitchBranch);
-              if (_isSwitchBranch) {
-                cpTracker.pushBreakable('switch');
-              }
-            }
-          }
-          if (_catchCaseTagSet.has(tag)) {
-            const oldSeg = cpTracker.segment;
-            if (oldSeg) _segEndEvent(oldSeg);
-            const seg = cpTracker.nextBranch();
-            if (seg) _segStartOrUnreachEvent(seg);
-          }
-          if (elseStartNodes && elseStartNodes[idx]) {
-            const oldSeg = cpTracker.segment;
-            if (oldSeg) _segEndEvent(oldSeg);
-            const seg = cpTracker.nextBranch();
-            if (seg) _segStartOrUnreachEvent(seg);
-          }
-        }
+        _fireCfgEvents(idx, 0);
         const enter = isMethodNode ? visitorMap.get(tn) : _tagHandlers[tag];
         if (enter) {
           const node = nodeView(ast, idx);
@@ -4672,13 +4279,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               catch (e) { context._reports.push({ ruleId: enter[_ek].ruleId, message: `Plugin error: ${e.message}` }); }
             }
           }
-        }
-        // Deferred switch markUnreachable (CPTracker only)
-        if (hasCodePath && !_useCfgGraph && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
-          const oldSegSwitch = cpTracker.segment;
-          if (oldSegSwitch) _segEndEvent(oldSegSwitch);
-          cpTracker.markUnreachable();
-          _segStartOrUnreachEvent(cpTracker.segment);
         }
         // Synthesize Identifier visits for synthetic children not in the DFS tree:
         // labels (LabeledStatement/BreakStatement/ContinueStatement) and
@@ -4792,39 +4392,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
           catchStack.pop();
         }
-        // Code-path terminators (CPTracker only — CfgGraph handles via exit events)
-        if (hasCodePath && !_useCfgGraph) {
-          if (_terminatorTagSet.has(tag)) {
-            const nv2 = nodeView(ast, idx);
-            if (_segLoopH && nv2.type === 'ContinueStatement') {
-              const fromSeg = cpTracker.segment;
-              const loopInfo = cpTracker.nearestLoopTarget;
-              if (fromSeg && fromSeg.reachable && loopInfo) {
-                _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv2);
-              }
-            }
-            if (nv2.type === 'BreakStatement' && !nv2.label && cpTracker.breakTarget === 'switch') {
-              cpTracker.markSwitchBranchReachable();
-            }
-            if (nv2.type === 'ReturnStatement') {
-              const seg = cpTracker.segment;
-              if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
-            } else if (nv2.type === 'ThrowStatement') {
-              const seg = cpTracker.segment;
-              if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
-            }
-            {
-              const oldSeg = cpTracker.segment;
-              if (oldSeg) _segEndEvent(oldSeg);
-              cpTracker.markUnreachable();
-              const unreachSeg = cpTracker.segment;
-              if (_unreachStartH) _dispatchSeg(_unreachStartH, unreachSeg);
-            }
-          }
-        }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
         // CfgGraph: code path exit events BEFORE rule exit handlers (ESLint order)
-        if (_useCfgGraph) _fireCfgEvents(idx, 1);
+        _fireCfgEvents(idx, 1);
         const exit = isMethodNode ? visitorMap.get(tn + ':exit') : _tagExitHandlers[tag];
         if (exit) {
           const node = nodeView(ast, idx);
@@ -4855,51 +4425,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
-        if (!_useCfgGraph && hasCodePath) {
-          if (_branchEnterTagSet.has(tag)) {
-            if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-              const fromSeg = cpTracker.segment;
-              const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
-              if (fromSeg && fromSeg.reachable && loopExitAlive) {
-                const loopInfo = cpTracker.nearestLoopTarget;
-                if (loopInfo && loopInfo.loopIdx === idx) {
-                  _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
-                }
-              }
-              cpTracker.exitLoop();
-              cpTracker.popBreakable();
-            } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
-              cpTracker.popBreakable();
-            }
-            const oldSeg = cpTracker.segment;
-            if (oldSeg) _segEndEvent(oldSeg);
-            const nv4 = nodeView(ast, idx);
-            const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nv4.alternate != null) ||
-              (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
-              (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
-              (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nv4));
-            const seg = cpTracker.exitBranch(hasAllBranches);
-            if (seg && seg.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-              if (seg.reachable && ast._nodeReachable) {
-                const nextEvI2 = i + 1;
-                if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
-                  if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
-                }
-              }
-            }
-            _segStartOrUnreachEvent(seg);
-          }
-          if (CODE_PATH_TYPES.has(tn)) {
-            const oldSeg = cpTracker.segment;
-            if (oldSeg) _segEndEvent(oldSeg);
-            invokeCodePathHandlers('onCodePathEnd', idx);
-            cpTracker.exitFunction();
-            const outerSeg = cpTracker.segment;
-            if (outerSeg) _segStartOrUnreachEvent(outerSeg);
-          }
-        }
         if ((_selectorTagArr && _selectorTagArr[tag]) || _hasUniversalExit) invokeSelectorHandlers(idx, true);
-        if (_useCfgGraph) _fireCfgEvents(idx, 2);
+        _fireCfgEvents(idx, 2);
       }
     }
     return;
@@ -5065,60 +4592,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
-      // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-      if (_useCfgGraph) _fireCfgEvents(idx, 0);
-      if (!_useCfgGraph) {
-        if (flags & FLAG_CODEPATH_ENTER) {
-          const outerSeg = cpTracker.segment;
-          if (outerSeg) _segEndEvent(outerSeg);
-          const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
-          invokeCodePathHandlers('onCodePathStart', idx);
-          if (_segStartH) _dispatchSeg(_segStartH, segment);
-        }
-        if (flags & FLAG_BRANCH_ENTER) {
-          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            const oldSeg3 = cpTracker.segment;
-            if (oldSeg3) _segEndEvent(oldSeg3);
-            const { targetSeg } = cpTracker.enterLoop(idx);
-            if (_segStartH) {
-              const loopNode = nodeView(ast, idx);
-              const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
-                : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
-                : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
-                : loopNode.test;
-              _dispatchSeg(_segStartH, targetSeg, targetNode || loopNode);
-            }
-          }
-          const _isSwitchOpt = _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag);
-          cpTracker.enterBranch(_isSwitchOpt);
-          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            cpTracker.pushBreakable('loop');
-          } else if (_isSwitchOpt) {
-            cpTracker.pushBreakable('switch');
-          }
-        }
-        if (flags & FLAG_CATCH_CASE) {
-          const oldSeg2 = cpTracker.segment;
-          if (oldSeg2) _segEndEvent(oldSeg2);
-          const seg2 = cpTracker.nextBranch();
-          if (seg2) _segStartOrUnreachEvent(seg2);
-        }
-        if (elseStartNodes && elseStartNodes[idx]) {
-          const oldSeg2 = cpTracker.segment;
-          if (oldSeg2) _segEndEvent(oldSeg2);
-          const seg2 = cpTracker.nextBranch();
-          if (seg2) _segStartOrUnreachEvent(seg2);
-        }
-      }
+      _fireCfgEvents(idx, 0);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
-      }
-      // Deferred switch markUnreachable (CPTracker only)
-      if (hasCodePath && !_useCfgGraph && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
-        const oldSegSwitch = cpTracker.segment;
-        if (oldSegSwitch) _segEndEvent(oldSegSwitch);
-        cpTracker.markUnreachable();
-        _segStartOrUnreachEvent(cpTracker.segment);
       }
       // Synthesize Identifier visits for synthetic children (optimized path)
       const _tn = tagNames[tag];
@@ -5224,82 +4700,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
       // CfgGraph: code path exit events BEFORE rule exit handlers
-      if (_useCfgGraph) _fireCfgEvents(idx, 1);
+      _fireCfgEvents(idx, 1);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-      if (!_useCfgGraph) {
-        if (flags & FLAG_TERMINATOR) {
-          const nv = nodeView(ast, idx);
-          if (_segLoopH && nv.type === 'ContinueStatement') {
-            const fromSeg = cpTracker.segment;
-            const loopInfo = cpTracker.nearestLoopTarget;
-            if (fromSeg && fromSeg.reachable && loopInfo) {
-              _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv);
-            }
-          }
-          if (nv.type === 'BreakStatement' && !nv.label && cpTracker.breakTarget === 'switch') {
-            cpTracker.markSwitchBranchReachable();
-          }
-          if (nv.type === 'ReturnStatement') {
-            const seg = cpTracker.segment;
-            if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
-          } else if (nv.type === 'ThrowStatement') {
-            const seg = cpTracker.segment;
-            if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
-          }
-          {
-            const oldSeg = cpTracker.segment;
-            if (oldSeg) _segEndEvent(oldSeg);
-            cpTracker.markUnreachable();
-            if (_unreachStartH) _dispatchSeg(_unreachStartH, cpTracker.segment);
-          }
-        }
-        if (flags & FLAG_BRANCH_EXIT) {
-          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            const fromSeg = cpTracker.segment;
-            const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
-            if (fromSeg && fromSeg.reachable && loopExitAlive) {
-              const loopInfo = cpTracker.nearestLoopTarget;
-              if (loopInfo && loopInfo.loopIdx === idx) {
-                _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
-              }
-            }
-            cpTracker.exitLoop();
-            cpTracker.popBreakable();
-          } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
-            cpTracker.popBreakable();
-          }
-          const oldSeg = cpTracker.segment;
-          if (oldSeg) _segEndEvent(oldSeg);
-          const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
-            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
-            (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
-            (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nodeView(ast, idx)));
-          const seg2 = cpTracker.exitBranch(hasAllBranches);
-          if (seg2 && seg2.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            if (seg2.reachable && ast._nodeReachable) {
-              const nextEvIdx = i + 1;
-              if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
-                if (!ast._nodeReachable[dfsEvents[nextEvIdx]]) seg2.reachable = false;
-              }
-            }
-          }
-          _segStartOrUnreachEvent(seg2);
-        }
-        if (flags & FLAG_CODEPATH_EXIT) {
-          const oldSeg = cpTracker.segment;
-          if (oldSeg) _segEndEvent(oldSeg);
-          invokeCodePathHandlers('onCodePathEnd', idx);
-          cpTracker.exitFunction();
-          const outerSeg = cpTracker.segment;
-          if (outerSeg) _segStartOrUnreachEvent(outerSeg);
-        }
-      }
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
+      _fireCfgEvents(idx, 2);
     }
-      if (_useCfgGraph) _fireCfgEvents(idx, 2);
   }
 
   // ── Execute file-level exit rules (after DFS) ─────────────────
