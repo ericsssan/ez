@@ -2593,16 +2593,6 @@ function _handleError(err, ruleId, context) {
  * Applies predicate pushdown only — skipSet check and try/catch are baked
  * into each safeHandler wrapper, keeping this loop free of both (items 1+2).
  */
-// Helper: call item._state.inner or fall back to item.handler (for items without _state).
-// Called only on error recovery paths — not the hot path.
-function _invokeFusedItem(item, node, context) {
-  if (item._state) {
-    item._state.inner(node);
-  } else {
-    item.handler(node);
-  }
-}
-
 /**
  * Invoke a fused handler descriptor against a node.
  *
@@ -3957,20 +3947,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // selectorsByTagEnter/Exit[tagIdx] = selectors whose root type == tagNames[tagIdx].
   // Avoids looping all selectors per node; slot.handler refs update automatically per file.
   const _selPlan = hasSelectors ? _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) : null;
-  const _selectorTagArr     = _selPlan ? _selPlan.selectorTagArr     : null;
   const selectorsByTagEnter = _selPlan ? _selPlan.selectorsByTagEnter : null;
   const selectorsByTagExit  = _selPlan ? _selPlan.selectorsByTagExit  : null;
   const _universalEnter     = _selPlan && _selPlan.universalEnter.length > 0 ? _selPlan.universalEnter : null;
   const _universalExit      = _selPlan && _selPlan.universalExit.length  > 0 ? _selPlan.universalExit  : null;
-  // When universal selectors exist, they must fire on every node for that event type.
-  const _hasUniversalEnter = _universalEnter !== null;
-  const _hasUniversalExit  = _universalExit  !== null;
 
-  // ── Small file fast path ──────────────────────────────────────
-  // For files with < 100 nodes, skip the full optimizer (plan remap,
-  // subtree pruning, materialized views, batch scan, etc.) and use
-  // a simple DFS with direct visitorMap lookups. The optimizer overhead
-  // (0.5ms) exceeds the DFS cost on these tiny files.
   // ── Interleaved DFS traversal ──────────────────────────────────
   // Build a single event sequence that interleaves enter (pre-order)
   // and exit (post-order) events in correct DFS order. This ensures
@@ -4163,35 +4144,38 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // ── Optimized DFS path ─────────────────────────────────────────
   const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip, selectorHandlers);
-  const { tagEnterHandlers, tagExitHandlers, tagFlags, relevantTag, relevantTagCount,
+  const { tagEnterHandlers, tagExitHandlers, tagFlags,
           fileLevelEnter, fileLevelExit, batchScannable } = plan;
 
+  // Clone relevantTag so we can safely extend it for synthesis/remap without
+  // corrupting the cached plan (relevantTag is a Uint8Array owned by the plan).
+  const relevantTag = new Uint8Array(plan.relevantTag);
+
   // Mark tags as relevant that need synthesis or remapping (must not be pruned/skipped).
-  {
-    const _needsIdentSynth = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
-    const _needsPrivateSynth = visitorMap.has('PrivateIdentifier') || visitorMap.has('PrivateIdentifier:exit');
-    // MethodDefinition→Property remap: MethodDefinition tags need relevance when Property has handlers
-    const _needsMdRemap = visitorMap.has('Property') || visitorMap.has('Property:exit');
-    if (_needsIdentSynth || _needsPrivateSynth || _needsMdRemap) {
-      for (let _ti = 0; _ti < tagNames.length; _ti++) {
-        const _tn = tagNames[_ti];
-        if (_needsIdentSynth && (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement' ||
-            _tn === 'ImportSpecifier' || _tn === 'ImportDefaultSpecifier' ||
-            _tn === 'ImportNamespaceSpecifier' || _tn === 'ExportSpecifier' ||
-            _tn === 'MemberExpression')) {
-          relevantTag[_ti] = 1;
-        }
-        if (_needsPrivateSynth && (_tn === 'Identifier' || _tn === 'MemberExpression')) {
-          relevantTag[_ti] = 1;
-        }
-        if (_needsMdRemap && _tn === 'MethodDefinition') {
-          relevantTag[_ti] = 1;
-        }
+  const _needsIdentSynth = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
+  const _needsPrivateSynth = visitorMap.has('PrivateIdentifier') || visitorMap.has('PrivateIdentifier:exit');
+  const _needsMdRemap = visitorMap.has('Property') || visitorMap.has('Property:exit');
+  if (_needsIdentSynth || _needsPrivateSynth || _needsMdRemap) {
+    for (let _ti = 0; _ti < tagNames.length; _ti++) {
+      const _tn = tagNames[_ti];
+      if (_needsIdentSynth && (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement' ||
+          _tn === 'ImportSpecifier' || _tn === 'ImportDefaultSpecifier' ||
+          _tn === 'ImportNamespaceSpecifier' || _tn === 'ExportSpecifier' ||
+          _tn === 'MemberExpression')) {
+        relevantTag[_ti] = 1;
+      }
+      if (_needsPrivateSynth && (_tn === 'Identifier' || _tn === 'MemberExpression')) {
+        relevantTag[_ti] = 1;
+      }
+      if (_needsMdRemap && _tn === 'MethodDefinition') {
+        relevantTag[_ti] = 1;
       }
     }
   }
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
-  const usePruning = canSkip && !hasCodePath && relevantTagCount < tagCount * 0.5 && pd;
+  let _relevantCount = 0;
+  for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
+  const usePruning = canSkip && !hasCodePath && _relevantCount < tagCount * 0.5 && pd;
   if (usePruning) {
     for (let i = 0; i < postOrder.length; i++) {
       const idx = postOrder[i];
@@ -4300,12 +4284,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // Interleaved DFS: enter and exit events in correct DFS order.
   const hasPrivateIdOpt = visitorMap.has('PrivateIdentifier');
-  const hasPrivateIdExitOpt = visitorMap.has('PrivateIdentifier:exit');
   const identTagOpt = tagNames.indexOf('Identifier');
-  const memberExprTagOpt = tagNames.indexOf('MemberExpression');
   // Label + specifier synthesis for optimized path
   const needsLabelSynthOpt = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
-  const labeledStmtTagOpt = tagNames.indexOf('LabeledStatement');
   const _labelStmtTagSet = new Set();
   const _specifierTagSetOpt = new Set();
   for (let _ti = 0; _ti < tagNames.length; _ti++) {
@@ -4428,7 +4409,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       // Synthesize PrivateIdentifier for MemberExpression with private property
-      if (hasPrivateIdOpt && (tag === memberExprTagOpt || tagNames[tag] === 'MemberExpression')) {
+      if (hasPrivateIdOpt && tagNames[tag] === 'MemberExpression') {
         const rhs = ast.nodeRhs(idx);
         if (rhs !== NONE) {
           const propStart = ast._tokStarts[rhs];
@@ -4458,7 +4439,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const tag = nodeTags[idx];
       const handlers = _resolveHandlers(tagExitHandlers, tag, idx);
       const flags = tagFlags[tag];
-      if (canSkip && !hasCodePath && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag])) continue;
+      if (canSkip && !hasCodePath && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag])) continue;
       // Catch stack: pop CatchClause/function-boundary on exit
       if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
         catchStack.pop();
@@ -4468,6 +4449,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _fireCfgEvents(idx, 1);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      // PrivateIdentifier:exit dispatch for Identifier nodes with # prefix
+      if (_needsPrivateSynth && tagNames[tag] === 'Identifier') {
+        const pos = ast._tokStarts[ast._mainTokens[idx]];
+        if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
+          const privExit = visitorMap.get('PrivateIdentifier:exit');
+          if (privExit) {
+            const node = nodeView(ast, idx);
+            context._currentNodeIdx = idx;
+            for (let h = 0; h < privExit.length; h++) {
+              try { privExit[h].handler(node); } catch (err) {
+                context._reports.push({ ruleId: privExit[h].ruleId, message: `Plugin error: ${err.message}` });
+              }
+            }
+          }
+        }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
