@@ -767,6 +767,24 @@ pub const CodePathBuilder = struct {
         try self.forwardCurrentToHead(node, .enter);
     }
 
+    /// Called between LHS and RHS of a logical expression (&&, ||, ??).
+    /// For `a && b`: LHS evaluated, now fork — truthy continues to RHS,
+    /// falsy short-circuits to merge. Save LHS-end to the short-circuit
+    /// branch, create new segment for RHS.
+    pub fn makeLogicalRight(self: *CodePathBuilder, node: NodeIndex) !void {
+        const ctx = self.choice_context orelse return;
+        // Save LHS ending to the short-circuit branch (true_fork).
+        // popChoiceContext merges true_fork + last_branch_end (RHS ending).
+        // For all logical operators, the short-circuit path is merged at the end.
+        const head = try self.allocator.dupe(SegmentId, self.fork_context.head());
+        try ctx.true_fork.add(head, self);
+        // End LHS segment, create new segment for RHS
+        try self.leaveFromCurrentSegment(node, .enter);
+        const new_segs = try self.fork_context.makeNext(-1, -1, self);
+        try self.fork_context.replaceHead(new_segs, self);
+        try self.forwardCurrentToHead(node, .enter);
+    }
+
     pub fn makeIfAlternate(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.choice_context orelse return;
         // Save end of true branch

@@ -565,8 +565,22 @@ pub const SemanticAnalyzer = struct {
             .add_assign, .sub_assign, .mul_assign, .div_assign,
             .mod_assign, .exp_assign, .and_assign, .or_assign,
             .xor_assign, .shl_assign, .shr_assign, .ushr_assign,
-            .logical_and_assign, .logical_or_assign, .nullish_assign,
             => try self.visitAssignment(data, .read_write),
+            .logical_and_assign => {
+                if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_and, false);
+                try self.visitAssignment(data, .read_write);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
+            },
+            .logical_or_assign => {
+                if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_or, false);
+                try self.visitAssignment(data, .read_write);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
+            },
+            .nullish_assign => {
+                if (self.cpb_initialized) try self.cpb.pushChoiceContext(.nullish, false);
+                try self.visitAssignment(data, .read_write);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
+            },
 
             // ── Update expressions ─────────────────────────
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec => {
@@ -729,10 +743,16 @@ pub const SemanticAnalyzer = struct {
 
             // ── Expressions with children ──────────────────
             .conditional => {
-                try self.visitNode(data.lhs);
+                try self.visitNode(data.lhs); // condition
                 const cond = self.ast.extraData(Conditional, @intFromEnum(data.rhs));
+                if (self.cpb_initialized) {
+                    try self.cpb.pushChoiceContext(.test_kind, false);
+                    try self.cpb.makeIfConsequent(idx);
+                }
                 try self.visitNode(cond.consequent);
+                if (self.cpb_initialized) try self.cpb.makeIfAlternate(idx);
                 try self.visitNode(cond.alternate);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .call_expr, .optional_call_expr => {
                 try self.visitNode(data.lhs);
@@ -830,10 +850,26 @@ pub const SemanticAnalyzer = struct {
             .instanceof_expr, .in_expr,
             .bitwise_and, .bitwise_or, .bitwise_xor,
             .shift_left, .shift_right, .unsigned_shift_right,
-            .logical_and, .logical_or, .nullish_coalesce,
-            => {
+            .logical_and => {
+                if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_and, false);
                 try self.visitNode(data.lhs);
+                if (self.cpb_initialized) try self.cpb.makeLogicalRight(idx);
                 try self.visitNode(data.rhs);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
+            },
+            .logical_or => {
+                if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_or, false);
+                try self.visitNode(data.lhs);
+                if (self.cpb_initialized) try self.cpb.makeLogicalRight(idx);
+                try self.visitNode(data.rhs);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
+            },
+            .nullish_coalesce => {
+                if (self.cpb_initialized) try self.cpb.pushChoiceContext(.nullish, false);
+                try self.visitNode(data.lhs);
+                if (self.cpb_initialized) try self.cpb.makeLogicalRight(idx);
+                try self.visitNode(data.rhs);
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
 
             // ── Patterns (in binding positions) ────────────

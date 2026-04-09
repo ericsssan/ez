@@ -3121,21 +3121,55 @@ class CfgCodePath {
     const opts = typeof optionsOrCb === 'object' ? optionsOrCb : null;
     const startSeg = opts?.first || this.initialSegment;
     const lastSeg = opts?.last || null;
+
+    // DFS traversal matching ESLint's CodePath.traverseSegments exactly.
+    // Key: a segment is only processed when ALL its prevSegments have been
+    // visited (or are looped back-edges). This ensures merge points wait
+    // for both branches.
     const visited = new Set();
-    const queue = [startSeg];
-    let stopped = false;
-    while (queue.length > 0 && !stopped) {
-      const s = queue.shift();
-      if (!s || visited.has(s.id)) continue;
-      visited.add(s.id);
-      let skipped = false;
-      cb(s, { skip() { skipped = true; }, break() { stopped = true; } });
-      if (stopped) break;
-      if (lastSeg && s.id === lastSeg.id) continue;
-      if (!skipped) {
-        for (const next of s.nextSegments) {
-          if (!visited.has(next.id)) queue.push(next);
+    const skipped = new Set();
+    const stack = [[startSeg, 0]];
+    let segment = null;
+    let broken = false;
+    const controller = {
+      skip() { skipped.add(segment); },
+      break() { broken = true; },
+    };
+    function isVisited(prev) { return visited.has(prev) || segment.isLoopedPrevSegment(prev); }
+    function isSkipped(prev) { return skipped.has(prev) || segment.isLoopedPrevSegment(prev); }
+
+    while (stack.length > 0) {
+      const record = stack[stack.length - 1];
+      segment = record[0];
+      const index = record[1];
+
+      if (index === 0) {
+        if (visited.has(segment)) { stack.pop(); continue; }
+        // Wait until all prevSegments are visited (looped prevs count as visited)
+        if (segment !== startSeg && segment.prevSegments.length > 0 &&
+            !segment.prevSegments.every(isVisited)) { stack.pop(); continue; }
+        visited.add(segment);
+        // Auto-skip if all prevSegments were skipped
+        const shouldSkip = skipped.size > 0 && segment.prevSegments.length > 0 &&
+            segment.prevSegments.every(isSkipped);
+        if (!shouldSkip) {
+          cb.call(this, segment, controller);
+          if (segment === lastSeg) controller.skip();
+          if (broken) break;
+        } else {
+          skipped.add(segment);
         }
+      }
+
+      const end = segment.nextSegments.length - 1;
+      if (index < end) {
+        record[1] += 1;
+        stack.push([segment.nextSegments[index], 0]);
+      } else if (index === end) {
+        record[0] = segment.nextSegments[index];
+        record[1] = 0;
+      } else {
+        stack.pop();
       }
     }
   }

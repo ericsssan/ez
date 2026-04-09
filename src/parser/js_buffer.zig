@@ -348,41 +348,57 @@ fn writeCfgGraph(
     }
 
     // ── Adjacency lists (CSR format) ────────────────────────
-    // Build CSR starts arrays from segment range fields.
-    // next (reachable only)
+    // Reorder targets into segment-ID order for valid CSR (monotonic starts).
+    // Targets are appended in markUsed() order which may differ from segment order.
     const seg_next_starts = try alloc.alloc(u32, seg_count + 1);
-    for (0..seg_count) |i| seg_next_starts[i] = cpr.segments[i].next_start;
-    seg_next_starts[seg_count] = @intCast(cpr.next_targets.len);
     const seg_next_targets = try alloc.alloc(u32, cpr.next_targets.len);
-    @memcpy(seg_next_targets, cpr.next_targets);
-
-    // prev (reachable only)
     const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    for (0..seg_count) |i| seg_prev_starts[i] = cpr.segments[i].prev_start;
-    seg_prev_starts[seg_count] = @intCast(cpr.prev_targets.len);
     const seg_prev_targets = try alloc.alloc(u32, cpr.prev_targets.len);
-    @memcpy(seg_prev_targets, cpr.prev_targets);
-
-    // allNext
     const seg_all_next_starts = try alloc.alloc(u32, seg_count + 1);
-    for (0..seg_count) |i| seg_all_next_starts[i] = cpr.segments[i].all_next_start;
-    seg_all_next_starts[seg_count] = @intCast(cpr.all_next_targets.len);
     const seg_all_next_targets = try alloc.alloc(u32, cpr.all_next_targets.len);
-    @memcpy(seg_all_next_targets, cpr.all_next_targets);
-
-    // allPrev
     const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    for (0..seg_count) |i| seg_all_prev_starts[i] = cpr.segments[i].all_prev_start;
-    seg_all_prev_starts[seg_count] = @intCast(cpr.all_prev_targets.len);
     const seg_all_prev_targets = try alloc.alloc(u32, cpr.all_prev_targets.len);
-    @memcpy(seg_all_prev_targets, cpr.all_prev_targets);
-
-    // looped
     const seg_looped_starts = try alloc.alloc(u32, seg_count + 1);
-    for (0..seg_count) |i| seg_looped_starts[i] = cpr.segments[i].looped_prev_start;
-    seg_looped_starts[seg_count] = @intCast(cpr.looped_targets.len);
     const seg_looped_targets = try alloc.alloc(u32, cpr.looped_targets.len);
-    @memcpy(seg_looped_targets, cpr.looped_targets);
+    {
+        var n_off: u32 = 0;
+        var p_off: u32 = 0;
+        var an_off: u32 = 0;
+        var ap_off: u32 = 0;
+        var l_off: u32 = 0;
+        for (0..seg_count) |i| {
+            const s = cpr.segments[i];
+            const n_len = s.next_end - s.next_start;
+            seg_next_starts[i] = n_off;
+            if (n_len > 0) @memcpy(seg_next_targets[n_off..][0..n_len], cpr.next_targets[s.next_start..s.next_end]);
+            n_off += n_len;
+
+            const p_len = s.prev_end - s.prev_start;
+            seg_prev_starts[i] = p_off;
+            if (p_len > 0) @memcpy(seg_prev_targets[p_off..][0..p_len], cpr.prev_targets[s.prev_start..s.prev_end]);
+            p_off += p_len;
+
+            const an_len = s.all_next_end - s.all_next_start;
+            seg_all_next_starts[i] = an_off;
+            if (an_len > 0) @memcpy(seg_all_next_targets[an_off..][0..an_len], cpr.all_next_targets[s.all_next_start..s.all_next_end]);
+            an_off += an_len;
+
+            const ap_len = s.all_prev_end - s.all_prev_start;
+            seg_all_prev_starts[i] = ap_off;
+            if (ap_len > 0) @memcpy(seg_all_prev_targets[ap_off..][0..ap_len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]);
+            ap_off += ap_len;
+
+            const l_len = s.looped_prev_end - s.looped_prev_start;
+            seg_looped_starts[i] = l_off;
+            if (l_len > 0) @memcpy(seg_looped_targets[l_off..][0..l_len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]);
+            l_off += l_len;
+        }
+        seg_next_starts[seg_count] = n_off;
+        seg_prev_starts[seg_count] = p_off;
+        seg_all_next_starts[seg_count] = an_off;
+        seg_all_prev_starts[seg_count] = ap_off;
+        seg_looped_starts[seg_count] = l_off;
+    }
 
     // ── Per-codepath data ───────────────────────────────────
     const cp_origin = try alloc.alloc(u8, cp_count);
