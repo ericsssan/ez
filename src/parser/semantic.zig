@@ -597,7 +597,7 @@ pub const SemanticAnalyzer = struct {
                 const alive_pre = self.cfg_alive;
                 if (self.cpb_initialized) {
                     try self.cpb.pushChoiceContext(.test_kind, false);
-                    try self.cpb.makeIfConsequent(idx);
+                    try self.cpb.makeIfConsequent(@enumFromInt(@intFromEnum(data.rhs)));
                 }
                 try self.visitNode(data.rhs);
                 self.cfg_alive = alive_pre or self.cfg_alive;
@@ -609,12 +609,12 @@ pub const SemanticAnalyzer = struct {
                 const alive_pre = self.cfg_alive;
                 if (self.cpb_initialized) {
                     try self.cpb.pushChoiceContext(.test_kind, false);
-                    try self.cpb.makeIfConsequent(idx);
+                    try self.cpb.makeIfConsequent(if_data.consequent);
                 }
                 try self.visitNode(if_data.consequent);
                 const alive_true = self.cfg_alive;
                 self.cfg_alive = alive_pre;
-                if (self.cpb_initialized) try self.cpb.makeIfAlternate(idx);
+                if (self.cpb_initialized) try self.cpb.makeIfAlternate(if_data.alternate);
                 try self.visitNode(if_data.alternate);
                 self.cfg_alive = alive_true or self.cfg_alive;
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);

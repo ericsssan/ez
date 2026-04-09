@@ -1118,11 +1118,11 @@ pub const CodePathBuilder = struct {
             try ctx.broken_fork.add(head, self);
         }
 
-        // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, .exit);
+        // Make subsequent code unreachable (post phase so exit handlers see current segment)
+        try self.leaveFromCurrentSegment(node, .post);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, .exit);
+        try self.forwardCurrentToHead(node, .post);
     }
 
     pub fn makeContinue(self: *CodePathBuilder, label: ?[]const u8, node: NodeIndex) !void {
@@ -1171,11 +1171,11 @@ pub const CodePathBuilder = struct {
             }
         }
 
-        // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, .exit);
+        // Make subsequent code unreachable (post phase so exit handlers see current segment)
+        try self.leaveFromCurrentSegment(node, .post);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, .exit);
+        try self.forwardCurrentToHead(node, .post);
     }
 
     // ── Return/Throw ─────────────────────────────────────────
@@ -1194,11 +1194,13 @@ pub const CodePathBuilder = struct {
         }
         cp.returned_end = @intCast(self.cp_returned_pool.items.len);
 
-        // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, .exit);
+        // Make subsequent code unreachable.
+        // Use post phase so SEG_END fires AFTER exit handlers — rules like
+        // no-useless-return check currentSegments in ReturnStatement:exit.
+        try self.leaveFromCurrentSegment(node, .post);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, .exit);
+        try self.forwardCurrentToHead(node, .post);
     }
 
     /// Mark current head as unreachable (e.g., after infinite loop with no break).
@@ -1231,11 +1233,11 @@ pub const CodePathBuilder = struct {
             }
         }
 
-        // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, .exit);
+        // Make subsequent code unreachable (post phase so exit handlers see current segment)
+        try self.leaveFromCurrentSegment(node, .post);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, .exit);
+        try self.forwardCurrentToHead(node, .post);
     }
 
     // ── Fork context management ──────────────────────────────
