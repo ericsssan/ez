@@ -180,6 +180,9 @@ const SH = {
   SCOPE_CHILD_STARTS: 120, // u32[scope_count] — first index in scope_child_ids per scope
   SCOPE_CHILD_COUNTS: 124, // u32[scope_count] — number of child scopes per scope
   SCOPE_CHILD_IDS: 128,    // u32[total_children] — child scope IDs sorted by parent
+  TAG_NODE_STARTS: 132,    // u32[tag_count + 1] — prefix-sum (sentinel at end)
+  TAG_NODE_IDS: 136,       // u32[node_count]    — node indices sorted by tag
+  TAG_COUNT: 140,          // u32 — number of tag slots
 };
 
 const FLAG_HAS_BOM = 1;
@@ -420,12 +423,23 @@ class AstView {
         this._scopeChildStarts = new Uint32Array(buffer, scOff, this._semScopeCount);
         this._scopeChildCounts = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_CHILD_COUNTS, true), this._semScopeCount);
         const sciOff = dv.getUint32(semOff + SH.SCOPE_CHILD_IDS, true);
-        // Total children = sum of counts, but we can derive it from the last start + count
         if (sciOff > 0 && this._semScopeCount > 0) {
           const lastScope = this._semScopeCount - 1;
           const totalChildren = this._scopeChildStarts[lastScope] + this._scopeChildCounts[lastScope];
           this._scopeChildIds = new Uint32Array(buffer, sciOff, totalChildren);
         }
+      }
+
+      // Tag → nodes CSR (precomputed in Zig)
+      const tagCount = dv.getUint32(semOff + SH.TAG_COUNT, true);
+      const tnsOff = dv.getUint32(semOff + SH.TAG_NODE_STARTS, true);
+      if (tnsOff > 0 && tagCount > 0) {
+        this._tagNodeStarts = new Uint32Array(buffer, tnsOff, tagCount + 1); // +1 sentinel
+        const tniOff = dv.getUint32(semOff + SH.TAG_NODE_IDS, true);
+        if (tniOff > 0) {
+          this._tagNodeIds = new Uint32Array(buffer, tniOff, this.nodeCount);
+        }
+        this._tagCount = tagCount;
       }
     } else {
       this._semScopeCount = 0;

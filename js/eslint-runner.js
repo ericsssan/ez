@@ -4928,41 +4928,57 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   skipSet.init(visitorMap.size);
   context._skipSet = skipSet;
 
-  const nodesByType = new Map();
-  for (let i = 0; i < ast.nodeCount; i++) {
-    const tag = nodeTags[i];
-    const tn = tagNames[tag];
-    if (tn) {
-      let arr = nodesByType.get(tn);
-      if (!arr) { arr = []; nodesByType.set(tn, arr); }
-      arr.push(i);
-    }
-  }
-  context.sourceCode._nodesByType = nodesByType;
+  // Use Zig-precomputed tag→node CSR for getNodesByType and batch scan.
+  const _tagNodeStarts = ast._tagNodeStarts; // Uint32Array[tag_count + 1] or undefined
+  const _tagNodeIds = ast._tagNodeIds;       // Uint32Array[node_count] or undefined
+  context.sourceCode._nodesByType = null; // lazy fallback
   context.sourceCode.getNodesByType = function(typeName) {
+    if (_tagNodeStarts && _tagNodeIds) {
+      const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(typeName) : null;
+      if (!allTags) return [];
+      const result = [];
+      for (let ti = 0; ti < allTags.length; ti++) {
+        const t = allTags[ti];
+        if (t >= _tagNodeStarts.length - 1) continue;
+        const start = _tagNodeStarts[t], end = _tagNodeStarts[t + 1];
+        for (let j = start; j < end; j++) result.push(nodeView(this._ast, _tagNodeIds[j]));
+      }
+      return result;
+    }
+    // Fallback: build lazily
+    if (!this._nodesByType) {
+      this._nodesByType = new Map();
+      for (let i = 0; i < ast.nodeCount; i++) {
+        const tn2 = tagNames[nodeTags[i]]; if (tn2) { let a = this._nodesByType.get(tn2); if (!a) { a = []; this._nodesByType.set(tn2, a); } a.push(i); }
+      }
+    }
     const indices = this._nodesByType.get(typeName);
-    if (!indices) return [];
-    return indices.map(idx => nodeView(this._ast, idx));
+    return indices ? indices.map(idx => nodeView(this._ast, idx)) : [];
   };
 
   // Execute batch-scannable rules before the DFS walk.
-  // SQL columnar scan: one pass over all nodes of each type, calling N rule handlers.
-  // Batch try/catch: ONE try/catch for all N handlers per node, not per handler.
+  // Columnar scan: iterate tag→node CSR ranges directly from buffer.
   for (const [typeName, handlers] of batchScannable) {
-    const indices = nodesByType.get(typeName);
-    if (!indices) continue;
+    const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(typeName) : null;
+    if (!allTags) continue;
     const hn = handlers.length;
-    for (let i = 0; i < indices.length; i++) {
-      const node = nodeView(ast, indices[i]);
-      context._currentNodeIdx = indices[i];
-      let bh = 0;
-      try {
-        for (; bh < hn; bh++) handlers[bh]._state.inner(node);
-      } catch (err) {
-        context._reports.push({ ruleId: handlers[bh].ruleId, message: `Plugin error: ${err.message}` });
-        for (let bk = bh + 1; bk < hn; bk++) {
-          try { handlers[bk]._state.inner(node); }
-          catch (e) { context._reports.push({ ruleId: handlers[bk].ruleId, message: `Plugin error: ${e.message}` }); }
+    for (let ti = 0; ti < allTags.length; ti++) {
+      const t = allTags[ti];
+      if (!_tagNodeStarts || t >= _tagNodeStarts.length - 1) continue;
+      const start = _tagNodeStarts[t], end = _tagNodeStarts[t + 1];
+      for (let j = start; j < end; j++) {
+        const nodeIdx = _tagNodeIds[j];
+        const node = nodeView(ast, nodeIdx);
+        context._currentNodeIdx = nodeIdx;
+        let bh = 0;
+        try {
+          for (; bh < hn; bh++) handlers[bh]._state.inner(node);
+        } catch (err) {
+          context._reports.push({ ruleId: handlers[bh].ruleId, message: `Plugin error: ${err.message}` });
+          for (let bk = bh + 1; bk < hn; bk++) {
+            try { handlers[bk]._state.inner(node); }
+            catch (e) { context._reports.push({ ruleId: handlers[bk].ruleId, message: `Plugin error: ${e.message}` }); }
+          }
         }
       }
     }

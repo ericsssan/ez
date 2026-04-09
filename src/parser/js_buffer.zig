@@ -135,10 +135,15 @@ pub const SemanticHeader = extern struct {
     scope_child_starts_offset: u32 = 0, // u32[scope_count]     — first index in scope_child_ids
     scope_child_counts_offset: u32 = 0, // u32[scope_count]     — number of children per scope
     scope_child_ids_offset: u32 = 0,    // u32[total_children]  — child scope IDs sorted by parent
+
+    // Tag → nodes CSR (nodes grouped by tag via counting sort)
+    tag_node_starts_offset: u32 = 0,    // u32[tag_count + 1]  — prefix-sum (sentinel at end)
+    tag_node_ids_offset: u32 = 0,       // u32[node_count]     — node indices sorted by tag
+    tag_count: u32 = 0,                 // number of tag slots (= max_tag + 1)
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 132);
+    std.debug.assert(@sizeOf(SemanticHeader) == 144);
     std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 104);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 108);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 112);
@@ -146,6 +151,9 @@ comptime {
     std.debug.assert(@offsetOf(SemanticHeader, "scope_child_starts_offset") == 120);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_child_counts_offset") == 124);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_child_ids_offset") == 128);
+    std.debug.assert(@offsetOf(SemanticHeader, "tag_node_starts_offset") == 132);
+    std.debug.assert(@offsetOf(SemanticHeader, "tag_node_ids_offset") == 136);
+    std.debug.assert(@offsetOf(SemanticHeader, "tag_count") == 140);
 }
 
 // ── CFG Graph Header ────────────────────────────────────────────
@@ -198,6 +206,7 @@ pub fn writeSemanticData(
     backing: *JsBufferAllocator,
     sem: *const semantic_mod.SemanticResult,
     node_count: u32,
+    node_tags: []const ast_mod.Node.Tag,
 ) !u32 {
     const alloc = backing.allocator();
     const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
@@ -363,6 +372,41 @@ pub fn writeSemanticData(
         @memset(scope_child_starts, 0);
     }
 
+    // ── Tag → nodes CSR (counting sort on node tags) ──────────────
+    // Find max tag value to size the starts array.
+    var max_tag: u32 = 0;
+    for (node_tags) |t| {
+        const tv: u32 = @intFromEnum(t);
+        if (tv > max_tag) max_tag = tv;
+    }
+    const tag_slots: u32 = max_tag + 1;
+    const tag_node_starts = try alloc.alloc(u32, tag_slots + 1); // +1 sentinel
+    const tag_node_ids = try alloc.alloc(u32, node_count);
+    {
+        // Count nodes per tag
+        @memset(tag_node_starts, 0);
+        for (node_tags) |t| {
+            tag_node_starts[@intFromEnum(t)] += 1;
+        }
+        // Prefix sum
+        var running: u32 = 0;
+        for (0..tag_slots) |i| {
+            const c = tag_node_starts[i];
+            tag_node_starts[i] = running;
+            running += c;
+        }
+        tag_node_starts[tag_slots] = running; // sentinel
+        // Place node indices (use a cursor copy of starts)
+        const cursor = try alloc.alloc(u32, tag_slots);
+        defer alloc.free(cursor);
+        @memcpy(cursor, tag_node_starts[0..tag_slots]);
+        for (0..node_count) |i| {
+            const tv: u32 = @intFromEnum(node_tags[i]);
+            tag_node_ids[cursor[tv]] = @intCast(i);
+            cursor[tv] += 1;
+        }
+    }
+
     // ── SemanticHeader ────────────────────────────────────────────
     const header_mem = try alloc.alloc(u8, @sizeOf(SemanticHeader));
     const sem_header: *SemanticHeader = @ptrCast(@alignCast(header_mem.ptr));
@@ -423,6 +467,9 @@ pub fn writeSemanticData(
     sem_header.scope_child_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_child_starts.ptr) else 0;
     sem_header.scope_child_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_child_counts.ptr) else 0;
     sem_header.scope_child_ids_offset = if (total_children > 0) ptrOffsetPub(buf, scope_child_ids.ptr) else 0;
+    sem_header.tag_node_starts_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_starts.ptr) else 0;
+    sem_header.tag_node_ids_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_ids.ptr) else 0;
+    sem_header.tag_count = tag_slots;
 
     return ptrOffsetPub(buf, header_mem.ptr);
 }

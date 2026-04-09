@@ -92,7 +92,7 @@ fn parseImpl(
     if (semantic_mod.SemanticAnalyzer.analyze(sem_arena.allocator(), &tree)) |sem_result| {
         var sem = sem_result;
         // sem.deinit() is intentionally skipped — the arena frees everything.
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len))) |off| {
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag))) |off| {
             semantic_data_offset = off;
         } else |_| {}
     } else |_| {}
@@ -246,7 +246,7 @@ fn parseAndLintImpl(
     var sem_result_opt: ?semantic_mod.SemanticResult = null;
     if (semantic_mod.SemanticAnalyzer.analyze(sem_arena.allocator(), &tree)) |sr| {
         sem_result_opt = sr;
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len))) |off| {
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag))) |off| {
             semantic_data_offset = off;
         } else |_| {}
     } else |_| {}
