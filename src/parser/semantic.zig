@@ -699,7 +699,7 @@ pub const SemanticAnalyzer = struct {
                     try self.cpb.makeUnreachable(idx);
                 }
             },
-            .try_stmt => try self.visitTryStmt(data),
+            .try_stmt => try self.visitTryStmt(idx, data),
             .labeled_stmt => {
                 // Push a non-breakable break context with the label name
                 // so `break label` finds this context, not the enclosing loop/switch
@@ -1778,11 +1778,11 @@ pub const SemanticAnalyzer = struct {
 
     // ── Try/catch ──────────────────────────────────────────
 
-    fn visitTryStmt(self: *SemanticAnalyzer, data: Node.Data) !void {
+    fn visitTryStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         // lhs = try block, rhs = extra index to TryData
         const try_data = self.ast.extraData(TryData, @intFromEnum(data.rhs));
         const has_finalizer = try_data.finally_body != .none;
-        if (self.cpb_initialized) try self.cpb.pushTryContext(has_finalizer);
+        if (self.cpb_initialized) try self.cpb.pushTryContext(has_finalizer, data.lhs);
 
         const alive_before = self.cfg_alive;
         try self.visitNode(data.lhs); // try block
@@ -1805,7 +1805,9 @@ pub const SemanticAnalyzer = struct {
             try self.visitNode(try_data.finally_body);
         }
 
-        if (self.cpb_initialized) try self.cpb.popTryContext(data.lhs);
+        // Use the TryStatement node for merge events so they fire AFTER
+        // all children (try body + catch + finally) are visited in the DFS.
+        if (self.cpb_initialized) try self.cpb.popTryContext(idx);
     }
 
     // ── Binding extraction (handles destructuring) ─────────

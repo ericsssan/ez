@@ -872,7 +872,7 @@ pub const CodePathBuilder = struct {
 
     // ── Try/catch/finally ────────────────────────────────────
 
-    pub fn pushTryContext(self: *CodePathBuilder, has_finalizer: bool) !void {
+    pub fn pushTryContext(self: *CodePathBuilder, has_finalizer: bool, _: NodeIndex) !void {
         const ctx = try self.allocator.create(TryContext);
         ctx.* = .{
             .upper = self.try_context,
