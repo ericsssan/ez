@@ -594,8 +594,11 @@ class AstView {
   _syntheticId(tokIdx) {
     const start = this._tokStarts[tokIdx];
     const src = this.source;
-    let end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
-    while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+    let end = this._tokEnds ? this._tokEnds[tokIdx] : undefined;
+    if (end === undefined) {
+      end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
+      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+    }
     let name = src.slice(start, end);
     // Private identifiers: # may be a separate token from the name.
     let type = 'Identifier';
@@ -635,8 +638,11 @@ class AstView {
   _syntheticLiteral(tokIdx) {
     const start = this._tokStarts[tokIdx];
     const src = this.source;
-    let end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
-    while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+    let end = this._tokEnds ? this._tokEnds[tokIdx] : undefined;
+    if (end === undefined) {
+      end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
+      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+    }
     const raw = src.slice(start, end);
     // Decode the value: strip quotes for strings
     let value = raw;
@@ -2609,6 +2615,7 @@ const NodeProto = {
     const src = ast.source;
     const tags = ast._tokTags;
     const starts = ast._tokStarts;
+    const tokEnds = ast._tokEnds;
     const count = ast.tokenCount;
     const ls = ast._lineStarts();
     const result = [];
@@ -2616,8 +2623,11 @@ const NodeProto = {
       const tag = tags[i];
       if (tag === 131) continue; // skip EOF
       const start = starts[i];
-      let end = i + 1 < count ? starts[i + 1] : src.length;
-      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+      let end = tokEnds ? tokEnds[i] : undefined;
+      if (end === undefined) {
+        end = i + 1 < count ? starts[i + 1] : src.length;
+        while (end > start && src.charCodeAt(end - 1) <= 32) end--;
+      }
       const value = src.slice(start, end);
       // Map tag to ESLint token type
       let type;
@@ -2892,34 +2902,29 @@ const TOK_STAR    = 89;   // asterisk (generator marker)
  * Method tokens before the name: `static`, `async`, `*`, `get`, `set`
  * Returns { async: bool, generator: bool, static: bool }.
  */
-// Reusable result object — avoids allocating {async, generator, static} per call.
-const _methodFlagsResult = { async: false, generator: false, static: false };
-
 function _methodFlags(ast, mainToken) {
-  _methodFlagsResult.async = false;
-  _methodFlagsResult.generator = false;
-  _methodFlagsResult.static = false;
+  let isAsync = false, isGenerator = false, isStatic = false;
   // Check the main token and scan backwards for modifier keywords.
   // Layout: [static] [async] [*] name (...)
   // mainToken may be: *, async, static, get, set, or the method name identifier.
   const mainTag = ast._tokTags[mainToken];
-  if (mainTag === TOK_STAR) _methodFlagsResult.generator = true;
-  if (mainTag === TOK_ASYNC) _methodFlagsResult.async = true;
-  if (mainTag === TOK_STATIC) _methodFlagsResult.static = true;
+  if (mainTag === TOK_STAR) isGenerator = true;
+  if (mainTag === TOK_ASYNC) isAsync = true;
+  if (mainTag === TOK_STATIC) isStatic = true;
   // For async generators: mainToken=async, * is the next token
   if (mainTag === TOK_ASYNC && mainToken + 1 < ast.tokenCount && ast._tokTags[mainToken + 1] === TOK_STAR) {
-    _methodFlagsResult.generator = true;
+    isGenerator = true;
   }
   let i = mainToken - 1;
   while (i >= 0) {
     const tag = ast._tokTags[i];
-    if (tag === TOK_STAR)   { _methodFlagsResult.generator = true; i--; continue; }
-    if (tag === TOK_ASYNC)  { _methodFlagsResult.async = true;     i--; continue; }
-    if (tag === TOK_STATIC) { _methodFlagsResult.static = true;    i--; continue; }
+    if (tag === TOK_STAR)   { isGenerator = true; i--; continue; }
+    if (tag === TOK_ASYNC)  { isAsync = true;     i--; continue; }
+    if (tag === TOK_STATIC) { isStatic = true;    i--; continue; }
     if (tag >= 9 && tag <= 71) { i--; continue; }
     break;
   }
-  return _methodFlagsResult;
+  return { async: isAsync, generator: isGenerator, static: isStatic };
 }
 
 /**

@@ -41,6 +41,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const first_arg: NodeIndex = @enumFromInt(args[0]);
     if (first_arg == .none) return;
     if (ctx.nodeTag(first_arg) == .object_literal) {
-        ctx.report(node, meta.name, "Use spread syntax instead of `Object.assign({},...)`", meta.default_severity);
+        ctx.report(node);
     }
 }

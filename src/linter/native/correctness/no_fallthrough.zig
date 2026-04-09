@@ -30,7 +30,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     if (isTerminator(last_tag)) return;
 
-    ctx.report(node, meta.name, "Expected a `break`, `return`, `throw`, or `continue` statement", meta.default_severity);
+    ctx.report(node);
 }
 
 fn isTerminator(tag: Node.Tag) bool {

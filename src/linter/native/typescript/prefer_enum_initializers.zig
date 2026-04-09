@@ -27,7 +27,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (member == .none) continue;
         const member_data = ctx.nodeData(member);
         if (member_data.rhs == .none) {
-            ctx.report(member, meta.name, "Each enum member should have an explicit value", meta.default_severity);
+            ctx.report(member);
         }
     }
 }

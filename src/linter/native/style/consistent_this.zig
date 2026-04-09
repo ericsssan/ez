@@ -32,6 +32,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const name = ctx.tokenText(name_token);
 
     if (!std.mem.eql(u8, name, ALLOWED_ALIAS)) {
-        ctx.report(node, meta.name, "Unexpected alias for 'this'", meta.default_severity);
+        ctx.report(node);
     }
 }

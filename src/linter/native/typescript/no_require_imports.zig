@@ -23,7 +23,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(callee) == .identifier) {
         const name = ctx.tokenText(ctx.nodeMainToken(callee));
         if (std.mem.eql(u8, name, "require")) {
-            ctx.report(node, meta.name, "Use ES `import` syntax instead of `require()`.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

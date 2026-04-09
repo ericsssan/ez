@@ -34,8 +34,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const is_inc = update_tag == .prefix_inc or update_tag == .postfix_inc;
 
     if (is_less and is_dec) {
-        ctx.report(node, meta.name, "The update clause in this loop moves the variable in the wrong direction.", meta.default_severity);
+        ctx.report(node);
     } else if (is_greater and is_inc) {
-        ctx.report(node, meta.name, "The update clause in this loop moves the variable in the wrong direction.", meta.default_severity);
+        ctx.report(node);
     }
 }

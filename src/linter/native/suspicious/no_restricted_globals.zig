@@ -51,7 +51,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         for (restricted) |r| {
             if (std.mem.eql(u8, name, r)) {
                 const decl_node = syms.getDeclNode(id);
-                ctx.report(decl_node, meta.name, "Unexpected use of restricted global variable", meta.default_severity);
+                ctx.report(decl_node);
                 break;
             }
         }

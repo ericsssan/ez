@@ -36,5 +36,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
 
-    ctx.report(node, meta.name, "Label is defined but never used", meta.default_severity);
+    ctx.report(node);
 }

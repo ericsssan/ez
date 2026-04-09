@@ -60,5 +60,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (!isDirectArrowBody(node, ctx)) return;
     }
 
-    ctx.report(node, meta.name, "Unexpected use of comma operator.", meta.default_severity);
+    ctx.report(node);
 }

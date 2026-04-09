@@ -25,13 +25,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Check there's at least one argument
     if (data.rhs == .none) {
-        ctx.report(node, meta.name, "Expected Symbol to have a description.", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
     const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
     const args = ctx.extraSlice(range);
     if (args.len == 0) {
-        ctx.report(node, meta.name, "Expected Symbol to have a description.", meta.default_severity);
+        ctx.report(node);
     }
 }

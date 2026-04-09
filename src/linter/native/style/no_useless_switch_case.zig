@@ -39,7 +39,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (i + 1 < cases.len) {
             const next: NodeIndex = @enumFromInt(cases[i + 1]);
             if (ctx.nodeTag(next) == .switch_default) {
-                ctx.report(case_node, meta.name, "Useless case clause that only falls through to the default", meta.default_severity);
+                ctx.report(case_node);
             }
         }
     }

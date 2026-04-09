@@ -24,12 +24,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .optional_member_expr,
         .optional_computed_member_expr,
         .optional_call_expr,
-        => ctx.report(
-            node,
-            meta.name,
-            "Optional chain expressions can return `undefined`; non-null assertion is pointless",
-            meta.default_severity,
-        ),
+        => ctx.report(node),
         else => {},
     }
 }

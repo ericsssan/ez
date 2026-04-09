@@ -56,7 +56,7 @@ fn checkForReturn(node: NodeIndex, ctx: *const LintContext) void {
                 const text = ctx.tokenText(ctx.nodeMainToken(data.lhs));
                 if (std.mem.eql(u8, text, "undefined")) return;
             }
-            ctx.report(node, meta.name, "Unexpected return statement in constructor.", meta.default_severity);
+            ctx.report(node);
         }
         return;
     }

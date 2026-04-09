@@ -18,6 +18,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // for_stmt: lhs = extra index to ForData, rhs = body
     const for_data = ctx.extraData(ast.ForData, @intFromEnum(data.lhs));
     if (for_data.init == .none and for_data.condition == .none and for_data.update == .none) {
-        ctx.report(node, meta.name, "Use `while(true)` instead of `for(;;)`", meta.default_severity);
+        ctx.report(node);
     }
 }

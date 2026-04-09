@@ -87,7 +87,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const sym_var_scope = scopes.nearestVarScope(sym_scope);
 
         if (scopes.isAncestor(label_var_scope, sym_var_scope)) {
-            ctx.report(node, meta.name, "Found identifier with same name as label.", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

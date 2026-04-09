@@ -30,13 +30,13 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const decl_node = symbols.getDeclNode(id);
 
         if (flags.is_written) {
-            ctx.report(decl_node, meta.name, "Assignment to import binding", meta.default_severity);
+            ctx.report(decl_node);
             continue;
         }
 
         // Detect `import * as ns from 'mod'; ns.prop = 0` — members of namespace imports are readonly.
         if (flags.is_member_written and ctx.nodeTag(decl_node) == .import_namespace_specifier) {
-            ctx.report(decl_node, meta.name, "The members of this import are read-only", meta.default_severity);
+            ctx.report(decl_node);
         }
     }
 }

@@ -44,11 +44,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (tag == .member_expr) {
         const prop_name = ctx.tokenText(@intCast(@intFromEnum(data.rhs)));
         if (std.mem.eql(u8, prop_name, PROP)) {
-            ctx.report(node, meta.name, "The '__proto__' property is deprecated.", meta.default_severity);
+            ctx.report(node);
         }
     } else { // computed_member_expr
         if (computedKeyEquals(data.rhs, PROP, ctx)) {
-            ctx.report(node, meta.name, "The '__proto__' property is deprecated.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

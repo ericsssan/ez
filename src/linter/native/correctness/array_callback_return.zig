@@ -126,7 +126,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             // Block body: check for missing returns
             // Flag if there's an explicit `return;` without a value
             if (hasMissingReturn(body, ctx, 16)) {
-                ctx.report(node, meta.name, "Array method callback must have a return statement", meta.default_severity);
+                ctx.report(node);
             }
         },
         .fn_expr, .async_fn_expr => {
@@ -134,7 +134,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const body = fn_data.body;
             if (body == .none) return;
             if (hasMissingReturn(body, ctx, 16)) {
-                ctx.report(node, meta.name, "Array method callback must have a return statement", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

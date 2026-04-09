@@ -43,6 +43,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const inner = raw[1 .. raw.len - 1];
 
     if (isValidIdentifier(inner)) {
-        ctx.report(node, meta.name, "Use dot notation instead of bracket notation for property access", meta.default_severity);
+        ctx.report(node);
     }
 }

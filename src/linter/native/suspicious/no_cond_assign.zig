@@ -28,6 +28,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const cond_tag = ctx.nodeTag(condition);
     if (cond_tag == .assign) {
-        ctx.report(node, meta.name, "Expected a conditional expression and instead saw an assignment.", meta.default_severity);
+        ctx.report(node);
     }
 }

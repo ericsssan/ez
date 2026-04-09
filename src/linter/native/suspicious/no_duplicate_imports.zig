@@ -36,7 +36,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // Check if we've already seen this source
         for (seen_sources[0..seen_count]) |prev| {
             if (std.mem.eql(u8, prev, source_text)) {
-                ctx.report(idx, meta.name, "Duplicate import from same module", meta.default_severity);
+                ctx.report(idx);
                 break;
             }
         } else {

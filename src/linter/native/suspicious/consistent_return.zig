@@ -52,7 +52,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     collectReturns(body, ctx, &has_return_value, &has_return_empty);
 
     if (has_return_value and has_return_empty) {
-        ctx.report(node, meta.name, "Function has inconsistent return: some paths return a value and some do not", meta.default_severity);
+        ctx.report(node);
     }
 }
 

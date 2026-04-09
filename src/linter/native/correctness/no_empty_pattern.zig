@@ -23,9 +23,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (start == end) {
         const tag = ctx.nodeTag(node);
         if (tag == .array_pattern) {
-            ctx.report(node, meta.name, "Unexpected empty array pattern", meta.default_severity);
+            ctx.report(node);
         } else {
-            ctx.report(node, meta.name, "Unexpected empty object pattern", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

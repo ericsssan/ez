@@ -24,7 +24,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             while (line_end < source.len and source[line_end] != '\n') : (line_end += 1) {}
             const comment = source[i..line_end];
             if (std.mem.indexOf(u8, comment, "@ts-ignore") != null) {
-                ctx.report(.root, meta.name, "Use `@ts-expect-error` instead of `@ts-ignore`", meta.default_severity);
+                ctx.report(.root);
                 return;
             }
             i = line_end;

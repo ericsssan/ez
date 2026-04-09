@@ -14,5 +14,5 @@ pub const meta = RuleMeta{
 pub const relevant_tags = [_]Node.Tag{.ts_module_decl};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node, meta.name, "Use `namespace` instead of `module` to declare TypeScript namespaces", meta.default_severity);
+    ctx.report(node);
 }

@@ -60,7 +60,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         // When there's a finally block, ESLint reports on the CatchClause node;
         // otherwise it reports on the TryStatement (node).
         const report_node = if (try_data.finally_body != .none) try_data.catch_node else node;
-        ctx.report(report_node, meta.name, "Unnecessary catch clause that just rethrows the error", meta.default_severity);
+        ctx.report(report_node);
     }
 }
 

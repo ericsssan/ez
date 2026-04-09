@@ -51,7 +51,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 name;
             const result = seen.getOrPut(normalized) catch continue;
             if (result.found_existing) {
-                ctx.report(prop_idx, meta.name, "Duplicate key in object literal", meta.default_severity);
+                ctx.report(prop_idx);
             }
         }
     }

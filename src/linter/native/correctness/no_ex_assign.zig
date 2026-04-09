@@ -24,7 +24,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const flags = symbols.getFlags(id);
 
         if (flags.is_catch_param and flags.is_written) {
-            ctx.report(symbols.getDeclNode(id), meta.name, "Do not reassign exception parameter", meta.default_severity);
+            ctx.report(symbols.getDeclNode(id));
         }
     }
 }

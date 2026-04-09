@@ -58,5 +58,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const ret_data = ctx.nodeData(last);
     if (ret_data.lhs != .none) return; // has a return value — not useless
 
-    ctx.report(last, meta.name, "Unnecessary return statement.", meta.default_severity);
+    ctx.report(last);
 }

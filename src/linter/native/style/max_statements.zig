@@ -49,6 +49,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const body = getBody(node, ctx);
     const count = countStmts(body, ctx);
     if (count > MAX_STATEMENTS) {
-        ctx.report(node, meta.name, "Function has too many statements", meta.default_severity);
+        ctx.report(node);
     }
 }

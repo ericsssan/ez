@@ -26,6 +26,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const key_tag = ctx.nodeTag(key);
     if (key_tag == .string_literal or key_tag == .number_literal) {
-        ctx.report(node, meta.name, "Unnecessary computed key; use a static key instead", meta.default_severity);
+        ctx.report(node);
     }
 }

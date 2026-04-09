@@ -24,7 +24,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const key = member_data.rhs;
         if (key == .none) return;
         if (ctx.nodeTag(key) == .number_literal) {
-            ctx.report(node, meta.name, "Avoid deleting array elements with `delete`; use `Array#splice` instead", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

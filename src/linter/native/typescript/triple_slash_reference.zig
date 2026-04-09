@@ -27,7 +27,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             if (std.mem.indexOf(u8, comment, "<reference") != null or
                 std.mem.indexOf(u8, comment, "<amd-module") != null)
             {
-                ctx.report(.root, meta.name, "Do not use triple-slash references", meta.default_severity);
+                ctx.report(.root);
                 return;
             }
             i = line_end;

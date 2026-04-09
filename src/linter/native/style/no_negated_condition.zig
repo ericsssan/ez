@@ -34,7 +34,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const alt_tag = ctx.nodeTag(if_data.alternate);
         if (alt_tag == .if_stmt or alt_tag == .if_else_stmt) return;
 
-        ctx.report(node, meta.name, "Unexpected negated condition.", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -42,7 +42,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const data = ctx.nodeData(node);
         const condition = data.lhs;
         if (isNegated(condition, ctx)) {
-            ctx.report(node, meta.name, "Unexpected negated condition.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

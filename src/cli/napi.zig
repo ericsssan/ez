@@ -273,18 +273,10 @@ fn parseAndLintImpl(
         std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
         var pos: u32 = 4;
         for (diagnostics) |diag| {
-            const rule     = diag.rule_name;
-            const msg      = diag.message;
-            const rule_len: u8  = @intCast(@min(rule.len, 255));
-            const msg_len:  u16 = @intCast(@min(msg.len, 65535));
-            const needed: u32 = 4 + 1 + 1 + rule_len + 2 + msg_len;
-            if (pos + needed > out_len) break;
+            if (pos + 7 > out_len) break;
+            std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
             std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
-            out[pos] = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 }; pos += 1;
-            out[pos] = rule_len; pos += 1;
-            @memcpy(out[pos..][0..rule_len], rule[0..rule_len]); pos += rule_len;
-            std.mem.writeInt(u16, out[pos..][0..2], msg_len, .little); pos += 2;
-            @memcpy(out[pos..][0..msg_len], msg[0..msg_len]); pos += msg_len;
+            out[pos] = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 }; pos += 1;
         }
     }
 
@@ -442,23 +434,15 @@ fn lintImpl(
     if (out_len < 4) return 0;
     const out = out_ptr[0..out_len];
 
+    // Compact format: count(u32) + per-diag: rule_index(u16) + offset(u32) + severity(u8) = 7 bytes each
     std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
     var pos: u32 = 4;
 
     for (diagnostics) |diag| {
-        const rule = diag.rule_name;
-        const msg  = diag.message;
-        const rule_len: u8  = @intCast(@min(rule.len, 255));
-        const msg_len: u16  = @intCast(@min(msg.len, 65535));
-        const needed: u32 = 4 + 1 + 1 + rule_len + 2 + msg_len;
-        if (pos + needed > out_len) break;
-
+        if (pos + 7 > out_len) break;
+        std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
         std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
-        out[pos] = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 }; pos += 1;
-        out[pos] = rule_len; pos += 1;
-        @memcpy(out[pos..][0..rule_len], rule[0..rule_len]); pos += rule_len;
-        std.mem.writeInt(u16, out[pos..][0..2], msg_len, .little); pos += 2;
-        @memcpy(out[pos..][0..msg_len], msg[0..msg_len]); pos += msg_len;
+        out[pos] = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 }; pos += 1;
     }
 
     return pos;
@@ -637,7 +621,8 @@ fn readFileIntoBuf(buf_ptr: [*]u8, buf_len: u32, path_z: [:0]const u8) !ReadFile
     defer _ = std.c.close(fd);
 
     var stat: std.c.Stat = undefined;
-    if (std.c.fstat(fd, &stat) != 0 or stat.size <= 0) return error.FileStatFailed;
+    if (std.c.fstat(fd, &stat) != 0 or stat.size < 0) return error.FileStatFailed;
+    if (stat.size == 0) return .{ .source_start = buf_len, .source_len = 0 };
     const file_size: u32 = @intCast(stat.size);
 
     if (file_size >= buf_len) {
@@ -909,8 +894,7 @@ const DiagRaw = struct {
     col: u32,
     offset: u32,
     severity: u8,
-    rule_name: []const u8,
-    message: []const u8,
+    rule_index: u16,
 };
 
 /// Pre-computed line start offsets for O(log n) line/col lookup.
@@ -1046,9 +1030,8 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
                     .line      = line_idx.lineAt(byte_offset),
                     .col       = line_idx.colAt(byte_offset),
                     .offset    = byte_offset,
-                    .severity  = switch (diag.severity) { .@"error" => 0, .warning => 1, else => 1 },
-                    .rule_name = args.out_alloc.dupe(u8, diag.rule_name) catch "",
-                    .message   = args.out_alloc.dupe(u8, diag.message) catch "",
+                    .severity  = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 },
+                    .rule_index = diag.rule_index,
                 };
             }
             args.results[i] = .{ .file_path = file_path, .diags = diag_copy, .had_error = false };
@@ -1154,10 +1137,11 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
                 .results    = results[start..end],
                 .out_alloc  = out_arenas[t].allocator(),
             };
-            threads[t] = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, lintBatchWorker, .{&worker_args[t]}) catch {
+            const handle = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, lintBatchWorker, .{&worker_args[t]}) catch {
                 lintBatchWorker(&worker_args[t]);
                 continue;
             };
+            threads[spawned] = handle;
             spawned += 1;
         }
         for (threads[0..spawned]) |thread| thread.join();
@@ -1187,10 +1171,8 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
                 _ = n.napi_set_named_property(env, diag_obj, "offset", v);
             if (n.napi_create_uint32(env, d.severity, &v) == n.OK)
                 _ = n.napi_set_named_property(env, diag_obj, "severity", v);
-            if (n.napi_create_string_utf8(env, d.rule_name.ptr, d.rule_name.len, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "ruleName", v);
-            if (n.napi_create_string_utf8(env, d.message.ptr, d.message.len, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "message", v);
+            if (n.napi_create_uint32(env, d.rule_index, &v) == n.OK)
+                _ = n.napi_set_named_property(env, diag_obj, "ruleIndex", v);
             _ = n.napi_set_element(env, diags_arr, @intCast(j), diag_obj);
         }
         _ = n.napi_set_named_property(env, obj, "diags", diags_arr);

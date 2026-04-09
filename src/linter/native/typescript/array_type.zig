@@ -21,6 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const name = ctx.tokenText(ctx.nodeMainToken(node));
     if (std.mem.eql(u8, name, "Array") or std.mem.eql(u8, name, "ReadonlyArray")) {
-        ctx.report(node, meta.name, "Use `T[]` instead of `Array<T>`", meta.default_severity);
+        ctx.report(node);
     }
 }

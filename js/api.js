@@ -186,7 +186,7 @@ function _fromRunnerReport(r) {
 function _fromNativeDiag(d) {
   return {
     ruleId: d.ruleName,
-    message: d.message,
+    message: `[${d.ruleName}]`, // message comes from bundled rule meta.messages on JS side
     severity: d.severity || 2,
     line: d.line ?? 0,
     column: d.col ?? 0,

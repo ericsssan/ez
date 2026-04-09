@@ -27,7 +27,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         // Check for literal control characters (0x00-0x1f)
         if (text[i] < 0x20) {
-            ctx.report(node, meta.name, "Unexpected control character in regular expression", meta.default_severity);
+            ctx.report(node);
             return;
         }
 
@@ -38,7 +38,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             if (h1 != null and h2 != null) {
                 const val = (h1.? << 4) | h2.?;
                 if (val < 0x20) {
-                    ctx.report(node, meta.name, "Unexpected control character in regular expression", meta.default_severity);
+                    ctx.report(node);
                     return;
                 }
             }

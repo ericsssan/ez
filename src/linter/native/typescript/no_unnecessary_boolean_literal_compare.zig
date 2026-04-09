@@ -18,10 +18,10 @@ pub const relevant_tags = [_]Node.Tag{
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     if (data.lhs != .none and ctx.nodeTag(data.lhs) == .boolean_literal) {
-        ctx.report(node, meta.name, "Unnecessary comparison to a boolean literal", meta.default_severity);
+        ctx.report(node);
         return;
     }
     if (data.rhs != .none and ctx.nodeTag(data.rhs) == .boolean_literal) {
-        ctx.report(node, meta.name, "Unnecessary comparison to a boolean literal", meta.default_severity);
+        ctx.report(node);
     }
 }

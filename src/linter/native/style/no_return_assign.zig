@@ -19,6 +19,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (expr == .none) return;
 
     if (ctx.nodeTag(expr) == .assign) {
-        ctx.report(node, meta.name, "Assignment in return statement; use a separate statement", meta.default_severity);
+        ctx.report(node);
     }
 }

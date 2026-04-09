@@ -51,7 +51,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             if (ctx.nodeTag(binding) != .identifier) return;
             const name = ctx.tokenText(ctx.nodeMainToken(binding));
             if (!isCamelCase(name)) {
-                ctx.report(node, meta.name, "Identifiers must use camelCase", meta.default_severity);
+                ctx.report(node);
             }
         },
         .fn_decl, .fn_expr => {
@@ -59,7 +59,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             if (fn_data.name == .none) return;
             const name = ctx.tokenText(ctx.nodeMainToken(fn_data.name));
             if (!isCamelCase(name)) {
-                ctx.report(node, meta.name, "Identifiers must use camelCase", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

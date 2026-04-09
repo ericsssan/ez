@@ -98,7 +98,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (!(parent_is_block and parent.child_count == 1)) return;
     }
 
-    ctx.report(node, meta.name, "Block is unnecessary", meta.default_severity);
+    ctx.report(node);
 }
 
 pub fn runOnSymbols(_: *const LintContext) void {}

@@ -25,12 +25,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const c1 = text[i + 1];
         if (c1 >= '1' and c1 <= '7') {
             // \1-\7 is always an octal escape
-            ctx.report(node, meta.name, "Don't use octal escape sequences; use Unicode escapes instead", meta.default_severity);
+            ctx.report(node);
             return;
         }
         if (c1 == '0' and i + 2 < text.len - 1 and text[i + 2] >= '0' and text[i + 2] <= '9') {
             // \0 followed by any digit — deprecated octal/escape sequence (e.g. \01, \08)
-            ctx.report(node, meta.name, "Don't use octal escape sequences; use Unicode escapes instead", meta.default_severity);
+            ctx.report(node);
             return;
         }
         // Skip escaped character(s): handle multi-char escape sequences

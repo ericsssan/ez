@@ -29,12 +29,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     if (default_idx) |idx| {
         if (idx != cases.len - 1) {
-            ctx.report(
-                @enumFromInt(cases[idx]),
-                meta.name,
-                "Default clause should be last",
-                meta.default_severity,
-            );
+            ctx.report(@enumFromInt(cases[idx]));
         }
     }
 }

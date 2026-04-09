@@ -57,7 +57,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // If the arrow body is an expression (not a block), that's a return value
     if (ctx.nodeTag(exec_body) != .block_stmt) {
-        ctx.report(executor, meta.name, "Promise executor should not return a value", meta.default_severity);
+        ctx.report(executor);
         return;
     }
 
@@ -91,7 +91,7 @@ fn checkStmt(node: NodeIndex, ctx: *const LintContext) void {
     if (tag == .return_stmt) {
         const data = ctx.nodeData(node);
         if (data.lhs != .none) {
-            ctx.report(node, meta.name, "Promise executor should not return a value", meta.default_severity);
+            ctx.report(node);
         }
         return;
     }

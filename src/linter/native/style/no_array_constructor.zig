@@ -21,6 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(callee) != .identifier) return;
     const name = ctx.tokenText(ctx.nodeMainToken(callee));
     if (std.mem.eql(u8, name, "Array")) {
-        ctx.report(node, meta.name, "Do not use the Array constructor; use array literal notation instead", meta.default_severity);
+        ctx.report(node);
     }
 }

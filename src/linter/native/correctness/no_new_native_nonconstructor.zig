@@ -29,7 +29,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const name = ctx.tokenText(ctx.nodeMainToken(callee));
     for (non_constructors) |nc| {
         if (std.mem.eql(u8, name, nc)) {
-            ctx.report(node, meta.name, "Cannot use 'new' with this function", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

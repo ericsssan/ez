@@ -23,8 +23,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none) return;
 
     if (ctx.nodeTag(lhs) == .logical_not) {
-        const tag = ctx.nodeTag(node);
-        const message = if (tag == .instanceof_expr) msg_instanceof else msg_in;
-        ctx.report(node, meta.name, message, meta.default_severity);
+        ctx.report(node);
     }
 }

@@ -25,7 +25,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const flags = symbols.getFlags(id);
         if (flags.is_parameter and flags.is_written) {
             const decl_node = symbols.getDeclNode(id);
-            ctx.report(decl_node, meta.name, "Assignment to function parameter; use a local variable instead", meta.default_severity);
+            ctx.report(decl_node);
         }
     }
 }

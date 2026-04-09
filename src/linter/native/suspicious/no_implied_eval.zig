@@ -46,6 +46,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const first_arg: NodeIndex = @enumFromInt(args[0]);
     if (ctx.nodeTag(first_arg) == .string_literal) {
-        ctx.report(node, meta.name, "Implied eval. Prefer passing a function instead of a string", meta.default_severity);
+        ctx.report(node);
     }
 }

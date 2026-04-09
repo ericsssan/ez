@@ -21,7 +21,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none or rhs == .none) return;
 
     if (isStringLiteral(lhs, ctx) and isStringLiteral(rhs, ctx)) {
-        ctx.report(node, meta.name, "Unexpected string concatenation of literals.", meta.default_severity);
+        ctx.report(node);
     }
 }
 

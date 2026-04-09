@@ -19,5 +19,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // When both are equal (or both .none), there are no specifiers: `export {}`
     if (data.lhs != data.rhs) return; // has specifiers — not empty
 
-    ctx.report(node, meta.name, "Empty `export {}` is unnecessary", meta.default_severity);
+    ctx.report(node);
 }

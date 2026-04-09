@@ -22,26 +22,26 @@ const ReferenceTable = reference_mod.ReferenceTable;
 // ── Lint Diagnostic ────────────────────────────────────────
 
 pub const LintDiagnostic = struct {
-    rule_name: []const u8,
-    message: []const u8,
+    rule_index: u16,
     span: Span,
     severity: Severity,
 
-    /// Format as "file:line:col: severity(rule-name): message"
+    /// Format as "file:line:col: severity(rule-name)"
     pub fn format(
         self: *const LintDiagnostic,
         source: []const u8,
         file_path: []const u8,
+        rule_names: []const []const u8,
         writer: anytype,
     ) !void {
         const loc = Location.fromOffset(source, self.span.start);
-        try writer.print("{s}:{d}:{d}: {s}({s}): {s}\n", .{
+        const name = if (self.rule_index < rule_names.len) rule_names[self.rule_index] else "unknown";
+        try writer.print("{s}:{d}:{d}: {s}({s})\n", .{
             file_path,
             loc.line + 1,
             loc.column + 1,
             self.severity.symbol(),
-            self.rule_name,
-            self.message,
+            name,
         });
     }
 };
@@ -54,6 +54,8 @@ pub const LintContext = struct {
     diagnostics: *std.ArrayList(LintDiagnostic),
     allocator: std.mem.Allocator,
     severity_override: ?Severity = null,
+    /// Current rule index, set by the linter before calling run().
+    current_rule_index: u16 = 0,
     /// Per-rule JSON options value, set by the linter before calling run().
     /// null when no options are configured for the current rule.
     /// Points into the config's retained JSON parse tree.
@@ -176,35 +178,19 @@ pub const LintContext = struct {
 
     // ── Reporting ─────────────────────────────────────────
 
-    pub fn report(
-        self: *const LintContext,
-        node_idx: NodeIndex,
-        rule_name: []const u8,
-        message: []const u8,
-        severity: Severity,
-    ) void {
-        const effective_sev = self.severity_override orelse severity;
+    pub fn report(self: *const LintContext, node_idx: NodeIndex) void {
         self.diagnostics.append(self.allocator, .{
-            .rule_name = rule_name,
-            .message = message,
+            .rule_index = self.current_rule_index,
             .span = self.nodeSpan(node_idx),
-            .severity = effective_sev,
+            .severity = self.severity_override orelse .warning,
         }) catch {};
     }
 
-    pub fn reportSpan(
-        self: *const LintContext,
-        span: Span,
-        rule_name: []const u8,
-        message: []const u8,
-        severity: Severity,
-    ) void {
-        const effective_sev = self.severity_override orelse severity;
+    pub fn reportSpan(self: *const LintContext, span: Span) void {
         self.diagnostics.append(self.allocator, .{
-            .rule_name = rule_name,
-            .message = message,
+            .rule_index = self.current_rule_index,
             .span = span,
-            .severity = effective_sev,
+            .severity = self.severity_override orelse .warning,
         }) catch {};
     }
 };

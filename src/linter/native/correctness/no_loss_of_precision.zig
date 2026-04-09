@@ -185,6 +185,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         baseTenLosesPrecision(clean);
 
     if (loses) {
-        ctx.report(node, meta.name, "This number literal will lose precision at runtime.", meta.default_severity);
+        ctx.report(node);
     }
 }

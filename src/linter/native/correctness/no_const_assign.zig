@@ -31,7 +31,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (sym_id == .none) continue;
 
         if (symbols.getBindingKind(sym_id) == .@"const") {
-            ctx.report(refs.getNode(ref_id), meta.name, "Assignment to constant variable", meta.default_severity);
+            ctx.report(refs.getNode(ref_id));
         }
     }
 }

@@ -28,6 +28,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Any ternary where both branches are boolean literals is unneeded
     if (cons_is_bool and alt_is_bool) {
-        ctx.report(node, meta.name, "Unnecessary ternary; use the condition directly or negate it", meta.default_severity);
+        ctx.report(node);
     }
 }

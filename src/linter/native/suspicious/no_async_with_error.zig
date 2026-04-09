@@ -41,7 +41,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const first_arg: NodeIndex = @enumFromInt(args[0]);
     if (first_arg == .none) {
-        ctx.report(node, meta.name, "Expected the Promise rejection reason to be an Error object", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -55,13 +55,13 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 const ctor_name = ctx.tokenText(ctx.nodeMainToken(new_data.lhs));
                 if (std.mem.endsWith(u8, ctor_name, "Error")) return; // e.g., TypeError, RangeError
             }
-            ctx.report(node, meta.name, "Expected the Promise rejection reason to be an Error object", meta.default_severity);
+            ctx.report(node);
         },
         // Allow identifiers, member expressions, call expressions — can't know type
         .identifier, .member_expr, .call_expr, .optional_call_expr => {},
         // Flag literals and other non-error values
         .number_literal, .boolean_literal, .null_literal, .string_literal, .array_literal, .object_literal => {
-            ctx.report(node, meta.name, "Expected the Promise rejection reason to be an Error object", meta.default_severity);
+            ctx.report(node);
         },
         else => {},
     }

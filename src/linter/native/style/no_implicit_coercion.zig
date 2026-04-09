@@ -27,19 +27,19 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const inner = data.lhs;
             if (inner == .none) return;
             if (ctx.nodeTag(inner) == .logical_not) {
-                ctx.report(node, meta.name, "Use `Boolean(x)` instead of `!!x`", meta.default_severity);
+                ctx.report(node);
             }
         },
         // `+x` — unary plus for number coercion: use Number(x) instead
         .unary_plus => {
-            ctx.report(node, meta.name, "Use `Number(x)` instead of `+x`", meta.default_severity);
+            ctx.report(node);
         },
         // `"" + x` or `x + ""` — string coercion: use String(x) instead
         .add => {
             const lhs = data.lhs;
             const rhs = data.rhs;
             if (isEmptyString(lhs, ctx) or isEmptyString(rhs, ctx)) {
-                ctx.report(node, meta.name, "Use `String(x)` instead of concatenation with an empty string", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

@@ -80,9 +80,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     for (dangerous_methods) |method| {
         if (std.mem.eql(u8, name, method)) {
-            ctx.report(node, meta.name,
-                "Do not access Object.prototype method directly from the target object",
-                meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

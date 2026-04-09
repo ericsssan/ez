@@ -38,6 +38,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Check if the type reference text matches the literal value
     const lhs_text = ctx.tokenText(ctx.nodeMainToken(lhs));
     if (std.mem.eql(u8, lhs_text, rhs_text)) {
-        ctx.report(node, meta.name, "Use `as const` instead of literal type assertion.", meta.default_severity);
+        ctx.report(node);
     }
 }

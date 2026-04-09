@@ -53,7 +53,7 @@ fn walkForFunc(node: NodeIndex, ctx: *const LintContext, depth: u8) void {
         .arrow_fn,
         .async_arrow_fn,
         => {
-            ctx.report(node, meta.name, "Function defined inside a loop may have unintended variable capture", meta.default_severity);
+            ctx.report(node);
             return;
         },
         // Nested loops — recurse, but don't re-flag (rule runs on each loop already)

@@ -117,6 +117,6 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const node_idx = refs.getNode(ref_id);
         const name = ctx.tokenText(ctx.nodeMainToken(node_idx));
         if (isKnownGlobal(name)) continue;
-        ctx.report(node_idx, meta.name, "Variable is not defined", meta.default_severity);
+        ctx.report(node_idx);
     }
 }

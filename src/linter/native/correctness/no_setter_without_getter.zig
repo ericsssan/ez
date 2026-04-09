@@ -68,7 +68,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             }
         }
         if (!found) {
-            ctx.report(node, meta.name, "Setter has no corresponding getter", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

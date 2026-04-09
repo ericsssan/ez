@@ -31,9 +31,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const ref_id = ReferenceId.fromInt(i);
         if (refs.getNode(ref_id) != callee) continue;
         if (!refs.isResolved(ref_id)) {
-            ctx.report(node, meta.name, "The object literal notation {} is preferable.", meta.default_severity);
+            ctx.report(node);
         }
         return;
     }
-    ctx.report(node, meta.name, "The object literal notation {} is preferable.", meta.default_severity);
+    ctx.report(node);
 }

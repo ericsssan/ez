@@ -24,7 +24,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     for (banned) |b| {
         if (std.mem.eql(u8, name, b)) {
-            ctx.report(node, meta.name, "Don't use the wrapper type, use the primitive type instead", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

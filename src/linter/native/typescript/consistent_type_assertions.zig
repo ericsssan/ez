@@ -14,5 +14,5 @@ pub const meta = RuleMeta{
 pub const relevant_tags = [_]Node.Tag{.ts_type_assertion};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node, meta.name, "Use `as Type` instead of angle-bracket type assertion", meta.default_severity);
+    ctx.report(node);
 }

@@ -26,7 +26,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const imported = ctx.tokenText(@intFromEnum(data.lhs));
             const local = ctx.tokenText(@intFromEnum(data.rhs));
             if (std.mem.eql(u8, imported, local)) {
-                ctx.report(node, meta.name, "Useless rename: local name is the same as imported name", meta.default_severity);
+                ctx.report(node);
             }
         },
         .export_specifier => {
@@ -35,7 +35,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const local = ctx.tokenText(@intFromEnum(data.lhs));
             const exported = ctx.tokenText(@intFromEnum(data.rhs));
             if (std.mem.eql(u8, local, exported)) {
-                ctx.report(node, meta.name, "Useless rename: exported name is the same as local name", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

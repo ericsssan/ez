@@ -27,5 +27,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Only flag named function expressions (anonymous are fine in many contexts)
     if (fn_data.name == .none) return;
 
-    ctx.report(node, meta.name, "Expected a function declaration instead of a function expression", meta.default_severity);
+    ctx.report(node);
 }

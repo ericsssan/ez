@@ -14,5 +14,5 @@ pub const meta = RuleMeta{
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node, meta.name, "TypeScript namespaces are discouraged. Use ES modules instead.", meta.default_severity);
+    ctx.report(node);
 }

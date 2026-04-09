@@ -74,6 +74,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const max_ref = maxBackref(pattern);
 
     if (max_ref > 0 and max_ref > groups) {
-        ctx.report(node, meta.name, "Backreference references a group that does not exist", meta.default_severity);
+        ctx.report(node);
     }
 }

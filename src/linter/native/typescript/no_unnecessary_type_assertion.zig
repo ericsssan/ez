@@ -24,7 +24,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(rhs) == .ts_type_reference) {
         const text = ctx.tokenText(ctx.nodeMainToken(rhs));
         if (std.mem.eql(u8, text, "any")) {
-            ctx.report(node, meta.name, "Unnecessary `as any` type assertion.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

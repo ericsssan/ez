@@ -23,7 +23,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(callee) == .identifier) {
         const name = ctx.tokenText(ctx.nodeMainToken(callee));
         if (std.mem.eql(u8, name, "eval")) {
-            ctx.report(node, meta.name, "`eval` can be harmful.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

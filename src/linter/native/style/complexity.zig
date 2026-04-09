@@ -187,6 +187,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const complexity = 1 + countComplexity(body, ctx, 48);
     if (complexity > MAX_COMPLEXITY) {
-        ctx.report(node, meta.name, "Function has too high cyclomatic complexity", meta.default_severity);
+        ctx.report(node);
     }
 }

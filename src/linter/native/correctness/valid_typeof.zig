@@ -33,12 +33,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const pairs = [_][2]NodeIndex{ .{ data.lhs, data.rhs }, .{ data.rhs, data.lhs } };
     for (pairs) |pair| {
         if (isTypeofExpr(pair[0], ctx) and isInvalidComparisonValue(pair[1], ctx)) {
-            ctx.report(
-                node,
-                meta.name,
-                "Invalid typeof comparison value. Expected one of: undefined, object, boolean, number, string, function, symbol, bigint",
-                meta.default_severity,
-            );
+            ctx.report(node);
             return;
         }
     }

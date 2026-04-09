@@ -38,5 +38,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // We flag all `this` aliases.
     _ = name;
 
-    ctx.report(node, meta.name, "Unexpected aliasing of `this` to a local variable", meta.default_severity);
+    ctx.report(node);
 }

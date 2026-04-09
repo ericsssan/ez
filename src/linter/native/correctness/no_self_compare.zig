@@ -112,7 +112,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (lhs == .none or rhs == .none) return;
 
     if (nodesEqual(lhs, rhs, ctx)) {
-        ctx.report(node, meta.name, "Comparing to itself is potentially pointless.", meta.default_severity);
+        ctx.report(node);
     }
 }
 

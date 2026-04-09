@@ -38,7 +38,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (body == .none) return;
 
     if (!hasAwait(body, ctx, 0)) {
-        ctx.report(node, meta.name, "Remove 'async'.", meta.default_severity);
+        ctx.report(node);
     }
 }
 

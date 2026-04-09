@@ -65,7 +65,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         while (ancestor.isValid()) : (ancestor = scopes.parent(ancestor)) {
             if (scope_names.get(ancestor)) |name_set| {
                 if (name_set.contains(name)) {
-                    ctx.report(symbols.getDeclNode(id), meta.name, "Variable shadows a variable declared in the outer scope", meta.default_severity);
+                    ctx.report(symbols.getDeclNode(id));
                     break;
                 }
             }

@@ -58,6 +58,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const params = ctx.extraSlice(range);
 
     if (params.len > MAX_PARAMS) {
-        ctx.report(node, meta.name, "Function has too many parameters (max 4)", meta.default_severity);
+        ctx.report(node);
     }
 }

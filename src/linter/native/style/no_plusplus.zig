@@ -14,5 +14,5 @@ pub const meta = RuleMeta{
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node, meta.name, "Unary operator '++/--' used; use '+= 1' or '-= 1' instead", meta.default_severity);
+    ctx.report(node);
 }

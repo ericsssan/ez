@@ -309,7 +309,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const cond = data.lhs;
             if (cond == .none) return;
             if (isConstant(cond, true, ctx)) {
-                ctx.report(cond, meta.name, "Unexpected constant condition.", meta.default_severity);
+                ctx.report(cond);
             }
         },
 
@@ -322,7 +322,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 if (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(cond)), "true")) return;
             }
             if (isConstant(cond, true, ctx)) {
-                ctx.report(cond, meta.name, "Unexpected constant condition.", meta.default_severity);
+                ctx.report(cond);
             }
         },
 
@@ -331,7 +331,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const cond = data.rhs;
             if (cond == .none) return;
             if (isConstant(cond, true, ctx)) {
-                ctx.report(cond, meta.name, "Unexpected constant condition.", meta.default_severity);
+                ctx.report(cond);
             }
         },
 
@@ -341,7 +341,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const cond = fd.condition;
             if (cond == .none) return; // `for(;;)` — no condition
             if (isConstant(cond, true, ctx)) {
-                ctx.report(cond, meta.name, "Unexpected constant condition.", meta.default_severity);
+                ctx.report(cond);
             }
         },
 
@@ -350,7 +350,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const cond = data.lhs;
             if (cond == .none) return;
             if (isConstant(cond, true, ctx)) {
-                ctx.report(cond, meta.name, "Unexpected constant condition.", meta.default_severity);
+                ctx.report(cond);
             }
         },
 

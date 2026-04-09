@@ -25,7 +25,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const name = ctx.tokenText(ctx.nodeMainToken(callee));
     for (alert_fns) |fn_name| {
         if (std.mem.eql(u8, name, fn_name)) {
-            ctx.report(node, meta.name, "Unexpected alert/confirm/prompt statement", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

@@ -32,7 +32,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
             const ref_id = ReferenceId.fromInt(r);
             const kind = refs.getKind(ref_id);
             if (kind == .write or kind == .read_write) {
-                ctx.report(refs.getNode(ref_id), meta.name, "Reassignment of function declaration", meta.default_severity);
+                ctx.report(refs.getNode(ref_id));
             }
         }
     }

@@ -36,7 +36,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const name = ctx.tokenText(ctx.nodeMainToken(callee));
     for (banned) |b| {
         if (std.mem.eql(u8, name, b)) {
-            ctx.report(node, meta.name, "Do not use `new` with this constructor", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

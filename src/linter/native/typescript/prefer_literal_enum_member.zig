@@ -39,5 +39,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         else => {},
     }
 
-    ctx.report(node, meta.name, "Enum members must be initialized with a literal value", meta.default_severity);
+    ctx.report(node);
 }

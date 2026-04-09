@@ -69,6 +69,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const pattern = text[1..end];
 
     if (hasUnnamedGroup(pattern)) {
-        ctx.report(node, meta.name, "Prefer named capture groups in regular expressions", meta.default_severity);
+        ctx.report(node);
     }
 }

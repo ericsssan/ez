@@ -34,7 +34,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const stmt_tag = ctx.nodeTag(stmt);
         switch (stmt_tag) {
             .let_decl, .const_decl, .class_decl, .fn_decl, .async_fn_decl => {
-                ctx.report(stmt, meta.name, "Unexpected lexical declaration in case clause. Wrap in a block", meta.default_severity);
+                ctx.report(stmt);
             },
             else => {},
         }

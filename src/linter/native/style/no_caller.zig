@@ -23,6 +23,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (!std.mem.eql(u8, obj_name, "arguments")) return;
     const prop_name = ctx.tokenText(@intFromEnum(data.rhs));
     if (std.mem.eql(u8, prop_name, "caller") or std.mem.eql(u8, prop_name, "callee")) {
-        ctx.report(node, meta.name, "Avoid using arguments.caller or arguments.callee", meta.default_severity);
+        ctx.report(node);
     }
 }

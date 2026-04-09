@@ -126,23 +126,34 @@ function _makePrivateBuf(buf, sourceStart, sourceLen) {
  * Parse packed binary diagnostics from the lint output buffer.
  * If srcBytes is provided, each diag includes line/col.
  */
+// Cache native rule names for index→name mapping
+let _nativeRuleNames = null;
+
+function _getNativeRuleNames() {
+  if (_nativeRuleNames) return _nativeRuleNames;
+  const rules = getNativeRules();
+  _nativeRuleNames = new Array(rules.size);
+  for (const [name, info] of rules) _nativeRuleNames[info.index] = name;
+  return _nativeRuleNames;
+}
+
+/**
+ * Parse compact binary diagnostics: count(u32) + per-diag(rule_index:u16, offset:u32, severity:u8) = 7 bytes each.
+ */
 function _parseDiags(bytesWritten, srcBytes) {
   if (bytesWritten < 4) return [];
   const dv = new DataView(_lintOutBuf);
   const count = dv.getUint32(0, true);
+  const ruleNames = _getNativeRuleNames();
   const diags = [];
   let pos = 4;
   for (let i = 0; i < count; i++) {
-    if (pos + 8 > bytesWritten) break;
-    const offset   = dv.getUint32(pos, true); pos += 4;
-    const severity = dv.getUint8(pos);         pos += 1;
-    const ruleLen  = dv.getUint8(pos);          pos += 1;
-    if (pos + ruleLen + 2 > bytesWritten) break;
-    const ruleName = _decoder.decode(new Uint8Array(_lintOutBuf, pos, ruleLen)); pos += ruleLen;
-    const msgLen   = dv.getUint16(pos, true);   pos += 2;
-    if (pos + msgLen > bytesWritten) break;
-    const message  = _decoder.decode(new Uint8Array(_lintOutBuf, pos, msgLen));  pos += msgLen;
-    const diag = { offset, severity, ruleName, message };
+    if (pos + 7 > bytesWritten) break;
+    const ruleIndex = dv.getUint16(pos, true);    pos += 2;
+    const offset    = dv.getUint32(pos, true);    pos += 4;
+    const severity  = dv.getUint8(pos);           pos += 1;
+    const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
+    const diag = { offset, severity, ruleName };
     if (srcBytes) {
       diag.line = _bufOffsetToLine(srcBytes, offset);
       diag.col = _bufOffsetToCol(srcBytes, offset);

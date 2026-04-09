@@ -29,10 +29,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
 
     if (data.lhs != .none and isMixedLogical(tag, ctx.nodeTag(data.lhs))) {
-        ctx.report(node, meta.name, "Unexpected mix of '&&' and '||'", meta.default_severity);
+        ctx.report(node);
         return;
     }
     if (data.rhs != .none and isMixedLogical(tag, ctx.nodeTag(data.rhs))) {
-        ctx.report(node, meta.name, "Unexpected mix of '&&' and '||'", meta.default_severity);
+        ctx.report(node);
     }
 }

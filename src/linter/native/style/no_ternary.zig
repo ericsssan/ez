@@ -15,5 +15,5 @@ pub const meta = RuleMeta{
 pub const relevant_tags = [_]Node.Tag{.conditional};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    ctx.report(node, meta.name, "Ternary operator used.", meta.default_severity);
+    ctx.report(node);
 }

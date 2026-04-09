@@ -95,7 +95,7 @@ fn isSwitchBodyEmpty(switch_node: NodeIndex, ctx: *const LintContext) bool {
 
 fn checkBlock(block: NodeIndex, ctx: *const LintContext) void {
     if (isEmptyBlock(block, ctx)) {
-        ctx.report(block, meta.name, "Empty block statement", meta.default_severity);
+        ctx.report(block);
     }
 }
 
@@ -159,7 +159,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 break :blk sub_range.start != sub_range.end;
             };
             if (!has_cases and isSwitchBodyEmpty(node, ctx)) {
-                ctx.report(node, meta.name, "Empty switch statement", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

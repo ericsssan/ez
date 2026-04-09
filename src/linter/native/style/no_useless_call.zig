@@ -61,5 +61,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
     }
 
-    ctx.report(node, meta.name, "Unnecessary `.call()`/`.apply()`; call the function directly", meta.default_severity);
+    ctx.report(node);
 }

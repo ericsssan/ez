@@ -49,7 +49,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         // new Function(...)
         const callee = data.lhs;
         if (isFunctionIdentifier(callee, ctx)) {
-            ctx.report(node, meta.name, "The Function constructor is eval.", meta.default_severity);
+            ctx.report(node);
         }
     } else if (tag == .call_expr) {
         // Function(...), Function.call(...), Function.apply(...), Function.bind(...)
@@ -57,10 +57,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         if (isFunctionIdentifier(callee, ctx)) {
             // Function(...) - direct call
-            ctx.report(node, meta.name, "The Function constructor is eval.", meta.default_severity);
+            ctx.report(node);
         } else if (isFunctionCallOrApplyOrBind(callee, ctx)) {
             // Function.call(...), Function.apply(...), Function.bind(...)
-            ctx.report(node, meta.name, "The Function constructor is eval.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

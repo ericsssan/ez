@@ -30,6 +30,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const obj_name = ctx.tokenText(ctx.nodeMainToken(object));
     if (std.mem.eql(u8, obj_name, "console")) {
-        ctx.report(node, meta.name, "Unexpected console statement", meta.default_severity);
+        ctx.report(node);
     }
 }

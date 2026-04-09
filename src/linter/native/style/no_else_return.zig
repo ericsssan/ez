@@ -126,7 +126,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         } else {
             // This is the final else block
             if (alwaysReturns(if_data.consequent, ctx)) {
-                ctx.report(alternate, meta.name, "Unnecessary 'else' after 'return'.", meta.default_severity);
+                ctx.report(alternate);
             }
             return;
         }

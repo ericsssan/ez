@@ -30,7 +30,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(value) == .identifier) {
         const val_name = ctx.tokenText(ctx.nodeMainToken(value));
         if (std.mem.eql(u8, key_name, val_name)) {
-            ctx.report(node, meta.name, "Prefer shorthand property syntax", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

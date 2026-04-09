@@ -31,7 +31,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
 
         if (scope_kind == .block) {
             const decl_node = symbols.getDeclNode(id);
-            ctx.report(decl_node, meta.name, "Move function declaration to program root or function body", meta.default_severity);
+            ctx.report(decl_node);
         }
     }
 }

@@ -36,7 +36,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (tag == .return_stmt) {
             const return_data = ctx.nodeData(stmt_node);
             if (return_data.lhs != .none) {
-                ctx.report(stmt_node, meta.name, "Setter cannot return a value.", meta.default_severity);
+                ctx.report(stmt_node);
             }
         }
     }

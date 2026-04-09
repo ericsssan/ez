@@ -42,7 +42,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             }
             // Only report the first unreachable statement in a consecutive run
             if (!reported_start) {
-                ctx.report(stmt, meta.name, "Unreachable code.", meta.default_severity);
+                ctx.report(stmt);
                 reported_start = true;
             }
         } else {

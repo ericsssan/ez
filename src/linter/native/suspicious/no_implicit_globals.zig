@@ -38,12 +38,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // (let/const in global scope create block-scoped bindings, not globals)
         switch (kind) {
             .@"var", .function_decl => {
-                ctx.report(
-                    symbols.getDeclNode(id),
-                    meta.name,
-                    "Unexpected declaration in the global scope",
-                    meta.default_severity,
-                );
+                ctx.report(symbols.getDeclNode(id));
             },
             else => {},
         }

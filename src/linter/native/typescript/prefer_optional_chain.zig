@@ -45,7 +45,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     if (!strEql(lhs_name, rhs_name)) return;
 
-    ctx.report(node, meta.name, "Prefer optional chain `?.` over `&&` for nullish checks", meta.default_severity);
+    ctx.report(node);
 }
 
 fn getMemberRoot(node: NodeIndex, ctx: *const LintContext) NodeIndex {

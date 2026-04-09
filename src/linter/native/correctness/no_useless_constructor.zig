@@ -38,7 +38,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Empty constructor body
     if (stmts.len == 0) {
-        ctx.report(node, meta.name, "Useless constructor", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -46,7 +46,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (stmts.len == 1) {
         const stmt: NodeIndex = @enumFromInt(stmts[0]);
         if (isSuperDelegateCall(stmt, ctx)) {
-            ctx.report(node, meta.name, "Useless constructor that only delegates to super", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

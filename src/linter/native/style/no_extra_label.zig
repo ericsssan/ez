@@ -83,6 +83,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     };
 
     if (!hasNestedLoopOrSwitch(loop_body, ctx, 16)) {
-        ctx.report(node, meta.name, "This label is unnecessary", meta.default_severity);
+        ctx.report(node);
     }
 }

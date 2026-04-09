@@ -142,7 +142,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         if (is_dup) {
             ctx.allocator.free(key);
-            ctx.report(case_node, meta.name, "Duplicate case label.", meta.default_severity);
+            ctx.report(case_node);
         } else {
             keys.append(ctx.allocator, key) catch {
                 ctx.allocator.free(key);

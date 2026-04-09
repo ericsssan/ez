@@ -33,7 +33,7 @@ fn checkVarsOnTop(body: NodeIndex, ctx: *const LintContext) void {
         switch (tag) {
             .var_decl => {
                 if (seen_non_decl) {
-                    ctx.report(stmt, meta.name, "var declarations should appear at the top of the function scope", meta.default_severity);
+                    ctx.report(stmt);
                 }
             },
             // Function declarations and "use strict" are OK at top

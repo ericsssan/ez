@@ -68,7 +68,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         const result = seen.getOrPut(name) catch continue;
         if (result.found_existing) {
-            ctx.report(param_idx, meta.name, "Duplicate parameter name", meta.default_severity);
+            ctx.report(param_idx);
         }
     }
 }

@@ -56,7 +56,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
 
         const result = seen.getOrPut(key) catch continue;
         if (result.found_existing) {
-            ctx.report(syms.getDeclNode(id), meta.name, "Variable is already declared in this scope", meta.default_severity);
+            ctx.report(syms.getDeclNode(id));
         } else {
             // Store an owned copy so the key survives key_buf overwrites
             result.key_ptr.* = ctx.allocator.dupe(u8, key) catch continue;

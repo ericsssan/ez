@@ -39,7 +39,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (callee_tag == .identifier) {
         const name = ctx.tokenText(ctx.nodeMainToken(callee));
         if (std.mem.eql(u8, name, "parseInt")) {
-            ctx.report(node, meta.name, "Use a numeric literal instead of parseInt()", meta.default_severity);
+            ctx.report(node);
         }
         return;
     }
@@ -53,6 +53,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (!std.mem.eql(u8, obj_name, "Number")) return;
         const prop_name = ctx.tokenText(@intFromEnum(member_data.rhs));
         if (!std.mem.eql(u8, prop_name, "parseInt")) return;
-        ctx.report(node, meta.name, "Use a numeric literal instead of Number.parseInt()", meta.default_severity);
+        ctx.report(node);
     }
 }

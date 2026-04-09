@@ -23,7 +23,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const name = ctx.ast.tokenText(ctx.ast.nodeMainToken(data.lhs));
     if (isReadonlyGlobal(name)) {
-        ctx.report(node, meta.name, "Read-only global should not be modified", meta.default_severity);
+        ctx.report(node);
     }
 }
 
@@ -89,7 +89,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
 
         if (isReadonlyGlobal(name)) {
             const decl_node = symbols.getDeclNode(id);
-            ctx.report(decl_node, meta.name, "Read-only global should not be modified", meta.default_severity);
+            ctx.report(decl_node);
         }
     }
 }

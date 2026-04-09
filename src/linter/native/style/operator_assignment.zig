@@ -47,5 +47,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     if (!std.mem.eql(u8, lhs_name, bin_lhs_name)) return;
 
-    ctx.report(node, meta.name, "Assignment can be simplified using an assignment operator shorthand", meta.default_severity);
+    ctx.report(node);
 }

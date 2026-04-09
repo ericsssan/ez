@@ -38,5 +38,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const ret_data = ctx.nodeData(only_stmt);
     if (ret_data.lhs == .none) return; // bare return; — not simplifiable
 
-    ctx.report(node, meta.name, "Unexpected block statement around arrow function body; use concise body `=> expr` instead", meta.default_severity);
+    ctx.report(node);
 }

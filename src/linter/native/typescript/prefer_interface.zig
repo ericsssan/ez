@@ -21,6 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Check if the aliased type is an object type literal
     if (ctx.nodeTag(alias_data.type_node) == .ts_type_literal) {
-        ctx.report(node, meta.name, "Use `interface` instead of `type` for object type definitions.", meta.default_severity);
+        ctx.report(node);
     }
 }

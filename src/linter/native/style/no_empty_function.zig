@@ -59,6 +59,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const stmts = ctx.extraSlice(range);
 
     if (stmts.len == 0) {
-        ctx.report(node, meta.name, "Unexpected empty function body", meta.default_severity);
+        ctx.report(node);
     }
 }

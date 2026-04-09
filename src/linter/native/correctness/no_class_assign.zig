@@ -26,7 +26,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (symbols.getBindingKind(id) != .class_decl) continue;
         const flags = symbols.getFlags(id);
         if (flags.is_written) {
-            ctx.report(symbols.getDeclNode(id), meta.name, "Assignment to class variable", meta.default_severity);
+            ctx.report(symbols.getDeclNode(id));
         }
     }
 }

@@ -17,6 +17,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     // static_block: direct SubRange encoding — lhs = start, rhs = end
     if (data.lhs == data.rhs) {
-        ctx.report(node, meta.name, "Unexpected empty static block", meta.default_severity);
+        ctx.report(node);
     }
 }

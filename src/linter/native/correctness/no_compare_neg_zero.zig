@@ -21,7 +21,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
 
     if (isNegZero(data.lhs, ctx) or isNegZero(data.rhs, ctx)) {
-        ctx.report(node, meta.name, "Do not use the `===` operator to compare against -0, use `Object.is(x, -0)` instead", meta.default_severity);
+        ctx.report(node);
     }
 }
 

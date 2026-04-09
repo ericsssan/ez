@@ -19,8 +19,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (text.len == 0) return;
 
     if (text[0] == '.') {
-        ctx.report(node, meta.name, "A leading decimal point can be confused with a dot; use '0.' prefix", meta.default_severity);
+        ctx.report(node);
     } else if (text[text.len - 1] == '.') {
-        ctx.report(node, meta.name, "A trailing decimal point can be confused with a dot; add a trailing '0'", meta.default_severity);
+        ctx.report(node);
     }
 }

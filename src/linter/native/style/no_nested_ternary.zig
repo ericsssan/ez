@@ -21,10 +21,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const alternate = cond_data.alternate;
 
     if (consequent != .none and ctx.nodeTag(consequent) == .conditional) {
-        ctx.report(node, meta.name, "Do not nest ternary expressions.", meta.default_severity);
+        ctx.report(node);
         return;
     }
     if (alternate != .none and ctx.nodeTag(alternate) == .conditional) {
-        ctx.report(node, meta.name, "Do not nest ternary expressions.", meta.default_severity);
+        ctx.report(node);
     }
 }

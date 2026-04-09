@@ -25,7 +25,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // new RegExp() — always flag
     if (data.rhs == .none) {
-        ctx.report(node, meta.name, "Use a regular expression literal instead of the RegExp constructor", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -34,7 +34,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // new RegExp() with no args
     if (args.len == 0) {
-        ctx.report(node, meta.name, "Use a regular expression literal instead of the RegExp constructor", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -46,11 +46,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (first_tag == .string_literal) {
         // Check if 2nd arg is also a string literal or absent
         if (args.len == 1) {
-            ctx.report(node, meta.name, "Use a regular expression literal instead of the RegExp constructor", meta.default_severity);
+            ctx.report(node);
         } else {
             const second_arg: NodeIndex = @enumFromInt(args[1]);
             if (second_arg == .none or ctx.nodeTag(second_arg) == .string_literal) {
-                ctx.report(node, meta.name, "Use a regular expression literal instead of the RegExp constructor", meta.default_severity);
+                ctx.report(node);
             }
         }
     }

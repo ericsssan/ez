@@ -30,25 +30,19 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         .equal, .not_equal, .strict_equal, .strict_not_equal,
         .less_than, .greater_than, .less_equal, .greater_equal => {
             if (isNaN(data.lhs, ctx) or isNaN(data.rhs, ctx)) {
-                ctx.report(node, meta.name,
-                    "Use the isNaN function to compare with NaN",
-                    meta.default_severity);
+                ctx.report(node);
             }
         },
         .switch_stmt => {
             // Check discriminant: switch(NaN) { ... }
             if (isNaN(data.lhs, ctx)) {
-                ctx.report(node, meta.name,
-                    "'switch(NaN)' can never match a case clause. Use Number.isNaN instead of the switch.",
-                    meta.default_severity);
+                ctx.report(node);
             }
         },
         .switch_case => {
             // Check case test: case NaN:
             if (isNaN(data.lhs, ctx)) {
-                ctx.report(node, meta.name,
-                    "'case NaN' can never match. Use Number.isNaN before the switch.",
-                    meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

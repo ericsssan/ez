@@ -39,7 +39,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (tag == .regex_literal) {
         const text = ctx.tokenText(ctx.nodeMainToken(node));
         if (!hasUnicodeFlag(text)) {
-            ctx.report(node, meta.name, "Regular expressions should use the 'u' or 'v' flag", meta.default_severity);
+            ctx.report(node);
         }
         return;
     }
@@ -53,21 +53,21 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (!std.mem.eql(u8, name, "RegExp")) return;
 
         if (data.rhs == .none) {
-            ctx.report(node, meta.name, "Regular expressions should use the 'u' or 'v' flag", meta.default_severity);
+            ctx.report(node);
             return;
         }
 
         const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
         const args = ctx.extraSlice(range);
         if (args.len < 2) {
-            ctx.report(node, meta.name, "Regular expressions should use the 'u' or 'v' flag", meta.default_severity);
+            ctx.report(node);
             return;
         }
 
         // Check second arg (flags)
         const flags_arg: NodeIndex = @enumFromInt(args[1]);
         if (flags_arg == .none) {
-            ctx.report(node, meta.name, "Regular expressions should use the 'u' or 'v' flag", meta.default_severity);
+            ctx.report(node);
             return;
         }
         if (ctx.nodeTag(flags_arg) != .string_literal) return; // dynamic flags — can't check
@@ -77,7 +77,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (std.mem.indexOfScalar(u8, flags_text, 'u') == null and
             std.mem.indexOfScalar(u8, flags_text, 'v') == null)
         {
-            ctx.report(node, meta.name, "Regular expressions should use the 'u' or 'v' flag", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

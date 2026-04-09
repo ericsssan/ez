@@ -21,6 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const name = ctx.tokenText(ctx.nodeMainToken(data.rhs));
     if (std.mem.eql(u8, name, "undefined")) {
-        ctx.report(node, meta.name, "It's unnecessary to initialize a variable to undefined", meta.default_severity);
+        ctx.report(node);
     }
 }

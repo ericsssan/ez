@@ -17,6 +17,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     if (data.lhs == .none) return;
     if (ctx.nodeTag(data.lhs) == .ts_non_null_expr) {
-        ctx.report(node, meta.name, "Unnecessary extra non-null assertion", meta.default_severity);
+        ctx.report(node);
     }
 }

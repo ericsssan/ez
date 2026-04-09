@@ -36,5 +36,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (tag == .return_stmt) return;
     }
 
-    ctx.report(node, meta.name, "Getter must return a value", meta.default_severity);
+    ctx.report(node);
 }

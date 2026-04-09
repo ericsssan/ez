@@ -25,7 +25,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Check arg count
     if (data.rhs == .none) {
-        ctx.report(node, meta.name, "Missing radix argument in parseInt", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -33,6 +33,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const args = ctx.extraSlice(range);
 
     if (args.len < 2) {
-        ctx.report(node, meta.name, "Missing radix argument in parseInt", meta.default_severity);
+        ctx.report(node);
     }
 }

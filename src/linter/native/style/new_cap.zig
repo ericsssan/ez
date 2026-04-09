@@ -24,6 +24,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const first = name[0];
     if (first >= 'a' and first <= 'z') {
-        ctx.report(node, meta.name, "A constructor name should start with an uppercase letter", meta.default_severity);
+        ctx.report(node);
     }
 }

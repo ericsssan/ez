@@ -215,7 +215,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Arrow functions: bind is always extra
     if (fn_tag == .arrow_fn or fn_tag == .async_arrow_fn) {
-        ctx.report(node, meta.name, "The function binding is unnecessary.", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -225,7 +225,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     {
         const fn_data = ctx.extraData(ast.FnData, @intFromEnum(ctx.nodeData(fn_node).lhs));
         if (!bodyUsesThis(fn_data.body, ctx)) {
-            ctx.report(node, meta.name, "The function binding is unnecessary.", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

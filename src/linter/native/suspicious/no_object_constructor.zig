@@ -25,12 +25,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // `new Object()` with no arguments
     if (data.rhs == .none) {
-        ctx.report(node, meta.name, "The object literal notation {} is preferable.", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
     const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
     if (range.start == range.end) {
-        ctx.report(node, meta.name, "The object literal notation {} is preferable.", meta.default_severity);
+        ctx.report(node);
     }
 }

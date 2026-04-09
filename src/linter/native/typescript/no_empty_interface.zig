@@ -21,6 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Flag if the interface has no members and no extends clauses
     if (iface.body_start == iface.body_end and iface.extends_start == iface.extends_end) {
-        ctx.report(node, meta.name, "Empty interface is equivalent to `{}`.", meta.default_severity);
+        ctx.report(node);
     }
 }

@@ -37,7 +37,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                     else => unreachable,
                 };
                 _ = op;
-                ctx.report(node, meta.name, "Separate the logical assignment into an assignment with a logical operator.", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

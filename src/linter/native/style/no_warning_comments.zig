@@ -31,12 +31,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const comment = source[line_start..line_end];
             for (WARNING_TERMS) |term| {
                 if (std.mem.indexOf(u8, comment, term) != null) {
-                    ctx.reportSpan(
-                        Span{ .start = @intCast(line_start), .end = @intCast(line_end) },
-                        meta.name,
-                        "Unexpected warning comment",
-                        meta.default_severity,
-                    );
+                    ctx.reportSpan(Span{ .start = @intCast(line_start), .end = @intCast(line_end) });
                     break;
                 }
             }

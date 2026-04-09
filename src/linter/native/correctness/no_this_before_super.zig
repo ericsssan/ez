@@ -76,7 +76,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (!super_called) {
             // Check if this statement uses `this`
             if (stmtUsesThis(stmt_node, ctx)) {
-                ctx.report(stmt_node, meta.name, "Use of `this` before `super()` in constructor", meta.default_severity);
+                ctx.report(stmt_node);
                 return;
             }
         }

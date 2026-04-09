@@ -21,6 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (text.len < 2) return;
     const content = text[1 .. text.len - 1];
     if (std.ascii.startsWithIgnoreCase(content, "javascript:")) {
-        ctx.report(node, meta.name, "Script URL is a form of eval.", meta.default_severity);
+        ctx.report(node);
     }
 }

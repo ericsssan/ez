@@ -71,29 +71,29 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const lhs_tag = ctx.nodeTag(lhs);
             const rhs_tag = ctx.nodeTag(rhs);
             if (isAlwaysDefined(lhs_tag) and isNullOrUndefined(rhs, ctx)) {
-                ctx.report(node, meta.name, "Constant binary expression: result is always false", meta.default_severity);
+                ctx.report(node);
                 return;
             }
             if (isAlwaysDefined(rhs_tag) and isNullOrUndefined(lhs, ctx)) {
-                ctx.report(node, meta.name, "Constant binary expression: result is always false", meta.default_severity);
+                ctx.report(node);
                 return;
             }
         },
         .logical_or => {
             if (isAlwaysTruthy(lhs, ctx)) {
-                ctx.report(node, meta.name, "Constant binary expression: left side is always truthy, right side is never reached", meta.default_severity);
+                ctx.report(node);
             }
         },
         .logical_and => {
             const lhs_tag = ctx.nodeTag(lhs);
             if (lhs_tag == .boolean_literal) {
                 if (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(lhs)), "false")) {
-                    ctx.report(node, meta.name, "Constant binary expression: result is always false", meta.default_severity);
+                    ctx.report(node);
                     return;
                 }
             }
             if (lhs_tag == .null_literal) {
-                ctx.report(node, meta.name, "Constant binary expression: left side is always null", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

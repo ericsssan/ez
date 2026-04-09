@@ -33,27 +33,27 @@ fn scan(node: NodeIndex, flags: Flags, ctx: *const LintContext) void {
     switch (tag) {
         // ── Control flow → potentially report ────────────────
         .return_stmt, .throw_stmt => {
-            ctx.report(node, meta.name, "Unsafe usage of control flow statement in a finally block", meta.default_severity);
+            ctx.report(node);
         },
         .break_stmt => {
             // Unlabeled break is safe inside a loop or switch
             if (!flags.in_loop and !flags.in_switch) {
-                ctx.report(node, meta.name, "Unsafe usage of control flow statement in a finally block", meta.default_severity);
+                ctx.report(node);
             }
         },
         .break_label => {
             // Labeled break always unsafe (exits the finally block via label outside it)
-            ctx.report(node, meta.name, "Unsafe usage of control flow statement in a finally block", meta.default_severity);
+            ctx.report(node);
         },
         .continue_stmt => {
             // Unlabeled continue is safe inside a loop (but NOT just a switch)
             if (!flags.in_loop) {
-                ctx.report(node, meta.name, "Unsafe usage of control flow statement in a finally block", meta.default_severity);
+                ctx.report(node);
             }
         },
         .continue_label => {
             // Labeled continue always unsafe
-            ctx.report(node, meta.name, "Unsafe usage of control flow statement in a finally block", meta.default_severity);
+            ctx.report(node);
         },
 
         // ── Stop at function/class boundaries ─────────────────

@@ -21,11 +21,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Flag `a! ?? b` — a! is already non-null so ?? is pointless
     if (ctx.nodeTag(lhs) == .ts_non_null_expr) {
-        ctx.report(
-            node,
-            meta.name,
-            "The `!` is unnecessary since the value is already asserted to be non-null",
-            meta.default_severity,
-        );
+        ctx.report(node);
     }
 }

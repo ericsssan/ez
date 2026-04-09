@@ -18,6 +18,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const token = ctx.nodeMainToken(node);
     const text = ctx.tokenText(token);
     if (std.mem.eql(u8, text, "any")) {
-        ctx.report(node, meta.name, "Unexpected `any` type. Specify a more precise type.", meta.default_severity);
+        ctx.report(node);
     }
 }

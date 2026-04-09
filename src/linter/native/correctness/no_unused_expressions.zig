@@ -28,7 +28,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const allow_tagged = ctx.getOptionBool("allowTaggedTemplates", false);
 
     if (!hasSideEffect(expr, ctx, allow_short, allow_ternary, allow_tagged)) {
-        ctx.report(node, meta.name, "Expected an assignment or function call and instead saw an expression.", meta.default_severity);
+        ctx.report(node);
     }
 }
 

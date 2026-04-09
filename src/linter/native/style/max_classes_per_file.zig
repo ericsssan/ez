@@ -43,6 +43,6 @@ fn countClasses(node: NodeIndex, ctx: *const LintContext) usize {
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const count = countClasses(node, ctx);
     if (count > MAX_CLASSES) {
-        ctx.report(node, meta.name, "File has too many classes", meta.default_severity);
+        ctx.report(node);
     }
 }

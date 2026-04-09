@@ -47,9 +47,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
 
     if (tag == .equal) {
-        ctx.report(node, meta.name, "Expected '===' but found '=='. Use strict equality", meta.default_severity);
+        ctx.report(node);
     } else if (tag == .not_equal) {
-        ctx.report(node, meta.name, "Expected '!==' but found '!='. Use strict inequality", meta.default_severity);
+        ctx.report(node);
     }
 }
 

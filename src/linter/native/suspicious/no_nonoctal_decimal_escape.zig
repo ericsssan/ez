@@ -23,7 +23,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     while (i < text.len - 1) : (i += 1) {
         if (text[i] == '\\' and i + 1 < text.len) {
             if (text[i + 1] == '8' or text[i + 1] == '9') {
-                ctx.report(node, meta.name, "Don't use '\\8' or '\\9' escape sequences. They are not octal escapes", meta.default_severity);
+                ctx.report(node);
                 return;
             }
         }

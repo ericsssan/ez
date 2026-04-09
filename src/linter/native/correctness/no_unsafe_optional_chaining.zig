@@ -154,9 +154,7 @@ fn isDestructuringPattern(tag: Node.Tag) bool {
 // ── Report helper ─────────────────────────────────────────────────────────
 
 fn report(ctx: *const LintContext, node: NodeIndex) void {
-    ctx.report(node, meta.name,
-        "Unsafe usage of optional chaining. If it short-circuits with 'undefined' the evaluation will throw TypeError.",
-        meta.default_severity);
+    ctx.report(node);
 }
 
 // ── Rule handler ──────────────────────────────────────────────────────────

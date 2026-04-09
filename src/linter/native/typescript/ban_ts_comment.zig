@@ -45,12 +45,7 @@ pub fn run(_: NodeIndex, ctx: *const LintContext) void {
                 if (i + directive.len <= source.len and
                     std.mem.eql(u8, source[i .. i + directive.len], directive))
                 {
-                    ctx.reportSpan(
-                        .{ .start = @intCast(comment_start), .end = @intCast(i + directive.len) },
-                        meta.name,
-                        "TypeScript directive comment suppresses type errors — prefer fixing the issue",
-                        meta.default_severity,
-                    );
+                    ctx.reportSpan(.{ .start = @intCast(comment_start), .end = @intCast(i + directive.len) });
                     break;
                 }
             }

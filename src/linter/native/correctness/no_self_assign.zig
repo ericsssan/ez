@@ -43,7 +43,7 @@ fn checkAssignment(lhs: NodeIndex, rhs: NodeIndex, ctx: *const LintContext, chec
             var buf: [128]u8 = undefined;
             const msg = std.fmt.bufPrint(&buf, MSG, .{lhs_name}) catch MSG_DEFAULT;
             _ = msg;
-            ctx.report(lhs, meta.name, "'{s}' is assigned to itself", meta.default_severity);
+            ctx.report(lhs);
         }
         return;
     }
@@ -69,7 +69,7 @@ fn checkAssignment(lhs: NodeIndex, rhs: NodeIndex, ctx: *const LintContext, chec
 
     if ((is_lhs_member and is_rhs_member) or (is_lhs_computed and is_rhs_computed)) {
         if (areSameNode(lhs, rhs, ctx)) {
-            ctx.report(lhs, meta.name, "Property is assigned to itself", meta.default_severity);
+            ctx.report(lhs);
         }
         return;
     }
@@ -77,7 +77,7 @@ fn checkAssignment(lhs: NodeIndex, rhs: NodeIndex, ctx: *const LintContext, chec
     // Mixed member vs member (cross optional/non-optional)
     if ((is_lhs_member or is_lhs_computed) and (is_rhs_member or is_rhs_computed)) {
         if (areSameNode(lhs, rhs, ctx)) {
-            ctx.report(lhs, meta.name, "Property is assigned to itself", meta.default_severity);
+            ctx.report(lhs);
         }
         return;
     }

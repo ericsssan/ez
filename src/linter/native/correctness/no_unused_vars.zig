@@ -35,7 +35,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (name.len > 0 and name[0] == '_') continue;
 
         if (!symbols.isUsed(id)) {
-            ctx.report(symbols.getDeclNode(id), meta.name, "Variable is declared but never used", meta.default_severity);
+            ctx.report(symbols.getDeclNode(id));
         }
     }
 }

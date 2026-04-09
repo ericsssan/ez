@@ -113,7 +113,7 @@ fn runOnRegexLiteral(node: NodeIndex, ctx: *const LintContext) void {
     }
 
     if (scanForSpaces(text, 1, pattern_end)) {
-        ctx.report(node, meta.name, MSG, meta.default_severity);
+        ctx.report(node);
     }
 }
 
@@ -312,7 +312,7 @@ fn runOnRegExpCall(node: NodeIndex, ctx: *const LintContext) void {
     if (unicode_mode and looksLikeInvalidUnicodePattern(str_text, content_start, content_end)) return;
 
     if (scanStringPatternForSpaces(str_text, content_start, content_end)) {
-        ctx.report(node, meta.name, MSG, meta.default_severity);
+        ctx.report(node);
     }
 }
 

@@ -18,6 +18,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (data.lhs == .none) return;
     const inner_tag = ctx.nodeTag(data.lhs);
     if (inner_tag == .computed_member_expr or inner_tag == .optional_computed_member_expr) {
-        ctx.report(node, meta.name, "Do not delete dynamically computed property keys", meta.default_severity);
+        ctx.report(node);
     }
 }

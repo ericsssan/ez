@@ -28,6 +28,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const inner_tag = ctx.nodeTag(inner);
     if (inner_tag == .ts_non_null_expr) {
         // Double non-null assertion: `a!!` — confusing
-        ctx.report(node, meta.name, "Double non-null assertion `!!` is confusing", meta.default_severity);
+        ctx.report(node);
     }
 }

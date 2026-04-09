@@ -24,6 +24,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (c == '\n') lines += 1;
     }
     if (lines > MAX_LINES) {
-        ctx.report(.root, meta.name, "File has too many lines", meta.default_severity);
+        ctx.report(.root);
     }
 }

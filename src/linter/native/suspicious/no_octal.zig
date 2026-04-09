@@ -38,5 +38,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // a digit (matches /^0\d/). This includes 010, 07, 08, 09.1, 09e1, etc.
     if (text[1] < '0' or text[1] > '9') return;
 
-    ctx.report(node, meta.name, "Octal literals should not be used.", meta.default_severity);
+    ctx.report(node);
 }

@@ -40,7 +40,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         };
 
         if (!is_valid) {
-            ctx.report(node, meta.name, "Unnecessary escape character in string", meta.default_severity);
+            ctx.report(node);
             return;
         }
 

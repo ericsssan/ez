@@ -42,7 +42,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         const result = seen.getOrPut(text) catch continue;
         if (result.found_existing) {
-            ctx.report(node, meta.name, "Duplicate type constituent", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

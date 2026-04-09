@@ -27,7 +27,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     for (non_callable_globals) |global| {
         if (std.mem.eql(u8, name, global)) {
-            ctx.report(node, meta.name, "This global object is not callable", meta.default_severity);
+            ctx.report(node);
             return;
         }
     }

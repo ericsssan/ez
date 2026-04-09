@@ -37,6 +37,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     const for_data = ctx.extraData(ast.ForInOfData, @intFromEnum(data.lhs));
     if (!bodyHasGuard(for_data.body, ctx)) {
-        ctx.report(node, meta.name, "The body of a for-in should be wrapped in an if statement to filter unwanted properties from the prototype.", meta.default_severity);
+        ctx.report(node);
     }
 }

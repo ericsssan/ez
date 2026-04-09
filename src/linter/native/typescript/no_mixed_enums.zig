@@ -54,6 +54,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     }
 
     if (seen_numeric and seen_string) {
-        ctx.report(node, meta.name, "Enum mixes string and number values", meta.default_severity);
+        ctx.report(node);
     }
 }

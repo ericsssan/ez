@@ -26,7 +26,7 @@ fn checkBody(body: NodeIndex, ctx: *const LintContext, depth: u8) void {
         .return_stmt => {
             if (data.lhs == .none) return;
             if (ctx.nodeTag(data.lhs) == .await_expr) {
-                ctx.report(body, meta.name, "Unnecessary await in return statement; await is implicit when returning a Promise from async function", meta.default_severity);
+                ctx.report(body);
             }
         },
         .block_stmt => {

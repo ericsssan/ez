@@ -18,7 +18,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     // rhs = extra index to SubRange of cases
     if (data.rhs == .none) {
-        ctx.report(node, meta.name, "Expected a default case.", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -37,7 +37,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const span = ctx.nodeSpan(node);
     if (hasNoDefaultComment(src, span.start, span.end)) return;
 
-    ctx.report(node, meta.name, "Expected a default case.", meta.default_severity);
+    ctx.report(node);
 }
 
 fn hasNoDefaultComment(source: []const u8, start: u32, end: u32) bool {

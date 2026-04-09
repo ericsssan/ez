@@ -121,6 +121,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     const depth = measureDepth(body, ctx, 0);
     if (depth > MAX_DEPTH) {
-        ctx.report(node, meta.name, "Block is nested too deeply", meta.default_severity);
+        ctx.report(node);
     }
 }

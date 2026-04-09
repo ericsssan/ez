@@ -20,6 +20,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Check if operand is also a logical_not (double negation !!x)
     if (ctx.nodeTag(operand) == .logical_not) {
-        ctx.report(node, meta.name, "Unnecessary double negation (!!); value is already coerced to boolean", meta.default_severity);
+        ctx.report(node);
     }
 }

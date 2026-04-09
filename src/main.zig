@@ -321,7 +321,7 @@ fn lintSingleFile(
     defer allocator.free(lint_diagnostics);
 
     for (lint_diagnostics) |*diag| {
-        try diag.format(source, file_path, stdout);
+        try diag.format(source, file_path, &linter.rule_names, stdout);
     }
     try stdout.flush();
 

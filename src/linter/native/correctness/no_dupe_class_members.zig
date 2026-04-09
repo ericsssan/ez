@@ -150,7 +150,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         }
 
         if (is_dup) {
-            ctx.report(member_node, meta.name, "Duplicate class member", meta.default_severity);
+            ctx.report(member_node);
         }
     }
 }

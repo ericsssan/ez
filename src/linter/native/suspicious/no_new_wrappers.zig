@@ -48,7 +48,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         // Found a reference to this callee.
         // Only report if the reference is unresolved (undefined).
         if (!refs.isResolved(ref_id)) {
-            ctx.report(node, meta.name, "Do not use primitive wrapper objects. Use the literal form instead", meta.default_severity);
+            ctx.report(node);
         }
         return;
     }

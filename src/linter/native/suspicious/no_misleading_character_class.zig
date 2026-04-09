@@ -31,7 +31,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
                 if (in_class and text[i + 1] == 'u' and i + 5 < text.len) {
                     // Check for \uD800-\uDFFF range (surrogate pairs)
                     if (text[i + 2] == 'D' or text[i + 2] == 'd') {
-                        ctx.report(node, meta.name, "Character class contains a surrogate pair. Use the 'u' flag", meta.default_severity);
+                        ctx.report(node);
                         return;
                     }
                 }
@@ -48,7 +48,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
         // Check for combining marks inside character classes (U+0300-U+036F)
         if (in_class and text[i] >= 0xCC and i + 1 < text.len and text[i + 1] >= 0x80) {
-            ctx.report(node, meta.name, "Character class contains a combining character. This may be misleading", meta.default_severity);
+            ctx.report(node);
             return;
         }
 

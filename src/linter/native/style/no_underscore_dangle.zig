@@ -37,7 +37,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             if (ctx.nodeTag(binding) != .identifier) return;
             const name = ctx.tokenText(ctx.nodeMainToken(binding));
             if (hasDangling(name)) {
-                ctx.report(node, meta.name, "Unexpected dangling '_' in identifier", meta.default_severity);
+                ctx.report(node);
             }
         },
         .fn_decl => {
@@ -45,7 +45,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             if (fn_data.name == .none) return;
             const name = ctx.tokenText(ctx.nodeMainToken(fn_data.name));
             if (hasDangling(name)) {
-                ctx.report(node, meta.name, "Unexpected dangling '_' in identifier", meta.default_severity);
+                ctx.report(node);
             }
         },
         else => {},

@@ -87,7 +87,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (thrown == .none) return;
 
     if (!couldBeError(thrown, ctx)) {
-        ctx.report(node, meta.name, "Expected an error object to be thrown", meta.default_severity);
+        ctx.report(node);
         return;
     }
 
@@ -95,7 +95,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(thrown) == .identifier) {
         const name = ctx.tokenText(ctx.nodeMainToken(thrown));
         if (std.mem.eql(u8, name, "undefined")) {
-            ctx.report(node, meta.name, "Do not throw undefined", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

@@ -22,6 +22,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     if (body == .none) return;
     if (ctx.nodeTag(body) == .conditional) {
-        ctx.report(node, meta.name, "Arrow function used ambiguously with a conditional expression.", meta.default_severity);
+        ctx.report(node);
     }
 }

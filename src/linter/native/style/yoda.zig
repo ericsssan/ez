@@ -33,6 +33,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
 
     // Flag: literal OP expression (yoda condition)
     if (isLiteral(data.lhs, ctx) and !isLiteral(data.rhs, ctx)) {
-        ctx.report(node, meta.name, "Unexpected literal on the left side of condition", meta.default_severity);
+        ctx.report(node);
     }
 }

@@ -367,8 +367,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         const alt_cond = unwrap(alt_cond_raw, ctx); // strip outer parens
 
         if (isCovered(alt_cond, seen[0..seen_len], ctx)) {
-            ctx.report(alternate, meta.name,
-                "This branch can never execute. Its condition is a duplicate or covered by previous conditions in the if-else-if chain.", meta.default_severity);
+            ctx.report(alternate);
         }
 
         if (seen_len < MAX_CHAIN) {

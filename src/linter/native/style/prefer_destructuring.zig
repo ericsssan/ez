@@ -36,5 +36,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Only flag when binding name matches the property name: `const foo = obj.foo`
     if (!std.mem.eql(u8, binding_name, prop_name)) return;
 
-    ctx.report(node, meta.name, "Prefer destructuring over member expression assignment", meta.default_severity);
+    ctx.report(node);
 }

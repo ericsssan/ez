@@ -316,8 +316,9 @@ pub const ParallelRunner = struct {
                         .warning => warning_count += 1,
                         else => {},
                     }
-                    const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s}): {s}\n", .{
-                        file_path, cur_line + 1, column + 1, diag.severity.symbol(), diag.rule_name, diag.message,
+                    const rn = if (diag.rule_index < linter_mod.rule_names.len) linter_mod.rule_names[diag.rule_index] else "unknown";
+                    const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s})\n", .{
+                        file_path, cur_line + 1, column + 1, diag.severity.symbol(), rn,
                     }) catch continue;
                     output_buf.appendSlice(arena, out) catch {};
                 },

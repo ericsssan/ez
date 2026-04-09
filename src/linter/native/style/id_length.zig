@@ -35,5 +35,5 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (name.len >= 2) return; // long enough
     if (isAllowed(name)) return;
 
-    ctx.report(node, meta.name, "Identifier is too short (minimum 2 characters)", meta.default_severity);
+    ctx.report(node);
 }

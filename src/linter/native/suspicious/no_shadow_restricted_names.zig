@@ -74,7 +74,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
                 // Special case: `undefined` declared without init and never written is a safe shadow
                 if (std.mem.eql(u8, name, "undefined") and safelyShadowsUndefined(id, ctx)) break;
                 const decl_node = syms.getDeclNode(id);
-                ctx.report(decl_node, meta.name, "Shadowing of global restricted name is not allowed", meta.default_severity);
+                ctx.report(decl_node);
                 break;
             }
         }

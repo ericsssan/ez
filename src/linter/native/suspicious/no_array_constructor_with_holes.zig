@@ -31,7 +31,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (args.len == 1) {
         const arg: NodeIndex = @enumFromInt(args[0]);
         if (arg != .none and ctx.nodeTag(arg) == .number_literal) {
-            ctx.report(node, meta.name, "Use Array.from() or array literals instead of new Array(n)", meta.default_severity);
+            ctx.report(node);
         }
     }
 }

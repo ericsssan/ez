@@ -18,6 +18,6 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const start = @intFromEnum(data.lhs);
     const end = @intFromEnum(data.rhs);
     if (start == end) {
-        ctx.report(node, meta.name, "Don't use `{}` as a type. Use `object` instead", meta.default_severity);
+        ctx.report(node);
     }
 }
