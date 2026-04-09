@@ -817,7 +817,7 @@ pub const CodePathBuilder = struct {
             }
         }
         try self.popChoiceContext(node);
-        try self.popForkContext();
+        try self.popForkContext(node);
         self.popBreakContext();
     }
 
@@ -866,7 +866,7 @@ pub const CodePathBuilder = struct {
         self.try_context = ctx.upper;
 
         if (ctx.has_finalizer) {
-            try self.popForkContext();
+            try self.popForkContext(node);
         }
 
         // Merge try-end + catch-end as reachable continuations
@@ -1177,14 +1177,20 @@ pub const CodePathBuilder = struct {
         self.fork_context = new_fc;
     }
 
-    pub fn popForkContext(self: *CodePathBuilder) !void {
+    pub fn popForkContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const fc = self.fork_context;
         if (fc.upper) |upper| {
             if (!fc.empty()) {
+                // End current segments before merge
+                try self.leaveFromCurrentSegment(node, .exit);
                 const merged = try fc.makeNext(0, -1, self);
                 try upper.replaceHead(merged, self);
             }
             self.fork_context = upper;
+            // Start the merged segments so they get SEG_START events
+            if (!fc.empty()) {
+                try self.forwardCurrentToHead(node, .exit);
+            }
         }
     }
 
