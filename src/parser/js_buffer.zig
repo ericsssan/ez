@@ -389,7 +389,9 @@ fn writeCfgGraph(
     const cp_upper = try alloc.alloc(u32, cp_count);
     const cp_initial_seg = try alloc.alloc(u32, cp_count);
 
-    // Build CSR for final/returned/thrown segment lists
+    // Build CSR for final/returned/thrown segment lists.
+    // Pool entries are in EXIT order (inner functions first, program last),
+    // but CSR requires codepath order (cp 0, cp 1, ...). Reorder here.
     const cp_final_starts = try alloc.alloc(u32, cp_count + 1);
     const cp_returned_starts = try alloc.alloc(u32, cp_count + 1);
     const cp_thrown_starts = try alloc.alloc(u32, cp_count + 1);
@@ -399,20 +401,41 @@ fn writeCfgGraph(
         cp_origin[i] = @intFromEnum(cp.origin);
         cp_upper[i] = cp.upper;
         cp_initial_seg[i] = cp.initial_segment;
-        cp_final_starts[i] = cp.final_start;
-        cp_returned_starts[i] = cp.returned_start;
-        cp_thrown_starts[i] = cp.thrown_start;
     }
-    cp_final_starts[cp_count] = @intCast(cpr.cp_final_pool.len);
-    cp_returned_starts[cp_count] = @intCast(cpr.cp_returned_pool.len);
-    cp_thrown_starts[cp_count] = @intCast(cpr.cp_thrown_pool.len);
 
+    // Reorder pools into codepath order
     const cp_final_targets = try alloc.alloc(u32, cpr.cp_final_pool.len);
-    @memcpy(cp_final_targets, cpr.cp_final_pool);
     const cp_returned_targets = try alloc.alloc(u32, cpr.cp_returned_pool.len);
-    @memcpy(cp_returned_targets, cpr.cp_returned_pool);
     const cp_thrown_targets = try alloc.alloc(u32, cpr.cp_thrown_pool.len);
-    @memcpy(cp_thrown_targets, cpr.cp_thrown_pool);
+    var final_off: u32 = 0;
+    var returned_off: u32 = 0;
+    var thrown_off: u32 = 0;
+    for (0..cp_count) |i| {
+        const cp = cpr.codepaths[i];
+        cp_final_starts[i] = final_off;
+        const f_len = cp.final_end - cp.final_start;
+        if (f_len > 0) {
+            @memcpy(cp_final_targets[final_off..][0..f_len], cpr.cp_final_pool[cp.final_start..cp.final_end]);
+        }
+        final_off += f_len;
+
+        cp_returned_starts[i] = returned_off;
+        const r_len = cp.returned_end - cp.returned_start;
+        if (r_len > 0) {
+            @memcpy(cp_returned_targets[returned_off..][0..r_len], cpr.cp_returned_pool[cp.returned_start..cp.returned_end]);
+        }
+        returned_off += r_len;
+
+        cp_thrown_starts[i] = thrown_off;
+        const t_len = cp.thrown_end - cp.thrown_start;
+        if (t_len > 0) {
+            @memcpy(cp_thrown_targets[thrown_off..][0..t_len], cpr.cp_thrown_pool[cp.thrown_start..cp.thrown_end]);
+        }
+        thrown_off += t_len;
+    }
+    cp_final_starts[cp_count] = final_off;
+    cp_returned_starts[cp_count] = returned_off;
+    cp_thrown_starts[cp_count] = thrown_off;
 
     // ── Event stream ────────────────────────────────────────
     const events_flat = try alloc.alloc(u32, ev_count * 4);

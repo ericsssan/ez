@@ -4543,8 +4543,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               _cfgCpStack.push(_cfgCurrentCp);
               _cfgCurrentCp = cp;
               cp.currentSegments = [cp.initialSegment];
-              // For class methods, pass the synthesized FunctionExpression
-              const cpNode = node.type === 'MethodDefinition' ? (node.value || node) : node;
+              // For methods/getters/setters, pass the synthesized FunctionExpression
+              const nt = node.type;
+              const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
               const cpStartH = visitorMap.get('onCodePathStart');
               if (cpStartH) for (let h = 0; h < cpStartH.length; h++) {
                 try { cpStartH[h]._state.inner(cp, cpNode); }
@@ -4556,7 +4557,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           case 1: { // CODEPATH_END
             const cp = _cfgGraph.codepath(ev.d1);
             if (cp) {
-              const cpNode = node.type === 'MethodDefinition' ? (node.value || node) : node;
+              const nt2 = node.type;
+              const cpNode = (nt2 === 'MethodDefinition' || nt2 === 'Property') ? (node.value || node) : node;
               const cpEndH = visitorMap.get('onCodePathEnd');
               if (cpEndH) for (let h = 0; h < cpEndH.length; h++) {
                 try { cpEndH[h]._state.inner(cp, cpNode); }
