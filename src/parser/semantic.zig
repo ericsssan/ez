@@ -641,11 +641,9 @@ pub const SemanticAnalyzer = struct {
                 const is_infinite = data.lhs != .none and self.isLiteralTrue(data.lhs);
                 if (is_infinite and !had_break) {
                     self.cfg_alive = false;
-                } else if (!body_alive and !had_break) {
-                    // Body always dies (inner infinite loop, all paths return/throw)
-                    // and no break exits → loop can't iterate → dead after.
-                    self.cfg_alive = false;
                 } else {
+                    // While-loop: condition could be false initially, so code
+                    // after is reachable even if body always returns/throws.
                     self.cfg_alive = alive_pre;
                 }
                 // Store whether the loop body can complete and iterate again.

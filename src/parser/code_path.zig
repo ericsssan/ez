@@ -260,6 +260,8 @@ const SwitchContext = struct {
     found_empty_default: bool,
     last_is_default: bool,
     fork_count: u32,
+    /// Discriminant entry segments — each case forks from here.
+    entry_segments: ?[]SegmentId,
 };
 
 const TryContext = struct {
@@ -819,6 +821,7 @@ pub const CodePathBuilder = struct {
             .found_empty_default = false,
             .last_is_default = false,
             .fork_count = 0,
+            .entry_segments = try self.allocator.dupe(SegmentId, self.fork_context.head()),
         };
         self.switch_context = ctx;
 
@@ -868,8 +871,17 @@ pub const CodePathBuilder = struct {
         }
         ctx.fork_count += 1;
 
-        // End current segments and start new ones for the case body
+        // End current segments
         try self.leaveFromCurrentSegment(node, .enter);
+
+        // Each case body forks from the discriminant entry (head of the outer
+        // fork context), NOT from the previous case's exit. This ensures cases
+        // after break/return start reachable.
+        const current_head = self.fork_context.head();
+        var has_reachable_prev = false;
+        for (current_head) |s| {
+            if (s != NONE_SEG and self.segments.items[s].reachable) has_reachable_prev = true;
+        }
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.add(new_segs, self);
         try self.forwardCurrentToHead(node, .enter);
