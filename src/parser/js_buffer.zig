@@ -214,7 +214,6 @@ pub fn writeSemanticData(
     sem: *const semantic_mod.SemanticResult,
     node_count: u32,
     node_tags: []const ast_mod.Node.Tag,
-    pre_order: []const u32,
     parent_indices: []const u32,
 ) !u32 {
     const alloc = backing.allocator();
@@ -417,14 +416,16 @@ pub fn writeSemanticData(
     }
 
     // ── Node depths ─────────────────────────────────────────────
+    // depth[root]=0, depth[child]=depth[parent]+1.
+    // Parents have higher indices than children (except root=0),
+    // so reverse iteration guarantees parent is processed first.
     const node_depths = try alloc.alloc(u32, node_count);
-    @memset(node_depths, 0);
     if (node_count > 0) {
-        for (1..node_count) |j| {
-            const idx = pre_order[j];
-            if (idx >= node_count) break; // pre_order may be shorter than node_count
-            const p = parent_indices[idx];
-            node_depths[idx] = if (p < node_count) node_depths[p] + 1 else 0;
+        var i: usize = node_count;
+        while (i > 0) {
+            i -= 1;
+            const p = parent_indices[i];
+            node_depths[i] = if (p < node_count) node_depths[p] + 1 else 0;
         }
     }
 
