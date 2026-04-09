@@ -46,11 +46,19 @@ function loadPlugin(pkgName, ruleFilters) {
   };
 
   // ── ESLint core: scan lib/rules/*.js ────────────────────────
-  // ESLint v10 added package exports that block subpath requires.
-  // We resolve the package root via its main entry and navigate from there.
+  // Try installed eslint first, fall back to bundled rules.
   if (pkgName === "eslint") {
-    const eslintMain = require.resolve("eslint", resolveOpts);
-    const rulesDir = path.join(path.dirname(eslintMain), "..", "lib", "rules");
+    let rulesDir;
+    try {
+      const eslintMain = require.resolve("eslint", resolveOpts);
+      rulesDir = path.join(path.dirname(eslintMain), "..", "lib", "rules");
+    } catch {
+      // No eslint installed — use bundled rules
+      rulesDir = path.join(path.dirname(__filename), "..", "tests", "conformance", "eslint", "lib", "rules");
+    }
+    if (!fs.existsSync(rulesDir)) {
+      rulesDir = path.join(path.dirname(__filename), "..", "tests", "conformance", "eslint", "lib", "rules");
+    }
     const plugins = [];
     for (const file of fs.readdirSync(rulesDir)) {
       if (!file.endsWith(".js")) continue;
