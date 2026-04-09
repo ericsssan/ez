@@ -760,11 +760,10 @@ pub const CodePathBuilder = struct {
             const head_copy2 = try self.allocator.dupe(SegmentId, head);
             try ctx.false_fork.add(head_copy2, self);
         }
-        // Switch to true fork path
+        // End current segments BEFORE switching to the true fork path
+        try self.leaveFromCurrentSegment(node, .enter);
         const new_segs = try ctx.true_fork.makeNext(0, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
-        // End old segments, start new
-        try self.leaveFromCurrentSegment(node, .enter);
         try self.forwardCurrentToHead(node, .enter);
     }
 
@@ -773,11 +772,12 @@ pub const CodePathBuilder = struct {
         // Save end of true branch
         const true_end = try self.allocator.dupe(SegmentId, self.fork_context.head());
         try ctx.true_fork.add(true_end, self);
+        // End current (true branch ending) BEFORE switching to false path
+        try self.leaveFromCurrentSegment(node, .enter);
         // Switch to false fork path
         const new_segs = try ctx.false_fork.makeNext(0, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
-        // End old segments, start new
-        try self.leaveFromCurrentSegment(node, .enter);
+        // Start new (else branch) segments
         try self.forwardCurrentToHead(node, .enter);
     }
 
