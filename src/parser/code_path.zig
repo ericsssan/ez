@@ -272,6 +272,7 @@ const TryContext = struct {
     pre_try_segments: ?[]SegmentId, // head before try body (for catch entry reachability)
     last_of_try_reachable: bool,
     last_of_catch_reachable: bool,
+    first_throwable_called: bool, // has makeFirstThrowablePathInTryBlock been called?
 };
 
 pub const LoopType = enum {
@@ -898,6 +899,7 @@ pub const CodePathBuilder = struct {
             .pre_try_segments = pre_try,
             .last_of_try_reachable = false,
             .last_of_catch_reachable = false,
+            .first_throwable_called = false,
         };
         self.try_context = ctx;
 
@@ -911,7 +913,25 @@ pub const CodePathBuilder = struct {
         self.try_context = ctx.upper;
 
         if (ctx.has_finalizer) {
-            try self.popForkContext(node);
+            if (!ctx.thrown_fork.empty()) {
+                // Pop the doubled-count fork. Extract only lane 0 (normal path).
+                // Lane 1 (exception) re-throws — code after try/finally doesn't run on it.
+                const doubled_fc = self.fork_context;
+                if (doubled_fc.upper) |parent_fc| {
+                    const parent_count = parent_fc.count;
+                    const head = doubled_fc.head();
+                    const lane0 = try self.allocator.alloc(SegmentId, parent_count);
+                    for (0..parent_count) |i| {
+                        lane0[i] = if (i < head.len) head[i] else NONE_SEG;
+                    }
+                    try self.leaveFromCurrentSegment(node, .exit);
+                    try parent_fc.replaceHead(lane0, self);
+                    self.fork_context = parent_fc;
+                    try self.forwardCurrentToHead(node, .exit);
+                }
+            } else {
+                try self.popForkContext(node);
+            }
         }
 
         // Merge try-end + catch-end as reachable continuations
@@ -952,15 +972,62 @@ pub const CodePathBuilder = struct {
         try self.forwardCurrentToHead(node, .enter);
     }
 
+    /// Called for the first potentially-throwing node inside a try body
+    /// (call expressions, member expressions, identifiers, etc.).
+    /// Saves the current head to thrownForkContext so that finally can see
+    /// the exception path (state before any try-body code completed).
+    pub fn makeFirstThrowablePathInTryBlock(self: *CodePathBuilder) !void {
+        if (!self.fork_context.reachable(self)) return;
+        const ctx = self.try_context orelse return;
+        if (ctx.position != .try_body or ctx.first_throwable_called) return;
+        if (!ctx.has_finalizer) return; // only needed for finally
+        ctx.first_throwable_called = true;
+        // Save PRE-TRY segments to thrownForkContext — this represents the
+        // exception path where code throws before any try-body code completed.
+        if (ctx.pre_try_segments) |pre_try| {
+            const pre_copy = try self.allocator.dupe(SegmentId, pre_try);
+            try ctx.thrown_fork.add(pre_copy, self);
+        }
+    }
+
     pub fn makeFinallyBlock(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.try_context orelse return;
         ctx.last_of_catch_reachable = self.fork_context.reachable(self);
         ctx.position = .finally_body;
 
         try self.leaveFromCurrentSegment(node, .enter);
-        const new_segs = try self.fork_context.makeNext(-1, -1, self);
-        try self.fork_context.replaceHead(new_segs, self);
-        try self.forwardCurrentToHead(node, .enter);
+
+        // If thrownForkContext has entries (from makeFirstThrowablePathInTryBlock),
+        // create a doubled-count fork for the finally body. Lane 0 = normal path,
+        // lane 1 = exception/thrown path.
+        if (!ctx.thrown_fork.empty()) {
+            // Create the normal-path finally entry
+            const normal_segs = try self.fork_context.makeNext(-1, -1, self);
+
+            // Create the exception-path finally entry from thrown segments
+            const thrown_segs = try ctx.thrown_fork.makeNext(0, -1, self);
+
+            // Push a doubled-count fork context
+            const parent_count = self.fork_context.count;
+            const new_fc = try self.allocator.create(ForkContext);
+            new_fc.* = ForkContext.init(self.allocator, self.fork_context, parent_count * 2);
+
+            // Seed with [normal_lane..., exception_lane...]
+            const doubled = try self.allocator.alloc(SegmentId, parent_count * 2);
+            for (0..parent_count) |i| {
+                doubled[i] = if (i < normal_segs.len) normal_segs[i] else NONE_SEG;
+                doubled[i + parent_count] = if (i < thrown_segs.len) thrown_segs[i] else NONE_SEG;
+            }
+            try new_fc.segments_list.append(self.allocator, doubled);
+            self.fork_context = new_fc;
+            // Start both lanes
+            try self.forwardCurrentToHead(node, .enter);
+        } else {
+            // No throwable paths — simple finally (no count doubling)
+            const new_segs = try self.fork_context.makeNext(-1, -1, self);
+            try self.fork_context.replaceHead(new_segs, self);
+            try self.forwardCurrentToHead(node, .enter);
+        }
     }
 
     // ── Loops ────────────────────────────────────────────────

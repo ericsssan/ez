@@ -755,6 +755,7 @@ pub const SemanticAnalyzer = struct {
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .call_expr, .optional_call_expr => {
+                if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
                 try self.visitNode(data.lhs);
                 if (data.rhs != .none) {
                     const args_range = self.readSubRange(@intFromEnum(data.rhs));
@@ -774,6 +775,7 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .new_expr => {
+                if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
                 try self.visitNode(data.lhs);
                 if (data.rhs != .none) {
                     const args_range = self.readSubRange(@intFromEnum(data.rhs));
