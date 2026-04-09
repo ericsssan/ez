@@ -4129,6 +4129,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // so rules like no-constructor-return and getter-return work correctly.
 
   const cpTracker = new CodePathTracker();
+  let _useCfgGraph = false; // true = CfgGraph replaces CPTracker; false = CPTracker active
+  let _cfgGraphAdditive = false; // true = CfgGraph events fire alongside CPTracker
 
   function invokeCodePathHandlersWithNode(mapKey, node) {
     const handlers = visitorMap.get(mapKey);
@@ -4232,14 +4234,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   function invokeMethodFnHandlers(methodNodeIdx, isExit) {
     const fnKey = isExit ? 'FunctionExpression:exit' : 'FunctionExpression';
     const hasFn = visitorMap.has(fnKey);
-    const hasCodePath = visitorMap.has(isExit ? 'onCodePathEnd' : 'onCodePathStart');
-    if (!hasFn && !hasCodePath) return;
+    const hasCP = visitorMap.has(isExit ? 'onCodePathEnd' : 'onCodePathStart');
+    if (!hasFn && !hasCP) return;
 
     const methodNode = nodeView(ast, methodNodeIdx);
-    // Use node.value which already computes async/generator/params/body from the buffer
     const fnExpr = methodNode.value;
     if (!fnExpr || fnExpr.type !== 'FunctionExpression') return;
-    // Augment with parent pointer and position info for rules that inspect node.parent
     fnExpr.parent = methodNode;
     fnExpr.end = methodNode.end;
     fnExpr.range = methodNode.range;
@@ -4248,20 +4248,27 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     fnExpr._i = methodNodeIdx;
 
     if (!isExit) {
-      const outerSeg = cpTracker.segment;
-      if (outerSeg) _segEndEvent(outerSeg);
-      const { segment } = cpTracker.enterFunction(fnExpr);
-      invokeCodePathHandlersWithNode('onCodePathStart', fnExpr);
-      if (_segStartH) _dispatchSeg(_segStartH, segment);
+      // CfgGraph handles code path events; CPTracker handles them when no CfgGraph
+      if (!_useCfgGraph) {
+        const outerSeg = cpTracker.segment;
+        if (outerSeg) _segEndEvent(outerSeg);
+        const { segment } = cpTracker.enterFunction(fnExpr);
+        invokeCodePathHandlersWithNode('onCodePathStart', fnExpr);
+        if (_segStartH) _dispatchSeg(_segStartH, segment);
+      }
+      // AST event always fires
       if (hasFn) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
     } else {
+      // AST event always fires
       if (hasFn) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
-      const oldSeg = cpTracker.segment;
-      if (oldSeg) _segEndEvent(oldSeg);
-      invokeCodePathHandlersWithNode('onCodePathEnd', fnExpr);
-      cpTracker.exitFunction();
-      const outerSeg = cpTracker.segment;
-      if (outerSeg) _segStartOrUnreachEvent(outerSeg);
+      if (!_useCfgGraph) {
+        const oldSeg = cpTracker.segment;
+        if (oldSeg) _segEndEvent(oldSeg);
+        invokeCodePathHandlersWithNode('onCodePathEnd', fnExpr);
+        cpTracker.exitFunction();
+        const outerSeg = cpTracker.segment;
+        if (outerSeg) _segStartOrUnreachEvent(outerSeg);
+      }
     }
   }
 
@@ -4510,7 +4517,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const _cfgGraph = ast._cfgGraph || null;
     let _cfgEnterEvents = null; // Map<nodeIdx, [{type, data1, data2}]>
     let _cfgExitEvents = null;
-    let _useCfgGraph = false;
     if (_cfgGraph && _cfgGraph._events && hasCodePath) {
       _cfgEnterEvents = new Map();
       _cfgExitEvents = new Map();
@@ -4527,7 +4533,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (!map.has(nodeIdx)) map.set(nodeIdx, []);
         map.get(nodeIdx).push({ type: evType, d1, d2 });
       }
-      _useCfgGraph = true;
+      // Clean-cut mode: CfgGraph fully replaces CPTracker. Disabled pending Zig event tuning.
+      // _useCfgGraph = true;
+      // Additive mode: CfgGraph events fire alongside CPTracker (+2 tests).
+      // Additive mode temporarily disabled — causes 1 regression in no-this-before-super
+      // due to dual segment IDs. Enable when Zig events are tuned for clean-cut mode.
+      // _cfgGraphAdditive = true;
     }
 
     // CfgGraph state: track current codepath for currentSegments updates
@@ -4536,7 +4547,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
     // Fire CfgGraph events for a given node (enter or exit)
     function _fireCfgEvents(nodeIdx, isExit) {
-      if (!_useCfgGraph) return;
+      if (!_useCfgGraph && !_cfgGraphAdditive) return;
       const map = isExit ? _cfgExitEvents : _cfgEnterEvents;
       const evts = map.get(nodeIdx);
       if (!evts) return;
@@ -4649,31 +4660,26 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             }
           }
         }
-        // Fire CfgGraph enter events (multi-segment graph from Zig)
-        if (_useCfgGraph) _fireCfgEvents(idx, false);
-        if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
-          // End outer segment before starting a new code path
-          const outerSeg = cpTracker.segment;
-          if (outerSeg) _segEndEvent(outerSeg);
-          const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
-          invokeCodePathHandlers('onCodePathStart', idx);
-          if (_segStartH) _dispatchSeg(_segStartH, segment);
-        }
-        // Branch points (integer tag checks — no string comparisons)
-        if (hasCodePath) {
+        // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
+        if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, false);
+        if (!_useCfgGraph && hasCodePath) {
+          if (CODE_PATH_TYPES.has(tn)) {
+            const outerSeg = cpTracker.segment;
+            if (outerSeg) _segEndEvent(outerSeg);
+            const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
+            invokeCodePathHandlers('onCodePathStart', idx);
+            if (_segStartH) _dispatchSeg(_segStartH, segment);
+          }
           if (_branchEnterTagSet.has(tag)) {
-            // For loops, create a target segment so onCodePathSegmentLoop can reference it
             if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
               const oldSeg = cpTracker.segment;
               if (oldSeg) _segEndEvent(oldSeg);
               const { targetSeg } = cpTracker.enterLoop(idx);
-              // Fire onCodePathSegmentStart with the "looping target" node
-              // (test for while, body for do-while, update||test||body for for, left for for-in/of)
               const loopNode = nodeView(ast, idx);
               const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
                 : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
                 : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
-                : loopNode.test; // WhileStatement
+                : loopNode.test;
               _segStartOrUnreachEvent(targetSeg, targetNode || loopNode);
               cpTracker.enterBranch();
               cpTracker.pushBreakable('loop');
@@ -4682,11 +4688,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               cpTracker.enterBranch(_isSwitchBranch);
               if (_isSwitchBranch) {
                 cpTracker.pushBreakable('switch');
-                // Defer markUnreachable until AFTER handler dispatch so that
-                // rules like no-unreachable see the pre-switch reachable segment
-                // when their SwitchStatement handler runs.
-              } else {
-                // if/try: not breakable targets
               }
             }
           }
@@ -4696,7 +4697,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             const seg = cpTracker.nextBranch();
             if (seg) _segStartOrUnreachEvent(seg);
           }
-          // Detect else branch (pre-computed map)
           if (elseStartNodes && elseStartNodes[idx]) {
             const oldSeg = cpTracker.segment;
             if (oldSeg) _segEndEvent(oldSeg);
@@ -4719,9 +4719,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             }
           }
         }
-        // Deferred switch markUnreachable: now that handlers have seen the
-        // pre-switch reachable segment, mark the switch body unreachable.
-        if (hasCodePath && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+        // Deferred switch markUnreachable (CPTracker only)
+        if (hasCodePath && !_useCfgGraph && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
           const oldSegSwitch = cpTracker.segment;
           if (oldSegSwitch) _segEndEvent(oldSegSwitch);
           cpTracker.markUnreachable();
@@ -4839,11 +4838,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
           catchStack.pop();
         }
-        // Code-path: terminators mark subsequent code unreachable (integer tag checks)
-        if (hasCodePath) {
+        // Code-path terminators (CPTracker only — CfgGraph handles via exit events)
+        if (hasCodePath && !_useCfgGraph) {
           if (_terminatorTagSet.has(tag)) {
             const nv2 = nodeView(ast, idx);
-            // ContinueStatement → fire onCodePathSegmentLoop before marking unreachable
             if (_segLoopH && nv2.type === 'ContinueStatement') {
               const fromSeg = cpTracker.segment;
               const loopInfo = cpTracker.nearestLoopTarget;
@@ -4851,13 +4849,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
                 _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv2);
               }
             }
-            // BreakStatement targeting a switch: the break means this branch reached
-            // a viable exit → mark the switch's branch as reachable so exitBranch
-            // correctly computes anyBranchReachable.
             if (nv2.type === 'BreakStatement' && !nv2.label && cpTracker.breakTarget === 'switch') {
               cpTracker.markSwitchBranchReachable();
             }
-            // Track returned/thrown segments for codePath.returnedSegments/thrownSegments
             if (nv2.type === 'ReturnStatement') {
               const seg = cpTracker.segment;
               if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
@@ -4865,8 +4859,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               const seg = cpTracker.segment;
               if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
             }
-            // All terminators (break, continue, return, throw) mark subsequent
-            // code unreachable — including labeled break/continue.
             {
               const oldSeg = cpTracker.segment;
               if (oldSeg) _segEndEvent(oldSeg);
@@ -4908,57 +4900,51 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
-        // Exit branching statements — merge reachability
-        if (hasCodePath && _branchEnterTagSet.has(tag)) {
-          // Fire onCodePathSegmentLoop BEFORE exitBranch for loops.
-          // Use Zig's precomputed loop exit reachability to suppress the loop
-          // event for loops whose body never completes (infinite inner loops,
-          // all paths return/throw in switch, etc).
-          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            const fromSeg = cpTracker.segment;
-            const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
-            if (fromSeg && fromSeg.reachable && loopExitAlive) {
-              const loopInfo = cpTracker.nearestLoopTarget;
-              if (loopInfo && loopInfo.loopIdx === idx) {
-                _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
+        // Code path exit: CfgGraph events (additive or exclusive) + CPTracker (fallback)
+        if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, true);
+        if (!_useCfgGraph && hasCodePath) {
+          if (_branchEnterTagSet.has(tag)) {
+            if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+              const fromSeg = cpTracker.segment;
+              const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
+              if (fromSeg && fromSeg.reachable && loopExitAlive) {
+                const loopInfo = cpTracker.nearestLoopTarget;
+                if (loopInfo && loopInfo.loopIdx === idx) {
+                  _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
+                }
+              }
+              cpTracker.exitLoop();
+              cpTracker.popBreakable();
+            } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+              cpTracker.popBreakable();
+            }
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) _segEndEvent(oldSeg);
+            const nv4 = nodeView(ast, idx);
+            const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nv4.alternate != null) ||
+              (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
+              (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
+              (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nv4));
+            const seg = cpTracker.exitBranch(hasAllBranches);
+            if (seg && seg.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+              if (seg.reachable && ast._nodeReachable) {
+                const nextEvI2 = i + 1;
+                if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
+                  if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
+                }
               }
             }
-            cpTracker.exitLoop();
-            cpTracker.popBreakable();
-          } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
-            cpTracker.popBreakable();
+            _segStartOrUnreachEvent(seg);
           }
-          const oldSeg = cpTracker.segment;
-          if (oldSeg) _segEndEvent(oldSeg);
-          const nv4 = nodeView(ast, idx);
-          const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nv4.alternate != null) ||
-            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nv4.handler != null) ||
-            (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
-            (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nv4));
-          const seg = cpTracker.exitBranch(hasAllBranches);
-          if (seg && seg.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-            // Also use the precomputed reachability from the Zig parser
-            if (seg.reachable && ast._nodeReachable) {
-              const nextEvI2 = i + 1;
-              if (nextEvI2 < evCount && events[nextEvI2] >= 0) {
-                if (!ast._nodeReachable[events[nextEvI2]]) seg.reachable = false;
-              }
-            }
+          if (CODE_PATH_TYPES.has(tn)) {
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) _segEndEvent(oldSeg);
+            invokeCodePathHandlers('onCodePathEnd', idx);
+            cpTracker.exitFunction();
+            const outerSeg = cpTracker.segment;
+            if (outerSeg) _segStartOrUnreachEvent(outerSeg);
           }
-          _segStartOrUnreachEvent(seg);
         }
-        if (hasCodePath && CODE_PATH_TYPES.has(tn)) {
-          const oldSeg = cpTracker.segment;
-          if (oldSeg) _segEndEvent(oldSeg);
-          // Fire onCodePathEnd BEFORE exitFunction — rule needs to see the function's codePath
-          invokeCodePathHandlers('onCodePathEnd', idx);
-          cpTracker.exitFunction();
-          // Restore outer segment
-          const outerSeg = cpTracker.segment;
-          if (outerSeg) _segStartOrUnreachEvent(outerSeg);
-        }
-        // Fire CfgGraph exit events (multi-segment graph from Zig)
-        if (_useCfgGraph) _fireCfgEvents(idx, true);
         if ((_selectorTagArr && _selectorTagArr[tag]) || _hasUniversalExit) invokeSelectorHandlers(idx, true);
       }
     }
@@ -5109,54 +5095,56 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
-      if (flags & FLAG_CODEPATH_ENTER) {
-        const outerSeg = cpTracker.segment;
-        if (outerSeg) _segEndEvent(outerSeg);
-        const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
-        invokeCodePathHandlers('onCodePathStart', idx);
-        if (_segStartH) _dispatchSeg(_segStartH, segment);
-      }
-      // Branch enter (flag-based: no string lookups in hot path)
-      if (flags & FLAG_BRANCH_ENTER) {
-        if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-          const oldSeg3 = cpTracker.segment;
-          if (oldSeg3) _segEndEvent(oldSeg3);
-          const { targetSeg } = cpTracker.enterLoop(idx);
-          if (_segStartH) {
-            const loopNode = nodeView(ast, idx);
-            const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
-              : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
-              : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
-              : loopNode.test;
-            _dispatchSeg(_segStartH, targetSeg, targetNode || loopNode);
+      // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
+      if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, false);
+      if (!_useCfgGraph) {
+        if (flags & FLAG_CODEPATH_ENTER) {
+          const outerSeg = cpTracker.segment;
+          if (outerSeg) _segEndEvent(outerSeg);
+          const { segment } = cpTracker.enterFunction(nodeView(ast, idx));
+          invokeCodePathHandlers('onCodePathStart', idx);
+          if (_segStartH) _dispatchSeg(_segStartH, segment);
+        }
+        if (flags & FLAG_BRANCH_ENTER) {
+          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+            const oldSeg3 = cpTracker.segment;
+            if (oldSeg3) _segEndEvent(oldSeg3);
+            const { targetSeg } = cpTracker.enterLoop(idx);
+            if (_segStartH) {
+              const loopNode = nodeView(ast, idx);
+              const targetNode = loopNode.type === 'DoWhileStatement' ? loopNode.body
+                : (loopNode.type === 'ForInStatement' || loopNode.type === 'ForOfStatement') ? loopNode.left
+                : (loopNode.type === 'ForStatement') ? (loopNode.update || loopNode.test || loopNode.body)
+                : loopNode.test;
+              _dispatchSeg(_segStartH, targetSeg, targetNode || loopNode);
+            }
+          }
+          const _isSwitchOpt = _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag);
+          cpTracker.enterBranch(_isSwitchOpt);
+          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+            cpTracker.pushBreakable('loop');
+          } else if (_isSwitchOpt) {
+            cpTracker.pushBreakable('switch');
           }
         }
-        const _isSwitchOpt = _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag);
-        cpTracker.enterBranch(_isSwitchOpt);
-        if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-          cpTracker.pushBreakable('loop');
-        } else if (_isSwitchOpt) {
-          cpTracker.pushBreakable('switch');
-          // Defer markUnreachable until after handler dispatch (see fast path)
+        if (flags & FLAG_CATCH_CASE) {
+          const oldSeg2 = cpTracker.segment;
+          if (oldSeg2) _segEndEvent(oldSeg2);
+          const seg2 = cpTracker.nextBranch();
+          if (seg2) _segStartOrUnreachEvent(seg2);
         }
-      }
-      if (flags & FLAG_CATCH_CASE) {
-        const oldSeg2 = cpTracker.segment;
-        if (oldSeg2) _segEndEvent(oldSeg2);
-        const seg2 = cpTracker.nextBranch();
-        if (seg2) _segStartOrUnreachEvent(seg2);
-      }
-      if (elseStartNodes && elseStartNodes[idx]) {
-        const oldSeg2 = cpTracker.segment;
-        if (oldSeg2) _segEndEvent(oldSeg2);
-        const seg2 = cpTracker.nextBranch();
-        if (seg2) _segStartOrUnreachEvent(seg2);
+        if (elseStartNodes && elseStartNodes[idx]) {
+          const oldSeg2 = cpTracker.segment;
+          if (oldSeg2) _segEndEvent(oldSeg2);
+          const seg2 = cpTracker.nextBranch();
+          if (seg2) _segStartOrUnreachEvent(seg2);
+        }
       }
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
-      // Deferred switch markUnreachable (optimized path)
-      if (hasCodePath && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+      // Deferred switch markUnreachable (CPTracker only)
+      if (hasCodePath && !_useCfgGraph && _cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
         const oldSegSwitch = cpTracker.segment;
         if (oldSegSwitch) _segEndEvent(oldSegSwitch);
         cpTracker.markUnreachable();
@@ -5269,77 +5257,75 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-      // Terminators and branch exit (flag-based: no string lookups in hot path)
-      if (flags & FLAG_TERMINATOR) {
-        const nv = nodeView(ast, idx);
-        // ContinueStatement → fire onCodePathSegmentLoop before marking unreachable
-        if (_segLoopH && nv.type === 'ContinueStatement') {
-          const fromSeg = cpTracker.segment;
-          const loopInfo = cpTracker.nearestLoopTarget;
-          if (fromSeg && fromSeg.reachable && loopInfo) {
-            _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv);
+      // Code path exit: CfgGraph events (additive or exclusive) + CPTracker (fallback)
+      if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, true);
+      if (!_useCfgGraph) {
+        if (flags & FLAG_TERMINATOR) {
+          const nv = nodeView(ast, idx);
+          if (_segLoopH && nv.type === 'ContinueStatement') {
+            const fromSeg = cpTracker.segment;
+            const loopInfo = cpTracker.nearestLoopTarget;
+            if (fromSeg && fromSeg.reachable && loopInfo) {
+              _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nv);
+            }
+          }
+          if (nv.type === 'BreakStatement' && !nv.label && cpTracker.breakTarget === 'switch') {
+            cpTracker.markSwitchBranchReachable();
+          }
+          if (nv.type === 'ReturnStatement') {
+            const seg = cpTracker.segment;
+            if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
+          } else if (nv.type === 'ThrowStatement') {
+            const seg = cpTracker.segment;
+            if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
+          }
+          {
+            const oldSeg = cpTracker.segment;
+            if (oldSeg) _segEndEvent(oldSeg);
+            cpTracker.markUnreachable();
+            if (_unreachStartH) _dispatchSeg(_unreachStartH, cpTracker.segment);
           }
         }
-        // BreakStatement targeting a switch: mark switch branch as reachable
-        if (nv.type === 'BreakStatement' && !nv.label && cpTracker.breakTarget === 'switch') {
-          cpTracker.markSwitchBranchReachable();
-        }
-        // Track returned/thrown segments for codePath.returnedSegments/thrownSegments
-        if (nv.type === 'ReturnStatement') {
-          const seg = cpTracker.segment;
-          if (seg && cpTracker._codePath) cpTracker._codePath.returnedSegments.push(seg);
-        } else if (nv.type === 'ThrowStatement') {
-          const seg = cpTracker.segment;
-          if (seg && cpTracker._codePath) cpTracker._codePath.thrownSegments.push(seg);
-        }
-        // All terminators mark subsequent code unreachable — including labeled break/continue.
-        {
+        if (flags & FLAG_BRANCH_EXIT) {
+          if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+            const fromSeg = cpTracker.segment;
+            const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
+            if (fromSeg && fromSeg.reachable && loopExitAlive) {
+              const loopInfo = cpTracker.nearestLoopTarget;
+              if (loopInfo && loopInfo.loopIdx === idx) {
+                _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
+              }
+            }
+            cpTracker.exitLoop();
+            cpTracker.popBreakable();
+          } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
+            cpTracker.popBreakable();
+          }
           const oldSeg = cpTracker.segment;
           if (oldSeg) _segEndEvent(oldSeg);
-          cpTracker.markUnreachable();
-          if (_unreachStartH) _dispatchSeg(_unreachStartH, cpTracker.segment);
-        }
-      }
-      if (flags & FLAG_BRANCH_EXIT) {
-        // Fire onCodePathSegmentLoop BEFORE exitBranch for loops
-        if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-          const fromSeg = cpTracker.segment;
-          const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[idx] !== 0;
-          if (fromSeg && fromSeg.reachable && loopExitAlive) {
-            const loopInfo = cpTracker.nearestLoopTarget;
-            if (loopInfo && loopInfo.loopIdx === idx) {
-              _dispatchSegLoop(fromSeg, loopInfo.targetSeg, nodeView(ast, idx));
+          const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
+            (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
+            (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
+            (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nodeView(ast, idx)));
+          const seg2 = cpTracker.exitBranch(hasAllBranches);
+          if (seg2 && seg2.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
+            if (seg2.reachable && ast._nodeReachable) {
+              const nextEvIdx = i + 1;
+              if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
+                if (!ast._nodeReachable[dfsEvents[nextEvIdx]]) seg2.reachable = false;
+              }
             }
           }
-          cpTracker.exitLoop();
-          cpTracker.popBreakable();
-        } else if (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag)) {
-          cpTracker.popBreakable();
+          _segStartOrUnreachEvent(seg2);
         }
-        const oldSeg = cpTracker.segment;
-        if (oldSeg) _segEndEvent(oldSeg);
-        const hasAllBranches = (_ifStmtTagSet && _ifStmtTagSet.has(tag) && nodeView(ast, idx).alternate != null) ||
-          (_tryStmtTagSet && _tryStmtTagSet.has(tag) && nodeView(ast, idx).handler != null) ||
-          (_doWhileStmtTagSet && _doWhileStmtTagSet.has(tag)) ||
-          (_cachedSwitchTagSet && _cachedSwitchTagSet.has(tag) && _switchHasDefault(nodeView(ast, idx)));
-        const seg2 = cpTracker.exitBranch(hasAllBranches);
-        if (seg2 && seg2.reachable && _cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
-          if (seg2.reachable && ast._nodeReachable) {
-            const nextEvIdx = i + 1;
-            if (nextEvIdx < dfsCount && dfsEvents[nextEvIdx] >= 0) {
-              if (!ast._nodeReachable[dfsEvents[nextEvIdx]]) seg2.reachable = false;
-            }
-          }
+        if (flags & FLAG_CODEPATH_EXIT) {
+          const oldSeg = cpTracker.segment;
+          if (oldSeg) _segEndEvent(oldSeg);
+          invokeCodePathHandlers('onCodePathEnd', idx);
+          cpTracker.exitFunction();
+          const outerSeg = cpTracker.segment;
+          if (outerSeg) _segStartOrUnreachEvent(outerSeg);
         }
-        _segStartOrUnreachEvent(seg2);
-      }
-      if (flags & FLAG_CODEPATH_EXIT) {
-        const oldSeg = cpTracker.segment;
-        if (oldSeg) _segEndEvent(oldSeg);
-        invokeCodePathHandlers('onCodePathEnd', idx);
-        cpTracker.exitFunction();
-        const outerSeg = cpTracker.segment;
-        if (outerSeg) _segStartOrUnreachEvent(outerSeg);
       }
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
     }
