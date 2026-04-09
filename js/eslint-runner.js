@@ -4517,7 +4517,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const _cfgGraph = ast._cfgGraph || null;
     let _cfgEnterEvents = null; // Map<nodeIdx, [{type, data1, data2}]>
     let _cfgExitEvents = null;
-    if (_cfgGraph && _cfgGraph._events && hasCodePath) {
+    const _hasAnyCodePathHandler = hasCodePath ||
+      visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
+      visitorMap.has('onCodePathSegmentLoop') ||
+      visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
+    if (_cfgGraph && _cfgGraph._events && _hasAnyCodePathHandler) {
       _cfgEnterEvents = new Map();
       _cfgExitEvents = new Map();
       const evs = _cfgGraph._events;
@@ -4536,9 +4540,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Clean-cut mode: CfgGraph fully replaces CPTracker. Disabled pending Zig event tuning.
       // _useCfgGraph = true;
       // Additive mode: CfgGraph events fire alongside CPTracker (+2 tests).
-      // Additive mode temporarily disabled — causes 1 regression in no-this-before-super
-      // due to dual segment IDs. Enable when Zig events are tuned for clean-cut mode.
-      // _cfgGraphAdditive = true;
+      // Clean-cut mode disabled: CodePathBuilder needs more segment events
+      // (if/else fork, loop condition, switch case segments) to match ESLint.
+      // Currently only emits root + loop back-edge segments.
+      // _useCfgGraph = true;
     }
 
     // CfgGraph state: track current codepath for currentSegments updates

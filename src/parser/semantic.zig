@@ -502,14 +502,14 @@ pub const SemanticAnalyzer = struct {
             // ── Scope-creating statements ──────────────────
             .block_stmt => try self.visitBlockStmt(idx, data),
             .for_stmt => {
-                const for_body_alive = try self.visitForStmt(data);
+                const for_body_alive = try self.visitForStmt(idx, data);
                 const fi = @intFromEnum(idx);
                 if (fi < self.loop_exit_reachable.len) {
                     self.loop_exit_reachable[fi] = if (for_body_alive) 1 else 0;
                 }
             },
             .for_in_stmt, .for_of_stmt, .for_await_of_stmt => {
-                const fiof_body_alive = try self.visitForInOfStmt(data, tag);
+                const fiof_body_alive = try self.visitForInOfStmt(idx, data, tag);
                 const fiof_i = @intFromEnum(idx);
                 if (fiof_i < self.loop_exit_reachable.len) {
                     self.loop_exit_reachable[fiof_i] = if (fiof_body_alive) 1 else 0;
@@ -1142,7 +1142,7 @@ pub const SemanticAnalyzer = struct {
             std.mem.eql(u8, self.ast.source[start..start + 4], "true");
     }
 
-    fn visitForStmt(self: *SemanticAnalyzer, data: Node.Data) !bool {
+    fn visitForStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !bool {
         // for (init; cond; update) body
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
@@ -1159,7 +1159,7 @@ pub const SemanticAnalyzer = struct {
             self.breakable_depth = depth + 1;
         }
         try self.visitNode(data.rhs);
-        if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(data.rhs);
+        if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
         if (depth < self.break_hit.len) self.breakable_depth = depth;
         const body_alive = self.cfg_alive;
@@ -1172,12 +1172,12 @@ pub const SemanticAnalyzer = struct {
         } else {
             self.cfg_alive = alive_pre;
         }
-        if (self.cpb_initialized) try self.cpb.popLoopContext(data.rhs);
+        if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
         self.leaveScope();
         return body_alive;
     }
 
-    fn visitForInOfStmt(self: *SemanticAnalyzer, data: Node.Data, tag: Node.Tag) !bool {
+    fn visitForInOfStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data, tag: Node.Tag) !bool {
         const fiof_data = self.ast.extraData(ForInOfData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, fiof_data.body);
         const alive_pre = self.cfg_alive;
@@ -1198,10 +1198,10 @@ pub const SemanticAnalyzer = struct {
         }
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
-        if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(fiof_data.body);
+        if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
         const body_alive = self.cfg_alive;
         self.cfg_alive = alive_pre;
-        if (self.cpb_initialized) try self.cpb.popLoopContext(fiof_data.body);
+        if (self.cpb_initialized) try self.cpb.popLoopContext(idx);
         self.leaveScope();
         return body_alive;
     }
