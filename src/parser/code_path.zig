@@ -563,7 +563,7 @@ pub const CodePathBuilder = struct {
 
         // Create fork context (save current as upper for restore on exitCodePath)
         const fc = try self.allocator.create(ForkContext);
-        const upper_fc: ?*ForkContext = if (self.current_codepath != NONE_CP) self.fork_context else null;
+        const upper_fc: ?*ForkContext = if (upper != NONE_CP) self.fork_context else null;
         fc.* = ForkContext.init(self.allocator, upper_fc, 1);
         const seg_slice = try self.allocator.alloc(SegmentId, 1);
         seg_slice[0] = initial_seg;
@@ -601,7 +601,7 @@ pub const CodePathBuilder = struct {
     pub fn exitCodePath(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
 
-        // End current segments (post phase — fires AFTER exit handlers, matching ESLint's postprocess)
+        // End current segments (post phase — fires AFTER exit handlers)
         const head = self.fork_context.head();
         for (head) |seg_id| {
             if (seg_id != NONE_SEG) {

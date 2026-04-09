@@ -865,12 +865,36 @@ pub const SemanticAnalyzer = struct {
             .property_def => {
                 // Non-computed property key is a definition, not a reference.
                 // Only visit the initializer (rhs).
-                try self.visitNode(data.rhs);
+                // Class field initializers have their own code path.
+                // Use the initializer node for CP events so computed keys stay in
+                // the containing code path.
+                if (data.rhs != .none and self.cpb_initialized) {
+                    const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
+                    const saved_alive = self.cfg_alive;
+                    self.cfg_alive = true;
+                    try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
+                    try self.visitNode(data.rhs);
+                    try self.cpb.exitCodePath(rhs_idx);
+                    self.cfg_alive = saved_alive;
+                } else {
+                    try self.visitNode(data.rhs);
+                }
             },
             .computed_property_def => {
                 // Computed key is an expression — visit both key and initializer.
+                // Key is in the containing code path; initializer gets its own.
                 try self.visitNode(data.lhs);
-                try self.visitNode(data.rhs);
+                if (data.rhs != .none and self.cpb_initialized) {
+                    const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
+                    const saved_alive = self.cfg_alive;
+                    self.cfg_alive = true;
+                    try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
+                    try self.visitNode(data.rhs);
+                    try self.cpb.exitCodePath(rhs_idx);
+                    self.cfg_alive = saved_alive;
+                } else {
+                    try self.visitNode(data.rhs);
+                }
             },
 
             // ── Formal parameters (handled by fn visitors) ─
@@ -1242,8 +1266,13 @@ pub const SemanticAnalyzer = struct {
 
     fn visitStaticBlock(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         _ = try self.enterScope(.static_block, idx);
+        const saved_alive = self.cfg_alive;
+        self.cfg_alive = true;
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .class_static_block, idx);
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
+        if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
+        self.cfg_alive = saved_alive;
         self.leaveScope();
     }
 
