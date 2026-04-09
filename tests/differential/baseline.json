@@ -42,8 +42,8 @@
     },
     "array-callback-return": {
       "runner": {
-        "fn": 0,
-        "fp": 3,
+        "fn": 2,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -211,8 +211,8 @@
     },
     "complexity": {
       "runner": {
-        "fn": 6,
-        "fp": 1,
+        "fn": 32,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -238,7 +238,7 @@
     "consistent-return": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -263,8 +263,8 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 24,
-        "fp": 4,
+        "fn": 40,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -471,7 +471,7 @@
     },
     "getter-return": {
       "runner": {
-        "fn": 0,
+        "fn": 15,
         "fp": 0,
         "crash": 0
       },
@@ -1147,7 +1147,7 @@
     },
     "no-constructor-return": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -1498,8 +1498,8 @@
     },
     "no-fallthrough": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 5,
+        "fp": 18,
         "crash": 0
       },
       "native": {
@@ -1641,8 +1641,8 @@
     },
     "no-invalid-this": {
       "runner": {
-        "fn": 3,
-        "fp": 9,
+        "fn": 6,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2486,8 +2486,8 @@
     },
     "no-this-before-super": {
       "runner": {
-        "fn": 11,
-        "fp": 1,
+        "fn": 23,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2616,8 +2616,8 @@
     },
     "no-unreachable-loop": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 232,
         "crash": 0
       },
       "native": {
@@ -2629,8 +2629,8 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 5,
-        "fp": 3,
+        "fn": 18,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -2850,8 +2850,8 @@
     },
     "no-useless-return": {
       "runner": {
-        "fn": 0,
-        "fp": 16,
+        "fn": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
