@@ -4494,6 +4494,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const _cfgGraph = ast._cfgGraph || null;
     let _cfgEnterEvents = null; // Map<nodeIdx, [{type, data1, data2}]>
     let _cfgExitEvents = null;
+    let _cfgPostEvents = null;
     const _hasAnyCodePathHandler = hasCodePath ||
       visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
       visitorMap.has('onCodePathSegmentLoop') ||
@@ -4502,20 +4503,23 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _cfgEnterEvents = new Map();
       _cfgExitEvents = new Map();
       const evs = _cfgGraph._events;
-      const EXIT_FLAG = 0x80000000;
+      const EXIT_FLAG = 0x40000000;
+      const POST_FLAG = 0x80000000;
+      const NODE_MASK = 0x3FFFFFFF;
+      _cfgPostEvents = new Map();
       for (let ei = 0; ei < evs.length; ei += 4) {
         const evType = evs[ei];
         const nodeRaw = evs[ei + 1];
         const d1 = evs[ei + 2];
         const d2 = evs[ei + 3];
-        // is_exit is encoded in bit 31 of the node field
+        const isPost = (nodeRaw & POST_FLAG) !== 0;
         const isExit = (nodeRaw & EXIT_FLAG) !== 0;
-        const nodeIdx = nodeRaw & ~EXIT_FLAG;
-        const map = isExit ? _cfgExitEvents : _cfgEnterEvents;
+        const nodeIdx = nodeRaw & NODE_MASK;
+        const map = isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
         if (!map.has(nodeIdx)) map.set(nodeIdx, []);
         map.get(nodeIdx).push({ type: evType, d1, d2 });
       }
-      // _useCfgGraph = true;
+      _useCfgGraph = true;
     }
 
     // CfgGraph state: track current codepath for currentSegments updates
@@ -4523,9 +4527,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const _cfgCpStack = [];
 
     // Fire CfgGraph events for a given node (enter or exit)
-    function _fireCfgEvents(nodeIdx, isExit) {
+    function _fireCfgEvents(nodeIdx, phase) {
+      // phase: 0=enter, 1=exit (before handler), 2=post (after handler)
       if (!_useCfgGraph) return;
-      const map = isExit ? _cfgExitEvents : _cfgEnterEvents;
+      const map = phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
       const evts = map.get(nodeIdx);
       if (!evts) return;
       const node = nodeView(ast, nodeIdx);
@@ -4642,7 +4647,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-        if (_useCfgGraph) _fireCfgEvents(idx, false);
+        if (_useCfgGraph) _fireCfgEvents(idx, 0);
         if (!_useCfgGraph && hasCodePath) {
           if (CODE_PATH_TYPES.has(tn)) {
             const outerSeg = cpTracker.segment;
@@ -4851,7 +4856,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
         // CfgGraph: code path exit events BEFORE rule exit handlers (ESLint order)
-        if (_useCfgGraph) _fireCfgEvents(idx, true);
+        if (_useCfgGraph) _fireCfgEvents(idx, 1);
         const exit = isMethodNode ? visitorMap.get(tn + ':exit') : _tagExitHandlers[tag];
         if (exit) {
           const node = nodeView(ast, idx);
@@ -4926,6 +4931,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if ((_selectorTagArr && _selectorTagArr[tag]) || _hasUniversalExit) invokeSelectorHandlers(idx, true);
+        if (_useCfgGraph) _fireCfgEvents(idx, 2);
       }
     }
     return;
@@ -5076,7 +5082,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-      if (_useCfgGraph) _fireCfgEvents(idx, false);
+      if (_useCfgGraph) _fireCfgEvents(idx, 0);
       if (!_useCfgGraph) {
         if (flags & FLAG_CODEPATH_ENTER) {
           const outerSeg = cpTracker.segment;
@@ -5234,7 +5240,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
       // CfgGraph: code path exit events BEFORE rule exit handlers
-      if (_useCfgGraph) _fireCfgEvents(idx, true);
+      if (_useCfgGraph) _fireCfgEvents(idx, 1);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
@@ -5309,6 +5315,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
     }
+      if (_useCfgGraph) _fireCfgEvents(idx, 2);
   }
 
   // ── Execute file-level exit rules (after DFS) ─────────────────

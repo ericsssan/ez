@@ -82,15 +82,22 @@ pub const EventType = enum(u32) {
     seg_loop = 6,
 };
 
-/// Bit 31 of the serialized node field indicates the event fires at node EXIT (1) vs ENTER (0).
-pub const EVENT_EXIT_FLAG: u32 = 0x80000000;
+/// Bits 30-31 of the serialized node field encode the event phase:
+///   00 = fire at node ENTER (before enter handler)
+///   01 = fire at node EXIT (before exit handler)
+///   10 = fire at node POST (after exit handler)
+pub const EVENT_EXIT_FLAG: u32 = 0x40000000;
+pub const EVENT_POST_FLAG: u32 = 0x80000000;
+pub const EVENT_NODE_MASK: u32 = 0x3FFFFFFF;
+
+pub const EventPhase = enum(u2) { enter = 0, exit = 1, post = 2 };
 
 pub const Event = struct {
     type: EventType,
     node: NodeIndex,
     data1: u32,
     data2: u32,
-    is_exit: bool, // true = fire at node exit, false = fire at node enter
+    phase: EventPhase,
 };
 
 // ── ForkContext ───────────────────────────────────────────────────
@@ -576,23 +583,23 @@ pub const CodePathBuilder = struct {
             .node = node,
             .data1 = cp_id,
             .data2 = 0,
-            .is_exit = false,
+            .phase = .enter,
         });
 
         // Mark initial segment used and emit segment start
         try self.markUsed(initial_seg);
-        try self.emitSegStart(initial_seg, node, false);
+        try self.emitSegStart(initial_seg, node, .enter);
     }
 
     /// Exit the current code path.
     pub fn exitCodePath(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
 
-        // End current segments
+        // End current segments (post phase — fires AFTER exit handlers, matching ESLint's postprocess)
         const head = self.fork_context.head();
         for (head) |seg_id| {
             if (seg_id != NONE_SEG) {
-                try self.emitSegEnd(seg_id, node, true);
+                try self.emitSegEnd(seg_id, node, .post);
             }
         }
 
@@ -604,13 +611,13 @@ pub const CodePathBuilder = struct {
         }
         cp.final_end = @intCast(self.cp_final_pool.items.len);
 
-        // Emit codepath end (exit phase)
+        // Emit codepath end (post phase — fires AFTER exit handlers)
         try self.events.append(self.allocator, .{
             .type = .codepath_end,
             .node = node,
             .data1 = cp_id,
             .data2 = 0,
-            .is_exit = true,
+            .phase = .post,
         });
 
         // Restore upper code path
@@ -622,7 +629,7 @@ pub const CodePathBuilder = struct {
 
     // ── Segment event emission ───────────────────────────────
 
-    fn emitSegStart(self: *CodePathBuilder, seg_id: SegmentId, node: NodeIndex, is_exit: bool) !void {
+    fn emitSegStart(self: *CodePathBuilder, seg_id: SegmentId, node: NodeIndex, phase: EventPhase) !void {
         if (seg_id == NONE_SEG) return;
         const seg = self.segments.items[seg_id];
         try self.events.append(self.allocator, .{
@@ -630,11 +637,11 @@ pub const CodePathBuilder = struct {
             .node = node,
             .data1 = seg_id,
             .data2 = 0,
-            .is_exit = is_exit,
+            .phase = phase,
         });
     }
 
-    fn emitSegEnd(self: *CodePathBuilder, seg_id: SegmentId, node: NodeIndex, is_exit: bool) !void {
+    fn emitSegEnd(self: *CodePathBuilder, seg_id: SegmentId, node: NodeIndex, phase: EventPhase) !void {
         if (seg_id == NONE_SEG) return;
         const seg = self.segments.items[seg_id];
         try self.events.append(self.allocator, .{
@@ -642,7 +649,7 @@ pub const CodePathBuilder = struct {
             .node = node,
             .data1 = seg_id,
             .data2 = 0,
-            .is_exit = is_exit,
+            .phase = phase,
         });
     }
 
@@ -652,27 +659,27 @@ pub const CodePathBuilder = struct {
             .node = node,
             .data1 = from_seg,
             .data2 = to_seg,
-            .is_exit = true, // loop events always fire at exit
+            .phase = .exit, // loop events always fire at exit
         });
     }
 
     // ── Forward head segments (emit end + start for new segments) ─
 
-    pub fn forwardCurrentToHead(self: *CodePathBuilder, node: NodeIndex, is_exit: bool) !void {
+    pub fn forwardCurrentToHead(self: *CodePathBuilder, node: NodeIndex, phase: EventPhase) !void {
         const head = self.fork_context.head();
         for (head) |seg_id| {
             if (seg_id != NONE_SEG) {
                 try self.markUsed(seg_id);
-                try self.emitSegStart(seg_id, node, is_exit);
+                try self.emitSegStart(seg_id, node, phase);
             }
         }
     }
 
-    pub fn leaveFromCurrentSegment(self: *CodePathBuilder, node: NodeIndex, is_exit: bool) !void {
+    pub fn leaveFromCurrentSegment(self: *CodePathBuilder, node: NodeIndex, phase: EventPhase) !void {
         const head = self.fork_context.head();
         for (head) |seg_id| {
             if (seg_id != NONE_SEG) {
-                try self.emitSegEnd(seg_id, node, is_exit);
+                try self.emitSegEnd(seg_id, node, phase);
             }
         }
     }
@@ -698,7 +705,7 @@ pub const CodePathBuilder = struct {
         self.choice_context = ctx.upper;
 
         // End current segments
-        try self.leaveFromCurrentSegment(node, true);
+        try self.leaveFromCurrentSegment(node, .exit);
 
         // Merge true and false paths
         var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
@@ -711,7 +718,7 @@ pub const CodePathBuilder = struct {
         }
 
         // Start merged segment
-        try self.forwardCurrentToHead(node, true);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     pub fn makeIfConsequent(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -729,8 +736,8 @@ pub const CodePathBuilder = struct {
         const new_segs = try ctx.true_fork.makeNext(0, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
         // End old segments, start new
-        try self.leaveFromCurrentSegment(node, false);
-        try self.forwardCurrentToHead(node, false);
+        try self.leaveFromCurrentSegment(node, .enter);
+        try self.forwardCurrentToHead(node, .enter);
     }
 
     pub fn makeIfAlternate(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -742,8 +749,8 @@ pub const CodePathBuilder = struct {
         const new_segs = try ctx.false_fork.makeNext(0, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
         // End old segments, start new
-        try self.leaveFromCurrentSegment(node, false);
-        try self.forwardCurrentToHead(node, false);
+        try self.leaveFromCurrentSegment(node, .enter);
+        try self.forwardCurrentToHead(node, .enter);
     }
 
     // ── Switch ───────────────────────────────────────────────
@@ -788,10 +795,10 @@ pub const CodePathBuilder = struct {
         ctx.fork_count += 1;
 
         // End current segments and start new ones for the case body
-        try self.leaveFromCurrentSegment(node, false);
+        try self.leaveFromCurrentSegment(node, .enter);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.add(new_segs, self);
-        try self.forwardCurrentToHead(node, false);
+        try self.forwardCurrentToHead(node, .enter);
     }
 
     // ── Try/catch/finally ────────────────────────────────────
@@ -830,14 +837,14 @@ pub const CodePathBuilder = struct {
         ctx.position = .catch_body;
 
         // End try body segments, start catch segments
-        try self.leaveFromCurrentSegment(node, false);
+        try self.leaveFromCurrentSegment(node, .enter);
         // Thrown fork context has segments from throw statements in try block
         const thrown_segs = if (!ctx.thrown_fork.empty())
             try ctx.thrown_fork.makeNext(0, -1, self)
         else
             try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(thrown_segs, self);
-        try self.forwardCurrentToHead(node, false);
+        try self.forwardCurrentToHead(node, .enter);
     }
 
     pub fn makeFinallyBlock(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -845,10 +852,10 @@ pub const CodePathBuilder = struct {
         ctx.last_of_catch_reachable = self.fork_context.reachable(self);
         ctx.position = .finally_body;
 
-        try self.leaveFromCurrentSegment(node, false);
+        try self.leaveFromCurrentSegment(node, .enter);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
-        try self.forwardCurrentToHead(node, false);
+        try self.forwardCurrentToHead(node, .enter);
     }
 
     // ── Loops ────────────────────────────────────────────────
@@ -869,10 +876,10 @@ pub const CodePathBuilder = struct {
 
         try self.pushChoiceContext(.loop, false);
         // Emit segment transition: end current, start loop body segment
-        try self.leaveFromCurrentSegment(node, false);
+        try self.leaveFromCurrentSegment(node, .enter);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
-        try self.forwardCurrentToHead(node, false);
+        try self.forwardCurrentToHead(node, .enter);
     }
 
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -950,10 +957,10 @@ pub const CodePathBuilder = struct {
         }
 
         // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, true);
+        try self.leaveFromCurrentSegment(node, .exit);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, true);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     pub fn makeContinue(self: *CodePathBuilder, label: ?[]const u8, node: NodeIndex) !void {
@@ -974,10 +981,10 @@ pub const CodePathBuilder = struct {
         }
 
         // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, true);
+        try self.leaveFromCurrentSegment(node, .exit);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, true);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     // ── Return/Throw ─────────────────────────────────────────
@@ -997,10 +1004,10 @@ pub const CodePathBuilder = struct {
         cp.returned_end = @intCast(self.cp_returned_pool.items.len);
 
         // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, true);
+        try self.leaveFromCurrentSegment(node, .exit);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, true);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     pub fn makeThrow(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -1026,10 +1033,10 @@ pub const CodePathBuilder = struct {
         }
 
         // Make subsequent code unreachable
-        try self.leaveFromCurrentSegment(node, true);
+        try self.leaveFromCurrentSegment(node, .exit);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, true);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     // ── Fork context management ──────────────────────────────
