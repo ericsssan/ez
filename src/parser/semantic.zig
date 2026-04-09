@@ -568,17 +568,17 @@ pub const SemanticAnalyzer = struct {
             => try self.visitAssignment(data, .read_write),
             .logical_and_assign => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_and, false);
-                try self.visitAssignment(data, .read_write);
+                try self.visitLogicalAssignment(data, .read_write);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .logical_or_assign => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_or, false);
-                try self.visitAssignment(data, .read_write);
+                try self.visitLogicalAssignment(data, .read_write);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .nullish_assign => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.nullish, false);
-                try self.visitAssignment(data, .read_write);
+                try self.visitLogicalAssignment(data, .read_write);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
 
@@ -1598,6 +1598,30 @@ pub const SemanticAnalyzer = struct {
                 // Inner identifiers are assignment targets → write references.
                 try self.visitLValueExpr(data.lhs);
             }
+        }
+        try self.visitNode(data.rhs);
+    }
+
+    /// Like visitAssignment but inserts a code path branch between LHS and RHS
+    /// for logical assignment operators (&&=, ||=, ??=).
+    fn visitLogicalAssignment(self: *SemanticAnalyzer, data: Node.Data, kind: ReferenceKind) !void {
+        if (data.lhs != .none) {
+            if (self.ast.nodeTag(data.lhs) == .identifier) {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+                const ref_id = try self.references.addReference(
+                    kind,
+                    data.lhs,
+                    self.current_scope,
+                );
+                self.resolveReference(name, ref_id);
+            } else {
+                try self.visitLValueExpr(data.lhs);
+            }
+        }
+        // Branch between LHS and RHS: RHS only executes if LHS short-circuit
+        // condition is met (truthy for &&=, falsy for ||=, nullish for ??=).
+        if (self.cpb_initialized and data.rhs != .none) {
+            try self.cpb.makeLogicalRight(@enumFromInt(@intFromEnum(data.rhs)));
         }
         try self.visitNode(data.rhs);
     }
