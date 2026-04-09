@@ -779,6 +779,15 @@ pub const CodePathBuilder = struct {
     pub fn popSwitchContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.switch_context orelse return;
         self.switch_context = ctx.upper;
+        // Merge switch-break segments into the choice context BEFORE merging.
+        // Switch break = reachable exit from the switch statement.
+        if (self.break_context) |bc| {
+            if (!bc.broken_fork.empty()) {
+                if (self.choice_context) |cc| {
+                    try cc.true_fork.addAll(&bc.broken_fork);
+                }
+            }
+        }
         try self.popChoiceContext(node);
         try self.popForkContext();
         self.popBreakContext();
@@ -1046,6 +1055,12 @@ pub const CodePathBuilder = struct {
     pub fn pushForkContext(self: *CodePathBuilder) !void {
         const new_fc = try self.allocator.create(ForkContext);
         new_fc.* = ForkContext.init(self.allocator, self.fork_context, self.fork_context.count);
+        // Carry over parent's current head so child operations can reference them as prev
+        const parent_head = self.fork_context.head();
+        if (parent_head.len > 0) {
+            const head_copy = try self.allocator.dupe(SegmentId, parent_head);
+            try new_fc.add(head_copy, self);
+        }
         self.fork_context = new_fc;
     }
 
