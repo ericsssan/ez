@@ -1498,7 +1498,7 @@
     },
     "no-fallthrough": {
       "runner": {
-        "fn": 3,
+        "fn": 1,
         "fp": 3,
         "crash": 0
       },
@@ -2616,7 +2616,7 @@
     },
     "no-unreachable-loop": {
       "runner": {
-        "fn": 27,
+        "fn": 26,
         "fp": 180,
         "crash": 0
       },

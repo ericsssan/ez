@@ -896,8 +896,34 @@ pub const CodePathBuilder = struct {
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.loop_context orelse return;
         self.loop_context = ctx.upper;
+        // Save break context's broken_fork BEFORE popping
+        const break_ctx = self.break_context;
         try self.popChoiceContext(node);
         self.popBreakContext();
+        // After both pops: merge break exits as reachable post-loop paths.
+        // Break exits the loop, so they flow AFTER the loop (not through back-edge).
+        if (break_ctx) |bc| {
+            if (!bc.broken_fork.empty()) {
+                // Create new reachable segments from the saved break segments
+                const broken_segs = try bc.broken_fork.makeNext(0, -1, self);
+                // Replace the current head (which may be unreachable from the merge)
+                // with a merge of current head + break exits
+                const current_head = self.fork_context.head();
+                if (current_head.len > 0) {
+                    // Check if current head is unreachable
+                    var any_reachable = false;
+                    for (current_head) |s| {
+                        if (s != NONE_SEG and self.segments.items[s].reachable) any_reachable = true;
+                    }
+                    if (!any_reachable) {
+                        // Current head is all unreachable — replace with break exits
+                        try self.fork_context.replaceHead(broken_segs, self);
+                        // Re-emit segment events for the new reachable head
+                        try self.forwardCurrentToHead(node, .exit);
+                    }
+                }
+            }
+        }
     }
 
     pub fn makeLoopBackEdge(self: *CodePathBuilder, node: NodeIndex) !void {
