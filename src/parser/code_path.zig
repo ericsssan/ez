@@ -860,7 +860,8 @@ pub const CodePathBuilder = struct {
 
     // ── Loops ────────────────────────────────────────────────
 
-    pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, node: NodeIndex) !void {
+    /// `target_node`: the loop's condition/body/update child node for isLoopingTarget matching.
+    pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, _: NodeIndex, target_node: NodeIndex) !void {
         try self.pushBreakContext(true, label);
         const break_ctx = self.break_context orelse unreachable;
 
@@ -876,10 +877,11 @@ pub const CodePathBuilder = struct {
 
         try self.pushChoiceContext(.loop, false);
         // Emit segment transition: end current, start loop body segment
-        try self.leaveFromCurrentSegment(node, .enter);
+        // Use target_node (test/body/update child) so isLoopingTarget matches
+        try self.leaveFromCurrentSegment(target_node, .enter);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
-        try self.forwardCurrentToHead(node, .enter);
+        try self.forwardCurrentToHead(target_node, .enter);
     }
 
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {

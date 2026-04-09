@@ -608,7 +608,7 @@ pub const SemanticAnalyzer = struct {
             .while_stmt => {
                 const alive_pre = self.cfg_alive;
                 if (self.cpb_initialized) {
-                    try self.cpb.pushLoopContext(.while_stmt, null, idx);
+                    try self.cpb.pushLoopContext(.while_stmt, null, idx, data.lhs); // target = test
                     self.cpb.setLoopContinueDest();
                 }
                 try self.visitNode(data.lhs); // condition
@@ -648,7 +648,7 @@ pub const SemanticAnalyzer = struct {
             .do_while_stmt => {
                 const alive_pre = self.cfg_alive;
                 if (self.cpb_initialized) {
-                    try self.cpb.pushLoopContext(.do_while_stmt, null, idx);
+                    try self.cpb.pushLoopContext(.do_while_stmt, null, idx, data.lhs); // target = body
                     self.cpb.setLoopEntrySegments();
                 }
                 const depth = self.breakable_depth;
@@ -1092,7 +1092,11 @@ pub const SemanticAnalyzer = struct {
         const for_data = self.ast.extraData(ForData, @intFromEnum(data.lhs));
         _ = try self.enterScope(.block, data.rhs);
         const alive_pre = self.cfg_alive;
-        if (self.cpb_initialized) try self.cpb.pushLoopContext(.for_stmt, null, idx);
+        if (self.cpb_initialized) {
+            // target = update || condition || body
+            const target = if (for_data.update != .none) for_data.update else if (for_data.condition != .none) for_data.condition else data.rhs;
+            try self.cpb.pushLoopContext(.for_stmt, null, idx, target);
+        }
         try self.visitNode(for_data.init);
         if (self.cpb_initialized) self.cpb.setLoopContinueDest();
         try self.visitNode(for_data.condition);
@@ -1132,7 +1136,7 @@ pub const SemanticAnalyzer = struct {
             else => .for_in_stmt,
         };
         if (self.cpb_initialized) {
-            try self.cpb.pushLoopContext(loop_type, null, idx);
+            try self.cpb.pushLoopContext(loop_type, null, idx, fiof_data.binding); // target = left
             self.cpb.setLoopContinueDest();
         }
         const binding_tag = self.ast.nodeTag(fiof_data.binding);

@@ -4567,15 +4567,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             const seg = _cfgGraph.segment(ev.d1);
             if (seg) {
               if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg];
-              // For loop nodes, pass the loop's target child as the event node
-              // so isLoopingTarget(node) returns true in rules like no-unreachable-loop
-              let segNode = node;
-              const nt = node.type;
-              if (nt === 'WhileStatement') segNode = node.test;
-              else if (nt === 'DoWhileStatement') segNode = node.body;
-              else if (nt === 'ForStatement') segNode = node.update || node.test || node.body;
-              else if (nt === 'ForInStatement' || nt === 'ForOfStatement') segNode = node.left;
-              if (_segStartH) _dispatchSeg(_segStartH, seg, segNode || node);
+              if (_segStartH) _dispatchSeg(_segStartH, seg, node);
             }
             break;
           }
