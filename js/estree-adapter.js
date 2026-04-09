@@ -147,6 +147,9 @@ const H = {
   SORTED_BY_START_OFFSET: 132,
 };
 
+// CfgGraphHeader: 25 u32 fields = 100 bytes
+const CFG_GRAPH_HEADER_SIZE = 100;
+
 // SemanticHeader field offsets (byte offsets from semOff)
 const SH = {
   SCOPE_COUNT: 0,
@@ -313,8 +316,8 @@ class AstView {
     // DFS traversal orders (v4 — pre-order and post-order, computed in Zig)
     const preOff  = dv.getUint32(H.PRE_ORDER_OFFSET,  true);
     const postOff = dv.getUint32(H.POST_ORDER_OFFSET, true);
-    this._preOrder  = preOff  > 0 ? new Int32Array(buffer, preOff,  this.nodeCount) : null;
-    this._postOrder = postOff > 0 ? new Int32Array(buffer, postOff, this.nodeCount) : null;
+    this._preOrder  = preOff  > 0 ? new Uint32Array(buffer, preOff,  this.nodeCount) : null;
+    this._postOrder = postOff > 0 ? new Uint32Array(buffer, postOff, this.nodeCount) : null;
 
     // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig)
     // Copy immediately: the Zig allocator reuses this memory region during subsequent
@@ -408,7 +411,7 @@ class AstView {
       this._loopExitReachable = loopExitOff > 0 ? new Uint8Array(buffer, loopExitOff, this.nodeCount) : null;
       // Full code path graph
       const cfgGraphOff = dv.getUint32(semOff + SH.CFG_GRAPH_OFFSET, true);
-      if (cfgGraphOff > 0 && cfgGraphOff + 100 <= buffer.byteLength) {
+      if (cfgGraphOff > 0 && cfgGraphOff + CFG_GRAPH_HEADER_SIZE <= buffer.byteLength) {
         try { this._cfgGraph = new CfgGraph(buffer, dv, cfgGraphOff); }
         catch { this._cfgGraph = null; }
       } else {

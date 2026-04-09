@@ -324,7 +324,6 @@ pub fn writeSemanticData(
         }
         // Step 3: place ref indices into sorted order
         const cursor = try alloc.alloc(u32, scope_count);
-        defer alloc.free(cursor);
         @memcpy(cursor, scope_ref_starts);
         for (0..ref_count) |i| {
             const rsc = sem.references.scope_ids.items[i];
@@ -366,7 +365,6 @@ pub fn writeSemanticData(
         }
         // Place child scope IDs
         const ccursor = try alloc.alloc(u32, scope_count);
-        defer alloc.free(ccursor);
         @memcpy(ccursor, scope_child_starts);
         for (0..scope_count) |i| {
             const p = sem.scopes.parents.items[i];
@@ -406,7 +404,6 @@ pub fn writeSemanticData(
         tag_node_starts[tag_slots] = running; // sentinel
         // Place node indices (use a cursor copy of starts)
         const cursor = try alloc.alloc(u32, tag_slots);
-        defer alloc.free(cursor);
         @memcpy(cursor, tag_node_starts[0..tag_slots]);
         for (0..node_count) |i| {
             const tv: u32 = @intFromEnum(node_tags[i]);
@@ -420,6 +417,7 @@ pub fn writeSemanticData(
     // Parents have higher indices than children (except root=0),
     // so reverse iteration guarantees parent is processed first.
     const node_depths = try alloc.alloc(u32, node_count);
+    @memset(node_depths, 0);
     if (node_count > 0) {
         var i: usize = node_count;
         while (i > 0) {
@@ -885,8 +883,9 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     var byte_pos: u32 = 0;
     var utf16_pos: u32 = 0;
     // Cursors: one per array, tracking which element to convert next.
-    var cursors: [8]usize = .{0} ** 8;
-    const n = @min(arrays.len, 8);
+    const MAX_ARRAYS = 16;
+    var cursors: [MAX_ARRAYS]usize = .{0} ** MAX_ARRAYS;
+    const n = @min(arrays.len, MAX_ARRAYS);
 
     // Process until all cursors are exhausted.
     while (true) {
@@ -1035,19 +1034,15 @@ pub fn computeNodePositions(
 
     // Bracket matching: closeOpen[k] = opener token index for closing bracket k
     const closeOpen = try alloc.alloc(u32, tc);
-    defer alloc.free(closeOpen);
     @memset(closeOpen, NONE);
-    // Stack for bracket matching (reuse alloc — max depth = tc)
-    var stack_buf = try alloc.alloc(u32, @min(tc, 4096));
-    defer alloc.free(stack_buf);
+    // Stack for bracket matching (max depth = tc)
+    var stack_buf = try alloc.alloc(u32, tc);
     var stack_top: usize = 0;
     for (0..tc) |j| {
         const tt = tok_tags[j];
         if (tt == .l_brace or tt == .l_bracket or tt == .l_paren) {
-            if (stack_top < stack_buf.len) {
-                stack_buf[stack_top] = @intCast(j);
-                stack_top += 1;
-            }
+            stack_buf[stack_top] = @intCast(j);
+            stack_top += 1;
         }
         // Closers: } ] ) and template tokens starting with } (template_middle, template_tail)
         // This mirrors JS _computeAllEndPos which matches by source character, not token tag.
@@ -1063,7 +1058,6 @@ pub fn computeNodePositions(
 
     // isMainTok[j] = 1 if token j is the main token of some AST node
     const isMainTok = try alloc.alloc(u8, tc);
-    defer alloc.free(isMainTok);
     @memset(isMainTok, 0);
     for (main_tokens[0..n]) |mt| isMainTok[mt] = 1;
 

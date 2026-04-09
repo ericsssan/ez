@@ -2696,18 +2696,26 @@ function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers
     }
   }
 
+  // Pre-build ruleId → enter tag count for O(1) multi-type check (replaces O(tagCount) scan)
+  const _ruleTagCount = new Map();
   for (let t = 0; t < tagCount; t++) {
     const enter = tagEnterHandlers[t];
     if (!enter) continue;
-    // Can't batch if there are exit handlers or special flags
+    const items = enter._fused ? enter.items : enter;
+    for (let j = 0; j < items.length; j++) {
+      const rid = items[j].ruleId;
+      _ruleTagCount.set(rid, (_ruleTagCount.get(rid) || 0) + 1);
+    }
+  }
+
+  for (let t = 0; t < tagCount; t++) {
+    const enter = tagEnterHandlers[t];
+    if (!enter) continue;
     if (tagExitHandlers[t] || tagFlags[t]) continue;
     const tn = tagNames[t];
     if (!tn) continue;
-    // Identifier/PrivateIdentifier can't be batch-scanned because synthetic nodes
-    // (labels, specifiers, MemberExpression properties) are only visited during DFS.
     if (tn === 'Identifier' || tn === 'PrivateIdentifier') continue;
 
-    // Check each handler: batchable if this rule ONLY registered this one type
     const handlers = enter._fused ? enter.items : enter;
     const batchableHandlers = [];
     const keepHandlers = [];
@@ -2716,25 +2724,13 @@ function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers
       const hd = handlers[h];
       const ruleId = hd.ruleId;
 
-      // Rule has non-tag entries (onCodePathStart, Program:exit, etc.) — not batchable
       if (rulesWithNonTagEntries.has(ruleId)) {
         keepHandlers.push(hd);
         continue;
       }
 
-      // Check if this rule has handlers for other tag types too
-      let multiType = false;
-      for (let t2 = 0; t2 < tagCount; t2++) {
-        if (t2 === t) continue;
-        const other = tagEnterHandlers[t2];
-        if (!other) continue;
-        const otherItems = other._fused ? other.items : other;
-        for (let j = 0; j < otherItems.length; j++) {
-          if (otherItems[j].ruleId === ruleId) { multiType = true; break; }
-        }
-        if (multiType) break;
-      }
-      if (multiType) {
+      // O(1) check: rule appears in more than one tag's enter handlers
+      if ((_ruleTagCount.get(ruleId) || 0) > 1) {
         keepHandlers.push(hd);
       } else {
         batchableHandlers.push(hd);
@@ -3583,14 +3579,10 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
   const { _template, tagFlags, relevantTag, relevantTagCount } = cachedPlan;
   // Build ruleId+key → handler lookup from fresh visitorMap
   const handlerByKey = new Map();
-  const handlerByRule = new Map();
   for (const [key, handlers] of visitorMap) {
     const items = Array.isArray(handlers) ? handlers : [handlers];
     for (const h of items) {
-      if (h.ruleId) {
-        handlerByKey.set(h.ruleId + '|' + key, h);
-        if (!handlerByRule.has(h.ruleId)) handlerByRule.set(h.ruleId, h);
-      }
+      if (h.ruleId) handlerByKey.set(h.ruleId + '|' + key, h);
     }
   }
 
@@ -3600,14 +3592,14 @@ function _remapPlan(cachedPlan, visitorMap, tagNames, tagCount) {
       const items = [];
       for (let i = 0; i < template.items.length; i++) {
         const t = template.items[i];
-        const fresh = handlerByKey.get(t.ruleId + '|' + tagName) || handlerByRule.get(t.ruleId);
+        const fresh = handlerByKey.get(t.ruleId + '|' + tagName);
         if (fresh) items.push({ _state: fresh._state || null, handler: fresh.handler, ruleId: t.ruleId, ruleMeta: fresh.ruleMeta, ruleOptions: fresh.ruleOptions, cost: t.cost, parentGuard: t.parentGuard, _coalescedGuard: t._coalescedGuard });
       }
       return items.length > 0 ? { items, length: items.length, _fused: true } : null;
     }
     const arr = [];
     for (let i = 0; i < template.length; i++) {
-      const fresh = handlerByKey.get(template[i].ruleId + '|' + tagName) || handlerByRule.get(template[i].ruleId);
+      const fresh = handlerByKey.get(template[i].ruleId + '|' + tagName);
       if (fresh) arr.push(fresh);
     }
     return arr.length > 0 ? arr : null;
@@ -3949,43 +3941,49 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const len = events.length;
       let count = 0;
       while (count < len && events[count] !== -1) count++;
-      count++; // include Program:exit itself
-      return { events, count };
+      if (count < len) count++; // include Program:exit itself
+      return { events, count: Math.min(count, len) };
     }
     return buildDFSEvents();
   }
 
   // JS fallback: reconstruct correct DFS from pre-order + parent data.
+  // O(n) using depth to determine when to pop exits from the stack.
   function buildDFSEvents() {
     const n = preOrder.length;
     const events = new Int32Array(n * 2);
     let ei = 0;
-    // Use a stack to track when to emit exits
-    const stack = [];
+    if (!pd) {
+      // No parent data — flat enter/exit sequence
+      for (let i = 0; i < n; i++) events[ei++] = preOrder[i];
+      for (let i = n; i > 0; i--) events[ei++] = ~preOrder[i - 1];
+      return { events, count: ei };
+    }
+    // Compute depth for each node via parent chain (O(n) amortized with memoization)
+    const depth = new Uint32Array(ast.nodeCount);
     for (let i = 0; i < n; i++) {
       const idx = preOrder[i];
-      // Pop exits: any node on the stack that is NOT an ancestor of idx
-      while (stack.length > 0) {
-        const top = stack[stack.length - 1];
-        // Check if top is ancestor of idx using parent data
-        let isAncestor = false;
-        if (pd) {
-          let p = pd[idx];
-          while (p !== NONE && p !== undefined && p < ast.nodeCount) {
-            if (p === top) { isAncestor = true; break; }
-            p = pd[p];
-          }
-        }
-        if (isAncestor) break;
-        stack.pop();
-        events[ei++] = ~top; // exit
+      const p = pd[idx];
+      depth[idx] = (p !== NONE && p < ast.nodeCount) ? depth[p] + 1 : 0;
+    }
+    // Stack tracks (nodeIdx, depth) — pop when next node's depth <= top's depth
+    const stack = []; // entries: nodeIdx
+    const stackDepth = []; // parallel depth array
+    for (let i = 0; i < n; i++) {
+      const idx = preOrder[i];
+      const d = depth[idx];
+      // Pop exits for nodes that are not ancestors of idx
+      while (stack.length > 0 && stackDepth[stack.length - 1] >= d) {
+        events[ei++] = ~stack.pop();
+        stackDepth.pop();
       }
       events[ei++] = idx; // enter
       stack.push(idx);
+      stackDepth.push(d);
     }
-    // Flush remaining exits
     while (stack.length > 0) {
       events[ei++] = ~stack.pop();
+      stackDepth.pop();
     }
     return { events, count: ei };
   }
@@ -4154,7 +4152,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   const skipSet = new RuleSkipSet();
-  skipSet.init(visitorMap.size);
+  // Count unique ruleIds (not visitorMap keys which count per-type entries).
+  const _ruleIds = new Set();
+  for (const [, handlers] of visitorMap) {
+    const items = Array.isArray(handlers) ? handlers : (handlers.items || [handlers]);
+    for (const h of items) if (h.ruleId) _ruleIds.add(h.ruleId);
+  }
+  skipSet.init(_ruleIds.size);
   context._skipSet = skipSet;
 
   // Use Zig-precomputed tag→node CSR for getNodesByType and batch scan.
