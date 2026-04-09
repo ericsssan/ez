@@ -143,10 +143,14 @@ pub const SemanticHeader = extern struct {
     tag_node_starts_offset: u32 = 0,    // u32[tag_count + 1]  — prefix-sum (sentinel at end)
     tag_node_ids_offset: u32 = 0,       // u32[node_count]     — node indices sorted by tag
     tag_count: u32 = 0,                 // number of tag slots (= max_tag + 1)
+
+    // Node depths: depth[root]=0, depth[child]=depth[parent]+1
+    node_depths_offset: u32 = 0,        // u32[node_count]
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 144);
+    std.debug.assert(@sizeOf(SemanticHeader) == 148);
+    std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 144);
     std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 104);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 108);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 112);
@@ -210,6 +214,8 @@ pub fn writeSemanticData(
     sem: *const semantic_mod.SemanticResult,
     node_count: u32,
     node_tags: []const ast_mod.Node.Tag,
+    pre_order: []const u32,
+    parent_indices: []const u32,
 ) !u32 {
     const alloc = backing.allocator();
     const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
@@ -410,6 +416,18 @@ pub fn writeSemanticData(
         }
     }
 
+    // ── Node depths ─────────────────────────────────────────────
+    const node_depths = try alloc.alloc(u32, node_count);
+    @memset(node_depths, 0);
+    if (node_count > 0) {
+        for (1..node_count) |j| {
+            const idx = pre_order[j];
+            if (idx >= node_count) break; // pre_order may be shorter than node_count
+            const p = parent_indices[idx];
+            node_depths[idx] = if (p < node_count) node_depths[p] + 1 else 0;
+        }
+    }
+
     // ── SemanticHeader ────────────────────────────────────────────
     const header_mem = try alloc.alloc(u8, @sizeOf(SemanticHeader));
     const sem_header: *SemanticHeader = @ptrCast(@alignCast(header_mem.ptr));
@@ -473,6 +491,7 @@ pub fn writeSemanticData(
     sem_header.tag_node_starts_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_starts.ptr) else 0;
     sem_header.tag_node_ids_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_ids.ptr) else 0;
     sem_header.tag_count = tag_slots;
+    sem_header.node_depths_offset = if (node_count > 0) ptrOffsetPub(buf, node_depths.ptr) else 0;
 
     return ptrOffsetPub(buf, header_mem.ptr);
 }
@@ -1219,7 +1238,7 @@ pub fn computeNodePositions(
             const sa = ctx.starts[a]; const sb = ctx.starts[b];
             if (sa != sb) return sa < sb;
             // Same start: smaller range (innermost) first
-            return (ctx.ends[a] - sa) < (ctx.ends[b] - sb);
+            return (ctx.ends[a] -| sa) < (ctx.ends[b] -| sb);
         }
     };
     std.mem.sortUnstable(u32, sorted_by_start, SortCtx{ .starts = node_starts, .ends = node_ends }, SortCtx.lessThan);

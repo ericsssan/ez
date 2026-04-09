@@ -39,7 +39,7 @@ function loadBinding() {
 // ── Buffer management ────────────────────────────────────────────
 
 const DEFAULT_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
-const HEADER_SIZE = 132; // 33 fields × 4 bytes
+const HEADER_SIZE = 136; // 34 fields × 4 bytes
 const MAGIC = 0x5A4E4153; // "SANZ" little-endian
 
 let sharedBuffer = null;
@@ -104,7 +104,7 @@ function _makePrivateBuf(buf, sourceStart, sourceLen) {
   const dv0 = new DataView(buf);
   const totalUsed = dv0.getUint32(56, true);
   const semOff = dv0.getUint32(68, true);
-  const semEnd = semOff > 0 ? semOff + 144 : 0; // SemanticHeader = 144 bytes
+  const semEnd = semOff > 0 ? semOff + 148 : 0; // SemanticHeader = 148 bytes
   const srcStart = Math.max(totalUsed, semEnd);
   const privateSize = srcStart + sourceLen;
   const privateArr = new Uint8Array(privateSize);

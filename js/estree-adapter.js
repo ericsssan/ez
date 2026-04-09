@@ -184,6 +184,7 @@ const SH = {
   TAG_NODE_STARTS: 132,    // u32[tag_count + 1] — prefix-sum (sentinel at end)
   TAG_NODE_IDS: 136,       // u32[node_count]    — node indices sorted by tag
   TAG_COUNT: 140,          // u32 — number of tag slots
+  NODE_DEPTHS: 144,        // u32[node_count] — pre-computed node depths
 };
 
 const FLAG_HAS_BOM = 1;
@@ -446,6 +447,10 @@ class AstView {
         }
         this._tagCount = tagCount;
       }
+
+      // Pre-computed node depths (u32 per node)
+      const ndOff = dv.getUint32(semOff + SH.NODE_DEPTHS, true);
+      if (ndOff > 0) this._nodeDepths = new Uint32Array(buffer, ndOff, this.nodeCount);
     } else {
       this._semScopeCount = 0;
       this._semSymbolCount = 0;

@@ -3734,16 +3734,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Use pre-order (parent-before-child guaranteed) for a single correct O(n) pass:
   // when processing node preOrder[j], its parent has already been processed.
   // _parentData is Uint32Array: values are always plain JS numbers, no undefined.
-  const _nodeDepths = (hasSelectors && pd) ? (() => {
+  // Node depths: use Zig-precomputed array, fallback to JS computation.
+  const _nodeDepths = (hasSelectors && pd) ? (ast._nodeDepths || (() => {
     const n = ast.nodeCount;
-    const depths = new Uint16Array(n); // root gets depth 0 by default
+    const depths = new Uint16Array(n);
     for (let j = 1; j < n; j++) {
-      const idx = preOrder[j]; // pre-order: parent always visited before child
+      const idx = preOrder[j];
       const p = pd[idx];
-      if (p < n) depths[idx] = depths[p] + 1; // p < n implies p !== NONE (NONE=0xFFFFFFFF)
+      if (p < n) depths[idx] = depths[p] + 1;
     }
     return depths;
-  })() : null;
+  })()) : null;
 
   function getAncestorsFor(nodeIdx) {
     if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
