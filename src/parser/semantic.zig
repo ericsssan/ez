@@ -747,10 +747,10 @@ pub const SemanticAnalyzer = struct {
                 const cond = self.ast.extraData(Conditional, @intFromEnum(data.rhs));
                 if (self.cpb_initialized) {
                     try self.cpb.pushChoiceContext(.test_kind, false);
-                    try self.cpb.makeIfConsequent(idx);
+                    try self.cpb.makeIfConsequent(cond.consequent);
                 }
                 try self.visitNode(cond.consequent);
-                if (self.cpb_initialized) try self.cpb.makeIfAlternate(idx);
+                if (self.cpb_initialized) try self.cpb.makeIfAlternate(cond.alternate);
                 try self.visitNode(cond.alternate);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
@@ -853,21 +853,21 @@ pub const SemanticAnalyzer = struct {
             .logical_and => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_and, false);
                 try self.visitNode(data.lhs);
-                if (self.cpb_initialized) try self.cpb.makeLogicalRight(idx);
+                if (self.cpb_initialized) try self.cpb.makeLogicalRight(@enumFromInt(@intFromEnum(data.rhs)));
                 try self.visitNode(data.rhs);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .logical_or => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.logical_or, false);
                 try self.visitNode(data.lhs);
-                if (self.cpb_initialized) try self.cpb.makeLogicalRight(idx);
+                if (self.cpb_initialized) try self.cpb.makeLogicalRight(@enumFromInt(@intFromEnum(data.rhs)));
                 try self.visitNode(data.rhs);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .nullish_coalesce => {
                 if (self.cpb_initialized) try self.cpb.pushChoiceContext(.nullish, false);
                 try self.visitNode(data.lhs);
-                if (self.cpb_initialized) try self.cpb.makeLogicalRight(idx);
+                if (self.cpb_initialized) try self.cpb.makeLogicalRight(@enumFromInt(@intFromEnum(data.rhs)));
                 try self.visitNode(data.rhs);
                 if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },

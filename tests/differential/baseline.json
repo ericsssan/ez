@@ -43,7 +43,7 @@
     "array-callback-return": {
       "runner": {
         "fn": 0,
-        "fp": 6,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -211,8 +211,8 @@
     },
     "complexity": {
       "runner": {
-        "fn": 25,
-        "fp": 9,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -238,7 +238,7 @@
     "consistent-return": {
       "runner": {
         "fn": 0,
-        "fp": 6,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -263,9 +263,9 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 14,
-        "fp": 7,
-        "crash": 1
+        "fn": 7,
+        "fp": 2,
+        "crash": 0
       },
       "native": {
         "fn": 40,
@@ -471,8 +471,8 @@
     },
     "getter-return": {
       "runner": {
-        "fn": 9,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1498,8 +1498,8 @@
     },
     "no-fallthrough": {
       "runner": {
-        "fn": 1,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2486,7 +2486,7 @@
     },
     "no-this-before-super": {
       "runner": {
-        "fn": 9,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -2616,8 +2616,8 @@
     },
     "no-unreachable-loop": {
       "runner": {
-        "fn": 28,
-        "fp": 142,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2629,7 +2629,7 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 15,
+        "fn": 4,
         "fp": 6,
         "crash": 0
       },
@@ -2850,7 +2850,7 @@
     },
     "no-useless-return": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
