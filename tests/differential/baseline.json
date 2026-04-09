@@ -211,7 +211,7 @@
     },
     "complexity": {
       "runner": {
-        "fn": 32,
+        "fn": 25,
         "fp": 9,
         "crash": 0
       },
@@ -238,7 +238,7 @@
     "consistent-return": {
       "runner": {
         "fn": 0,
-        "fp": 8,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -1642,7 +1642,7 @@
     "no-invalid-this": {
       "runner": {
         "fn": 6,
-        "fp": 0,
+        "fp": 6,
         "crash": 0
       },
       "native": {

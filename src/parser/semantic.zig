@@ -1415,7 +1415,12 @@ pub const SemanticAnalyzer = struct {
         const fn_scope = try self.enterScope(.function, idx);
         _ = fn_scope;
         try self.visitParams(SubRange{ .start = method_data.params_start, .end = method_data.params_end });
+        const saved_alive = self.cfg_alive;
+        self.cfg_alive = true;
+        if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(method_data.body);
+        if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
+        self.cfg_alive = saved_alive;
         self.leaveScope();
     }
 
