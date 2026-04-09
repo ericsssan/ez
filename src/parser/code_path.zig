@@ -855,7 +855,7 @@ pub const CodePathBuilder = struct {
         }
 
         try self.popForkContext(node);
-        _ = self.popBreakContext();
+        _ = self.popBreakContext(node);
     }
 
     pub fn makeSwitchCaseBody(self: *CodePathBuilder, is_default: bool, node: NodeIndex) !void {
@@ -1082,7 +1082,7 @@ pub const CodePathBuilder = struct {
         // Save break context's broken_fork BEFORE popping
         const break_ctx = self.break_context;
         try self.popChoiceContext(node);
-        _ = self.popBreakContext();
+        _ = self.popBreakContext(node);
         // After both pops: merge break exits as reachable post-loop paths.
         // Break exits the loop, so they flow AFTER the loop (not through back-edge).
         if (break_ctx) |bc| {
@@ -1167,7 +1167,8 @@ pub const CodePathBuilder = struct {
     }
 
     /// Returns true if any `break` targeted this context.
-    pub fn popBreakContext(self: *CodePathBuilder) bool {
+    /// `node` is the statement node where the break context ends (for event emission).
+    pub fn popBreakContext(self: *CodePathBuilder, node: NodeIndex) bool {
         const ctx = self.break_context orelse return false;
         const had_break = !ctx.broken_fork.empty();
         self.break_context = ctx.upper;
@@ -1175,8 +1176,11 @@ pub const CodePathBuilder = struct {
         // merge broken segments as reachable continuation after the statement.
         if (!ctx.breakable and had_break) {
             const broken_segs = ctx.broken_fork.makeNext(0, -1, self) catch return had_break;
-            // Replace head if it's all unreachable, otherwise add alongside
+            // End current (unreachable) segments, then start the new merge segments
             const head = self.fork_context.head();
+            for (head) |s| {
+                if (s != NONE_SEG) self.emitSegEnd(s, node, .post) catch {};
+            }
             var any_reachable = false;
             for (head) |s| {
                 if (s != NONE_SEG and self.segments.items[s].reachable) any_reachable = true;
@@ -1185,6 +1189,10 @@ pub const CodePathBuilder = struct {
                 self.fork_context.replaceHead(broken_segs, self) catch {};
             } else {
                 self.fork_context.add(broken_segs, self) catch {};
+            }
+            // Emit SEG_START for the new merge segments
+            for (broken_segs) |s| {
+                if (s != NONE_SEG) self.emitSegStart(s, node, .post) catch {};
             }
         }
         return had_break;

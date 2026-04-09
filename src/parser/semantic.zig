@@ -710,7 +710,7 @@ pub const SemanticAnalyzer = struct {
                 }
                 const alive_before_label = self.cfg_alive;
                 try self.visitNode(data.lhs);
-                const had_break = if (self.cpb_initialized) self.cpb.popBreakContext() else false;
+                const had_break = if (self.cpb_initialized) self.cpb.popBreakContext(idx) else false;
                 // Only restore liveness if `break label` was used (not return/throw).
                 // return/throw inside a labeled block should keep code after dead.
                 if (!self.cfg_alive and alive_before_label and had_break) {
