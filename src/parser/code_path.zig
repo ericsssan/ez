@@ -1099,10 +1099,14 @@ pub const CodePathBuilder = struct {
                         if (s != NONE_SEG and self.segments.items[s].reachable) any_reachable = true;
                     }
                     if (!any_reachable) {
-                        // Current head is all unreachable — replace with break exits
+                        // End unreachable segments, replace with break exits, emit starts
+                        for (current_head) |s| {
+                            if (s != NONE_SEG) try self.emitSegEnd(s, node, .post);
+                        }
                         try self.fork_context.replaceHead(broken_segs, self);
-                        // Re-emit segment events for the new reachable head
-                        try self.forwardCurrentToHead(node, .exit);
+                        for (broken_segs) |s| {
+                            if (s != NONE_SEG) try self.emitSegStart(s, node, .post);
+                        }
                     }
                 }
             }
