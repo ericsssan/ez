@@ -269,6 +269,7 @@ const TryContext = struct {
     returned_fork: ForkContext,
     thrown_fork: ForkContext,
     try_end_fork: ForkContext, // segments at end of try body (for merging with catch end)
+    pre_try_segments: ?[]SegmentId, // head before try body (for catch entry reachability)
     last_of_try_reachable: bool,
     last_of_catch_reachable: bool,
 };
@@ -822,6 +823,7 @@ pub const CodePathBuilder = struct {
             .returned_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .thrown_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .try_end_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
+            .pre_try_segments = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null,
             .last_of_try_reachable = false,
             .last_of_catch_reachable = false,
         };
@@ -868,12 +870,14 @@ pub const CodePathBuilder = struct {
 
         // End try body segments, start catch segments
         try self.leaveFromCurrentSegment(node, .enter);
-        // Thrown fork context has segments from throw statements in try block
-        const thrown_segs = if (!ctx.thrown_fork.empty())
-            try ctx.thrown_fork.makeNext(0, -1, self)
-        else
-            try self.fork_context.makeNext(-1, -1, self);
-        try self.fork_context.replaceHead(thrown_segs, self);
+        // Catch is reachable from pre-try state (exceptions can be thrown at any point)
+        // Use pre-try segments as predecessors so catch starts reachable
+        if (ctx.pre_try_segments) |pre_try| {
+            const catch_seg_slice = try self.allocator.dupe(SegmentId, pre_try);
+            try self.fork_context.add(catch_seg_slice, self);
+        }
+        const catch_segs = try self.fork_context.makeNext(-1, -1, self);
+        try self.fork_context.replaceHead(catch_segs, self);
         try self.forwardCurrentToHead(node, .enter);
     }
 

@@ -2617,7 +2617,7 @@
     "no-unreachable-loop": {
       "runner": {
         "fn": 28,
-        "fp": 170,
+        "fp": 142,
         "crash": 0
       },
       "native": {
@@ -2629,8 +2629,8 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 11,
-        "fp": 9,
+        "fn": 14,
+        "fp": 6,
         "crash": 0
       },
       "native": {
