@@ -4515,7 +4515,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (!map.has(nodeIdx)) map.set(nodeIdx, []);
         map.get(nodeIdx).push({ type: evType, d1, d2 });
       }
-      // _useCfgGraph = true; // Enable after fixing popChoiceContext merge events + loop suppression
+      // _useCfgGraph = true;
     }
 
     // CfgGraph state: track current codepath for currentSegments updates

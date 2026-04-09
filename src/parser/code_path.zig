@@ -549,9 +549,10 @@ pub const CodePathBuilder = struct {
         // Create initial segment
         const initial_seg = try self.newRootSegment();
 
-        // Create fork context
+        // Create fork context (save current as upper for restore on exitCodePath)
         const fc = try self.allocator.create(ForkContext);
-        fc.* = ForkContext.init(self.allocator, null, 1);
+        const upper_fc: ?*ForkContext = if (self.current_codepath != NONE_CP) self.fork_context else null;
+        fc.* = ForkContext.init(self.allocator, upper_fc, 1);
         const seg_slice = try self.allocator.alloc(SegmentId, 1);
         seg_slice[0] = initial_seg;
         try fc.add(seg_slice, self);
