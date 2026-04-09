@@ -146,7 +146,7 @@
     },
     "camelcase": {
       "runner": {
-        "fn": 26,
+        "fn": 25,
         "fp": 3,
         "crash": 0
       },
@@ -211,7 +211,7 @@
     },
     "complexity": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1433,7 +1433,7 @@
     },
     "no-extra-bind": {
       "runner": {
-        "fn": 3,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -2630,7 +2630,7 @@
     "no-unreachable": {
       "runner": {
         "fn": 3,
-        "fp": 5,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -2837,7 +2837,7 @@
     },
     "no-useless-rename": {
       "runner": {
-        "fn": 13,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -3006,7 +3006,7 @@
     },
     "operator-assignment": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3084,7 +3084,7 @@
     },
     "prefer-destructuring": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 4,
         "crash": 0
       },
@@ -3097,7 +3097,7 @@
     },
     "prefer-exponentiation-operator": {
       "runner": {
-        "fn": 4,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
