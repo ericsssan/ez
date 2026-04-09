@@ -4597,10 +4597,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           case 6: { // SEG_LOOP
             const fromSeg = _cfgGraph.segment(ev.d1);
             const toSeg = _cfgGraph.segment(ev.d2);
-            // Only fire loop event if from-segment is reachable AND loop can iterate
-            const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[nodeIdx] !== 0;
-            if (fromSeg && toSeg && fromSeg.reachable && loopExitAlive) {
-              _dispatchSegLoop(fromSeg, toSeg, node);
+            if (fromSeg && toSeg) {
+              // ESLint's makeLooped mutates prevSegments/nextSegments.
+              // Always mutate (for both real loops and synthetic finally edges).
+              const toPrev = toSeg.prevSegments;
+              if (!toPrev.includes(fromSeg)) toPrev.push(fromSeg);
+              const toAllPrev = toSeg.allPrevSegments;
+              if (!toAllPrev.includes(fromSeg)) toAllPrev.push(fromSeg);
+              const fromNext = fromSeg.nextSegments;
+              if (!fromNext.includes(toSeg)) fromNext.push(toSeg);
+              const fromAllNext = fromSeg.allNextSegments;
+              if (!fromAllNext.includes(toSeg)) fromAllNext.push(toSeg);
+              // Only dispatch the onCodePathSegmentLoop handler for real loops
+              const loopExitAlive = !ast._loopExitReachable || ast._loopExitReachable[nodeIdx] !== 0;
+              if (fromSeg.reachable && loopExitAlive) {
+                _dispatchSegLoop(fromSeg, toSeg, node);
+              }
             }
             break;
           }

@@ -496,14 +496,16 @@ pub const CodePathBuilder = struct {
     pub fn markLooped(self: *CodePathBuilder, seg_id: SegmentId, prev_seg_id: SegmentId) !void {
         if (seg_id == NONE_SEG or prev_seg_id == NONE_SEG) return;
         var seg = &self.segments.items[seg_id];
+        const prev = &self.segments.items[prev_seg_id];
+
+        // loopedPrevSegments
         if (seg.looped_prev_end == 0 and seg.looped_prev_start == 0) {
             seg.looped_prev_start = @intCast(self.looped_targets.items.len);
         }
         try self.looped_targets.append(self.allocator, prev_seg_id);
         seg.looped_prev_end = @intCast(self.looped_targets.items.len);
 
-        // Also add to forward edges: prev→seg
-        var prev = &self.segments.items[prev_seg_id];
+        // Also add to forward edges: prev→seg allNextSegments
         if (prev.all_next_end == 0 and prev.all_next_start == 0) {
             prev.all_next_start = @intCast(self.all_next_targets.items.len);
         }
