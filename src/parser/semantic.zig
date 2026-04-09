@@ -1725,7 +1725,7 @@ pub const SemanticAnalyzer = struct {
             try self.visitNode(try_data.finally_body);
         }
 
-        if (self.cpb_initialized) try self.cpb.popTryContext();
+        if (self.cpb_initialized) try self.cpb.popTryContext(data.lhs);
     }
 
     // ── Binding extraction (handles destructuring) ─────────

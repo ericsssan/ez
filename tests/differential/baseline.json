@@ -42,7 +42,7 @@
     },
     "array-callback-return": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 3,
         "crash": 0
       },

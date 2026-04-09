@@ -268,6 +268,7 @@ const TryContext = struct {
     position: enum { try_body, catch_body, finally_body },
     returned_fork: ForkContext,
     thrown_fork: ForkContext,
+    try_end_fork: ForkContext, // segments at end of try body (for merging with catch end)
     last_of_try_reachable: bool,
     last_of_catch_reachable: bool,
 };
@@ -820,6 +821,7 @@ pub const CodePathBuilder = struct {
             .position = .try_body,
             .returned_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .thrown_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
+            .try_end_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .last_of_try_reachable = false,
             .last_of_catch_reachable = false,
         };
@@ -831,18 +833,37 @@ pub const CodePathBuilder = struct {
         }
     }
 
-    pub fn popTryContext(self: *CodePathBuilder) !void {
+    pub fn popTryContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.try_context orelse return;
         self.try_context = ctx.upper;
 
         if (ctx.has_finalizer) {
             try self.popForkContext();
         }
+
+        // Merge try-end + catch-end as reachable continuations
+        // (either try completed normally OR catch completed)
+        if (!ctx.try_end_fork.empty()) {
+            try self.leaveFromCurrentSegment(node, .exit);
+            var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
+            try combined.addAll(&ctx.try_end_fork);
+            // Current head has catch-end segments
+            const catch_end = try self.allocator.dupe(SegmentId, self.fork_context.head());
+            try combined.add(catch_end, self);
+            if (!combined.empty()) {
+                const merged = try combined.makeNext(0, -1, self);
+                try self.fork_context.replaceHead(merged, self);
+            }
+            try self.forwardCurrentToHead(node, .exit);
+        }
     }
 
     pub fn makeCatchBlock(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.try_context orelse return;
         ctx.last_of_try_reachable = self.fork_context.reachable(self);
+        // Save try-body exit segments for merging in popTryContext
+        const try_end_head = try self.allocator.dupe(SegmentId, self.fork_context.head());
+        try ctx.try_end_fork.add(try_end_head, self);
         ctx.position = .catch_body;
 
         // End try body segments, start catch segments
