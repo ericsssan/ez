@@ -2630,12 +2630,12 @@
     "no-unreachable": {
       "runner": {
         "fn": 3,
-        "fp": 4,
+        "fp": 3,
         "crash": 0
       },
       "native": {
         "fn": 17,
-        "fp": 8,
+        "fp": 7,
         "crash": 0,
         "skip": 0
       }
