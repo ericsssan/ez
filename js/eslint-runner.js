@@ -988,17 +988,8 @@ class SourceCode {
     }
     this._scopeChildIndex = childIndex;
 
-    // symbol → [refIdx, ...] index (avoids O(symbols × refs) scan in _buildVariable)
-    const symRefIndex = new Array(ast._semSymbolCount || 0);
-    for (let i = 0; i < symRefIndex.length; i++) symRefIndex[i] = [];
-    if (ast._refSymbolIds) {
-      const NONE32 = 0xFFFFFFFF;
-      for (let i = 0; i < (ast._semRefCount || 0); i++) {
-        const s = ast._refSymbolIds[i];
-        if (s !== NONE32 && s < symRefIndex.length) symRefIndex[s].push(i);
-      }
-    }
-    this._symRefIndex = symRefIndex;
+    // symbol → ref range is already in the Zig buffer as _symRefStarts/_symRefEnds.
+    // No JS-side index needed — use those directly.
 
     // declNode ancestor → [symId, ...] index for O(1) getDeclaredVariables lookups.
     // For each symbol, index it under its decl node AND all ancestor nodes up to the
@@ -1389,14 +1380,12 @@ class SourceCode {
     const is_read   = (flags16 & 0x800) !== 0;
     const is_written= (flags16 & 0x400) !== 0;
 
-    // Build references for this symbol via precomputed index (O(refs_for_sym) not O(all_refs)).
+    // Build references for this symbol from Zig-side ref ranges (O(refs_for_sym)).
     const references = [];
-    this._ensureScopeIndex();
-    const symRefs = this._symRefIndex ? this._symRefIndex[symId] : null;
-    if (symRefs) {
-      for (let j = 0; j < symRefs.length; j++) {
-        references.push(this._buildReference(symRefs[j]));
-      }
+    const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
+    const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
+    for (let j = refStart; j < refEnd; j++) {
+      references.push(this._buildReference(j));
     }
 
     const declNodeIdx = ast._symDeclNodes[symId];
@@ -1588,14 +1577,28 @@ class SourceCode {
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
     let defNode = declNode ? _findDefNode(declNode, defType) : null;
+    const builder = this;
+    const _symId = symId;
     const thinVar = {
       name,
       defs: declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
-      references: [], // thin — no refs to avoid cycle
+      _refs: null, // lazy — populated on first access from Zig buffer ranges
+      get references() {
+        if (this._refs === null) {
+          this._refs = [];
+          const _ast = builder._ast;
+          const rs = _ast._symRefStarts ? _ast._symRefStarts[_symId] : 0;
+          const re = _ast._symRefEnds ? _ast._symRefEnds[_symId] : 0;
+          for (let j = rs; j < re; j++) {
+            this._refs.push(builder._buildReference(j));
+          }
+        }
+        return this._refs;
+      },
+      set references(v) { this._refs = v; },
       scope,
       identifiers: declNode ? [declNode] : [],
       eslintUsed: false,
-      // DO NOT set writeable for user-declared vars — see _buildVariable for details
       isRead: () => is_read,
       isWritten: () => is_written,
     };
