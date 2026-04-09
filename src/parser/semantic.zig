@@ -86,7 +86,6 @@ pub const SemanticResult = struct {
 
     /// Code path events: packed as triples of (event_type, node_idx, data).
     /// Event types: 0=SEG_START, 1=SEG_END, 2=CODEPATH_START, 3=CODEPATH_END, 4=SEG_LOOP.
-    cfg_events: []u32 = &.{},
 
     /// Full multi-segment code path graph (built by CodePathBuilder).
     code_path_result: ?CodePathBuilder.Result = null,
@@ -103,7 +102,6 @@ pub const SemanticResult = struct {
             .diagnostics = &.{},
             .node_reachable = &.{},
             .loop_exit_reachable = &.{},
-            .cfg_events = &.{},
             .code_path_result = null,
         };
     }
@@ -115,7 +113,6 @@ pub const SemanticResult = struct {
         allocator.free(self.diagnostics);
         if (self.node_reachable.len > 0) allocator.free(self.node_reachable);
         if (self.loop_exit_reachable.len > 0) allocator.free(self.loop_exit_reachable);
-        if (self.cfg_events.len > 0) allocator.free(self.cfg_events);
         self.* = undefined;
     }
 };
@@ -147,9 +144,6 @@ pub const SemanticAnalyzer = struct {
     /// Reset to true on entering each function body.
     cfg_alive: bool = true,
 
-    /// Code path event recorder (legacy — kept for backward compat during transition).
-    cfg_events: std.ArrayList(u32) = undefined,
-    cfg_seg_counter: u32 = 0,
 
     /// Full multi-segment code path builder.
     cpb: CodePathBuilder = undefined,
@@ -229,9 +223,6 @@ pub const SemanticAnalyzer = struct {
         const loop_exit_reachable = try allocator.alloc(u8, node_count);
         @memset(loop_exit_reachable, 1); // default: all exits reachable
 
-        // Code path event recorder (legacy)
-        self.cfg_events = .empty;
-        self.cfg_seg_counter = 0;
         self.loop_exit_reachable = loop_exit_reachable;
 
         // Full code path builder
@@ -252,7 +243,6 @@ pub const SemanticAnalyzer = struct {
             .diagnostics = try self.diagnostics.toOwnedSlice(self.allocator),
             .node_reachable = node_reachable,
             .loop_exit_reachable = loop_exit_reachable,
-            .cfg_events = try self.cfg_events.toOwnedSlice(self.allocator),
             .code_path_result = if (self.cpb_initialized) self.cpb.finish() else null,
         };
     }
@@ -591,38 +581,28 @@ pub const SemanticAnalyzer = struct {
                 // if (cond) consequent  — no else branch
                 try self.visitNode(data.lhs); // condition
                 const alive_pre = self.cfg_alive;
-                try self.cfgSegEnd();
-                try self.cfgSegStart(idx, alive_pre); // consequent branch
                 if (self.cpb_initialized) {
                     try self.cpb.pushChoiceContext(.test_kind, false);
                     try self.cpb.makeIfConsequent(idx);
                 }
                 try self.visitNode(data.rhs);
-                try self.cfgSegEnd();
                 self.cfg_alive = alive_pre or self.cfg_alive;
-                try self.cfgSegStart(idx, self.cfg_alive); // merge
                 if (self.cpb_initialized) try self.cpb.popChoiceContext();
             },
             .if_else_stmt => {
                 try self.visitNode(data.lhs); // condition
                 const if_data = self.ast.extraData(IfData, @intFromEnum(data.rhs));
                 const alive_pre = self.cfg_alive;
-                try self.cfgSegEnd();
-                try self.cfgSegStart(idx, alive_pre); // then branch
                 if (self.cpb_initialized) {
                     try self.cpb.pushChoiceContext(.test_kind, false);
                     try self.cpb.makeIfConsequent(idx);
                 }
                 try self.visitNode(if_data.consequent);
                 const alive_true = self.cfg_alive;
-                try self.cfgSegEnd();
                 self.cfg_alive = alive_pre;
-                try self.cfgSegStart(idx, alive_pre); // else branch
                 if (self.cpb_initialized) try self.cpb.makeIfAlternate(idx);
                 try self.visitNode(if_data.alternate);
-                try self.cfgSegEnd();
                 self.cfg_alive = alive_true or self.cfg_alive;
-                try self.cfgSegStart(idx, self.cfg_alive); // merge
                 if (self.cpb_initialized) try self.cpb.popChoiceContext();
             },
             .while_stmt => {
@@ -704,15 +684,11 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(data.lhs); // return expression
                 if (self.cpb_initialized) try self.cpb.makeReturn(idx);
                 self.cfg_alive = false;
-                try self.cfgSegEnd();
-                try self.cfgSegStart(idx, false); // unreachable after return
             },
             .throw_stmt => {
                 try self.visitNode(data.lhs); // thrown expression
                 if (self.cpb_initialized) try self.cpb.makeThrow(idx);
                 self.cfg_alive = false;
-                try self.cfgSegEnd();
-                try self.cfgSegStart(idx, false); // unreachable after throw
             },
             .expression_stmt => try self.visitNode(data.lhs),
 
@@ -1081,14 +1057,10 @@ pub const SemanticAnalyzer = struct {
         if (self.is_module) {
             _ = try self.enterScope(.module, idx);
         }
-        try self.cfgCodePathStart(idx);
-        try self.cfgSegStart(idx, true);
         // CodePathBuilder: enter program code path
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .program);
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
-        try self.cfgSegEnd();
-        try self.cfgCodePathEnd(idx);
         // CodePathBuilder: exit program code path
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         if (self.is_module) {
@@ -1097,33 +1069,6 @@ pub const SemanticAnalyzer = struct {
         self.leaveScope(); // global
     }
 
-    // ── Code path event emitters ─────────────────────────────────
-    fn cfgEmit(self: *SemanticAnalyzer, event_type: u32, node_idx: u32, data: u32) !void {
-        try self.cfg_events.append(self.allocator, event_type);
-        try self.cfg_events.append(self.allocator, node_idx);
-        try self.cfg_events.append(self.allocator, data);
-    }
-
-    fn cfgSegStart(self: *SemanticAnalyzer, node: NodeIndex, reachable: bool) !void {
-        self.cfg_seg_counter += 1;
-        try self.cfgEmit(0, @intFromEnum(node), if (reachable) 1 else 0);
-    }
-
-    fn cfgSegEnd(self: *SemanticAnalyzer) !void {
-        try self.cfgEmit(1, 0, 0);
-    }
-
-    fn cfgCodePathStart(self: *SemanticAnalyzer, node: NodeIndex) !void {
-        try self.cfgEmit(2, @intFromEnum(node), 0);
-    }
-
-    fn cfgCodePathEnd(self: *SemanticAnalyzer, node: NodeIndex) !void {
-        try self.cfgEmit(3, @intFromEnum(node), 0);
-    }
-
-    fn cfgSegLoop(self: *SemanticAnalyzer, node: NodeIndex, can_iterate: bool) !void {
-        try self.cfgEmit(4, @intFromEnum(node), if (can_iterate) 1 else 0);
-    }
 
     fn visitBlockStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         _ = try self.enterScope(.block, idx);
@@ -1297,12 +1242,8 @@ pub const SemanticAnalyzer = struct {
         // Each function body starts with a fresh live path; restore outer state after.
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        try self.cfgCodePathStart(idx);
-        try self.cfgSegStart(idx, true);
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(fn_data.body);
-        try self.cfgSegEnd();
-        try self.cfgCodePathEnd(idx);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
@@ -1330,12 +1271,8 @@ pub const SemanticAnalyzer = struct {
         try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        try self.cfgCodePathStart(idx);
-        try self.cfgSegStart(idx, true);
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(fn_data.body);
-        try self.cfgSegEnd();
-        try self.cfgCodePathEnd(idx);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
@@ -1355,12 +1292,8 @@ pub const SemanticAnalyzer = struct {
         try self.visitParams(SubRange{ .start = arrow_data.params_start, .end = arrow_data.params_end });
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
-        try self.cfgCodePathStart(idx);
-        try self.cfgSegStart(idx, true);
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function);
         try self.visitNode(arrow_data.body);
-        try self.cfgSegEnd();
-        try self.cfgCodePathEnd(idx);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 

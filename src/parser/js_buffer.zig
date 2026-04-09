@@ -315,15 +315,8 @@ pub fn writeSemanticData(
             }
             break :blk 0;
         },
-        .cfg_events_offset = blk: {
-            if (sem.cfg_events.len > 0) {
-                const arr = try alloc.alloc(u32, sem.cfg_events.len);
-                @memcpy(arr, sem.cfg_events);
-                break :blk ptrOffsetPub(buf, @as([*]u8, @ptrCast(arr.ptr)));
-            }
-            break :blk 0;
-        },
-        .cfg_events_count = @intCast(sem.cfg_events.len),
+        .cfg_events_offset = 0, // legacy — replaced by cfg_graph_offset
+        .cfg_events_count = 0,
 
         .cfg_graph_offset = blk: {
             if (sem.code_path_result) |cpr| {

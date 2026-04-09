@@ -4130,7 +4130,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   const cpTracker = new CodePathTracker();
   let _useCfgGraph = false; // true = CfgGraph replaces CPTracker; false = CPTracker active
-  let _cfgGraphAdditive = false; // true = CfgGraph events fire alongside CPTracker
 
   function invokeCodePathHandlersWithNode(mapKey, node) {
     const handlers = visitorMap.get(mapKey);
@@ -4173,11 +4172,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
   }
-  // When CfgGraph is active, suppress CPTracker segment events
-  function _dispatchSegGuarded(handlers, seg, node) {
-    if (_useCfgGraph) return;
-    _dispatchSeg(handlers, seg, node);
-  }
 
   // Dispatch onCodePathSegmentLoop(fromSeg, toSeg, node)
   function _dispatchSegLoop(fromSeg, toSeg, node) {
@@ -4187,10 +4181,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       try { _segLoopH[h]._state.inner(fromSeg, toSeg, node); }
       catch (e) { context._reports.push({ ruleId: _segLoopH[h].ruleId, message: `Plugin error: ${e.message}` }); }
     }
-  }
-  function _dispatchSegLoopGuarded(fromSeg, toSeg, node) {
-    if (_useCfgGraph) return; // CfgGraph handles loop events
-    _dispatchSegLoop(fromSeg, toSeg, node);
   }
 
   function invokeSegmentEvent(eventName, segment) {
@@ -4497,19 +4487,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // ── Zig CFG event replay ────────────────────────────────────
     // Build per-node event index from Zig-precomputed code path events.
     // Events fire BEFORE the node's enter/exit handler during DFS.
-    const _zigCfgEvents = ast._cfgEvents;
-    let _zigCfgNodeEnter = null; // Map<nodeIdx, [{type, data}, ...]>
-    if (_zigCfgEvents && hasCodePath) {
-      _zigCfgNodeEnter = new Map();
-      for (let ei = 0; ei < _zigCfgEvents.length; ei += 3) {
-        const evType = _zigCfgEvents[ei];
-        const nodeIdx = _zigCfgEvents[ei + 1];
-        const data = _zigCfgEvents[ei + 2];
-        if (!_zigCfgNodeEnter.has(nodeIdx)) _zigCfgNodeEnter.set(nodeIdx, []);
-        _zigCfgNodeEnter.get(nodeIdx).push({ type: evType, data });
-      }
-    }
-
     // ── CfgGraph event replay index ─────────────────────────────
     // When the full code path graph is available from Zig, build node→events
     // maps for enter and exit. During DFS, fire events from these maps instead
@@ -4552,7 +4529,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
     // Fire CfgGraph events for a given node (enter or exit)
     function _fireCfgEvents(nodeIdx, isExit) {
-      if (!_useCfgGraph && !_cfgGraphAdditive) return;
+      if (!_useCfgGraph) return;
       const map = isExit ? _cfgExitEvents : _cfgEnterEvents;
       const evts = map.get(nodeIdx);
       if (!evts) return;
@@ -4666,7 +4643,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-        if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, false);
+        if (_useCfgGraph) _fireCfgEvents(idx, false);
         if (!_useCfgGraph && hasCodePath) {
           if (CODE_PATH_TYPES.has(tn)) {
             const outerSeg = cpTracker.segment;
@@ -4906,7 +4883,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
         if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
         // Code path exit: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-        if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, true);
+        if (_useCfgGraph) _fireCfgEvents(idx, true);
         if (!_useCfgGraph && hasCodePath) {
           if (_branchEnterTagSet.has(tag)) {
             if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
@@ -5101,7 +5078,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       // Code path enter: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-      if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, false);
+      if (_useCfgGraph) _fireCfgEvents(idx, false);
       if (!_useCfgGraph) {
         if (flags & FLAG_CODEPATH_ENTER) {
           const outerSeg = cpTracker.segment;
@@ -5263,7 +5240,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
       // Code path exit: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-      if (_cfgGraphAdditive || _useCfgGraph) _fireCfgEvents(idx, true);
+      if (_useCfgGraph) _fireCfgEvents(idx, true);
       if (!_useCfgGraph) {
         if (flags & FLAG_TERMINATOR) {
           const nv = nodeView(ast, idx);
