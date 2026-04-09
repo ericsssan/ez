@@ -55,8 +55,9 @@ function _isStatementTag(tag) {
   return tag === T.var_decl || tag === T.let_decl || tag === T.const_decl ||
          tag === T.expression_stmt || tag === T.return_stmt || tag === T.throw_stmt ||
          tag === T.break_stmt || tag === T.continue_stmt ||
-         tag === T.import_decl || tag === T.export_decl || tag === T.export_named_decl ||
-         tag === T.export_default_decl;
+         tag === T.import_decl || tag === T.export_named ||
+         tag === T.export_default_expr || tag === T.export_default_fn || tag === T.export_default_class ||
+         tag === T.export_all;
 }
 
 function _extendRangeToIncludeSemicolon(ast, endPos) {

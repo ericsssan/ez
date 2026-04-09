@@ -17,7 +17,7 @@ pub const FLAG_HAS_BOM: u32 = 1;
 
 /// Written at offset 0 of the shared buffer after parsing.
 /// All offsets are byte offsets from the start of the buffer.
-/// 20 fields × 4 bytes = 80 bytes.
+/// 34 fields × 4 bytes = 136 bytes.
 pub const BufferHeader = extern struct {
     magic: u32,
     version: u32,
@@ -81,7 +81,7 @@ comptime {
 
 /// Secondary header written into the bump region when semantic analysis is run.
 /// All offsets are byte offsets from the start of the buffer (same origin as BufferHeader).
-/// 22 u32 fields = 88 bytes.
+/// 37 u32 fields = 148 bytes.
 pub const SemanticHeader = extern struct {
     scope_count: u32,
     symbol_count: u32,
@@ -1293,8 +1293,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 132 bytes" {
-    try std.testing.expectEqual(@as(usize, 132), @sizeOf(BufferHeader));
+test "BufferHeader is 136 bytes" {
+    try std.testing.expectEqual(@as(usize, 136), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {
