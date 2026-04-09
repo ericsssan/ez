@@ -617,17 +617,19 @@ pub const CodePathBuilder = struct {
         }
         cp.final_end = @intCast(self.cp_final_pool.items.len);
 
-        // Final segments are also returned segments for functions (implicit return)
-        // ESLint adds them to returnedSegments in CodePathState.makeFinal()
-        // Only for function origins — program doesn't have implicit return
+        // Reachable final segments are also returned segments (implicit return).
+        // Only add reachable ones — unreachable finals mean all paths explicitly
+        // return/throw, so they shouldn't appear in returnedSegments.
         if (cp.origin != .program) {
-            if (cp.returned_end == 0 and cp.returned_start == 0) {
-                cp.returned_start = @intCast(self.cp_returned_pool.items.len);
-            }
             for (head) |seg_id| {
-                try self.cp_returned_pool.append(self.allocator, seg_id);
+                if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+                    if (cp.returned_end == 0 and cp.returned_start == 0) {
+                        cp.returned_start = @intCast(self.cp_returned_pool.items.len);
+                    }
+                    try self.cp_returned_pool.append(self.allocator, seg_id);
+                    cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+                }
             }
-            cp.returned_end = @intCast(self.cp_returned_pool.items.len);
         }
 
         // Emit codepath end (post phase — fires AFTER exit handlers)

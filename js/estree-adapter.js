@@ -1010,7 +1010,10 @@ const NodeProto = {
     // Only route these specific tags to avoid breaking scope detection for other node types.
     if (result && (result._tag === T.class_decl || result._tag === T.class_expr)) {
       const t = this._tag;
-      if (t === T.method_def || t === T.property_def) {
+      if (t === T.method_def || t === T.property_def || t === T.getter_def ||
+          t === T.setter_def || t === T.constructor_def || t === T.computed_method_def ||
+          t === T.computed_getter_def || t === T.computed_setter_def ||
+          t === T.computed_property_def || t === T.static_block) {
         const body = result.body; // Returns the synthetic ClassBody
         if (body && body.body && body.body.includes(this)) {
           result = body;
