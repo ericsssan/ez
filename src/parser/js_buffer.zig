@@ -423,7 +423,8 @@ fn writeCfgGraph(
     const events_flat = try alloc.alloc(u32, ev_count * 4);
     for (0..ev_count) |i| {
         events_flat[i * 4 + 0] = @intFromEnum(cpr.events[i].type);
-        events_flat[i * 4 + 1] = @intFromEnum(cpr.events[i].node);
+        const node_raw = @intFromEnum(cpr.events[i].node);
+        events_flat[i * 4 + 1] = if (cpr.events[i].is_exit) node_raw | code_path_mod.EVENT_EXIT_FLAG else node_raw;
         events_flat[i * 4 + 2] = cpr.events[i].data1;
         events_flat[i * 4 + 3] = cpr.events[i].data2;
     }

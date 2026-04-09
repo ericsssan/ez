@@ -4502,24 +4502,21 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _cfgEnterEvents = new Map();
       _cfgExitEvents = new Map();
       const evs = _cfgGraph._events;
+      const EXIT_FLAG = 0x80000000;
       for (let ei = 0; ei < evs.length; ei += 4) {
         const evType = evs[ei];
-        const nodeIdx = evs[ei + 1];
+        const nodeRaw = evs[ei + 1];
         const d1 = evs[ei + 2];
         const d2 = evs[ei + 3];
-        // Enter events: CODEPATH_START(0), SEG_START(2), UNREACHABLE_SEG_START(4)
-        // Exit events: CODEPATH_END(1), SEG_END(3), UNREACHABLE_SEG_END(5), SEG_LOOP(6)
-        const isEnter = (evType === 0 || evType === 2 || evType === 4);
-        const map = isEnter ? _cfgEnterEvents : _cfgExitEvents;
+        // is_exit is encoded in bit 31 of the node field
+        const isExit = (nodeRaw & EXIT_FLAG) !== 0;
+        const nodeIdx = nodeRaw & ~EXIT_FLAG;
+        const map = isExit ? _cfgExitEvents : _cfgEnterEvents;
         if (!map.has(nodeIdx)) map.set(nodeIdx, []);
         map.get(nodeIdx).push({ type: evType, d1, d2 });
       }
-      // Clean-cut mode: CfgGraph fully replaces CPTracker. Disabled pending Zig event tuning.
-      // _useCfgGraph = true;
-      // Additive mode: CfgGraph events fire alongside CPTracker (+2 tests).
-      // Clean-cut disabled: CfgGraph events fire at enter/exit boundaries but ESLint
-      // interleaves them with AST events. Rules depend on exact timing — loop events
-      // must fire BEFORE the loop node's exit handler, not at the same time.
+      // Clean-cut: 0 crashes on most rules, 41 crashes in consistent-return,
+      // 792 FP in no-unreachable-loop. Enable when these are resolved.
       // _useCfgGraph = true;
     }
 
@@ -4855,7 +4852,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasClassBody && CLASS_TYPES.has(tn)) invokeClassBodyHandlers(idx, true);
-        // Use pre-indexed array (no Map lookup, no string allocation); fall back on remap (MethodDefinition→Property)
+        // CfgGraph: code path exit events BEFORE rule exit handlers (ESLint order)
+        if (_useCfgGraph) _fireCfgEvents(idx, true);
         const exit = isMethodNode ? visitorMap.get(tn + ':exit') : _tagExitHandlers[tag];
         if (exit) {
           const node = nodeView(ast, idx);
@@ -4886,8 +4884,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
         if (hasMethodFn && isMethodNode) invokeMethodFnHandlers(idx, true);
-        // Code path exit: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-        if (_useCfgGraph) _fireCfgEvents(idx, true);
         if (!_useCfgGraph && hasCodePath) {
           if (_branchEnterTagSet.has(tag)) {
             if (_cachedLoopTagSet && _cachedLoopTagSet.has(tag)) {
@@ -5239,12 +5235,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         catchStack.pop();
       }
       if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
+      // CfgGraph: code path exit events BEFORE rule exit handlers
+      if (_useCfgGraph) _fireCfgEvents(idx, true);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-      // Code path exit: CfgGraph events (additive or exclusive) + CPTracker (fallback)
-      if (_useCfgGraph) _fireCfgEvents(idx, true);
       if (!_useCfgGraph) {
         if (flags & FLAG_TERMINATOR) {
           const nv = nodeView(ast, idx);
