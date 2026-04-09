@@ -891,6 +891,8 @@ pub const CodePathBuilder = struct {
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
         try self.forwardCurrentToHead(target_node, .enter);
+        // Always save entry segments for LOOP event (used as toSegment)
+        ctx.entry_segments = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null;
     }
 
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -935,6 +937,18 @@ pub const CodePathBuilder = struct {
                 for (d) |to_seg| {
                     if (from_seg != NONE_SEG and to_seg != NONE_SEG) {
                         try self.markLooped(to_seg, from_seg);
+                    }
+                }
+            }
+        }
+        // Emit LOOP event with entry_segments as toSegment (for isLoopingTarget)
+        // The entry segment is the one created at pushLoopContext — rules use it
+        // to map segment→loop via onCodePathSegmentStart.
+        const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
+        if (entry) |e| {
+            for (head) |from_seg| {
+                for (e) |to_seg| {
+                    if (from_seg != NONE_SEG and to_seg != NONE_SEG) {
                         try self.emitSegLoop(from_seg, to_seg, node);
                     }
                 }
