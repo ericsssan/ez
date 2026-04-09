@@ -882,6 +882,7 @@ pub const CodePathBuilder = struct {
         for (current_head) |s| {
             if (s != NONE_SEG and self.segments.items[s].reachable) has_reachable_prev = true;
         }
+
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.add(new_segs, self);
         try self.forwardCurrentToHead(node, .enter);
