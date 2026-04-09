@@ -692,9 +692,12 @@ pub const CodePathBuilder = struct {
         self.choice_context = ctx;
     }
 
-    pub fn popChoiceContext(self: *CodePathBuilder) !void {
+    pub fn popChoiceContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.choice_context orelse return;
         self.choice_context = ctx.upper;
+
+        // End current segments
+        try self.leaveFromCurrentSegment(node, true);
 
         // Merge true and false paths
         var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
@@ -705,6 +708,9 @@ pub const CodePathBuilder = struct {
             const merged = try combined.makeNext(0, -1, self);
             try self.fork_context.replaceHead(merged, self);
         }
+
+        // Start merged segment
+        try self.forwardCurrentToHead(node, true);
     }
 
     pub fn makeIfConsequent(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -762,10 +768,10 @@ pub const CodePathBuilder = struct {
         try self.pushChoiceContext(.test_kind, false);
     }
 
-    pub fn popSwitchContext(self: *CodePathBuilder) !void {
+    pub fn popSwitchContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.switch_context orelse return;
         self.switch_context = ctx.upper;
-        try self.popChoiceContext();
+        try self.popChoiceContext(node);
         try self.popForkContext();
         self.popBreakContext();
     }
@@ -871,13 +877,8 @@ pub const CodePathBuilder = struct {
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.loop_context orelse return;
         self.loop_context = ctx.upper;
-        try self.popChoiceContext();
+        try self.popChoiceContext(node);
         self.popBreakContext();
-        // Emit segment transition: end loop, start after-loop segment
-        try self.leaveFromCurrentSegment(node, true);
-        const new_segs = try self.fork_context.makeNext(-1, -1, self);
-        try self.fork_context.replaceHead(new_segs, self);
-        try self.forwardCurrentToHead(node, true);
     }
 
     pub fn makeLoopBackEdge(self: *CodePathBuilder, node: NodeIndex) !void {

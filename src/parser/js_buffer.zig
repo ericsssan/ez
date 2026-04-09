@@ -318,12 +318,7 @@ pub fn writeSemanticData(
         .cfg_events_offset = 0, // legacy — replaced by cfg_graph_offset
         .cfg_events_count = 0,
 
-        .cfg_graph_offset = blk: {
-            if (sem.code_path_result) |cpr| {
-                break :blk writeCfgGraph(buf, alloc, &cpr) catch 0;
-            }
-            break :blk 0;
-        },
+        .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr) catch 0; } break :blk 0; },
     };
 
     return ptrOffsetPub(buf, header_mem.ptr);

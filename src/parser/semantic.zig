@@ -587,7 +587,7 @@ pub const SemanticAnalyzer = struct {
                 }
                 try self.visitNode(data.rhs);
                 self.cfg_alive = alive_pre or self.cfg_alive;
-                if (self.cpb_initialized) try self.cpb.popChoiceContext();
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .if_else_stmt => {
                 try self.visitNode(data.lhs); // condition
@@ -603,7 +603,7 @@ pub const SemanticAnalyzer = struct {
                 if (self.cpb_initialized) try self.cpb.makeIfAlternate(idx);
                 try self.visitNode(if_data.alternate);
                 self.cfg_alive = alive_true or self.cfg_alive;
-                if (self.cpb_initialized) try self.cpb.popChoiceContext();
+                if (self.cpb_initialized) try self.cpb.popChoiceContext(idx);
             },
             .while_stmt => {
                 const alive_pre = self.cfg_alive;
@@ -1188,7 +1188,7 @@ pub const SemanticAnalyzer = struct {
         // break inside switch also means exit is alive
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else false;
         if (had_break) self.cfg_alive = true;
-        if (self.cpb_initialized) try self.cpb.popSwitchContext();
+        if (self.cpb_initialized) try self.cpb.popSwitchContext(idx);
         self.leaveScope();
     }
 

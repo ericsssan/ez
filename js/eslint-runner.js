@@ -4515,9 +4515,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         if (!map.has(nodeIdx)) map.set(nodeIdx, []);
         map.get(nodeIdx).push({ type: evType, d1, d2 });
       }
-      // Clean-cut: 0 crashes on most rules, 41 crashes in consistent-return,
-      // 792 FP in no-unreachable-loop. Enable when these are resolved.
-      // _useCfgGraph = true;
+      // _useCfgGraph = true; // Enable after fixing popChoiceContext merge events + loop suppression
     }
 
     // CfgGraph state: track current codepath for currentSegments updates
