@@ -150,6 +150,7 @@ fn parseImpl(
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
     const min_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.min_tok.ptr) else 0;
+    const sorted_by_start_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.sorted_by_start.ptr) else 0;
 
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
@@ -175,6 +176,7 @@ fn parseImpl(
         .line_starts_count = @intCast(line_starts.len),
         .max_tok_offset = max_tok_offset,
         .min_tok_offset = min_tok_offset,
+        .sorted_by_start_offset = sorted_by_start_offset,
     });
 
     return backing.bytesUsed();

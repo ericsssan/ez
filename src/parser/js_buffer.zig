@@ -68,10 +68,13 @@ pub const BufferHeader = extern struct {
     line_starts_count: u32 = 0,
     max_tok_offset: u32 = 0,
     min_tok_offset: u32 = 0,
+    // Added in v10: sorted node indices for O(log n) getNodeByRangeIndex.
+    // Sorted by (start ASC, range_size ASC) so innermost nodes come first.
+    sorted_by_start_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 132);
+    std.debug.assert(@sizeOf(BufferHeader) == 136);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -749,6 +752,7 @@ pub const HeaderInfo = struct {
     line_starts_count: u32 = 0,
     max_tok_offset: u32 = 0,
     min_tok_offset: u32 = 0,
+    sorted_by_start_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -792,6 +796,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .line_starts_count = info.line_starts_count,
         .max_tok_offset = info.max_tok_offset,
         .min_tok_offset = info.min_tok_offset,
+        .sorted_by_start_offset = info.sorted_by_start_offset,
     };
 }
 
@@ -954,7 +959,7 @@ pub fn computeNodePositions(
     tok_ends: []const u32,
     node_count: u32,
     token_count: u32,
-) !struct { starts: []u32, ends: []u32, max_tok: []u32, min_tok: []u32 } {
+) !struct { starts: []u32, ends: []u32, max_tok: []u32, min_tok: []u32, sorted_by_start: []u32 } {
     const n: usize = node_count;
     const tc: usize = token_count;
     const NONE: u32 = 0xFFFFFFFF;
@@ -1202,7 +1207,24 @@ pub fn computeNodePositions(
         node_ends[i] = ext_end;
     }
 
-    return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok, .min_tok = minTok };
+    // ── Sorted index for getNodeByRangeIndex: O(log n) lookup ──
+    // Sort node indices by (start ASC, range_size ASC) so innermost nodes
+    // come first among nodes sharing the same start position.
+    const sorted_by_start = try alloc.alloc(u32, n);
+    for (0..n) |i| sorted_by_start[i] = @intCast(i);
+    const SortCtx = struct {
+        starts: []const u32,
+        ends: []const u32,
+        pub fn lessThan(ctx: @This(), a: u32, b: u32) bool {
+            const sa = ctx.starts[a]; const sb = ctx.starts[b];
+            if (sa != sb) return sa < sb;
+            // Same start: smaller range (innermost) first
+            return (ctx.ends[a] - sa) < (ctx.ends[b] - sb);
+        }
+    };
+    std.mem.sortUnstable(u32, sorted_by_start, SortCtx{ .starts = node_starts, .ends = node_ends }, SortCtx.lessThan);
+
+    return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok, .min_tok = minTok, .sorted_by_start = sorted_by_start };
 }
 
 /// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).

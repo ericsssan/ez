@@ -143,6 +143,7 @@ const H = {
   LINE_STARTS_COUNT: 120,
   MAX_TOK_OFFSET: 124,
   MIN_TOK_OFFSET: 128,
+  SORTED_BY_START_OFFSET: 132,
 };
 
 // SemanticHeader field offsets (byte offsets from semOff)
@@ -291,6 +292,10 @@ class AstView {
     this._maxTokFromBuffer = mtOff > 0 ? new Uint32Array(buffer, mtOff, this.nodeCount) : null;
     const minTokOff = dv.getUint32(H.MIN_TOK_OFFSET, true);
     this._minTokFromBuffer = minTokOff > 0 ? new Uint32Array(buffer, minTokOff, this.nodeCount) : null;
+
+    // Sorted node indices for O(log n) getNodeByRangeIndex
+    const sbsOff = dv.getUint32(H.SORTED_BY_START_OFFSET, true);
+    this._sortedByStart = sbsOff > 0 ? new Uint32Array(buffer, sbsOff, this.nodeCount) : null;
 
     // Source text (UTF-8 in buffer, decoded lazily)
     this._sourceBytes = new Uint8Array(buffer, sourceOff, this.sourceLen);

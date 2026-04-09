@@ -1898,20 +1898,42 @@ class SourceCode {
    */
   getNodeByRangeIndex(index) {
     const ast = this._ast;
-    const n = ast.nodeCount;
     const startArr = ast._nodeStartPosArr;
     const endArr = ast._nodeEndPosArr;
     if (!startArr || !endArr) return null;
-    let best = null;
-    let bestSize = Infinity;
+    const sorted = ast._sortedByStart;
+    if (sorted) {
+      // O(log n): binary search sorted index for rightmost node with start <= index
+      const n = sorted.length;
+      let lo = 0, hi = n - 1, best = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (startArr[sorted[mid]] <= index) { best = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      // Scan backwards from best: sorted by (start ASC, size ASC) so innermost is first
+      let bestNode = null, bestSize = Infinity;
+      for (let i = best; i >= 0; i--) {
+        const ni = sorted[i];
+        const s = startArr[ni];
+        if (s > index) continue;
+        if (index - s > bestSize) break; // can't improve — all remaining have smaller start
+        const e = endArr[ni];
+        if (index < e) {
+          const size = e - s;
+          if (size < bestSize) { bestSize = size; bestNode = ni; }
+        }
+      }
+      return bestNode !== null ? nodeView(ast, bestNode) : null;
+    }
+    // Fallback: O(n) linear scan
+    const n = ast.nodeCount;
+    let best = null, bestSize = Infinity;
     for (let i = 0; i < n; i++) {
       const s = startArr[i], e = endArr[i];
       if (index >= s && index < e) {
         const size = e - s;
-        if (size <= bestSize) {
-          bestSize = size;
-          best = i;
-        }
+        if (size <= bestSize) { bestSize = size; best = i; }
       }
     }
     return best !== null ? nodeView(ast, best) : null;
