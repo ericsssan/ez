@@ -706,13 +706,22 @@ pub const CodePathBuilder = struct {
         const ctx = self.choice_context orelse return;
         self.choice_context = ctx.upper;
 
+        // Save the current (last branch ending) segments
+        const last_branch_end = try self.allocator.dupe(SegmentId, self.fork_context.head());
+
         // End current segments
         try self.leaveFromCurrentSegment(node, .exit);
 
-        // Merge true and false paths
+        // Merge branch endings:
+        // true_fork.head() = if-consequent ending (saved by makeIfAlternate)
+        // last_branch_end = else-alternate ending (or last case in switch)
         var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
-        try combined.addAll(&ctx.true_fork);
-        try combined.addAll(&ctx.false_fork);
+        if (!ctx.true_fork.empty()) {
+            const true_end = ctx.true_fork.head();
+            const true_copy = try self.allocator.dupe(SegmentId, true_end);
+            try combined.add(true_copy, self);
+        }
+        try combined.add(last_branch_end, self);
 
         if (!combined.empty()) {
             const merged = try combined.makeNext(0, -1, self);
