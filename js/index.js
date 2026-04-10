@@ -344,4 +344,82 @@ function buildNativeConfig(rulesObj, optionsObj) {
   return sevBuf;
 }
 
-module.exports = { parse, parseSource, parseAndLint, lintSource, lint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+// ── Batch IO functions ───────────────────────────────────────────
+
+const _textDec = new TextDecoder();
+
+/**
+ * Decode binary file-list buffer returned by discoverFiles().
+ * Format: u32 count, (u16 path_len, u8[] path, u32 size) per entry.
+ */
+function _decodeFileList(buf) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  const count = dv.getUint32(0, true);
+  const paths = new Array(count);
+  const sizes = new Uint32Array(count);
+  let pos = 4;
+  for (let i = 0; i < count; i++) {
+    const len = dv.getUint16(pos, true); pos += 2;
+    paths[i] = _textDec.decode(u8.subarray(pos, pos + len)); pos += len;
+    sizes[i] = dv.getUint32(pos, true); pos += 4;
+  }
+  return { paths, sizes };
+}
+
+/**
+ * Decode binary batch-lint result buffer returned by lintPaths().
+ * Format: u32 file_count, per file: u16 path_len, u8[] path, u32 diag_count,
+ *   per diag (15 bytes): u32 line, u32 col, u32 offset, u8 severity, u16 rule_index.
+ */
+function _decodeBatchResults(buf) {
+  const u8 = new Uint8Array(buf);
+  const dv = new DataView(buf);
+  const ruleNames = _getNativeRuleNames();
+  const count = dv.getUint32(0, true);
+  const results = new Array(count);
+  let pos = 4;
+  for (let f = 0; f < count; f++) {
+    const pathLen = dv.getUint16(pos, true); pos += 2;
+    const file = _textDec.decode(u8.subarray(pos, pos + pathLen)); pos += pathLen;
+    const diagCount = dv.getUint32(pos, true); pos += 4;
+    const diags = new Array(diagCount);
+    for (let d = 0; d < diagCount; d++) {
+      const line      = dv.getUint32(pos,      true);
+      const col       = dv.getUint32(pos + 4,  true);
+      const offset    = dv.getUint32(pos + 8,  true);
+      const severity  = dv.getUint8 (pos + 12);
+      const ruleIndex = dv.getUint16(pos + 13, true);
+      pos += 15;
+      diags[d] = {
+        ruleName: ruleNames[ruleIndex] || `native-rule-${ruleIndex}`,
+        severity, line, col, offset,
+      };
+    }
+    results[f] = { file, diags };
+  }
+  return results;
+}
+
+/**
+ * Discover JS/TS source files under root paths (in Zig — no JS readdirSync).
+ * Returns { paths: string[], sizes: Uint32Array }.
+ */
+function discoverFiles(roots) {
+  const b = loadBinding();
+  const buf = b.discoverFiles(Array.isArray(roots) ? roots : [roots]);
+  return _decodeFileList(buf);
+}
+
+/**
+ * Discover files + batch lint in one Zig call. Returns decoded results array.
+ * Eliminates JS readdirSync, path marshaling, and per-diag NAPI object creation.
+ */
+function lintPaths(roots, options = {}) {
+  const b = loadBinding();
+  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  const buf = b.lintPaths(Array.isArray(roots) ? roots : [roots], configBuf);
+  return _decodeBatchResults(buf);
+}
+
+module.exports = { parse, parseSource, parseAndLint, lintSource, lint, discoverFiles, lintPaths, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

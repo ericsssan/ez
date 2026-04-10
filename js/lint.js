@@ -15,7 +15,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { parseAndLint, parse, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLint, parse, discoverFiles, lintPaths, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
@@ -94,27 +94,8 @@ if (filePaths.length === 0) {
   process.exit(1);
 }
 
-// ── File discovery ───────────────────────────────────────────────
-
-const JS_EXTS = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]);
-
-function discoverFiles(pathArg) {
-  const results = [];
-  function walk(p) {
-    const stat = fs.statSync(p, { throwIfNoEntry: false });
-    if (!stat) return;
-    if (stat.isDirectory()) {
-      for (const entry of fs.readdirSync(p)) {
-        if (entry.startsWith(".") || entry === "node_modules") continue;
-        walk(path.join(p, entry));
-      }
-    } else if (stat.isFile() && JS_EXTS.has(path.extname(p)) && !p.endsWith(".d.ts") && !p.endsWith(".d.mts") && !p.endsWith(".d.cts")) {
-      results.push({ path: p, size: stat.size });
-    }
-  }
-  walk(pathArg);
-  return results;
-}
+// ── File discovery — delegated to Zig (no JS readdirSync) ────────
+// discoverFiles() is imported from ./index; it calls the Zig NAPI binding.
 
 // ── Config loading ───────────────────────────────────────────────
 
@@ -221,13 +202,8 @@ const nativeConfig = hasNativeRules ? buildNativeConfig(nativeRuleObj) : null;
 const jsOnlyPlugins = allPlugins.filter(p => !nativeRules.has(p.meta?.name));
 
 
-// Discover files — collect {path, size} pairs to avoid re-stat in Zig workers
-const allFileEntries = [];
-for (const p of filePaths) {
-  allFileEntries.push(...discoverFiles(p));
-}
-const allFiles = allFileEntries.map(e => e.path);
-const allFileSizes = new Uint32Array(allFileEntries.map(e => Math.min(e.size, 0xFFFFFFFF)));
+// Discover files via Zig — no JS readdirSync/statSync walk
+const { paths: allFiles, sizes: allFileSizes } = discoverFiles(filePaths);
 
 if (allFiles.length === 0) {
   console.error("error: no JS/TS files found");
@@ -255,23 +231,20 @@ async function main() {
   let errorFiles = 0;
   let totalFixed = 0;
 
-  // Native batch: all rules handled by Zig, JS workers not needed.
-  // lintFiles reads files and parallelizes internally using OS threads.
-  // Falls back to sequential when --fix is set (lintFiles has no fix ranges).
+  // Native batch: Zig handles discovery + parallel read + lint + binary results.
+  // Falls back to sequential when JS plugins present (need AST) or --fix (need source).
   const useNativeBatch = jsOnlyPlugins.length === 0 && hasNativeRules && allFiles.length > 1 && !applyFix;
 
   if (useNativeBatch) {
-    // ── Native batch path (lintFiles → Zig OS threads) ─────────
-    // Zig workers read files and compute line/col before arena reset — no JS I/O needed.
-    const batchResults = lintFiles(allFiles, { config: nativeConfig, sizes: allFileSizes });
+    // ── Native batch path (lintPaths → Zig discovery+threads+binary) ─────
+    const batchResults = lintPaths(filePaths, { config: nativeConfig });
 
-    // Zig only returns entries for files with violations — clean files are omitted.
     totalFiles = allFiles.length;
     for (const { file, diags } of batchResults) {
       const violations = diags.map(d => ({
         ruleId: d.ruleName,
         severity: d.severity === 0 ? 2 : 1,
-        message: d.message,
+        message: `[${d.ruleName}]`,
         loc: { start: { line: d.line, column: d.col } },
       }));
 

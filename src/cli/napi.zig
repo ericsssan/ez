@@ -635,6 +635,7 @@ const n = struct {
     extern fn napi_create_object(env: Env, result: *Value) Status;
     extern fn napi_set_element(env: Env, object: Value, index: u32, value: Value) Status;
     extern fn napi_get_typedarray_info(env: Env, typedarray: Value, type_out: ?*c_uint, length: *usize, data: *?*anyopaque, arraybuffer: ?*Value, byte_offset: ?*usize) Status;
+    extern fn napi_create_arraybuffer(env: Env, byte_length: usize, data: *?*anyopaque, result: *Value) Status;
 };
 
 // ── Config helpers ────────────────────────────────────────────────
@@ -709,6 +710,8 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "parseAndLintFile", napiParseAndLintFile);
     registerFn(env, exports, "lintFiles", napiLintFiles);
+    registerFn(env, exports, "discoverFiles", napiDiscoverFiles);
+    registerFn(env, exports, "lintPaths", napiLintPaths);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
@@ -1102,12 +1105,19 @@ const FileRaw = struct {
     had_error: bool,
 };
 
+/// Atomic work-stealing queue — threads race to claim the next file index.
+const WorkQueue = struct {
+    next: std.atomic.Value(usize),
+    fn init() WorkQueue { return .{ .next = std.atomic.Value(usize).init(0) }; }
+};
+
 const BatchWorkerArgs = struct {
-    file_paths: []const [:0]const u8, // null-terminated — no dupeZ needed for open()
-    file_sizes: ?[]const u32,         // non-null → known sizes, skip fstat
+    all_paths: []const [:0]const u8, // full file list shared across all workers
+    all_sizes: ?[]const u32,         // non-null → known sizes, skip fstat
     config: ?*const linter_root.config.Config,
-    results: []FileRaw,
-    out_alloc: std.mem.Allocator,
+    results: []FileRaw,              // results[i] written by whichever thread claims i
+    out_alloc: std.mem.Allocator,    // per-thread; freed after NAPI/binary result built
+    queue: *WorkQueue,               // shared atomic work counter
 };
 
 /// Read a file into allocator-owned memory using libc primitives.
@@ -1138,16 +1148,19 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
     var parse_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer parse_arena.deinit();
 
-    for (0..args.file_paths.len) |i| {
-        const file_path = args.file_paths[i];
+    while (true) {
+        const i = args.queue.next.fetchAdd(1, .monotonic);
+        if (i >= args.all_paths.len) break;
 
-        const known = if (args.file_sizes) |sz| sz[i] else null;
+        // Always reset arena at end of iteration — even on error continue paths.
+        defer _ = parse_arena.reset(.retain_capacity);
+
+        const file_path = args.all_paths[i];
+        const known = if (args.all_sizes) |sz| sz[i] else null;
         const source: []const u8 = readFilePosix(file_path, known, parse_arena.allocator()) catch {
             args.results[i] = .{ .file_path = file_path, .diags = &.{}, .had_error = true };
             continue;
         };
-
-        defer _ = parse_arena.reset(.retain_capacity);
 
         const lang      = Language.fromExtension(file_path) orelse .js;
         const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
@@ -1164,7 +1177,6 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
         };
 
         // Use parse_arena for lint — reset together with parse data per file.
-        // Avoids threadlocal lint arena that grows unboundedly with retain_capacity.
         var sem = if (linter_mod.needsSemantic(args.config))
             semantic_mod.SemanticAnalyzer.analyze(bump, &tree) catch semantic_mod.SemanticResult.initEmpty(bump)
         else
@@ -1172,18 +1184,17 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
 
         const diagnostics = linter_mod.lint(bump, &tree, &sem, args.config) catch &.{};
 
-        // Build line index once, then O(log n) per diagnostic.
-        // Without this, lineFromSource scans from byte 0 per diagnostic = O(diags × filesize).
+        // Build line index once → O(log n) per diagnostic (vs O(diags × filesize) per-scan).
         const line_idx = if (diagnostics.len > 0) LineIndex.build(source, bump) else LineIndex{ .starts = &.{} };
 
         if (args.out_alloc.alloc(DiagRaw, diagnostics.len)) |diag_copy| {
             for (diagnostics, 0..) |diag, j| {
                 const byte_offset = diag.span.start;
                 diag_copy[j] = .{
-                    .line      = line_idx.lineAt(byte_offset),
-                    .col       = line_idx.colAt(byte_offset),
-                    .offset    = byte_offset,
-                    .severity  = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 },
+                    .line       = line_idx.lineAt(byte_offset),
+                    .col        = line_idx.colAt(byte_offset),
+                    .offset     = byte_offset,
+                    .severity   = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 },
                     .rule_index = diag.rule_index,
                 };
             }
@@ -1264,41 +1275,7 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     for (out_arenas) |*a| a.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer for (out_arenas) |*a| a.deinit();
 
-    if (thread_count <= 1) {
-        var args = BatchWorkerArgs{
-            .file_paths = file_paths,
-            .file_sizes = file_sizes,
-            .config     = config_ptr,
-            .results    = results,
-            .out_alloc  = out_arenas[0].allocator(),
-        };
-        lintBatchWorker(&args);
-    } else {
-        const threads     = tmp.alloc(std.Thread, thread_count) catch return null;
-        const worker_args = tmp.alloc(BatchWorkerArgs, thread_count) catch return null;
-        const chunk_size  = (file_count + thread_count - 1) / thread_count;
-        var spawned: usize = 0;
-
-        for (0..thread_count) |t| {
-            const start: usize = t * chunk_size;
-            if (start >= file_count) break;
-            const end = @min(start + chunk_size, @as(usize, file_count));
-            worker_args[t] = .{
-                .file_paths = file_paths[start..end],
-                .file_sizes = if (file_sizes) |sz| sz[start..end] else null,
-                .config     = config_ptr,
-                .results    = results[start..end],
-                .out_alloc  = out_arenas[t].allocator(),
-            };
-            const handle = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, lintBatchWorker, .{&worker_args[t]}) catch {
-                lintBatchWorker(&worker_args[t]);
-                continue;
-            };
-            threads[spawned] = handle;
-            spawned += 1;
-        }
-        for (threads[0..spawned]) |thread| thread.join();
-    }
+    runBatchWorkers(file_paths, file_sizes, config_ptr, results, tmp, out_arenas);
 
     // Build NAPI return array — only files with violations, clean files omitted.
     var js_result: n.Value = undefined;
@@ -1333,6 +1310,318 @@ fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         out_idx += 1;
     }
     return js_result;
+}
+
+// ── File discovery helpers ───────────────────────────────────────
+
+/// JS/TS source extensions (matches the JS-side JS_EXTS set).
+fn hasJsExtension(name: []const u8) bool {
+    const exts = [_][]const u8{ ".tsx", ".jsx", ".mts", ".cts", ".mjs", ".cjs", ".ts", ".js" };
+    inline for (exts) |ext| {
+        if (std.mem.endsWith(u8, name, ext)) return true;
+    }
+    return false;
+}
+
+/// True for .d.ts / .d.mts / .d.cts declaration files — always skipped.
+fn isDtsFile(name: []const u8) bool {
+    return std.mem.endsWith(u8, name, ".d.ts") or
+           std.mem.endsWith(u8, name, ".d.mts") or
+           std.mem.endsWith(u8, name, ".d.cts");
+}
+
+const FileEntry = struct { path: [:0]const u8, size: u32 };
+
+/// fstatat(AT_FDCWD, path, ...) — portable replacement for stat() on the path.
+/// Works on macOS and Linux; follows symlinks (flag = 0).
+fn statPath(path_z: [:0]const u8, st: *std.c.Stat) bool {
+    return std.c.fstatat(std.c.AT.FDCWD, path_z.ptr, st, 0) == 0;
+}
+
+/// Walk `dir_path_z` using POSIX opendir/readdir. Uses d_type for fast type
+/// detection; falls back to fstatat on DT_UNKNOWN filesystems.
+fn walkDirPosix(
+    dir_path_z: [:0]const u8,
+    list: *std.ArrayList(FileEntry),
+    alloc: std.mem.Allocator,
+) void {
+    const dp = std.c.opendir(dir_path_z.ptr) orelse return;
+    defer _ = std.c.closedir(dp);
+
+    while (std.c.readdir(dp)) |entry| {
+        const raw_name = std.mem.sliceTo(&entry.name, 0);
+        if (raw_name.len == 0 or raw_name[0] == '.') continue;
+        if (std.mem.eql(u8, raw_name, "node_modules")) continue;
+
+        const joined = std.fs.path.join(alloc, &.{ dir_path_z, raw_name }) catch continue;
+        const child_z: [:0]u8 = alloc.dupeZ(u8, joined) catch continue;
+
+        const dt = entry.@"type";
+        if (dt == std.c.DT.DIR) {
+            walkDirPosix(child_z, list, alloc);
+        } else if (dt == std.c.DT.REG or dt == std.c.DT.LNK) {
+            if (!hasJsExtension(raw_name)) continue;
+            if (isDtsFile(raw_name)) continue;
+            var st: std.c.Stat = undefined;
+            const size: u32 = if (statPath(child_z, &st)) @intCast(@min(st.size, std.math.maxInt(u32))) else 0;
+            list.append(alloc, .{ .path = child_z, .size = size }) catch {};
+        } else if (dt == std.c.DT.UNKNOWN) {
+            // Slow path: stat to determine type (rare on APFS/ext4)
+            var st: std.c.Stat = undefined;
+            if (!statPath(child_z, &st)) continue;
+            const m = st.mode & std.c.S.IFMT;
+            if (m == std.c.S.IFDIR) {
+                walkDirPosix(child_z, list, alloc);
+            } else if (m == std.c.S.IFREG or m == std.c.S.IFLNK) {
+                if (!hasJsExtension(raw_name)) continue;
+                if (isDtsFile(raw_name)) continue;
+                list.append(alloc, .{ .path = child_z, .size = @intCast(@min(st.size, std.math.maxInt(u32))) }) catch {};
+            }
+        }
+    }
+}
+
+/// Add a single root path (file or directory) into `list`.
+fn discoverRoot(root: []const u8, list: *std.ArrayList(FileEntry), alloc: std.mem.Allocator) void {
+    const root_z: [:0]u8 = alloc.dupeZ(u8, root) catch return;
+
+    var st: std.c.Stat = undefined;
+    if (!statPath(root_z, &st)) return;
+
+    const mode = st.mode & std.c.S.IFMT;
+    if (mode == std.c.S.IFDIR) {
+        walkDirPosix(root_z, list, alloc);
+    } else if (mode == std.c.S.IFREG or mode == std.c.S.IFLNK) {
+        const basename = std.fs.path.basename(root);
+        if (!hasJsExtension(basename) or isDtsFile(basename)) return;
+        list.append(alloc, .{ .path = root_z, .size = @intCast(@min(st.size, std.math.maxInt(u32))) }) catch {};
+    }
+}
+
+/// Serialize lint results to a flat binary buffer — no NAPI object creation.
+/// Format:
+///   u32 file_count_with_violations
+///   per file: u16 path_len, u8[path_len] path, u32 diag_count
+///     per diag (15 bytes): u32 line, u32 col, u32 offset, u8 severity, u16 rule_index
+fn serializeBatchResults(results: []const FileRaw, allocator: std.mem.Allocator) ?[]const u8 {
+    var file_count: u32 = 0;
+    var total: usize = 4;
+    for (results) |r| {
+        if (r.diags.len == 0) continue;
+        file_count += 1;
+        total += 2 + r.file_path.len + 4 + r.diags.len * 15;
+    }
+    const buf = allocator.alloc(u8, total) catch return null;
+    var pos: usize = 0;
+    std.mem.writeInt(u32, buf[pos..][0..4], file_count, .little); pos += 4;
+    for (results) |r| {
+        if (r.diags.len == 0) continue;
+        std.mem.writeInt(u16, buf[pos..][0..2], @intCast(r.file_path.len), .little); pos += 2;
+        @memcpy(buf[pos..][0..r.file_path.len], r.file_path); pos += r.file_path.len;
+        std.mem.writeInt(u32, buf[pos..][0..4], @intCast(r.diags.len), .little); pos += 4;
+        for (r.diags) |d| {
+            std.mem.writeInt(u32, buf[pos..][0..4],   d.line,       .little);
+            std.mem.writeInt(u32, buf[pos+4..][0..4], d.col,        .little);
+            std.mem.writeInt(u32, buf[pos+8..][0..4], d.offset,     .little);
+            buf[pos+12] = d.severity;
+            std.mem.writeInt(u16, buf[pos+13..][0..2], d.rule_index, .little);
+            pos += 15;
+        }
+    }
+    return buf[0..pos];
+}
+
+/// Serialize a file list for discoverFiles() return.
+/// Format: u32 count, per entry: u16 path_len, u8[path_len] path, u32 size
+fn serializeFileList(entries: []const FileEntry, allocator: std.mem.Allocator) ?[]const u8 {
+    var total: usize = 4;
+    for (entries) |e| total += 2 + e.path.len + 4;
+    const buf = allocator.alloc(u8, total) catch return null;
+    var pos: usize = 0;
+    std.mem.writeInt(u32, buf[pos..][0..4], @intCast(entries.len), .little); pos += 4;
+    for (entries) |e| {
+        std.mem.writeInt(u16, buf[pos..][0..2], @intCast(e.path.len), .little); pos += 2;
+        @memcpy(buf[pos..][0..e.path.len], e.path[0..e.path.len]); pos += e.path.len;
+        std.mem.writeInt(u32, buf[pos..][0..4], e.size, .little); pos += 4;
+    }
+    return buf[0..pos];
+}
+
+/// Create a NAPI ArrayBuffer whose content is a copy of `bytes`.
+/// JS callers wrap it with `new DataView(buf)` or `new Uint8Array(buf)`.
+fn napiArrayBufferFrom(env: n.Env, bytes: []const u8) n.Value {
+    var data: ?*anyopaque = null;
+    var result: n.Value = undefined;
+    if (n.napi_create_arraybuffer(env, bytes.len, &data, &result) != n.OK) return result;
+    if (data) |d| @memcpy(@as([*]u8, @ptrCast(d))[0..bytes.len], bytes);
+    return result;
+}
+
+/// Shared batch-lint driver used by both napiLintFiles and napiLintPaths.
+/// Runs work-stealing lint across `all_paths`, stores results in caller-provided slice.
+fn runBatchWorkers(
+    all_paths: []const [:0]const u8,
+    all_sizes: ?[]const u32,
+    config: ?*const linter_root.config.Config,
+    results: []FileRaw,
+    allocator: std.mem.Allocator,
+    out_arenas: []std.heap.ArenaAllocator,
+) void {
+    const thread_count = out_arenas.len;
+    var work_queue = WorkQueue.init();
+
+    if (thread_count <= 1) {
+        var args = BatchWorkerArgs{
+            .all_paths = all_paths,
+            .all_sizes = all_sizes,
+            .config    = config,
+            .results   = results,
+            .out_alloc = out_arenas[0].allocator(),
+            .queue     = &work_queue,
+        };
+        lintBatchWorker(&args);
+        return;
+    }
+
+    const threads     = allocator.alloc(std.Thread, thread_count) catch return;
+    const worker_args = allocator.alloc(BatchWorkerArgs, thread_count) catch return;
+    var spawned: usize = 0;
+
+    for (0..thread_count) |t| {
+        worker_args[t] = .{
+            .all_paths = all_paths,
+            .all_sizes = all_sizes,
+            .config    = config,
+            .results   = results,
+            .out_alloc = out_arenas[t].allocator(),
+            .queue     = &work_queue,
+        };
+        const handle = std.Thread.spawn(.{ .stack_size = 64 * 1024 * 1024 }, lintBatchWorker, .{&worker_args[t]}) catch {
+            lintBatchWorker(&worker_args[t]);
+            continue;
+        };
+        threads[spawned] = handle;
+        spawned += 1;
+    }
+    for (threads[0..spawned]) |thread| thread.join();
+}
+
+// ── discoverFiles(roots[]) → Buffer ─────────────────────────────
+//
+// Walks root paths in Zig, returns a binary blob of paths+sizes.
+// Eliminates JS readdirSync/statSync walk entirely.
+// Buffer: u32 count, (u16 path_len, u8[] path, u32 size) per entry.
+
+fn napiDiscoverFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 1;
+    var argv: [1]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 1) {
+        _ = n.napi_throw_error(env, null, "discoverFiles(roots[]): 1 arg required");
+        return null;
+    }
+
+    var root_count: u32 = 0;
+    if (n.napi_get_array_length(env, argv[0], &root_count) != n.OK) return null;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var list: std.ArrayList(FileEntry) = .empty;
+
+    for (0..root_count) |i| {
+        var val: n.Value = undefined;
+        _ = n.napi_get_element(env, argv[0], @intCast(i), &val);
+        var len: usize = 0;
+        _ = n.napi_get_value_string_utf8(env, val, null, 0, &len);
+        const pbuf = alloc.alloc(u8, len + 1) catch continue;
+        var written: usize = 0;
+        _ = n.napi_get_value_string_utf8(env, val, pbuf.ptr, len + 1, &written);
+        discoverRoot(pbuf[0..written], &list, alloc);
+    }
+
+    const serial = serializeFileList(list.items, alloc) orelse return null;
+    return napiArrayBufferFrom(env, serial);
+}
+
+// ── lintPaths(roots[], config?) → Buffer ────────────────────────
+//
+// Combines Zig discovery + work-stealing batch lint into one call.
+// Eliminates both JS readdirSync AND per-path NAPI string marshaling.
+// Returns a binary buffer decoded by JS with DataView — no per-diag NAPI objects.
+
+fn napiLintPaths(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 2;
+    var argv: [2]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 1) {
+        _ = n.napi_throw_error(env, null, "lintPaths(roots[], config?): 1 arg required");
+        return null;
+    }
+
+    var root_count: u32 = 0;
+    if (n.napi_get_array_length(env, argv[0], &root_count) != n.OK) return null;
+
+    var config_val: ?linter_root.config.Config = null;
+    if (argc >= 2) {
+        if (getOptionalConfigBytes(env, argv[1])) |bytes| {
+            config_val = configFromSeverityBytes(bytes);
+        }
+    }
+    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
+
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // ── 1. Discover files in Zig ─────────────────────────────────
+    var list: std.ArrayList(FileEntry) = .empty;
+
+    for (0..root_count) |i| {
+        var val: n.Value = undefined;
+        _ = n.napi_get_element(env, argv[0], @intCast(i), &val);
+        var len: usize = 0;
+        _ = n.napi_get_value_string_utf8(env, val, null, 0, &len);
+        const pbuf = alloc.alloc(u8, len + 1) catch continue;
+        var written: usize = 0;
+        _ = n.napi_get_value_string_utf8(env, val, pbuf.ptr, len + 1, &written);
+        discoverRoot(pbuf[0..written], &list, alloc);
+    }
+
+    if (list.items.len == 0) {
+        const empty = [4]u8{ 0, 0, 0, 0 };
+        return napiArrayBufferFrom(env, &empty);
+    }
+
+    // Build typed-array views for the batch worker
+    const all_paths = alloc.alloc([:0]const u8, list.items.len) catch return null;
+    const all_sizes = alloc.alloc(u32, list.items.len) catch return null;
+    for (list.items, 0..) |e, j| {
+        all_paths[j] = e.path;
+        all_sizes[j] = e.size;
+    }
+
+    // ── 2. Batch lint with work-stealing ─────────────────────────
+    const file_count = all_paths.len;
+    const cpu_count  = std.Thread.getCpuCount() catch 1;
+    const nthreads   = @min(file_count, cpu_count);
+
+    const results   = alloc.alloc(FileRaw, file_count) catch return null;
+    for (results) |*r| r.* = .{ .file_path = "", .diags = &.{}, .had_error = false };
+
+    const out_arenas = alloc.alloc(std.heap.ArenaAllocator, nthreads) catch return null;
+    for (out_arenas) |*a| a.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer for (out_arenas) |*a| a.deinit();
+
+    // Restore file paths into results so serializer can use them
+    for (all_paths, 0..) |p, j| results[j].file_path = p;
+
+    runBatchWorkers(all_paths, all_sizes, config_ptr, results, alloc, out_arenas);
+
+    // ── 3. Serialize to binary — no NAPI object creation ─────────
+    const serial = serializeBatchResults(results, alloc) orelse return null;
+    return napiArrayBufferFrom(env, serial);
 }
 
 // ── tagCount() → u32 ────────────────────────────────────────────
