@@ -614,11 +614,44 @@ pub const CodePathBuilder = struct {
             }
         }
 
-        // Record final segments
+        // Record final segments.
+        // ESLint populates finalSegments incrementally: when return/throw is called,
+        // the REACHABLE segments at that point are added. At exit, the head may be
+        // unreachable (after return/throw), but finalSegments already has the reachable ones.
+        // We replicate: use returned+thrown as finals, plus any reachable head segments.
         var cp = &self.codepaths.items[cp_id];
         cp.final_start = @intCast(self.cp_final_pool.items.len);
+        // Add returned segments first (reachable at point of return)
+        if (cp.returned_end > cp.returned_start) {
+            for (self.cp_returned_pool.items[cp.returned_start..cp.returned_end]) |seg_id| {
+                try self.cp_final_pool.append(self.allocator, seg_id);
+            }
+        }
+        // Add thrown segments
+        if (cp.thrown_end > cp.thrown_start) {
+            for (self.cp_thrown_pool.items[cp.thrown_start..cp.thrown_end]) |seg_id| {
+                var dup = false;
+                for (self.cp_final_pool.items[cp.final_start..]) |existing| {
+                    if (existing == seg_id) { dup = true; break; }
+                }
+                if (!dup) try self.cp_final_pool.append(self.allocator, seg_id);
+            }
+        }
+        // Add reachable head segments (for paths that reach the end without return/throw)
         for (head) |seg_id| {
-            try self.cp_final_pool.append(self.allocator, seg_id);
+            if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+                var dup = false;
+                for (self.cp_final_pool.items[cp.final_start..]) |existing| {
+                    if (existing == seg_id) { dup = true; break; }
+                }
+                if (!dup) try self.cp_final_pool.append(self.allocator, seg_id);
+            }
+        }
+        // If nothing was added (all paths exit and head is unreachable), add head anyway
+        if (self.cp_final_pool.items.len == cp.final_start) {
+            for (head) |seg_id| {
+                try self.cp_final_pool.append(self.allocator, seg_id);
+            }
         }
         cp.final_end = @intCast(self.cp_final_pool.items.len);
 
