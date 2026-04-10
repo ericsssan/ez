@@ -2492,17 +2492,21 @@ const NodeProto = {
     const t = this._tag;
     const ast = this._ast;
     if (t === T.import_decl) {
+      if (this._cachedSource) return this._cachedSource;
       const d = ast.extraImportData(ast.nodeLhs(this._i));
       if (d.source === NONE) return null;
       const lit = ast._syntheticLiteral(d.source);
       lit.parent = this;
+      this._cachedSource = lit;
       return lit;
     }
     if (t === T.export_all) {
+      if (this._cachedSource) return this._cachedSource;
       const tokIdx = ast.nodeLhs(this._i);
       if (tokIdx === NONE) return null;
       const lit = ast._syntheticLiteral(tokIdx);
       lit.parent = this;
+      this._cachedSource = lit;
       return lit;
     }
     // ImportExpression (dynamic import): source = the argument expression
