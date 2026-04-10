@@ -281,9 +281,13 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             try dumpNode(tree, data.lhs, child_indent, writer);
         },
         .export_all => {
-            // lhs = source string token
+            // lhs = source string_literal node, rhs = exported name node (or none)
             try writeIndent(writer, child_indent);
-            try writer.print("source \"{s}\"\n", .{tree.tokenText(@intFromEnum(data.lhs))});
+            try writer.print("source \"{s}\"\n", .{tree.tokenText(tree.nodeMainToken(data.lhs))});
+            if (data.rhs != .none) {
+                try writeIndent(writer, child_indent);
+                try writer.print("exported \"{s}\"\n", .{tree.tokenText(tree.nodeMainToken(data.rhs))});
+            }
         },
         .export_specifier => {
             // lhs = local name token, rhs = exported name token

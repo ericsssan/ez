@@ -268,8 +268,9 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .export_all => {
-                // lhs = source string_literal node
+                // lhs = source string_literal node, rhs = exported name node (or none)
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+                if (rhs != .none) push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
             },
             .new_target, .import_meta => {
                 // lhs = meta property_ident, rhs = property property_ident

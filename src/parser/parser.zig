@@ -2600,6 +2600,7 @@ pub const Parser = struct {
 
         // Computed key: `[expr]` — always allow `in` in computed keys
         if (self.peek() == .l_bracket) {
+            const computed_main_tok = self.tok_i; // '[' token — used as main_token for the method node
             _ = self.advance(); // eat '['
             const prev_allow_in = self.allow_in;
             self.allow_in = true;
@@ -2641,7 +2642,7 @@ pub const Parser = struct {
                     _ = self.eat(.semicolon);
                     return self.addNode(.{
                         .tag = .computed_property_def,
-                        .main_token = self.tok_i,
+                        .main_token = computed_main_tok,
                         .data = .{ .lhs = key_expr, .rhs = .none },
                     });
                 }
@@ -2664,7 +2665,7 @@ pub const Parser = struct {
 
                 return self.addNode(.{
                     .tag = node_tag,
-                    .main_token = self.tok_i,
+                    .main_token = computed_main_tok,
                     .data = .{
                         .lhs = key_expr,
                         .rhs = NodeIndex.fromInt(method_extra),
@@ -2697,7 +2698,7 @@ pub const Parser = struct {
 
             return self.addNode(.{
                 .tag = .computed_property_def,
-                .main_token = self.tok_i,
+                .main_token = computed_main_tok,
                 .data = .{
                     .lhs = key_expr,
                     .rhs = value,
@@ -3751,12 +3752,24 @@ pub const Parser = struct {
     pub fn parseExportAll(self: *Parser, export_tok: TokenIndex) Error!NodeIndex {
         _ = try self.expect(.asterisk);
 
-        // Optional `as ns` or `as "string"`
+        // Optional `as ns` or `as "string"` — store as exported node in rhs
+        var exported_node: NodeIndex = .none;
         if (self.eat(.kw_as) != null) {
+            const name_tok = self.tok_i;
             if (self.peek() == .string_literal) {
                 _ = self.advance();
+                exported_node = try self.addNode(.{
+                    .tag = .property_literal,
+                    .main_token = name_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
             } else {
                 _ = try self.expectIdentifierOrKeyword();
+                exported_node = try self.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = name_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
             }
         }
 
@@ -3775,7 +3788,7 @@ pub const Parser = struct {
             .main_token = export_tok,
             .data = .{
                 .lhs = source_node,
-                .rhs = .none,
+                .rhs = exported_node,
             },
         });
     }

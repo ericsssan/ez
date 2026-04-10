@@ -1803,6 +1803,14 @@ const NodeProto = {
   },
 
   /**
+   * node.await — true for for-await-of statements.
+   * ESLint's ForOfStatement.await property distinguishes `for await (...)`.
+   */
+  get await() {
+    return this._tag === T.for_await_of_stmt ? true : undefined;
+  },
+
+  /**
    * node.generator — true for generator functions.
    */
   get generator() {
@@ -2437,11 +2445,16 @@ const NodeProto = {
   },
 
   /**
-   * node.exported — exported name in ExportSpecifier.
+   * node.exported — exported name in ExportSpecifier or ExportAllDeclaration.
    * Real identifier/literal node from the parser.
    */
   get exported() {
-    if (this._tag !== T.export_specifier) return null;
+    const t = this._tag;
+    if (t === T.export_all) {
+      const rhs = this._ast.nodeRhs(this._i);
+      return rhs === NONE ? null : nodeView(this._ast, rhs);
+    }
+    if (t !== T.export_specifier) return null;
     const rhs = this._ast.nodeRhs(this._i);
     return rhs === NONE ? null : nodeView(this._ast, rhs);
   },
