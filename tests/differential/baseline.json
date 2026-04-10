@@ -2851,7 +2851,7 @@
     "no-useless-return": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -3676,6 +3676,214 @@
       "native": {
         "fn": 37,
         "fp": 35,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/always-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 24,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/avoid-new": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/catch-or-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-callback-in-promise": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-multiple-resolved": {
+      "runner": {
+        "fn": 5,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-nesting": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-new-statics": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-promise-in-callback": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-return-in-finally": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-return-wrap": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/param-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-await-to-callbacks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-await-to-then": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-catch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/spec-only": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/valid-params": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
