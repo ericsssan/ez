@@ -172,8 +172,8 @@
     },
     "class-methods-use-this": {
       "runner": {
-        "fn": 0,
-        "fp": 9,
+        "fn": 4,
+        "fp": 4,
         "crash": 0
       },
       "native": {
