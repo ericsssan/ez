@@ -1146,7 +1146,8 @@ class SourceCode {
         if (!/^\s*globals?\b/.test(val)) continue;
         // Parse: "globals a, b: readonly, c: off" etc.
         const body = val.replace(/^\s*globals?\s*/, '').replace(/\s*$/, '');
-        for (const entry of body.split(',')) {
+        // Split by comma or whitespace, keeping name:value pairs together
+        for (const entry of body.match(/[$_a-zA-Z][\w$]*(?:\s*:\s*[^,\s]+)?/g) || []) {
           const trimmed = entry.trim();
           if (!trimmed) continue;
           const [rawName, rawValue] = trimmed.split(':').map(s => s.trim());
