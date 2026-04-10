@@ -18,7 +18,6 @@
     "eslint-runner.js",
     "load-plugin.js",
     "lint.js",
-    "lint-worker.js",
     "rules/"
   ],
   "license": "MIT",

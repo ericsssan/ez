@@ -14,7 +14,7 @@
 const fs   = require("fs");
 const path = require("path");
 const {
-  parseSource, parseAndLint, parseAndLintSource,
+  parseSource, parseAndLint, lintSource: lintSourceNative,
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
 } = require("./index");
 const { runPlugins } = require("./eslint-runner");
@@ -254,16 +254,15 @@ function _lintOne(filePath, resolved) {
     ...reports.map(_fromRunnerReport),
   ].sort((a, b) => (a.line - b.line) || (a.column - b.column));
 
-  return diagnostics;
+  return { diagnostics, ast };
 }
 
 function _lintSourceOne(source, filename, resolved) {
   const tagNames = getTagNames();
   const { jsPlugins, nativeConfig, ruleSeverities, ruleOptions } = resolved;
 
-  const { ast, diags: nativeDiags } = nativeConfig
-    ? parseAndLintSource(source, { filename, config: nativeConfig })
-    : { ast: parseSource(source, { filename }), diags: [] };
+  const ast = parseSource(source, { filename });
+  const nativeDiags = nativeConfig ? lintSourceNative(source, { filename, config: nativeConfig }) : [];
 
   const ruleConfig = {};
   for (const p of jsPlugins) {
@@ -295,7 +294,7 @@ async function lint(targets, config = {}) {
   const results = [];
   for (const file of files) {
     try {
-      const diagnostics = _lintOne(file, resolved);
+      const { diagnostics } = _lintOne(file, resolved);
       if (diagnostics.length > 0 || config.includeClean) {
         results.push({ file, diagnostics });
       }
@@ -334,10 +333,10 @@ async function fix(targets, config = {}) {
 
   for (const file of files) {
     try {
-      const diagnostics = _lintOne(file, resolved);
+      const { diagnostics, ast } = _lintOne(file, resolved);
       const fixes = diagnostics.filter(d => d.fix).flatMap(d => Array.isArray(d.fix) ? d.fix : [d.fix]);
       if (fixes.length > 0) {
-        const source = fs.readFileSync(file, "utf8");
+        const source = ast.source;
         const fixed = _applyFixes(source, fixes);
         if (fixed !== source) {
           fs.writeFileSync(file, fixed);

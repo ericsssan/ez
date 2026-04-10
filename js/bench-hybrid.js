@@ -90,7 +90,7 @@ for (let i = 0; i < rawSources.length; i += BATCH) {
 const ez = require('./js/index.js');
 const fs = require('fs');
 const files = ${JSON.stringify(batch)};
-for (const f of files) { try { ez.parseAndLintSource(fs.readFileSync(f,'utf8'),{filename:f}); } catch {} }
+for (const f of files) { try { ez.parseSource(fs.readFileSync(f,'utf8'),{filename:f}); } catch {} }
 `], { timeout: 20000, cwd: process.cwd() });
   } catch (e) {
     if (e.status === 138 || e.status === 139 || e.signal) {
@@ -100,7 +100,7 @@ for (const f of files) { try { ez.parseAndLintSource(fs.readFileSync(f,'utf8'),{
           execFileSync(process.execPath, ["-e", `
 const ez = require('./js/index.js');
 const fs = require('fs');
-ez.parseAndLintSource(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.stringify(f)}});
+ez.parseSource(fs.readFileSync(${JSON.stringify(f)},'utf8'),{filename:${JSON.stringify(f)}});
 `], { timeout: 5000, cwd: process.cwd() });
         } catch (e2) {
           if (e2.status === 138 || e2.status === 139 || e2.signal) crashSet.add(f);
@@ -212,14 +212,15 @@ const pathA = allPlugins.length > 0
     })
   : null;
 
-// C: parseAndLintSource (all native, no JS runner)
-const pathC = bench("C  parseAndLintSource (all native)", (src, file) => {
-  ez.parseAndLintSource(src, { filename: file });
+// C: parseSource + lintSource (all native, no JS runner)
+const pathC = bench("C  parseSource + lintSource (all native)", (src, file) => {
+  ez.lintSource(src, { filename: file });
 });
 
-// B: hybrid — parseAndLintSource(nativeConfig) + runPlugins(jsOnly)
-const pathB = bench("B  hybrid: parseAndLintSource(cfg) + runPlugins(jsOnly)", (src, file) => {
-  const { ast } = ez.parseAndLintSource(src, { filename: file, config: nativeConfig });
+// B: hybrid — parseSource(nativeConfig) + runPlugins(jsOnly)
+const pathB = bench("B  hybrid: parseSource + lintSource(cfg) + runPlugins(jsOnly)", (src, file) => {
+  const ast = ez.parseSource(src, { filename: file });
+  if (nativeConfig) ez.lintSource(src, { filename: file, config: nativeConfig });
   if (jsOnlyPlugins.length > 0) {
     runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames });
   }

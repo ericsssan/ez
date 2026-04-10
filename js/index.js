@@ -270,27 +270,6 @@ function lint(paths, options = {}) {
   return b.lintFiles(paths, sizes, configBuf);
 }
 
-function parseAndLintSource(source, options = {}) {
-  const b = loadBinding();
-  const lang = options.lang
-    ? LANG[options.lang] ?? LANG.js
-    : options.filename ? detectLang(options.filename) : LANG.js;
-
-  const { buf, sourceStart, sourceLen } = _encodeSource(source);
-  _ensureLintOutBuf(sourceLen);
-
-  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-  const bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
-  if (bytesUsed === 0) throw new Error("ez: parseAndLint failed (buffer too small or invalid source)");
-
-  getTagNames();
-  const ast = options.noPrivateCopy
-    ? new AstView(buf)
-    : new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
-  const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
-  const diags = _parseDiags(bytesUsed, srcBytes);
-  return { ast, diags };
-}
 
 function parseAndLint(filePath, options = {}) {
   const b = loadBinding();
@@ -365,4 +344,4 @@ function buildNativeConfig(rulesObj, optionsObj) {
   return sevBuf;
 }
 
-module.exports = { parse, parseSource, parseAndLint, parseAndLintSource, lintSource, lint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, parseSource, parseAndLint, lintSource, lint, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
