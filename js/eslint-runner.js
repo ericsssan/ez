@@ -1747,7 +1747,22 @@ class SourceCode {
    */
   getAllComments() {
     if (this._allComments !== undefined) return this._allComments;
-    this._allComments = this._ast.commentsInRange(0, this.text.length);
+    const comments = this._ast.commentsInRange(0, this.text.length);
+    // Synthesize shebang comment if source starts with #!
+    if (this.text.startsWith('#!')) {
+      const end = this.text.indexOf('\n');
+      const shebangEnd = end >= 0 ? end : this.text.length;
+      const shebang = {
+        type: 'Shebang',
+        value: this.text.slice(2, shebangEnd),
+        start: 0,
+        end: shebangEnd,
+        range: [0, shebangEnd],
+        loc: { start: { line: 1, column: 0 }, end: { line: 1, column: shebangEnd } },
+      };
+      comments.unshift(shebang);
+    }
+    this._allComments = comments;
     return this._allComments;
   }
 
