@@ -1364,16 +1364,18 @@ pub const CodePathBuilder = struct {
     pub fn makeReturn(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
 
-        // Record in returned pool
+        // Record reachable segments in returned pool (unreachable returns are dead code)
         const head = self.fork_context.head();
         var cp = &self.codepaths.items[cp_id];
-        if (cp.returned_end == 0 and cp.returned_start == 0) {
-            cp.returned_start = @intCast(self.cp_returned_pool.items.len);
-        }
         for (head) |seg_id| {
-            try self.cp_returned_pool.append(self.allocator, seg_id);
+            if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+                if (cp.returned_end == 0 and cp.returned_start == 0) {
+                    cp.returned_start = @intCast(self.cp_returned_pool.items.len);
+                }
+                try self.cp_returned_pool.append(self.allocator, seg_id);
+                cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+            }
         }
-        cp.returned_end = @intCast(self.cp_returned_pool.items.len);
 
         // If inside a try-with-finally, add head to the try's returned_fork
         // so finally knows about the return path.
@@ -1404,16 +1406,18 @@ pub const CodePathBuilder = struct {
     pub fn makeThrow(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
 
-        // Record in thrown pool
+        // Record reachable segments in thrown pool
         const head = self.fork_context.head();
         var cp = &self.codepaths.items[cp_id];
-        if (cp.thrown_end == 0 and cp.thrown_start == 0) {
-            cp.thrown_start = @intCast(self.cp_thrown_pool.items.len);
-        }
         for (head) |seg_id| {
-            try self.cp_thrown_pool.append(self.allocator, seg_id);
+            if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+                if (cp.thrown_end == 0 and cp.thrown_start == 0) {
+                    cp.thrown_start = @intCast(self.cp_thrown_pool.items.len);
+                }
+                try self.cp_thrown_pool.append(self.allocator, seg_id);
+                cp.thrown_end = @intCast(self.cp_thrown_pool.items.len);
+            }
         }
-        cp.thrown_end = @intCast(self.cp_thrown_pool.items.len);
 
         // If inside a try block, also add to try context's thrown fork
         if (self.try_context) |ctx| {
