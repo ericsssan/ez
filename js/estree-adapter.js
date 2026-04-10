@@ -2140,6 +2140,30 @@ const NodeProto = {
   },
 
   /**
+   * node.implements — TS implements clause. Returns array of type references
+   * or empty array. Detected via token scanning for 'implements' keyword.
+   */
+  get implements() {
+    const t = this._tag;
+    if (t !== T.class_decl && t !== T.class_expr) return undefined;
+    const ast = this._ast;
+    const mt = this.mainToken;
+    // Scan forward from class keyword to opening brace looking for 'implements'
+    for (let i = mt + 1; i < ast.tokenCount; i++) {
+      const tag = ast._tokTags[i];
+      if (tag === 74) break; // '{' — opening brace
+      const start = ast._tokStarts[i];
+      const end = ast._tokEnds ? ast._tokEnds[i] : ast._tokStarts[i + 1];
+      if (ast.source.slice(start, end) === 'implements') {
+        // Return non-empty array to indicate implements exists
+        // (rules just check .implements?.length > 0)
+        return [{ type: 'TSClassImplements' }];
+      }
+    }
+    return [];
+  },
+
+  /**
    * node.elements — elements of ArrayExpression or ArrayPattern.
    * Holes are represented as null (matching ESLint's AST).
    */
