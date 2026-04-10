@@ -855,10 +855,47 @@ class SourceCode {
    */
   _getTokensAndCommentsMerged() {
     if (this._mergedCache) return this._mergedCache;
+    const ast = this._ast;
     const tokens = this._getAllTokens();
     const comments = this.getAllComments();
     if (comments.length === 0) { this._mergedCache = tokens; return tokens; }
-    // Merge two sorted arrays by range[0]
+
+    // If Zig pre-computed the merge order, materialize the array from indices.
+    // Note: tokens[] filters out EOF and comments[] prepends any synthesized
+    // shebang. We walk the Zig-provided order and fill in from each source's
+    // materialized cache.
+    const order = ast._tokCmtMerge;
+    if (order) {
+      const tokenCount = ast.tokenCount;
+      // Build a map from raw comment index to the position in `comments[]`
+      // (comments[] may have a synthesized shebang at index 0).
+      const hasShebang = comments.length > 0 && comments[0].type === 'Shebang';
+      const rawCommentOffset = hasShebang ? 1 : 0;
+      const merged = new Array(tokens.length + comments.length);
+      let mi = 0;
+      if (hasShebang) merged[mi++] = comments[0];
+      // Token index → position in tokens[] (EOF is dropped). EOF has tag 131.
+      const tokTags = ast._tokTags;
+      // Build dense mapping tokenRawIdx → tokens[] position.
+      // Tokens[] is built by _getAllTokens in order, skipping EOF, so the
+      // position is simply (rawIdx - (rawIdx > eofPos ? 1 : 0)). Simpler:
+      // iterate the order array, decoding each entry.
+      for (let i = 0; i < order.length; i++) {
+        const v = order[i];
+        if (v < tokenCount) {
+          if (tokTags[v] === 131) continue; // skip EOF
+          merged[mi++] = this._makeToken(v);
+        } else {
+          const ci = v - tokenCount;
+          merged[mi++] = comments[rawCommentOffset + ci];
+        }
+      }
+      merged.length = mi;
+      this._mergedCache = merged;
+      return merged;
+    }
+
+    // Fallback merge (if Zig didn't write the merge order).
     const merged = new Array(tokens.length + comments.length);
     let ti = 0, ci = 0, mi = 0;
     while (ti < tokens.length && ci < comments.length) {

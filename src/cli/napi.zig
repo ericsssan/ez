@@ -152,6 +152,32 @@ fn parseImpl(
     const min_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.min_tok.ptr) else 0;
     const sorted_by_start_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.sorted_by_start.ptr) else 0;
 
+    // Merge token + comment indices in ascending order of start position.
+    // Stored as u32[token_count + comment_count]:
+    //   value < token_count → token index
+    //   value >= token_count → comment index (value - token_count)
+    const tok_cmt_merge_offset = blk: {
+        const total = tokens.len + comment_count;
+        if (total == 0) break :blk @as(u32, 0);
+        const merged = try alloc.alloc(u32, total);
+        var ti: u32 = 0;
+        var ci: u32 = 0;
+        var mi: u32 = 0;
+        while (ti < tokens.len and ci < comment_count) {
+            if (tok_starts[ti] <= cs[ci]) {
+                merged[mi] = ti;
+                ti += 1;
+            } else {
+                merged[mi] = @as(u32, @intCast(tokens.len)) + ci;
+                ci += 1;
+            }
+            mi += 1;
+        }
+        while (ti < tokens.len) : ({ ti += 1; mi += 1; }) merged[mi] = ti;
+        while (ci < comment_count) : ({ ci += 1; mi += 1; }) merged[mi] = @as(u32, @intCast(tokens.len)) + ci;
+        break :blk js_buffer.ptrOffsetPub(buf_ptr, merged.ptr);
+    };
+
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start = if (bom.has_bom) source_start + 3 else source_start,
@@ -177,6 +203,7 @@ fn parseImpl(
         .max_tok_offset = max_tok_offset,
         .min_tok_offset = min_tok_offset,
         .sorted_by_start_offset = sorted_by_start_offset,
+        .tok_cmt_merge_offset = tok_cmt_merge_offset,
     });
 
     return backing.bytesUsed();
@@ -331,6 +358,29 @@ fn parseAndLintImpl(
     const min_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.min_tok.ptr) else 0;
     const sorted_by_start_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.sorted_by_start.ptr) else 0;
 
+    // Merged token + comment order (see parseImpl for format).
+    const tok_cmt_merge_offset = blk: {
+        const total = tokens.len + comment_count;
+        if (total == 0) break :blk @as(u32, 0);
+        const merged = try alloc.alloc(u32, total);
+        var ti: u32 = 0;
+        var ci: u32 = 0;
+        var mi: u32 = 0;
+        while (ti < tokens.len and ci < comment_count) {
+            if (tok_starts[ti] <= cs2[ci]) {
+                merged[mi] = ti;
+                ti += 1;
+            } else {
+                merged[mi] = @as(u32, @intCast(tokens.len)) + ci;
+                ci += 1;
+            }
+            mi += 1;
+        }
+        while (ti < tokens.len) : ({ ti += 1; mi += 1; }) merged[mi] = ti;
+        while (ci < comment_count) : ({ ci += 1; mi += 1; }) merged[mi] = @as(u32, @intCast(tokens.len)) + ci;
+        break :blk js_buffer.ptrOffsetPub(buf_ptr, merged.ptr);
+    };
+
     js_buffer.writeHeader(buf_ptr, &tree, .{
         .source_start        = if (bom.has_bom) source_start + 3 else source_start,
         .source_len          = @intCast(source.len),
@@ -355,6 +405,7 @@ fn parseAndLintImpl(
         .max_tok_offset         = max_tok_offset,
         .min_tok_offset         = min_tok_offset,
         .sorted_by_start_offset = sorted_by_start_offset,
+        .tok_cmt_merge_offset   = tok_cmt_merge_offset,
     });
 
     return backing.bytesUsed();

@@ -145,6 +145,8 @@ const H = {
   MAX_TOK_OFFSET: 124,
   MIN_TOK_OFFSET: 128,
   SORTED_BY_START_OFFSET: 132,
+  // v11: merged token+comment order (byte 136)
+  TOK_CMT_MERGE_OFFSET: 136,
 };
 
 // CfgGraphHeader: 25 u32 fields = 100 bytes
@@ -302,6 +304,12 @@ class AstView {
     const sbsOff = dv.getUint32(H.SORTED_BY_START_OFFSET, true);
     this._sortedByStart = sbsOff > 0 ? new Uint32Array(buffer, sbsOff, this.nodeCount) : null;
 
+    // Merged token+comment order (v11) — u32[tokenCount + commentCount].
+    // Entry < tokenCount → token index; entry >= tokenCount → comment index.
+    // Must be read after _commentCount is set below, so we defer initialization.
+    this._tokCmtMergeOff = dv.getUint32(H.TOK_CMT_MERGE_OFFSET, true);
+    this._tokCmtMerge = null; // lazily created — _commentCount not yet read
+
     // Source text (UTF-8 in buffer, decoded lazily)
     this._sourceBytes = new Uint8Array(buffer, sourceOff, this.sourceLen);
     this._sourceOff = sourceOff; // byte offset of source in buffer (for symbol name lookup)
@@ -347,6 +355,12 @@ class AstView {
       this._commentStarts = null;
       this._commentEnds = null;
       this._commentKinds = null;
+    }
+
+    // Deferred view creation for merged token+comment order (needs commentCount).
+    if (this._tokCmtMergeOff > 0) {
+      const total = this.tokenCount + this._commentCount;
+      this._tokCmtMerge = new Uint32Array(buffer, this._tokCmtMergeOff, total);
     }
 
     // Semantic data (v3 — scope/symbol/reference tables)

@@ -71,10 +71,16 @@ pub const BufferHeader = extern struct {
     // Added in v10: sorted node indices for O(log n) getNodeByRangeIndex.
     // Sorted by (start ASC, range_size ASC) so innermost nodes come first.
     sorted_by_start_offset: u32 = 0,
+    // Added in v11: merged token+comment order.
+    // u32[token_count + comment_count], ascending by start offset.
+    // Entries: value < token_count → token index; value >= token_count →
+    // comment index (value - token_count).
+    // JS views this to expose `sourceCode.tokensAndComments` without merging.
+    tok_cmt_merge_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 136);
+    std.debug.assert(@sizeOf(BufferHeader) == 140);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -771,6 +777,7 @@ pub const HeaderInfo = struct {
     max_tok_offset: u32 = 0,
     min_tok_offset: u32 = 0,
     sorted_by_start_offset: u32 = 0,
+    tok_cmt_merge_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -815,6 +822,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .max_tok_offset = info.max_tok_offset,
         .min_tok_offset = info.min_tok_offset,
         .sorted_by_start_offset = info.sorted_by_start_offset,
+        .tok_cmt_merge_offset = info.tok_cmt_merge_offset,
     };
 }
 
