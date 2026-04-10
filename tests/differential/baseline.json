@@ -146,8 +146,8 @@
     },
     "camelcase": {
       "runner": {
-        "fn": 25,
-        "fp": 3,
+        "fn": 3,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -537,7 +537,7 @@
     "id-blacklist": {
       "runner": {
         "fn": 1,
-        "fp": 10,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -550,7 +550,7 @@
     "id-denylist": {
       "runner": {
         "fn": 6,
-        "fp": 10,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -562,8 +562,8 @@
     },
     "id-length": {
       "runner": {
-        "fn": 4,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
