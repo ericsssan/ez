@@ -66,10 +66,10 @@ async function _resolveConfig(config = {}) {
     for (const cfg of configs) {
       if (cfg.rules) Object.assign(rules, cfg.rules);
       if (cfg.plugins) {
-        for (const [prefix, plugin] of Object.entries(cfg.plugins)) {
+        for (const [prefix, rawPlugin] of Object.entries(cfg.plugins)) {
           if (SKIP_PLUGINS.has(prefix)) continue;
-          // Flat config plugins are already loaded objects, not package names.
-          // We'll handle them directly later.
+          // Unwrap ESM default export (e.g. eslint-plugin-unicorn uses { default: { rules } })
+          const plugin = rawPlugin?.default || rawPlugin;
           if (plugin && plugin.rules) {
             pluginPkgs.push({ prefix, plugin });
           }
@@ -86,8 +86,6 @@ async function _resolveConfig(config = {}) {
       pluginPkgs.push(name);
     }
   }
-
-  const loadCoreByDefault = pluginPkgs.length === 0 && !flatConfig;
 
   // Build rule severity/options maps
   const ruleSeverities = {};
@@ -109,10 +107,9 @@ async function _resolveConfig(config = {}) {
   const ruleFilters = new Set(Object.keys(ruleSeverities));
   const allPluginDescs = [];
 
-  // Always load core rules
-  if (loadCoreByDefault) {
-    allPluginDescs.push(...loadCoreRules({ only: ruleFilters.size > 0 ? ruleFilters : undefined }));
-  }
+  // Always load core rules that are referenced in the config (or all if no config)
+  const coreOnly = ruleFilters.size > 0 ? ruleFilters : undefined;
+  allPluginDescs.push(...loadCoreRules({ only: coreOnly }));
 
   for (const entry of pluginPkgs) {
     if (typeof entry === "string") {
@@ -130,18 +127,11 @@ async function _resolveConfig(config = {}) {
         const create = rule.create || rule;
         if (typeof create !== "function") continue;
         allPluginDescs.push({
-          meta: { name: fullName, schema: rule.meta?.schema, messages: rule.meta?.messages },
+          meta: { name: fullName, schema: rule.meta?.schema, messages: rule.meta?.messages, defaultOptions: rule.meta?.defaultOptions, fixable: rule.meta?.fixable },
           create,
         });
       }
     }
-  }
-
-  // If no specific rules configured, load all from plugins with default severity
-  if (ruleFilters.size === 0 && allPluginDescs.length === 0) {
-    try {
-      allPluginDescs.push(...loadCoreRules());
-    } catch { /* eslint not installed */ }
   }
 
   // Split into native vs JS-only
