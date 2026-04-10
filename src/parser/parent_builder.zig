@@ -223,6 +223,8 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 // lhs is .none for TS import alias (`import X = require(...)`)
                 if (lhs != .none) {
                     const ed = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
+                    // source is visited last (document order: specifiers, then source)
+                    push(&stack, alloc, ed.source, p) catch return error.OutOfMemory;
                     pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.specifiers_start, .end = ed.specifiers_end }, p) catch return error.OutOfMemory;
                 }
             },
@@ -253,9 +255,15 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .export_named_from => {
                 // lhs = ExtraIndex to ImportData { spec_start, spec_end, source }
                 const import_data = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
+                // source is visited last (document order: specifiers, then source)
+                push(&stack, alloc, import_data.source, p) catch return error.OutOfMemory;
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = import_data.specifiers_start, .end = import_data.specifiers_end }, p) catch return error.OutOfMemory;
             },
             .export_default_expr, .export_default_fn, .export_default_class => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            .export_all => {
+                // lhs = source string_literal node
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
@@ -394,7 +402,6 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
             .import_meta, .new_target,
-            .export_all,
             .jsx_text_node, .error_node,
             // TS type nodes that are true leaves (no child types to traverse)
             .ts_type_reference, .ts_infer_type,

@@ -31,7 +31,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
 
         const data = ctx.nodeData(idx);
         const import_data = ctx.extraData(ast.ImportData, @intFromEnum(data.lhs));
-        const source_text = ctx.tokenText(import_data.source);
+        const source_text = ctx.tokenText(ctx.ast.nodeMainToken(import_data.source));
 
         // Check if we've already seen this source
         for (seen_sources[0..seen_count]) |prev| {

@@ -563,7 +563,7 @@ pub const Conditional = struct {
 pub const ImportData = struct {
     specifiers_start: ExtraIndex,
     specifiers_end: ExtraIndex,
-    source: TokenIndex, // string literal token
+    source: NodeIndex, // string_literal node (real node in AST)
 };
 
 /// method(params) { body } inside class

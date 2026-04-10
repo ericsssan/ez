@@ -645,45 +645,6 @@ class AstView {
     };
   }
 
-  /**
-   * Build a synthetic Literal node from a token index (for string/number literals).
-   * Used by ImportDeclaration.source, ExportDeclaration.source, etc.
-   */
-  _syntheticLiteral(tokIdx) {
-    const start = this._tokStarts[tokIdx];
-    const src = this.source;
-    let end = this._tokEnds ? this._tokEnds[tokIdx] : undefined;
-    if (end === undefined) {
-      end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
-      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
-    }
-    const raw = src.slice(start, end);
-    // Decode the value: strip quotes for strings
-    let value = raw;
-    if ((raw.startsWith('"') || raw.startsWith("'") || raw.startsWith('`')) && raw.length >= 2) {
-      value = raw.slice(1, -1).replace(/\\(.)/g, (_, c) => c === 'n' ? '\n' : c === 't' ? '\t' : c === 'r' ? '\r' : c);
-    } else if (!isNaN(Number(raw))) {
-      value = Number(raw);
-    }
-    const li = this._findLineIdx(start);
-    const eli = this._findLineIdx(end);
-    const ls = this._lineStarts();
-    return {
-      type: 'Literal',
-      value,
-      raw,
-      start,
-      end,
-      range: [start, end],
-      loc: {
-        start: { line: li + 1, column: start - ls[li] },
-        end: { line: eli + 1, column: end - ls[eli] },
-      },
-      mainToken: tokIdx,
-      parent: null, // set by callers (source getter, etc.)
-    };
-  }
-
   // ── ExtraData struct accessors ─────────────────────────────────
   // Each matches the Zig ExtraData struct layout (sequential u32 fields).
 
@@ -2488,44 +2449,30 @@ const NodeProto = {
   },
 
   /**
-   * node.source — import/export source literal node (Literal with value/raw).
-   * Returns a synthetic Literal node so rules can access .range, .loc, etc.
+   * node.source — import/export source literal node.
+   * Now a real string_literal node in the AST buffer; no synthesis needed.
    */
   get source() {
     const t = this._tag;
     const ast = this._ast;
     if (t === T.import_decl) {
-      if (this._cachedSource) return this._cachedSource;
-      const d = ast.extraImportData(ast.nodeLhs(this._i));
-      if (d.source === NONE) return null;
-      const lit = ast._syntheticLiteral(d.source);
-      lit.parent = this;
-      this._cachedSource = lit;
-      return lit;
+      const lhs = ast.nodeLhs(this._i);
+      if (lhs === NONE) return null;
+      const d = ast.extraImportData(lhs);
+      return d.source === NONE ? null : nodeView(ast, d.source);
     }
     if (t === T.export_named_from) {
-      if (this._cachedSource) return this._cachedSource;
       const d = ast.extraImportData(ast.nodeLhs(this._i));
-      if (d.source === NONE) return null;
-      const lit = ast._syntheticLiteral(d.source);
-      lit.parent = this;
-      this._cachedSource = lit;
-      return lit;
+      return d.source === NONE ? null : nodeView(ast, d.source);
     }
     if (t === T.export_all) {
-      if (this._cachedSource) return this._cachedSource;
-      const tokIdx = ast.nodeLhs(this._i);
-      if (tokIdx === NONE) return null;
-      const lit = ast._syntheticLiteral(tokIdx);
-      lit.parent = this;
-      this._cachedSource = lit;
-      return lit;
+      const srcIdx = ast.nodeLhs(this._i);
+      return srcIdx === NONE ? null : nodeView(ast, srcIdx);
     }
     // ImportExpression (dynamic import): source = the argument expression
     if (t === T.import_expr) {
       const argIdx = ast.nodeLhs(this._i);
-      if (argIdx === NONE) return null;
-      return nodeView(ast, argIdx);
+      return argIdx === NONE ? null : nodeView(ast, argIdx);
     }
     return undefined;
   },

@@ -3115,10 +3115,15 @@ pub const Parser = struct {
             try self.skipImportAttributes();
             try self.expectSemicolon();
 
+            const source_node = try self.addNode(.{
+                .tag = .string_literal,
+                .main_token = source_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             const extra = try self.addExtra(ast.ImportData, .{
                 .specifiers_start = 0,
                 .specifiers_end = 0,
-                .source = source_tok,
+                .source = source_node,
             });
 
             return self.addNode(.{
@@ -3202,10 +3207,15 @@ pub const Parser = struct {
         const specs = self.scratch.items[scratch_top..];
         const range = try self.listToSubRange(specs);
 
+        const source_node = try self.addNode(.{
+            .tag = .string_literal,
+            .main_token = source_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
         const extra = try self.addExtra(ast.ImportData, .{
             .specifiers_start = range.start,
             .specifiers_end = range.end,
-            .source = source_tok,
+            .source = source_node,
         });
 
         return self.addNode(.{
@@ -3700,10 +3710,15 @@ pub const Parser = struct {
 
         if (has_from) {
             // Re-export: store via ImportData (same layout: specifiers + source)
+            const source_node = try self.addNode(.{
+                .tag = .string_literal,
+                .main_token = source_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             const extra = try self.addExtra(ast.ImportData, .{
                 .specifiers_start = range.start,
                 .specifiers_end = range.end,
-                .source = source_tok,
+                .source = source_node,
             });
             return self.addNode(.{
                 .tag = .export_named_from,
@@ -3743,11 +3758,16 @@ pub const Parser = struct {
         try self.skipImportAttributes();
         try self.expectSemicolon();
 
+        const source_node = try self.addNode(.{
+            .tag = .string_literal,
+            .main_token = source_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
         return self.addNode(.{
             .tag = .export_all,
             .main_token = export_tok,
             .data = .{
-                .lhs = NodeIndex.fromInt(source_tok),
+                .lhs = source_node,
                 .rhs = .none,
             },
         });

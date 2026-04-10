@@ -227,7 +227,7 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             try dumpSubRange(tree, spec_range, child_indent, writer);
             // Print source string
             try writeIndent(writer, child_indent);
-            try writer.print("source \"{s}\"\n", .{tree.tokenText(imp.source)});
+            try writer.print("source \"{s}\"\n", .{tree.tokenText(tree.nodeMainToken(imp.source))});
         },
         .import_specifier => {
             // lhs = imported name token, rhs = local name token
@@ -261,7 +261,7 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             // lhs = extra index to ImportData { specifiers_start, specifiers_end, source }
             const import_data = tree.extraData(@import("ast.zig").ImportData, @intFromEnum(data.lhs));
             try writeIndent(writer, child_indent);
-            try writer.print("source \"{s}\"\n", .{tree.tokenText(import_data.source)});
+            try writer.print("source \"{s}\"\n", .{tree.tokenText(tree.nodeMainToken(import_data.source))});
             try dumpSubRange(tree, .{ .start = import_data.specifiers_start, .end = import_data.specifiers_end }, child_indent, writer);
         },
         .export_default_expr => {
