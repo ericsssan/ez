@@ -1755,6 +1755,21 @@ const NodeProto = {
    * node.override — true for TS override methods/properties.
    * Detected by checking if 'override' keyword precedes the method name.
    */
+  get readonly() {
+    const t = this._tag;
+    if (t !== T.property_def && t !== T.computed_property_def &&
+        t !== T.method_def && t !== T.computed_method_def) return undefined;
+    const mt = this.mainToken;
+    const ast = this._ast;
+    for (let i = mt - 1; i >= 0 && i >= mt - 5; i--) {
+      const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds ? ast._tokEnds[i] : ast._tokStarts[i + 1]);
+      if (val === 'readonly') return true;
+      if (val !== 'static' && val !== 'public' && val !== 'private' && val !== 'protected' &&
+          val !== 'override' && val !== 'abstract' && val !== 'declare') break;
+    }
+    return false;
+  },
+
   get override() {
     const t = this._tag;
     if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
