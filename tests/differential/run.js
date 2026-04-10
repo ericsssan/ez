@@ -385,17 +385,33 @@ function installCorpusIntercept() {
   const _JS_NM         = path.join(JS_ROOT, "node_modules");
   const _origLoad = Module._load;
 
+  // Also cache the eslint main module path for RuleTester interception
+  let _eslintMainPath;
+  try { _eslintMainPath = require.resolve("eslint"); } catch { _eslintMainPath = null; }
+  // Build a fake eslint module that swaps RuleTester
+  let _fakeEslint;
+
   Module._load = function (request, parent, isMain) {
     if (parent && parent.filename) {
       try {
         const resolved = Module._resolveFilename(request, parent, isMain);
         if (resolved === _ruleTestPath) return CapturingRuleTester;
+        // Intercept require('eslint') to swap RuleTester
+        if (_eslintMainPath && resolved === _eslintMainPath) {
+          if (!_fakeEslint) {
+            const real = _origLoad.call(this, resolved, parent, isMain);
+            _fakeEslint = { ...real, RuleTester: CapturingRuleTester };
+          }
+          return _fakeEslint;
+        }
       } catch { /* unresolvable */ }
 
       if (!request.startsWith(".") && !request.startsWith("/")) {
         if (request === "@typescript-eslint/parser" || request.includes("parsers/"))
           return CUSTOM_PARSER_STUB;
-        if (parent.filename.startsWith(_ESLINT_PREFIX)) {
+        // Redirect bare module requires from test files to js/node_modules
+        const _CONFORMANCE_PREFIX = path.join(__dirname, "../conformance") + path.sep;
+        if (parent.filename.startsWith(_ESLINT_PREFIX) || parent.filename.startsWith(_CONFORMANCE_PREFIX)) {
           const redirected = path.join(_JS_NM, request);
           try {
             const resolved = Module._resolveFilename(redirected, parent, isMain);
@@ -520,9 +536,20 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   const { TESTS_DIR, restore } = installCorpusIntercept();
   const RULES_DIR_SUB = path.join(ESLINT_ROOT, "lib/rules");
 
+  // Plugin test directories: { prefix, testsDir, rulesDir }
+  const PLUGIN_TEST_DIRS = [
+    { prefix: "react",       testsDir: path.join(__dirname, "../conformance/eslint-plugin-react/tests/lib/rules"),    rulesDir: path.join(__dirname, "../conformance/eslint-plugin-react/lib/rules") },
+    { prefix: "unicorn",     testsDir: path.join(__dirname, "../conformance/eslint-plugin-unicorn/test"),             rulesDir: path.join(__dirname, "../conformance/eslint-plugin-unicorn/rules") },
+    { prefix: "promise",     testsDir: path.join(__dirname, "../conformance/eslint-plugin-promise/__tests__"),        rulesDir: path.join(__dirname, "../conformance/eslint-plugin-promise/rules") },
+    { prefix: "jsdoc",       testsDir: path.join(__dirname, "../conformance/eslint-plugin-jsdoc/test/rules/assertions"), rulesDir: null },
+  ];
+
   // Phase 1: Load all rule cases upfront.
   const allRuleData = [];
+
+  // 1a: ESLint core rules
   for (const ruleName of COMPARABLE_RULES) {
+    if (ruleName.includes("/")) continue; // skip plugin rules here
     const cases = loadRuleCases(TESTS_DIR, ruleName);
     if (!cases) continue;
     const ruleModule = (() => {
@@ -534,6 +561,28 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     const isTypeScript = defaultParser && typeof defaultParser === 'object';
     const allCases = [...cases.valid, ...cases.invalid];
     allRuleData.push({ ruleName, ruleModule, defaultSourceType, isTypeScript, allCases });
+  }
+
+  // 1b: Plugin rules — load test cases from plugin submodule test dirs
+  for (const { prefix, testsDir, rulesDir } of PLUGIN_TEST_DIRS) {
+    if (!fs.existsSync(testsDir)) continue;
+    const testFiles = fs.readdirSync(testsDir).filter(f => f.endsWith(".js"));
+    for (const file of testFiles) {
+      const baseName = file.replace(/\.js$/, "");
+      const fullName = `${prefix}/${baseName}`;
+      if (filterRule && fullName !== filterRule) continue;
+      // Load test cases via RuleTester intercept
+      const cases = loadRuleCases(testsDir, baseName);
+      if (!cases) continue;
+      // Get the rule module from the plugin
+      const ruleModule = _pluginRuleModules.get(fullName);
+      if (!ruleModule) continue;
+      const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
+      const defaultParser = cases.defaultConfig?.languageOptions?.parser;
+      const isTypeScript = defaultParser && typeof defaultParser === 'object';
+      const allCases = [...cases.valid, ...cases.invalid];
+      allRuleData.push({ ruleName: fullName, ruleModule, defaultSourceType, isTypeScript, allCases });
+    }
   }
 
   // Phase 2: Per-rule analysis (native runs in-process via NAPI, same loop as runner).

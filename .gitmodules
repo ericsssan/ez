@@ -13,3 +13,15 @@
 [submodule "tests/conformance/eslint"]
 	path = tests/conformance/eslint
 	url = https://github.com/eslint/eslint
+[submodule "tests/conformance/eslint-plugin-react"]
+	path = tests/conformance/eslint-plugin-react
+	url = https://github.com/jsx-eslint/eslint-plugin-react.git
+[submodule "tests/conformance/eslint-plugin-unicorn"]
+	path = tests/conformance/eslint-plugin-unicorn
+	url = https://github.com/sindresorhus/eslint-plugin-unicorn.git
+[submodule "tests/conformance/eslint-plugin-promise"]
+	path = tests/conformance/eslint-plugin-promise
+	url = https://github.com/eslint-community/eslint-plugin-promise.git
+[submodule "tests/conformance/eslint-plugin-jsdoc"]
+	path = tests/conformance/eslint-plugin-jsdoc
+	url = https://github.com/gajus/eslint-plugin-jsdoc.git
