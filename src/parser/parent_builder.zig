@@ -406,13 +406,17 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .jsx_expression_container => {
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
+            .jsx_member_expr, .jsx_namespaced_name => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
 
             // ── Leaf nodes (no children) ──────────────────────
             .empty_stmt, .break_stmt, .continue_stmt,
             .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
-            .jsx_text_node, .error_node,
+            .jsx_text_node, .jsx_empty_expr, .jsx_identifier, .error_node,
             // TS type nodes that are true leaves (no child types to traverse)
             .ts_type_reference, .ts_infer_type,
             .ts_function_type, .ts_constructor_type,

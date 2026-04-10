@@ -1532,6 +1532,12 @@ fn parseArrowBody(p: *Parser) Error!NodeIndex {
     p.in_generator = false;
     defer p.in_generator = saved_gen;
     if (p.peek() == .l_brace) {
+        // Entering a new function body: always allow `in` operator.
+        // The `allow_in = false` flag from a for-loop init must not propagate
+        // into arrow function bodies (per spec, a new function scope resets it).
+        const saved_allow_in = p.allow_in;
+        p.allow_in = true;
+        defer p.allow_in = saved_allow_in;
         return parseBlockBody(p);
     }
     return parseAssignmentExpression(p);
@@ -1980,8 +1986,10 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
 
     // Computed property: [expr]: value (only valid in object literals, not class bodies)
     // In TS class bodies, [expr]: Type is valid (computed field with type annotation)
+    // When inside a function/method body (in_function=true), we are NOT at class-body level
+    // even if in_class is still set — so [expr]: val in object literals is valid.
     if (p.peek() == .colon) {
-        if (p.in_class and !p.language.isTs()) {
+        if (p.in_class and !p.in_function and !p.language.isTs()) {
             try p.emitError("Unexpected ':' in class body (use '=' for field initializers)");
             return error.ParseError;
         }
@@ -2628,12 +2636,15 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         switch (p.peek()) {
             .dot => {
                 _ = p.advance();
-                // Private name: .#ident
-                if (p.peek() == .hash and p.peekAt(1) == .identifier) {
-                    _ = p.advance(); // skip '#'
+                // Private name: .#ident — save '#' token as main_token for PrivateIdentifier detection.
+                var hash_tok: ?TokenIndex = null;
+                if (p.peek() == .hash) {
+                    hash_tok = p.advance(); // save '#', don't discard
+                    // keywords are valid private names: obj.#await, obj.#static, etc.
+                    if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
                 }
                 // Accept identifier, keyword, or escaped keyword after `.`
-                const prop_tok = if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword)
+                const prop_tok = if (hash_tok) |ht| ht else if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword)
                     p.advance()
                 else
                     try p.expect(.identifier); // will emit error

@@ -17,7 +17,7 @@ pub const FLAG_HAS_BOM: u32 = 1;
 
 /// Written at offset 0 of the shared buffer after parsing.
 /// All offsets are byte offsets from the start of the buffer.
-/// 34 fields × 4 bytes = 136 bytes.
+/// 35 fields × 4 bytes = 140 bytes.
 pub const BufferHeader = extern struct {
     magic: u32,
     version: u32,
@@ -1036,6 +1036,15 @@ pub fn computeNodePositions(
                 }
                 if (t != minTok[i]) node_starts[i] = tok_starts[t];
             },
+            // JSX element/fragment: `<` is consumed by the caller of parseJsxElement/
+            // parseJsxFragment; it's not any node's main_token, so minTok[i] points
+            // to the tag name (or `>` for fragments). Back up by 1 token to include `<`.
+            .jsx_element, .jsx_opening_element, .jsx_self_closing, .jsx_fragment => {
+                const mt = minTok[i];
+                if (mt > 0 and tok_tags[mt - 1] == .less_than) {
+                    node_starts[i] = tok_starts[mt - 1];
+                }
+            },
             else => {},
         }
     }
@@ -1064,10 +1073,16 @@ pub fn computeNodePositions(
         }
     }
 
-    // isMainTok[j] = 1 if token j is the main token of some AST node
+    // isMainTok[j] = 1 if token j is the main token of some AST node.
+    // Exclude jsx_text_node: gap-type JSXText nodes use the PRECEDING regular token
+    // as their main_token (the actual text is stored in data.lhs/rhs). Setting
+    // isMainTok on that preceding token (e.g. `}`) would cause the scan of the
+    // JSXExpressionContainer to break before including the closing `}`.
     const isMainTok = try alloc.alloc(u8, tc);
     @memset(isMainTok, 0);
-    for (main_tokens[0..n]) |mt| isMainTok[mt] = 1;
+    for (0..n) |i| {
+        if (node_tags[i] != .jsx_text_node) isMainTok[main_tokens[i]] = 1;
+    }
 
     // Compute node end positions
     const node_ends = try alloc.alloc(u32, n);
@@ -1082,13 +1097,26 @@ pub fn computeNodePositions(
             continue;
         }
 
-        // MethodDefinition / StaticBlock: extend through closing brackets but
-        // stop including non-bracket tokens after the outermost `}`.
-        // In ESTree, the `;` after `a() {}` is NOT part of the MethodDefinition.
+        // MethodDefinition / StaticBlock / FunctionExpression / ClassExpression /
+        // ArrowFunction: extend through closing brackets but stop including
+        // non-bracket tokens after the outermost `}`.
+        // - MethodDef: `;` after `a() {}` is NOT part of the node.
+        // - FunctionExpression: `;` after `function f() {}` must NOT be included
+        //   (only `}` closes the node), otherwise range check in rules like
+        //   no-shadow's isFunctionNameInitializerException breaks.
+        // - ArrowFunction with block body: same as FunctionExpression.
+        // - ClassExpression: `;` after `class {}` must NOT be included.
+        // Note: arrow functions with expression bodies (no `}`) will extend through
+        // the expression but stop before the trailing `;` via found_outer_brace=false
+        // breaking on the next non-bracket after the expression ends (isMainTok).
         if (tag == .method_def or tag == .computed_method_def or
             tag == .getter_def or tag == .computed_getter_def or
             tag == .setter_def or tag == .computed_setter_def or
-            tag == .constructor_def or tag == .static_block)
+            tag == .constructor_def or tag == .static_block or
+            tag == .fn_expr or tag == .async_fn_expr or
+            tag == .generator_fn_expr or tag == .async_generator_fn_expr or
+            tag == .class_expr or
+            tag == .arrow_fn or tag == .async_arrow_fn)
         {
             const sp = tok_starts[minTok[i]];
             var found_outer_brace = false;
@@ -1124,18 +1152,22 @@ pub fn computeNodePositions(
         // expression_stmt stops at `;` to prevent consuming sibling tokens
         // like `else` in `if (cond) expr; else ...`.
         const is_expr_stmt = tag == .expression_stmt;
-        const is_stmt = switch (tag) {
-            .expression_stmt, .var_decl, .let_decl, .const_decl, .empty_stmt, .debugger_stmt,
+        // var/let/const as the init of a for-statement: don't scan forward — the `;`
+        // separators and the closing `)` of the for(...) must not be included in the range.
+        const is_for_init_decl = (tag == .var_decl or tag == .let_decl or tag == .const_decl) and blk: {
+            const pi = parent_indices[i];
+            break :blk pi != NONE and node_tags[pi] == .for_stmt;
+        };
+        const is_stmt = !is_for_init_decl and switch (tag) {
+            .expression_stmt, .var_decl, .let_decl, .const_decl, .debugger_stmt,
             .return_stmt, .throw_stmt, .break_stmt, .break_label, .continue_stmt, .continue_label,
             .do_while_stmt, .import_decl, .export_named, .export_named_from, .export_all,
             .export_default_expr, .export_default_fn, .export_default_class,
             .property_def, .computed_property_def,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
-            .root, .block_stmt, .class_body, .class_decl, .class_expr,
-            .fn_decl, .fn_expr, .async_fn_decl, .async_fn_expr,
-            .generator_fn_decl, .generator_fn_expr,
-            .async_generator_fn_decl, .async_generator_fn_expr,
-            .arrow_fn, .async_arrow_fn,
+            .root, .block_stmt, .class_body, .class_decl,
+            .fn_decl, .async_fn_decl,
+            .generator_fn_decl, .async_generator_fn_decl,
             .if_stmt, .if_else_stmt, .while_stmt, .for_stmt,
             .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
             .switch_stmt, .try_stmt, .with_stmt, .labeled_stmt,
@@ -1155,16 +1187,33 @@ pub fn computeNodePositions(
         // object's closing `}`.
         var is_array = tag == .array_literal or tag == .array_pattern;
         var is_object = tag == .object_literal or tag == .object_pattern;
-        // NewExpression: `new Foo()` — maxTok is the callee, need to include `()`.
-        // The `(` is an opening bracket that the basic scan skips, so treat it
-        // as a container that continues through interior tokens to find `)`.
-        // Only activate if the next token is actually `(` (not for `new Bar;`).
-        var is_call = tag == .new_expr and (base + 1 < tc) and tok_tags[base + 1] == .l_paren;
+        // NewExpression / OptionalCall (no args): maxTok is the callee's last main token,
+        // need to extend through the `()` argument list to include the closing `)`.
+        // For a simple callee (new A()), base+1 is directly `(`.
+        // For a parenthesized callee (new (new A)()), the callee's closing `)` tokens
+        // lie between base and the args `(`; scan past them to find the real `(`.
+        // Track args_open_tok so we break on the matching `)`, not an inner `)`.
+        var args_open_tok: u32 = NONE;
+        if (tag == .new_expr or tag == .optional_call_expr) {
+            var k: u32 = @intCast(base + 1);
+            while (k < tc and isMainTok[k] == 0 and tok_tags[k] == .r_paren) : (k += 1) {
+                // Only skip r_paren tokens whose opener is within this node's range.
+                const opener = closeOpen[k];
+                if (opener == NONE or tok_starts[opener] < start_p) break;
+            }
+            if (k < tc and tok_tags[k] == .l_paren) args_open_tok = k;
+        }
+        var is_call = args_open_tok != NONE;
         // Import/export specifiers: stop before `,` or `}` (don't consume siblings)
         const is_specifier = tag == .import_specifier or tag == .import_default_specifier or
             tag == .import_namespace_specifier or tag == .export_specifier;
         // For class properties, stop after the first semicolon (don't include extras)
         const is_property = tag == .property_def or tag == .computed_property_def;
+        // JSX elements/fragments: extend through the terminating `>` (not a bracket).
+        // The loop scans through `<`, `/`, identifier tokens, then stops after `>`.
+        const is_jsx_elem = tag == .jsx_element or tag == .jsx_opening_element or
+            tag == .jsx_self_closing or tag == .jsx_closing_element or
+            tag == .jsx_fragment;
         while (j < tc) {
             if (isMainTok[j] == 1) break;
             const tt = tok_tags[j];
@@ -1182,8 +1231,9 @@ pub fn computeNodePositions(
                         is_object = false;
                         break;
                     }
-                    // For new expressions, stop after the closing `)` of the arguments
-                    if (is_call and tt == .r_paren) {
+                    // For new expressions, stop after the closing `)` of the arguments.
+                    // Use args_open_tok so we don't stop on the callee's paren `)`.
+                    if (is_call and tt == .r_paren and opener == args_open_tok) {
                         is_call = false;
                         break;
                     }
@@ -1199,9 +1249,12 @@ pub fn computeNodePositions(
                 // Statement/declaration: include trailing `;` and other tokens.
                 // For expression statements specifically, stop after `;` to prevent
                 // consuming sibling tokens (e.g., `else` after `if (cond) expr;`).
+                // Also stop before keywords that can follow an expression statement
+                // without a semicolon (ASI): `else`, `catch`, `finally`, `while`.
                 // For property definitions in class bodies, only include the first `;`
                 // For specifiers: stop before `,` `}` `)` `from` to not consume siblings or import tail
                 if (is_specifier and (tt == .comma or tt == .r_brace or tt == .r_paren or tt == .kw_from)) break;
+                if (is_expr_stmt and (tt == .kw_else or tt == .kw_catch or tt == .kw_finally or tt == .kw_while)) break;
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
                 if ((is_expr_stmt or is_property) and tt == .semicolon) break;
@@ -1215,11 +1268,17 @@ pub fn computeNodePositions(
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
             } else if (is_call) {
-                // For new expressions: include the opening `(` and interior tokens
-                // to reach the closing `)`. Stop once we've found the closing paren
-                // (handled by the r_paren branch above which updates ext_end).
+                // For new/optional-call with no args: include `(` and any interior
+                // tokens up to the closing `)` (handled by r_paren branch above).
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
+            } else if (is_jsx_elem) {
+                // JSX: extend through `<`, `/`, identifier tokens and the closing `>`.
+                // All `>` inside attribute expressions {a > b} are part of child subtrees
+                // (already consumed at base), so the first `>` we see here is the tag closer.
+                const te = tok_ends[j];
+                if (te > ext_end) ext_end = te;
+                if (tt == .greater_than) break;
             } else {
                 // Expression/identifier: stop at non-bracket tokens
                 break;
@@ -1295,8 +1354,8 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 136 bytes" {
-    try std.testing.expectEqual(@as(usize, 136), @sizeOf(BufferHeader));
+test "BufferHeader is 140 bytes" {
+    try std.testing.expectEqual(@as(usize, 140), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

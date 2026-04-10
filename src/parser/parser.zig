@@ -4707,9 +4707,9 @@ test "parse labeled statement" {
     defer result.deinit(allocator);
 
     try testing.expectEqual(@as(usize, 0), result.errors.len);
-    // root + empty_stmt + labeled_stmt = 3 nodes
-    try testing.expectEqual(@as(usize, 3), result.nodes.len);
-    try testing.expectEqual(Node.Tag.labeled_stmt, result.nodeTag(NodeIndex.fromInt(2)));
+    // root + property_ident (label) + empty_stmt + labeled_stmt = 4 nodes
+    try testing.expectEqual(@as(usize, 4), result.nodes.len);
+    try testing.expectEqual(Node.Tag.labeled_stmt, result.nodeTag(NodeIndex.fromInt(3)));
 }
 
 test "parse expression statement" {

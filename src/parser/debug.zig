@@ -638,7 +638,11 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
         .jsx_spread_attribute, .jsx_expression_container => {
             try dumpNode(tree, data.lhs, child_indent, writer);
         },
-        .jsx_text_node => {},
+        .jsx_text_node, .jsx_empty_expr, .jsx_identifier => {},
+        .jsx_member_expr, .jsx_namespaced_name => {
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
         .jsx_fragment => {
             const range = dataToSubRange(data);
             try dumpSubRange(tree, range, child_indent, writer);

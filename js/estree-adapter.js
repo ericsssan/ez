@@ -327,6 +327,17 @@ class AstView {
     this._preOrder  = preOff  > 0 ? new Uint32Array(buffer, preOff,  this.nodeCount) : null;
     this._postOrder = postOff > 0 ? new Uint32Array(buffer, postOff, this.nodeCount) : null;
 
+    // Inverse of _preOrder: _preOrderRank[nodeIdx] = DFS pre-order visiting position.
+    // Used by getNodeByRangeIndex to pick the deepest (last-entered) node among
+    // same-range candidates. Higher rank = visited later in DFS = deeper in tree.
+    if (this._preOrder) {
+      const rank = new Uint32Array(this.nodeCount);
+      for (let pi = 0; pi < this.nodeCount; pi++) rank[this._preOrder[pi]] = pi;
+      this._preOrderRank = rank;
+    } else {
+      this._preOrderRank = null;
+    }
+
     // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig)
     // Copy immediately: the Zig allocator reuses this memory region during subsequent
     // native calls, so a live TypedArray view would see stale data by the time
@@ -901,6 +912,8 @@ const NodeProto = {
   },
   get start() {
     const ast = this._ast;
+    // Program (root) always starts at 0, even if the first token is not at 0.
+    if (ast._nodeTags[this._i] === T.root) return 0;
     // SequenceExpression: ez assigns '(' as main token, but ESTree requires
     // start at the first expression (the paren is not part of the node's range).
     if (ast._nodeTags[this._i] === T.sequence_expr) {
@@ -986,8 +999,10 @@ const NodeProto = {
     //   buffer: MemberExpression(.p) -> MemberExpression(.prototype, optional)
     //   ESTree: MemberExpression(.p) -> ChainExpression -> MemberExpression(.prototype, optional)
     const thisTag = this._ast._nodeTags[this._i];
-    if (result && _isOptionalTag(thisTag)) {
-      // This node is optional. Wrap it in a ChainExpression.
+    if (result && _isOptionalTag(thisTag) && !_isChainChild(this._ast, this._i)) {
+      // This node is the outermost optional node — wrap parent in a ChainExpression.
+      // (Chain children should NOT get a ChainExpression parent; their parent is the
+      //  optional call/member that contains them.)
       const chainExpr = _getChainExpr(this._ast, this._i);
       // Store the actual parent so that chainExpr.parent returns the right value
       Object.defineProperty(chainExpr, '_realParent', {
@@ -1064,6 +1079,10 @@ const NodeProto = {
       }
       return _resolveUnicodeEscapes(ast._identAt(tok));
     }
+    // JSXIdentifier.name — the identifier text
+    if (t === T.jsx_identifier) {
+      return this._ast._identAt(this._ast._mainTokens[this._i]);
+    }
     // JSXOpeningElement.name / JSXClosingElement.name / JSXSelfClosing.name
     if (t === T.jsx_opening_element || t === T.jsx_self_closing) {
       const ast = this._ast;
@@ -1078,6 +1097,11 @@ const NodeProto = {
     if (t === T.jsx_attribute) {
       const lhs = this._ast.nodeLhs(this._i);
       return lhs !== NONE ? nodeView(this._ast, lhs) : null;
+    }
+    // JSXNamespacedName.name (local part, rhs)
+    if (t === T.jsx_namespaced_name) {
+      const idx = this._ast.nodeRhs(this._i);
+      return idx !== NONE ? nodeView(this._ast, idx) : null;
     }
     return undefined;
   },
@@ -1250,9 +1274,17 @@ const NodeProto = {
       v = { raw, cooked: _cookTemplate(raw) };
     } else if (t === T.jsx_text_node) {
       // JSXText: value is the raw text content between tags.
-      const mt = this.mainToken;
-      const s = ast._tokStarts[mt], e = ast._tokEnds[mt];
-      v = ast.source.slice(s, e);
+      // Gap-type nodes (data.lhs != NONE) store gap positions in node_pos.starts/ends.
+      const lhs = ast.nodeLhs(this._i);
+      if (lhs !== NONE) {
+        // Gap-type: range is the gap's UTF-16 positions (set by napi.zig override).
+        const r = this.range;
+        v = ast.source.slice(r[0], r[1]);
+      } else {
+        const mt = this.mainToken;
+        const s = ast._tokStarts[mt], e = ast._tokEnds[mt];
+        v = ast.source.slice(s, e);
+      }
     } else if (t === T.jsx_attribute) {
       // JSXAttribute: value is the rhs (string literal, expression container, or null)
       const rhs = ast.nodeRhs(this._i);
@@ -1268,6 +1300,11 @@ const NodeProto = {
    * node.raw — raw literal source text (for Literal nodes).
    */
   get raw() {
+    // Gap-type JSXText nodes: raw text comes from the gap range, not the main token.
+    if (this._tag === T.jsx_text_node && this._ast.nodeLhs(this._i) !== NONE) {
+      const r = this.range;
+      return this._ast.source.slice(r[0], r[1]);
+    }
     return this._ast._rawTokenText(this.mainToken);
   },
 
@@ -1306,21 +1343,23 @@ const NodeProto = {
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
     const rhs = ast.nodeRhs(this._i);
+    // Use nodeViewChain: the test is a boolean context, so optional chains
+    // at the top level must be wrapped in ChainExpression (e.g., `if (a?.b)`)
     if (t === T.if_stmt || t === T.if_else_stmt || t === T.while_stmt) {
-      return lhs === NONE ? null : nodeView(ast, lhs);
+      return lhs === NONE ? null : nodeViewChain(ast, lhs);
     }
     if (t === T.do_while_stmt) {
-      return rhs === NONE ? null : nodeView(ast, rhs);
+      return rhs === NONE ? null : nodeViewChain(ast, rhs);
     }
     if (t === T.for_stmt) {
       const d = ast.extraForData(lhs);
-      return d.condition === NONE ? null : nodeView(ast, d.condition);
+      return d.condition === NONE ? null : nodeViewChain(ast, d.condition);
     }
     if (t === T.conditional) {
-      return lhs === NONE ? null : nodeView(ast, lhs);
+      return lhs === NONE ? null : nodeViewChain(ast, lhs);
     }
     if (t === T.switch_case) {
-      return lhs === NONE ? null : nodeView(ast, lhs);
+      return lhs === NONE ? null : nodeViewChain(ast, lhs);
     }
     return null;
   },
@@ -1509,15 +1548,17 @@ const NodeProto = {
     const t = this._tag;
     const lhs = ast => ast.nodeLhs(this._i);
     const a = this._ast;
-    // await/unary-arithmetic: argument may be optional chain.
-    // (await obj?.foo)() or +(await obj?.foo) — checkUndefinedShortCircuit traverses into argument.
-    if (t === T.await_expr || t === T.unary_plus || t === T.unary_minus) {
+    // All unary operators wrap optional-chain arguments in ChainExpression.
+    // ESLint rules (no-import-assign, no-extra-boolean-cast, no-unsafe-optional-chaining)
+    // traverse into argument and rely on the ChainExpression wrapper.
+    if (t === T.await_expr || t === T.unary_plus || t === T.unary_minus ||
+        t === T.logical_not || t === T.bitwise_not || t === T.typeof_expr || t === T.void_expr ||
+        t === T.delete_expr || t === T.prefix_inc || t === T.prefix_dec ||
+        t === T.postfix_inc || t === T.postfix_dec) {
       const idx = lhs(a);
       return idx === NONE ? null : nodeViewChain(a, idx);
     }
-    if (t === T.logical_not || t === T.bitwise_not || t === T.typeof_expr || t === T.void_expr ||
-        t === T.delete_expr || t === T.prefix_inc || t === T.prefix_dec ||
-        t === T.postfix_inc || t === T.postfix_dec || t === T.ts_non_null_expr) {
+    if (t === T.ts_non_null_expr) {
       const idx = lhs(a);
       return idx === NONE ? null : nodeView(a, idx);
     }
@@ -1594,7 +1635,7 @@ const NodeProto = {
 
   /**
    * node.object — object being accessed.
-   * MemberExpression (all variants)
+   * MemberExpression (all variants) and JSXMemberExpression.
    */
   get object() {
     const t = this._tag;
@@ -1604,6 +1645,11 @@ const NodeProto = {
       const idx = this._ast.nodeLhs(this._i);
       // Use nodeViewChain to expose ChainExpression for optional chain objects.
       return idx === NONE ? null : nodeViewChain(this._ast, idx);
+    }
+    // JSXMemberExpression.object
+    if (t === T.jsx_member_expr) {
+      const idx = this._ast.nodeLhs(this._i);
+      return idx !== NONE ? nodeView(this._ast, idx) : null;
     }
     return undefined;
   },
@@ -1638,14 +1684,21 @@ const NodeProto = {
       const propIdx = ast.nodeRhs(this._i);
       return propIdx === NONE ? null : nodeView(ast, propIdx);
     }
+    // JSXMemberExpression.property
+    if (t === T.jsx_member_expr) {
+      const idx = ast.nodeRhs(this._i);
+      return idx !== NONE ? nodeView(ast, idx) : null;
+    }
     return undefined;
   },
 
   /**
    * node.computed — true for computed member/property access.
+   * JSXMemberExpression.computed is always false.
    */
   get computed() {
     const t = this._tag;
+    if (t === T.jsx_member_expr) return false;
     return t === T.computed_member_expr || t === T.optional_computed_member_expr ||
            t === T.computed_property || t === T.computed_method_def ||
            t === T.computed_property_def || t === T.computed_getter_def ||
@@ -1900,7 +1953,15 @@ const NodeProto = {
     const t = this._tag;
     if (t === T.var_decl) return 'var';
     if (t === T.let_decl) return 'let';
-    if (t === T.const_decl) return 'const';
+    if (t === T.const_decl) {
+      // 'await using' / 'using' declarations share const_decl tag; detect by main token.
+      // tag 45 = kw_await → 'await using', tag 8 = identifier "using" → 'using'.
+      const mainTok = this._ast._mainTokens[this._i];
+      const tokTag = this._ast._tokTags[mainTok];
+      if (tokTag === 45) return 'await using';
+      if (tokTag === 8) return 'using';
+      return 'const';
+    }
     if (t === T.getter_def || t === T.computed_getter_def) return 'get';
     if (t === T.setter_def || t === T.computed_setter_def) return 'set';
     if (t === T.constructor_def) return 'constructor';
@@ -1919,11 +1980,14 @@ const NodeProto = {
       if (t === T.method_def) {
         const ast = this._ast;
         const mainTok = this.mainToken;
-        // identifier token (tag 8) with text "constructor", not static
-        if (ast._tokTags[mainTok] === 8 &&
-            ast._rawTokenText(mainTok) === 'constructor' &&
-            !_methodFlags(ast, mainTok).static) {
-          return 'constructor';
+        if (!_methodFlags(ast, mainTok).static) {
+          const rawText = ast._rawTokenText(mainTok);
+          // identifier token (tag 8) with text "constructor"
+          // or string literal 'constructor'/"constructor" — both name the constructor
+          if (rawText === 'constructor' ||
+              rawText === "'constructor'" || rawText === '"constructor"') {
+            return 'constructor';
+          }
         }
       }
       return 'method';
@@ -2345,6 +2409,15 @@ const NodeProto = {
    * node.directive — for ExpressionStatement nodes that are directives
    * (e.g., "use strict"). Returns the directive string value, or undefined.
    * ESLint's astUtils.isDirective checks typeof node.directive === "string".
+   *
+   * Per the ECMAScript spec, directive prologues only appear at the start of:
+   *   - ScriptBody (Program)
+   *   - FunctionBody (BlockStatement whose parent is a function)
+   *   - ModuleBody (Program with sourceType=module)
+   * Class static blocks do NOT have directive prologues.
+   *
+   * A node is a directive only if all preceding siblings in the parent body
+   * are also string-literal expression statements (the leading directive sequence).
    */
   get directive() {
     if (this._tag !== T.expression_stmt) return undefined;
@@ -2352,7 +2425,48 @@ const NodeProto = {
     const exprIdx = ast.nodeLhs(this._i);
     if (exprIdx === NONE) return undefined;
     if (ast._nodeTags[exprIdx] !== T.string_literal) return undefined;
-    // Return the string value (without quotes)
+
+    // Check parent context — only Program or function BlockStatement are valid.
+    const pd = ast._parentData;
+    if (!pd) return undefined;
+    const parentIdx = pd[this._i];
+    if (parentIdx === NONE || parentIdx === 0xFFFFFFFF) return undefined;
+    const parentTag = ast._nodeTags[parentIdx];
+
+    let bodyStart, bodyEnd;
+    if (parentTag === T.root) {
+      bodyStart = ast.nodeLhs(parentIdx);
+      bodyEnd   = ast.nodeRhs(parentIdx);
+    } else if (parentTag === T.block_stmt) {
+      // Block must be the direct body of a function (not if/while/etc.)
+      const gpIdx = pd[parentIdx];
+      if (gpIdx === NONE || gpIdx === 0xFFFFFFFF) return undefined;
+      const gpTag = ast._nodeTags[gpIdx];
+      if (gpTag !== T.fn_decl && gpTag !== T.async_fn_decl &&
+          gpTag !== T.generator_fn_decl && gpTag !== T.async_generator_fn_decl &&
+          gpTag !== T.fn_expr && gpTag !== T.async_fn_expr &&
+          gpTag !== T.generator_fn_expr && gpTag !== T.async_generator_fn_expr &&
+          gpTag !== T.arrow_fn && gpTag !== T.async_arrow_fn) {
+        return undefined;
+      }
+      bodyStart = ast.nodeLhs(parentIdx);
+      bodyEnd   = ast.nodeRhs(parentIdx);
+    } else {
+      return undefined;
+    }
+
+    // Walk extra-data range: all preceding siblings must be string_literal expression_stmts.
+    const e = ast._extraData;
+    for (let ei = bodyStart; ei < bodyEnd; ei++) {
+      const sibIdx = e[ei];
+      if (sibIdx === NONE || sibIdx === 0xFFFFFFFF) continue;
+      if (sibIdx === this._i) break; // reached self — all before were directives
+      if (ast._nodeTags[sibIdx] !== T.expression_stmt) return undefined;
+      const sibExpr = ast.nodeLhs(sibIdx);
+      if (sibExpr === NONE || ast._nodeTags[sibExpr] !== T.string_literal) return undefined;
+    }
+
+    // This node is in the leading string-literal sequence → it's a directive.
     const raw = ast._rawTokenText(ast._mainTokens[exprIdx]);
     if (raw.length >= 2 && (raw[0] === '"' || raw[0] === "'")) {
       return raw.slice(1, -1);
@@ -2496,8 +2610,25 @@ const NodeProto = {
       // For statement nodes, check if a semicolon token follows and extend the range to include it.
       // Parser computes end positions based on child nodes, which excludes trailing semicolons.
       // This workaround extends statement ranges to include the semicolon for ESLint rule compatibility.
+      // Exception: var/let/const as the init of a for-statement must NOT include the for's `;` separator.
       if (_isStatementTag(tag)) {
-        end = _extendRangeToIncludeSemicolon(this._ast, end);
+        let isForInitDecl = false;
+        if (tag === T.var_decl || tag === T.let_decl || tag === T.const_decl) {
+          const pd = this._ast._parentData;
+          if (pd) {
+            const pi = pd[this._i];
+            if (pi !== undefined && pi !== 0xffffffff && this._ast._nodeTags[pi] === T.for_stmt) {
+              // Confirm this node is the INIT of the for-statement (not the body).
+              // The init is stored in extra data; body is in rhs. We check by looking at the
+              // ForStatement's init property: if parent.init === this node, skip extension.
+              const parentView = nodeView(this._ast, pi);
+              isForInitDecl = parentView && parentView.init === this;
+            }
+          }
+        }
+        if (!isForInitDecl) {
+          end = _extendRangeToIncludeSemicolon(this._ast, end);
+        }
       }
 
       this._range = [this.start, end];
@@ -2678,6 +2809,42 @@ const NodeProto = {
     if (this._tag === T.jsx_self_closing) return true;
     if (this._tag === T.jsx_opening_element) return false;
     return undefined;
+  },
+
+  /** JSXNamespacedName.namespace */
+  get namespace() {
+    if (this._tag !== T.jsx_namespaced_name) return undefined;
+    const idx = this._ast.nodeLhs(this._i);
+    return idx !== NONE ? nodeView(this._ast, idx) : null;
+  },
+
+  /** JSXFragment.openingFragment — synthetic JSXOpeningFragment node */
+  get openingFragment() {
+    if (this._tag !== T.jsx_fragment) return undefined;
+    const ast = this._ast;
+    const start = this.start; // already includes `<` after our js_buffer fix
+    const end = start + 2;   // `<>` = 2 UTF-16 code units
+    const ls = ast._lineStarts();
+    const sli = ast._findLineIdx(start);
+    const eli = ast._findLineIdx(end);
+    return { type: 'JSXOpeningFragment', start, end, range: [start, end],
+             loc: { start: { line: sli + 1, column: start - ls[sli] },
+                    end:   { line: eli + 1, column: end   - ls[eli] } },
+             attributes: [], selfClosing: false };
+  },
+
+  /** JSXFragment.closingFragment — synthetic JSXClosingFragment node */
+  get closingFragment() {
+    if (this._tag !== T.jsx_fragment) return undefined;
+    const ast = this._ast;
+    const end = this.end;   // end of `>`
+    const start = end - 3; // `</>` = 3 UTF-16 code units
+    const ls = ast._lineStarts();
+    const sli = ast._findLineIdx(start);
+    const eli = ast._findLineIdx(end);
+    return { type: 'JSXClosingFragment', start, end, range: [start, end],
+             loc: { start: { line: sli + 1, column: start - ls[sli] },
+                    end:   { line: eli + 1, column: end   - ls[eli] } } };
   },
 
 };
@@ -3202,4 +3369,16 @@ class CfgCodePath {
   }
 }
 
-module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T, effectiveTypeName, CfgGraph, CfgSegment, CfgCodePath };
+/**
+ * Return the synthetic ChainExpression wrapper for node `idx` if it is the outermost
+ * optional chain node, otherwise return null. Used by the runner to synthesize
+ * ChainExpression enter/exit events for rules like no-restricted-syntax.
+ */
+function getChainExprIfOutermost(ast, idx) {
+  if (_isChainNode(ast, idx) && !_isChainChild(ast, idx)) {
+    return _getChainExpr(ast, idx);
+  }
+  return null;
+}
+
+module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T, effectiveTypeName, CfgGraph, CfgSegment, CfgCodePath, getChainExprIfOutermost };

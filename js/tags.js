@@ -225,10 +225,15 @@ const T = {
   property_ident: 194,
   property_literal: 195,
   class_body: 196,
+  // Added at end to preserve existing ordinals for ABI compatibility
+  jsx_empty_expr: 197,
+  jsx_identifier: 198,
+  jsx_member_expr: 199,
+  jsx_namespaced_name: 200,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.
-const OPERATOR_BY_TAG = new Array(196).fill(null);
+const OPERATOR_BY_TAG = new Array(197).fill(null);
 OPERATOR_BY_TAG[T.unary_plus]              = '+';
 OPERATOR_BY_TAG[T.unary_minus]             = '-';
 OPERATOR_BY_TAG[T.logical_not]             = '!';

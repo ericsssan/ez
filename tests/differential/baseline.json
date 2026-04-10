@@ -68,12 +68,12 @@
     },
     "arrow-body-style": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 23,
+        "fn": 21,
         "fp": 3,
         "crash": 0,
         "skip": 0
@@ -147,7 +147,7 @@
     "camelcase": {
       "runner": {
         "fn": 2,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -173,7 +173,7 @@
     "class-methods-use-this": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -186,7 +186,7 @@
     "comma-spacing": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -224,7 +224,7 @@
     },
     "computed-property-spacing": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -277,7 +277,7 @@
     "curly": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -393,8 +393,8 @@
     },
     "func-call-spacing": {
       "runner": {
-        "fn": 16,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -640,7 +640,7 @@
     },
     "keyword-spacing": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -706,7 +706,7 @@
     "logical-assignment-operators": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -718,8 +718,8 @@
     },
     "max-classes-per-file": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -745,7 +745,7 @@
     "max-len": {
       "runner": {
         "fn": 0,
-        "fp": 9,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -874,8 +874,8 @@
     },
     "new-parens": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -965,7 +965,7 @@
     },
     "no-await-in-loop": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1239,7 +1239,7 @@
     "no-dupe-class-members": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1394,7 +1394,7 @@
     },
     "no-eval": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1433,7 +1433,7 @@
     },
     "no-extra-bind": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1446,7 +1446,7 @@
     },
     "no-extra-boolean-cast": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1472,8 +1472,8 @@
     },
     "no-extra-parens": {
       "runner": {
-        "fn": 16,
-        "fp": 26,
+        "fn": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1525,7 +1525,7 @@
     "no-func-assign": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1589,7 +1589,7 @@
     },
     "no-import-assign": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -1603,7 +1603,7 @@
     "no-inline-comments": {
       "runner": {
         "fn": 0,
-        "fp": 9,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1620,8 +1620,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 14,
-        "fp": 11,
+        "fn": 15,
+        "fp": 6,
         "crash": 0,
         "skip": 0
       }
@@ -1642,7 +1642,7 @@
     "no-invalid-this": {
       "runner": {
         "fn": 2,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1655,7 +1655,7 @@
     "no-irregular-whitespace": {
       "runner": {
         "fn": 0,
-        "fp": 19,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1685,7 +1685,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1811,7 +1811,7 @@
     "no-mixed-spaces-and-tabs": {
       "runner": {
         "fn": 0,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1837,7 +1837,7 @@
     "no-multi-spaces": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2031,8 +2031,8 @@
     },
     "no-obj-calls": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2278,7 +2278,7 @@
     },
     "no-restricted-syntax": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2395,12 +2395,12 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 1,
-        "fp": 7,
+        "fn": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 4,
         "fp": 103,
         "crash": 0,
         "skip": 0
@@ -2434,7 +2434,7 @@
     },
     "no-sync": {
       "runner": {
-        "fn": 7,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -2538,13 +2538,13 @@
     },
     "no-undef": {
       "runner": {
-        "fn": 1,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
         "fn": 9,
-        "fp": 15,
+        "fp": 14,
         "crash": 0,
         "skip": 0
       }
@@ -2681,7 +2681,7 @@
     },
     "no-unused-expressions": {
       "runner": {
-        "fn": 12,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -2708,7 +2708,7 @@
     "no-unused-private-class-members": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -2721,7 +2721,7 @@
     "no-unused-vars": {
       "runner": {
         "fn": 20,
-        "fp": 21,
+        "fp": 19,
         "crash": 0
       },
       "native": {
@@ -2733,7 +2733,7 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 13,
+        "fn": 10,
         "fp": 13,
         "crash": 0
       },
@@ -2994,7 +2994,7 @@
     "one-var": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3045,8 +3045,8 @@
     },
     "padding-line-between-statements": {
       "runner": {
-        "fn": 15,
-        "fp": 11,
+        "fn": 14,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -3058,7 +3058,7 @@
     },
     "prefer-arrow-callback": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3085,7 +3085,7 @@
     "prefer-destructuring": {
       "runner": {
         "fn": 0,
-        "fp": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3097,7 +3097,7 @@
     },
     "prefer-exponentiation-operator": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3163,7 +3163,7 @@
     "prefer-promise-reject-errors": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3279,7 +3279,7 @@
     },
     "radix": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3292,7 +3292,7 @@
     },
     "require-atomic-updates": {
       "runner": {
-        "fn": 1,
+        "fn": 4,
         "fp": 1,
         "crash": 0
       },
@@ -3306,7 +3306,7 @@
     "require-await": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3319,7 +3319,7 @@
     "require-unicode-regexp": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3383,7 +3383,7 @@
     },
     "semi": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 3,
         "crash": 0
       },
@@ -3409,7 +3409,7 @@
     },
     "sort-keys": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3748,7 +3748,7 @@
     "promise/no-nesting": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {

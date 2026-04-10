@@ -128,12 +128,43 @@ fn parseImpl(
     const line_starts = try js_buffer.computeLineStarts(source, alloc);
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
+    // Collect JSX position-override nodes (byte offsets) for UTF-16 conversion.
+    // - Gap-type jsx_text_node: data.lhs = gap_start, data.rhs = gap_end (byte offsets)
+    // - jsx_empty_expr: data.lhs = after '{', data.rhs = start of '}' (byte offsets)
+    // Both need their node_pos overridden with UTF-16 positions after conversion.
+    const node_count: u32 = @intCast(tree.nodes.len);
+    const node_tag_items = tree.nodes.items(.tag);
+    const node_data_items = tree.nodes.items(.data);
+    var gap_node_indices: []u32 = &.{};
+    var gap_starts_u32: []u32 = &.{};
+    var gap_ends_u32: []u32 = &.{};
+    {
+        var gap_count: usize = 0;
+        for (node_tag_items[0..node_count], node_data_items[0..node_count]) |nt, nd| {
+            if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) gap_count += 1;
+        }
+        if (gap_count > 0) {
+            gap_node_indices = try alloc.alloc(u32, gap_count);
+            gap_starts_u32 = try alloc.alloc(u32, gap_count);
+            gap_ends_u32 = try alloc.alloc(u32, gap_count);
+            var gi: usize = 0;
+            for (node_tag_items[0..node_count], node_data_items[0..node_count], 0..) |nt, nd, ni| {
+                if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) {
+                    gap_node_indices[gi] = @intCast(ni);
+                    gap_starts_u32[gi] = nd.lhs.toInt();
+                    gap_ends_u32[gi] = nd.rhs.toInt();
+                    gi += 1;
+                }
+            }
+        }
+    }
+
     // Convert ALL byte-offset arrays to UTF-16 in a single source scan.
-    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts };
+    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
+    // After this: gap_starts_u32 and gap_ends_u32 contain UTF-16 positions.
 
     // Compute node start/end positions (UTF-16) — uses already-converted tok_starts/tok_ends.
-    const node_count: u32 = @intCast(tree.nodes.len);
     const token_count: u32 = @intCast(tokens.len);
     const node_pos = try js_buffer.computeNodePositions(
         alloc,
@@ -146,6 +177,29 @@ fn parseImpl(
         node_count,
         token_count,
     );
+
+    // Override positions for gap-type jsx_text_node nodes.
+    // computeNodePositions uses main_token (the preceding token) — wrong for gaps.
+    if (gap_node_indices.len > 0) {
+        for (gap_node_indices, gap_starts_u32, gap_ends_u32) |ni, gs, ge| {
+            node_pos.starts[ni] = gs;
+            node_pos.ends[ni] = ge;
+        }
+        // Re-sort sorted_by_start after position overrides.
+        const GapSortCtx = struct {
+            starts: []const u32,
+            ends: []const u32,
+            pub fn lessThan(ctx: @This(), a: u32, b: u32) bool {
+                const sa = ctx.starts[a]; const sb = ctx.starts[b];
+                if (sa != sb) return sa < sb;
+                return (ctx.ends[a] -| sa) < (ctx.ends[b] -| sb);
+            }
+        };
+        std.mem.sortUnstable(u32, node_pos.sorted_by_start, GapSortCtx{
+            .starts = node_pos.starts, .ends = node_pos.ends,
+        }, GapSortCtx.lessThan);
+    }
+
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;
@@ -335,11 +389,38 @@ fn parseAndLintImpl(
     const line_starts = try js_buffer.computeLineStarts(source, alloc);
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
+    // Collect JSX position-override nodes for UTF-16 conversion (see parseImpl for details).
+    const node_count: u32 = @intCast(tree.nodes.len);
+    const node_tag_items2 = tree.nodes.items(.tag);
+    const node_data_items2 = tree.nodes.items(.data);
+    var gap_node_indices2: []u32 = &.{};
+    var gap_starts_u322: []u32 = &.{};
+    var gap_ends_u322: []u32 = &.{};
+    {
+        var gap_count: usize = 0;
+        for (node_tag_items2[0..node_count], node_data_items2[0..node_count]) |nt, nd| {
+            if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) gap_count += 1;
+        }
+        if (gap_count > 0) {
+            gap_node_indices2 = try alloc.alloc(u32, gap_count);
+            gap_starts_u322 = try alloc.alloc(u32, gap_count);
+            gap_ends_u322 = try alloc.alloc(u32, gap_count);
+            var gi: usize = 0;
+            for (node_tag_items2[0..node_count], node_data_items2[0..node_count], 0..) |nt, nd, ni| {
+                if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) {
+                    gap_node_indices2[gi] = @intCast(ni);
+                    gap_starts_u322[gi] = nd.lhs.toInt();
+                    gap_ends_u322[gi] = nd.rhs.toInt();
+                    gi += 1;
+                }
+            }
+        }
+    }
+
     // Single-pass UTF-16 conversion for all byte-offset arrays.
-    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts };
+    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans2);
 
-    const node_count: u32 = @intCast(tree.nodes.len);
     const token_count: u32 = @intCast(tokens.len);
     const node_pos = try js_buffer.computeNodePositions(
         alloc,
@@ -352,6 +433,27 @@ fn parseAndLintImpl(
         node_count,
         token_count,
     );
+
+    // Override positions for gap-type jsx_text_node nodes.
+    if (gap_node_indices2.len > 0) {
+        for (gap_node_indices2, gap_starts_u322, gap_ends_u322) |ni, gs, ge| {
+            node_pos.starts[ni] = gs;
+            node_pos.ends[ni] = ge;
+        }
+        const GapSortCtx2 = struct {
+            starts: []const u32,
+            ends: []const u32,
+            pub fn lessThan(ctx: @This(), a: u32, b: u32) bool {
+                const sa = ctx.starts[a]; const sb = ctx.starts[b];
+                if (sa != sb) return sa < sb;
+                return (ctx.ends[a] -| sa) < (ctx.ends[b] -| sb);
+            }
+        };
+        std.mem.sortUnstable(u32, node_pos.sorted_by_start, GapSortCtx2{
+            .starts = node_pos.starts, .ends = node_pos.ends,
+        }, GapSortCtx2.lessThan);
+    }
+
     const node_start_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.starts.ptr) else 0;
     const node_end_pos_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.ends.ptr) else 0;
     const max_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.max_tok.ptr) else 0;

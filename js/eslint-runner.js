@@ -1,6 +1,6 @@
 "use strict";
 
-const { nodeView, NONE, effectiveTypeName, T } = require("./estree-adapter");
+const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
@@ -46,6 +46,33 @@ function _mergeRuleOptions(defaultOptions, configured) {
   return _deepMergeArrays(defaultOptions ?? [], configured);
 }
 
+// Apply JSON schema `default` values to rule options.
+// ESLint v8 applies schema defaults before passing options to rules.
+// When a user passes an empty object `{}` for an options slot that has an
+// object schema with default property values, those defaults are filled in.
+// This prevents rules from seeing `undefined` for properties that have defaults.
+function _applySchemaDefaults(schema, options) {
+  if (!schema || !Array.isArray(schema) || !options || !Array.isArray(options)) return options;
+  const result = options.slice();
+  for (let i = 0; i < schema.length && i < result.length; i++) {
+    const s = schema[i];
+    if (!s || typeof s !== 'object' || s.type !== 'object' || !s.properties) continue;
+    let opt = result[i];
+    if (opt === null || typeof opt !== 'object' || Array.isArray(opt)) continue;
+    let filled = false;
+    const merged = Object.assign({}, opt);
+    for (const [propName, propSchema] of Object.entries(s.properties)) {
+      if (propName in merged) continue; // already set
+      if (propSchema && 'default' in propSchema) {
+        merged[propName] = propSchema.default;
+        filled = true;
+      }
+    }
+    if (filled) result[i] = merged;
+  }
+  return result;
+}
+
 // ── ecmaVersion normalization ────────────────────────────────────
 // Matches ESLint's normalizeEcmaVersionForLanguageOptions:
 // short form (3,5,6..13) → year form (3,5,2015..2022).
@@ -60,7 +87,7 @@ function _normalizeEcmaVersion(v) {
 const _GLOBAL_MIN_VERSION = {
   // ES2015 (ES6)
   Symbol: 2015, Promise: 2015, Proxy: 2015, Reflect: 2015, Map: 2015, Set: 2015,
-  WeakMap: 2015, WeakSet: 2015, ArrayBuffer: 2015, DataView: 2015,
+  WeakMap: 2015, WeakSet: 2015, ArrayBuffer: 2015, DataView: 2015, Intl: 2015,
   Int8Array: 2015, Uint8Array: 2015, Uint8ClampedArray: 2015,
   Int16Array: 2015, Uint16Array: 2015, Int32Array: 2015, Uint32Array: 2015,
   Float32Array: 2015, Float64Array: 2015,
@@ -96,6 +123,11 @@ const _BUILTIN_GLOBALS = [
   // Functions
   'eval', 'isFinite', 'isNaN', 'parseFloat', 'parseInt',
   'decodeURI', 'decodeURIComponent', 'encodeURI', 'encodeURIComponent',
+  'escape', 'unescape',
+  // Object.prototype methods — ESLint's conf/globals.es3 explicitly lists these
+  // as globals because they're accessible as top-level names via the global object.
+  'constructor', 'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable',
+  'toLocaleString', 'toString', 'valueOf',
   // Constructors / namespaces
   'Object', 'Function', 'Boolean', 'Symbol', 'Number', 'BigInt', 'Math', 'Date',
   'String', 'RegExp', 'Array', 'Int8Array', 'Uint8Array', 'Uint8ClampedArray',
@@ -146,15 +178,26 @@ function _intern(str) {
 
 // Returns true if a function AST node has a 'use strict' directive as its first body statement.
 // Used to detect strict mode when Zig's SF_HAS_USE_STRICT flag isn't set (module-mode wrapper bug).
-function _fnHasUseStrict(fnNode) {
+// `source` (optional string) is used to verify the literal is unparenthesized — a directive
+// requires the quote character to appear immediately at the expression start, not a '('.
+function _fnHasUseStrict(fnNode, source) {
   const body = fnNode.body;
   if (!body || body.type !== 'BlockStatement') return false;
   const stmts = body.body;
   if (!stmts || stmts.length === 0) return false;
   const first = stmts[0];
-  return first.type === 'ExpressionStatement' &&
+  if (!(first.type === 'ExpressionStatement' &&
     first.expression?.type === 'Literal' &&
-    first.expression?.value === 'use strict';
+    first.expression?.value === 'use strict')) return false;
+  // A valid directive must not be wrapped in parentheses.
+  // ('use strict') has ExpressionStatement start at '(' but Literal start at "'".
+  // Check the ExpressionStatement's start character, not the Literal's.
+  if (source) {
+    const pos = first.range ? first.range[0] : first.start;
+    const c = pos >= 0 && pos < source.length ? source[pos] : null;
+    if (c !== '"' && c !== "'") return false;
+  }
+  return true;
 }
 
 // Tags that act as destructuring pass-through nodes (not the declaring node).
@@ -234,12 +277,16 @@ function _findLine(ls, pos) {
  *   72+  = punctuation + operators  → Punctuator
  *   131  = eof                      → (not emitted)
  */
+// Contextual keywords that Espree/ESLint returns as "Identifier" (not "Keyword"):
+// async(44), of(43), from(49), as(50), get(47), set(48), await(45)
+const _CONTEXTUAL_KW_TAGS = new Set([43, 44, 45, 47, 48, 49, 50]);
 function _tokType(tag) {
   if (tag <= 1) return 'Numeric';
   if (tag === 2) return 'String';
   if (tag <= 6) return 'Template';
   if (tag === 7) return 'RegularExpression';
   if (tag === 8) return 'Identifier';
+  if (_CONTEXTUAL_KW_TAGS.has(tag)) return 'Identifier';
   if (tag <= 71) return 'Keyword';
   return 'Punctuator';
 }
@@ -357,6 +404,7 @@ class SourceCode {
     this._thinScopeCache = null; // lazily allocated Array[scopeCount]
     this._thinVarCache = null;   // lazily allocated Array[symCount]
     this._tokenSkipList = null; // lazily built token position index
+    this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
   }
 
   reset(ast, sourceText, sourceType, ecmaVersion) {
@@ -372,6 +420,7 @@ class SourceCode {
     this._thinScopeCache = null;
     this._thinVarCache = null;
     this._tokenSkipList = null;
+    this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
     this._nodesByType = null;
     this.parserServices = null;
@@ -404,6 +453,33 @@ class SourceCode {
   }
 
   /**
+   * Build a flags array marking which token indices are JSX text content.
+   * Tokens that are the main_token of a non-gap jsx_text_node should have
+   * type "JSXText" rather than their native type (e.g. Punctuator).
+   * Lazily computed and cached per file.
+   */
+  _getJsxTextTokFlags() {
+    if (this._jsxTextTokFlags !== null) return this._jsxTextTokFlags;
+    const ast = this._ast;
+    const flags = new Uint8Array(ast.tokenCount);
+    const nodeTags = ast._nodeTags;
+    const nodeCount = ast.nodeCount;
+    const mainTokens = ast._mainTokens;
+    const jsxTextTag = T.jsx_text_node; // 190
+    for (let i = 0; i < nodeCount; i++) {
+      if (nodeTags[i] === jsxTextTag) {
+        // Only non-gap nodes (lhs === NONE) own a real token as JSX text
+        if (ast.nodeLhs(i) === NONE) {
+          const mt = mainTokens[i];
+          if (mt < ast.tokenCount) flags[mt] = 1;
+        }
+      }
+    }
+    this._jsxTextTokFlags = flags;
+    return flags;
+  }
+
+  /**
    * Binary search: find the token index whose start position is <= pos.
    * Returns the index in _tokStarts. O(log n).
    */
@@ -427,29 +503,68 @@ class SourceCode {
   _makeToken(i) {
     if (!this._tokenObjCache) this._tokenObjCache = new Array(this._ast.tokenCount);
     const cached = this._tokenObjCache[i];
-    if (cached !== undefined) return cached;
+    if (cached !== undefined) return cached; // null means shadowed (identifier part of #name)
     const ast = this._ast;
+    // Identifier immediately preceded by hash at position-1: this is the name-part of a
+    // private identifier and is shadowed by the merged token at i-1. Return null.
+    if (i > 0 && ast._tokTags[i] === 8 /* identifier */ &&
+        ast._tokTags[i - 1] === 86 /* hash */ &&
+        ast._tokStarts[i] === ast._tokStarts[i - 1] + 1) {
+      this._tokenObjCache[i] = null;
+      return null;
+    }
     const src = this.text;
     const start = ast._tokStarts[i];
-    let end = i + 1 < ast.tokenCount ? ast._tokStarts[i + 1] : src.length;
-    // Clamp end to the first comment that starts after this token, so that
-    // trimming backwards does not walk through comment text into the token.
-    const cs = ast._commentStarts;
-    const cc = ast._commentCount || 0;
-    if (cc > 0) {
-      let lo = 0, hi = cc;
-      while (lo < hi) { const m = (lo + hi) >> 1; if (cs[m] <= start) lo = m + 1; else hi = m; }
-      if (lo < cc && cs[lo] < end) end = cs[lo];
+    // Use the authoritative token end from the parser (tok_ends is always written).
+    // Fall back to next-token-start with trimming only if tok_ends is unavailable.
+    let end;
+    if (ast._tokEnds) {
+      end = ast._tokEnds[i];
+    } else {
+      end = i + 1 < ast.tokenCount ? ast._tokStarts[i + 1] : src.length;
+      // Clamp end to the first comment that starts after this token.
+      const cs = ast._commentStarts;
+      const cc = ast._commentCount || 0;
+      if (cc > 0) {
+        let lo = 0, hi = cc;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (cs[m] <= start) lo = m + 1; else hi = m; }
+        if (lo < cc && cs[lo] < end) end = cs[lo];
+      }
+      // Trim trailing whitespace (ASCII + line separators)
+      while (end > start) { const cp = src.charCodeAt(end - 1); if (cp <= 32 || cp === 0x2028 || cp === 0x2029) end--; else break; }
     }
-    while (end > start && src.charCodeAt(end - 1) <= 32) end--;
-    const value = src.slice(start, end);
+    let value = src.slice(start, end);
+    // Merge hash (#) + following identifier into a single PrivateIdentifier token.
+    // ESTree/Espree convention: type='PrivateIdentifier', value=name_without_hash,
+    // range includes the leading '#'.
+    if (value === '#' && i + 1 < ast.tokenCount &&
+        ast._tokTags[i + 1] === 8 /* identifier */ &&
+        ast._tokStarts[i + 1] === start + 1) {
+      const identStart = ast._tokStarts[i + 1];
+      let identEnd;
+      if (ast._tokEnds) {
+        identEnd = ast._tokEnds[i + 1];
+      } else {
+        identEnd = i + 2 < ast.tokenCount ? ast._tokStarts[i + 2] : src.length;
+        while (identEnd > identStart) { const cp = src.charCodeAt(identEnd - 1); if (cp <= 32 || cp === 0x2028 || cp === 0x2029) identEnd--; else break; }
+      }
+      end = identEnd;
+      value = src.slice(identStart, identEnd); // name without '#'
+      // Shadow the identifier token at i+1 so it doesn't appear separately.
+      if (!this._tokenObjCache) this._tokenObjCache = new Array(ast.tokenCount);
+      this._tokenObjCache[i + 1] = null;
+    }
     const ls = ast._lineStarts();
     const startLine = _findLine(ls, start);
     const startCol = start - ls[startLine - 1];
     const endLine = _findLine(ls, end);
     const endCol = end - ls[endLine - 1];
+    const rawType = _tokType(ast._tokTags[i]);
+    // If this token is JSX text content (main token of a non-gap jsx_text_node),
+    // report type "JSXText" so spacing/punctuation rules don't flag it.
+    const isJsxText = ast._nodeTags && this._getJsxTextTokFlags()[i] === 1;
     const tok = {
-      type: _tokType(ast._tokTags[i]),
+      type: isJsxText ? 'JSXText' : (src.charCodeAt(start) === 35 /* # */ ? 'PrivateIdentifier' : rawType),
       value,
       range: [start, end],
       loc: {
@@ -526,6 +641,7 @@ class SourceCode {
     const toks = [];
     for (let t = startTok; t <= maxTok; t++) {
       const tok = this._makeToken(t);
+      if (tok === null) continue; // shadowed (name part of #ident)
       if (!fn || fn(tok)) toks.push(tok);
     }
     return toks;
@@ -547,6 +663,7 @@ class SourceCode {
         for (let t = lo; t < tc && starts[t] < node.range[1]; t++) {
           if (ast._tokTags[t] === 131) continue; // skip EOF
           const tok = this._makeToken(t);
+          if (tok === null) continue; // shadowed
           if (!fn || fn(tok)) { if (skipped >= skip) return tok; skipped++; }
         }
         return null;
@@ -572,8 +689,16 @@ class SourceCode {
         startTok = lo;
       }
     }
-    // Fast path: no filter, no skip — just return the first token
-    if (!fn && skip === 0) return this._makeToken(startTok);
+    // Fast path: no filter, no skip — just return the first token (skip past shadowed tokens)
+    if (!fn && skip === 0) {
+      let tok = this._makeToken(startTok);
+      if (tok !== null) return tok;
+      for (let t = startTok + 1; t < ast.tokenCount; t++) {
+        tok = this._makeToken(t);
+        if (tok !== null) return tok;
+      }
+      return null;
+    }
     // Slow path: filter/skip required — find end token from node.range[1]
     const tc = ast.tokenCount;
     let endTok;
@@ -592,6 +717,7 @@ class SourceCode {
     let skipped = 0;
     for (let t = startTok; t <= endTok; t++) {
       const tok = this._makeToken(t);
+      if (tok === null) continue; // shadowed
       if (!fn || fn(tok)) {
         if (skipped >= skip) return tok;
         skipped++;
@@ -620,7 +746,16 @@ class SourceCode {
           else hi = mid - 1;
         }
         while (endTok > 0 && ast._tokTags[endTok] === 131) endTok--;
-        if (!fn && skip === 0) return this._makeToken(endTok);
+        // Fast path: skip past shadowed tokens backward
+        if (!fn && skip === 0) {
+          let tok = this._makeToken(endTok);
+          if (tok !== null) return tok;
+          for (let t = endTok - 1; t >= 0; t--) {
+            tok = this._makeToken(t);
+            if (tok !== null) return tok;
+          }
+          return null;
+        }
         // Find startTok via binary search
         let startTok = 0;
         lo = 0; hi = tc - 1;
@@ -629,6 +764,7 @@ class SourceCode {
         let skipped = 0;
         for (let t = endTok; t >= startTok; t--) {
           const tok = this._makeToken(t);
+          if (tok === null) continue; // shadowed
           if (!fn || fn(tok)) {
             if (skipped >= skip) return tok;
             skipped++;
@@ -658,8 +794,8 @@ class SourceCode {
       if (starts[mid] < nodeEnd) { endTok = mid; lo = mid + 1; }
       else hi = mid - 1;
     }
-    // Skip EOF
-    while (endTok > 0 && ast._tokTags[endTok] === 131) endTok--;
+    // Skip EOF and shadowed tokens backward
+    while (endTok > 0 && (ast._tokTags[endTok] === 131 || this._makeToken(endTok) === null)) endTok--;
     // Fast path: no filter, no skip
     if (!fn && skip === 0) return this._makeToken(endTok);
     // Slow path: iterate backwards
@@ -667,6 +803,7 @@ class SourceCode {
     let skipped = 0;
     for (let t = endTok; t >= startTok; t--) {
       const tok = this._makeToken(t);
+      if (tok === null) continue; // shadowed
       if (!fn || fn(tok)) {
         if (skipped >= skip) return tok;
         skipped++;
@@ -725,13 +862,24 @@ class SourceCode {
       const nodeStart = node.range[0];
       if (ast._tokStarts[mainTok] !== nodeStart) {
         anchorTok = this._tokenIndexAtOrBefore(nodeStart - 1);
+        // _tokenIndexAtOrBefore(pos) returns 0 even when no token start <= pos
+        // (e.g. nodeStart=0 → pos=-1 → returns 0). Guard against that.
+        if (anchorTok >= 0 && ast._tokStarts[anchorTok] >= nodeStart) anchorTok = -1;
       }
     }
     if (anchorTok < 0) return null;
-    if (!fn && skip === 0) return this._makeToken(anchorTok);
+    if (!fn && skip === 0) {
+      // Fast path: skip backward past shadowed tokens
+      for (let i = anchorTok; i >= 0; i--) {
+        const tok = this._makeToken(i);
+        if (tok !== null) return tok;
+      }
+      return null;
+    }
     let skipped = 0;
     for (let i = anchorTok; i >= 0; i--) {
       const tok = this._makeToken(i);
+      if (tok === null) continue; // shadowed
       if (!fn || fn(tok)) { if (skipped >= skip) return tok; skipped++; }
     }
     return null;
@@ -781,14 +929,15 @@ class SourceCode {
       }
     }
     if (anchorTok >= ast.tokenCount) return null;
-    // Skip EOF token (tag 131)
-    while (anchorTok < ast.tokenCount && ast._tokTags[anchorTok] === 131) anchorTok++;
+    // Skip EOF and shadowed tokens forward
+    while (anchorTok < ast.tokenCount && (ast._tokTags[anchorTok] === 131 || this._makeToken(anchorTok) === null)) anchorTok++;
     if (anchorTok >= ast.tokenCount) return null;
     if (!fn && skip === 0) return this._makeToken(anchorTok);
     let skipped = 0;
     for (let i = anchorTok; i < ast.tokenCount; i++) {
       if (ast._tokTags[i] === 131) continue;
       const tok = this._makeToken(i);
+      if (tok === null) continue; // shadowed
       if (!fn || fn(tok)) { if (skipped >= skip) return tok; skipped++; }
     }
     return null;
@@ -815,23 +964,49 @@ class SourceCode {
     const { fn } = this._normalizeFilter(filterOrOpts);
     for (let i = startTok; i < endTok; i++) {
       const tok = this._makeToken(i);
+      if (tok === null) continue; // shadowed
       if (!fn || fn(tok)) return tok;
     }
     return null;
   }
 
   /**
-   * Get all tokens between two nodes (inclusive optional).
+   * Get all tokens strictly between two nodes (i.e., after nodeA ends, before nodeB starts).
+   * ESLint getTokensBetween does NOT include tokens inside either node.
    */
   getTokensBetween(nodeA, nodeB, filterOrOpts) {
     if (!nodeA || !nodeB) return [];
     const ast = this._ast;
-    const startTok = nodeA.mainToken + 1;
-    const endTok = nodeB.mainToken;
-    const { fn } = this._normalizeFilter(filterOrOpts);
+    const { fn, ic } = this._normalizeFilter(filterOrOpts);
+    // Gap boundaries: strictly after nodeA ends, strictly before nodeB starts
+    const gapStart = nodeA.range ? nodeA.range[1] : (nodeA.end != null ? nodeA.end : (nodeA.mainToken != null ? ast._tokStarts[nodeA.mainToken] : 0));
+    const gapEnd   = nodeB.range ? nodeB.range[0] : (nodeB.start != null ? nodeB.start : (nodeB.mainToken != null ? ast._tokStarts[nodeB.mainToken] : 0));
+    if (gapStart >= gapEnd) return [];
+
+    if (ic) {
+      // includeComments: iterate merged token+comment array
+      const merged = this._getTokensAndCommentsMerged();
+      // Binary search for first item with range[0] >= gapStart
+      let lo = 0, hi = merged.length - 1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (merged[m].range[0] < gapStart) lo = m + 1; else hi = m - 1; }
+      const result = [];
+      for (let i = lo; i < merged.length; i++) {
+        if (merged[i].range[0] >= gapEnd) break;
+        if (!fn || fn(merged[i])) result.push(merged[i]);
+      }
+      return result;
+    }
+
+    // Token-only path: binary search for first token at/after gapStart
+    const starts = ast._tokStarts;
+    const tc = ast.tokenCount;
+    let lo = 0, hi = tc - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (starts[m] < gapStart) lo = m + 1; else hi = m - 1; }
     const result = [];
-    for (let i = startTok; i < endTok; i++) {
+    for (let i = lo; i < tc; i++) {
+      if (starts[i] >= gapEnd) break;
       const tok = this._makeToken(i);
+      if (tok === null) continue; // shadowed
       if (!fn || fn(tok)) result.push(tok);
     }
     return result;
@@ -843,7 +1018,10 @@ class SourceCode {
     const result = [];
     const tags = this._ast._tokTags;
     for (let i = 0; i < this._ast.tokenCount; i++) {
-      if (tags[i] !== 131) result.push(this._makeToken(i));
+      if (tags[i] !== 131) {
+        const tok = this._makeToken(i);
+        if (tok !== null) result.push(tok); // skip shadowed tokens
+      }
     }
     this._tokensCache = result;
     return result;
@@ -884,7 +1062,9 @@ class SourceCode {
         const v = order[i];
         if (v < tokenCount) {
           if (tokTags[v] === 131) continue; // skip EOF
-          merged[mi++] = this._makeToken(v);
+          const t = this._makeToken(v);
+          if (t === null) continue; // shadowed (name part of #ident)
+          merged[mi++] = t;
         } else {
           const ci = v - tokenCount;
           merged[mi++] = comments[rawCommentOffset + ci];
@@ -942,13 +1122,17 @@ class SourceCode {
   // Wrap a module-scope so that ReferenceTracker can find global variables.
   // ReferenceTracker expects all globals to be in globalScope.set, but in script mode
   // we split into global(0) + module(1). This wrapper delegates to parent scope when needed.
+  // The wrapper is cached on the scope object itself (_wrappedWithGlobals) so that
+  // getScope(Program) always returns the SAME object, enabling reference.from === scope checks.
   _wrapScopeWithGlobals(moduleScope) {
     if (!moduleScope.upper) return moduleScope;
+    // Return cached wrapper for identity stability (rules like consistent-this use ===).
+    if (moduleScope._wrappedWithGlobals) return moduleScope._wrappedWithGlobals;
     const globalScope = moduleScope.upper;
     // Merge variables from module scope (user decls) and global scope (builtins).
     // Rules like no-global-assign iterate `variables`, while ReferenceTracker uses `set`.
     let _mergedVars;
-    return new Proxy(moduleScope, {
+    const wrapper = new Proxy(moduleScope, {
       get(target, prop) {
         if (prop === 'set') {
           // Return a proxy Map that delegates to global scope's set
@@ -978,6 +1162,8 @@ class SourceCode {
         return Reflect.get(target, prop);
       }
     });
+    moduleScope._wrappedWithGlobals = wrapper;
+    return wrapper;
   }
 
   /**
@@ -1091,20 +1277,31 @@ class SourceCode {
     // scope or inherited from an ancestor — NOT from module-mode wrapping.
     // Class bodies (kind 4) and static blocks (kind 7) are always strict per spec.
     const isAlwaysStrict = kind === 4 || kind === 7;
+    // ES3 does not recognise 'use strict' directives — no strict mode in ES3.
+    const ecmaSupportsStrict = this._ecmaVersion !== 3;
     // Detect 'use strict' directive by checking the function body's first statement,
     // since Zig's analyze() always uses module mode so SF_HAS_USE_STRICT is never set.
     // Check 'use strict' directive: in function bodies (kind 2) and in program/module (kind 0/1)
     let hasUseStrict = false;
-    if (kind === 2 && block !== null) {
-      hasUseStrict = _fnHasUseStrict(block);
-    } else if ((kind === 0 || kind === 1) && block !== null) {
-      // Program node: check first statement in body
-      const stmts = block.body;
-      if (stmts && stmts.length > 0) {
-        const first = stmts[0];
-        hasUseStrict = first.type === 'ExpressionStatement' &&
-          first.expression?.type === 'Literal' &&
-          first.expression?.value === 'use strict';
+    if (ecmaSupportsStrict) {
+      const src = this.text;
+      if (kind === 2 && block !== null) {
+        hasUseStrict = _fnHasUseStrict(block, src);
+      } else if ((kind === 0 || kind === 1) && block !== null) {
+        // Program node: check first statement in body
+        const stmts = block.body;
+        if (stmts && stmts.length > 0) {
+          const first = stmts[0];
+          if (first.type === 'ExpressionStatement' &&
+            first.expression?.type === 'Literal' &&
+            first.expression?.value === 'use strict') {
+            // Same parenthesis check as _fnHasUseStrict: must start with a quote.
+            // Check the ExpressionStatement's start, not the Literal's.
+            const pos = first.range ? first.range[0] : first.start;
+            const c = src && pos >= 0 && pos < src.length ? src[pos] : null;
+            hasUseStrict = (c === '"' || c === "'");
+          }
+        }
       }
     }
     // Function expressions in a class extends clause are always strict per spec
@@ -1117,7 +1314,7 @@ class SourceCode {
       block.parent.superClass !== null && block.parent.superClass._i === block._i;
     const isStrict = isAlwaysStrict || inClassExtends || hasUseStrict || (
       this._sourceType === 'script'
-        ? (flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict)
+        ? ecmaSupportsStrict && ((flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict))
         : (flags16 & SF_STRICT_MODE) !== 0
     );
 
@@ -1367,6 +1564,24 @@ class SourceCode {
       };
       resolveInScope(globalScope);
     }
+
+    // In script mode getScope(Program) wraps scope 1 with globals for ReferenceTracker.
+    // Eagerly create that wrapper now and update reference.from to point to it, so
+    // that rules using reference.from === scope (e.g. consistent-this) work correctly.
+    if (this._sourceType !== 'module' && (ast._semScopeCount || 0) > 1) {
+      const moduleScope = this._buildScope(1);
+      if (moduleScope) {
+        const wrapper = this._wrapScopeWithGlobals(moduleScope);
+        if (wrapper !== moduleScope) {
+          // Replace in cache so _buildScope(1) always returns the wrapper.
+          if (this._scopeCache) this._scopeCache[1] = wrapper;
+          // Update all top-level references' from pointer to the wrapper.
+          for (const ref of moduleScope.references) {
+            if (ref.from === moduleScope) ref.from = wrapper;
+          }
+        }
+      }
+    }
   }
 
   /** Build an ESLint Variable object for a symbol. */
@@ -1407,6 +1622,15 @@ class SourceCode {
     else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
     else if (is_import) defType = 'ImportBinding';
 
+    // For import bindings, the Zig semantic stores the specifier node as the decl node,
+    // but eslint-scope puts the *local identifier* in variable.identifiers and def.name.
+    // (def.node stays as the specifier, def.parent stays as the ImportDeclaration.)
+    let identNode = declNode;
+    if (is_import && declNode) {
+      const local = declNode.local;
+      if (local && local.type === 'Identifier') identNode = local;
+    }
+
     // Map declNode (Identifier) to the ESLint-expected def.node and def.parent:
     //   Variable:    def.name=Identifier, def.node=VariableDeclarator, def.parent=VariableDeclaration
     //   CatchClause: def.name=Identifier, def.node=Identifier, def.parent=TryStatement
@@ -1415,7 +1639,7 @@ class SourceCode {
     //   ClassName:   def.name=Identifier, def.node=ClassDeclaration, def.parent=container
     //   ImportBinding: def.name=Identifier, def.node=ImportSpecifier, def.parent=ImportDeclaration
     let defNode = declNode ? _findDefNode(declNode, defType) : null;
-    const defs = declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
+    const defs = declNode ? [{ type: defType, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
 
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
     // Use a thin scope (no variables) to avoid infinite recursion.
@@ -1495,7 +1719,7 @@ class SourceCode {
       defs,
       references,
       scope,
-      identifiers: declNode ? [declNode] : [],
+      identifiers: identNode ? [identNode] : [],
       eslintUsed: false,
       // DO NOT set writeable for user-declared vars — writeable is only for ESLint's builtin globals.
       // The no-implicit-globals rule checks: writeable===false (readonly global), writeable===true
@@ -1582,12 +1806,18 @@ class SourceCode {
     const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
+    // For import bindings, identifiers/def.name must be the local Identifier, not the specifier.
+    let identNode2 = declNode;
+    if (is_import && declNode) {
+      const local = declNode.local;
+      if (local && local.type === 'Identifier') identNode2 = local;
+    }
     let defNode = declNode ? _findDefNode(declNode, defType) : null;
     const builder = this;
     const _symId = symId;
     const thinVar = {
       name,
-      defs: declNode ? [{ type: defType, name: declNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
+      defs: declNode ? [{ type: defType, name: identNode2, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
       _refs: null, // lazy — populated on first access from Zig buffer ranges
       get references() {
         if (this._refs === null) {
@@ -1603,7 +1833,7 @@ class SourceCode {
       },
       set references(v) { this._refs = v; },
       scope,
-      identifiers: declNode ? [declNode] : [],
+      identifiers: identNode2 ? [identNode2] : [],
       eslintUsed: false,
       isRead: () => is_read,
       isWritten: () => is_written,
@@ -1715,19 +1945,22 @@ class SourceCode {
       this._ensureDeclSymIndex();
       const symIds = this._declSymIndex ? this._declSymIndex.get(node._i) : null;
       if (symIds && symIds.length > 0) {
-        // Merge variables with the same name (e.g. duplicate params `function f(a,b,a)`).
+        // Merge variables with the same name AND def type (e.g. duplicate params `function f(a,b,a)`).
         // ESLint scope analysis merges them into one variable with multiple defs.
+        // Key includes defType to avoid merging a FunctionName variable with a same-named Parameter
+        // (e.g. `function foo(foo)` — don't merge function name with parameter).
         const mergeSet = new Map();
         const mergeVars = [];
         for (const i of symIds) {
           const v = this._buildVariable(i);
-          const ex = mergeSet.get(v.name);
+          const key = v.name + '\0' + (v.defs[0] ? v.defs[0].type : '');
+          const ex = mergeSet.get(key);
           if (ex) {
             ex.identifiers.push(...v.identifiers);
             ex.defs.push(...v.defs);
             ex.references.push(...v.references);
           } else {
-            mergeSet.set(v.name, v);
+            mergeSet.set(key, v);
             mergeVars.push(v);
           }
         }
@@ -1972,6 +2205,7 @@ class SourceCode {
     const endArr = ast._nodeEndPosArr;
     if (!startArr || !endArr) return null;
     const sorted = ast._sortedByStart;
+    let candidateIdx = null;
     if (sorted) {
       // O(log n): binary search sorted index for rightmost node with start <= index
       const n = sorted.length;
@@ -1982,7 +2216,7 @@ class SourceCode {
         else hi = mid - 1;
       }
       // Scan backwards from best: sorted by (start ASC, size ASC) so innermost is first
-      let bestNode = null, bestSize = Infinity;
+      let bestSize = Infinity;
       for (let i = best; i >= 0; i--) {
         const ni = sorted[i];
         const s = startArr[ni];
@@ -1991,22 +2225,54 @@ class SourceCode {
         const e = endArr[ni];
         if (index < e) {
           const size = e - s;
-          if (size < bestSize) { bestSize = size; bestNode = ni; }
+          if (size < bestSize) { bestSize = size; candidateIdx = ni; }
         }
       }
-      return bestNode !== null ? nodeView(ast, bestNode) : null;
-    }
-    // Fallback: O(n) linear scan
-    const n = ast.nodeCount;
-    let best = null, bestSize = Infinity;
-    for (let i = 0; i < n; i++) {
-      const s = startArr[i], e = endArr[i];
-      if (index >= s && index < e) {
-        const size = e - s;
-        if (size <= bestSize) { bestSize = size; best = i; }
+    } else {
+      // Fallback: O(n) linear scan
+      const n = ast.nodeCount;
+      let bestSize = Infinity;
+      for (let i = 0; i < n; i++) {
+        const s = startArr[i], e = endArr[i];
+        if (index >= s && index < e) {
+          const size = e - s;
+          if (size < bestSize) { bestSize = size; candidateIdx = i; }
+        }
       }
     }
-    return best !== null ? nodeView(ast, best) : null;
+    if (candidateIdx === null) return null;
+    // ESLint uses DFS and returns the deepest (last-entered) node containing the index.
+    // When multiple nodes share the same range, use pre-order rank to pick the one
+    // visited LAST in DFS (highest rank = deepest). The root is pre-allocated at
+    // index 0 (smallest raw index) but visited first (rank 0 = shallowest), so raw
+    // index order is wrong — we must use the precomputed DFS rank instead.
+    const candidateSize = endArr[candidateIdx] - startArr[candidateIdx];
+    if (sorted && candidateSize > 0) {
+      const cs = startArr[candidateIdx], ce = endArr[candidateIdx];
+      // Binary search for first sorted position with start >= cs.
+      let lo = 0, hi = sorted.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (startArr[sorted[mid]] < cs) lo = mid + 1;
+        else hi = mid - 1;
+      }
+      const firstPos = lo;
+      // Among all nodes with same (start, end) range, pick the one with the
+      // highest pre-order rank (visited last in DFS = deepest in tree).
+      const preOrderRank = ast._preOrderRank;
+      let deepest = candidateIdx;
+      let deepestRank = preOrderRank ? preOrderRank[candidateIdx] : 0;
+      for (let i = firstPos; i < sorted.length; i++) {
+        const ni = sorted[i];
+        if (startArr[ni] > cs) break;
+        if (endArr[ni] === ce) {
+          const r = preOrderRank ? preOrderRank[ni] : 0;
+          if (r > deepestRank) { deepest = ni; deepestRank = r; }
+        }
+      }
+      if (deepest !== candidateIdx) return nodeView(ast, deepest);
+    }
+    return nodeView(ast, candidateIdx);
   }
 }
 
@@ -2347,7 +2613,8 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     const ruleMeta = plugin.meta || null;
     const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
     const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
-    const ruleOptions = _mergeRuleOptions(plugin.meta?.defaultOptions, configured);
+    const merged = _mergeRuleOptions(plugin.meta?.defaultOptions, configured);
+    const ruleOptions = _applySchemaDefaults(plugin.meta?.schema, merged);
     pluginOptions.push(ruleOptions);
     // Per-rule context — created once, reused across all files (items 4+5).
     // report() and options are stable per rule; prototype chain reads per-file
@@ -3298,6 +3565,12 @@ function _compileAttrCheck(attr) {
 
   // Existence check: [attr] means attr != null
   if (!op) return (n) => accessPath(n) != null;
+  // Regexp match: [attr=/regex/] uses the RegExp object directly.
+  // esquery stores the compiled RegExp in attr.value.value when attr.value.type === 'regexp'.
+  if (op === '=' && attr.value && attr.value.type === 'regexp' && rawVal instanceof RegExp) {
+    const rx = rawVal;
+    return (n) => { const v = accessPath(n); return v != null && rx.test(String(v)); };
+  }
   // Literal comparisons: esquery coerces both sides to string ("true" === "".concat(true)).
   // Using == would fail for e.g. true == "true" (JS: 1 == NaN → false).
   if (op === '=')  { const sv = ''.concat(rawVal); return (n) => ''.concat(accessPath(n)) === sv; }
@@ -3344,9 +3617,16 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
       // For child-combinator selectors with a known parent type (e.g. "ForStatement > .test"),
       // store the parent tag index so invokeSelectorHandlers can pre-filter by parent tag,
       // avoiding getAncestorsFor for the ~99% of nodes that are not children of that parent type.
-      if (sh._fastMatcher && sh._fastMatcher.requiredParentType && sh._fastMatcher.requiredParentTagIdx === undefined) {
-        const pti = tagNames.indexOf(sh._fastMatcher.requiredParentType);
-        sh._fastMatcher.requiredParentTagIdx = pti >= 0 ? pti : -1;
+      if (sh._fastMatcher && sh._fastMatcher.requiredParentType && sh._fastMatcher.requiredParentTagIdxs === undefined) {
+        // Use _cachedTypeNameToAllTags to get ALL variant tag indices for this type
+        // (e.g. PropertyDefinition → [property_def, computed_property_def]).
+        const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(sh._fastMatcher.requiredParentType) : null;
+        if (allTags && allTags.length > 0) {
+          sh._fastMatcher.requiredParentTagIdxs = allTags;
+        } else {
+          const pti = tagNames.indexOf(sh._fastMatcher.requiredParentType);
+          sh._fastMatcher.requiredParentTagIdxs = pti >= 0 ? [pti] : [];
+        }
       }
       (sh.isExit ? universalExit : universalEnter).push(sh);
       continue;
@@ -3500,14 +3780,27 @@ function _getSelectorRootTypes(key) {
     }
     return types; // flat array of root types for union
   }
-  // Get the last part after child combinator (>)
-  const last = k.split('>').pop().trim();
-  // Remove attribute selectors [...] (may span multiple), field access .field, pseudo-classes :class
-  const typePart = last.replace(/\[[^\]]*\]/g, '').split('.')[0].replace(/:.*$/, '').trim();
+  // Get the last part after any combinator (> child, or space descendant).
+  // Walk the string respecting bracket nesting to find the last combinator position.
+  let depth = 0, lastSep = -1;
+  for (let i = 0; i < k.length; i++) {
+    const c = k[i];
+    if (c === '[' || c === '(') depth++;
+    else if (c === ']' || c === ')') depth--;
+    else if (depth === 0 && (c === '>' || c === ' ')) {
+      while (i + 1 < k.length && k[i + 1] === ' ') i++;
+      lastSep = i;
+    }
+  }
+  const last = lastSep >= 0 ? k.slice(lastSep + 1).trim() : k.trim();
+  // Remove attribute selectors [...] and field access .field (but NOT pseudo-classes here)
+  const stripped = last.replace(/\[[^\]]*\]/g, '').split('.')[0].trim();
+  // Remove leading pseudo-class prefix like :function or :matches (keep the type after it)
+  const typePart = stripped.replace(/^:[a-z-]+\s*/, '').trim();
   // Must start with uppercase letter to be a node type name
   if (/^[A-Z][A-Za-z]*$/.test(typePart)) return typePart;
-  // Handle bare pseudo-class selectors like :function, :expression
-  const pseudoMatch = last.match(/^:([a-z-]+)/);
+  // Handle bare pseudo-class selectors like :function, :expression (when no type follows)
+  const pseudoMatch = stripped.match(/^:([a-z-]+)/);
   if (pseudoMatch) {
     const resolved = _PSEUDO_CLASS_TYPES[pseudoMatch[1]];
     if (resolved) return resolved; // array of concrete types
@@ -3785,9 +4078,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             // Parent tag pre-check: for child-combinator selectors with a known parent type
             // (e.g. "ForStatement > .test"), skip getAncestorsFor when parent tag doesn't match.
             // This avoids O(n) ancestor allocation for the vast majority of nodes.
-            if (fm.requiredParentTagIdx !== undefined && fm.requiredParentTagIdx >= 0) {
+            if (fm.requiredParentTagIdxs !== undefined && fm.requiredParentTagIdxs.length > 0) {
               const pIdx = pd ? pd[nodeIdx] : NONE;
-              if (pIdx === NONE || pIdx >= nodeTags.length || nodeTags[pIdx] !== fm.requiredParentTagIdx) continue;
+              if (pIdx === NONE || pIdx >= nodeTags.length) continue;
+              const pTag = nodeTags[pIdx];
+              const ptIdxs = fm.requiredParentTagIdxs;
+              let parentTagMatched = false;
+              for (let pti = 0; pti < ptIdxs.length; pti++) if (ptIdxs[pti] === pTag) { parentTagMatched = true; break; }
+              if (!parentTagMatched) continue;
             }
             // Fast path: use pre-compiled matcher
             let matched;
@@ -4150,6 +4448,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
   }
+  // ChainExpression synthesis: fire ChainExpression enter/exit for outermost optional chain nodes.
+  // ESTree wraps outermost optional chain nodes in a synthetic ChainExpression; rules like
+  // no-restricted-syntax can ban "ChainExpression" via a plain visitor key.
+  const chainEnterH = visitorMap.get('ChainExpression') || null;
+  const chainExitH  = visitorMap.get('ChainExpression:exit') || null;
+  const hasChainSynth = chainEnterH !== null || chainExitH !== null;
+  if (hasChainSynth) {
+    // Mark optional chain tags relevant so they're not pruned
+    if (T.optional_call_expr < relevantTag.length)          relevantTag[T.optional_call_expr] = 1;
+    if (T.optional_member_expr < relevantTag.length)        relevantTag[T.optional_member_expr] = 1;
+    if (T.optional_computed_member_expr < relevantTag.length) relevantTag[T.optional_computed_member_expr] = 1;
+  }
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   let _relevantCount = 0;
   for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
@@ -4304,12 +4614,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement') _labelStmtTagSet.add(_ti);
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
-  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt) ? new Uint8Array(tagNames.length) : null;
+  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
       // PrivateIdentifier dispatch needs all Identifier-mapped tags
       if (hasPrivateIdOpt && _identTagBits[_ti]) _synthTagArr[_ti] = 1;
+    }
+    // ChainExpression synthesis needs optional chain tags
+    if (hasChainSynth) {
+      if (T.optional_call_expr < _synthTagArr.length)          _synthTagArr[T.optional_call_expr] = 1;
+      if (T.optional_member_expr < _synthTagArr.length)        _synthTagArr[T.optional_member_expr] = 1;
+      if (T.optional_computed_member_expr < _synthTagArr.length) _synthTagArr[T.optional_computed_member_expr] = 1;
     }
   }
 
@@ -4347,6 +4663,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _fireCfgEvents(idx, 0);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      // Synthesize ChainExpression enter for outermost optional chain nodes.
+      if (hasChainSynth && chainEnterH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
+        const _chainNode = getChainExprIfOutermost(ast, idx);
+        if (_chainNode) _invokeFused(chainEnterH, _chainNode, idx, context);
       }
       // Synthesize Identifier visits for synthetic label children (optimized path).
       // MemberExpression.property and import/export specifier names are now real
@@ -4425,6 +4746,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _fireCfgEvents(idx, 1);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
+      }
+      // Synthesize ChainExpression:exit for outermost optional chain nodes.
+      if (hasChainSynth && chainExitH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
+        const _chainNode = getChainExprIfOutermost(ast, idx);
+        if (_chainNode) _invokeFused(chainExitH, _chainNode, idx, context);
       }
       // Synthesize Identifier:exit for synthetic label children.
       // Specifiers and MemberExpression property are real nodes and exit naturally.

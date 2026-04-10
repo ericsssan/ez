@@ -178,6 +178,11 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
 
         // ── Special ──────────────────────────────────────────
         .error_node => "ErrorNode",
+        // Added at end to preserve existing ordinals
+        .jsx_empty_expr => "JSXEmptyExpression",
+        .jsx_identifier => "JSXIdentifier",
+        .jsx_member_expr => "JSXMemberExpression",
+        .jsx_namespaced_name => "JSXNamespacedName",
     };
 }
 

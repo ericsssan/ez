@@ -146,6 +146,9 @@ const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/ru
 
 const eslintLinter = new Linter();
 
+// Timing accumulators for runner breakdown (parse vs plugin).
+let _runnerParseMs = 0, _runnerPluginMs = 0;
+
 // Pre-load runner plugins for fixture-file mode (all rules at once).
 const _runnerPlugins = [];
 for (const ruleName of COMPARABLE_RULES) {
@@ -282,15 +285,19 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
   try {
+    const _p0 = Date.now();
     const ast = parse(src, { filename: "test" + ext });
+    _runnerParseMs += Date.now() - _p0;
     const plugin = {
-      meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions },
+      meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
       create: ruleModule.create,
     };
     const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
+    const _pl0 = Date.now();
     const reports = runPlugins(ast, [plugin], {
       tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,
     });
+    _runnerPluginMs += Date.now() - _pl0;
     const results = [];
     for (const r of reports) {
       if (r.ruleId !== ruleName) continue;
@@ -869,7 +876,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     const runnerGaps = totalCases - totalPass;
     const nativeGaps = nativeTotal - totalNativePass;
     console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass (${runnerPct}%), ${totalSkip} skipped, ${totalCrash} crashes, ${runnerGaps} gaps`);
-    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)`);
+    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)  [parse: ${(_runnerParseMs/1000).toFixed(2)}s, plugin: ${(_runnerPluginMs/1000).toFixed(2)}s]`);
     console.log(`Corpus native:  ${totalNativePass}/${nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps`);
     console.log(`  linting: ${(nativeOnlyMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s)`);
   } else {

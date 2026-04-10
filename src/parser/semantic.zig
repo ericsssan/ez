@@ -1010,17 +1010,19 @@ pub const SemanticAnalyzer = struct {
             },
             .jsx_self_closing, .jsx_opening_element => {
                 const jsx_open = self.ast.extraData(ast_mod.JsxOpeningData, @intFromEnum(data.lhs));
-                try self.visitNode(jsx_open.name);
+                try self.visitJsxElementName(jsx_open.name);
                 try self.visitSubRange(.{ .start = jsx_open.attrs_start, .end = jsx_open.attrs_end });
             },
-            .jsx_closing_element => try self.visitNode(data.lhs),
+            .jsx_closing_element => try self.visitJsxElementName(data.lhs),
             .jsx_attribute => try self.visitNode(data.rhs),
             .jsx_spread_attribute => try self.visitNode(data.lhs),
             .jsx_expression_container => try self.visitNode(data.lhs),
             .jsx_fragment => {
                 try self.visitSubRange(.{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) });
             },
-            .jsx_text_node => {},
+            // jsx_identifier / jsx_member_expr / jsx_namespaced_name are only visited via
+            // visitJsxElementName, which handles reference creation correctly.
+            .jsx_text_node, .jsx_empty_expr, .jsx_identifier, .jsx_member_expr, .jsx_namespaced_name => {},
 
             // ── Leaf nodes / no-ops ────────────────────────
             .break_stmt => {
@@ -1192,6 +1194,20 @@ pub const SemanticAnalyzer = struct {
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
         self.leaveScope();
+    }
+
+    /// Visit a function body without creating a block scope when it is a BlockStatement.
+    /// Matches eslint-scope's behavior: function bodies don't create a separate block scope;
+    /// block-scoped declarations go directly into the function scope. See referencer.js:277.
+    fn visitFnBody(self: *SemanticAnalyzer, body: NodeIndex) !void {
+        if (body == .none) return;
+        if (self.ast.nodeTag(body) == .block_stmt) {
+            const data = self.ast.nodeData(body);
+            const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+            try self.visitSubRange(range);
+        } else {
+            try self.visitNode(body);
+        }
     }
 
     /// Check if a node is the literal `true` (boolean_literal with text "true").
@@ -1381,7 +1397,7 @@ pub const SemanticAnalyzer = struct {
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, fn_data.body);
-        try self.visitNode(fn_data.body);
+        try self.visitFnBody(fn_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
@@ -1410,7 +1426,7 @@ pub const SemanticAnalyzer = struct {
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, fn_data.body);
-        try self.visitNode(fn_data.body);
+        try self.visitFnBody(fn_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
@@ -1431,7 +1447,7 @@ pub const SemanticAnalyzer = struct {
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, arrow_data.body);
-        try self.visitNode(arrow_data.body);
+        try self.visitFnBody(arrow_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
 
@@ -1499,10 +1515,11 @@ pub const SemanticAnalyzer = struct {
     fn visitClassExpr(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         const class_data = self.ast.extraData(ClassData, @intFromEnum(data.lhs));
 
-        // Visit superclass in outer scope.
-        try self.visitNode(class_data.super_class);
-
-        // Enter class scope.
+        // Enter class scope before visiting superclass.
+        // ESLint's scope model places both the `extends` expression and the class body
+        // inside the class scope so the class name `C` in `class C extends C {}` is
+        // visible in the extends clause.  Match that behaviour by entering the scope
+        // (and declaring the name) before visiting super_class.
         _ = try self.enterScope(.class, idx);
 
         // Optionally declare the class name inside its own scope.
@@ -1512,6 +1529,9 @@ pub const SemanticAnalyzer = struct {
             const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
             _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
+
+        // Visit superclass (inside the class scope so the name is in scope).
+        try self.visitNode(class_data.super_class);
 
         // Visit class_body node (contains members as SubRange lhs..rhs)
         try self.visitNode(class_data.body);
@@ -1539,7 +1559,7 @@ pub const SemanticAnalyzer = struct {
         const saved_alive = self.cfg_alive;
         self.cfg_alive = true;
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .function, method_data.body);
-        try self.visitNode(method_data.body);
+        try self.visitFnBody(method_data.body);
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
         self.cfg_alive = saved_alive;
         self.leaveScope();
@@ -1623,6 +1643,53 @@ pub const SemanticAnalyzer = struct {
             self.current_scope,
         );
         self.resolveReference(name, ref_id);
+    }
+
+    /// Visit a JSX element name node for variable reference purposes.
+    ///
+    /// Rules:
+    ///   - `jsx_identifier` used directly as element name: only uppercase creates a reference
+    ///     (lowercase = built-in HTML element, e.g. `<div />`).
+    ///   - `jsx_member_expr`: the object (lhs, even if lowercase) is always a reference
+    ///     (e.g. `<components.Button />` → `components` is used).
+    ///   - `jsx_namespaced_name` (`foo:bar`): no variable references.
+    fn visitJsxElementName(self: *SemanticAnalyzer, name_idx: NodeIndex) !void {
+        const tag = self.ast.nodeTag(name_idx);
+        switch (tag) {
+            .jsx_identifier => {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(name_idx));
+                if (name.len > 0 and std.ascii.isUpper(name[0])) {
+                    const ref_id = try self.references.addReference(.read, name_idx, self.current_scope);
+                    self.resolveReference(name, ref_id);
+                }
+            },
+            .jsx_member_expr => {
+                const d = self.ast.nodeData(name_idx);
+                try self.visitJsxMemberObject(d.lhs);
+            },
+            .jsx_namespaced_name => {}, // XML namespaces — no variable references
+            else => {},
+        }
+    }
+
+    /// Visit the object (leftmost identifier) of a JSX member expression as a variable reference.
+    /// Unlike `visitJsxElementName`, this always creates a reference regardless of case,
+    /// because `components.Button` means `components` IS a variable being accessed.
+    fn visitJsxMemberObject(self: *SemanticAnalyzer, name_idx: NodeIndex) !void {
+        const tag = self.ast.nodeTag(name_idx);
+        switch (tag) {
+            .jsx_identifier => {
+                const name = self.ast.tokenText(self.ast.nodeMainToken(name_idx));
+                const ref_id = try self.references.addReference(.read, name_idx, self.current_scope);
+                self.resolveReference(name, ref_id);
+            },
+            .jsx_member_expr => {
+                // Nested: A.B.C → visit lhs (A.B) as member object → eventually visits A
+                const d = self.ast.nodeData(name_idx);
+                try self.visitJsxMemberObject(d.lhs);
+            },
+            else => {},
+        }
     }
 
     // ── Assignments ────────────────────────────────────────

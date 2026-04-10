@@ -124,13 +124,31 @@ fn parseJsxOpeningElement(p: *Parser) Error!NodeIndex {
     });
 }
 
-/// Parse a JSX element name, including dotted names like `Foo.Bar.Baz`.
-/// Returns the name as an identifier node or a chain of member_expr nodes.
+/// Parse a JSX element name, including dotted names like `Foo.Bar.Baz`
+/// and namespaced names like `foo:Bar`.
+/// Returns a jsx_identifier, jsx_member_expr, or jsx_namespaced_name node.
 fn parseJsxDottedName(p: *Parser) Error!NodeIndex {
     var name_node = try parseJsxSimpleName(p);
+
+    // Namespaced name: foo:Bar
+    if (p.peek() == .colon) {
+        const colon_tok = p.advance(); // consume `:`
+        const local_tag = p.peek();
+        if (local_tag != .identifier and !local_tag.isKeyword()) {
+            try p.emitError("Expected JSX element name after ':'");
+            return p.makeErrorNode();
+        }
+        const local = try parseJsxSimpleName(p);
+        return p.addNode(.{
+            .tag = .jsx_namespaced_name,
+            .main_token = colon_tok,
+            .data = .{ .lhs = name_node, .rhs = local },
+        });
+    }
+
+    // Dotted member expression: Foo.Bar.Baz
     while (p.peek() == .dot) {
         const dot_tok = p.advance(); // consume `.`
-        // Property parts are property_ident nodes (not references).
         const prop_tag = p.peek();
         if (prop_tag != .identifier and !prop_tag.isKeyword()) {
             try p.emitError("Expected JSX element name");
@@ -138,12 +156,12 @@ fn parseJsxDottedName(p: *Parser) Error!NodeIndex {
         }
         const prop_tok = p.advance();
         const prop_node = try p.addNode(.{
-            .tag = .property_ident,
+            .tag = .jsx_identifier,
             .main_token = prop_tok,
             .data = .{ .lhs = .none, .rhs = .none },
         });
         name_node = try p.addNode(.{
-            .tag = .member_expr,
+            .tag = .jsx_member_expr,
             .main_token = dot_tok,
             .data = .{ .lhs = name_node, .rhs = prop_node },
         });
@@ -157,7 +175,7 @@ fn parseJsxSimpleName(p: *Parser) Error!NodeIndex {
     if (tag == .identifier or tag.isKeyword()) {
         const tok = p.advance();
         return p.addNode(.{
-            .tag = .identifier,
+            .tag = .jsx_identifier,
             .main_token = tok,
             .data = .{ .lhs = .none, .rhs = .none },
         });
@@ -181,9 +199,33 @@ fn parseJsxSimpleName(p: *Parser) Error!NodeIndex {
 /// Returns a SubRange of child node indices.
 fn parseJsxChildren(p: *Parser) Error!SubRange {
     const scratch_top = p.scratchLen();
+    const starts = p.tokens.items(.start);
+    const lens = p.tokens.items(.len);
 
     while (!p.isAtEnd()) {
         const tag = p.peek();
+
+        // Detect whitespace/irregular-whitespace gaps between tokens.
+        // These are characters the lexer skips (e.g. \u00a0, \u200b) that
+        // appear as JSX text but produce no token.  Emit a gap-type
+        // jsx_text_node so that rules like no-irregular-whitespace can find
+        // the JSXText node and suppress false positives inside JSX.
+        if (p.tok_i > 0) {
+            const prev_end = starts[p.tok_i - 1] + lens[p.tok_i - 1];
+            const next_start = starts[p.tok_i];
+            if (prev_end < next_start) {
+                const gap_node = try p.addNode(.{
+                    .tag = .jsx_text_node,
+                    .main_token = p.tok_i - 1,
+                    .data = .{
+                        .lhs = NodeIndex.fromInt(prev_end),
+                        .rhs = NodeIndex.fromInt(next_start),
+                    },
+                });
+                try p.scratchPush(gap_node);
+                // Do NOT advance — fall through to normal token handling.
+            }
+        }
 
         // `</` signals the closing tag — stop collecting children.
         if (tag == .less_than) {
@@ -201,13 +243,25 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
         if (tag == .l_brace) {
             const brace_tok = p.advance(); // consume `{`
 
-            // Empty expression container: `{}`
+            // Empty expression container: `{}` or `{/*comment*/}`.
+            // Create a JSXEmptyExpression node whose range spans between the braces.
+            // The byte offsets are stored in data.lhs/rhs for UTF-16 conversion in napi.zig.
             if (p.peek() == .r_brace) {
+                const l_brace_end = starts[brace_tok] + lens[brace_tok];
+                const r_brace_start = starts[p.tok_i]; // `}` token start
                 _ = p.advance(); // consume `}`
+                const empty_expr = try p.addNode(.{
+                    .tag = .jsx_empty_expr,
+                    .main_token = brace_tok,
+                    .data = .{
+                        .lhs = NodeIndex.fromInt(l_brace_end),
+                        .rhs = NodeIndex.fromInt(r_brace_start),
+                    },
+                });
                 const container = try p.addNode(.{
                     .tag = .jsx_expression_container,
                     .main_token = brace_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
+                    .data = .{ .lhs = empty_expr, .rhs = .none },
                 });
                 try p.scratchPush(container);
                 continue;

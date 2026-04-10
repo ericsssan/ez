@@ -492,6 +492,18 @@ pub const Node = struct {
         property_literal,
         /// Class body block. lhs = body_start, rhs = body_end (SubRange). main_token = l_brace
         class_body,
+        /// Empty expression inside {}: {/*comment*/} or {}.
+        /// main_token = l_brace, data.lhs = byte offset after '{', data.rhs = byte offset of '}'.
+        jsx_empty_expr,
+        /// JSX tag/attribute name identifier. Type=JSXIdentifier in ESTree.
+        /// main_token = identifier token. No children.
+        jsx_identifier,
+        /// JSX member expression (Foo.Bar). Type=JSXMemberExpression in ESTree.
+        /// main_token = dot token. lhs = object (jsx_identifier|jsx_member_expr), rhs = property (jsx_identifier).
+        jsx_member_expr,
+        /// JSX namespaced name (foo:bar). Type=JSXNamespacedName in ESTree.
+        /// main_token = colon token. lhs = namespace (jsx_identifier), rhs = name (jsx_identifier).
+        jsx_namespaced_name,
     };
 };
 
