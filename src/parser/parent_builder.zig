@@ -227,6 +227,11 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                     pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
                 }
             },
+            .export_named_from => {
+                // lhs = ExtraIndex to ImportData { spec_start, spec_end, source }
+                const import_data = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = import_data.specifiers_start, .end = import_data.specifiers_end }, p) catch return error.OutOfMemory;
+            },
             .export_default_expr, .export_default_fn, .export_default_class => {
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },

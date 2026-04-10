@@ -257,6 +257,13 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
                 try dumpNode(tree, data.lhs, child_indent, writer);
             }
         },
+        .export_named_from => {
+            // lhs = extra index to ImportData { specifiers_start, specifiers_end, source }
+            const import_data = tree.extraData(@import("ast.zig").ImportData, @intFromEnum(data.lhs));
+            try writeIndent(writer, child_indent);
+            try writer.print("source \"{s}\"\n", .{tree.tokenText(import_data.source)});
+            try dumpSubRange(tree, .{ .start = import_data.specifiers_start, .end = import_data.specifiers_end }, child_indent, writer);
+        },
         .export_default_expr => {
             // lhs = expression
             try dumpNode(tree, data.lhs, child_indent, writer);

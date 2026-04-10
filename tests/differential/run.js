@@ -351,12 +351,19 @@ class CapturingRuleTester {
   constructor(defaultConfig) { this._config = defaultConfig || {}; }
 
   run(name, rule, cases) {
-    _captured = {
-      name,
-      defaultConfig: this._config,
-      valid:   (cases.valid   || []).map(normalizeCase),
-      invalid: (cases.invalid || []).map(normalizeCase),
-    };
+    // A test file may call ruleTester.run() multiple times (e.g. separate
+    // JS + TypeScript sections). Merge cases across all runs, tagging each
+    // with the RuleTester instance's defaultConfig so we can propagate
+    // per-section parser/sourceType to the runner.
+    const defaultConfig = this._config;
+    const validCases = (cases.valid || []).map(c => normalizeCase(c, defaultConfig));
+    const invalidCases = (cases.invalid || []).map(c => normalizeCase(c, defaultConfig));
+    if (!_captured) {
+      _captured = { name, defaultConfig, valid: validCases, invalid: invalidCases };
+    } else {
+      _captured.valid.push(...validCases);
+      _captured.invalid.push(...invalidCases);
+    }
   }
 
   static get describe() { return null; }
@@ -365,14 +372,27 @@ class CapturingRuleTester {
   static setDefaultConfig() {}
 }
 
-function normalizeCase(c) {
-  if (typeof c === "string") return { code: c, options: [], languageOptions: {}, errors: [], hasCustomParser: false };
+function normalizeCase(c, defaultConfig = {}) {
+  const defaultLO = defaultConfig.languageOptions || {};
+  const defaultHasParser = !!defaultLO.parser;
+  if (typeof c === "string") {
+    return {
+      code: c,
+      options: [],
+      languageOptions: defaultLO,
+      errors: [],
+      hasCustomParser: defaultHasParser,
+    };
+  }
+  const caseLO = c.languageOptions || {};
+  // Merge with default (case overrides default)
+  const mergedLO = { ...defaultLO, ...caseLO };
   return {
     code:            c.code || "",
     options:         c.options || [],
-    languageOptions: c.languageOptions || {},
+    languageOptions: mergedLO,
     errors:          c.errors || [],
-    hasCustomParser: !!(c.parser || (c.languageOptions && c.languageOptions.parser)),
+    hasCustomParser: !!(c.parser || caseLO.parser || defaultHasParser),
   };
 }
 

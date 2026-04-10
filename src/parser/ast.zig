@@ -131,7 +131,8 @@ pub const Node = struct {
         import_default_specifier,
         /// import * as x. lhs = local name token
         import_namespace_specifier,
-        /// export { x, y }. lhs = extra index to SubRange of export_specifier
+        /// export { x, y }. lhs = range start, rhs = range end (no from).
+        /// Also: export var/let/const/fn/class — lhs = decl, rhs = .none.
         export_named,
         /// export default expr. lhs = expression
         export_default_expr,
@@ -478,6 +479,9 @@ pub const Node = struct {
         // ── Special ────────────────────────────────────────────
         /// Error recovery node. main_token = position of error
         error_node,
+        /// export { x, y } from 'source'. lhs = extra index to ImportData (specifiers + source), rhs = .none
+        /// Added at end to preserve existing ordinals for JS T table compatibility.
+        export_named_from,
     };
 };
 

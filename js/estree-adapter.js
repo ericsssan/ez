@@ -55,7 +55,7 @@ function _isStatementTag(tag) {
   return tag === T.var_decl || tag === T.let_decl || tag === T.const_decl ||
          tag === T.expression_stmt || tag === T.return_stmt || tag === T.throw_stmt ||
          tag === T.break_stmt || tag === T.continue_stmt ||
-         tag === T.import_decl || tag === T.export_named ||
+         tag === T.import_decl || tag === T.export_named || tag === T.export_named_from ||
          tag === T.export_default_expr || tag === T.export_default_fn || tag === T.export_default_class ||
          tag === T.export_all;
 }
@@ -2091,10 +2091,10 @@ const NodeProto = {
    */
   get exportKind() {
     const t = this._tag;
-    if (t !== T.export_named && t !== T.export_all && t !== T.export_specifier) return undefined;
+    if (t !== T.export_named && t !== T.export_named_from && t !== T.export_all && t !== T.export_specifier) return undefined;
     const ast = this._ast;
     const mt = this.mainToken;
-    if (t === T.export_named || t === T.export_all) {
+    if (t === T.export_named || t === T.export_named_from || t === T.export_all) {
       if (mt + 1 < ast.tokenCount) {
         const next = ast.source.slice(ast._tokStarts[mt + 1], ast._tokEnds[mt + 1]);
         if (next === 'type') return 'type';
@@ -2481,6 +2481,11 @@ const NodeProto = {
       if (rhs === NONE) return []; // declaration export has no specifiers
       return ast._nodesFromRange(ast.nodeLhs(this._i), rhs);
     }
+    if (t === T.export_named_from) {
+      // lhs = extra index to ImportData { specifiers_start, specifiers_end, source }
+      const d = ast.extraImportData(ast.nodeLhs(this._i));
+      return ast._nodesFromRange(d.specifiers_start, d.specifiers_end);
+    }
     return undefined;
   },
 
@@ -2492,6 +2497,15 @@ const NodeProto = {
     const t = this._tag;
     const ast = this._ast;
     if (t === T.import_decl) {
+      if (this._cachedSource) return this._cachedSource;
+      const d = ast.extraImportData(ast.nodeLhs(this._i));
+      if (d.source === NONE) return null;
+      const lit = ast._syntheticLiteral(d.source);
+      lit.parent = this;
+      this._cachedSource = lit;
+      return lit;
+    }
+    if (t === T.export_named_from) {
       if (this._cachedSource) return this._cachedSource;
       const d = ast.extraImportData(ast.nodeLhs(this._i));
       if (d.source === NONE) return null;
@@ -2587,6 +2601,9 @@ const NodeProto = {
       if (rhs !== NONE) return null; // specifiers export has no declaration
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    if (t === T.export_named_from) {
+      return null; // re-export has specifiers + source, no declaration
     }
     return undefined;
   },

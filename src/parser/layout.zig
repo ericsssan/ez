@@ -55,7 +55,7 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
         .import_specifier => "ImportSpecifier",
         .import_default_specifier => "ImportDefaultSpecifier",
         .import_namespace_specifier => "ImportNamespaceSpecifier",
-        .export_named => "ExportNamedDeclaration",
+        .export_named, .export_named_from => "ExportNamedDeclaration",
         .export_default_expr, .export_default_fn, .export_default_class => "ExportDefaultDeclaration",
         .export_all => "ExportAllDeclaration",
         .export_specifier => "ExportSpecifier",

@@ -3566,8 +3566,9 @@ pub const Parser = struct {
         // Optional `from 'source'` — if present, this is a re-export and
         // reserved keywords are allowed as specifier names.
         const has_from = self.eat(.kw_from) != null;
+        var source_tok: TokenIndex = 0;
         if (has_from) {
-            _ = try self.expect(.string_literal);
+            source_tok = try self.expect(.string_literal);
             try self.skipImportAttributes();
         }
 
@@ -3594,6 +3595,23 @@ pub const Parser = struct {
         }
 
         const range = try self.listToSubRange(specs);
+
+        if (has_from) {
+            // Re-export: store via ImportData (same layout: specifiers + source)
+            const extra = try self.addExtra(ast.ImportData, .{
+                .specifiers_start = range.start,
+                .specifiers_end = range.end,
+                .source = source_tok,
+            });
+            return self.addNode(.{
+                .tag = .export_named_from,
+                .main_token = export_tok,
+                .data = .{
+                    .lhs = NodeIndex.fromInt(extra),
+                    .rhs = .none,
+                },
+            });
+        }
 
         return self.addNode(.{
             .tag = .export_named,

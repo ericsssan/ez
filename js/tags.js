@@ -220,10 +220,12 @@ const T = {
   jsx_fragment: 191,
   // Special
   error_node: 192,
+  // Added at end to preserve existing ordinals for ABI compatibility
+  export_named_from: 193,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.
-const OPERATOR_BY_TAG = new Array(193).fill(null);
+const OPERATOR_BY_TAG = new Array(194).fill(null);
 OPERATOR_BY_TAG[T.unary_plus]              = '+';
 OPERATOR_BY_TAG[T.unary_minus]             = '-';
 OPERATOR_BY_TAG[T.logical_not]             = '!';

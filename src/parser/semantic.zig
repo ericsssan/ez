@@ -553,6 +553,15 @@ pub const SemanticAnalyzer = struct {
                     try self.trackExportSpecifiers(idx, data);
                 }
             },
+            .export_named_from => {
+                // export { x, y } from 'source'
+                // lhs = extra index to ImportData { spec_start, spec_end, source }
+                const import_data = self.ast.extraData(ast_mod.ImportData, @intFromEnum(data.lhs));
+                try self.visitSubRange(.{
+                    .start = import_data.specifiers_start,
+                    .end = import_data.specifiers_end,
+                });
+            },
             .export_default_expr => try self.visitNode(data.lhs),
             .export_default_fn => try self.visitNode(data.lhs),
             .export_default_class => try self.visitNode(data.lhs),

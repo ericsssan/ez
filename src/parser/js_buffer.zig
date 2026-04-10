@@ -1119,7 +1119,7 @@ pub fn computeNodePositions(
         const is_stmt = switch (tag) {
             .expression_stmt, .var_decl, .let_decl, .const_decl, .empty_stmt, .debugger_stmt,
             .return_stmt, .throw_stmt, .break_stmt, .break_label, .continue_stmt, .continue_label,
-            .do_while_stmt, .import_decl, .export_named, .export_all,
+            .do_while_stmt, .import_decl, .export_named, .export_named_from, .export_all,
             .export_default_expr, .export_default_fn, .export_default_class,
             .property_def, .computed_property_def,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
