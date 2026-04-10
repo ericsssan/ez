@@ -1021,9 +1021,21 @@ pub const CodePathBuilder = struct {
         // If thrownForkContext has entries (from makeFirstThrowablePathInTryBlock),
         // create a doubled-count fork for the finally body. Lane 0 = normal path,
         // lane 1 = exception/thrown path.
-        if (!ctx.thrown_fork.empty()) {
-            // Create the normal-path finally entry
-            const normal_segs = try self.fork_context.makeNext(-1, -1, self);
+        if (!ctx.thrown_fork.empty() or !ctx.returned_fork.empty()) {
+            // Merge normal path + returned paths for the finally entry.
+            // Finally is always reachable because at least one path leads to it.
+            var fc_for_normal = newEmptyForkContext(self.allocator, self.fork_context, false);
+            // Add current head (may be unreachable after return)
+            const cur_head = self.fork_context.head();
+            if (cur_head.len > 0) {
+                const copy = try self.allocator.dupe(SegmentId, cur_head);
+                try fc_for_normal.add(copy, self);
+            }
+            // Add returned paths (these are reachable — they existed before return made code dead)
+            if (!ctx.returned_fork.empty()) {
+                try fc_for_normal.addAll(&ctx.returned_fork);
+            }
+            const normal_segs = try fc_for_normal.makeNext(0, -1, self);
 
             // Create the exception-path finally entry from thrown segments
             const thrown_segs = try ctx.thrown_fork.makeNext(0, -1, self);
@@ -1320,6 +1332,15 @@ pub const CodePathBuilder = struct {
             try self.cp_returned_pool.append(self.allocator, seg_id);
         }
         cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+
+        // If inside a try-with-finally, add head to the try's returned_fork
+        // so finally knows about the return path.
+        if (self.try_context) |tc| {
+            if (tc.has_finalizer and tc.position != .finally_body) {
+                const head_copy = try self.allocator.dupe(SegmentId, head);
+                try tc.returned_fork.add(head_copy, self);
+            }
+        }
 
         // Make subsequent code unreachable.
         // Use post phase so SEG_END fires AFTER exit handlers — rules like
