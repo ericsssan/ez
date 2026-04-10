@@ -981,16 +981,26 @@ pub const CodePathBuilder = struct {
         ctx.position = .catch_body;
 
         // End try body segments, start catch segments.
-        // Catch predecessor is pre-try state ONLY — exception can throw before
-        // any try-body code, so catch must not inherit try-body-end state.
         try self.leaveFromCurrentSegment(node, .enter);
-        if (ctx.pre_try_segments) |pre_try| {
-            const pre_copy = try self.allocator.dupe(SegmentId, pre_try);
-            try self.fork_context.replaceHead(pre_copy, self);
+        // Catch is unreachable only if: (a) no throwable expressions in try body, AND
+        // (b) the try body always exits (return/throw/break — current head is unreachable).
+        // Otherwise catch is reachable from pre-try segments.
+        const try_body_dead = !self.fork_context.reachable(self);
+        if (!ctx.first_throwable_called and try_body_dead) {
+            // Try body exited without any throwable expression — catch is dead.
+            const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
+            try self.fork_context.replaceHead(unreachable_segs, self);
+            try self.forwardCurrentToHead(node, .enter);
+        } else {
+            // Catch is reachable from pre-try
+            if (ctx.pre_try_segments) |pre_try| {
+                const pre_copy = try self.allocator.dupe(SegmentId, pre_try);
+                try self.fork_context.replaceHead(pre_copy, self);
+            }
+            const catch_segs = try self.fork_context.makeNext(-1, -1, self);
+            try self.fork_context.replaceHead(catch_segs, self);
+            try self.forwardCurrentToHead(node, .enter);
         }
-        const catch_segs = try self.fork_context.makeNext(-1, -1, self);
-        try self.fork_context.replaceHead(catch_segs, self);
-        try self.forwardCurrentToHead(node, .enter);
     }
 
     /// Called for the first potentially-throwing node inside a try body
@@ -1001,7 +1011,6 @@ pub const CodePathBuilder = struct {
         if (!self.fork_context.reachable(self)) return;
         const ctx = self.try_context orelse return;
         if (ctx.position != .try_body or ctx.first_throwable_called) return;
-        if (!ctx.has_finalizer) return; // only needed for finally
         ctx.first_throwable_called = true;
         // Save PRE-TRY segments to thrownForkContext — this represents the
         // exception path where code throws before any try-body code completed.
@@ -1376,6 +1385,7 @@ pub const CodePathBuilder = struct {
         // If inside a try block, also add to try context's thrown fork
         if (self.try_context) |ctx| {
             if (ctx.position == .try_body) {
+                ctx.first_throwable_called = true;
                 const head_copy = try self.allocator.dupe(SegmentId, head);
                 try ctx.thrown_fork.add(head_copy, self);
             }
