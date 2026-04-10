@@ -2519,46 +2519,47 @@ const NodeProto = {
    * Returns a synthetic Identifier node (with range/loc).
    */
   get local() {
+    if (this._cachedLocal) return this._cachedLocal;
     const t = this._tag;
     const ast = this._ast;
     let syn;
     if (t === T.import_specifier) {
-      syn = ast._syntheticId(ast.nodeRhs(this._i)); // rhs = local name token
-      syn.parent = this;
-      return syn;
-    }
-    if (t === T.import_default_specifier || t === T.import_namespace_specifier) {
+      syn = ast._syntheticId(ast.nodeRhs(this._i));
+    } else if (t === T.import_default_specifier || t === T.import_namespace_specifier) {
       syn = ast._syntheticId(ast.nodeLhs(this._i));
-      syn.parent = this;
-      return syn;
-    }
-    if (t === T.export_specifier) {
+    } else if (t === T.export_specifier) {
       syn = ast._syntheticId(ast.nodeLhs(this._i));
-      syn.parent = this;
-      return syn;
+    } else {
+      return undefined;
     }
-    return undefined;
+    syn.parent = this;
+    this._cachedLocal = syn;
+    return syn;
   },
 
   /**
    * node.imported — imported name in ImportSpecifier.
-   * Returns a synthetic Identifier node (with range/loc).
+   * Returns a synthetic Identifier node (with range/loc). Cached for identity.
    */
   get imported() {
     if (this._tag !== T.import_specifier) return null;
+    if (this._cachedImported) return this._cachedImported;
     const syn = this._ast._syntheticId(this._ast.nodeLhs(this._i));
     syn.parent = this;
+    this._cachedImported = syn;
     return syn;
   },
 
   /**
    * node.exported — exported name in ExportSpecifier.
-   * Returns a synthetic Identifier node (with range/loc).
+   * Returns a synthetic Identifier node (with range/loc). Cached for identity.
    */
   get exported() {
     if (this._tag !== T.export_specifier) return null;
+    if (this._cachedExported) return this._cachedExported;
     const syn = this._ast._syntheticId(this._ast.nodeRhs(this._i));
     syn.parent = this;
+    this._cachedExported = syn;
     return syn;
   },
 
