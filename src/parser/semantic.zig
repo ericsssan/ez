@@ -1474,9 +1474,11 @@ pub const SemanticAnalyzer = struct {
         _ = try self.enterScope(.class, idx);
 
         // Optionally declare the class name inside its own scope for self-reference.
+        // Use .class_decl so symbol flags get is_class=true (required for no-shadow's
+        // FunctionName/ClassName exception detection).
         if (class_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
-            _ = try self.declareBinding(name, class_data.name, .@"const", self.current_scope);
+            _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
 
         const body_range = SubRange{ .start = class_data.body_start, .end = class_data.body_end };
@@ -1495,9 +1497,11 @@ pub const SemanticAnalyzer = struct {
         _ = try self.enterScope(.class, idx);
 
         // Optionally declare the class name inside its own scope.
+        // Use .class_decl so the symbol has is_class=true (required for no-shadow's
+        // exception for `var a = class a {}` patterns).
         if (class_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
-            _ = try self.declareBinding(name, class_data.name, .@"const", self.current_scope);
+            _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
 
         const body_range = SubRange{ .start = class_data.body_start, .end = class_data.body_end };

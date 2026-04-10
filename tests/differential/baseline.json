@@ -1048,7 +1048,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1732,7 +1732,7 @@
     },
     "no-loop-func": {
       "runner": {
-        "fn": 37,
+        "fn": 8,
         "fp": 0,
         "crash": 0
       },
@@ -2396,7 +2396,7 @@
     "no-shadow": {
       "runner": {
         "fn": 1,
-        "fp": 25,
+        "fp": 12,
         "crash": 0
       },
       "native": {
@@ -2733,8 +2733,8 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 25,
-        "fp": 9,
+        "fn": 13,
+        "fp": 13,
         "crash": 0
       },
       "native": {
