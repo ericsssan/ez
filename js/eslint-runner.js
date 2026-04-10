@@ -4074,8 +4074,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
         case 2: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_segStartH) _dispatchSeg(_segStartH, seg, node); } break; }
         case 3: { const seg = _cfgGraph.segment(ev.d1); if (seg && _segEndH) _dispatchSeg(_segEndH, seg, node); break; }
-        case 4: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node); } break; }
-        case 5: { const seg = _cfgGraph.segment(ev.d1); if (seg && _unreachEndH) _dispatchSeg(_unreachEndH, seg, node); break; }
+        case 4: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_segStartH) _dispatchSeg(_segStartH, seg, node); if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node); } break; }
+        case 5: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_segEndH) _dispatchSeg(_segEndH, seg, node); if (_unreachEndH) _dispatchSeg(_unreachEndH, seg, node); } break; }
         case 6: {
           const fromSeg = _cfgGraph.segment(ev.d1), toSeg = _cfgGraph.segment(ev.d2);
           if (fromSeg && toSeg) {
