@@ -3684,7 +3684,7 @@
       "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 1
+        "crash": 0
       },
       "native": {
         "fn": 28,
