@@ -1028,9 +1028,9 @@ pub const SemanticAnalyzer = struct {
                 self.cfg_alive = false;
             },
             .break_label => {
-                // Labeled break — extract label text.
+                // Labeled break — label is a real identifier node in lhs.
                 if (self.cpb_initialized) {
-                    const label_tok: TokenIndex = @intFromEnum(data.lhs);
+                    const label_tok = self.ast.nodeMainToken(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeBreak(label_text, idx);
                 }
@@ -1046,7 +1046,7 @@ pub const SemanticAnalyzer = struct {
             },
             .continue_label => {
                 if (self.cpb_initialized) {
-                    const label_tok: TokenIndex = @intFromEnum(data.lhs);
+                    const label_tok = self.ast.nodeMainToken(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeContinue(label_text, idx);
                 }

@@ -2359,34 +2359,19 @@ const NodeProto = {
    * LabeledStatement, BreakStatement (with label), ContinueStatement (with label)
    */
   get label() {
-    if (this._label !== undefined) return this._label;
     const t = this._tag;
     const ast = this._ast;
-    let tokIdx = null;
+    // labeled_stmt: rhs = label identifier node
     if (t === T.labeled_stmt) {
-      tokIdx = this.mainToken;
-    } else if (t === T.break_label || t === T.continue_label) {
-      const tokAbsIdx = ast.nodeLhs(this._i);
-      if (tokAbsIdx === NONE) { this._label = null; return null; }
-      tokIdx = tokAbsIdx; // nodeLhs stores absolute token index for break/continue label
+      const rhs = ast.nodeRhs(this._i);
+      return rhs === NONE ? null : nodeView(ast, rhs);
     }
-    if (tokIdx === null) { this._label = null; return null; }
-    // Return an Identifier-like object with name, range, loc, type.
-    const name = ast._identAt(tokIdx);
-    const start = ast._tokStarts[tokIdx];
-    const end = start + name.length;
-    const ls = ast._lineStarts();
-    let lo = 0, hi = ls.length - 1;
-    while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ls[m] <= start) lo = m; else hi = m - 1; }
-    let elo = 0, ehi = ls.length - 1;
-    while (elo < ehi) { const m = (elo + ehi + 1) >> 1; if (ls[m] <= end) elo = m; else ehi = m - 1; }
-    this._label = {
-      type: 'Identifier', name, start, end,
-      range: [start, end],
-      loc: { start: { line: lo + 1, column: start - ls[lo] }, end: { line: elo + 1, column: end - ls[elo] } },
-      parent: this,
-    };
-    return this._label;
+    // break_label / continue_label: lhs = label identifier node
+    if (t === T.break_label || t === T.continue_label) {
+      const lhs = ast.nodeLhs(this._i);
+      return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    return null;
   },
 
   /**

@@ -1655,12 +1655,18 @@ pub const Parser = struct {
         // Label must be on the same line (no ASI between break and label).
         if (self.peek() == .identifier and !self.isOnNewLine()) {
             const label_tok = self.advance();
+            // Create a real identifier node for the label so rules can walk it.
+            const label_node = try self.addNode(.{
+                .tag = .property_ident,
+                .main_token = label_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             try self.expectSemicolon();
             return self.addNode(.{
                 .tag = .break_label,
                 .main_token = break_tok,
                 .data = .{
-                    .lhs = NodeIndex.fromInt(label_tok),
+                    .lhs = label_node,
                     .rhs = .none,
                 },
             });
@@ -1685,12 +1691,17 @@ pub const Parser = struct {
         // Label must be on the same line (no ASI between continue and label).
         if (self.peek() == .identifier and !self.isOnNewLine()) {
             const label_tok = self.advance();
+            const label_node = try self.addNode(.{
+                .tag = .property_ident,
+                .main_token = label_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             try self.expectSemicolon();
             return self.addNode(.{
                 .tag = .continue_label,
                 .main_token = cont_tok,
                 .data = .{
-                    .lhs = NodeIndex.fromInt(label_tok),
+                    .lhs = label_node,
                     .rhs = .none,
                 },
             });
@@ -1708,6 +1719,13 @@ pub const Parser = struct {
     pub fn parseLabeledStatement(self: *Parser) Error!NodeIndex {
         const label_tok = self.advance(); // eat identifier (the label)
         _ = try self.expect(.colon); // eat ':'
+
+        // Create a real identifier node for the label.
+        const label_node = try self.addNode(.{
+            .tag = .property_ident,
+            .main_token = label_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
 
         // Labeled declarations are mostly forbidden
         switch (self.peek()) {
@@ -1756,7 +1774,7 @@ pub const Parser = struct {
             .main_token = label_tok,
             .data = .{
                 .lhs = stmt,
-                .rhs = .none,
+                .rhs = label_node,
             },
         });
     }

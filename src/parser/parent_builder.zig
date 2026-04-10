@@ -147,7 +147,16 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             },
 
             // ── Simple statements ─────────────────────────────
-            .expression_stmt, .return_stmt, .throw_stmt, .labeled_stmt => {
+            .expression_stmt, .return_stmt, .throw_stmt => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // labeled_stmt: lhs = statement, rhs = label identifier node
+            .labeled_stmt => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // break_label / continue_label: lhs = label identifier node
+            .break_label, .continue_label => {
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .with_stmt => {
@@ -380,7 +389,7 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             },
 
             // ── Leaf nodes (no children) ──────────────────────
-            .empty_stmt, .break_stmt, .break_label, .continue_stmt, .continue_label,
+            .empty_stmt, .break_stmt, .continue_stmt,
             .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
