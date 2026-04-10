@@ -781,9 +781,11 @@ pub const SemanticAnalyzer = struct {
                 }
             },
             .member_expr, .optional_member_expr => {
+                if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
                 try self.visitNode(data.lhs);
             },
             .computed_member_expr, .optional_computed_member_expr => {
+                if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
                 try self.visitNode(data.lhs);
                 try self.visitNode(data.rhs);
             },
@@ -823,12 +825,18 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(data.lhs);
             },
             .grouping_expr => try self.visitNode(data.lhs),
-            .import_expr => try self.visitNode(data.lhs),
+            .import_expr => {
+                if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
+                try self.visitNode(data.lhs);
+            },
 
             // ── Unary expressions ──────────────────────────
             .unary_plus, .unary_minus, .bitwise_not, .logical_not,
-            .void_expr, .await_expr, .yield_expr, .yield_delegate,
-            => try self.visitNode(data.lhs),
+            .void_expr, .await_expr => try self.visitNode(data.lhs),
+            .yield_expr, .yield_delegate => {
+                if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
+                try self.visitNode(data.lhs);
+            },
             // delete marks a member write on the base symbol (e.g. `delete ns.prop`).
             .delete_expr => {
                 if (data.lhs != .none) {
