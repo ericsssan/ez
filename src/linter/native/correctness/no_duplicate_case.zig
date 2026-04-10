@@ -43,10 +43,10 @@ fn appendKey(node: NodeIndex, ctx: *const LintContext, buf: *std.ArrayListUnmana
             }
         },
 
-        // Member expressions: recurse into object, property token is in rhs
+        // Member expressions: recurse into object, property is a real node in rhs
         .member_expr, .optional_member_expr => {
             appendKey(data.lhs, ctx, buf, allocator);
-            const prop = ctx.tokenText(@intCast(@intFromEnum(data.rhs)));
+            const prop = ctx.memberPropertyName(data.rhs);
             buf.appendSlice(allocator, prop) catch return;
             buf.append(allocator, '|') catch return;
         },

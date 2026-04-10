@@ -28,10 +28,9 @@ fn getMethodName(callee: NodeIndex, ctx: *const LintContext) ?[]const u8 {
         // Unwrap grouping: (foo?.hasOwnProperty)(...)
         .grouping_expr => return getMethodName(ctx.nodeData(callee).lhs, ctx),
 
-        // obj.prop or obj?.prop — rhs encodes property token index
+        // obj.prop or obj?.prop — rhs is a property_ident node
         .member_expr, .optional_member_expr => {
-            const tok: u32 = @intCast(@intFromEnum(ctx.nodeData(callee).rhs));
-            return ctx.tokenText(tok);
+            return ctx.memberPropertyName(ctx.nodeData(callee).rhs);
         },
 
         // obj['prop'] or obj?.['prop'] — rhs is the computed expression

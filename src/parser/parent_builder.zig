@@ -255,12 +255,16 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
 
             // ── Member access ─────────────────────────────────
             .member_expr, .optional_member_expr => {
+                // rhs is the property identifier node (property_ident or identifier for private)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .computed_member_expr, .optional_computed_member_expr => {
                 push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
+            // Property name / module specifier name — a leaf, no children.
+            .property_ident, .property_literal => {},
 
             // ── Binary / assignment ───────────────────────────
             .add, .subtract, .multiply, .divide, .modulo, .exponentiate,

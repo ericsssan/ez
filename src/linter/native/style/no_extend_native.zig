@@ -30,7 +30,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(inner) != .member_expr) return;
 
     const inner_data = ctx.nodeData(inner);
-    const prop_name = ctx.tokenText(@intFromEnum(inner_data.rhs));
+    const prop_name = ctx.memberPropertyName(inner_data.rhs);
     if (std.mem.eql(u8, prop_name, "prototype")) {
         ctx.report(node);
     }

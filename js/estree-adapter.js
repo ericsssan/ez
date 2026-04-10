@@ -916,6 +916,7 @@ const NodeProto = {
     const tagName = TAG_NAMES ? TAG_NAMES[this._ast._nodeTags[this._i]] : String(this._ast._nodeTags[this._i]);
     let result = tagName;
     // Remap Identifier → PrivateIdentifier when the token starts with #.
+    // Applies to both regular identifiers and property_ident (which maps to Identifier).
     if (tagName === 'Identifier') {
       const pos = this._ast._tokStarts[this._ast._mainTokens[this._i]];
       if (pos < this._ast.source.length && this._ast.source.charCodeAt(pos) === 35) {
@@ -1135,7 +1136,7 @@ const NodeProto = {
    */
   get name() {
     const t = this._tag;
-    if (t === T.identifier) {
+    if (t === T.identifier || t === T.property_ident) {
       const ast = this._ast;
       const tok = this.mainToken;
       const pos = ast._tokStarts[tok];
@@ -1709,7 +1710,7 @@ const NodeProto = {
 
   /**
    * node.property — property being accessed.
-   * Dot access: returns synthetic Identifier node (ESTree-compatible).
+   * Dot access: rhs is a real property_ident (or identifier for #private) node.
    * Computed access: returns NodeView of the expression.
    */
   get property() {
@@ -1717,13 +1718,8 @@ const NodeProto = {
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
     if (t === T.member_expr || t === T.optional_member_expr) {
-      // rhs is the token index of the property identifier; wrap as synthetic Identifier.
-      // Cache so identity checks (parent.property === node) work in rules like id-blacklist.
-      if (this._cachedProperty) return this._cachedProperty;
-      const syn = ast._syntheticId(rhs);
-      syn.parent = this;
-      this._cachedProperty = syn;
-      return syn;
+      // rhs is a node index to a property_ident (or identifier for private).
+      return rhs === NONE ? null : nodeView(ast, rhs);
     }
     if (t === T.computed_member_expr || t === T.optional_computed_member_expr) {
       return rhs === NONE ? null : nodeView(ast, rhs);

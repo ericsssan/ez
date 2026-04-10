@@ -21,7 +21,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(object) != .identifier) return;
     const obj_name = ctx.tokenText(ctx.nodeMainToken(object));
     if (!std.mem.eql(u8, obj_name, "arguments")) return;
-    const prop_name = ctx.tokenText(@intFromEnum(data.rhs));
+    const prop_name = ctx.memberPropertyName(data.rhs);
     if (std.mem.eql(u8, prop_name, "caller") or std.mem.eql(u8, prop_name, "callee")) {
         ctx.report(node);
     }

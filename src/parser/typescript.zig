@@ -481,7 +481,7 @@ fn parseTypeReference(p: *Parser) Error!NodeIndex {
         if (p.peek() == .identifier or p.peek().isKeyword()) {
             const prop_tok = p.advance();
             const prop_node = try p.addNode(.{
-                .tag = .identifier,
+                .tag = .property_ident,
                 .main_token = prop_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
@@ -1458,7 +1458,14 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
         // Support dotted names: `namespace A.B.C { }`
         while (p.peek() == .dot) {
             _ = p.advance(); // consume `.`
-            const sub = try p.parseIdentifier();
+            // Parts after the first are property names, not references.
+            if (p.peek() != .identifier and !p.peek().isKeyword()) break;
+            const prop_tok = p.advance();
+            const sub = try p.addNode(.{
+                .tag = .property_ident,
+                .main_token = prop_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             name_node = try p.addNode(.{
                 .tag = .member_expr,
                 .main_token = p.tok_i,

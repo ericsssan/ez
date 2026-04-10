@@ -21,7 +21,7 @@ fn isHasOwnPropertyCall(callee: NodeIndex, ctx: *const LintContext) bool {
 
     const outer = ctx.nodeData(callee);
     if (outer.rhs == .none) return false;
-    const prop1 = ctx.tokenText(@intFromEnum(outer.rhs));
+    const prop1 = ctx.memberPropertyName(outer.rhs);
     if (!std.mem.eql(u8, prop1, "call")) return false;
 
     // outer.lhs should be `...hasOwnProperty`
@@ -31,7 +31,7 @@ fn isHasOwnPropertyCall(callee: NodeIndex, ctx: *const LintContext) bool {
 
     const hopa_data = ctx.nodeData(hopa);
     if (hopa_data.rhs == .none) return false;
-    const prop2 = ctx.tokenText(@intFromEnum(hopa_data.rhs));
+    const prop2 = ctx.memberPropertyName(hopa_data.rhs);
     if (!std.mem.eql(u8, prop2, "hasOwnProperty")) return false;
 
     // hopa_data.lhs should be `Object.prototype` or any object
@@ -46,14 +46,14 @@ fn isObjectLiteralHasOwn(callee: NodeIndex, ctx: *const LintContext) bool {
     if (ctx.nodeTag(callee) != .member_expr) return false;
     const outer = ctx.nodeData(callee);
     if (outer.rhs == .none) return false;
-    if (!std.mem.eql(u8, ctx.tokenText(@intFromEnum(outer.rhs)), "call")) return false;
+    if (!std.mem.eql(u8, ctx.memberPropertyName(outer.rhs), "call")) return false;
 
     const hopa = outer.lhs;
     if (hopa == .none) return false;
     if (ctx.nodeTag(hopa) != .member_expr) return false;
     const hopa_data = ctx.nodeData(hopa);
     if (hopa_data.rhs == .none) return false;
-    if (!std.mem.eql(u8, ctx.tokenText(@intFromEnum(hopa_data.rhs)), "hasOwnProperty")) return false;
+    if (!std.mem.eql(u8, ctx.memberPropertyName(hopa_data.rhs), "hasOwnProperty")) return false;
 
     // Check that object is `{}`
     if (ctx.nodeTag(hopa_data.lhs) == .object_literal) return true;

@@ -34,8 +34,8 @@ fn isFunctionCallOrApplyOrBind(node: NodeIndex, ctx: *const LintContext) bool {
     // Check if object is "Function"
     if (!isFunctionIdentifier(obj, ctx)) return false;
 
-    // data.rhs is a token index for the property name
-    const prop_name = ctx.tokenText(@intFromEnum(data.rhs));
+    // data.rhs is the property_ident node
+    const prop_name = ctx.memberPropertyName(data.rhs);
     return std.mem.eql(u8, prop_name, "call") or
            std.mem.eql(u8, prop_name, "apply") or
            std.mem.eql(u8, prop_name, "bind");

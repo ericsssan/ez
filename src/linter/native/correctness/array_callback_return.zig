@@ -27,7 +27,7 @@ fn isArrayMethod(callee: NodeIndex, ctx: *const LintContext) bool {
     const member_data = ctx.nodeData(callee);
     if (member_data.rhs == .none) return false;
 
-    const prop = ctx.tokenText(@intFromEnum(member_data.rhs));
+    const prop = ctx.memberPropertyName(member_data.rhs);
     for (array_methods) |m| {
         if (std.mem.eql(u8, prop, m)) return true;
     }

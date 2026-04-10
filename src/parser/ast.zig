@@ -482,6 +482,14 @@ pub const Node = struct {
         /// export { x, y } from 'source'. lhs = extra index to ImportData (specifiers + source), rhs = .none
         /// Added at end to preserve existing ordinals for JS T table compatibility.
         export_named_from,
+        /// A name used as a property key, not a variable reference.
+        /// main_token = identifier/keyword token.
+        /// Created for: member expression property, import/export specifier names.
+        /// Type=Identifier in ESTree. Does NOT create a reference in semantic analysis.
+        property_ident,
+        /// A string literal used as an import/export specifier name (ES2022).
+        /// main_token = string_literal token. Type=Literal in ESTree.
+        property_literal,
     };
 };
 

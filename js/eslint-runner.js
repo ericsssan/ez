@@ -4291,7 +4291,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // Interleaved DFS: enter and exit events in correct DFS order.
   const hasPrivateIdOpt = visitorMap.has('PrivateIdentifier');
-  const identTagOpt = tagNames.indexOf('Identifier');
+  // Bitfield of tag indices that map to "Identifier" (both identifier and property_ident).
+  const _identTagBits = new Uint8Array(tagNames.length);
+  for (let _ti = 0; _ti < tagNames.length; _ti++) {
+    if (tagNames[_ti] === 'Identifier') _identTagBits[_ti] = 1;
+  }
   // Label + specifier synthesis for optimized path
   const needsLabelSynthOpt = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
   const _labelStmtTagSet = new Set();
@@ -4307,10 +4311,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       const _tn = tagNames[_ti];
       if (needsLabelSynthOpt) {
-        if (_labelStmtTagSet.has(_ti) || _specifierTagSetOpt.has(_ti) || _tn === 'MemberExpression') _synthTagArr[_ti] = 1;
+        if (_labelStmtTagSet.has(_ti) || _specifierTagSetOpt.has(_ti)) _synthTagArr[_ti] = 1;
       }
-      // PrivateIdentifier synthesis needs Identifier + MemberExpression tags
-      if (hasPrivateIdOpt && (_tn === 'Identifier' || _tn === 'MemberExpression')) _synthTagArr[_ti] = 1;
+      // PrivateIdentifier dispatch needs all Identifier-mapped tags
+      if (hasPrivateIdOpt && _identTagBits[_ti]) _synthTagArr[_ti] = 1;
     }
   }
 
@@ -4377,7 +4381,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               }
             }
             if (hasSelectors && selectorsByTagEnter) {
-              const selHandlers = selectorsByTagEnter[identTagOpt];
+              const selHandlers = selectorsByTagEnter[tagNames.indexOf('Identifier')];
               const lists = [selHandlers, _universalEnter].filter(Boolean);
               const parentAncestors = [pn];
               let _p = pd ? pd[idx] : NONE;
@@ -4403,8 +4407,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
-      // PrivateIdentifier dispatch for Identifier nodes with # prefix
-      if (hasPrivateIdOpt && tag === identTagOpt) {
+      // PrivateIdentifier dispatch for Identifier-mapped nodes with # prefix.
+      // Covers both T.identifier (class field declarations) and T.property_ident
+      // (member-expression property for `this.#x`).
+      if (hasPrivateIdOpt && _identTagBits[tag]) {
         const pos = ast._tokStarts[ast._mainTokens[idx]];
         if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
           const privEnter = visitorMap.get('PrivateIdentifier');
@@ -4412,27 +4418,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             const node = nodeView(ast, idx);
             context._currentNodeIdx = idx;
             for (let h = 0; h < privEnter.length; h++) privEnter[h].handler(node);
-          }
-        }
-      }
-      // Synthesize PrivateIdentifier for MemberExpression with private property
-      if (hasPrivateIdOpt && tagNames[tag] === 'MemberExpression') {
-        const rhs = ast.nodeRhs(idx);
-        if (rhs !== NONE) {
-          const propStart = ast._tokStarts[rhs];
-          if (propStart < ast.source.length && ast.source.charCodeAt(propStart) === 35) {
-            const synth = ast._syntheticId(rhs);
-            if (synth.type === 'PrivateIdentifier') {
-              synth.parent = nodeView(ast, idx);
-              const privEnter = visitorMap.get('PrivateIdentifier');
-              if (privEnter) {
-                for (let h = 0; h < privEnter.length; h++) {
-                  try { privEnter[h].handler(synth); } catch (err) {
-                    context._reports.push({ ruleId: privEnter[h].ruleId, message: `Plugin error: ${err.message}` });
-                  }
-                }
-              }
-            }
           }
         }
       }
@@ -4486,8 +4471,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
-      // PrivateIdentifier:exit dispatch for Identifier nodes with # prefix
-      if (_needsPrivateSynth && tagNames[tag] === 'Identifier') {
+      // PrivateIdentifier:exit dispatch for Identifier-mapped nodes with # prefix.
+      if (_needsPrivateSynth && _identTagBits[tag]) {
         const pos = ast._tokStarts[ast._mainTokens[idx]];
         if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
           const privExit = visitorMap.get('PrivateIdentifier:exit');

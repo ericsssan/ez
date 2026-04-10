@@ -569,6 +569,9 @@ pub const SemanticAnalyzer = struct {
             // ── Identifier references ──────────────────────
             .identifier => try self.visitIdentifier(idx),
 
+            // Property/specifier names — real nodes but NOT variable references.
+            .property_ident, .property_literal => {},
+
             // ── Assignments ────────────────────────────────
             .assign => try self.visitAssignment(data, .write),
             .add_assign, .sub_assign, .mul_assign, .div_assign,

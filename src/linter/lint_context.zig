@@ -79,6 +79,13 @@ pub const LintContext = struct {
         return self.ast.tokenText(index);
     }
 
+    /// Property name text for a MemberExpression (dot access).
+    /// Handles the fact that member_expr.rhs is a property_ident node whose
+    /// main_token is the property name token.
+    pub fn memberPropertyName(self: *const LintContext, member_rhs: NodeIndex) []const u8 {
+        return self.ast.tokenText(self.ast.nodeMainToken(member_rhs));
+    }
+
     pub fn tokenTag(self: *const LintContext, index: TokenIndex) @import("../parser/token.zig").Tag {
         return self.ast.tokenTag(index);
     }

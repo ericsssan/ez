@@ -29,8 +29,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (ctx.nodeTag(obj) != .identifier) return;
 
     const obj_text = ctx.tokenText(ctx.nodeMainToken(obj));
-    // member_expr: rhs stores the property token index directly
-    const prop_text = ctx.tokenText(@intFromEnum(member_data.rhs));
+    // member_expr: rhs is the property_ident node
+    const prop_text = ctx.memberPropertyName(member_data.rhs);
 
     if (std.mem.eql(u8, obj_text, "process") and std.mem.eql(u8, prop_text, "exit")) {
         ctx.report(node);

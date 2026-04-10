@@ -30,7 +30,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const obj_name = ctx.tokenText(ctx.nodeMainToken(object));
     if (!std.mem.eql(u8, obj_name, "Math")) return;
 
-    const prop_name = ctx.tokenText(@intFromEnum(member_data.rhs));
+    const prop_name = ctx.memberPropertyName(member_data.rhs);
     if (std.mem.eql(u8, prop_name, "pow")) {
         ctx.report(node);
     }

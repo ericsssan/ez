@@ -153,7 +153,7 @@ fn bodyUsesThis(node: NodeIndex, ctx: *const LintContext) bool {
             return false;
         },
 
-        // Member expressions: lhs=object (node), rhs=token index (not a node for .member_expr)
+        // Member expressions: lhs=object (node), rhs=property_ident node (leaf, no `this`)
         .member_expr, .optional_member_expr => return bodyUsesThis(data.lhs, ctx),
         // Computed member: lhs=object, rhs=key (both nodes)
         .computed_member_expr, .optional_computed_member_expr => {
@@ -185,7 +185,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const fn_node_raw = switch (ctx.nodeTag(callee)) {
         .member_expr, .optional_member_expr => blk: {
             const m = ctx.nodeData(callee);
-            const prop = ctx.tokenText(@intCast(@intFromEnum(m.rhs)));
+            const prop = ctx.memberPropertyName(m.rhs);
             if (!std.mem.eql(u8, prop, "bind")) return;
             break :blk m.lhs;
         },

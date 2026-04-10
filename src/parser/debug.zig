@@ -641,6 +641,11 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
         .error_node => {
             // Nothing more to dump; main_token marks the error position.
         },
+
+        // ── Property names (real nodes, leaf) ────────────────
+        .property_ident, .property_literal => {
+            // main_token holds the name/string; no children to dump.
+        },
     }
 }
 

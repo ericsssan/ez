@@ -28,10 +28,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const member_data = ctx.nodeData(init);
     if (member_data.lhs == .none or member_data.rhs == .none) return;
 
-    // Skip computed member access obj[0] — that's index-based
-    // member_expr uses rhs as token index, not a node. So it's always a property name.
+    // member_expr rhs is a property_ident node; read its main_token for the name.
     const binding_name = ctx.tokenText(ctx.nodeMainToken(binding));
-    const prop_name = ctx.tokenText(@intFromEnum(member_data.rhs));
+    const prop_name = ctx.tokenText(ctx.nodeMainToken(member_data.rhs));
 
     // Only flag when binding name matches the property name: `const foo = obj.foo`
     if (!std.mem.eql(u8, binding_name, prop_name)) return;

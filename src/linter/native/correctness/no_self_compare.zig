@@ -51,13 +51,12 @@ fn nodesEqual(a: NodeIndex, b: NodeIndex, ctx: *const LintContext) bool {
         .template_literal, // simple template — close enough
         => return true,
 
-        // ── Member expressions: compare object + property token ─
+        // ── Member expressions: compare object + property name ──
         .member_expr, .optional_member_expr => {
-            // lhs = object, rhs = property token (as NodeIndex)
             if (!nodesEqual(da.lhs, db.lhs, ctx)) return false;
-            // Property token: compare via rhs cast to token index
-            const prop_a = ctx.tokenText(@intCast(@intFromEnum(da.rhs)));
-            const prop_b = ctx.tokenText(@intCast(@intFromEnum(db.rhs)));
+            // rhs is a property_ident node; compare its main_token text.
+            const prop_a = ctx.memberPropertyName(da.rhs);
+            const prop_b = ctx.memberPropertyName(db.rhs);
             return std.mem.eql(u8, prop_a, prop_b);
         },
         .computed_member_expr, .optional_computed_member_expr => {

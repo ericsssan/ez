@@ -107,6 +107,8 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
         .call_expr, .optional_call_expr => "CallExpression",
         .new_expr => "NewExpression",
         .member_expr, .computed_member_expr, .optional_member_expr, .optional_computed_member_expr => "MemberExpression",
+        .property_ident => "Identifier",
+        .property_literal => "Literal",
         .sequence_expr => "SequenceExpression",
         .grouping_expr => "ParenthesizedExpression",
         .import_expr => "ImportExpression",

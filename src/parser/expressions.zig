@@ -2610,10 +2610,15 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                     p.advance()
                 else
                     try p.expect(.identifier); // will emit error
+                const prop_node = try p.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = prop_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
                 callee = try p.addNode(.{
                     .tag = .member_expr,
                     .main_token = prop_tok,
-                    .data = .{ .lhs = callee, .rhs = NodeIndex.fromInt(prop_tok) },
+                    .data = .{ .lhs = callee, .rhs = prop_node },
                 });
             },
             .l_bracket => {
@@ -3328,10 +3333,15 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
         break :blk p.tok_i;
     };
 
+    const prop_node = try p.addNode(.{
+        .tag = .property_ident,
+        .main_token = prop_tok,
+        .data = .{ .lhs = .none, .rhs = .none },
+    });
     return p.addNode(.{
         .tag = .member_expr,
         .main_token = prop_tok,
-        .data = .{ .lhs = object, .rhs = NodeIndex.fromInt(prop_tok) },
+        .data = .{ .lhs = object, .rhs = prop_node },
     });
 }
 
@@ -3409,10 +3419,15 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
                 try p.emitError("Expected property name after '?.'");
                 break :blk p.tok_i;
             };
+            const prop_node = try p.addNode(.{
+                .tag = .property_ident,
+                .main_token = prop_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             return p.addNode(.{
                 .tag = .optional_member_expr,
                 .main_token = prop_tok,
-                .data = .{ .lhs = object, .rhs = NodeIndex.fromInt(prop_tok) },
+                .data = .{ .lhs = object, .rhs = prop_node },
             });
         },
     }

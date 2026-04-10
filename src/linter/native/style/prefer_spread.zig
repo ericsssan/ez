@@ -25,8 +25,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const member_data = ctx.nodeData(callee);
     if (member_data.rhs == .none) return;
 
-    // member_expr: rhs stores the property token index directly
-    const prop_text = ctx.tokenText(@intFromEnum(member_data.rhs));
+    // member_expr: rhs is the property_ident node
+    const prop_text = ctx.memberPropertyName(member_data.rhs);
     if (!std.mem.eql(u8, prop_text, "apply")) return;
 
     ctx.report(node);

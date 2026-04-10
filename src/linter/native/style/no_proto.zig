@@ -42,7 +42,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     const tag = ctx.nodeTag(node);
     if (tag == .member_expr) {
-        const prop_name = ctx.tokenText(@intCast(@intFromEnum(data.rhs)));
+        const prop_name = ctx.memberPropertyName(data.rhs);
         if (std.mem.eql(u8, prop_name, PROP)) {
             ctx.report(node);
         }

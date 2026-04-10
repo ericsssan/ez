@@ -29,7 +29,7 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const obj_name = ctx.tokenText(ctx.nodeMainToken(obj));
     if (!std.mem.eql(u8, obj_name, "Object")) return;
 
-    const prop_name = ctx.tokenText(@intFromEnum(member_data.rhs));
+    const prop_name = ctx.memberPropertyName(member_data.rhs);
     if (!std.mem.eql(u8, prop_name, "assign")) return;
 
     // First argument must be an object literal `{}`

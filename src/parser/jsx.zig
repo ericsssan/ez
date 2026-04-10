@@ -130,7 +130,18 @@ fn parseJsxDottedName(p: *Parser) Error!NodeIndex {
     var name_node = try parseJsxSimpleName(p);
     while (p.peek() == .dot) {
         const dot_tok = p.advance(); // consume `.`
-        const prop_node = try parseJsxSimpleName(p);
+        // Property parts are property_ident nodes (not references).
+        const prop_tag = p.peek();
+        if (prop_tag != .identifier and !prop_tag.isKeyword()) {
+            try p.emitError("Expected JSX element name");
+            return p.makeErrorNode();
+        }
+        const prop_tok = p.advance();
+        const prop_node = try p.addNode(.{
+            .tag = .property_ident,
+            .main_token = prop_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
         name_node = try p.addNode(.{
             .tag = .member_expr,
             .main_token = dot_tok,
