@@ -3135,15 +3135,21 @@ pub const Parser = struct {
         // Default import: `import x from '...'`
         if (self.peek() == .identifier) {
             const local_tok = self.tok_i;
-            // Consume the identifier (we create a specifier node below, not
-            // a separate identifier node)
             _ = self.advance();
+
+            // Create a real identifier node for the local binding.
+            // (Used as a reference target, so use .identifier not .property_ident.)
+            const local_node = try self.addNode(.{
+                .tag = .identifier,
+                .main_token = local_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
 
             const spec = try self.addNode(.{
                 .tag = .import_default_specifier,
                 .main_token = local_tok,
                 .data = .{
-                    .lhs = NodeIndex.fromInt(local_tok),
+                    .lhs = local_node,
                     .rhs = .none,
                 },
             });
@@ -3200,11 +3206,18 @@ pub const Parser = struct {
 
         while (self.peek() != .r_brace and !self.isAtEnd()) {
             const imported_tok = self.tok_i;
-            _ = try self.expectIdentifierOrKeyword();
+            const imported_is_string = self.peek() == .string_literal;
+            if (imported_is_string) {
+                _ = self.advance();
+            } else {
+                _ = try self.expectIdentifierOrKeyword();
+            }
 
             // `as` alias — local binding can be identifier or contextual keyword
             var local_tok = imported_tok;
+            var has_alias = false;
             if (self.eat(.kw_as) != null) {
+                has_alias = true;
                 if (self.peek() == .identifier or self.peek() == .kw_as or self.peek() == .kw_of or
                     self.peek() == .kw_from or self.peek() == .kw_let or self.peek() == .kw_get or
                     self.peek() == .kw_set or self.peek() == .kw_static or self.peek() == .kw_async or
@@ -3227,12 +3240,45 @@ pub const Parser = struct {
                 }
             }
 
+            // Create real nodes for imported/local.
+            // - imported can be string_literal (ES2022 `import {"foo" as bar}`) or identifier
+            // - local is always an identifier (it's a binding)
+            const imported_node = if (imported_is_string)
+                try self.addNode(.{
+                    .tag = .property_literal,
+                    .main_token = imported_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                })
+            else
+                try self.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = imported_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+            // local binding: if no alias and imported was an identifier, reuse imported as local.
+            // Otherwise, create a fresh identifier node for the local binding.
+            const local_node = if (!has_alias and !imported_is_string)
+                // `import { foo }` — imported and local are the same identifier. We still
+                // need a distinct node since local is a binding (reference target) while
+                // imported is a property name. Create a real identifier node.
+                try self.addNode(.{
+                    .tag = .identifier,
+                    .main_token = local_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                })
+            else
+                try self.addNode(.{
+                    .tag = .identifier,
+                    .main_token = local_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+
             const spec = try self.addNode(.{
                 .tag = .import_specifier,
                 .main_token = imported_tok,
                 .data = .{
-                    .lhs = NodeIndex.fromInt(imported_tok),
-                    .rhs = NodeIndex.fromInt(local_tok),
+                    .lhs = imported_node,
+                    .rhs = local_node,
                 },
             });
             try self.scratch.append(self.gpa, @intFromEnum(spec));
@@ -3249,11 +3295,17 @@ pub const Parser = struct {
         _ = try self.expect(.kw_as);
         const local_tok = try self.expect(.identifier);
 
+        const local_node = try self.addNode(.{
+            .tag = .identifier,
+            .main_token = local_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
+
         return self.addNode(.{
             .tag = .import_namespace_specifier,
             .main_token = star_tok,
             .data = .{
-                .lhs = NodeIndex.fromInt(local_tok),
+                .lhs = local_node,
                 .rhs = .none,
             },
         });
@@ -3529,31 +3581,66 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+        // Track raw tokens (for the reserved-word check below) separately from
+        // the spec node indices, so we can still validate without traversing nodes.
+        const local_toks_start = self.scratch.items.len;
+        defer self.scratch.shrinkRetainingCapacity(local_toks_start);
+        var local_token_list: std.ArrayList(TokenIndex) = .empty;
+        defer local_token_list.deinit(self.gpa);
+
         while (self.peek() != .r_brace and !self.isAtEnd()) {
             const local_tok = self.tok_i;
-            // Export specifiers allow identifiers, keywords, AND string literals (ES2022)
-            if (self.peek() == .string_literal) {
+            const local_is_string = self.peek() == .string_literal;
+            if (local_is_string) {
                 _ = self.advance();
             } else {
                 _ = try self.expectIdentifierOrKeyword();
             }
+            try local_token_list.append(self.gpa, local_tok);
 
             var exported_tok = local_tok;
+            var exported_is_string = local_is_string;
             if (self.eat(.kw_as) != null) {
                 exported_tok = self.tok_i;
-                if (self.peek() == .string_literal) {
+                exported_is_string = self.peek() == .string_literal;
+                if (exported_is_string) {
                     _ = self.advance();
                 } else {
                     _ = try self.expectIdentifierOrKeyword();
                 }
             }
 
+            const local_node = if (local_is_string)
+                try self.addNode(.{
+                    .tag = .property_literal,
+                    .main_token = local_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                })
+            else
+                try self.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = local_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+            const exported_node = if (exported_is_string)
+                try self.addNode(.{
+                    .tag = .property_literal,
+                    .main_token = exported_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                })
+            else
+                try self.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = exported_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+
             const spec = try self.addNode(.{
                 .tag = .export_specifier,
                 .main_token = local_tok,
                 .data = .{
-                    .lhs = NodeIndex.fromInt(local_tok),
-                    .rhs = NodeIndex.fromInt(exported_tok),
+                    .lhs = local_node,
+                    .rhs = exported_node,
                 },
             });
             try self.scratch.append(self.gpa, @intFromEnum(spec));
@@ -3574,14 +3661,11 @@ pub const Parser = struct {
 
         try self.expectSemicolon();
 
-        const specs = self.scratch.items[scratch_top..];
+        const specs = self.scratch.items[local_toks_start..];
 
         // Without `from`, local specifier names must be valid identifiers
         if (!has_from) {
-            for (specs) |spec_raw| {
-                const spec_node: NodeIndex = @enumFromInt(spec_raw);
-                const spec_data = self.nodes.items(.data)[spec_node.toInt()];
-                const local_token: TokenIndex = @intFromEnum(spec_data.lhs);
+            for (local_token_list.items) |local_token| {
                 const tag = self.tokenTagAt(local_token);
                 if (tag != .identifier and !tag.isTsContextualKeyword() and tag != .kw_as and
                     tag != .kw_from and tag != .kw_of and tag != .kw_let and tag != .kw_async and

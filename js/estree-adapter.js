@@ -1175,9 +1175,12 @@ const NodeProto = {
   get value() {
     if (this._value !== _VALUE_UNSET) return this._value;
     let v;
-    const t = this._tag;
+    let t = this._tag;
     const ast = this._ast;
     const src = ast._rawTokenText(this.mainToken);
+    // property_literal is a Literal whose main_token is a string_literal token.
+    // Reuse the string-literal decoding path.
+    if (t === T.property_literal) t = T.string_literal;
     if (t === T.string_literal) {
       // Strip surrounding quotes and unescape basic sequences.
       // ESLint's Literal.value is the evaluated string, not the raw source.
@@ -2530,56 +2533,44 @@ const NodeProto = {
 
   /**
    * node.local — local binding in import/export specifier.
-   * Returns a synthetic Identifier node (with range/loc).
+   * Returns the real identifier node created by the parser.
    */
   get local() {
-    if (this._cachedLocal) return this._cachedLocal;
     const t = this._tag;
     const ast = this._ast;
-    let tokIdx;
     if (t === T.import_specifier) {
-      tokIdx = ast.nodeRhs(this._i);
-    } else if (t === T.import_default_specifier || t === T.import_namespace_specifier) {
-      tokIdx = ast.nodeLhs(this._i);
-    } else if (t === T.export_specifier) {
-      tokIdx = ast.nodeLhs(this._i);
-    } else {
-      return undefined;
+      const rhs = ast.nodeRhs(this._i);
+      return rhs === NONE ? null : nodeView(ast, rhs);
     }
-    const syn = ast._tokTags[tokIdx] === 2 ? ast._syntheticLiteral(tokIdx) : ast._syntheticId(tokIdx);
-    syn.parent = this;
-    this._cachedLocal = syn;
-    return syn;
+    if (t === T.import_default_specifier || t === T.import_namespace_specifier) {
+      const lhs = ast.nodeLhs(this._i);
+      return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    if (t === T.export_specifier) {
+      const lhs = ast.nodeLhs(this._i);
+      return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    return undefined;
   },
 
   /**
    * node.imported — imported name in ImportSpecifier.
-   * Returns a synthetic Identifier or Literal (for string module names). Cached.
+   * Real identifier/literal node from the parser.
    */
   get imported() {
     if (this._tag !== T.import_specifier) return null;
-    if (this._cachedImported) return this._cachedImported;
-    const ast = this._ast;
-    const tokIdx = ast.nodeLhs(this._i);
-    const syn = ast._tokTags[tokIdx] === 2 ? ast._syntheticLiteral(tokIdx) : ast._syntheticId(tokIdx);
-    syn.parent = this;
-    this._cachedImported = syn;
-    return syn;
+    const lhs = this._ast.nodeLhs(this._i);
+    return lhs === NONE ? null : nodeView(this._ast, lhs);
   },
 
   /**
    * node.exported — exported name in ExportSpecifier.
-   * Returns a synthetic Identifier or Literal (for string module names). Cached.
+   * Real identifier/literal node from the parser.
    */
   get exported() {
     if (this._tag !== T.export_specifier) return null;
-    if (this._cachedExported) return this._cachedExported;
-    const ast = this._ast;
-    const tokIdx = ast.nodeRhs(this._i);
-    const syn = ast._tokTags[tokIdx] === 2 ? ast._syntheticLiteral(tokIdx) : ast._syntheticId(tokIdx);
-    syn.parent = this;
-    this._cachedExported = syn;
-    return syn;
+    const rhs = this._ast.nodeRhs(this._i);
+    return rhs === NONE ? null : nodeView(this._ast, rhs);
   },
 
   /**

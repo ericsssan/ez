@@ -1109,11 +1109,13 @@ pub const SemanticAnalyzer = struct {
         while (i < range.end) : (i += 1) {
             const spec_idx: NodeIndex = @enumFromInt(self.ast.extra_data[i]);
             const spec_data = self.ast.nodes.items(.data)[spec_idx.toInt()];
-            const local_token: TokenIndex = @intFromEnum(spec_data.lhs);
-            const exported_token: TokenIndex = @intFromEnum(spec_data.rhs);
+            // Specifiers now store real identifier/literal nodes in lhs/rhs.
+            // Read the name via the node's main_token.
+            const local_tok = self.ast.nodeMainToken(spec_data.lhs);
+            const exported_tok = self.ast.nodeMainToken(spec_data.rhs);
 
-            const exported_name = self.ast.tokenText(exported_token);
-            const local_name = self.ast.tokenText(local_token);
+            const exported_name = self.ast.tokenText(exported_tok);
+            const local_name = self.ast.tokenText(local_tok);
 
             try self.exported_names.append(self.allocator, .{
                 .exported_name = exported_name,
@@ -1584,26 +1586,26 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitImportSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
-        // import { x as y } — rhs = local name token.
+        // import { x as y } — rhs = local identifier node (real node).
         const data = self.ast.nodeData(idx);
-        const local_token = @intFromEnum(data.rhs);
-        const name = self.ast.tokenText(local_token);
+        const local_tok = self.ast.nodeMainToken(data.rhs);
+        const name = self.ast.tokenText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
 
     fn visitImportDefaultSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
-        // import x — lhs = local name token.
+        // import x — lhs = local identifier node.
         const data = self.ast.nodeData(idx);
-        const local_token = @intFromEnum(data.lhs);
-        const name = self.ast.tokenText(local_token);
+        const local_tok = self.ast.nodeMainToken(data.lhs);
+        const name = self.ast.tokenText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
 
     fn visitImportNamespaceSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
-        // import * as x — lhs = local name token.
+        // import * as x — lhs = local identifier node.
         const data = self.ast.nodeData(idx);
-        const local_token = @intFromEnum(data.lhs);
-        const name = self.ast.tokenText(local_token);
+        const local_tok = self.ast.nodeMainToken(data.lhs);
+        const name = self.ast.tokenText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
 

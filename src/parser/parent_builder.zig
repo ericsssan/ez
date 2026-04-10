@@ -217,7 +217,21 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                     pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.specifiers_start, .end = ed.specifiers_end }, p) catch return error.OutOfMemory;
                 }
             },
-            .import_specifier, .import_default_specifier, .import_namespace_specifier => {},
+            // Import specifiers: lhs/rhs point to real identifier nodes
+            .import_specifier => {
+                // lhs = imported (property_ident/literal), rhs = local (identifier)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            .import_default_specifier, .import_namespace_specifier => {
+                // lhs = local identifier
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            .export_specifier => {
+                // lhs = local (property_ident/literal), rhs = exported (property_ident/literal)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
 
             // ── Exports ───────────────────────────────────────
             .export_named => {
@@ -371,7 +385,7 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
             .import_meta, .new_target,
-            .export_all, .export_specifier,
+            .export_all,
             .jsx_text_node, .error_node,
             // TS type nodes that are true leaves (no child types to traverse)
             .ts_type_reference, .ts_infer_type,

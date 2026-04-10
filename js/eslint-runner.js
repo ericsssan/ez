@@ -4296,23 +4296,19 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   for (let _ti = 0; _ti < tagNames.length; _ti++) {
     if (tagNames[_ti] === 'Identifier') _identTagBits[_ti] = 1;
   }
-  // Label + specifier synthesis for optimized path
+  // Label synthesis for optimized path (BreakStatement/ContinueStatement/LabeledStatement
+  // use a bare label field that is not a real node).
   const needsLabelSynthOpt = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
   const _labelStmtTagSet = new Set();
-  const _specifierTagSetOpt = new Set();
   for (let _ti = 0; _ti < tagNames.length; _ti++) {
     const _tn = tagNames[_ti];
     if (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement') _labelStmtTagSet.add(_ti);
-    if (_tn === 'ImportSpecifier' || _tn === 'ImportDefaultSpecifier' || _tn === 'ImportNamespaceSpecifier' || _tn === 'ExportSpecifier') _specifierTagSetOpt.add(_ti);
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
   const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
-      const _tn = tagNames[_ti];
-      if (needsLabelSynthOpt) {
-        if (_labelStmtTagSet.has(_ti) || _specifierTagSetOpt.has(_ti)) _synthTagArr[_ti] = 1;
-      }
+      if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
       // PrivateIdentifier dispatch needs all Identifier-mapped tags
       if (hasPrivateIdOpt && _identTagBits[_ti]) _synthTagArr[_ti] = 1;
     }
@@ -4353,24 +4349,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
-      // Synthesize Identifier visits for synthetic children (optimized path)
+      // Synthesize Identifier visits for synthetic label children (optimized path).
+      // MemberExpression.property and import/export specifier names are now real
+      // nodes in the buffer and get visited naturally via DFS.
       const _tn = tagNames[tag];
-      if (needsLabelSynthOpt && (_labelStmtTagSet.has(tag) || _specifierTagSetOpt.has(tag) || _tn === 'MemberExpression')) {
+      if (needsLabelSynthOpt && _labelStmtTagSet.has(tag)) {
         let synthNodes;
         const pn = nodeView(ast, idx);
-        if (_labelStmtTagSet.has(tag)) {
-          const lbl = pn.label;
-          if (lbl) synthNodes = [lbl];
-        } else if (_tn === 'MemberExpression') {
-          if (!pn.computed && pn.property && pn.property.type === 'Identifier' && pn.property._i === undefined) {
-            synthNodes = [pn.property];
-          }
-        } else {
-          synthNodes = [];
-          if (pn.local && pn.local.type === 'Identifier') synthNodes.push(pn.local);
-          if (pn.imported && pn.imported.type === 'Identifier' && pn.imported !== pn.local) synthNodes.push(pn.imported);
-          if (pn.exported && pn.exported.type === 'Identifier') synthNodes.push(pn.exported);
-        }
+        const lbl = pn.label;
+        if (lbl) synthNodes = [lbl];
         if (synthNodes && synthNodes.length > 0) {
           const identEnter = visitorMap.get('Identifier');
           for (const synthId of synthNodes) {
@@ -4442,31 +4429,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
-      // Synthesize Identifier:exit for synthetic children (labels, specifiers, MemberExpression)
-      if (needsLabelSynthOpt && (_labelStmtTagSet.has(tag) || _specifierTagSetOpt.has(tag) || tagNames[tag] === 'MemberExpression')) {
+      // Synthesize Identifier:exit for synthetic label children.
+      // Specifiers and MemberExpression property are real nodes and exit naturally.
+      if (needsLabelSynthOpt && _labelStmtTagSet.has(tag)) {
         const identExit = visitorMap.get('Identifier:exit');
         if (identExit) {
-          let synthNodes;
           const pn = nodeView(ast, idx);
-          if (_labelStmtTagSet.has(tag)) {
-            const lbl = pn.label;
-            if (lbl) synthNodes = [lbl];
-          } else if (tagNames[tag] === 'MemberExpression') {
-            if (!pn.computed && pn.property && pn.property.type === 'Identifier' && pn.property._i === undefined) {
-              synthNodes = [pn.property];
-            }
-          } else {
-            synthNodes = [];
-            if (pn.local && pn.local.type === 'Identifier') synthNodes.push(pn.local);
-            if (pn.imported && pn.imported.type === 'Identifier' && pn.imported !== pn.local) synthNodes.push(pn.imported);
-            if (pn.exported && pn.exported.type === 'Identifier') synthNodes.push(pn.exported);
-          }
-          if (synthNodes) {
-            for (const synthId of synthNodes) {
-              for (let h = 0; h < identExit.length; h++) {
-                try { identExit[h]._state.inner(synthId); }
-                catch (e) { context._reports.push({ ruleId: identExit[h].ruleId, message: `Plugin error: ${e.message}` }); }
-              }
+          const lbl = pn.label;
+          if (lbl) {
+            for (let h = 0; h < identExit.length; h++) {
+              try { identExit[h]._state.inner(lbl); }
+              catch (e) { context._reports.push({ ruleId: identExit[h].ruleId, message: `Plugin error: ${e.message}` }); }
             }
           }
         }
