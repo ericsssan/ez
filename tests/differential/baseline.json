@@ -185,8 +185,8 @@
     },
     "comma-spacing": {
       "runner": {
-        "fn": 2,
-        "fp": 8,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -1836,8 +1836,8 @@
     },
     "no-multi-spaces": {
       "runner": {
-        "fn": 13,
-        "fp": 2,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -3461,8 +3461,8 @@
     },
     "space-in-parens": {
       "runner": {
-        "fn": 5,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
