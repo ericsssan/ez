@@ -872,11 +872,11 @@ class SourceCode {
   }
 
   /**
-   * tokensAndComments — all tokens (no real comments, stub includes only tokens).
-   * Used by rules like no-multi-spaces, space-in-parens.
+   * tokensAndComments — all tokens merged with all comments, sorted by position.
+   * Used by rules like no-multi-spaces, comma-spacing, space-in-parens.
    */
   get tokensAndComments() {
-    return this._getAllTokens();
+    return this._getTokensAndCommentsMerged();
   }
 
   /**
