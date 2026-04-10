@@ -2629,8 +2629,8 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
