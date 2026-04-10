@@ -834,7 +834,6 @@ pub const CodePathBuilder = struct {
         const ctx = self.switch_context orelse return;
         self.switch_context = ctx.upper;
         // Merge switch-break segments into the choice context BEFORE merging.
-        // Switch break = reachable exit from the switch statement.
         if (self.break_context) |bc| {
             if (!bc.broken_fork.empty()) {
                 if (self.choice_context) |cc| {
@@ -883,8 +882,17 @@ pub const CodePathBuilder = struct {
             if (s != NONE_SEG and self.segments.items[s].reachable) has_reachable_prev = true;
         }
 
-        const new_segs = try self.fork_context.makeNext(-1, -1, self);
-        try self.fork_context.add(new_segs, self);
+        // Merge ALL entries in the fork context (0 to -1), not just the last.
+        // This combines fallthrough from previous case + discriminant fork path.
+        const list_len = self.fork_context.segments_list.items.len;
+        if (list_len > 1) {
+            // Multiple entries exist (fallthrough + fork): merge all
+            const new_segs = try self.fork_context.makeNext(0, -1, self);
+            try self.fork_context.add(new_segs, self);
+        } else {
+            const new_segs = try self.fork_context.makeNext(-1, -1, self);
+            try self.fork_context.add(new_segs, self);
+        }
         try self.forwardCurrentToHead(node, .enter);
     }
 
@@ -1360,6 +1368,26 @@ pub const CodePathBuilder = struct {
     }
 
     // ── Fork context management ──────────────────────────────
+
+    /// ESLint's forkPath: create new segments from parent FC's last entry,
+    /// add them to current FC. Used at each switch case (after the first)
+    /// to create a "test this case" path from the discriminant.
+    pub fn forkPath(self: *CodePathBuilder) !void {
+        const parent = self.fork_context.upper orelse return;
+        const new_segs = try parent.makeNext(-1, -1, self);
+        try self.fork_context.add(new_segs, self);
+    }
+
+    /// ESLint's forkBypassPath: add parent's head directly to current FC.
+    /// Represents "skip this block entirely" (e.g., no-match in switch).
+    pub fn forkBypassPath(self: *CodePathBuilder) !void {
+        const parent = self.fork_context.upper orelse return;
+        const h = parent.head();
+        if (h.len > 0) {
+            const copy = try self.allocator.dupe(SegmentId, h);
+            try self.fork_context.add(copy, self);
+        }
+    }
 
     pub fn pushForkContext(self: *CodePathBuilder) !void {
         const new_fc = try self.allocator.create(ForkContext);
