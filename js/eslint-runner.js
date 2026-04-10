@@ -1016,15 +1016,29 @@ class SourceCode {
     }
 
     // Build references: use Zig-precomputed scope→ref CSR.
+    // ESLint's `through` = references from this scope whose target is NOT
+    // declared here (i.e., references to outer/global variables that pass
+    // through this scope). Our current list contains ALL refs in this scope;
+    // filter to those whose resolved symbol is in a different scope (or is
+    // unresolved).
     const references = [];
     const through = [];
     const refStart = ast._scopeRefStarts ? ast._scopeRefStarts[scopeId] : 0;
     const refCount = ast._scopeRefCounts ? ast._scopeRefCounts[scopeId] : 0;
     const refIds = ast._scopeRefIds;
     for (let j = 0; j < refCount; j++) {
-      const ref = this._buildReference(refIds ? refIds[refStart + j] : j);
+      const refId = refIds ? refIds[refStart + j] : j;
+      const ref = this._buildReference(refId);
       references.push(ref);
-      if (!ref.resolved) through.push(ref);
+      // Determine if this ref's target symbol is declared in this scope
+      const refSymId = ast._refSymbolIds ? ast._refSymbolIds[refId] : NONE32;
+      if (refSymId === NONE32 || refSymId === undefined) {
+        // Unresolved — propagates up
+        through.push(ref);
+      } else {
+        const symScopeId = ast._symScopeIds ? ast._symScopeIds[refSymId] : NONE32;
+        if (symScopeId !== scopeId) through.push(ref);
+      }
     }
 
     const upper = parentId === NONE32 ? null : this._buildScope(parentId);
