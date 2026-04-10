@@ -2849,6 +2849,23 @@ function _nodeViewRaw(ast, index) {
     n._range = null;
     n._body = _BODY_UNSET;
     n._value = _VALUE_UNSET;
+    // Make regex/bigint own properties so Object.hasOwn() works (ESLint uses this)
+    const tag = ast._nodeTags[index];
+    if (tag === T.regex_literal) {
+      const _n = n;
+      const _regexGetter = Object.getOwnPropertyDescriptor(NodeProto, 'regex').get;
+      Object.defineProperty(n, 'regex', {
+        get() { return _regexGetter.call(_n); },
+        configurable: true, enumerable: true,
+      });
+    } else if (tag === T.bigint_literal) {
+      const _n = n;
+      const _bigintGetter = Object.getOwnPropertyDescriptor(NodeProto, 'bigint').get;
+      Object.defineProperty(n, 'bigint', {
+        get() { return _bigintGetter.call(_n); },
+        configurable: true, enumerable: true,
+      });
+    }
     cache[index] = n;
   }
   return n;
