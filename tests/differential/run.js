@@ -109,6 +109,33 @@ const COMPARABLE_RULES = new Set(
     .map(f => f.replace(/\.js$/, ""))
 );
 
+// ── Third-party plugins ──────────────────────────────────────
+// Load installed ESLint plugins and add their rules to the comparable set.
+const PLUGIN_PACKAGES = [
+  "eslint-plugin-react",
+  "eslint-plugin-react-hooks",
+  "eslint-plugin-unicorn",
+  "eslint-plugin-promise",
+  "eslint-plugin-jsdoc",
+];
+
+const _pluginRuleModules = new Map(); // fullName → { create, meta }
+for (const pkgName of PLUGIN_PACKAGES) {
+  try {
+    let pkg = require(pkgName);
+    if (pkg.__esModule && pkg.default) pkg = pkg.default;
+    const prefix = pkgName.replace(/^eslint-plugin-/, "");
+    const rulesMap = pkg.rules || {};
+    for (const [name, rule] of Object.entries(rulesMap)) {
+      const fullName = `${prefix}/${name}`;
+      const create = rule.create || rule;
+      if (typeof create !== "function") continue;
+      COMPARABLE_RULES.add(fullName);
+      _pluginRuleModules.set(fullName, { create, meta: rule.meta || {} });
+    }
+  } catch { /* plugin not installed */ }
+}
+
 // ── ESLint + Ez runner setup ────────────────────────────────
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
@@ -122,6 +149,14 @@ const eslintLinter = new Linter();
 // Pre-load runner plugins for fixture-file mode (all rules at once).
 const _runnerPlugins = [];
 for (const ruleName of COMPARABLE_RULES) {
+  if (_pluginRuleModules.has(ruleName)) {
+    const mod = _pluginRuleModules.get(ruleName);
+    _runnerPlugins.push({
+      meta: { name: ruleName, defaultOptions: mod.meta?.defaultOptions },
+      create: mod.create,
+    });
+    continue;
+  }
   try {
     const mod = require(path.join(RULES_DIR_NM, `${ruleName}.js`));
     _runnerPlugins.push({
@@ -133,6 +168,17 @@ for (const ruleName of COMPARABLE_RULES) {
 
 // ── Espree (reference) ────────────────────────────────────────
 
+// Register plugin rules with ESLint Linter so espree can run them.
+const _espreePlugins = {};
+for (const pkgName of PLUGIN_PACKAGES) {
+  try {
+    let pkg = require(pkgName);
+    if (pkg.__esModule && pkg.default) pkg = pkg.default;
+    const prefix = pkgName.replace(/^eslint-plugin-/, "");
+    _espreePlugins[prefix] = pkg;
+  } catch { /* not installed */ }
+}
+
 const _espreeRules = {};
 for (const r of COMPARABLE_RULES) _espreeRules[r] = "error";
 
@@ -140,6 +186,7 @@ function runEspree(filePath) {
   const source = fs.readFileSync(filePath, "utf-8");
   const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
   const messages = eslintLinter.verify(source, [{
+    plugins: _espreePlugins,
     languageOptions: { ecmaVersion: 2022, sourceType },
     rules: _espreeRules,
   }], { filename: filePath });
@@ -157,6 +204,7 @@ function runEspreeForRule(src, ruleName, ruleOptions, sourceType, tcLanguageOpti
   if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
   try {
     const messages = eslintLinter.verify(src, [{
+      plugins: _espreePlugins,
       languageOptions: langOpts,
       rules: { [ruleName]: ruleEntry },
     // Always use test.js — ESLint flat config doesn't apply rules to .jsx by default,
