@@ -1394,7 +1394,7 @@
     },
     "no-eval": {
       "runner": {
-        "fn": 5,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -1576,7 +1576,7 @@
     },
     "no-implied-eval": {
       "runner": {
-        "fn": 17,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3293,7 +3293,7 @@
     "require-atomic-updates": {
       "runner": {
         "fn": 1,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -3318,7 +3318,7 @@
     },
     "require-unicode-regexp": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 1,
         "crash": 0
       },

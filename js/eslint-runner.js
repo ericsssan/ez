@@ -1172,9 +1172,9 @@ class SourceCode {
       }
     }
 
-    // CommonJS globals: require, module, exports, __dirname, __filename
+    // CommonJS globals: require, module, exports, __dirname, __filename, global, process, Buffer
     if (kind === 0 && this._sourceType === 'commonjs') {
-      for (const name of ['require', 'module', 'exports', '__dirname', '__filename']) {
+      for (const name of ['require', 'module', 'exports', '__dirname', '__filename', 'global', 'process', 'Buffer', 'clearImmediate', 'setImmediate']) {
         if (!set.has(name)) {
           const globalVar = { name, defs: [], references: [], identifiers: [],
             scope, eslintUsed: false, writeable: false,
