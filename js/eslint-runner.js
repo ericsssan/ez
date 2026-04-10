@@ -2559,12 +2559,12 @@ const _VALID_PARENTS = {
   CatchClause: new Set(['TryStatement']),
   // SwitchCase can only be child of SwitchStatement
   SwitchCase: new Set(['SwitchStatement']),
-  // ClassBody (synthetic) can only be child of ClassDeclaration/ClassExpression
+  // ClassBody can only be child of ClassDeclaration/ClassExpression
   ClassBody: new Set(['ClassDeclaration', 'ClassExpression']),
-  // MethodDefinition can only be in class body (mapped to ClassDeclaration/ClassExpression)
-  MethodDefinition: new Set(['ClassDeclaration', 'ClassExpression']),
+  // MethodDefinition/PropertyDefinition are direct children of ClassBody
+  MethodDefinition: new Set(['ClassBody']),
   // PropertyDefinition same as MethodDefinition
-  PropertyDefinition: new Set(['ClassDeclaration', 'ClassExpression']),
+  PropertyDefinition: new Set(['ClassBody']),
 };
 
 function _isDeadHandler(typeName, parentGuard) {
@@ -3371,7 +3371,7 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
   return _cachedSelectorPlan;
 }
 
-function _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip, selectorHandlers) {
+function _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, canSkip, selectorHandlers) {
   // Cache keyed on plugins array identity — same array = same rule set.
   // In lint.js, the same plugins array is reused for every file.
   if (_cachedLivePlanPlugins === plugins && _cachedLivePlan) {
@@ -3386,7 +3386,7 @@ function _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, h
     return plan;
   }
 
-  const plan = _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip, selectorHandlers);
+  const plan = _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, canSkip, selectorHandlers);
   _cachedPlanPlugins = plugins;
   _cachedPlan = plan;
   _cachedLivePlan = plan;
@@ -3515,8 +3515,8 @@ function _getSelectorRootTypes(key) {
   return null;
 }
 
-function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip, selectorHandlers) {
-  const FLAG_CODEPATH_ENTER = 1, FLAG_CLASS_BODY = 2, FLAG_METHOD_FN = 4, FLAG_CODEPATH_EXIT = 8;
+function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, canSkip, selectorHandlers) {
+  const FLAG_CODEPATH_ENTER = 1, FLAG_METHOD_FN = 4, FLAG_CODEPATH_EXIT = 8;
   const FLAG_BRANCH_ENTER = 16, FLAG_CATCH_CASE = 32, FLAG_TERMINATOR = 64, FLAG_BRANCH_EXIT = 128;
   const FLAG_SELECTOR = 256;
   const tagEnterHandlers = new Array(tagCount);
@@ -3546,7 +3546,6 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, h
     if (!tn) continue;
     tagEnterHandlers[t] = visitorMap.get(tn) || null;
     tagExitHandlers[t]  = visitorMap.get(tn + ':exit') || null;
-    if (hasClassBody && CLASS_TYPES.has(tn))    tagFlags[t] |= FLAG_CLASS_BODY;
     if (hasMethodFn && tn === 'MethodDefinition') tagFlags[t] |= FLAG_METHOD_FN;
     if (hasCodePath) {
       if (_BRANCH_STMT_TYPES.has(tn)) tagFlags[t] |= FLAG_BRANCH_ENTER | FLAG_BRANCH_EXIT;
@@ -3820,41 +3819,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (universal && universal.length > 0) _runSelectorList(universal);
   }
 
-  // Synthetic ClassBody node (passed to ClassBody/ClassBody:exit handlers).
-  // We reuse a single object and update the class node reference each time.
-  // _i and _ast are set so getFirstToken/getLastToken work correctly.
-  const syntheticClassBody = { type: 'ClassBody', body: null, parent: null, mainToken: 0, _ast: ast };
-
-  function invokeClassBodyHandlers(classNodeIdx, isExit) {
-    const classBodyKey = isExit ? 'ClassBody:exit' : 'ClassBody';
-    if (!visitorMap.has(classBodyKey)) return;
-    // Build the synthetic ClassBody node from the class's body property.
-    // classNode.body is a synthetic ClassBody object with correct range
-    // (starts at '{', not 'class').
-    const classNode = nodeView(ast, classNodeIdx);
-    const cb = classNode.body;
-    syntheticClassBody.body = cb?.body || [];
-    syntheticClassBody.parent = classNode;
-    // Use ClassBody's range (from '{' to '}'), not ClassDeclaration's.
-    syntheticClassBody.start = cb?.start ?? classNode.start;
-    syntheticClassBody.end = cb?.end ?? classNode.end;
-    syntheticClassBody.range = cb?.range ?? classNode.range;
-    syntheticClassBody.loc = cb?.loc ?? classNode.loc;
-    syntheticClassBody.mainToken = classNode.mainToken;
-    const handlers = visitorMap.get(classBodyKey);
-    context._currentNodeIdx = classNodeIdx;
-    for (let h = 0; h < handlers.length; h++) {
-      try {
-        handlers[h].handler(syntheticClassBody);
-      } catch (err) {
-        context._reports.push({
-          ruleId: handlers[h].ruleId,
-          message: `Plugin error: ${err.message}`,
-        });
-      }
-    }
-  }
-
   // ── FunctionExpression synthesis for class methods ───────────────
   // ez has no FunctionExpression node in the AST for class methods.
   // Synthesize FunctionExpression enter/exit events
@@ -3952,7 +3916,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
     visitorMap.has('onCodePathSegmentLoop') ||
     visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
-  const hasClassBody = visitorMap.has('ClassBody') || visitorMap.has('ClassBody:exit');
   const hasMethodFn  = visitorMap.has('FunctionExpression') || visitorMap.has('FunctionExpression:exit') ||
                        visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
   // canSkip: true allows the DFS to skip nodes with no handlers or flags.
@@ -3961,7 +3924,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const canSkip = true;
   const tagCount = tagNames.length;
   const FLAG_CODEPATH_ENTER = 1;
-  const FLAG_CLASS_BODY     = 2;
   const FLAG_METHOD_FN      = 4;
   const FLAG_CODEPATH_EXIT  = 8;
   const FLAG_BRANCH_ENTER   = 16;
@@ -4159,7 +4121,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   // ── Optimized DFS path ─────────────────────────────────────────
-  const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasClassBody, hasMethodFn, canSkip, selectorHandlers);
+  const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, canSkip, selectorHandlers);
   const { tagEnterHandlers, tagExitHandlers, tagFlags,
           fileLevelEnter, fileLevelExit, batchScannable } = plan;
 
@@ -4445,7 +4407,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
-      if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, false);
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, false);
     } else {
@@ -4460,7 +4421,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
         catchStack.pop();
       }
-      if (flags & FLAG_CLASS_BODY) invokeClassBodyHandlers(idx, true);
       // CfgGraph: code path exit events BEFORE rule exit handlers
       _fireCfgEvents(idx, 1);
       if (handlers) {

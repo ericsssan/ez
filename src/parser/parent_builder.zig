@@ -193,9 +193,14 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             // ── Classes ───────────────────────────────────────
             .class_decl, .class_expr => {
                 const ed = tree.extraData(ast_mod.ClassData, @intFromEnum(lhs));
-                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.body_start, .end = ed.body_end }, p) catch return error.OutOfMemory;
+                // class_body is visited last (after name and super_class in document order)
+                push(&stack, alloc, ed.body,        p) catch return error.OutOfMemory;
                 push(&stack, alloc, ed.super_class, p) catch return error.OutOfMemory;
                 push(&stack, alloc, ed.name,        p) catch return error.OutOfMemory;
+            },
+            .class_body => {
+                // lhs = body_start, rhs = body_end (SubRange of member nodes)
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
 
             // ── Class members ─────────────────────────────────

@@ -72,9 +72,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     const class_data = ctx.extraData(ast.ClassData, @intFromEnum(data.lhs));
 
+    // class_data.body is the class_body node; its lhs/rhs is the member SubRange
+    const body_data = ctx.nodeData(class_data.body);
     const sub_range = ast.SubRange{
-        .start = class_data.body_start,
-        .end = class_data.body_end,
+        .start = @intFromEnum(body_data.lhs),
+        .end = @intFromEnum(body_data.rhs),
     };
     const members = ctx.extraSlice(sub_range);
 

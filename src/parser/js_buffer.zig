@@ -1131,7 +1131,7 @@ pub fn computeNodePositions(
             .export_default_expr, .export_default_fn, .export_default_class,
             .property_def, .computed_property_def,
             .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl,
-            .root, .block_stmt, .class_decl, .class_expr,
+            .root, .block_stmt, .class_body, .class_decl, .class_expr,
             .fn_decl, .fn_expr, .async_fn_decl, .async_fn_expr,
             .generator_fn_decl, .generator_fn_expr,
             .async_generator_fn_decl, .async_generator_fn_expr,

@@ -2333,7 +2333,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     } else .none;
 
     // Class body.
-    _ = try p.expect(.l_brace);
+    const l_brace_tok = try p.expect(.l_brace);
     const prev_in_class = p.in_class;
     const prev_strict = p.in_strict;
     p.in_class = true;
@@ -2367,11 +2367,18 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     const range = try p.addSlice(members);
     p.scratchPop(scratch_top);
 
+    const class_body_node = try p.addNode(.{
+        .tag = .class_body,
+        .main_token = l_brace_tok,
+        .data = .{
+            .lhs = ast.NodeIndex.fromInt(range.start),
+            .rhs = ast.NodeIndex.fromInt(range.end),
+        },
+    });
     const extra = try p.addExtra(ast.ClassData, .{
         .name = name_node,
         .super_class = super_node,
-        .body_start = range.start,
-        .body_end = range.end,
+        .body = class_body_node,
     });
     return p.addNode(.{
         .tag = .class_expr,

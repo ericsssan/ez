@@ -639,10 +639,10 @@ class AstView {
     return { name: e[i], params: e[i + 1], params_end: e[i + 2], body: e[i + 3] };
   }
 
-  /** ClassData { name, super_class, body_start, body_end } */
+  /** ClassData { name, super_class, body, _pad } */
   extraClassData(i) {
     const e = this._extraData;
-    return { name: e[i], super_class: e[i + 1], body_start: e[i + 2], body_end: e[i + 3] };
+    return { name: e[i], super_class: e[i + 1], body: e[i + 2] };
   }
 
   /** ArrowData { params_start, params_end, body } */
@@ -998,21 +998,6 @@ const NodeProto = {
       });
       this._parent = chainExpr;
       return chainExpr;
-    }
-
-    // Class body members (MethodDefinition, PropertyDefinition) should parent to synthetic ClassBody.
-    // Only route these specific tags to avoid breaking scope detection for other node types.
-    if (result && (result._tag === T.class_decl || result._tag === T.class_expr)) {
-      const t = this._tag;
-      if (t === T.method_def || t === T.property_def || t === T.getter_def ||
-          t === T.setter_def || t === T.constructor_def || t === T.computed_method_def ||
-          t === T.computed_getter_def || t === T.computed_setter_def ||
-          t === T.computed_property_def || t === T.static_block) {
-        const body = result.body; // Returns the synthetic ClassBody
-        if (body && body.body && body.body.includes(this)) {
-          result = body;
-        }
-      }
     }
 
     // Method/getter/setter bodies: the block's parent in ez is the method_def,
@@ -1428,30 +1413,12 @@ const NodeProto = {
     } else if (t === T.static_block) {
       result = ast._nodesFromRange(lhs, rhs);
     } else if (t === T.class_decl || t === T.class_expr) {
+      // class_body is a real node now — return it directly
       const d = ast.extraClassData(lhs);
-      const members = ast._nodesFromRange(d.body_start, d.body_end);
-      // Find the '{' token that opens the class body
-      const mt = ast._mainTokens[this._i];
-      const tokTags = ast._tokTags;
-      let bodyOpenTok = mt;
-      for (let j = mt + 1; j < ast.tokenCount; j++) {
-        if (tokTags[j] === 74 /* l_brace */) { bodyOpenTok = j; break; }
-      }
-      const cbStart = ast._tokStarts[bodyOpenTok];
-      const cbEnd = this.end;
-      result = {
-        type: 'ClassBody',
-        body: members,
-        start: cbStart,
-        end: cbEnd,
-        range: [cbStart, cbEnd],
-        loc: this.loc, // approximate — line/col computed lazily by SourceCode
-        parent: this,
-      };
-      // Update each member's parent to point to the synthetic ClassBody instead of the ClassDeclaration
-      for (const member of members) {
-        member._parent = result;
-      }
+      result = d.body === NONE ? null : nodeView(ast, d.body);
+    } else if (t === T.class_body) {
+      // class_body.body = array of member nodes
+      result = ast._nodesFromRange(lhs, rhs);
     } else if (t === T.root) {
       result = ast._nodesFromRange(lhs, rhs);
     }

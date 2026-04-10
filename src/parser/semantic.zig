@@ -526,6 +526,10 @@ pub const SemanticAnalyzer = struct {
             // ── Class ──────────────────────────────────────
             .class_decl => try self.visitClassDecl(idx, data),
             .class_expr => try self.visitClassExpr(idx, data),
+            .class_body => {
+                // Visit class members (lhs = body_start, rhs = body_end)
+                try self.visitSubRange(.{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) });
+            },
 
             // ── Declarations ───────────────────────────────
             .var_decl => try self.visitVarDecl(data, .@"var"),
@@ -1486,8 +1490,8 @@ pub const SemanticAnalyzer = struct {
             _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
 
-        const body_range = SubRange{ .start = class_data.body_start, .end = class_data.body_end };
-        try self.visitSubRange(body_range);
+        // Visit class_body node (contains members as SubRange lhs..rhs)
+        try self.visitNode(class_data.body);
 
         self.leaveScope();
     }
@@ -1509,8 +1513,8 @@ pub const SemanticAnalyzer = struct {
             _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
 
-        const body_range = SubRange{ .start = class_data.body_start, .end = class_data.body_end };
-        try self.visitSubRange(body_range);
+        // Visit class_body node (contains members as SubRange lhs..rhs)
+        try self.visitNode(class_data.body);
 
         self.leaveScope();
     }

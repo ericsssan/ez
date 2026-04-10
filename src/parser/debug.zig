@@ -215,7 +215,11 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             const cls = tree.extraData(ClassData, @intFromEnum(data.lhs));
             try dumpNode(tree, cls.name, child_indent, writer);
             try dumpNode(tree, cls.super_class, child_indent, writer);
-            const body_range = SubRange{ .start = cls.body_start, .end = cls.body_end };
+            try dumpNode(tree, cls.body, child_indent, writer);
+        },
+        .class_body => {
+            // lhs = body_start, rhs = body_end (SubRange)
+            const body_range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
             try dumpSubRange(tree, body_range, child_indent, writer);
         },
 
@@ -358,8 +362,7 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             const cls = tree.extraData(ClassData, @intFromEnum(data.lhs));
             try dumpNode(tree, cls.name, child_indent, writer);
             try dumpNode(tree, cls.super_class, child_indent, writer);
-            const body_range = SubRange{ .start = cls.body_start, .end = cls.body_end };
-            try dumpSubRange(tree, body_range, child_indent, writer);
+            try dumpNode(tree, cls.body, child_indent, writer);
         },
         .arrow_fn, .async_arrow_fn => {
             // lhs = extra index to ArrowData

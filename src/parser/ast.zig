@@ -490,6 +490,8 @@ pub const Node = struct {
         /// A string literal used as an import/export specifier name (ES2022).
         /// main_token = string_literal token. Type=Literal in ESTree.
         property_literal,
+        /// Class body block. lhs = body_start, rhs = body_end (SubRange). main_token = l_brace
+        class_body,
     };
 };
 
@@ -541,8 +543,8 @@ pub const FnData = struct {
 pub const ClassData = struct {
     name: NodeIndex, // .none for anonymous
     super_class: NodeIndex, // .none if no extends
-    body_start: ExtraIndex, // SubRange start
-    body_end: ExtraIndex, // SubRange end
+    body: NodeIndex, // class_body node (contains members as SubRange lhs..rhs)
+    _pad: u32 = 0, // keep size at 4 u32s for ABI stability
 };
 
 /// (params) => body

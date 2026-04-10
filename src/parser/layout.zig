@@ -49,6 +49,7 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
         .declarator => "VariableDeclarator",
         .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => "FunctionDeclaration",
         .class_decl => "ClassDeclaration",
+        .class_body => "ClassBody",
 
         // ── Module ───────────────────────────────────────────
         .import_decl => "ImportDeclaration",

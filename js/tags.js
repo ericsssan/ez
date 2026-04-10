@@ -224,6 +224,7 @@ const T = {
   export_named_from: 193,
   property_ident: 194,
   property_literal: 195,
+  class_body: 196,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.

@@ -2254,15 +2254,22 @@ pub const Parser = struct {
             }
         }
 
-        _ = try self.expect(.l_brace);
+        const l_brace_tok = try self.expect(.l_brace);
         const body_range = try self.parseClassBody();
         _ = try self.expect(.r_brace);
 
+        const class_body_node = try self.addNode(.{
+            .tag = .class_body,
+            .main_token = l_brace_tok,
+            .data = .{
+                .lhs = NodeIndex.fromInt(body_range.start),
+                .rhs = NodeIndex.fromInt(body_range.end),
+            },
+        });
         const extra = try self.addExtra(ast.ClassData, .{
             .name = name,
             .super_class = super_class,
-            .body_start = body_range.start,
-            .body_end = body_range.end,
+            .body = class_body_node,
         });
 
         return self.addNode(.{
