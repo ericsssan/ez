@@ -10,7 +10,7 @@
 //------------------------------------------------------------------------------
 
 const astUtils = require("./utils/ast-utils");
-const { getGraphemeCount } = require("../shared/string-utils");
+const { getGraphemeCount } = require("./shared/string-utils");
 
 /**
  * Checks whether a string contains a line terminator as defined in

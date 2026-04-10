@@ -9,7 +9,7 @@
 //------------------------------------------------------------------------------
 
 const astUtils = require("./utils/ast-utils");
-const { upperCaseFirst } = require("../shared/string-utils");
+const { upperCaseFirst } = require("./shared/string-utils");
 
 //------------------------------------------------------------------------------
 // Constants

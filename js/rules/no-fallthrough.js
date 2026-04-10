@@ -8,7 +8,7 @@
 // Requirements
 //------------------------------------------------------------------------------
 
-const { directivesPattern } = require("../shared/directives");
+const { directivesPattern } = require("./shared/directives");
 
 //------------------------------------------------------------------------------
 // Helpers

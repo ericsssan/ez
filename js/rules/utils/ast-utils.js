@@ -18,9 +18,9 @@ const {
 	createGlobalLinebreakMatcher,
 	lineBreakPattern,
 	shebangPattern,
-} = require("../../shared/ast-utils");
-const globals = require("../../../conf/globals");
-const { LATEST_ECMA_VERSION } = require("../../../conf/ecma-version");
+} = require("../shared/ast-utils");
+const globals = require("../conf/globals");
+const { LATEST_ECMA_VERSION } = require("../conf/ecma-version");
 
 //------------------------------------------------------------------------------
 // Types

@@ -10,7 +10,7 @@
 // Requirements
 //------------------------------------------------------------------------------
 
-const { getGraphemeCount } = require("../shared/string-utils");
+const { getGraphemeCount } = require("./shared/string-utils");
 const {
 	getModuleExportName,
 	isImportAttributeKey,
