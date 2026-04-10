@@ -1717,9 +1717,12 @@ const NodeProto = {
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
     if (t === T.member_expr || t === T.optional_member_expr) {
-      // rhs is the token index of the property identifier; wrap as synthetic Identifier
+      // rhs is the token index of the property identifier; wrap as synthetic Identifier.
+      // Cache so identity checks (parent.property === node) work in rules like id-blacklist.
+      if (this._cachedProperty) return this._cachedProperty;
       const syn = ast._syntheticId(rhs);
       syn.parent = this;
+      this._cachedProperty = syn;
       return syn;
     }
     if (t === T.computed_member_expr || t === T.optional_computed_member_expr) {
