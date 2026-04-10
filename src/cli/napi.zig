@@ -707,9 +707,7 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parse", napiParse);
     registerFn(env, exports, "parseFile", napiParseFile);
     registerFn(env, exports, "lint", napiLint);
-    registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "parseAndLintFile", napiParseAndLintFile);
-    registerFn(env, exports, "lintFiles", napiLintFiles);
     registerFn(env, exports, "discoverFiles", napiDiscoverFiles);
     registerFn(env, exports, "lintPaths", napiLintPaths);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
@@ -949,56 +947,6 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     return js_result;
 }
 
-// ── parseAndLint(buf, sourceStart, sourceLen, lang, outBuf[, configBuf]) → bytesUsed ──
-
-fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 6;
-    var argv: [6]n.Value = undefined;
-    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
-
-    if (argc < 5) {
-        _ = n.napi_throw_error(env, null, "parseAndLint(buf, srcStart, srcLen, lang, outBuf[, configBuf]): 5 args required");
-        return null;
-    }
-
-    var buf_data: ?*anyopaque = null;
-    var buf_len: usize = 0;
-    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len) != n.OK) return null;
-    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse return null);
-
-    var source_start: u32 = 0;
-    var source_len: u32 = 0;
-    var lang_val: u32 = 0;
-    _ = n.napi_get_value_uint32(env, argv[1], &source_start);
-    _ = n.napi_get_value_uint32(env, argv[2], &source_len);
-    _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
-
-    var out_data: ?*anyopaque = null;
-    var out_len: usize = 0;
-    if (n.napi_get_arraybuffer_info(env, argv[4], &out_data, &out_len) != n.OK) return null;
-    const out_ptr: [*]u8 = @ptrCast(out_data orelse return null);
-
-    // Optional config Uint8Array (arg 6)
-    var config_val: ?linter_root.config.Config = null;
-    if (argc >= 6) {
-        if (getOptionalConfigBytes(env, argv[5])) |bytes| {
-            config_val = configFromSeverityBytes(bytes);
-        }
-    }
-    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
-
-    const bytes_used = parseAndLintImpl(
-        buf_ptr, @intCast(buf_len),
-        source_start, source_len, @intCast(lang_val),
-        out_ptr, @intCast(out_len),
-        config_ptr,
-    ) catch 0;
-
-    var js_result: n.Value = undefined;
-    if (n.napi_create_uint32(env, bytes_used, &js_result) != n.OK) return null;
-    return js_result;
-}
-
 // ── getNativeRules() → Array<{name,index,category,defaultSeverity}> ─
 
 fn napiGetNativeRules(env: n.Env, _: n.CallbackInfo) callconv(.c) ?n.Value {
@@ -1209,108 +1157,6 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
 //
 // Workers read files from disk. Optional sizes[] (Uint32Array) skips fstat per
 // file — callers that already stat'd files during discovery pass sizes here.
-
-fn napiLintFiles(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 3;
-    var argv: [3]n.Value = undefined;
-    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
-    if (argc < 1) {
-        _ = n.napi_throw_error(env, null, "lintFiles(paths[], sizes?, config?): 1 arg required");
-        return null;
-    }
-
-    var file_count: u32 = 0;
-    if (n.napi_get_array_length(env, argv[0], &file_count) != n.OK) return null;
-
-    var empty_result: n.Value = undefined;
-    if (file_count == 0) {
-        _ = n.napi_create_array_with_length(env, 0, &empty_result);
-        return empty_result;
-    }
-
-    // Optional sizes[] (arg 2): Uint32Array from JS discovery stat calls.
-    var file_sizes: ?[]const u32 = null;
-    if (argc >= 2) {
-        var sizes_data: ?*anyopaque = null;
-        var sizes_len: usize = 0;
-        if (n.napi_get_typedarray_info(env, argv[1], null, &sizes_len, &sizes_data, null, null) == n.OK) {
-            if (sizes_data != null and sizes_len == file_count) {
-                file_sizes = @as([*]const u32, @ptrCast(@alignCast(sizes_data)))[0..sizes_len];
-            }
-        }
-    }
-
-    // Optional config (arg 3).
-    var config_val: ?linter_root.config.Config = null;
-    if (argc >= 3) {
-        if (getOptionalConfigBytes(env, argv[2])) |bytes| {
-            config_val = configFromSeverityBytes(bytes);
-        }
-    }
-    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
-
-    var tmp_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer tmp_arena.deinit();
-    const tmp = tmp_arena.allocator();
-
-    // Read all file paths on main thread (NAPI constraint) — no source reads.
-    const file_paths = tmp.alloc([:0]const u8, file_count) catch return null;
-    for (0..file_count) |i| {
-        var path_val: n.Value = undefined;
-        _ = n.napi_get_element(env, argv[0], @intCast(i), &path_val);
-        var path_len: usize = 0;
-        _ = n.napi_get_value_string_utf8(env, path_val, null, 0, &path_len);
-        const path_buf = tmp.alloc(u8, path_len + 1) catch return null;
-        var written: usize = 0;
-        _ = n.napi_get_value_string_utf8(env, path_val, path_buf.ptr, path_len + 1, &written);
-        file_paths[i] = path_buf[0..written :0];
-    }
-
-    const results = tmp.alloc(FileRaw, file_count) catch return null;
-
-    const cpu_count    = std.Thread.getCpuCount() catch 1;
-    const thread_count = @min(@as(usize, file_count), cpu_count);
-
-    const out_arenas = tmp.alloc(std.heap.ArenaAllocator, thread_count) catch return null;
-    for (out_arenas) |*a| a.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer for (out_arenas) |*a| a.deinit();
-
-    runBatchWorkers(file_paths, file_sizes, config_ptr, results, tmp, out_arenas);
-
-    // Build NAPI return array — only files with violations, clean files omitted.
-    var js_result: n.Value = undefined;
-    if (n.napi_create_array_with_length(env, 0, &js_result) != n.OK) return null;
-    var out_idx: u32 = 0;
-    for (results) |r| {
-        if (r.diags.len == 0) continue;
-        var obj: n.Value = undefined;
-        if (n.napi_create_object(env, &obj) != n.OK) continue;
-        var v: n.Value = undefined;
-        if (n.napi_create_string_utf8(env, r.file_path.ptr, r.file_path.len, &v) == n.OK)
-            _ = n.napi_set_named_property(env, obj, "file", v);
-        var diags_arr: n.Value = undefined;
-        _ = n.napi_create_array_with_length(env, r.diags.len, &diags_arr);
-        for (r.diags, 0..) |d, j| {
-            var diag_obj: n.Value = undefined;
-            if (n.napi_create_object(env, &diag_obj) != n.OK) continue;
-            if (n.napi_create_uint32(env, d.line, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "line", v);
-            if (n.napi_create_uint32(env, d.col, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "col", v);
-            if (n.napi_create_uint32(env, d.offset, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "offset", v);
-            if (n.napi_create_uint32(env, d.severity, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "severity", v);
-            if (n.napi_create_uint32(env, d.rule_index, &v) == n.OK)
-                _ = n.napi_set_named_property(env, diag_obj, "ruleIndex", v);
-            _ = n.napi_set_element(env, diags_arr, @intCast(j), diag_obj);
-        }
-        _ = n.napi_set_named_property(env, obj, "diags", diags_arr);
-        _ = n.napi_set_element(env, js_result, out_idx, obj);
-        out_idx += 1;
-    }
-    return js_result;
-}
 
 // ── File discovery helpers ───────────────────────────────────────
 

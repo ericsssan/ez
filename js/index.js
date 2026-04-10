@@ -263,14 +263,6 @@ function lintSource(source, options = {}) {
   return _parseDiags(bytesWritten, srcBytes);
 }
 
-function lint(paths, options = {}) {
-  const b = loadBinding();
-  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-  const sizes = options.sizes instanceof Uint32Array ? options.sizes : undefined;
-  return b.lintFiles(paths, sizes, configBuf);
-}
-
-
 function parseAndLint(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
@@ -422,4 +414,4 @@ function lintPaths(roots, options = {}) {
   return _decodeBatchResults(buf);
 }
 
-module.exports = { parse, parseSource, parseAndLint, lintSource, lint, discoverFiles, lintPaths, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, parseSource, parseAndLint, lintSource, discoverFiles, lintPaths, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };

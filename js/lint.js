@@ -203,7 +203,7 @@ const jsOnlyPlugins = allPlugins.filter(p => !nativeRules.has(p.meta?.name));
 
 
 // Discover files via Zig — no JS readdirSync/statSync walk
-const { paths: allFiles, sizes: allFileSizes } = discoverFiles(filePaths);
+const { paths: allFiles } = discoverFiles(filePaths);
 
 if (allFiles.length === 0) {
   console.error("error: no JS/TS files found");
