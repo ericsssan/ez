@@ -2851,7 +2851,7 @@
     "no-useless-return": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3683,8 +3683,8 @@
     "promise/always-return": {
       "runner": {
         "fn": 0,
-        "fp": 24,
-        "crash": 0
+        "fp": 0,
+        "crash": 26
       },
       "native": {
         "fn": 28,
