@@ -2046,12 +2046,15 @@ const NodeProto = {
   get declare() {
     const t = this._tag;
     if (t !== T.var_decl && t !== T.let_decl && t !== T.const_decl &&
-        t !== T.fn_decl && t !== T.async_fn_decl && t !== T.class_decl) return undefined;
+        t !== T.fn_decl && t !== T.async_fn_decl && t !== T.class_decl &&
+        t !== T.property_def && t !== T.computed_property_def) return undefined;
     const mt = this.mainToken;
-    if (mt > 0) {
-      const ast = this._ast;
-      const prev = ast.source.slice(ast._tokStarts[mt - 1], ast._tokEnds[mt - 1]);
-      if (prev === 'declare') return true;
+    const ast = this._ast;
+    for (let i = mt - 1; i >= 0 && i >= mt - 5; i--) {
+      const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds ? ast._tokEnds[i] : ast._tokStarts[i + 1]);
+      if (val === 'declare') return true;
+      if (val !== 'static' && val !== 'readonly' && val !== 'public' && val !== 'private' &&
+          val !== 'protected' && val !== 'override' && val !== 'abstract' && val !== 'export') break;
     }
     return false;
   },
