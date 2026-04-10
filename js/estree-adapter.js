@@ -1141,7 +1141,7 @@ const NodeProto = {
     } else if (t === T.null_literal) {
       v = null;
     } else if (t === T.bigint_literal) {
-      v = src.slice(0, -1); // strip 'n'
+      try { v = BigInt(src.slice(0, -1)); } catch { v = null; } // actual BigInt, typeof === 'bigint'
     } else if (t === T.regex_literal) {
       // ESTree spec: Literal.value for a regex is the RegExp object, not a string.
       // Returning the raw source string as value causes rules like no-useless-escape

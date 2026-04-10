@@ -1733,6 +1733,8 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     const accessor_tok = p.advance(); // consume `get` or `set`
     const accessor_tag = p.tokenTag(accessor_tok);
 
+    const is_computed = p.peek() == .l_bracket;
+    const computed_open = p.tok_i; // save `[` token index for computed case
     const key = try parsePropertyName(p);
 
     // Set method flags BEFORE parsing params so super works in setter param defaults.
@@ -1852,10 +1854,13 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
         .body = body,
     });
 
-    const node_tag: Node.Tag = if (accessor_tag == .kw_get) .getter_def else .setter_def;
+    const node_tag: Node.Tag = if (accessor_tag == .kw_get)
+        (if (is_computed) .computed_getter_def else .getter_def)
+    else
+        (if (is_computed) .computed_setter_def else .setter_def);
     return p.addNode(.{
         .tag = node_tag,
-        .main_token = accessor_tok,
+        .main_token = if (is_computed) computed_open else accessor_tok,
         .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
     });
 }
@@ -1865,6 +1870,8 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     const is_generator = p.peek() == .asterisk;
     if (is_generator) _ = p.advance();
 
+    const is_computed = p.peek() == .l_bracket;
+    const computed_open = p.tok_i; // save `[` token index for computed case
     const key = try parsePropertyName(p);
 
     // Set flags BEFORE parsing params
@@ -1892,14 +1899,17 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
         .body = body,
     });
     return p.addNode(.{
-        .tag = .method_def,
-        .main_token = async_tok,
+        .tag = if (is_computed) .computed_method_def else .method_def,
+        .main_token = if (is_computed) computed_open else async_tok,
         .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
     });
 }
 
 fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     const star_tok = p.advance(); // consume `*`
+
+    const is_computed = p.peek() == .l_bracket;
+    const computed_open = p.tok_i; // save `[` token index for computed case
     const key = try parsePropertyName(p);
 
     // Set flags BEFORE parsing params
@@ -1924,8 +1934,8 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
         .body = body,
     });
     return p.addNode(.{
-        .tag = .method_def,
-        .main_token = star_tok,
+        .tag = if (is_computed) .computed_method_def else .method_def,
+        .main_token = if (is_computed) computed_open else star_tok,
         .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
     });
 }
