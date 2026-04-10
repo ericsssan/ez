@@ -600,51 +600,6 @@ class AstView {
     return lo;
   }
 
-  /**
-   * Create a synthetic Identifier-like object for a token index.
-   * Used by the `property` getter on MemberExpression nodes, where ez stores
-   * the property name as a token index rather than a full AST node.
-   */
-  _syntheticId(tokIdx) {
-    const start = this._tokStarts[tokIdx];
-    const src = this.source;
-    let end = this._tokEnds ? this._tokEnds[tokIdx] : undefined;
-    if (end === undefined) {
-      end = tokIdx + 1 < this.tokenCount ? this._tokStarts[tokIdx + 1] : src.length;
-      while (end > start && src.charCodeAt(end - 1) <= 32) end--;
-    }
-    let name = src.slice(start, end);
-    // Private identifiers: # may be a separate token from the name.
-    let type = 'Identifier';
-    if (name.charCodeAt(0) === 35) { // '#'
-      type = 'PrivateIdentifier';
-      if (name.length === 1 && tokIdx + 1 < this.tokenCount) {
-        const nameStart = this._tokStarts[tokIdx + 1];
-        let nameEnd = tokIdx + 2 < this.tokenCount ? this._tokStarts[tokIdx + 2] : src.length;
-        while (nameEnd > nameStart && src.charCodeAt(nameEnd - 1) <= 32) nameEnd--;
-        name = src.slice(nameStart, nameEnd);
-      } else {
-        name = name.slice(1);
-      }
-    }
-    name = _resolveUnicodeEscapes(name);
-    const li = this._findLineIdx(start);
-    const eli = this._findLineIdx(end);
-    const ls = this._lineStarts();
-    return {
-      type,
-      name,
-      start,
-      end,
-      range: [start, end],
-      loc: {
-        start: { line: li + 1, column: start - ls[li] },
-        end: { line: eli + 1, column: end - ls[eli] },
-      },
-      mainToken: tokIdx,
-    };
-  }
-
   // ── ExtraData struct accessors ─────────────────────────────────
   // Each matches the Zig ExtraData struct layout (sequential u32 fields).
 
@@ -1711,9 +1666,11 @@ const NodeProto = {
       const lhs = ast.nodeLhs(this._i);
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
-    // MetaProperty: new.target → property = Identifier("target")
-    if (t === T.new_target) return { type: 'Identifier', name: 'target' };
-    if (t === T.import_meta) return { type: 'Identifier', name: 'meta' };
+    // MetaProperty: new.target → property = real property_ident("target")
+    if (t === T.new_target || t === T.import_meta) {
+      const propIdx = ast.nodeRhs(this._i);
+      return propIdx === NONE ? null : nodeView(ast, propIdx);
+    }
     return undefined;
   },
 
@@ -2376,11 +2333,14 @@ const NodeProto = {
 
   /**
    * node.meta — MetaProperty meta identifier (e.g., "new" in new.target).
+   * Real property_ident node stored in lhs.
    */
   get meta() {
     const t = this._tag;
-    if (t === T.new_target) return { type: 'Identifier', name: 'new' };
-    if (t === T.import_meta) return { type: 'Identifier', name: 'import' };
+    if (t === T.new_target || t === T.import_meta) {
+      const metaIdx = this._ast.nodeLhs(this._i);
+      return metaIdx === NONE ? null : nodeView(this._ast, metaIdx);
+    }
     return undefined;
   },
 

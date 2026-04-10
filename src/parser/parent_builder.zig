@@ -266,6 +266,11 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 // lhs = source string_literal node
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
+            .new_target, .import_meta => {
+                // lhs = meta property_ident, rhs = property property_ident
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
 
             // ── Expressions with SubRange children ────────────
             .array_literal, .object_literal, .template_literal,
@@ -401,7 +406,6 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
-            .import_meta, .new_target,
             .jsx_text_node, .error_node,
             // TS type nodes that are true leaves (no child types to traverse)
             .ts_type_reference, .ts_infer_type,

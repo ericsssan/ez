@@ -2568,11 +2568,21 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
     if (p.peek() == .dot) {
         _ = p.advance(); // consume `.`
         if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "target"))) {
-            _ = p.advance(); // consume `target`
+            const target_tok = p.advance(); // consume `target`
+            const meta_node = try p.addNode(.{
+                .tag = .property_ident,
+                .main_token = new_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+            const prop_node = try p.addNode(.{
+                .tag = .property_ident,
+                .main_token = target_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             return p.addNode(.{
                 .tag = .new_target,
                 .main_token = new_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
+                .data = .{ .lhs = meta_node, .rhs = prop_node },
             });
         }
         try p.emitError("Expected 'target' after 'new.'");
@@ -2876,11 +2886,21 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
         if (p.peek() == .kw_meta or
             (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "meta")))
         {
-            _ = p.advance(); // consume `meta`
+            const meta_tok = p.advance(); // consume `meta`
+            const meta_id_node = try p.addNode(.{
+                .tag = .property_ident,
+                .main_token = import_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+            const prop_node = try p.addNode(.{
+                .tag = .property_ident,
+                .main_token = meta_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             return p.addNode(.{
                 .tag = .import_meta,
                 .main_token = import_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
+                .data = .{ .lhs = meta_id_node, .rhs = prop_node },
             });
         }
         // import.source(...) and import.defer(...) are valid dynamic import variants
