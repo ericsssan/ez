@@ -1,114 +1,85 @@
 "use strict";
 /**
- * Shared plugin-loading logic used by both lint.js (main thread) and
- * lint-worker.js (worker threads).
+ * Rule loading — core rules + third-party ESLint plugins.
  */
 
 const fs = require("fs");
 const path = require("path");
 
+const BUNDLED_RULES_DIR = path.join(__dirname, "rules");
+
+// ── Core rules ───────────────────────────────────────────────
+
 /**
- * Resolve a package name to its directory, searching cwd first.
+ * Load bundled core rules (shipped with ez).
+ * Returns array of { meta: { name, ... }, create } descriptors.
+ *
+ * @param {object} [opts]
+ * @param {Set<string>} [opts.only]  If provided, load only these rule names
+ * @param {boolean} [opts.includeDeprecated]  Include deprecated rules (default: false)
+ * @returns {{ meta: object, create: Function }[]}
  */
-function resolvePackageDir(pkgName) {
-  const searchPaths = [
-    path.join(process.cwd(), "node_modules"),
-    path.join(path.dirname(__filename), "node_modules"),
-  ];
-  for (const base of searchPaths) {
-    const p = path.join(base, pkgName);
-    if (fs.existsSync(p)) return p;
+function loadCoreRules(opts = {}) {
+  const { only, includeDeprecated = false } = opts;
+  const rulesDir = BUNDLED_RULES_DIR;
+  if (!fs.existsSync(rulesDir)) {
+    throw new Error("ez: bundled rules not found at " + rulesDir);
   }
-  return null;
+  const rules = [];
+  for (const file of fs.readdirSync(rulesDir)) {
+    if (!file.endsWith(".js") || file === "index.js") continue;
+    const name = file.slice(0, -3);
+    if (only && !only.has(name)) continue;
+    try {
+      const mod = require(path.join(rulesDir, file));
+      if (typeof mod.create !== "function") continue;
+      if (mod.meta?.deprecated && !includeDeprecated && !(only && only.has(name))) continue;
+      rules.push({
+        meta: { name, defaultOptions: mod.meta?.defaultOptions, schema: mod.meta?.schema, messages: mod.meta?.messages, fixable: mod.meta?.fixable },
+        create: mod.create,
+      });
+    } catch { /* skip broken rules */ }
+  }
+  return rules;
 }
 
-// Code-path rules that crash with our lightweight CodePathTracker.
-// These need full CFG (forking, merging, loop detection) that we don't implement yet.
-const _NEEDS_CODE_PATH = new Set([
-  "complexity",               // accesses codePath.origin and deep segment graph
-  "no-invalid-this",          // accesses codePath properties we don't populate
-  "no-fallthrough",           // needs switch case segment merging
-  "no-unreachable-loop",      // needs onCodePathSegmentLoop (loop back-edge event)
-]);
+// ── Third-party plugins ──────────────────────────────────────
 
 /**
- * Load an ESLint plugin package and return an array of plugin objects
- * compatible with runPlugins: [{ meta: { name }, create }]
+ * Load a third-party ESLint plugin package.
+ * Returns array of { meta: { name }, create } descriptors.
  *
- * @param {string} pkgName
- * @param {Set<string>} ruleFilters  empty = load all rules
+ * @param {string} pkgName  e.g. "eslint-plugin-react"
+ * @param {object} [opts]
+ * @param {Set<string>} [opts.only]  If provided, load only these rule names
  * @returns {{ meta: object, create: Function }[]}
- * @throws on unresolvable package
  */
-function loadPlugin(pkgName, ruleFilters) {
+function loadPlugin(pkgName, opts = {}) {
+  const { only } = opts;
   const resolveOpts = {
-    paths: [process.cwd(), path.join(path.dirname(__filename), "node_modules"), path.dirname(__filename)],
+    paths: [process.cwd(), path.join(__dirname, "node_modules"), __dirname],
   };
 
-  // ── ESLint core: scan lib/rules/*.js ────────────────────────
-  // Try installed eslint first, fall back to bundled rules.
-  if (pkgName === "eslint") {
-    // Use bundled rules shipped with the package.
-    // Falls back to installed eslint if bundled dir is missing.
-    const bundledDir = path.join(path.dirname(__filename), "rules");
-    let rulesDir;
-    if (fs.existsSync(bundledDir)) {
-      rulesDir = bundledDir;
-    } else {
-      try {
-        const eslintMain = require.resolve("eslint", resolveOpts);
-        rulesDir = path.join(path.dirname(eslintMain), "..", "lib", "rules");
-      } catch {
-        throw new Error("ez: bundled rules not found and eslint not installed");
-      }
-    }
-    const plugins = [];
-    for (const file of fs.readdirSync(rulesDir)) {
-      if (!file.endsWith(".js")) continue;
-      const ruleName = file.slice(0, -3);
-      if (ruleFilters.size > 0 && !ruleFilters.has(ruleName) && !ruleFilters.has(`eslint/${ruleName}`)) continue;
-      try {
-        const rule = require(path.join(rulesDir, file));
-        if (typeof rule.create !== "function") continue;
-        // Skip deprecated rules unless explicitly requested.
-        if (rule.meta?.deprecated && ruleFilters.size === 0) continue;
-        // Skip rules that require code path analysis (not yet implemented).
-        // These produce false positives with FAKE_CODE_PATH and should not
-        // run until real code path analysis is added.
-        if (_NEEDS_CODE_PATH.has(ruleName) && ruleFilters.size === 0) continue;
-        plugins.push({
-          meta: { name: ruleName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema, messages: rule.meta?.messages },
-          create: rule.create,
-        });
-      } catch { /* skip broken rules */ }
-    }
-    return plugins;
-  }
-
-  // ── Standard ESLint plugin ───────────────────────────────────
   let pkg;
   try {
-    const resolved = require.resolve(pkgName, resolveOpts);
-    pkg = require(resolved);
+    pkg = require(require.resolve(pkgName, resolveOpts));
   } catch {
     pkg = require(pkgName);
   }
 
-  const rules = pkg.rules || pkg.default?.rules || {};
-  const plugins = [];
-
-  for (const [ruleName, rule] of Object.entries(rules)) {
+  const rulesMap = pkg.rules || pkg.default?.rules || {};
+  const rules = [];
+  for (const [ruleName, rule] of Object.entries(rulesMap)) {
     const create = rule.create || rule;
     if (typeof create !== "function") continue;
     const fullName = `${pkgName}/${ruleName}`;
-    if (ruleFilters.size > 0 && !ruleFilters.has(ruleName) && !ruleFilters.has(fullName)) continue;
-    plugins.push({
-      meta: { name: fullName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema },
+    if (only && !only.has(ruleName) && !only.has(fullName)) continue;
+    rules.push({
+      meta: { name: fullName, defaultOptions: rule.meta?.defaultOptions, schema: rule.meta?.schema, messages: rule.meta?.messages, fixable: rule.meta?.fixable },
       create,
     });
   }
-
-  return plugins;
+  return rules;
 }
 
-module.exports = { loadPlugin, resolvePackageDir };
+module.exports = { loadCoreRules, loadPlugin };

@@ -18,7 +18,7 @@ const {
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
 } = require("./index");
 const { runPlugins } = require("./eslint-runner");
-const { loadPlugin } = require("./load-plugin");
+const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
 // ── Constants ───────────────────────────────────────────────────
 
@@ -87,10 +87,7 @@ async function _resolveConfig(config = {}) {
     }
   }
 
-  // Default: load bundled ESLint core rules if no plugins specified
-  if (pluginPkgs.length === 0 && !flatConfig) {
-    pluginPkgs.push("eslint");
-  }
+  const loadCoreByDefault = pluginPkgs.length === 0 && !flatConfig;
 
   // Build rule severity/options maps
   const ruleSeverities = {};
@@ -112,12 +109,17 @@ async function _resolveConfig(config = {}) {
   const ruleFilters = new Set(Object.keys(ruleSeverities));
   const allPluginDescs = [];
 
+  // Always load core rules
+  if (loadCoreByDefault) {
+    allPluginDescs.push(...loadCoreRules({ only: ruleFilters.size > 0 ? ruleFilters : undefined }));
+  }
+
   for (const entry of pluginPkgs) {
     if (typeof entry === "string") {
       // Package name — load via loadPlugin
       if (SKIP_PLUGINS.has(entry)) continue;
       try {
-        const descs = loadPlugin(entry, ruleFilters);
+        const descs = loadPlugin(entry, { only: ruleFilters.size > 0 ? ruleFilters : undefined });
         allPluginDescs.push(...descs);
       } catch { /* skip unresolvable */ }
     } else if (entry.prefix && entry.plugin) {
@@ -138,7 +140,7 @@ async function _resolveConfig(config = {}) {
   // If no specific rules configured, load all from plugins with default severity
   if (ruleFilters.size === 0 && allPluginDescs.length === 0) {
     try {
-      allPluginDescs.push(...loadPlugin("eslint", new Set()));
+      allPluginDescs.push(...loadCoreRules());
     } catch { /* eslint not installed */ }
   }
 

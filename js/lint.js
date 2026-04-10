@@ -19,7 +19,7 @@ const os = require("os");
 const { Worker } = require("worker_threads");
 const { parseAndLint, parseAndLintSource, parse, parseSource, lint: lintFiles, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
-const { loadPlugin } = require("./load-plugin");
+const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
 // ── CLI arg parsing ──────────────────────────────────────────────
 
@@ -200,7 +200,7 @@ const allPlugins = [];
 for (const name of pluginNames) {
   let loaded;
   try {
-    loaded = loadPlugin(name, ruleFilters);
+    loaded = name === "eslint" ? loadCoreRules({ only: ruleFilters.size > 0 ? ruleFilters : undefined }) : loadPlugin(name, { only: ruleFilters.size > 0 ? ruleFilters : undefined });
   } catch (e) {
     console.error(`error: cannot load plugin "${name}": ${e.message}`);
     console.error(`       Install it with: npm install --save-dev ${name}`);

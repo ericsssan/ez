@@ -15,17 +15,18 @@ const { workerData, parentPort } = require("worker_threads");
 const fs = require("fs");
 const { parseAndLintSource, parseSource, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins } = require("./eslint-runner");
-const { loadPlugin } = require("./load-plugin");
+const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
 const { pluginNames, ruleFilters: ruleFiltersArr, ruleConfig, applyFix, typeAware } = workerData;
 const ruleFilters = new Set(ruleFiltersArr || []);
+const filterOpts = ruleFilters.size > 0 ? { only: ruleFilters } : {};
 
 const tagNames = getTagNames();
 
 const allPlugins = [];
 for (const name of pluginNames) {
   try {
-    allPlugins.push(...loadPlugin(name, ruleFilters));
+    allPlugins.push(...(name === "eslint" ? loadCoreRules(filterOpts) : loadPlugin(name, filterOpts)));
   } catch (e) {
     parentPort.postMessage({ fatalError: `cannot load plugin "${name}": ${e.message}` });
     process.exit(1);
