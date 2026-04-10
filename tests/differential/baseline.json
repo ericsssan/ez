@@ -3188,7 +3188,7 @@
     },
     "prefer-regex-literals": {
       "runner": {
-        "fn": 24,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
