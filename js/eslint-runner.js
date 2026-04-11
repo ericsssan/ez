@@ -2364,6 +2364,53 @@ class SourceCode {
     }
     return nodeView(ast, candidateIdx);
   }
+
+  // ── ESLint 9 sourceCode APIs ─────────────────────────────────
+  // Added in ESLint 9 as preferred alternatives to node.loc / node.range.
+  // Unicorn and other ESLint 9-targeting rules use these APIs extensively.
+
+  /** ESLint 9: getLoc(node) → node.loc */
+  getLoc(node) { return node?.loc ?? null; }
+
+  /** ESLint 9: getRange(node) → node.range */
+  getRange(node) { return node?.range ?? null; }
+
+  /**
+   * ESLint 9: visitorKeys — map of node type name → child property names.
+   * Lazily loaded from eslint-visitor-keys.
+   */
+  get visitorKeys() {
+    if (!SourceCode._visitorKeys) {
+      try {
+        SourceCode._visitorKeys = require("./node_modules/eslint-visitor-keys").KEYS;
+      } catch {
+        SourceCode._visitorKeys = Object.create(null);
+      }
+    }
+    return SourceCode._visitorKeys;
+  }
+
+  /**
+   * ESLint 9: sourceCode.scopeManager — thin wrapper around our getScope().
+   * Unicorn rules use scopeManager.acquire(node) to get the scope for a node.
+   */
+  get scopeManager() {
+    if (this._scopeManagerProxy) return this._scopeManagerProxy;
+    const sc = this;
+    this._scopeManagerProxy = {
+      acquire(node) { return sc.getScope(node); },
+      get scopes() { return []; },
+    };
+    return this._scopeManagerProxy;
+  }
+
+  /**
+   * ESLint 9: getDisableDirectives() — inline disable directive info.
+   * Return empty; actual disable-comment handling is done in _execReport.
+   */
+  getDisableDirectives() {
+    return { directives: [], problems: [] };
+  }
 }
 
 // ── Fixer ────────────────────────────────────────────────────────
@@ -2583,6 +2630,7 @@ class RuleContext {
     this._ast = ast;
     this._filename = filename;
     this.filename = filename; // ESLint v8+ flat config uses context.filename directly
+    this.physicalFilename = filename; // ESLint 9: physical file path (same as filename for us)
     this._source = sourceText;
     this._reports = [];
     this.options = options.ruleOptions || [];
@@ -2614,6 +2662,7 @@ class RuleContext {
     this._ast = ast;
     this._filename = filename;
     this.filename = filename;
+    this.physicalFilename = filename;
     this._source = sourceText;
     this._reports = [];
     this._ruleErrors = Object.create(null);

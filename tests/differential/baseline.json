@@ -1,85 +1,20 @@
 {
   "files": {},
   "corpus": {
-    "accessor-pairs": {
+    "no-var": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 136,
-        "fp": 7,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "array-bracket-newline": {
-      "runner": {
-        "fn": 9,
-        "fp": 12,
-        "crash": 0
-      },
-      "native": {
-        "fn": 127,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "array-bracket-spacing": {
-      "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 37,
-        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "array-callback-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 126,
-        "fp": 14,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "array-element-newline": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 57,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "arrow-body-style": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 21,
-        "fp": 3,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "arrow-parens": {
+    "sort-vars": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -88,903 +23,6 @@
       "native": {
         "fn": 25,
         "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "arrow-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 24,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "block-scoped-var": {
-      "runner": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "block-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 55,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "callback-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 30,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "camelcase": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 104,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "capitalized-comments": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 63,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "class-methods-use-this": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "comma-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 26,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "comma-style": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 38,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "complexity": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 96,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "computed-property-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 54,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "consistent-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 21,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "consistent-this": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "constructor-super": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 40,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "curly": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 117,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "default-case-last": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "default-case": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 13,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "default-param-last": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "dot-location": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 31,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "dot-notation": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 14,
-        "fp": 5,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "eol-last": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 12,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "eqeqeq": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 7,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "for-direction": {
-      "runner": {
-        "fn": 1,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 19,
-        "fp": 6,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "func-call-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 93,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "func-name-matching": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 50,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "func-names": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 51,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "func-style": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 23,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "function-call-argument-newline": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 34,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "generator-star-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 85,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "getter-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 1,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "global-require": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "grouped-accessor-pairs": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 57,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "guard-for-in": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "handle-callback-err": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "id-blacklist": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 92,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "id-denylist": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 96,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "id-length": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 84,
-        "fp": 1,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "id-match": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 55,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "indent-legacy": {
-      "runner": {
-        "fn": 0,
-        "fp": 1,
-        "crash": 0
-      },
-      "native": {
-        "fn": 293,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "init-declarations": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "jsx-quotes": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "key-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 104,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "keyword-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 302,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "line-comment-position": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 9,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "linebreak-style": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "lines-around-directive": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 141,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "lines-between-class-members": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 94,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "logical-assignment-operators": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 150,
-        "fp": 3,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-classes-per-file": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 5,
-        "fp": 5,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-depth": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 12,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-len": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 55,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-lines-per-function": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 24,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-lines": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 31,
-        "fp": 1,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-nested-callbacks": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-params": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-statements-per-line": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 42,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "max-statements": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "multiline-comment-style": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 100,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "multiline-ternary": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 83,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "new-cap": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 3,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "new-parens": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 21,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "newline-after-var": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 36,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "newline-before-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 33,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "newline-per-chained-call": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 24,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-alert": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 17,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-array-constructor": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 12,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-async-promise-executor": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-await-in-loop": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 9,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-bitwise": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
-        "fp": 4,
         "crash": 0,
         "skip": 0
       }
@@ -1002,46 +40,7 @@
         "skip": 0
       }
     },
-    "no-caller": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-case-declarations": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-catch-shadow": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-class-assign": {
+    "no-new-symbol": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1067,85 +66,176 @@
         "skip": 0
       }
     },
-    "no-cond-assign": {
+    "no-extra-semi": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 13,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-confusing-arrow": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 6,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-console": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 5,
+        "fn": 10,
         "fp": 9,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-const-assign": {
+    "padding-line-between-statements": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 271,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-constant-binary-expression": {
+    "dot-notation": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 204,
+        "fn": 14,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-match": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "complexity": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "guard-for-in": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
         "fp": 2,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-constant-condition": {
+    "arrow-parens": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 18,
-        "fp": 6,
+        "fn": 25,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-constructor-return": {
+    "no-new-native-nonconstructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "class-methods-use-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "object-curly-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 107,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "semi-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-setter-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-undef": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 14,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-label": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1153,12 +243,142 @@
       },
       "native": {
         "fn": 1,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "one-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 144,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-continue": {
+    "strict": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 78,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-promise-reject-errors": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-infix-ops": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "wrap-iife": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "computed-property-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-escape": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 68,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-bracket-newline": {
+      "runner": {
+        "fn": 9,
+        "fp": 12,
+        "crash": 0
+      },
+      "native": {
+        "fn": 127,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "function-call-argument-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "consistent-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-floating-decimal": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1171,92 +391,14 @@
         "skip": 0
       }
     },
-    "no-control-regex": {
+    "newline-before-return": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 12,
-        "fp": 1,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-debugger": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-delete-var": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-div-regex": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-dupe-args": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-dupe-class-members": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 5,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-dupe-else-if": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
+        "fn": 33,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1275,223 +417,15 @@
         "skip": 0
       }
     },
-    "no-duplicate-case": {
+    "space-unary-ops": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 55,
         "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-duplicate-imports": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 9,
-        "fp": 4,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-else-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-empty-character-class": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-empty-function": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 338,
-        "fp": 30,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-empty-pattern": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 6,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-empty-static-block": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 1,
-        "fp": 3,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-empty": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-eq-null": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-eval": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 32,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-ex-assign": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-extend-native": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 14,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-extra-bind": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-extra-boolean-cast": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 250,
-        "fp": 28,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-extra-label": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 1,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-extra-parens": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 600,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-extra-semi": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 9,
         "crash": 0,
         "skip": 0
       }
@@ -1509,20 +443,20 @@
         "skip": 0
       }
     },
-    "no-floating-decimal": {
+    "nonblock-statement-body-position": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 19,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-func-assign": {
+    "no-lonely-if": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1530,64 +464,12 @@
       },
       "native": {
         "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-global-assign": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
         "fp": 1,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-implicit-coercion": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 25,
-        "fp": 15,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-implicit-globals": {
-      "runner": {
-        "fn": 28,
-        "fp": 27,
-        "crash": 0
-      },
-      "native": {
-        "fn": 121,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-implied-eval": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 21,
-        "fp": 16,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-import-assign": {
+    "no-const-assign": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1600,53 +482,27 @@
         "skip": 0
       }
     },
-    "no-inline-comments": {
+    "no-array-constructor": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 33,
-        "fp": 0,
+        "fn": 12,
+        "fp": 8,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-inner-declarations": {
+    "no-div-regex": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 15,
-        "fp": 6,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-invalid-regexp": {
-      "runner": {
         "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 39,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-invalid-this": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 116,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1665,137 +521,137 @@
         "skip": 0
       }
     },
-    "no-iterator": {
+    "array-callback-return": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 126,
+        "fp": 14,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-label-var": {
+    "indent-legacy": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-labels": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 4,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-lone-blocks": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-lonely-if": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
         "fn": 0,
         "fp": 1,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-loop-func": {
-      "runner": {
-        "fn": 8,
-        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 8,
-        "fp": 47,
+        "fn": 293,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-loss-of-precision": {
+    "no-empty-character-class": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 6,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-magic-numbers": {
+    "no-implied-eval": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 71,
+        "fn": 21,
+        "fp": 16,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "lines-between-class-members": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 94,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-misleading-character-class": {
+    "max-len": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-rename": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 72,
+        "fp": 13,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "for-direction": {
       "runner": {
         "fn": 1,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 91,
-        "fp": 22,
+        "fn": 19,
+        "fp": 6,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-mixed-operators": {
+    "no-restricted-properties": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 7,
+        "fn": 45,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-mixed-requires": {
+    "no-empty-pattern": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 6,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-params": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1808,28 +664,15 @@
         "skip": 0
       }
     },
-    "no-mixed-spaces-and-tabs": {
+    "func-name-matching": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 8,
-        "fp": 23,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-multi-assign": {
-      "runner": {
-        "fn": 0,
+        "fn": 50,
         "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 9,
-        "fp": 2,
         "crash": 0,
         "skip": 0
       }
@@ -1847,7 +690,176 @@
         "skip": 0
       }
     },
-    "no-multi-str": {
+    "prefer-object-has-own": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 15,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-concat": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "multiline-comment-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 100,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-constant-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 6,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-eval": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-loop-func": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 47,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-element-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "semi-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-named-capture-group": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "curly": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 117,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "operator-linebreak": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "yield-star-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-unicode-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -1860,14 +872,131 @@
         "skip": 0
       }
     },
-    "no-multiple-empty-lines": {
+    "no-object-constructor": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 29,
+        "fn": 47,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-label-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-eq-null": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-shadow": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 103,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-self-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 7,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-call-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "default-case-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "spaced-comment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "padded-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1886,110 +1015,6 @@
         "skip": 0
       }
     },
-    "no-negated-condition": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-negated-in-lhs": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 1,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-nested-ternary": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-new-func": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 2,
-        "fp": 5,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-new-native-nonconstructor": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 4,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-new-object": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-new-require": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-new-symbol": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
     "no-new-wrappers": {
       "runner": {
         "fn": 0,
@@ -2003,14 +1028,53 @@
         "skip": 0
       }
     },
-    "no-new": {
+    "no-implicit-globals": {
+      "runner": {
+        "fn": 28,
+        "fp": 27,
+        "crash": 0
+      },
+      "native": {
+        "fn": 121,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-before-function-paren": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unmodified-loop-condition": {
+      "runner": {
         "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-param-reassign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2029,33 +1093,20 @@
         "skip": 0
       }
     },
-    "no-obj-calls": {
+    "no-mixed-operators": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 34,
-        "fp": 12,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-object-constructor": {
-      "runner": {
-        "fn": 0,
+        "fn": 7,
         "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 47,
-        "fp": 2,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-octal-escape": {
+    "no-new-object": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2081,7 +1132,280 @@
         "skip": 0
       }
     },
-    "no-param-reassign": {
+    "no-magic-numbers": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 71,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "eol-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "arrow-body-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 3,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-obj-calls": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 12,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-else-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "preserve-caught-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-assignment": {
+      "runner": {
+        "fn": 13,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-warning-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 3,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-case-declarations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-labels": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "vars-on-top": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 1,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-negated-in-lhs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extend-native": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 8,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "use-isnan": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 8,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-ex-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "handle-callback-err": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "template-tag-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-cond-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-constructor-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sort-keys": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 62,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-bind": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-exponentiation-operator": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2089,45 +1413,45 @@
       },
       "native": {
         "fn": 19,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-path-concat": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-plusplus": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
         "fp": 9,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-process-env": {
+    "no-unreachable-loop": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 28,
+        "fp": 150,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "eqeqeq": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 8,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-proto": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2146,274 +1470,66 @@
         "skip": 0
       }
     },
-    "no-promise-executor-return": {
+    "id-denylist": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 3,
-        "fp": 10,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-proto": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
+        "fn": 96,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-prototype-builtins": {
+    "newline-after-var": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 36,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-redeclare": {
+    "no-alert": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 44,
+        "fn": 17,
+        "fp": 8,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-regex-spaces": {
+    "capitalized-comments": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-restricted-exports": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 88,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-restricted-globals": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 55,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-restricted-imports": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 119,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-restricted-modules": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-restricted-properties": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 45,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-restricted-syntax": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-return-assign": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 5,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-return-await": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 24,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-script-url": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-self-assign": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
-        "fp": 7,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-self-compare": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-sequences": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-setter-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 31,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-shadow-restricted-names": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 3,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-shadow": {
-      "runner": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 103,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-spaced-func": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 13,
+        "fn": 63,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2432,14 +1548,1041 @@
         "skip": 0
       }
     },
-    "no-sync": {
+    "no-unused-vars": {
+      "runner": {
+        "fn": 20,
+        "fp": 15,
+        "crash": 0
+      },
+      "native": {
+        "fn": 101,
+        "fp": 50,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "linebreak-style": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 7,
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-numeric-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 9,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-modules": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-sequences": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-whitespace-before-property": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 103,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-duplicate-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "yoda": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 35,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-regex-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 102,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-plusplus": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 9,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unsafe-finally": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-throw-literal": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-labels": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-reflect": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-template": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 8,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-loss-of-precision": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-control-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 1,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "logical-assignment-operators": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 150,
+        "fp": 3,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-backreference": {
+      "runner": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 90,
+        "fp": 7,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-lines-per-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "radix": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-constant-binary-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 204,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-global-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 1,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "accessor-pairs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 136,
+        "fp": 7,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-path-concat": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-atomic-updates": {
+      "runner": {
+        "fn": 4,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "block-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-prototype-builtins": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-catch-shadow": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-length": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 84,
+        "fp": 1,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unsafe-optional-chaining": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-caller": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "consistent-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "switch-colon-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-duplicate-imports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 4,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-inner-declarations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 6,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "operator-assignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-nested-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "quotes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-boolean-cast": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 250,
+        "fp": 28,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-spaced-func": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "default-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 13,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "key-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 104,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "symbol-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "block-scoped-var": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "callback-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsx-quotes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "default-param-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "template-curly-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unreachable": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 7,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "valid-typeof": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-invalid-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "newline-per-chained-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-undef-init": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-yield": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-before-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-require": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-confusing-arrow": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 6,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 338,
+        "fp": 30,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "semi": {
+      "runner": {
+        "fn": 3,
+        "fp": 3,
+        "crash": 0
+      },
+      "native": {
+        "fn": 130,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unexpected-multiline": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-exports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 88,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-func": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-invalid-this": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "quote-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-void": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-process-env": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-implicit-coercion": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 15,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "camelcase": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 104,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "init-declarations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "line-comment-position": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-await-in-loop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-expressions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 4,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unsafe-negation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-async-promise-executor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "rest-spread-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-bracket-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-mixed-requires": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2458,7 +2601,85 @@
         "skip": 0
       }
     },
-    "no-template-curly-in-string": {
+    "arrow-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-imports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 119,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unneeded-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-use-before-define": {
+      "runner": {
+        "fn": 10,
+        "fp": 13,
+        "crash": 0
+      },
+      "native": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-blacklist": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 92,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-debugger": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2471,7 +2692,111 @@
         "skip": 0
       }
     },
-    "no-ternary": {
+    "max-statements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 13,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "keyword-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 302,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-lone-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "new-parens": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "getter-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 1,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-shadow-restricted-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-import-assign": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2497,54 +2822,28 @@
         "skip": 0
       }
     },
-    "no-throw-literal": {
+    "prefer-object-spread": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 16,
+        "fp": 13,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-trailing-spaces": {
+    "comma-style": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 41,
+        "fn": 38,
         "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-undef-init": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 4,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-undef": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 9,
-        "fp": 14,
         "crash": 0,
         "skip": 0
       }
@@ -2562,85 +2861,20 @@
         "skip": 0
       }
     },
-    "no-underscore-dangle": {
+    "max-lines": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 39,
-        "fp": 3,
+        "fn": 31,
+        "fp": 1,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-unexpected-multiline": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 16,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unmodified-loop-condition": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 11,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unneeded-ternary": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 16,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unreachable-loop": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 28,
-        "fp": 150,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unreachable": {
-      "runner": {
-        "fn": 1,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 17,
-        "fp": 7,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unsafe-finally": {
+    "no-continue": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2653,46 +2887,7 @@
         "skip": 0
       }
     },
-    "no-unsafe-negation": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 5,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unsafe-optional-chaining": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 32,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unused-expressions": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 25,
-        "fp": 4,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unused-labels": {
+    "no-func-assign": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2705,85 +2900,7 @@
         "skip": 0
       }
     },
-    "no-unused-private-class-members": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-unused-vars": {
-      "runner": {
-        "fn": 20,
-        "fp": 19,
-        "crash": 0
-      },
-      "native": {
-        "fn": 101,
-        "fp": 50,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-use-before-define": {
-      "runner": {
-        "fn": 10,
-        "fp": 13,
-        "crash": 0
-      },
-      "native": {
-        "fn": 116,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-useless-assignment": {
-      "runner": {
-        "fn": 13,
-        "fp": 2,
-        "crash": 0
-      },
-      "native": {
-        "fn": 54,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-useless-backreference": {
-      "runner": {
-        "fn": 9,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 90,
-        "fp": 7,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-useless-call": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 21,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-useless-catch": {
+    "no-iterator": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2796,7 +2913,7 @@
         "skip": 0
       }
     },
-    "no-useless-computed-key": {
+    "no-else-return": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -2804,149 +2921,32 @@
       },
       "native": {
         "fn": 3,
-        "fp": 12,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-useless-concat": {
+    "no-mixed-spaces-and-tabs": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 5,
-        "fp": 2,
+        "fn": 8,
+        "fp": 23,
         "crash": 0,
         "skip": 0
       }
     },
-    "no-useless-escape": {
-      "runner": {
-        "fn": 1,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 68,
-        "fp": 5,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-useless-rename": {
+    "no-redeclare": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 72,
-        "fp": 13,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-useless-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 16,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-var": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-void": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-warning-comments": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 24,
-        "fp": 3,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-whitespace-before-property": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 103,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "no-with": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "nonblock-statement-body-position": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 19,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "object-curly-newline": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 107,
+        "fn": 44,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2965,92 +2965,14 @@
         "skip": 0
       }
     },
-    "object-property-newline": {
+    "global-require": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 39,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "one-var-declaration-per-line": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 17,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "one-var": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 144,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "operator-assignment": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 51,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "operator-linebreak": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 56,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "padded-blocks": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 93,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "padding-line-between-statements": {
-      "runner": {
-        "fn": 14,
-        "fp": 8,
-        "crash": 0
-      },
-      "native": {
-        "fn": 271,
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -3069,6 +2991,32 @@
         "skip": 0
       }
     },
+    "generator-star-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-catch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
     "prefer-const": {
       "runner": {
         "fn": 0,
@@ -3082,137 +3030,20 @@
         "skip": 0
       }
     },
-    "prefer-destructuring": {
+    "no-extra-parens": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 18,
-        "fp": 5,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-exponentiation-operator": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 19,
-        "fp": 9,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-named-capture-group": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 21,
+        "fn": 600,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "prefer-numeric-literals": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 9,
-        "fp": 9,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-object-has-own": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 11,
-        "fp": 15,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-object-spread": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 16,
-        "fp": 13,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-promise-reject-errors": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 34,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-reflect": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-regex-literals": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 102,
-        "fp": 5,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-rest-params": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 6,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-spread": {
+    "no-console": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3220,241 +3051,7 @@
       },
       "native": {
         "fn": 5,
-        "fp": 13,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "prefer-template": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "preserve-caught-error": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 33,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "quote-props": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 37,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "quotes": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 57,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "radix": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "require-atomic-updates": {
-      "runner": {
-        "fn": 4,
-        "fp": 1,
-        "crash": 0
-      },
-      "native": {
-        "fn": 34,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "require-await": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "require-unicode-regexp": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 28,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "require-yield": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 2,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "rest-spread-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 51,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "semi-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 35,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "semi-style": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 30,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "semi": {
-      "runner": {
-        "fn": 3,
-        "fp": 3,
-        "crash": 0
-      },
-      "native": {
-        "fn": 130,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "sort-imports": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 30,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "sort-keys": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 62,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "sort-vars": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 25,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "space-before-blocks": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 69,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "space-before-function-paren": {
-      "runner": {
-        "fn": 1,
-        "fp": 2,
-        "crash": 0
-      },
-      "native": {
-        "fn": 37,
-        "fp": 0,
+        "fp": 9,
         "crash": 0,
         "skip": 0
       }
@@ -3472,33 +3069,33 @@
         "skip": 0
       }
     },
-    "space-infix-ops": {
+    "no-return-await": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 37,
+        "fn": 24,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "space-unary-ops": {
+    "no-class-assign": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 55,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "spaced-comment": {
+    "no-inline-comments": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3511,46 +3108,7 @@
         "skip": 0
       }
     },
-    "strict": {
-      "runner": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 78,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "switch-colon-spacing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 13,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "symbol-description": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 4,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "template-curly-spacing": {
+    "no-trailing-spaces": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3563,23 +3121,231 @@
         "skip": 0
       }
     },
-    "template-tag-spacing": {
+    "no-self-compare": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 35,
+        "fn": 0,
         "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "grouped-accessor-pairs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "object-property-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multi-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 2,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "one-var-declaration-per-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-with": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty-static-block": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 3,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "constructor-super": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-negated-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-script-url": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multi-str": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-statements-per-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "multiline-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 83,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-promise-executor-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 10,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-private-class-members": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-classes-per-file": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-bitwise": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 4,
         "crash": 0,
         "skip": 0
       }
     },
     "unicode-bom": {
       "runner": {
-        "fn": 2,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3589,53 +3355,40 @@
         "skip": 0
       }
     },
-    "use-isnan": {
+    "no-useless-return": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 38,
-        "fp": 8,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "valid-typeof": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
+        "fn": 16,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "vars-on-top": {
+    "no-delete-var": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 24,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "wrap-iife": {
+    "no-restricted-globals": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 42,
+        "fn": 55,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -3654,111 +3407,20 @@
         "skip": 0
       }
     },
-    "yield-star-spacing": {
+    "dot-location": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 17,
+        "fn": 31,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "yoda": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 37,
-        "fp": 35,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/always-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 28,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/avoid-new": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/catch-or-return": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 38,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/no-callback-in-promise": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/no-multiple-resolved": {
-      "runner": {
-        "fn": 5,
-        "fp": 1,
-        "crash": 0
-      },
-      "native": {
-        "fn": 17,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/no-nesting": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/no-new-statics": {
+    "max-nested-callbacks": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3771,33 +3433,7 @@
         "skip": 0
       }
     },
-    "promise/no-promise-in-callback": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 11,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/no-return-in-finally": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "promise/no-return-wrap": {
+    "new-cap": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3805,64 +3441,129 @@
       },
       "native": {
         "fn": 22,
-        "fp": 0,
+        "fp": 3,
         "crash": 0,
         "skip": 0
       }
     },
-    "promise/param-names": {
+    "lines-around-directive": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 5,
+        "fn": 141,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "promise/prefer-await-to-callbacks": {
+    "no-regex-spaces": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 14,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "promise/prefer-await-to-then": {
+    "prefer-rest-params": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 11,
-        "fp": 0,
+        "fn": 0,
+        "fp": 6,
         "crash": 0,
         "skip": 0
       }
     },
-    "promise/prefer-catch": {
+    "no-template-curly-in-string": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "promise/spec-only": {
+    "prefer-destructuring": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 5,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sort-imports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "comma-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multiple-empty-lines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-underscore-dangle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 3,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-sync": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3875,7 +3576,1827 @@
         "skip": 0
       }
     },
-    "promise/valid-params": {
+    "no-return-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 8,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-class-members": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-octal-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-args": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-misleading-character-class": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 88,
+        "fp": 18,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-computed-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 12,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-at": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 82,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/throw-new-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/template-indent": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-switch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/escape-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 86,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/catch-error-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-blob-reading-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-classlist-toggle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 61,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-json-parse-buffer": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-empty-array-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-assert": {
+      "runner": {
+        "fn": 0,
+        "fp": 23,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-raw": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-switch-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-typeof-undefined": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-method-this-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unreadable-array-destructuring": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/empty-brace-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 117,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-array-flat-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/expiring-todo-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-object-from-entries": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-text-content": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-new-array": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-node-protocol": {
+      "runner": {
+        "fn": 0,
+        "fp": 10,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-number-properties": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-lonely-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-code-point": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-date-clone": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/string-content": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unused-properties": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-export-from": {
+      "runner": {
+        "fn": 0,
+        "fp": 19,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-add-event-listener": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-index-of": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-structured-clone": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-array-splice-count": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-document-cookie": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-import-meta-properties": {
+      "runner": {
+        "fn": 0,
+        "fp": 21,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-math-trunc": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 53,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-bigint-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/better-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 45,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-response-static-json": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-includes": {
+      "runner": {
+        "fn": 22,
+        "fp": 1,
+        "crash": 22
+      },
+      "native": {
+        "fn": 36,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-object-as-default-parameter": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-invalid-remove-event-listener": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-thenable": {
+      "runner": {
+        "fn": 0,
+        "fp": 28,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-iterator-to-array": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-replace-all": {
+      "runner": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0
+      },
+      "native": {
+        "fn": 45,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-type-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-anonymous-default-export": {
+      "runner": {
+        "fn": 0,
+        "fp": 43,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-reduce": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-function-scoping": {
+      "runner": {
+        "fn": 2,
+        "fp": 16,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-event-target": {
+      "runner": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-remove": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-single-promise-in-promise-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 37,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-number-to-fixed-digits-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-immediate-mutation": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 115,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-module-specifiers": {
+      "runner": {
+        "fn": 0,
+        "fp": 12,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-find": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-await-expression-member": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-error-capture-stack-trace": {
+      "runner": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-process-exit": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/numeric-separators-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-modern-dom-apis": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/relative-url-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-single-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-starts-ends-with": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-default-parameters": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-set-has": {
+      "runner": {
+        "fn": 2,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/switch-case-braces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-callback-reference": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 60,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/filename-case": {
+      "runner": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-this-assignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-top-level-await": {
+      "runner": {
+        "fn": 4,
+        "fp": 5,
+        "crash": 0
+      },
+      "native": {
+        "fn": 36,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-template-literal-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-promise-resolve-reject": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-slice-end": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-slice": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 52,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-undefined": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 45,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/text-encoding-identifier-case": {
+      "runner": {
+        "fn": 16,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prevent-abbreviations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 148,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/number-literal-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-nested-ternary": {
+      "runner": {
+        "fn": 1,
+        "fp": 5,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/switch-case-break-position": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-console-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-reverse": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-hex-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-empty-file": {
+      "runner": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-flat-map": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-magic-array-flat-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-global-this": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 88,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-optional-catch-binding": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-fallback-in-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-existence-index-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-flat": {
+      "runner": {
+        "fn": 4,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-polyfills": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-null": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-module-attributes": {
+      "runner": {
+        "fn": 0,
+        "fp": 20,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/explicit-length-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 63,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-prototype-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-invalid-fetch-options": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-module": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-native-coercion-functions": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/import-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 6,
+        "crash": 0
+      },
+      "native": {
+        "fn": 89,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-spread": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 109,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-query-selector": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-new-buffer": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-named-default": {
+      "runner": {
+        "fn": 0,
+        "fp": 25,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-keyword-prefix": {
+      "runner": {
+        "fn": 4,
+        "fp": 4,
+        "crash": 5
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/isolated-functions": {
+      "runner": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-instanceof-builtins": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 71,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-negation-in-equality-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-simple-condition-first": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-for-each": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 278,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unreadable-iife": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-dataset": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 65,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-await-in-promise-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 154,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-keyboard-event-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 53,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-length-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/error-message": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/new-for-builtins": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 61,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-collection-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-append": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-negative-index": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-modern-math-apis": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-negated-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-for-loop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-set-size": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-destructuring": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-abusive-eslint-disable": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/custom-error-definition": {
+      "runner": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-regexp-test": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-date-now": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -3883,6 +5404,175 @@
       },
       "native": {
         "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-accessor-recursion": {
+      "runner": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-array-join-separator": {
+      "runner": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-reflect-apply": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-static-only-class": {
+      "runner": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-math-min-max": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-post-message-target-origin": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-logical-operator-over-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-class-fields": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-some": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-trim-start-end": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-sort": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-zero-fractions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 173,
         "fp": 0,
         "crash": 0,
         "skip": 0
