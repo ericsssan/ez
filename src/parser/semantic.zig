@@ -1179,6 +1179,12 @@ pub const SemanticAnalyzer = struct {
         // CodePathBuilder: enter program code path
         if (self.cpb_initialized) try self.cpb.enterCodePath(idx, .program, idx);
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+        // Propagate program-level "use strict" directive into the current scope.
+        if (self.detectUseStrict(range)) {
+            var flags = self.scopes.getFlags(self.current_scope);
+            flags.has_use_strict = true;
+            self.scopes.setFlags(self.current_scope, flags);
+        }
         try self.visitSubRange(range);
         // CodePathBuilder: exit program code path
         if (self.cpb_initialized) try self.cpb.exitCodePath(idx);
@@ -1196,6 +1202,30 @@ pub const SemanticAnalyzer = struct {
         self.leaveScope();
     }
 
+    /// Detect a "use strict" directive at the start of a block body range.
+    /// Returns true iff the first statement is an unparenthesized string literal "use strict".
+    fn detectUseStrict(self: *const SemanticAnalyzer, range: SubRange) bool {
+        if (range.start >= range.end) return false;
+        const first: NodeIndex = @enumFromInt(self.ast.extra_data[range.start]);
+        if (first == .none) return false;
+        if (self.ast.nodeTag(first) != .expression_stmt) return false;
+        const expr: NodeIndex = self.ast.nodeData(first).lhs;
+        if (expr == .none) return false;
+        if (self.ast.nodeTag(expr) != .string_literal) return false;
+        const tok = self.ast.nodeMainToken(expr);
+        const start = self.ast.tokenStart(tok);
+        const src = self.ast.source;
+        // Must start with ' or " (parenthesized directives like ('use strict') are not directives).
+        if (start >= src.len) return false;
+        const quote = src[start];
+        if (quote != '"' and quote != '\'') return false;
+        // "use strict" = 10 chars + 2 quotes = 12 total
+        if (start + 12 > src.len) return false;
+        if (!std.mem.eql(u8, src[start + 1 .. start + 11], "use strict")) return false;
+        if (src[start + 11] != quote) return false;
+        return true;
+    }
+
     /// Visit a function body without creating a block scope when it is a BlockStatement.
     /// Matches eslint-scope's behavior: function bodies don't create a separate block scope;
     /// block-scoped declarations go directly into the function scope. See referencer.js:277.
@@ -1204,6 +1234,12 @@ pub const SemanticAnalyzer = struct {
         if (self.ast.nodeTag(body) == .block_stmt) {
             const data = self.ast.nodeData(body);
             const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+            // Propagate "use strict" directive into the current function scope's flags.
+            if (self.detectUseStrict(range)) {
+                var flags = self.scopes.getFlags(self.current_scope);
+                flags.has_use_strict = true;
+                self.scopes.setFlags(self.current_scope, flags);
+            }
             try self.visitSubRange(range);
         } else {
             try self.visitNode(body);

@@ -419,6 +419,7 @@ class SourceCode {
     this._scopeCache = null;
     this._thinScopeCache = null;
     this._thinVarCache = null;
+    this._refCache = null;       // file-specific — ref objects hold AST node pointers
     this._tokenSkipList = null;
     this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
@@ -1202,7 +1203,6 @@ class SourceCode {
    * to break the parent↔child circular reference during construction.
    */
   _buildScope(scopeId) {
-    // Use an Array instead of Map for O(1) integer-indexed cache lookups.
     if (!this._scopeCache) this._scopeCache = new Array(this._ast._semScopeCount || 64);
     const cached = this._scopeCache[scopeId];
     if (cached) return cached;
@@ -1217,10 +1217,94 @@ class SourceCode {
     const flags16 = ast._scopeFlags[scopeId];
     const parentId = ast._scopeParents[scopeId];
 
-    // Ensure _declSymIndex is built (once per SourceCode).
+    // upper: computed eagerly — isStrict inherits from parent chain.
+    const upper = parentId === NONE32 ? null : this._buildScope(parentId);
+
+    // block: cheap — one index lookup + nodeView.
+    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
+    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+      ? nodeView(ast, scopeNodeIdx) : null;
+
+    const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const isStrict = this._computeIsStrict(kind, flags16, upper, block);
+
+    // Cheap fields only — expensive arrays (variables/references/through/childScopes) are lazy.
+    const scope = {
+      type: KIND_NAMES[kind] || 'block',
+      isStrict,
+      block,
+      upper,
+      implicit: { variables: [] },
+      lookup(name) { return scope.set.get(name) || null; },
+    };
+    scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
+
+    // Cache BEFORE defining lazy getters — breaks parent↔child cycle.
+    this._scopeCache[scopeId] = scope;
+
+    // Lazy state: computed once on first access, then reused.
+    const sc = this;
+    let _vars = null, _set = null, _refs = null, _through = null, _children = null;
+
+    function ensureVarsSet() {
+      if (_vars !== null) return;
+      const vs = sc._buildScopeVarsAndSet(scopeId, scope, kind);
+      _vars = vs[0]; _set = vs[1];
+    }
+    function ensureRefsThrough() {
+      if (_refs !== null) return;
+      const cs = scope.childScopes; // trigger lazy children first (needed for through bubbling)
+      const rt = sc._buildScopeRefsAndThrough(scopeId, scope, cs);
+      _refs = rt[0]; _through = rt[1];
+    }
+    function ensureChildren() {
+      if (_children !== null) return;
+      _children = sc._buildScopeChildren(scopeId);
+    }
+
+    Object.defineProperties(scope, {
+      variables:   { get() { ensureVarsSet();     return _vars;     }, configurable: true, enumerable: true },
+      set:         { get() { ensureVarsSet();     return _set;      }, configurable: true, enumerable: true },
+      references:  { get() { ensureRefsThrough(); return _refs;     }, configurable: true, enumerable: true },
+      through:     { get() { ensureRefsThrough(); return _through;  }, configurable: true, enumerable: true },
+      childScopes: { get() { ensureChildren();    return _children; }, configurable: true, enumerable: true },
+    });
+
+    return scope;
+  }
+
+  /**
+   * Compute isStrict for a scope. Zig now sets SF_HAS_USE_STRICT correctly in semantic.zig,
+   * so we read the flag directly instead of scanning source text.
+   */
+  _computeIsStrict(kind, flags16, upper, block) {
+    // Class bodies and static blocks are always strict per spec.
+    if (kind === 4 || kind === 7) return true;
+    // Function expressions used as a class extends clause are always strict per spec.
+    // (class heritage is evaluated in strict mode)
+    if (kind === 2 && block !== null && block.parent !== null &&
+        (block.parent.type === 'ClassDeclaration' || block.parent.type === 'ClassExpression') &&
+        block.parent.superClass !== null && block.parent.superClass._i === block._i) {
+      return true;
+    }
+    // ES3 does not recognise 'use strict' directives.
+    if (this._ecmaVersion === 3) return false;
+    // Zig sets SF_HAS_USE_STRICT when the scope body starts with "use strict".
+    if ((flags16 & SF_HAS_USE_STRICT) !== 0) return true;
+    // In script mode, inherit strict from parent scope.
+    if (this._sourceType === 'script') return !!(upper && upper.isStrict);
+    // In module mode, use Zig's strict_mode flag (module scope inherits true everywhere).
+    return (flags16 & SF_STRICT_MODE) !== 0;
+  }
+
+  /**
+   * Build variables[] and set (Map) for a scope.
+   * Handles builtins, environment globals, CommonJS globals, comment directives, and 'arguments'.
+   */
+  _buildScopeVarsAndSet(scopeId, scope, kind) {
+    const ast = this._ast;
     this._ensureDeclSymIndex();
 
-    // Build variables: use Zig-precomputed scope→symbol CSR (scopeBindStart/Count).
     const set = new Map();
     const variables = [];
     const symStart = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
@@ -1238,108 +1322,10 @@ class SourceCode {
       }
     }
 
-    // Build references: use Zig-precomputed scope→ref CSR.
-    // ESLint's `through` = references from this scope whose target is NOT
-    // declared here (i.e., references to outer/global variables that pass
-    // through this scope). Our current list contains ALL refs in this scope;
-    // filter to those whose resolved symbol is in a different scope (or is
-    // unresolved).
-    const references = [];
-    const through = [];
-    const refStart = ast._scopeRefStarts ? ast._scopeRefStarts[scopeId] : 0;
-    const refCount = ast._scopeRefCounts ? ast._scopeRefCounts[scopeId] : 0;
-    const refIds = ast._scopeRefIds;
-    for (let j = 0; j < refCount; j++) {
-      const refId = refIds ? refIds[refStart + j] : j;
-      const ref = this._buildReference(refId);
-      references.push(ref);
-      // Determine if this ref's target symbol is declared in this scope
-      const refSymId = ast._refSymbolIds ? ast._refSymbolIds[refId] : NONE32;
-      if (refSymId === NONE32 || refSymId === undefined) {
-        // Unresolved — propagates up
-        through.push(ref);
-      } else {
-        const symScopeId = ast._symScopeIds ? ast._symScopeIds[refSymId] : NONE32;
-        if (symScopeId !== scopeId) through.push(ref);
-      }
-    }
-
-    const upper = parentId === NONE32 ? null : this._buildScope(parentId);
-
-    // block = the AST node that created this scope (for require-atomic-updates)
-    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
-    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
-      ? nodeView(ast, scopeNodeIdx) : null;
-
-    const isVarScope = kind === 0 || kind === 1 || kind === 2; // global, module, function
-
-    // In script mode, isStrict comes from an explicit 'use strict' directive in this
-    // scope or inherited from an ancestor — NOT from module-mode wrapping.
-    // Class bodies (kind 4) and static blocks (kind 7) are always strict per spec.
-    const isAlwaysStrict = kind === 4 || kind === 7;
-    // ES3 does not recognise 'use strict' directives — no strict mode in ES3.
-    const ecmaSupportsStrict = this._ecmaVersion !== 3;
-    // Detect 'use strict' directive by checking the function body's first statement,
-    // since Zig's analyze() always uses module mode so SF_HAS_USE_STRICT is never set.
-    // Check 'use strict' directive: in function bodies (kind 2) and in program/module (kind 0/1)
-    let hasUseStrict = false;
-    if (ecmaSupportsStrict) {
-      const src = this.text;
-      if (kind === 2 && block !== null) {
-        hasUseStrict = _fnHasUseStrict(block, src);
-      } else if ((kind === 0 || kind === 1) && block !== null) {
-        // Program node: check first statement in body
-        const stmts = block.body;
-        if (stmts && stmts.length > 0) {
-          const first = stmts[0];
-          if (first.type === 'ExpressionStatement' &&
-            first.expression?.type === 'Literal' &&
-            first.expression?.value === 'use strict') {
-            // Same parenthesis check as _fnHasUseStrict: must start with a quote.
-            // Check the ExpressionStatement's start, not the Literal's.
-            const pos = first.range ? first.range[0] : first.start;
-            const c = src && pos >= 0 && pos < src.length ? src[pos] : null;
-            hasUseStrict = (c === '"' || c === "'");
-          }
-        }
-      }
-    }
-    // Function expressions in a class extends clause are always strict per spec
-    // (class heritage is evaluated in strict mode). Zig's scope parent for these
-    // functions points to the module scope rather than the class scope, so we
-    // need to detect this case explicitly.
-    const inClassExtends = kind === 2 && block !== null &&
-      block.parent !== null &&
-      (block.parent.type === 'ClassDeclaration' || block.parent.type === 'ClassExpression') &&
-      block.parent.superClass !== null && block.parent.superClass._i === block._i;
-    const isStrict = isAlwaysStrict || inClassExtends || hasUseStrict || (
-      this._sourceType === 'script'
-        ? ecmaSupportsStrict && ((flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict))
-        : (flags16 & SF_STRICT_MODE) !== 0
-    );
-
-    const childScopes = [];
-    const scope = {
-      type: KIND_NAMES[kind] || 'block',
-      isStrict,
-      variables,
-      set,
-      references,
-      through,
-      childScopes,
-      implicit: { variables: [] },
-      block,
-      upper,
-      lookup(name) { return set.get(name) || null; },
-    };
-    scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
-
-    // Add ES2022 built-in globals to the global scope so rules like no-undef
-    // don't flag NaN, undefined, Infinity, etc. as undeclared.
-    if (kind === 0) { // global scope
+    // Global scope: add built-in globals so no-undef doesn't flag NaN, undefined, etc.
+    if (kind === 0) {
       const ecmaVersion = this._ecmaVersion;
       for (const name of _BUILTIN_GLOBALS) {
-        // Exclude globals that weren't available at the specified ecmaVersion.
         const minVer = _GLOBAL_MIN_VERSION[name];
         if (minVer !== undefined && ecmaVersion < minVer) continue;
         if (!set.has(name)) {
@@ -1350,11 +1336,9 @@ class SourceCode {
           set.set(name, globalVar);
           variables.push(globalVar);
         } else {
-          // Mark user-declared variable that shadows a builtin
           set.get(name).eslintImplicitGlobalSetting = 'writable';
         }
       }
-      // Add environment globals (setTimeout, console, fetch, etc.) only when configured.
       if (this._envGlobals) {
         for (const name of _ENV_GLOBALS) {
           if (!set.has(name)) {
@@ -1384,17 +1368,13 @@ class SourceCode {
     }
 
     // Process /*global X, Y */ and /*globals X: writable */ directive comments.
-    // ESLint's scope analysis exposes these via variable.eslintExplicitGlobalComments
-    // so rules like no-redeclare can flag double-declarations.
     if (kind === 0) {
       const comments = ast.commentsInRange(0, ast.sourceLen);
       for (const comment of comments) {
         if (comment.type !== 'Block') continue;
         const val = comment.value;
         if (!/^\s*globals?\b/.test(val)) continue;
-        // Parse: "globals a, b: readonly, c: off" etc.
         const body = val.replace(/^\s*globals?\s*/, '').replace(/\s*$/, '');
-        // Split by comma or whitespace, keeping name:value pairs together
         for (const entry of body.match(/[$_a-zA-Z][\w$]*(?:\s*:\s*[^,\s]+)?/g) || []) {
           const trimmed = entry.trim();
           if (!trimmed) continue;
@@ -1403,7 +1383,6 @@ class SourceCode {
           if (!name || !/^[$_a-zA-Z][\w$]*$/.test(name)) continue;
           const valueStr = (rawValue || 'readonly').toLowerCase();
           if (valueStr === 'off') {
-            // Remove the global variable so rules don't see it as a global reference.
             if (set.has(name)) {
               const idx = variables.indexOf(set.get(name));
               if (idx >= 0) variables.splice(idx, 1);
@@ -1429,19 +1408,12 @@ class SourceCode {
       }
     }
 
-    // In script mode, mark module-scope variables that shadow built-in globals with
-    // eslintImplicitGlobalSetting so no-redeclare can detect the redeclaration.
-    // ESLint in script mode has a single global scope; we split into global(0)+module(1),
-    // so the builtin marker must be on the module-scope var.
-    // Also propagate eslintExplicitGlobalComments from global scope to module scope
-    // so that /*global b:false*/ var b = 1 is detected as a redeclaration.
+    // Module scope in script mode: mark shadowed builtins + propagate comment globals.
     if (kind === 1 && this._sourceType === 'script') {
       const ecmaVersion = this._ecmaVersion;
-      // Lazily get global scope set for comment propagation (avoid infinite recursion)
       let globalSet = null;
       const getGlobalSet = () => {
         if (globalSet === null) {
-          // Access the already-cached global scope if available
           const globalScope = this._scopeCache ? this._scopeCache[0] : null;
           globalSet = globalScope ? globalScope.set : new Map();
         }
@@ -1454,7 +1426,6 @@ class SourceCode {
             v.eslintImplicitGlobalSetting = 'writable';
           }
         }
-        // Propagate /*global X:false*/ comment declarations from global scope
         const gSet = getGlobalSet();
         const gVar = gSet.get(v.name);
         if (gVar && gVar.eslintExplicitGlobalComments) {
@@ -1464,10 +1435,8 @@ class SourceCode {
       }
     }
 
-    // Add implicit 'arguments' to function scopes (non-arrow functions).
-    // ESLint's eslint-scope provides 'arguments' as a built-in variable
-    // in every function scope (except arrow functions).
-    if (kind === 2 && !set.has('arguments')) { // kind 2 = function
+    // Function scope: add implicit 'arguments' variable (not for arrow functions).
+    if (kind === 2 && !set.has('arguments')) {
       const argsVar = { name: 'arguments', defs: [], references: [], identifiers: [],
         scope, eslintUsed: false, writeable: false,
         isRead: () => false, isWritten: () => false };
@@ -1475,25 +1444,42 @@ class SourceCode {
       variables.push(argsVar);
     }
 
-    // Cache before building children to break the parent←→child cycle.
-    this._scopeCache[scopeId] = scope;
+    return [variables, set];
+  }
 
-    // Populate childScopes via Zig-precomputed scope→children CSR.
-    const childStart = ast._scopeChildStarts ? ast._scopeChildStarts[scopeId] : 0;
-    const childCount = ast._scopeChildCounts ? ast._scopeChildCounts[scopeId] : 0;
-    const childIdsArr = ast._scopeChildIds;
-    for (let j = 0; j < childCount; j++) {
-      childScopes.push(this._buildScope(childIdsArr ? childIdsArr[childStart + j] : j));
+  /**
+   * Build references[] and through[] for a scope.
+   * Bubbles unresolved refs from child scopes, resolving what this scope declares.
+   */
+  _buildScopeRefsAndThrough(scopeId, scope, childScopes) {
+    const ast = this._ast;
+    const NONE32 = 0xFFFFFFFF;
+    const references = [];
+    const through = [];
+    // Hoist typed-array lookups outside the hot loop: avoid ternary guards per iteration.
+    const _scopeRefStarts  = ast._scopeRefStarts;
+    const _scopeRefCounts  = ast._scopeRefCounts;
+    const _scopeRefIds     = ast._scopeRefIds;
+    const _refSymbolIds    = ast._refSymbolIds;
+    const _symScopeIds     = ast._symScopeIds;
+    if (!_scopeRefStarts || !_scopeRefCounts || !_scopeRefIds) return [references, through];
+    const refStart = _scopeRefStarts[scopeId];
+    const refCount = _scopeRefCounts[scopeId];
+    for (let j = 0; j < refCount; j++) {
+      const refId = _scopeRefIds[refStart + j];
+      const ref = this._buildReference(refId);
+      references.push(ref);
+      const refSymId = _refSymbolIds ? _refSymbolIds[refId] : NONE32;
+      if (refSymId === NONE32) {
+        through.push(ref);
+      } else {
+        const symScopeId = _symScopeIds ? _symScopeIds[refSymId] : NONE32;
+        if (symScopeId !== scopeId) through.push(ref);
+      }
     }
 
-    // Bubble unresolved references from child scopes into this scope's through
-    // list, matching ESLint's eslint-scope behavior. A reference that is
-    // unresolved in a child scope and also not resolved in this scope should
-    // appear in through (so no-undef sees it on the global scope).
-    // IMPORTANT: eslint-scope removes resolved refs from child.through so that
-    // child.through only ever contains truly unresolved refs. Failing to do this
-    // causes no-undef FP when scope 1 is returned for getScope(Program): it would
-    // see builtin refs (resolved by scope 0) still listed in scope 1's through.
+    // Bubble unresolved refs from children, resolving against this scope's variables.
+    const set = scope.set; // triggers ensureVarsSet lazily
     for (const child of childScopes) {
       const keep = [];
       for (const ref of child.through) {
@@ -1501,7 +1487,10 @@ class SourceCode {
         const name = ref.identifier?.name;
         const variable = name ? set.get(name) : undefined;
         if (variable) {
-          variable.references.push(ref);
+          // Only push to variable.references if the ref was previously unresolved (symId=NONE32).
+          // User-declared refs (ref.resolved != null) are already in variable.references from
+          // _buildVariable; with _refCache they are the same object, so pushing again would duplicate.
+          if (ref.resolved === null) variable.references.push(ref);
           ref.resolved = variable;
         } else {
           through.push(ref);
@@ -1515,23 +1504,35 @@ class SourceCode {
       }
     }
 
-    // Resolve this scope's own unresolved references against its variables.
-    // This handles builtin globals (undefined, NaN, Boolean, etc.) that are
-    // added to the global scope AFTER references are initially built.
+    // Resolve remaining through refs against this scope's own variables
+    // (covers builtins added to global scope after initial build).
     if (through.length > 0 && set.size > 0) {
       for (let k = through.length - 1; k >= 0; k--) {
         const ref = through[k];
         const name = ref.identifier?.name;
         const variable = name ? set.get(name) : undefined;
         if (variable) {
-          variable.references.push(ref);
+          if (ref.resolved === null) variable.references.push(ref);
           ref.resolved = variable;
           through.splice(k, 1);
         }
       }
     }
 
-    return scope;
+    return [references, through];
+  }
+
+  /** Build childScopes[] for a scope from the Zig-precomputed scope→children CSR. */
+  _buildScopeChildren(scopeId) {
+    const ast = this._ast;
+    const childStart = ast._scopeChildStarts ? ast._scopeChildStarts[scopeId] : 0;
+    const childCount = ast._scopeChildCounts ? ast._scopeChildCounts[scopeId] : 0;
+    const childIdsArr = ast._scopeChildIds;
+    const children = [];
+    for (let j = 0; j < childCount; j++) {
+      children.push(this._buildScope(childIdsArr ? childIdsArr[childStart + j] : j));
+    }
+    return children;
   }
 
   /**
@@ -1551,19 +1552,13 @@ class SourceCode {
     // Zig's semantic analyzer doesn't know about JS builtin globals (undefined,
     // NaN, Boolean, etc.), so references to them have resolved=null. Walk all
     // scopes and resolve them now that global variables are populated.
-    const globalSet = globalScope.set;
-    if (globalSet && globalSet.size > 0) {
-      const resolveInScope = (scope) => {
-        for (const ref of scope.references) {
-          if (!ref.resolved && ref.identifier) {
-            const v = globalSet.get(ref.identifier.name);
-            if (v) { ref.resolved = v; v.references.push(ref); }
-          }
-        }
-        for (const child of scope.childScopes) resolveInScope(child);
-      };
-      resolveInScope(globalScope);
-    }
+    // Trigger the full through-bubbling chain: global → children → grandchildren.
+    // Accessing globalScope.through forces ensureRefsThrough(), which calls
+    // _buildScopeRefsAndThrough(0, ...) and resolves all child scope through-arrays
+    // against global builtins (Math, console, undefined, etc.) that Zig doesn't know about.
+    // Without this, scope 1's .through retains unresolved builtin refs since nothing
+    // triggers global scope's lazy getter.
+    void globalScope.through; // eslint-disable-line no-void
 
     // In script mode getScope(Program) wraps scope 1 with globals for ReferenceTracker.
     // Eagerly create that wrapper now and update reference.from to point to it, so
@@ -1729,8 +1724,12 @@ class SourceCode {
     };
   }
 
-  /** Build an ESLint Reference object for a reference entry. */
+  /** Build an ESLint Reference object for a reference entry. Cached per refIdx. */
   _buildReference(refIdx) {
+    if (!this._refCache) this._refCache = new Array(this._ast._semRefCount || 256);
+    const cachedRef = this._refCache[refIdx];
+    if (cachedRef !== undefined) return cachedRef;
+
     const ast = this._ast;
     const NONE32 = 0xFFFFFFFF;
     const symId = ast._refSymbolIds[refIdx];
@@ -1772,6 +1771,7 @@ class SourceCode {
     } else {
       ref.writeExpr = null;
     }
+    this._refCache[refIdx] = ref;
     return ref;
   }
 

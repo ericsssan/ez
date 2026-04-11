@@ -17,7 +17,7 @@ const path = require("path");
 
 const ez = require("./index");
 const { runPlugins } = require("./eslint-runner");
-const { loadPlugin }  = require("./load-plugin");
+const { loadPlugin, loadCoreRules } = require("./load-plugin");
 
 // ── CLI ──────────────────────────────────────────────────────────
 const argv = process.argv.slice(2);
@@ -122,13 +122,8 @@ console.log(`Corpus: ${sources.length} files`);
 // Load eslint plugin for JS runner
 let allPlugins = [];
 try {
-  allPlugins = loadPlugin("eslint", new Set());
-} catch {
-  try {
-    // fall back to just using a subset of rules directly
-    allPlugins = [];
-  } catch {}
-}
+  allPlugins = loadCoreRules();
+} catch {}
 
 const tagNames      = ez.getTagNames();
 const nativeRules   = ez.getNativeRules();
@@ -212,17 +207,18 @@ const pathA = allPlugins.length > 0
     })
   : null;
 
-// C: parseSource + lintSource (all native, no JS runner)
-const pathC = bench("C  parseSource + lintSource (all native)", (src, file) => {
+// C: lintSource (all native, parse+lint in one Zig pass, no JS runner)
+const pathC = bench("C  lintSource (all native, no JS runner)", (src, file) => {
   ez.lintSource(src, { filename: file });
 });
 
-// B: hybrid — parseSource(nativeConfig) + runPlugins(jsOnly)
-const pathB = bench("B  hybrid: parseSource + lintSource(cfg) + runPlugins(jsOnly)", (src, file) => {
-  const ast = ez.parseSource(src, { filename: file });
-  if (nativeConfig) ez.lintSource(src, { filename: file, config: nativeConfig });
+// B: hybrid — parseAndLint (single native pass) + runPlugins(jsOnly)
+const pathB = bench("B  hybrid: parseAndLint(cfg) + runPlugins(jsOnly)", (src, file) => {
+  const result = nativeConfig
+    ? ez.parseAndLint(file, { config: nativeConfig })
+    : { ast: ez.parseSource(src, { filename: file }) };
   if (jsOnlyPlugins.length > 0) {
-    runPlugins(ast, jsOnlyPlugins, { filename: file, tagNames });
+    runPlugins(result.ast, jsOnlyPlugins, { filename: file, tagNames });
   }
 });
 
