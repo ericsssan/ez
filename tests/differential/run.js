@@ -140,7 +140,7 @@ for (const pkgName of PLUGIN_PACKAGES) {
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
 const { parseSource: parse, getTagNames, lintSource: ezLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
-const { runPlugins }            = require(path.join(JS_ROOT, "eslint-runner"));
+const { runPlugins, computeGlobals } = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
 
@@ -263,7 +263,8 @@ function runRunner(filePath) {
   const source = fs.readFileSync(filePath, "utf-8");
   try {
     const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
-    const ast = parse(source, { filename: filePath });
+    const globals = computeGlobals(2022, false);
+    const ast = parse(source, { filename: filePath, globals });
     const reports = runPlugins(ast, _runnerPlugins, { tagNames, sourceType });
     const results = [];
     for (const r of reports) {
@@ -285,14 +286,15 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
   try {
+    const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
+    const globals = computeGlobals(ecmaVersion, false);
     const _p0 = Date.now();
-    const ast = parse(src, { filename: "test" + ext });
+    const ast = parse(src, { filename: "test" + ext, globals });
     _runnerParseMs += Date.now() - _p0;
     const plugin = {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
       create: ruleModule.create,
     };
-    const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
     const _pl0 = Date.now();
     const reports = runPlugins(ast, [plugin], {
       tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,

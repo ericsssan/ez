@@ -156,6 +156,30 @@ const _ENV_GLOBALS = [
 
 const _BUILTIN_GLOBALS_SET = new Set(_BUILTIN_GLOBALS);
 
+/**
+ * Compute the list of global names to pre-declare in Zig's semantic analysis.
+ * Pass the returned array as `options.globals` to `parseSource()`.
+ * Zig will pre-declare these in the global scope so references resolve there,
+ * making scope.through exact without JS post-processing.
+ *
+ * @param {number} ecmaVersion - ECMAScript version (year or short form)
+ * @param {boolean} envEnabled - Whether to include env globals (console, fetch, etc.)
+ * @returns {string[]} Array of global names to pre-declare
+ */
+function computeGlobals(ecmaVersion, envEnabled) {
+  const ev = _normalizeEcmaVersion(ecmaVersion);
+  const globals = [];
+  for (const name of _BUILTIN_GLOBALS) {
+    const minVer = _GLOBAL_MIN_VERSION[name];
+    if (minVer !== undefined && ev < minVer) continue;
+    globals.push(name);
+  }
+  if (envEnabled) {
+    for (const name of _ENV_GLOBALS) globals.push(name);
+  }
+  return globals;
+}
+
 // ── Interned String Table ────────────────────────────────────────
 // Pre-intern all ESTree type name strings so identity comparisons (===)
 // on node.type are O(1) pointer checks, not string byte comparisons.
@@ -1709,7 +1733,8 @@ class SourceCode {
       }
     }
 
-    return {
+    const is_implicit_global = (flags16 & 0x2000) !== 0;
+    const v = {
       name,
       defs,
       references,
@@ -1722,6 +1747,14 @@ class SourceCode {
       isRead: () => is_read,
       isWritten: () => is_written || is_let, // let vars are potentially writable
     };
+    if (is_implicit_global) {
+      // Match the shape of JS-created builtin globals: writeable=false, eslintImplicitGlobalSetting='writable'.
+      // no-global-assign/no-native-reassign check variable.writeable===false to identify protected globals.
+      // no-shadow with builtinGlobals:true uses writeable!==undefined to detect implicit globals.
+      v.writeable = false;
+      v.eslintImplicitGlobalSetting = 'writable';
+    }
+    return v;
   }
 
   /** Build an ESLint Reference object for a reference entry. Cached per refIdx. */
@@ -4892,6 +4925,7 @@ function runPlugins(ast, plugins, options = {}) {
 
 module.exports = {
   runPlugins, RuleContext,
+  computeGlobals,
   // Exported for testing
   _estimateHandlerCost, _extractParentGuard, _fuseHandlers,
   _isTrivialHandler, _isDeadHandler, _classifyRuleAccess,

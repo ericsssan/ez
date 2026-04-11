@@ -156,6 +156,11 @@ pub const SemanticAnalyzer = struct {
     breakable_depth: u32 = 0,
     break_hit: [64]bool = [_]bool{false} ** 64,
 
+    /// Null-separated list of global names to pre-declare in scope 0 before visiting.
+    /// Passed from JS via the NAPI globals arg so references to builtins resolve in Zig,
+    /// making scope.through exact without JS post-processing.
+    implicit_globals: []const u8 = &.{},
+
     /// Global (scope_id, name) → SymbolId map for O(1) binding lookup.
     /// Single allocation replaces one StringHashMapUnmanaged per scope.
     scope_binding_map: ScopeBindingMap,
@@ -198,12 +203,24 @@ pub const SemanticAnalyzer = struct {
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
     /// Defaults to module mode (global→module scope, strict).
     pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
-        return analyzeModule(allocator, ast, true);
+        return analyzeModuleWithGlobals(allocator, ast, true, &.{});
     }
 
     /// Analyze with explicit module/script mode.
     pub fn analyzeModule(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool) !SemanticResult {
+        return analyzeModuleWithGlobals(allocator, ast, is_module, &.{});
+    }
+
+    /// Analyze with JS builtin globals pre-declared in the global scope.
+    /// `globals` is a null-separated list of global names (e.g. "Math\x00console\x00").
+    /// Pre-declaring them causes references to resolve in Zig, making scope.through exact.
+    pub fn analyzeWithGlobals(allocator: std.mem.Allocator, ast: *const Ast, globals: []const u8) !SemanticResult {
+        return analyzeModuleWithGlobals(allocator, ast, true, globals);
+    }
+
+    fn analyzeModuleWithGlobals(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool, globals: []const u8) !SemanticResult {
         var self = SemanticAnalyzer.init(allocator, ast, is_module);
+        self.implicit_globals = globals;
         errdefer self.deinit();
         // exported_names and scope_binding_map are temporaries; always free them.
         defer self.exported_names.deinit(allocator);
@@ -296,7 +313,9 @@ pub const SemanticAnalyzer = struct {
         // var + function_decl  => OK
         // function_decl + function_decl  => OK
         // parameter + var  => OK (var in function body shadows parameter)
+        // implicit_global + anything => OK (builtins can always be shadowed by user declarations)
         // Everything else in the same scope => error
+        if (existing == .implicit_global) return true;
         return existing.canRedeclare() and new.canRedeclare();
     }
 
@@ -333,10 +352,22 @@ pub const SemanticAnalyzer = struct {
     /// (uses before the declaration in source order) may fail during the
     /// single-pass walk.  After all bindings have been registered, retry
     /// the scope-chain lookup for every unresolved reference.
+    ///
+    /// Also re-resolves references that currently resolve to implicit globals
+    /// (pre-declared builtins in scope 0).  A `var x` inside a function
+    /// declared after the reference site causes the single-pass walk to
+    /// find the implicit global before the local var is registered; the
+    /// post-pass corrects this by re-checking closer scopes first.
     fn resolveUnresolved(self: *SemanticAnalyzer) void {
         const count = self.references.symbol_ids.items.len;
         for (0..count) |i| {
-            if (self.references.symbol_ids.items[i] != .none) continue;
+            const existing = self.references.symbol_ids.items[i];
+            // Skip refs that are already resolved to a non-implicit-global symbol.
+            if (existing != .none) {
+                if (!self.symbols.flags.items[existing.toInt()].is_implicit_global) continue;
+                // Fall through to re-check: the implicit global may be shadowed by a
+                // local var/function that was declared later in the same scope.
+            }
             const ref_id: ReferenceId = @enumFromInt(i);
             const node_idx = self.references.getNode(ref_id);
             if (node_idx == .none) continue;
@@ -348,6 +379,9 @@ pub const SemanticAnalyzer = struct {
             while (scope.isValid()) {
                 const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
                 if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
+                    // If the sym_id is the same implicit global we already have, stop.
+                    if (sym_id == existing) break;
+                    // Found a closer binding — update the resolution.
                     self.references.resolve(ref_id, sym_id);
                     const kind = self.references.getKind(ref_id);
                     if (kind.isRead()) self.symbols.markRead(sym_id);
@@ -1173,6 +1207,9 @@ pub const SemanticAnalyzer = struct {
 
     fn visitRoot(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         _ = try self.enterScope(.global, idx);
+        // Pre-declare JS builtins (Math, undefined, console, etc.) in the global scope
+        // so references to them resolve during semantic analysis, making scope.through exact.
+        if (self.implicit_globals.len > 0) try self.predeclareImplicitGlobals();
         if (self.is_module) {
             _ = try self.enterScope(.module, idx);
         }
@@ -1194,6 +1231,19 @@ pub const SemanticAnalyzer = struct {
         self.leaveScope(); // global
     }
 
+    /// Pre-declare all names in `self.implicit_globals` (null-separated) as implicit_global
+    /// symbols in the current (global) scope.  Called before visiting AST body so that
+    /// references to builtins (Math, undefined, console…) resolve during the walk rather
+    /// than appearing in scope.through.
+    fn predeclareImplicitGlobals(self: *SemanticAnalyzer) !void {
+        const flags = symbol_mod.flagsFromBindingKind(.implicit_global);
+        var iter = std.mem.splitScalar(u8, self.implicit_globals, 0);
+        while (iter.next()) |name| {
+            if (name.len == 0) continue;
+            const sym_id = try self.symbols.addSymbol(name, flags, .implicit_global, self.current_scope, .none);
+            try self.scope_binding_map.put(self.allocator, .{ .scope_id = self.current_scope.toInt(), .name = name }, sym_id);
+        }
+    }
 
     fn visitBlockStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         _ = try self.enterScope(.block, idx);

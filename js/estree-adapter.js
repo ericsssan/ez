@@ -404,12 +404,15 @@ class AstView {
         const srcStr = _decoder.decode(this._sourceBytes);
         this._sourceText = srcStr; // pre-fill lazy source cache
         if (srcStr.length === this.sourceLen) {
-          // All-ASCII source: byte offset == char offset in decoded string → string slicing
+          // All-ASCII source: byte offset == char offset in decoded string → string slicing.
+          // Names in the bump region (implicit globals) have s < srcOff, so cs < 0;
+          // fall back to direct buffer decode for those.
           const srcOff = this._sourceOff;
           for (let i = 0; i < symCount; i++) {
             const s = this._symNameStarts[i], l = this._symNameLens[i];
+            if (l === 0) { nameCache[i] = ''; continue; }
             const cs = s - srcOff;
-            nameCache[i] = (l === 0 || cs < 0) ? '' : srcStr.slice(cs, cs + l);
+            nameCache[i] = cs >= 0 ? srcStr.slice(cs, cs + l) : _decoder.decode(new Uint8Array(buffer, s, l));
           }
         } else {
           // Non-ASCII source: per-symbol TextDecoder (correctness fallback)

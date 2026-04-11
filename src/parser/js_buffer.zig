@@ -268,8 +268,18 @@ pub fn writeSemanticData(
         // Names: store byte offset from buffer base and byte length.
         // These are byte offsets; the JS side converts to UTF-16 indices.
         const name = sem.symbols.names.items[i];
-        symbol_name_starts[i] = @intCast(@intFromPtr(name.ptr) - @intFromPtr(buf));
-        symbol_name_lens[i] = @intCast(name.len);
+        const is_implicit = sem.symbols.flags.items[i].is_implicit_global;
+        if (is_implicit and name.len > 0) {
+            // Implicit global names point into the external JS globals buffer, not the
+            // source buffer.  Copy into the bump region so the JS offset math is valid.
+            const name_copy = try alloc.alloc(u8, name.len);
+            @memcpy(name_copy, name);
+            symbol_name_starts[i] = ptrOffsetPub(buf, name_copy.ptr);
+            symbol_name_lens[i] = @intCast(name.len);
+        } else {
+            symbol_name_starts[i] = @intCast(@intFromPtr(name.ptr) - @intFromPtr(buf));
+            symbol_name_lens[i] = @intCast(name.len);
+        }
     }
 
     // ── Reference arrays ─────────────────────────────────────────

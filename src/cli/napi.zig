@@ -41,7 +41,7 @@ pub export fn ez_parse(
     source_len: u32,
     lang: u8,
 ) u32 {
-    return parseImpl(buf_ptr, buf_len, source_start, source_len, lang) catch 0;
+    return parseImpl(buf_ptr, buf_len, source_start, source_len, lang, &.{}) catch 0;
 }
 
 fn parseImpl(
@@ -50,6 +50,7 @@ fn parseImpl(
     source_start: u32,
     source_len: u32,
     lang: u8,
+    globals: []const u8,
 ) !u32 {
     if (source_start + source_len > buf_len) return 0;
     if (source_start < js_buffer.HEADER_SIZE) return 0;
@@ -89,7 +90,7 @@ fn parseImpl(
     var semantic_data_offset: u32 = 0;
     var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer sem_arena.deinit();
-    if (semantic_mod.SemanticAnalyzer.analyze(sem_arena.allocator(), &tree)) |sem_result| {
+    if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena.allocator(), &tree, globals)) |sem_result| {
         var sem = sem_result;
         // sem.deinit() is intentionally skipped — the arena frees everything.
         if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
@@ -726,12 +727,12 @@ fn registerFn(env: n.Env, exports: n.Value, name: [*:0]const u8, cb: n.Callback)
 // ── parse(buffer, sourceStart, sourceLen, lang) → bytesUsed ─────
 
 fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
-    var argc: usize = 4;
-    var argv: [4]n.Value = undefined;
+    var argc: usize = 5; // allow optional 5th globals arg
+    var argv: [5]n.Value = undefined;
     if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
 
     if (argc < 4) {
-        _ = n.napi_throw_error(env, null, "parse(buffer, sourceStart, sourceLen, lang): 4 args required");
+        _ = n.napi_throw_error(env, null, "parse(buffer, sourceStart, sourceLen, lang[, globals]): 4 args required");
         return null;
     }
 
@@ -754,7 +755,10 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     _ = n.napi_get_value_uint32(env, argv[2], &source_len);
     _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
 
-    const result = ez_parse(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val));
+    // Optional 5th arg: null-separated globals Uint8Array (Buffer or Uint8Array)
+    const globals: []const u8 = if (argc >= 5) (getOptionalConfigBytes(env, argv[4]) orelse &.{}) else &.{};
+
+    const result = parseImpl(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val), globals) catch 0;
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
@@ -829,7 +833,7 @@ fn napiParseFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
     const file_info = readFileIntoBuf(buf_ptr, @intCast(buf_len), path_z) catch return returnU32(env, 0);
 
-    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val)) catch return returnU32(env, 0);
+    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val), &.{}) catch return returnU32(env, 0);
     return returnU32(env, result);
 }
 

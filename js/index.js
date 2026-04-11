@@ -112,7 +112,11 @@ function _makePrivateBuf(buf, sourceStart, sourceLen) {
         const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
         const shift = srcStart - sourceStart;
         for (let i = 0; i < symCount; i++) {
-          nameStartsArr[i] = (nameStartsArr[i] + shift) >>> 0;
+          const orig = nameStartsArr[i];
+          // Only shift offsets that point into the source text.
+          // Names in the bump region (implicit globals, offset < sourceStart) are already
+          // at the correct offset in the private buffer — no shift needed.
+          if (orig >= sourceStart) nameStartsArr[i] = (orig + shift) >>> 0;
         }
       }
     }
@@ -210,7 +214,16 @@ function parseSource(source, options = {}) {
     : options.filename ? detectLang(options.filename) : LANG.js;
 
   const { buf, sourceStart, sourceLen } = _encodeSource(source);
-  const bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
+  // Pass globals as null-separated UTF-8 bytes so Zig pre-declares them in scope 0,
+  // making scope.through exact without JS post-processing.
+  let bytesUsed;
+  const globals = options.globals;
+  if (globals && globals.length > 0) {
+    const globalsU8 = Buffer.from(globals.join('\0'), 'utf8');
+    bytesUsed = b.parse(buf, sourceStart, sourceLen, lang, globalsU8);
+  } else {
+    bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
+  }
   if (bytesUsed === 0) throw new Error("ez: parse failed (buffer too small or invalid source)");
 
   getTagNames();
