@@ -35,6 +35,29 @@ const ESLINT_ROOT  = path.resolve(__dirname, "../conformance/eslint");
 const FIXTURES_DIR = path.resolve(__dirname, "fixtures");
 const BASELINE_FILE = path.resolve(__dirname, "baseline.json");
 
+// ── Bun: pre-create @typescript-eslint/parser stub ──────────
+// Bun caches failed module resolutions.  24 ESLint test files require
+// @typescript-eslint/parser at load time; if any code triggers a failed
+// resolution before the stub is created, those files can never load.
+// Solution: create the stub here, before any plugin/rule loading happens.
+// The stub is cleaned up in installCorpusIntercept()'s restore() call.
+const _BUN_PARSER_STUB_DIR = path.join(ESLINT_ROOT, "node_modules/@typescript-eslint/parser");
+let   _BUN_PARSER_STUB_CREATED = false;
+if (typeof Bun !== "undefined" && !fs.existsSync(_BUN_PARSER_STUB_DIR)) {
+  fs.mkdirSync(_BUN_PARSER_STUB_DIR, { recursive: true });
+  fs.writeFileSync(path.join(_BUN_PARSER_STUB_DIR, "package.json"),
+    JSON.stringify({ name: "@typescript-eslint/parser", main: "index.js", version: "0.0.0" }));
+  fs.writeFileSync(path.join(_BUN_PARSER_STUB_DIR, "index.js"),
+    '"use strict";\nmodule.exports = { parse() { return { type: "Program", body: [], range: [0, 0] }; } };\n');
+  _BUN_PARSER_STUB_CREATED = true;
+  // Register cleanup on exit so the stub is removed even if an error occurs
+  process.on("exit", () => {
+    try { fs.rmSync(_BUN_PARSER_STUB_DIR, { recursive: true, force: true }); } catch {}
+    try { fs.rmdirSync(path.dirname(_BUN_PARSER_STUB_DIR)); } catch {}
+    try { fs.rmdirSync(path.join(ESLINT_ROOT, "node_modules")); } catch {}
+  });
+}
+
 // ── CLI flags ─────────────────────────────────────────────────
 
 const args         = process.argv.slice(2);
@@ -437,6 +460,58 @@ function installCorpusIntercept() {
   const _ruleTestPath = require.resolve(
     path.join(ESLINT_ROOT, "lib/rule-tester/rule-tester")
   );
+
+  // ── Bun: Module._load hook never fires; use require.cache injection ──
+  // Confirmed: injection at real on-disk paths is respected by Bun's require().
+  if (typeof Bun !== "undefined") {
+    const _eslintApiPath = path.join(ESLINT_ROOT, "lib/api.js");
+
+    // The @typescript-eslint/parser stub was created at script start (top-level).
+    // Cleanup is handled via process.on("exit") registered there.
+
+    // Inject stubs at a path.
+    const _stubbedPaths = [];
+    const _stub = (p, exports) => {
+      require.cache[p] = { id: p, filename: p, loaded: true, exports };
+      _stubbedPaths.push(p);
+    };
+
+    // Build fake eslint for a real eslint path (real + RuleTester swapped).
+    const _makeFakeEslint = (eslintPath) => {
+      try { return { ...require(eslintPath), RuleTester: CapturingRuleTester }; }
+      catch { return { RuleTester: CapturingRuleTester }; }
+    };
+
+    // Load real eslint BEFORE injecting stubs so we can spread its exports.
+    // Inject fake at the conformance submodule path (ESLint core tests).
+    _stub(_ruleTestPath, CapturingRuleTester);
+    _stub(_eslintApiPath, _makeFakeEslint(_eslintApiPath));
+
+    // Plugin tests (promise, react, unicorn) resolve 'eslint' to a different path
+    // (e.g. system install).  Discover those paths and inject fakes there too.
+    const _pluginSampleDirs = [
+      path.join(__dirname, "../conformance/eslint-plugin-promise/__tests__"),
+      path.join(__dirname, "../conformance/eslint-plugin-react/tests/lib/rules"),
+      path.join(__dirname, "../conformance/eslint-plugin-unicorn/test"),
+    ];
+    for (const dir of _pluginSampleDirs) {
+      try {
+        const resolved = require.resolve("eslint", { paths: [dir] });
+        if (!_stubbedPaths.includes(resolved))
+          _stub(resolved, _makeFakeEslint(resolved));
+      } catch { /* eslint not resolvable from this dir — skip */ }
+    }
+
+    return {
+      TESTS_DIR,
+      restore: () => {
+        for (const p of _stubbedPaths) delete require.cache[p];
+        // Parser stub cleanup is handled by process.on("exit") registered at startup.
+      },
+    };
+  }
+
+  // ── Node.js: use Module._load hook ──
   const _ESLINT_PREFIX = ESLINT_ROOT + path.sep;
   const _JS_NM         = path.join(JS_ROOT, "node_modules");
   const _origLoad = Module._load;
