@@ -78,6 +78,10 @@ pub const ReferenceTable = struct {
     node_ids: std.ArrayList(ast.NodeIndex),
     /// Scope in which the reference occurs.
     scope_ids: std.ArrayList(ScopeId),
+    /// For write/read_write references: the expression being written (RHS of
+    /// assignment, VariableDeclarator init, ForIn/Of iterable). `.none` for
+    /// read-only references and update expressions (x++, x--).
+    write_expr_ids: std.ArrayList(ast.NodeIndex),
 
     /// Allocator used for all internal arrays.
     gpa: std.mem.Allocator,
@@ -88,6 +92,7 @@ pub const ReferenceTable = struct {
             .kinds = .empty,
             .node_ids = .empty,
             .scope_ids = .empty,
+            .write_expr_ids = .empty,
             .gpa = allocator,
         };
     }
@@ -97,16 +102,20 @@ pub const ReferenceTable = struct {
         self.kinds.deinit(self.gpa);
         self.node_ids.deinit(self.gpa);
         self.scope_ids.deinit(self.gpa);
+        self.write_expr_ids.deinit(self.gpa);
     }
 
     /// Add a new reference. The reference starts unresolved (symbol_id = .none).
     /// Resolution happens later via `resolve` once scope-chain lookup succeeds.
+    /// `write_expr` is the expression being written (for write/read_write refs),
+    /// or `.none` for read-only and update-expression refs.
     /// Returns the new reference's id.
     pub fn addReference(
         self: *ReferenceTable,
         kind: ReferenceKind,
         node_id: ast.NodeIndex,
         scope_id: ScopeId,
+        write_expr: ast.NodeIndex,
     ) !ReferenceId {
         const index: u32 = @intCast(self.symbol_ids.items.len);
 
@@ -116,14 +125,21 @@ pub const ReferenceTable = struct {
         try self.kinds.ensureUnusedCapacity(self.gpa, 1);
         try self.node_ids.ensureUnusedCapacity(self.gpa, 1);
         try self.scope_ids.ensureUnusedCapacity(self.gpa, 1);
+        try self.write_expr_ids.ensureUnusedCapacity(self.gpa, 1);
 
         // Append without capacity checks — all arrays were pre-allocated above.
         self.symbol_ids.appendAssumeCapacity(.none);
         self.kinds.appendAssumeCapacity(kind);
         self.node_ids.appendAssumeCapacity(node_id);
         self.scope_ids.appendAssumeCapacity(scope_id);
+        self.write_expr_ids.appendAssumeCapacity(write_expr);
 
         return ReferenceId.fromInt(index);
+    }
+
+    /// Get the write expression node for a reference (`.none` if not a write ref).
+    pub fn getWriteExpr(self: *const ReferenceTable, ref_id: ReferenceId) ast.NodeIndex {
+        return self.write_expr_ids.items[ref_id.toInt()];
     }
 
     /// Resolve a previously-unresolved reference to a symbol.
@@ -180,21 +196,24 @@ pub const ReferenceTable = struct {
             }
         }.lt);
 
-        // Apply the permutation to all four parallel arrays.
-        const sym_orig  = try allocator.dupe(SymbolId,      self.symbol_ids.items);
+        // Apply the permutation to all parallel arrays.
+        const sym_orig   = try allocator.dupe(SymbolId,       self.symbol_ids.items);
         defer allocator.free(sym_orig);
-        const kind_orig = try allocator.dupe(ReferenceKind, self.kinds.items);
+        const kind_orig  = try allocator.dupe(ReferenceKind,  self.kinds.items);
         defer allocator.free(kind_orig);
-        const node_orig = try allocator.dupe(ast.NodeIndex,  self.node_ids.items);
+        const node_orig  = try allocator.dupe(ast.NodeIndex,   self.node_ids.items);
         defer allocator.free(node_orig);
-        const scope_orig = try allocator.dupe(ScopeId,      self.scope_ids.items);
+        const scope_orig = try allocator.dupe(ScopeId,         self.scope_ids.items);
         defer allocator.free(scope_orig);
+        const wexpr_orig = try allocator.dupe(ast.NodeIndex,   self.write_expr_ids.items);
+        defer allocator.free(wexpr_orig);
 
         for (indices, 0..) |src, dst| {
-            self.symbol_ids.items[dst] = sym_orig[src];
-            self.kinds.items[dst]      = kind_orig[src];
-            self.node_ids.items[dst]   = node_orig[src];
-            self.scope_ids.items[dst]  = scope_orig[src];
+            self.symbol_ids.items[dst]    = sym_orig[src];
+            self.kinds.items[dst]         = kind_orig[src];
+            self.node_ids.items[dst]      = node_orig[src];
+            self.scope_ids.items[dst]     = scope_orig[src];
+            self.write_expr_ids.items[dst] = wexpr_orig[src];
         }
     }
 
@@ -214,10 +233,10 @@ test "add and resolve references" {
     var table = ReferenceTable.init(std.testing.allocator);
     defer table.deinit();
 
-    const ref0 = try table.addReference(.read, ast.NodeIndex.fromInt(10), ScopeId.fromInt(0));
-    const ref1 = try table.addReference(.write, ast.NodeIndex.fromInt(20), ScopeId.fromInt(1));
-    const ref2 = try table.addReference(.read_write, ast.NodeIndex.fromInt(30), ScopeId.fromInt(1));
-    const ref3 = try table.addReference(.type_of, ast.NodeIndex.fromInt(40), ScopeId.fromInt(0));
+    const ref0 = try table.addReference(.read, ast.NodeIndex.fromInt(10), ScopeId.fromInt(0), .none);
+    const ref1 = try table.addReference(.write, ast.NodeIndex.fromInt(20), ScopeId.fromInt(1), .none);
+    const ref2 = try table.addReference(.read_write, ast.NodeIndex.fromInt(30), ScopeId.fromInt(1), .none);
+    const ref3 = try table.addReference(.type_of, ast.NodeIndex.fromInt(40), ScopeId.fromInt(0), .none);
 
     try std.testing.expectEqual(@as(u32, 4), table.count());
     try std.testing.expectEqual(@as(u32, 4), table.unresolvedCount());
@@ -250,7 +269,7 @@ test "accessor round-trip" {
 
     const node = ast.NodeIndex.fromInt(42);
     const scope = ScopeId.fromInt(7);
-    const ref_id = try table.addReference(.write, node, scope);
+    const ref_id = try table.addReference(.write, node, scope, .none);
 
     try std.testing.expectEqual(ReferenceKind.write, table.getKind(ref_id));
     try std.testing.expectEqual(node, table.getNode(ref_id));

@@ -87,7 +87,7 @@ comptime {
 
 /// Secondary header written into the bump region when semantic analysis is run.
 /// All offsets are byte offsets from the start of the buffer (same origin as BufferHeader).
-/// 37 u32 fields = 148 bytes.
+/// 38 u32 fields = 152 bytes.
 pub const SemanticHeader = extern struct {
     scope_count: u32,
     symbol_count: u32,
@@ -116,6 +116,7 @@ pub const SemanticHeader = extern struct {
     ref_kinds_offset: u32,             // u8[]  — ReferenceKind enum
     ref_node_ids_offset: u32,          // u32[] — AST node of reference
     ref_scope_ids_offset: u32,         // u32[] — scope of reference
+    ref_write_expr_ids_offset: u32,    // u32[] — write expression node (NONE if not a write ref)
 
     // Node → containing scope mapping (one entry per AST node)
     node_scope_ids_offset: u32,        // u32[] — for each node, its containing ScopeId
@@ -155,18 +156,19 @@ pub const SemanticHeader = extern struct {
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 148);
-    std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 144);
-    std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 104);
-    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 108);
-    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 112);
-    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_ids_offset") == 116);
-    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_starts_offset") == 120);
-    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_counts_offset") == 124);
-    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_ids_offset") == 128);
-    std.debug.assert(@offsetOf(SemanticHeader, "tag_node_starts_offset") == 132);
-    std.debug.assert(@offsetOf(SemanticHeader, "tag_node_ids_offset") == 136);
-    std.debug.assert(@offsetOf(SemanticHeader, "tag_count") == 140);
+    std.debug.assert(@sizeOf(SemanticHeader) == 152);
+    std.debug.assert(@offsetOf(SemanticHeader, "ref_write_expr_ids_offset") == 84);
+    std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 148);
+    std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 108);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 112);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 116);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_ids_offset") == 120);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_starts_offset") == 124);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_counts_offset") == 128);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_child_ids_offset") == 132);
+    std.debug.assert(@offsetOf(SemanticHeader, "tag_node_starts_offset") == 136);
+    std.debug.assert(@offsetOf(SemanticHeader, "tag_node_ids_offset") == 140);
+    std.debug.assert(@offsetOf(SemanticHeader, "tag_count") == 144);
 }
 
 // ── CFG Graph Header ────────────────────────────────────────────
@@ -287,6 +289,7 @@ pub fn writeSemanticData(
     const ref_kinds = try alloc.alloc(u8, ref_count);
     const ref_node_ids = try alloc.alloc(u32, ref_count);
     const ref_scope_ids = try alloc.alloc(u32, ref_count);
+    const ref_write_expr_ids = try alloc.alloc(u32, ref_count);
 
     for (0..ref_count) |i| {
         const rsym = sem.references.symbol_ids.items[i];
@@ -296,6 +299,8 @@ pub fn writeSemanticData(
         ref_node_ids[i] = if (rn == .none) none32 else @intFromEnum(rn);
         const rsc = sem.references.scope_ids.items[i];
         ref_scope_ids[i] = if (rsc == .none) none32 else @intFromEnum(rsc);
+        const rwe = sem.references.write_expr_ids.items[i];
+        ref_write_expr_ids[i] = if (rwe == .none) none32 else @intFromEnum(rwe);
     }
 
     // ── Node → scope mapping ──────────────────────────────────────
@@ -470,6 +475,7 @@ pub fn writeSemanticData(
         .ref_kinds_offset = ptrOffsetPub(buf, ref_kinds.ptr),
         .ref_node_ids_offset = ptrOffsetPub(buf, ref_node_ids.ptr),
         .ref_scope_ids_offset = ptrOffsetPub(buf, ref_scope_ids.ptr),
+        .ref_write_expr_ids_offset = ptrOffsetPub(buf, ref_write_expr_ids.ptr),
 
         .node_scope_ids_offset = ptrOffsetPub(buf, node_scope_ids.ptr),
 

@@ -1784,23 +1784,11 @@ class SourceCode {
     ref.resolved = resolved;
     ref.init = false;
     ref._kind = kind;
-    // Infer writeExpr: for write references, the RHS of the assignment/declarator
+    // Read pre-baked write expression from Zig buffer (pre-computed during semantic analysis).
     if (kind === 1 || kind === 2) { // write or read_write
-      const parent = refNode?.parent;
-      if (parent) {
-        if (parent.type === 'AssignmentExpression' || parent.type === 'AssignmentPattern') {
-          ref.writeExpr = parent.right || null;
-        } else if (parent.type === 'VariableDeclarator') {
-          ref.writeExpr = parent.init || null;
-          ref.init = true;
-        } else if (parent.type === 'ForInStatement' || parent.type === 'ForOfStatement') {
-          ref.writeExpr = parent.right || null;
-        } else {
-          ref.writeExpr = null;
-        }
-      } else {
-        ref.writeExpr = null;
-      }
+      const weIdx = ast._refWriteExprIds ? ast._refWriteExprIds[refIdx] : NONE32;
+      ref.writeExpr = (weIdx !== undefined && weIdx !== NONE32 && weIdx < ast.nodeCount)
+        ? nodeView(ast, weIdx) : null;
     } else {
       ref.writeExpr = null;
     }

@@ -894,7 +894,7 @@ pub const SemanticAnalyzer = struct {
                     if (operand_tag == .member_expr or operand_tag == .optional_member_expr or
                         operand_tag == .computed_member_expr or operand_tag == .optional_computed_member_expr)
                     {
-                        try self.visitLValueExpr(data.lhs);
+                        try self.visitLValueExpr(data.lhs, .none);
                     } else {
                         try self.visitNode(data.lhs);
                     }
@@ -1371,7 +1371,8 @@ pub const SemanticAnalyzer = struct {
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
             try self.visitNode(fiof_data.binding);
         } else {
-            try self.visitLValueExpr(fiof_data.binding);
+            // For-in/of binding without a declaration: the write_expr is the iterable/collection.
+            try self.visitLValueExpr(fiof_data.binding, fiof_data.expr);
         }
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
@@ -1723,11 +1724,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitIdentifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
         const name = self.ast.tokenText(self.ast.nodeMainToken(idx));
-        const ref_id = try self.references.addReference(
-            .read,
-            idx,
-            self.current_scope,
-        );
+        const ref_id = try self.references.addReference(.read, idx, self.current_scope, .none);
         self.resolveReference(name, ref_id);
     }
 
@@ -1745,7 +1742,7 @@ pub const SemanticAnalyzer = struct {
             .jsx_identifier => {
                 const name = self.ast.tokenText(self.ast.nodeMainToken(name_idx));
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
-                    const ref_id = try self.references.addReference(.read, name_idx, self.current_scope);
+                    const ref_id = try self.references.addReference(.read, name_idx, self.current_scope, .none);
                     self.resolveReference(name, ref_id);
                 }
             },
@@ -1766,7 +1763,7 @@ pub const SemanticAnalyzer = struct {
         switch (tag) {
             .jsx_identifier => {
                 const name = self.ast.tokenText(self.ast.nodeMainToken(name_idx));
-                const ref_id = try self.references.addReference(.read, name_idx, self.current_scope);
+                const ref_id = try self.references.addReference(.read, name_idx, self.current_scope, .none);
                 self.resolveReference(name, ref_id);
             },
             .jsx_member_expr => {
@@ -1786,16 +1783,12 @@ pub const SemanticAnalyzer = struct {
         if (data.lhs != .none) {
             if (self.ast.nodeTag(data.lhs) == .identifier) {
                 const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
-                const ref_id = try self.references.addReference(
-                    kind,
-                    data.lhs,
-                    self.current_scope,
-                );
+                const ref_id = try self.references.addReference(kind, data.lhs, self.current_scope, data.rhs);
                 self.resolveReference(name, ref_id);
             } else {
                 // Destructuring pattern: [a, b] = ... or { a, b } = ...
-                // Inner identifiers are assignment targets → write references.
-                try self.visitLValueExpr(data.lhs);
+                // Inner identifiers are assignment targets → write references with write_expr = rhs.
+                try self.visitLValueExpr(data.lhs, data.rhs);
             }
         }
         try self.visitNode(data.rhs);
@@ -1807,14 +1800,10 @@ pub const SemanticAnalyzer = struct {
         if (data.lhs != .none) {
             if (self.ast.nodeTag(data.lhs) == .identifier) {
                 const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
-                const ref_id = try self.references.addReference(
-                    kind,
-                    data.lhs,
-                    self.current_scope,
-                );
+                const ref_id = try self.references.addReference(kind, data.lhs, self.current_scope, data.rhs);
                 self.resolveReference(name, ref_id);
             } else {
-                try self.visitLValueExpr(data.lhs);
+                try self.visitLValueExpr(data.lhs, data.rhs);
             }
         }
         // Branch between LHS and RHS: RHS only executes if LHS short-circuit
@@ -1830,16 +1819,13 @@ pub const SemanticAnalyzer = struct {
     fn visitUpdateExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
         if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
-            const ref_id = try self.references.addReference(
-                .read_write,
-                data.lhs,
-                self.current_scope,
-            );
+            // Update expressions (x++, x--) have no explicit write expression.
+            const ref_id = try self.references.addReference(.read_write, data.lhs, self.current_scope, .none);
             self.resolveReference(name, ref_id);
         } else if (data.lhs != .none) {
             // For member expressions like `obj.prop++`, visit as an lvalue base
             // so is_member_written gets set on the base symbol.
-            try self.visitLValueExpr(data.lhs);
+            try self.visitLValueExpr(data.lhs, .none);
         }
     }
 
@@ -1847,16 +1833,17 @@ pub const SemanticAnalyzer = struct {
 
     /// Visit an lvalue expression — any node that appears as an assignment target,
     /// for-in/of binding, or destructuring target. Identifiers produce write
-    /// references; patterns recurse; member expressions are visited normally
-    /// (their object is a read, the property is not a reference).
-    fn visitLValueExpr(self: *SemanticAnalyzer, node: NodeIndex) !void {
+    /// references with write_expr set to the expression being assigned (RHS of
+    /// the enclosing assignment or for-in/of iterable). Pass `.none` when there
+    /// is no explicit write expression (e.g. member-expression targets in delete).
+    fn visitLValueExpr(self: *SemanticAnalyzer, node: NodeIndex, write_expr: NodeIndex) !void {
         if (node == .none) return;
         const tag = self.ast.nodeTag(node);
         const data = self.ast.nodeData(node);
         switch (tag) {
             .identifier => {
                 const name = self.ast.tokenText(self.ast.nodeMainToken(node));
-                const ref_id = try self.references.addReference(.write, node, self.current_scope);
+                const ref_id = try self.references.addReference(.write, node, self.current_scope, write_expr);
                 self.resolveReference(name, ref_id);
             },
             .array_pattern => {
@@ -1864,7 +1851,7 @@ pub const SemanticAnalyzer = struct {
                 const items = self.ast.extraSlice(range);
                 for (items) |raw| {
                     const elem: NodeIndex = @enumFromInt(raw);
-                    try self.visitLValueExpr(elem);
+                    try self.visitLValueExpr(elem, write_expr);
                 }
             },
             .object_pattern => {
@@ -1875,14 +1862,14 @@ pub const SemanticAnalyzer = struct {
                     const prop_tag = self.ast.nodeTag(prop);
                     const prop_data = self.ast.nodeData(prop);
                     switch (prop_tag) {
-                        .property => try self.visitLValueExpr(prop_data.rhs),
-                        .shorthand_property => try self.visitLValueExpr(prop_data.lhs),
+                        .property => try self.visitLValueExpr(prop_data.rhs, write_expr),
+                        .shorthand_property => try self.visitLValueExpr(prop_data.lhs, write_expr),
                         .computed_property => {
                             try self.visitNode(prop_data.lhs); // computed key is a read
-                            try self.visitLValueExpr(prop_data.rhs);
+                            try self.visitLValueExpr(prop_data.rhs, write_expr);
                         },
-                        .rest_element => try self.visitLValueExpr(prop_data.lhs),
-                        else => try self.visitLValueExpr(prop),
+                        .rest_element => try self.visitLValueExpr(prop_data.lhs, write_expr),
+                        else => try self.visitLValueExpr(prop, write_expr),
                     }
                 }
             },
@@ -1895,7 +1882,7 @@ pub const SemanticAnalyzer = struct {
                 const items = self.ast.extraSlice(range);
                 for (items) |raw| {
                     const elem: NodeIndex = @enumFromInt(raw);
-                    try self.visitLValueExpr(elem);
+                    try self.visitLValueExpr(elem, write_expr);
                 }
             },
             .object_literal => {
@@ -1906,26 +1893,27 @@ pub const SemanticAnalyzer = struct {
                     const prop_tag = self.ast.nodeTag(prop);
                     const prop_data = self.ast.nodeData(prop);
                     switch (prop_tag) {
-                        .property => try self.visitLValueExpr(prop_data.rhs),
-                        .shorthand_property => try self.visitLValueExpr(prop_data.lhs),
+                        .property => try self.visitLValueExpr(prop_data.rhs, write_expr),
+                        .shorthand_property => try self.visitLValueExpr(prop_data.lhs, write_expr),
                         .computed_property => {
                             try self.visitNode(prop_data.lhs); // computed key is a read
-                            try self.visitLValueExpr(prop_data.rhs);
+                            try self.visitLValueExpr(prop_data.rhs, write_expr);
                         },
-                        .spread_element => try self.visitLValueExpr(prop_data.lhs),
-                        else => try self.visitLValueExpr(prop),
+                        .spread_element => try self.visitLValueExpr(prop_data.lhs, write_expr),
+                        else => try self.visitLValueExpr(prop, write_expr),
                     }
                 }
             },
             // Grouping: strip parens and recurse — `(x) = y` is valid when x is an lvalue.
-            .grouping_expr => try self.visitLValueExpr(data.lhs),
+            .grouping_expr => try self.visitLValueExpr(data.lhs, write_expr),
             .rest_element, .spread_element => {
-                try self.visitLValueExpr(data.lhs);
+                try self.visitLValueExpr(data.lhs, write_expr);
             },
             // Default value in a pattern: `a = defaultVal` — lhs is lvalue, rhs is read.
+            // The write_expr stays the same (the outer RHS), not the inner default.
             // .assign = AssignmentExpression; .assignment_pattern = `a = default` inside patterns.
             .assign, .assignment_pattern => {
-                try self.visitLValueExpr(data.lhs);
+                try self.visitLValueExpr(data.lhs, write_expr);
                 try self.visitNode(data.rhs);
             },
             // Member expression target: obj.prop = ... — obj is a read reference.
@@ -1973,7 +1961,7 @@ pub const SemanticAnalyzer = struct {
         if (node == .none) return;
         if (self.ast.nodeTag(node) == .identifier) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(node));
-            const ref_id = try self.references.addReference(.read, node, self.current_scope);
+            const ref_id = try self.references.addReference(.read, node, self.current_scope, .none);
             self.resolveReference(name, ref_id);
             // Mark the resolved symbol as having a member written.
             const sym_id = self.references.getSymbol(ref_id);
@@ -1988,11 +1976,7 @@ pub const SemanticAnalyzer = struct {
     fn visitTypeofExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
         if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
-            const ref_id = try self.references.addReference(
-                .type_of,
-                data.lhs,
-                self.current_scope,
-            );
+            const ref_id = try self.references.addReference(.type_of, data.lhs, self.current_scope, .none);
             self.resolveReference(name, ref_id);
         } else {
             try self.visitNode(data.lhs);

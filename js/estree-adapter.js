@@ -175,22 +175,23 @@ const SH = {
   REF_KINDS: 72,
   REF_NODE_IDS: 76,
   REF_SCOPE_IDS: 80,
-  NODE_SCOPE_IDS: 84,
-  NODE_REACHABLE: 88,   // u8[] per-node reachability: 1=live, 0=dead
-  LOOP_EXIT_REACHABLE: 92,  // u8[] per-loop exit reachability: 1=exit alive, 0=exit dead
-  _RESERVED_96: 96,        // legacy cfg_events_offset (unused)
-  _RESERVED_100: 100,      // legacy cfg_events_count (unused)
-  CFG_GRAPH_OFFSET: 104,   // byte offset to CfgGraphHeader (0 = not present)
-  SCOPE_REF_STARTS: 108,   // u32[scope_count] — first index in scope_ref_ids per scope
-  SCOPE_REF_COUNTS: 112,   // u32[scope_count] — number of refs per scope
-  SCOPE_REF_IDS: 116,      // u32[ref_count]   — ref indices sorted by scope
-  SCOPE_CHILD_STARTS: 120, // u32[scope_count] — first index in scope_child_ids per scope
-  SCOPE_CHILD_COUNTS: 124, // u32[scope_count] — number of child scopes per scope
-  SCOPE_CHILD_IDS: 128,    // u32[total_children] — child scope IDs sorted by parent
-  TAG_NODE_STARTS: 132,    // u32[tag_count + 1] — prefix-sum (sentinel at end)
-  TAG_NODE_IDS: 136,       // u32[node_count]    — node indices sorted by tag
-  TAG_COUNT: 140,          // u32 — number of tag slots
-  NODE_DEPTHS: 144,        // u32[node_count] — pre-computed node depths
+  REF_WRITE_EXPR_IDS: 84,  // u32[] — write expression node (NONE if not a write ref)
+  NODE_SCOPE_IDS: 88,
+  NODE_REACHABLE: 92,   // u8[] per-node reachability: 1=live, 0=dead
+  LOOP_EXIT_REACHABLE: 96,  // u8[] per-loop exit reachability: 1=exit alive, 0=exit dead
+  _RESERVED_100: 100,      // legacy cfg_events_offset (unused)
+  _RESERVED_104: 104,      // legacy cfg_events_count (unused)
+  CFG_GRAPH_OFFSET: 108,   // byte offset to CfgGraphHeader (0 = not present)
+  SCOPE_REF_STARTS: 112,   // u32[scope_count] — first index in scope_ref_ids per scope
+  SCOPE_REF_COUNTS: 116,   // u32[scope_count] — number of refs per scope
+  SCOPE_REF_IDS: 120,      // u32[ref_count]   — ref indices sorted by scope
+  SCOPE_CHILD_STARTS: 124, // u32[scope_count] — first index in scope_child_ids per scope
+  SCOPE_CHILD_COUNTS: 128, // u32[scope_count] — number of child scopes per scope
+  SCOPE_CHILD_IDS: 132,    // u32[total_children] — child scope IDs sorted by parent
+  TAG_NODE_STARTS: 136,    // u32[tag_count + 1] — prefix-sum (sentinel at end)
+  TAG_NODE_IDS: 140,       // u32[node_count]    — node indices sorted by tag
+  TAG_COUNT: 144,          // u32 — number of tag slots
+  NODE_DEPTHS: 148,        // u32[node_count] — pre-computed node depths
 };
 
 const FLAG_HAS_BOM = 1;
@@ -426,10 +427,11 @@ class AstView {
       }
 
       if (this._semRefCount > 0) {
-        this._refSymbolIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_SYMBOL_IDS, true), this._semRefCount);
-        this._refKinds        = new Uint8Array (buffer, dv.getUint32(semOff + SH.REF_KINDS, true),       this._semRefCount);
-        this._refNodeIds      = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_NODE_IDS, true),    this._semRefCount);
-        this._refScopeIds     = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_SCOPE_IDS, true),   this._semRefCount);
+        this._refSymbolIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_SYMBOL_IDS, true),     this._semRefCount);
+        this._refKinds        = new Uint8Array (buffer, dv.getUint32(semOff + SH.REF_KINDS, true),           this._semRefCount);
+        this._refNodeIds      = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_NODE_IDS, true),        this._semRefCount);
+        this._refScopeIds     = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_SCOPE_IDS, true),       this._semRefCount);
+        this._refWriteExprIds = new Uint32Array(buffer, dv.getUint32(semOff + SH.REF_WRITE_EXPR_IDS, true), this._semRefCount);
       }
 
       this._nodeScopeIds    = new Uint32Array(buffer, dv.getUint32(semOff + SH.NODE_SCOPE_IDS, true),  this.nodeCount);
