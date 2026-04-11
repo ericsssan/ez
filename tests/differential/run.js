@@ -119,21 +119,39 @@ const PLUGIN_PACKAGES = [
   "eslint-plugin-jsdoc",
 ];
 
+// Prefer local conformance copies of plugins for rule modules too (correct schemas and implementations).
+const _PLUGIN_CONFORMANCE_PATHS = {
+  promise:  path.join(__dirname, "../conformance/eslint-plugin-promise"),
+  react:    path.join(__dirname, "../conformance/eslint-plugin-react"),
+  unicorn:  path.join(__dirname, "../conformance/eslint-plugin-unicorn"),
+  jsdoc:    path.join(__dirname, "../conformance/eslint-plugin-jsdoc"),
+};
+
 const _pluginRuleModules = new Map(); // fullName → { create, meta }
 for (const pkgName of PLUGIN_PACKAGES) {
-  try {
-    let pkg = require(pkgName);
-    if (pkg.__esModule && pkg.default) pkg = pkg.default;
-    const prefix = pkgName.replace(/^eslint-plugin-/, "");
-    const rulesMap = pkg.rules || {};
-    for (const [name, rule] of Object.entries(rulesMap)) {
-      const fullName = `${prefix}/${name}`;
-      const create = rule.create || rule;
-      if (typeof create !== "function") continue;
-      COMPARABLE_RULES.add(fullName);
-      _pluginRuleModules.set(fullName, { create, meta: rule.meta || {} });
-    }
-  } catch { /* plugin not installed */ }
+  const prefix = pkgName.replace(/^eslint-plugin-/, "");
+  let pkg = null;
+  // Try local conformance version first.
+  if (_PLUGIN_CONFORMANCE_PATHS[prefix] && fs.existsSync(_PLUGIN_CONFORMANCE_PATHS[prefix])) {
+    try { pkg = require(_PLUGIN_CONFORMANCE_PATHS[prefix]); } catch { pkg = null; }
+    if (pkg?.__esModule && pkg.default) pkg = pkg.default;
+  }
+  // Fall back to npm version.
+  if (!pkg) {
+    try {
+      pkg = require(pkgName);
+      if (pkg.__esModule && pkg.default) pkg = pkg.default;
+    } catch { /* plugin not installed */ }
+  }
+  if (!pkg) continue;
+  const rulesMap = pkg.rules || {};
+  for (const [name, rule] of Object.entries(rulesMap)) {
+    const fullName = `${prefix}/${name}`;
+    const create = rule.create || rule;
+    if (typeof create !== "function") continue;
+    COMPARABLE_RULES.add(fullName);
+    _pluginRuleModules.set(fullName, { create, meta: rule.meta || {} });
+  }
 }
 
 // ── ESLint + Ez runner setup ────────────────────────────────
@@ -172,12 +190,21 @@ for (const ruleName of COMPARABLE_RULES) {
 // ── Espree (reference) ────────────────────────────────────────
 
 // Register plugin rules with ESLint Linter so espree can run them.
+// Use same preference as _pluginRuleModules: local conformance version first.
 const _espreePlugins = {};
 for (const pkgName of PLUGIN_PACKAGES) {
+  const prefix = pkgName.replace(/^eslint-plugin-/, "");
+  if (_PLUGIN_CONFORMANCE_PATHS[prefix] && fs.existsSync(_PLUGIN_CONFORMANCE_PATHS[prefix])) {
+    try {
+      let pkg = require(_PLUGIN_CONFORMANCE_PATHS[prefix]);
+      if (pkg.__esModule && pkg.default) pkg = pkg.default;
+      _espreePlugins[prefix] = pkg;
+      continue;
+    } catch { /* fall through to npm version */ }
+  }
   try {
     let pkg = require(pkgName);
     if (pkg.__esModule && pkg.default) pkg = pkg.default;
-    const prefix = pkgName.replace(/^eslint-plugin-/, "");
     _espreePlugins[prefix] = pkg;
   } catch { /* not installed */ }
 }

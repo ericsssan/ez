@@ -332,9 +332,14 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .yield_expr, .yield_delegate,
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
             .spread_element,
-            .grouping_expr, .import_expr,
+            .grouping_expr,
             .ts_as_expr, .ts_satisfies_expr, .ts_non_null_expr,
             => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // import_expr: lhs = source, rhs = options (optional second arg)
+            .import_expr => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             // rest_element: lhs = binding, rhs = type annotation (or .none)

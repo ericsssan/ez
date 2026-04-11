@@ -1,6 +1,12 @@
 "use strict";
 
 const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
+
+// ── Symbol BindingKind → ESLint def.type mapping ───────────────
+// Must match BindingKind enum in src/parser/symbol.zig (values 0-8 in enum order).
+// 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl,
+// 5=parameter, 6=catch_param, 7=import_binding, 8=implicit_global
+const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','Variable'];
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
@@ -415,12 +421,16 @@ class SourceCode {
   constructor(ast, sourceText, sourceType, ecmaVersion, envGlobals = true) {
     this._ast = ast;
     this.text = sourceText;
+    this.hasBOM = ast.hasBOM; // TextDecoder strips BOM; read from Zig buffer flag instead
     this._sourceType = sourceType || 'module';
     this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
     this._envGlobals = envGlobals;
     // Expose runtime sourceType on the AST so node.sourceType returns correctly.
     // Zig always parses in module mode, so the buffer always says 'module'.
     ast._runtimeSourceType = this._sourceType;
+    // Expose ecmaVersion on the AST so directive detection can be ecmaVersion-aware.
+    // Espree only sets ExpressionStatement.directive for ES5+ (directives are an ES5 concept).
+    ast._ecmaVersion = this._ecmaVersion;
     this._linesCache = null;
     this._tokensCache = null;
     this._mergedCache = null;
@@ -434,9 +444,11 @@ class SourceCode {
   reset(ast, sourceText, sourceType, ecmaVersion) {
     this._ast = ast;
     this.text = sourceText;
+    this.hasBOM = ast.hasBOM;
     this._sourceType = sourceType || 'module';
     this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
     ast._runtimeSourceType = this._sourceType;
+    ast._ecmaVersion = this._ecmaVersion;
     this._linesCache = null;
     this._tokensCache = null;
     this._mergedCache = null;
@@ -1252,9 +1264,15 @@ class SourceCode {
     const isVarScope = kind === 0 || kind === 1 || kind === 2;
     const isStrict = this._computeIsStrict(kind, flags16, upper, block);
 
+    // In script mode, the top-level scope (kind=1, "module") should appear as "global" to rules.
+    // ESLint's script mode has only one global scope covering all top-level code.
+    // Our Zig analyzer always creates a two-level structure (global=0, module=1), so we fix the
+    // reported type here so rules like no-alert, no-implicit-globals, no-unused-vars work correctly.
+    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global' : (KIND_NAMES[kind] || 'block');
+
     // Cheap fields only — expensive arrays (variables/references/through/childScopes) are lazy.
     const scope = {
-      type: KIND_NAMES[kind] || 'block',
+      type: scopeTypeName,
       isStrict,
       block,
       upper,
@@ -1632,14 +1650,10 @@ class SourceCode {
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
 
-    // Determine def type
-    const is_catch = (flags16 & 0x40) !== 0;
-    let defType = 'Variable';
-    if (is_param) defType = 'Parameter';
-    else if (is_catch) defType = 'CatchClause';
-    else if ((flags16 & 0x08) !== 0) defType = 'FunctionName';
-    else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
-    else if (is_import) defType = 'ImportBinding';
+    // Determine def type from pre-baked BindingKind (falls back to flag bits if unavailable).
+    const defType = ast._symKinds
+      ? (_DEF_TYPE_FROM_KIND[ast._symKinds[symId]] ?? 'Variable')
+      : (is_param ? 'Parameter' : (flags16 & 0x40) ? 'CatchClause' : (flags16 & 0x08) ? 'FunctionName' : (flags16 & 0x10) ? 'ClassName' : is_import ? 'ImportBinding' : 'Variable');
 
     // For import bindings, the Zig semantic stores the specifier node as the decl node,
     // but eslint-scope puts the *local identifier* in variable.identifiers and def.name.
@@ -1722,6 +1736,59 @@ class SourceCode {
             references.splice(insertIdx, 0, initRef);
           }
           initAdded = true; // found declarator; stop regardless of whether init exists
+        } else if (curTag === T.property || curTag === T.shorthand_property ||
+                   curTag === T.computed_property || curTag === T.object_pattern ||
+                   curTag === T.array_pattern || curTag === T.assignment_pattern ||
+                   curTag === T.rest_element) {
+          curIdx = ast._parentData[curIdx];
+        } else {
+          break;
+        }
+      }
+    }
+
+    // Add write reference for `var` in for-in/for-of headers (e.g. `for (var i in obj)`).
+    // ESLint scope analysis creates an implicit write ref so rules like no-loop-func can detect
+    // that the loop variable changes each iteration (making closures over it unsafe).
+    const is_var = (flags16 & 0x01) !== 0;
+    if (is_var && !is_let && !is_const && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+      let curIdx = ast._parentData[declNodeIdx];
+      let forInOfChecked = false;
+      while (!forInOfChecked && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
+        const curTag = ast._nodeTags[curIdx];
+        if (curTag === T.declarator) {
+          const declParentIdx = ast._parentData[curIdx];
+          const declGrandParentIdx = (declParentIdx !== undefined && declParentIdx !== NONE)
+            ? ast._parentData[declParentIdx] : NONE;
+          const declGPTag = (declGrandParentIdx !== undefined && declGrandParentIdx !== NONE)
+            ? ast._nodeTags[declGrandParentIdx] : undefined;
+          const isForInOf = declGPTag === T.for_in_stmt || declGPTag === T.for_of_stmt ||
+                            declGPTag === T.for_await_of_stmt;
+          if (isForInOf) {
+            const thin = this._buildThinVariable(symId);
+            const initRef = {
+              identifier: declNode,
+              from: scope,
+              resolved: thin,
+              writeExpr: null,
+              init: true,
+              isWrite: () => true,
+              isRead: () => false,
+              isWriteOnly: () => true,
+              isReadOnly: () => false,
+              isReadWrite: () => false,
+            };
+            const declStart = ast._nodeStartPos(declNodeIdx);
+            let insertIdx = 0;
+            while (insertIdx < references.length) {
+              const rId = references[insertIdx].identifier;
+              const rStart = rId && rId.range ? rId.range[0] : (rId ? ast._nodeStartPos(rId._i) : Infinity);
+              if (rStart > declStart) break;
+              insertIdx++;
+            }
+            references.splice(insertIdx, 0, initRef);
+          }
+          forInOfChecked = true;
         } else if (curTag === T.property || curTag === T.shorthand_property ||
                    curTag === T.computed_property || curTag === T.object_pattern ||
                    curTag === T.array_pattern || curTag === T.assignment_pattern ||
@@ -1817,13 +1884,9 @@ class SourceCode {
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
     const scope = (symScopeId !== undefined && symScopeId !== NONE32)
       ? this._buildThinScope(symScopeId) : this._stubScope();
-    const is_catch = (flags16 & 0x40) !== 0;
-    let defType = 'Variable';
-    if (is_param) defType = 'Parameter';
-    else if (is_catch) defType = 'CatchClause';
-    else if ((flags16 & 0x08) !== 0) defType = 'FunctionName';
-    else if ((flags16 & 0x10) !== 0) defType = 'ClassName';
-    else if (is_import) defType = 'ImportBinding';
+    const defType = ast._symKinds
+      ? (_DEF_TYPE_FROM_KIND[ast._symKinds[symId]] ?? 'Variable')
+      : (is_param ? 'Parameter' : (flags16 & 0x40) ? 'CatchClause' : (flags16 & 0x08) ? 'FunctionName' : (flags16 & 0x10) ? 'ClassName' : is_import ? 'ImportBinding' : 'Variable');
     const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
@@ -1871,6 +1934,12 @@ class SourceCode {
    * in prefer-const: writer.from === variable.scope).
    */
   _buildThinScope(scopeId) {
+    // If the full scope was already built via _buildScope, return it directly.
+    // This ensures reference.from === scope for rules that use identity checks
+    // (e.g. consistent-this: reference.from === sourceCode.getScope(node)).
+    if (this._scopeCache && this._scopeCache[scopeId]) {
+      return this._scopeCache[scopeId];
+    }
     if (!this._thinScopeCache) this._thinScopeCache = new Array(this._ast._semScopeCount || 64);
     const cached = this._thinScopeCache[scopeId];
     if (cached) return cached;
@@ -2017,7 +2086,15 @@ class SourceCode {
     let lo = 0, hi = ast.tokenCount - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] < start) lo = m; else hi = m - 1; }
     const prevEnd = lo > 0 ? starts[lo] : 0;
-    return ast.commentsInRange(prevEnd, start);
+    const nativeComments = ast.commentsInRange(prevEnd, start);
+    // Include synthesized Shebang comment if it falls in the gap (before first real token)
+    if (prevEnd === 0 && this.text.startsWith('#!')) {
+      const allComments = this.getAllComments();
+      if (allComments.length > 0 && allComments[0].type === 'Shebang' && allComments[0].range[1] <= start) {
+        return [allComments[0], ...nativeComments];
+      }
+    }
+    return nativeComments;
   }
 
   /** getCommentsAfter — comments in the gap after a node/token. */
@@ -2143,34 +2220,26 @@ class SourceCode {
     const aEnd = nodeA.range ? nodeA.range[1] : (nodeA.mainToken !== undefined && ast._tokEnds ? ast._tokEnds[nodeA.mainToken] : -1);
     const bStart = nodeB.range ? nodeB.range[0] : (nodeB.mainToken !== undefined ? ast._tokStarts[nodeB.mainToken] : -1);
     if (aEnd < 0 || bStart < 0 || aEnd >= bStart) return false;
-    // Walk tokens between A and B; check for whitespace gaps between consecutive tokens.
-    const starts = ast._tokStarts;
-    const ends = ast._tokEnds;
-    const tc = ast.tokenCount;
-    // Find first token at or after aEnd
-    let t = 0;
-    while (t < tc && starts[t] < aEnd) t++;
-    let prev = aEnd;
-    while (t < tc && starts[t] < bStart) {
-      if (starts[t] > prev) {
-        // Gap between prev and this token — check for whitespace
-        const src = ast.source;
-        for (let i = prev; i < starts[t]; i++) {
-          const c = src.charCodeAt(i);
-          if (c === 32 || c === 9 || c === 10 || c === 13) return true;
-        }
-      }
-      prev = ends[t];
-      t++;
-    }
-    // Check gap between last intermediate token and bStart
-    if (bStart > prev) {
-      const src = ast.source;
-      for (let i = prev; i < bStart; i++) {
+    // Collect all non-comment content ranges between aEnd and bStart.
+    // Comments are excluded — only gaps BETWEEN comments/tokens are whitespace candidates.
+    const src = ast.source;
+    const comments = ast.commentsInRange(aEnd, bStart);
+    // Build a list of "non-comment regions" between aEnd and bStart
+    let pos = aEnd;
+    function hasWhitespaceIn(from, to) {
+      for (let i = from; i < to; i++) {
         const c = src.charCodeAt(i);
         if (c === 32 || c === 9 || c === 10 || c === 13) return true;
       }
+      return false;
     }
+    for (const cmt of comments) {
+      const cs = cmt.range[0], ce = cmt.range[1];
+      if (cs > pos && hasWhitespaceIn(pos, cs)) return true;
+      pos = ce;
+    }
+    // Check after last comment (or entire gap if no comments)
+    if (bStart > pos && hasWhitespaceIn(pos, bStart)) return true;
     return false;
   }
 
@@ -2356,6 +2425,56 @@ class RuleFixer {
 // ── Context ─────────────────────────────────────────────────────
 
 /**
+ * Build a map from line number → Set<ruleId> | true (all-rules disabled)
+ * by scanning inline eslint-disable-line / eslint-disable-next-line comments.
+ * Lazily computed and cached on the context object.
+ */
+function _buildInlineDisableMap(ctx) {
+  if (ctx._inlineDisableMap !== undefined) return ctx._inlineDisableMap;
+  const map = new Map();
+  const comments = ctx.sourceCode.getAllComments();
+  for (const comment of comments) {
+    const text = comment.value.trim();
+    const cLine = comment.loc?.start?.line;
+    if (cLine === undefined) continue;
+    let targetLine, rest;
+    if (comment.type === 'Line') {
+      if (text.startsWith('eslint-disable-line')) {
+        targetLine = cLine;
+        rest = text.slice('eslint-disable-line'.length).trim();
+      } else if (text.startsWith('eslint-disable-next-line')) {
+        targetLine = cLine + 1;
+        rest = text.slice('eslint-disable-next-line'.length).trim();
+      }
+    } else if (comment.type === 'Block') {
+      // /* eslint-disable rule1, rule2 */ – single-location block disable (not range)
+      // Only handle if the comment itself is on one line (simple case).
+      if (comment.loc.start.line === comment.loc.end.line) {
+        if (text.startsWith('eslint-disable-line')) {
+          targetLine = cLine;
+          rest = text.slice('eslint-disable-line'.length).trim();
+        } else if (text.startsWith('eslint-disable-next-line')) {
+          targetLine = cLine + 1;
+          rest = text.slice('eslint-disable-next-line'.length).trim();
+        }
+      }
+    }
+    if (targetLine === undefined) continue;
+    const ruleNames = rest ? rest.split(',').map(r => r.trim()).filter(Boolean) : null;
+    if (!ruleNames || ruleNames.length === 0) {
+      map.set(targetLine, true); // all rules disabled
+    } else {
+      let lineSet = map.get(targetLine);
+      if (lineSet === true) continue;
+      if (!lineSet) { lineSet = new Set(); map.set(targetLine, lineSet); }
+      for (const r of ruleNames) lineSet.add(r);
+    }
+  }
+  ctx._inlineDisableMap = map;
+  return map;
+}
+
+/**
  * Core report logic — called from pre-bound per-rule report functions so that
  * ruleId/ruleMeta are captured at rule-load time, not mutated per handler call.
  */
@@ -2400,6 +2519,16 @@ function _execReport(descriptor, ruleId, ruleMeta, ctx) {
         fix = fix.filter(Boolean);
       }
     } catch { /* ignore fix errors */ }
+  }
+  // Inline disable comment suppression: // eslint-disable-line [rule] or // eslint-disable-next-line [rule]
+  if (resolvedLoc) {
+    // loc can be { start: { line, column }, end: ... } OR legacy { line, column }
+    const reportLine = resolvedLoc.start != null ? resolvedLoc.start.line : resolvedLoc.line;
+    if (reportLine != null) {
+      const disableMap = _buildInlineDisableMap(ctx);
+      const lineDisable = disableMap.get(reportLine);
+      if (lineDisable === true || (lineDisable instanceof Set && lineDisable.has(ruleId))) return;
+    }
   }
   ctx._reports.push({
     ruleId,
@@ -2493,6 +2622,7 @@ class RuleContext {
     this._currentNodeIdx = 0;
     this._currentRule = null;
     this._currentRuleMeta = null;
+    this._inlineDisableMap = undefined; // Invalidate per-file inline disable cache
     this.sourceCode.reset(ast, sourceText, options.sourceType, options.ecmaVersion);
     this.sourceCode._envGlobals = options.envGlobals !== undefined ? options.envGlobals : true;
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
@@ -4469,6 +4599,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
     }
   }
+  if (_needsIdentSynth && T.shorthand_property < relevantTag.length) {
+    relevantTag[T.shorthand_property] = 1;
+  }
   // ChainExpression synthesis: fire ChainExpression enter/exit for outermost optional chain nodes.
   // ESTree wraps outermost optional chain nodes in a synthetic ChainExpression; rules like
   // no-restricted-syntax can ban "ChainExpression" via a plain visitor key.
@@ -4635,7 +4768,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement') _labelStmtTagSet.add(_ti);
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
-  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth) ? new Uint8Array(tagNames.length) : null;
+  const _needsShorthandSynth = needsLabelSynthOpt; // true when Identifier visitors exist
+  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
@@ -4647,6 +4781,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (T.optional_call_expr < _synthTagArr.length)          _synthTagArr[T.optional_call_expr] = 1;
       if (T.optional_member_expr < _synthTagArr.length)        _synthTagArr[T.optional_member_expr] = 1;
       if (T.optional_computed_member_expr < _synthTagArr.length) _synthTagArr[T.optional_computed_member_expr] = 1;
+    }
+    // Shorthand VALUE synthesis: shorthand_property nodes must not be skipped when
+    // Identifier visitors exist, because we synthesize a second VALUE Identifier visit.
+    if (_needsShorthandSynth && T.shorthand_property < _synthTagArr.length) {
+      _synthTagArr[T.shorthand_property] = 1;
     }
   }
 
@@ -4682,6 +4821,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       _fireCfgEvents(idx, 0);
+      // ESLint fires CSS selector handlers (e.g. `:statement`) BEFORE type-specific handlers
+      // (e.g. `BlockStatement`). This matches ESLint's NodeEventGenerator behavior where all
+      // pseudo-class selectors are evaluated before direct-type dispatches for the same node.
+      if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, false);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
@@ -4750,7 +4893,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
-      if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, false);
     } else {
       // Exit event
       const idx = ~ev;
@@ -4763,8 +4905,48 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
         catchStack.pop();
       }
+      // Synthesize shorthand property VALUE shadow Identifier visit.
+      // ESLint/espree visits the shorthand identifier TWICE: once as key (parent.key===node),
+      // once as value (parent.value===node). Our buffer has one identifier (the key visit
+      // happens naturally via DFS). Here we fire enter+exit for a shadow "value" node.
+      //
+      // The shadow inherits all data from the real identifier (same _i, name, range, etc.)
+      // but overrides .parent to return a parentWrapper where:
+      //   parentWrapper.value === shadow  (so parent.value === shadow is true)
+      //   parentWrapper.key === realNode  (delegates to propNode.key, !== shadow)
+      // This lets rules like id-denylist distinguish KEY vs VALUE visits, while keeping
+      // realNode.parent.value === realNode (so equalsToOriginalName still works for camelcase).
+      if (_needsShorthandSynth && tag === T.shorthand_property) {
+        // Only synthesize for PURE shorthand `{ a }` where value === key (no default).
+        // `{ b = expr }` shorthand has rhs != NONE; its binding Identifier is visited
+        // normally as AssignmentPattern.left — synthesizing again would corrupt segment tracking.
+        const _childLhs = ast.nodeLhs(idx);
+        const _childRhs = ast.nodeRhs(idx);
+        if (_childRhs === NONE && _childLhs !== undefined && _childLhs !== NONE && _childLhs < ast.nodeCount) {
+          const _propNode = nodeView(ast, idx);
+          const _realNode = nodeView(ast, _childLhs);
+          // Create and cache the shadow + parentWrapper on the property node object
+          let _shadow = _propNode._shorthandShadow;
+          if (_shadow === undefined) {
+            const _parentWrapper = Object.create(_propNode);
+            _shadow = Object.create(_realNode);
+            // Override shadow.parent to return the wrapper
+            Object.defineProperty(_shadow, 'parent', { get() { return _parentWrapper; }, configurable: true });
+            // Override wrapper.value to return the shadow (wrapper.key still delegates to propNode.key = realNode)
+            Object.defineProperty(_parentWrapper, 'value', { get() { return _shadow; }, configurable: true });
+            _propNode._shorthandShadow = _shadow;
+          }
+          const _identEnterH = visitorMap.get('Identifier');
+          const _identExitH = visitorMap.get('Identifier:exit');
+          if (_identEnterH) _invokeFused(_identEnterH, _shadow, _childLhs, context);
+          if (_identExitH) _invokeFused(_identExitH, _shadow, _childLhs, context);
+        }
+      }
       // CfgGraph: code path exit events BEFORE rule exit handlers
       _fireCfgEvents(idx, 1);
+      // ESLint fires CSS selector exit handlers (e.g. `:statement:exit`) BEFORE type-specific
+      // exit handlers (e.g. `BlockStatement:exit`), matching NodeEventGenerator behavior.
+      if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
@@ -4805,7 +4987,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-      if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
       _fireCfgEvents(idx, 2);
     }
   }

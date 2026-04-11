@@ -878,6 +878,8 @@ pub const SemanticAnalyzer = struct {
             .import_expr => {
                 if (self.cpb_initialized) try self.cpb.makeFirstThrowablePathInTryBlock();
                 try self.visitNode(data.lhs);
+                // Also visit options (second argument), e.g. import('x', { with: { type: 'json' } })
+                if (data.rhs != .none) try self.visitNode(data.rhs);
             },
 
             // ── Unary expressions ──────────────────────────

@@ -192,6 +192,7 @@ const SH = {
   TAG_NODE_IDS: 140,       // u32[node_count]    — node indices sorted by tag
   TAG_COUNT: 144,          // u32 — number of tag slots
   NODE_DEPTHS: 148,        // u32[node_count] — pre-computed node depths
+  SYMBOL_KINDS: 152,       // u8[symbol_count] — BindingKind per symbol
 };
 
 const FLAG_HAS_BOM = 1;
@@ -391,6 +392,8 @@ class AstView {
 
       if (this._semSymbolCount > 0) {
         this._symFlags        = new Uint16Array(buffer, dv.getUint32(semOff + SH.SYMBOL_FLAGS, true),      this._semSymbolCount);
+        const _symKindsOff    = dv.getUint32(semOff + SH.SYMBOL_KINDS, true);
+        this._symKinds        = _symKindsOff ? new Uint8Array(buffer, _symKindsOff, this._semSymbolCount) : null;
         this._symScopeIds     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_SCOPE_IDS, true),  this._semSymbolCount);
         this._symDeclNodes    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_DECL_NODES, true), this._semSymbolCount);
         this._symRefStarts    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_REF_STARTS, true), this._semSymbolCount);
@@ -1815,6 +1818,13 @@ const NodeProto = {
            t === T.optional_call_expr;
   },
 
+  /** ImportExpression.options — second argument to dynamic import(), or null. */
+  get options() {
+    if (this._tag !== T.import_expr) return undefined;
+    const rhs = this._ast.nodeRhs(this._i);
+    return rhs === NONE ? null : nodeView(this._ast, rhs);
+  },
+
   /**
    * node.prefix — true for prefix update expressions (++x, --x).
    */
@@ -2427,6 +2437,9 @@ const NodeProto = {
   get directive() {
     if (this._tag !== T.expression_stmt) return undefined;
     const ast = this._ast;
+    // Directive prologues are an ES5+ concept. Espree does not set the directive
+    // property when ecmaVersion < 5 (i.e. ecmaVersion 3). Match that behavior.
+    if (ast._ecmaVersion !== undefined && ast._ecmaVersion < 5) return undefined;
     const exprIdx = ast.nodeLhs(this._i);
     if (exprIdx === NONE) return undefined;
     if (ast._nodeTags[exprIdx] !== T.string_literal) return undefined;

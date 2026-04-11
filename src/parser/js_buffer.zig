@@ -153,12 +153,16 @@ pub const SemanticHeader = extern struct {
 
     // Node depths: depth[root]=0, depth[child]=depth[parent]+1
     node_depths_offset: u32 = 0,        // u32[node_count]
+
+    // Symbol binding kind (one byte per symbol — BindingKind enum value)
+    symbol_kinds_offset: u32 = 0,       // u8[symbol_count] — BindingKind
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 152);
+    std.debug.assert(@sizeOf(SemanticHeader) == 156);
     std.debug.assert(@offsetOf(SemanticHeader, "ref_write_expr_ids_offset") == 84);
     std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 148);
+    std.debug.assert(@offsetOf(SemanticHeader, "symbol_kinds_offset") == 152);
     std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 108);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 112);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 116);
@@ -251,6 +255,7 @@ pub fn writeSemanticData(
 
     // ── Symbol arrays ────────────────────────────────────────────
     const symbol_flags = try alloc.alloc(u16, symbol_count);
+    const symbol_kinds = try alloc.alloc(u8, symbol_count);
     const symbol_scope_ids = try alloc.alloc(u32, symbol_count);
     const symbol_decl_nodes = try alloc.alloc(u32, symbol_count);
     const symbol_ref_starts = try alloc.alloc(u32, symbol_count);
@@ -260,6 +265,7 @@ pub fn writeSemanticData(
 
     for (0..symbol_count) |i| {
         symbol_flags[i] = @bitCast(sem.symbols.flags.items[i]);
+        symbol_kinds[i] = @intFromEnum(sem.symbols.binding_kinds.items[i]);
         const sid = sem.symbols.scope_ids.items[i];
         symbol_scope_ids[i] = if (sid == .none) none32 else @intFromEnum(sid);
         const dn = sem.symbols.decl_nodes.items[i];
@@ -464,6 +470,7 @@ pub fn writeSemanticData(
         .scope_bindings_count_offset = ptrOffsetPub(buf, scope_bindings_count.ptr),
 
         .symbol_flags_offset = ptrOffsetPub(buf, symbol_flags.ptr),
+        .symbol_kinds_offset = if (symbol_count > 0) ptrOffsetPub(buf, symbol_kinds.ptr) else 0,
         .symbol_scope_ids_offset = ptrOffsetPub(buf, symbol_scope_ids.ptr),
         .symbol_decl_nodes_offset = ptrOffsetPub(buf, symbol_decl_nodes.ptr),
         .symbol_ref_starts_offset = ptrOffsetPub(buf, symbol_ref_starts.ptr),

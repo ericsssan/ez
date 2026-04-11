@@ -2079,12 +2079,10 @@ pub const Parser = struct {
         defer self.in_strict = prev_strict;
 
         // If the function body has "use strict", check restrictions retroactively:
+        // Note: non-simple params + "use strict" is only a SyntaxError in ES2016+ (ES7+).
+        // We don't track ecmaVersion in the parser, so we skip that check here to avoid
+        // rejecting valid ES6 code. (Acorn/Espree gates this on ecmaVersion >= 7.)
         if (self.in_strict and !prev_strict) {
-            // "use strict" with non-simple parameters is a SyntaxError
-            if (self.hasNonSimpleParams(params)) {
-                try self.emitDiagnostic(self.currentSpan(), "\"use strict\" directive not allowed in function with non-simple parameters", .{});
-                return error.ParseError;
-            }
             // Function name must not be eval/arguments in strict mode
             if (name != .none) {
                 const fn_name_tok = self.nodes.items(.main_token)[name.toInt()];
@@ -2632,7 +2630,6 @@ pub const Parser = struct {
                 defer self.in_generator = prev_in_generator;
                 defer self.in_async = prev_in_async;
                 const params = try self.parseFormalParameters();
-                try self.checkUseStrictNonSimpleParams(params);
 
                 // TS return type annotation
                 const computed_method_return_type = try self.parseOptionalTypeAnnotation();
@@ -2814,7 +2811,6 @@ pub const Parser = struct {
             defer self.in_method = prev_in_method;
             defer self.in_generator = prev_in_generator_m;
             defer self.in_async = prev_in_async_m;
-            try self.checkUseStrictNonSimpleParams(params);
 
             // TS return type annotation: `): Type {`
             const method_return_type = try self.parseOptionalTypeAnnotation();
