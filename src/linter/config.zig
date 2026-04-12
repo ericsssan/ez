@@ -90,6 +90,21 @@ pub const Config = struct {
         return config;
     }
 
+    /// Create an all-off configuration: every rule disabled,
+    /// no include/exclude patterns, no overrides.
+    pub fn initAllOff(allocator: std.mem.Allocator) Config {
+        var config = Config{
+            .rule_severities = .{},
+            .include_patterns = &.{},
+            .exclude_patterns = &.{},
+            .overrides = &.{},
+            .rule_severity_table = undefined,
+            .allocator = allocator,
+        };
+        config.buildSeverityTableWithDefault(.off);
+        return config;
+    }
+
     pub fn deinit(self: *Config) void {
         self.rule_severities.deinit(self.allocator);
 
@@ -155,7 +170,6 @@ pub const Config = struct {
 
     /// Like buildSeverityTable but uses a uniform `default` for rules not
     /// in rule_severities (instead of per-rule registry defaults).
-    /// Used by configFromJson where only explicitly configured rules should run.
     pub fn buildSeverityTableWithDefault(self: *Config, default: RuleSeverity) void {
         for (0..rule_count) |i| {
             self.rule_severity_table[i] = self.rule_severities.get(linter.rule_names[i]) orelse default;
