@@ -641,6 +641,10 @@ const n = struct {
 
 // ── Config helpers ────────────────────────────────────────────────
 
+/// Reserved keys in the JSON extras blob (must match js/lint.js constants).
+const extras_settings = "$$settings";
+const extras_language_options = "$$languageOptions";
+
 /// Build a Config from a raw severity byte table.
 /// bytes[i]: 0=off, 1=warning, else=error for rule at index i.
 /// Rules beyond bytes.len default to off.
@@ -668,7 +672,7 @@ fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
             else => RuleSeverity.@"error",
         };
     }
-    // Parse JSON options if present: {"rule-name": [...opts], "$$settings": {...}, "$$languageOptions": {...}}
+    // Parse JSON options if present: {ruleName: [...opts], EXTRAS_SETTINGS: {...}, EXTRAS_LANGUAGE_OPTIONS: {...}}
     if (json_options) |json_str| {
         const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json_str, .{}) catch null;
         if (parsed) |p| {
@@ -678,9 +682,9 @@ fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
                 var iter = p.value.object.iterator();
                 while (iter.next()) |entry| {
                     const key = entry.key_ptr.*;
-                    if (std.mem.eql(u8, key, "$$settings")) {
+                    if (std.mem.eql(u8, key, extras_settings)) {
                         config.settings = entry.value_ptr;
-                    } else if (std.mem.eql(u8, key, "$$languageOptions")) {
+                    } else if (std.mem.eql(u8, key, extras_language_options)) {
                         config.language_options = entry.value_ptr;
                     } else {
                         for (linter_mod.rule_names, 0..) |rn, ri| {

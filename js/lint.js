@@ -22,6 +22,8 @@ const { loadConfig, normalizeRules, pluginsFromConfig } = require("./config-load
 const { applyFixes } = require("./api");
 
 const _TS_ESLINT = "typescript-eslint";
+const _EXTRAS_SETTINGS = "$$settings";
+const _EXTRAS_LANGUAGE_OPTIONS = "$$languageOptions";
 
 function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions, settings, languageOptions) {
   const obj = {};
@@ -36,8 +38,8 @@ function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, 
     if (o && o.length > 0) { extras[nm] = o; hasExtras = true; }
   }
   if (Object.keys(obj).length === 0) return null;
-  if (settings) { for (const _ in settings) { extras.$$settings = settings; hasExtras = true; break; } }
-  if (languageOptions) { for (const _ in languageOptions) { extras.$$languageOptions = languageOptions; hasExtras = true; break; } }
+  if (settings && Object.keys(settings).length > 0) { extras[_EXTRAS_SETTINGS] = settings; hasExtras = true; }
+  if (languageOptions && Object.keys(languageOptions).length > 0) { extras[_EXTRAS_LANGUAGE_OPTIONS] = languageOptions; hasExtras = true; }
   return buildNativeConfig(obj, hasExtras ? extras : undefined);
 }
 

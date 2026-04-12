@@ -416,11 +416,14 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
 
 // ── Global scope helpers ─────────────────────────────────────────
 
+// ESLint variable API stubs — never called, present for compat with rule consumers.
+const _FALSE = () => false;
+
 function _mkGlobalVar(name, scope, writeable, implicitSetting) {
   return { name, defs: [], references: [], identifiers: [],
     scope, eslintUsed: false, writeable,
     eslintImplicitGlobalSetting: implicitSetting,
-    isRead: () => false, isWritten: () => false };
+    isRead: _FALSE, isWritten: _FALSE };
 }
 
 function _removeGlobal(name, set, variables) {
