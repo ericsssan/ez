@@ -628,9 +628,23 @@ function installCorpusIntercept() {
           rules: { [fullName]: ruleEntry },
         }], { filename: tc.filename || "test.js" });
         if (messages.some(m => m.fatal)) continue; // espree parse error — skip case
-        tc.eslintResult = messages
-          .filter(m => m.ruleId === fullName && !m.fatal)
-          .map(m => ({ rule: fullName, line: m.line }));
+        // ESLint flat config returns a non-fatal "No matching configuration found" warning when
+        // the filename is an absolute path outside the project root. Re-run with a relative filename.
+        if (messages.length === 1 && messages[0].ruleId === null && messages[0].message?.startsWith("No matching configuration found")) {
+          const ext = path.extname(tc.filename || "test.js") || ".js";
+          const fallbackFilename = "test" + ext;
+          const msgs2 = eslintLinter.verify(tc.code, [{
+            plugins: pluginCfg,
+            languageOptions: langOpts,
+            rules: { [fullName]: ruleEntry },
+          }], { filename: fallbackFilename });
+          if (msgs2.some(m => m.fatal)) continue;
+          tc.eslintResult = msgs2.filter(m => m.ruleId === fullName && !m.fatal).map(m => ({ rule: fullName, line: m.line }));
+        } else {
+          tc.eslintResult = messages
+            .filter(m => m.ruleId === fullName && !m.fatal)
+            .map(m => ({ rule: fullName, line: m.line }));
+        }
       } catch { continue; }
       if (!_captured) _captured = { name: fullName, defaultConfig, cases: [] };
       _captured.cases.push(tc);
