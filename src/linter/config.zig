@@ -196,15 +196,8 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
     const root = parsed.value;
     if (root != .object) return error.InvalidConfig;
 
-    var config = Config{
-        .rule_severities = .{},
-        .include_patterns = &.{},
-        .exclude_patterns = &.{},
-        .overrides = &.{},
-        .rule_severity_table = undefined,
-        .allocator = allocator,
-        .json_parsed = parsed,
-    };
+    var config = blankConfig(allocator);
+    config.json_parsed = parsed;
 
     // 1. "extends" — array of preset names
     if (root.object.get("extends")) |extends_val| {
