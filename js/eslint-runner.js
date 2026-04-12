@@ -4474,16 +4474,23 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   function getAncestorsFor(nodeIdx) {
     if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
-    // Pre-size exactly: no push() overhead, no length-check per element.
+    // Pre-size to at most depth (actual count may be smaller due to grouping_expr skips).
     const depth = _nodeDepths ? _nodeDepths[nodeIdx] : 0;
     _ancestorsBuf.length = depth;
     // esquery expects ancestors[0] = immediate parent (closest first).
+    // Skip grouping_expr (ParenthesizedExpression) parents: nodeView unwraps them
+    // transparently, so they must not appear in the ancestors array either — otherwise
+    // a parenthesized child `(JSX)` inside a ternary would appear to have a JSXElement
+    // parent (the unwrapped self) rather than the ConditionalExpression.
     let p = pd[nodeIdx];
     let k = 0;
-    while (k < depth) {
+    const n = ast.nodeCount;
+    while (p !== NONE && p < n) {
+      if (ast._nodeTags[p] === T.grouping_expr) { p = pd[p]; continue; }
       _ancestorsBuf[k++] = nodeView(ast, p);
       p = pd[p];
     }
+    _ancestorsBuf.length = k;
     return _ancestorsBuf;
   }
 
