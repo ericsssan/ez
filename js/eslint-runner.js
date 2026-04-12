@@ -5204,11 +5204,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // realNode.parent.value === realNode (so equalsToOriginalName still works for camelcase).
       if (_needsShorthandSynth && tag === T.shorthand_property) {
         // Only synthesize for PURE shorthand `{ a }` where value === key (no default).
-        // `{ b = expr }` shorthand has rhs != NONE; its binding Identifier is visited
-        // normally as AssignmentPattern.left — synthesizing again would corrupt segment tracking.
+        // `{ a = expr }` shorthand-with-default: lhs is an AssignmentPattern (not an Identifier);
+        // the binding Identifier is visited naturally as AssignmentPattern.left.
+        // Both cases have rhs === NONE for the shorthand_property node, so we must also
+        // check that the lhs itself is an Identifier-mapped tag (not AssignmentPattern).
         const _childLhs = ast.nodeLhs(idx);
         const _childRhs = ast.nodeRhs(idx);
-        if (_childRhs === NONE && _childLhs !== undefined && _childLhs !== NONE && _childLhs < ast.nodeCount) {
+        const _childLhsIsIdent = _childLhs !== undefined && _childLhs !== NONE && _childLhs < ast.nodeCount && _identTagBits[nodeTags[_childLhs]];
+        if (_childRhs === NONE && _childLhsIsIdent) {
           const _propNode = nodeView(ast, idx);
           const _realNode = nodeView(ast, _childLhs);
           // Create and cache the shadow + parentWrapper on the property node object
