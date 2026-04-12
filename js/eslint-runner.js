@@ -2839,6 +2839,9 @@ class RuleContext {
     this.sourceCode._globalReturn = !!(lo?.parserOptions?.ecmaFeatures?.globalReturn);
     this.sourceCode._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
+    // Reset parserOptions to baseline before applying case-specific options to prevent
+    // leakage (e.g. ecmaFeatures.impliedStrict from one case bleeding into the next).
+    this.languageOptions.parserOptions = { ecmaFeatures: { jsx: true } };
     this._applyLanguageOptions(lo);
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
     if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
