@@ -45,10 +45,10 @@ test-conformance: build-conformance napi
 	@echo ""
 
 test-differential: build napi
-	node tests/differential/run.js
+	NODE_PATH=js/node_modules bun tests/differential/run.js
 
 differential-baseline: build napi
-	node tests/differential/run.js --save-baseline
+	NODE_PATH=js/node_modules bun tests/differential/run.js --save-baseline
 
 test-e2e: build
 	bash tests/e2e/run.sh

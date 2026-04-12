@@ -108,11 +108,11 @@
     "id-match": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 55,
+        "fn": 53,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -147,7 +147,7 @@
     "arrow-parens": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -185,12 +185,12 @@
     },
     "object-curly-newline": {
       "runner": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 107,
+        "fn": 113,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -212,11 +212,11 @@
     "no-setter-return": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
-        "fn": 31,
+        "fn": 29,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -225,12 +225,12 @@
     "no-undef": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 10,
         "crash": 0
       },
       "native": {
-        "fn": 9,
-        "fp": 14,
+        "fn": 5,
+        "fp": 20,
         "crash": 0,
         "skip": 0
       }
@@ -263,12 +263,12 @@
     },
     "strict": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 2,
+        "fp": 7,
         "crash": 0
       },
       "native": {
-        "fn": 78,
+        "fn": 73,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -289,12 +289,12 @@
     },
     "space-infix-ops": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 37,
+        "fn": 39,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -433,11 +433,11 @@
     "no-fallthrough": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 13,
+        "fn": 12,
         "fp": 67,
         "crash": 0,
         "skip": 0
@@ -485,12 +485,12 @@
     "no-array-constructor": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
         "fn": 12,
-        "fp": 8,
+        "fp": 9,
         "crash": 0,
         "skip": 0
       }
@@ -562,13 +562,13 @@
     },
     "no-implied-eval": {
       "runner": {
-        "fn": 0,
+        "fn": 58,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 21,
-        "fp": 16,
+        "fn": 74,
+        "fp": 11,
         "crash": 0,
         "skip": 0
       }
@@ -732,24 +732,24 @@
     "no-constant-condition": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
         "fn": 18,
-        "fp": 6,
+        "fp": 8,
         "crash": 0,
         "skip": 0
       }
     },
     "no-eval": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 8,
+        "fp": 2,
         "crash": 0
       },
       "native": {
-        "fn": 32,
+        "fn": 38,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -848,12 +848,12 @@
     },
     "require-unicode-regexp": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 28,
+        "fn": 29,
         "fp": 2,
         "crash": 0,
         "skip": 0
@@ -875,12 +875,12 @@
     "no-object-constructor": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
         "fn": 47,
-        "fp": 2,
+        "fp": 3,
         "crash": 0,
         "skip": 0
       }
@@ -913,12 +913,12 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 3,
+        "fn": 7,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 4,
+        "fn": 8,
         "fp": 103,
         "crash": 0,
         "skip": 0
@@ -1004,12 +1004,12 @@
     },
     "no-native-reassign": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 8,
+        "fn": 10,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1018,24 +1018,24 @@
     "no-new-wrappers": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
         "fn": 0,
-        "fp": 1,
+        "fp": 2,
         "crash": 0,
         "skip": 0
       }
     },
     "no-implicit-globals": {
       "runner": {
-        "fn": 28,
-        "fp": 27,
+        "fn": 26,
+        "fp": 30,
         "crash": 0
       },
       "native": {
-        "fn": 121,
+        "fn": 116,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1173,12 +1173,12 @@
     },
     "no-obj-calls": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 6,
+        "fp": 2,
         "crash": 0
       },
       "native": {
-        "fn": 34,
+        "fn": 38,
         "fp": 12,
         "crash": 0,
         "skip": 0
@@ -1212,12 +1212,12 @@
     },
     "no-useless-assignment": {
       "runner": {
-        "fn": 13,
-        "fp": 2,
+        "fn": 2,
+        "fp": 10,
         "crash": 0
       },
       "native": {
-        "fn": 54,
+        "fn": 50,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1407,12 +1407,12 @@
     },
     "prefer-exponentiation-operator": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 19,
+        "fn": 21,
         "fp": 9,
         "crash": 0,
         "skip": 0
@@ -1472,12 +1472,12 @@
     },
     "id-denylist": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 4,
         "crash": 0
       },
       "native": {
-        "fn": 96,
+        "fn": 92,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1551,12 +1551,12 @@
     "no-unused-vars": {
       "runner": {
         "fn": 20,
-        "fp": 15,
+        "fp": 19,
         "crash": 0
       },
       "native": {
         "fn": 101,
-        "fp": 50,
+        "fp": 54,
         "crash": 0,
         "skip": 0
       }
@@ -1654,12 +1654,12 @@
     },
     "prefer-regex-literals": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 2,
         "crash": 0
       },
       "native": {
-        "fn": 102,
+        "fn": 101,
         "fp": 5,
         "crash": 0,
         "skip": 0
@@ -1771,12 +1771,12 @@
     },
     "logical-assignment-operators": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 150,
+        "fn": 154,
         "fp": 3,
         "crash": 0,
         "skip": 0
@@ -1785,11 +1785,11 @@
     "no-useless-backreference": {
       "runner": {
         "fn": 9,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 90,
+        "fn": 89,
         "fp": 7,
         "crash": 0,
         "skip": 0
@@ -1811,11 +1811,11 @@
     "radix": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 22,
+        "fn": 21,
         "fp": 2,
         "crash": 0,
         "skip": 0
@@ -1836,12 +1836,12 @@
     },
     "no-global-assign": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 8,
         "fp": 1,
         "crash": 0,
         "skip": 0
@@ -1875,12 +1875,12 @@
     },
     "require-atomic-updates": {
       "runner": {
-        "fn": 4,
-        "fp": 1,
+        "fn": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 34,
+        "fn": 36,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2070,12 +2070,12 @@
     },
     "no-extra-boolean-cast": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 250,
+        "fn": 251,
         "fp": 28,
         "crash": 0,
         "skip": 0
@@ -2278,12 +2278,12 @@
     },
     "space-before-blocks": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 69,
+        "fn": 71,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2343,12 +2343,12 @@
     },
     "no-unexpected-multiline": {
       "runner": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2382,12 +2382,12 @@
     },
     "no-invalid-this": {
       "runner": {
-        "fn": 2,
+        "fn": 39,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 116,
+        "fn": 152,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2461,11 +2461,11 @@
     "camelcase": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 17,
         "crash": 0
       },
       "native": {
-        "fn": 104,
+        "fn": 86,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2569,7 +2569,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 37,
+        "fn": 39,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2647,7 +2647,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2668,12 +2668,12 @@
     },
     "id-blacklist": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 3,
         "crash": 0
       },
       "native": {
-        "fn": 92,
+        "fn": 90,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2720,12 +2720,12 @@
     },
     "keyword-spacing": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 302,
+        "fn": 305,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2734,12 +2734,12 @@
     "no-lone-blocks": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
         "fn": 0,
-        "fp": 2,
+        "fp": 3,
         "crash": 0,
         "skip": 0
       }
@@ -2747,7 +2747,7 @@
     "new-parens": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -2824,12 +2824,12 @@
     },
     "prefer-object-spread": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 16,
+        "fn": 18,
         "fp": 13,
         "crash": 0,
         "skip": 0
@@ -2941,12 +2941,12 @@
     },
     "no-redeclare": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 4,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 44,
+        "fn": 47,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2954,12 +2954,12 @@
     },
     "object-curly-spacing": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 61,
+        "fn": 62,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -3025,7 +3025,7 @@
       },
       "native": {
         "fn": 16,
-        "fp": 9,
+        "fp": 10,
         "crash": 0,
         "skip": 0
       }
@@ -3293,12 +3293,12 @@
     "no-promise-executor-return": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
         "fn": 3,
-        "fp": 10,
+        "fp": 11,
         "crash": 0,
         "skip": 0
       }
@@ -3383,12 +3383,12 @@
     },
     "no-restricted-globals": {
       "runner": {
-        "fn": 0,
+        "fn": 16,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 55,
+        "fn": 67,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -3656,12 +3656,12 @@
     },
     "no-misleading-character-class": {
       "runner": {
-        "fn": 1,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 88,
+        "fn": 12,
         "fp": 18,
         "crash": 0,
         "skip": 0
@@ -3676,6 +3676,1501 @@
       "native": {
         "fn": 3,
         "fp": 12,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/always-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-return-wrap": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-new-statics": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-return-in-finally": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/avoid-new": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/valid-params": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/param-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-await-to-callbacks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-await-to-then": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-multiple-resolved": {
+      "runner": {
+        "fn": 5,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-callback-in-promise": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/catch-or-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-catch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-promise-in-callback": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/spec-only": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-native": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 9
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-nesting": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-bind": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/style-prop-object": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-comment-textnodes": {
+      "runner": {
+        "fn": 4,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-max-props-per-line": {
+      "runner": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-closing-bracket-location": {
+      "runner": {
+        "fn": 53,
+        "fp": 19,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-sort-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unsafe": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-boolean-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 15,
+        "crash": 1
+      },
+      "native": {
+        "fn": 79,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-find-dom-node": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-multi-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-closing-tag-location": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 5,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-component-props": {
+      "runner": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 5
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-typos": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 129,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-elements": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/function-component-definition": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 4
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-one-expression-per-line": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 11
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/destructuring-assignment": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-deprecated": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-is-mounted": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-spreading": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-this-in-sfc": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-direct-mutation-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-will-update-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-arrow-function-lifecycle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-stateless-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-danger-with-children": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/react-in-jsx-scope": {
+      "runner": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-adjacent-inline-elements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-indent-props": {
+      "runner": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 2
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/button-has-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/display-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-spread-multi": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prop-types": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-useless-fragment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-leaked-render": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 43,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-danger": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unstable-nested-components": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/self-closing-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-script-url": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-handler-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-object-type-as-default-prop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-multi-spaces": {
+      "runner": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-first-prop-new-line": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/boolean-prop-naming": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-spacing": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-equals-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/default-props-match-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-duplicate-props": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/static-property-placement": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-target-blank": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-pascal-case": {
+      "runner": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/require-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-fragments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-did-mount-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-child-element-spacing": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-undef": {
+      "runner": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/iframe-missing-sandbox": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-dom-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-namespace": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-wrap-multilines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 106,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-invalid-html-attribute": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 82,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-access-state-in-setstate": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-children-prop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-filename-extension": {
+      "runner": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unknown-property": {
+      "runner": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 24
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-space-before-closing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-array-index-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-render-return-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-tag-spacing": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-redundant-should-component-update": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/checked-requires-onchange-or-readonly": {
+      "runner": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-literals": {
+      "runner": {
+        "fn": 3,
+        "fp": 10,
+        "crash": 0
+      },
+      "native": {
+        "fn": 75,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-max-depth": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-es6-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 8
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/state-in-constructor": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unescaped-entities": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/void-dom-elements-no-children": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-exact-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-brace-presence": {
+      "runner": {
+        "fn": 9,
+        "fp": 7,
+        "crash": 5
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-class-component-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-sort-props": {
+      "runner": {
+        "fn": 103,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 106,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-newline": {
+      "runner": {
+        "fn": 2,
+        "fp": 3,
+        "crash": 6
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/require-render-return": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-indent": {
+      "runner": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 75,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/async-server-action": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forward-ref-uses-ref": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-read-only-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-did-update-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-foreign-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       }
@@ -3813,7 +5308,7 @@
     "unicorn/consistent-assert": {
       "runner": {
         "fn": 0,
-        "fp": 23,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3852,7 +5347,7 @@
     "unicorn/no-typeof-undefined": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3969,7 +5464,7 @@
     "unicorn/prefer-node-protocol": {
       "runner": {
         "fn": 0,
-        "fp": 10,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3987,19 +5482,6 @@
       },
       "native": {
         "fn": 59,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "unicorn/no-lonely-if": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 25,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4057,23 +5539,10 @@
         "skip": 0
       }
     },
-    "unicorn/prefer-export-from": {
-      "runner": {
-        "fn": 0,
-        "fp": 19,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
     "unicorn/prefer-add-event-listener": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4099,7 +5568,7 @@
     "unicorn/prefer-structured-clone": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4130,19 +5599,6 @@
       },
       "native": {
         "fn": 1,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "unicorn/prefer-import-meta-properties": {
-      "runner": {
-        "fn": 0,
-        "fp": 21,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4242,7 +5698,7 @@
     "unicorn/no-thenable": {
       "runner": {
         "fn": 0,
-        "fp": 28,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4268,7 +5724,7 @@
     "unicorn/prefer-string-replace-all": {
       "runner": {
         "fn": 0,
-        "fp": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4294,7 +5750,7 @@
     "unicorn/no-anonymous-default-export": {
       "runner": {
         "fn": 0,
-        "fp": 43,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4337,7 +5793,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 56,
+        "fn": 53,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4372,7 +5828,7 @@
     "unicorn/no-single-promise-in-promise-methods": {
       "runner": {
         "fn": 0,
-        "fp": 37,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4408,19 +5864,6 @@
         "skip": 0
       }
     },
-    "unicorn/require-module-specifiers": {
-      "runner": {
-        "fn": 0,
-        "fp": 12,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
     "unicorn/prefer-array-find": {
       "runner": {
         "fn": 0,
@@ -4429,19 +5872,6 @@
       },
       "native": {
         "fn": 85,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "unicorn/no-await-expression-member": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4467,7 +5897,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 21,
+        "fn": 20,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4528,7 +5958,7 @@
     "unicorn/prefer-string-starts-ends-with": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4554,7 +5984,7 @@
     "unicorn/prefer-set-has": {
       "runner": {
         "fn": 2,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4619,7 +6049,7 @@
     "unicorn/prefer-top-level-await": {
       "runner": {
         "fn": 4,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4688,7 +6118,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 45,
+        "fn": 44,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4697,7 +6127,7 @@
     "unicorn/text-encoding-identifier-case": {
       "runner": {
         "fn": 16,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4714,7 +6144,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 148,
+        "fn": 127,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4892,7 +6322,7 @@
     "unicorn/prefer-array-flat": {
       "runner": {
         "fn": 4,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4909,7 +6339,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 30,
+        "fn": 28,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4931,7 +6361,7 @@
     "unicorn/require-module-attributes": {
       "runner": {
         "fn": 0,
-        "fp": 20,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4944,7 +6374,7 @@
     "unicorn/explicit-length-check": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4987,7 +6417,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 5,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -4996,7 +6426,7 @@
     "unicorn/prefer-native-coercion-functions": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -5009,11 +6439,11 @@
     "unicorn/import-style": {
       "runner": {
         "fn": 0,
-        "fp": 6,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 89,
+        "fn": 49,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5058,27 +6488,14 @@
         "skip": 0
       }
     },
-    "unicorn/no-named-default": {
-      "runner": {
-        "fn": 0,
-        "fp": 25,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
     "unicorn/no-keyword-prefix": {
       "runner": {
         "fn": 4,
-        "fp": 4,
+        "fp": 0,
         "crash": 5
       },
       "native": {
-        "fn": 39,
+        "fn": 30,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5086,12 +6503,12 @@
     },
     "unicorn/isolated-functions": {
       "runner": {
-        "fn": 17,
+        "fn": 15,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 24,
+        "fn": 22,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5143,7 +6560,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 278,
+        "fn": 275,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5165,7 +6582,7 @@
     "unicorn/prefer-dom-node-dataset": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -5372,12 +6789,12 @@
     },
     "unicorn/custom-error-definition": {
       "runner": {
-        "fn": 28,
+        "fn": 25,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 28,
+        "fn": 25,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5386,11 +6803,11 @@
     "unicorn/prefer-regexp-test": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 59,
+        "fn": 58,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5464,7 +6881,7 @@
     "unicorn/prefer-math-min-max": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -5490,7 +6907,7 @@
     "unicorn/prefer-logical-operator-over-ternary": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
