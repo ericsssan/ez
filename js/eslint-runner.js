@@ -2261,6 +2261,12 @@ class SourceCode {
    */
   isGlobalReference(node) {
     if (!node || node.type !== 'Identifier') return false;
+    // Not a variable reference: non-computed property name in a MemberExpression.
+    // e.g. `module.exports` — `exports` is a property, not a global variable reference.
+    const parent = node.parent;
+    if (parent && parent.type === 'MemberExpression' && !parent.computed && parent.property === node) {
+      return false;
+    }
     const name = node.name;
     let s = this.getScope(node);
     while (s) {
@@ -2563,8 +2569,12 @@ class SourceCode {
     const pd = this._ast._parentData;
     if (!pd || !node || node._i === undefined) return [];
     const ancestors = [];
+    const nodeTags = this._ast._nodeTags;
     let parentIdx = pd[node._i];
+    // Skip grouping_expr (ParenthesizedExpression) parents — nodeView unwraps them,
+    // which would make the node appear as its own ancestor (cycle).
     while (parentIdx !== NONE && parentIdx !== undefined && parentIdx < this._ast.nodeCount) {
+      if (nodeTags[parentIdx] === T.grouping_expr) { parentIdx = pd[parentIdx]; continue; }
       ancestors.unshift(nodeView(this._ast, parentIdx));
       parentIdx = pd[parentIdx];
     }

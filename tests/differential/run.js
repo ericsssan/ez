@@ -469,8 +469,12 @@ function runRunner(filePath) {
 // Per-rule runner call for corpus mode (forwards per-case options, sourceType, JSX mode).
 function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null) {
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
-  const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
-  const filename = tcFilename || ("test" + ext);
+  // Use the same filename as the oracle (tc.filename || "test.js") so filename-checking
+  // rules (e.g. react/jsx-filename-extension) see the same path and produce matching results.
+  // For JSX parsing mode, pass an explicit `lang` override rather than relying on extension.
+  const oracleExt = isTypeScript ? ".ts" : ".js";
+  const filename = tcFilename || ("test" + oracleExt);
+  const parseLang = isTypeScript ? (jsxEnabled ? "tsx" : "ts") : (jsxEnabled ? "jsx" : "js");
   try {
     const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
     const globals = computeGlobals(ecmaVersion, false);
@@ -481,7 +485,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
     const _p0 = Date.now();
-    const ast = parse(src, { filename, globals, sourceType });
+    const ast = parse(src, { filename, lang: parseLang, globals, sourceType });
     _runnerParseMs += Date.now() - _p0;
     const plugin = {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
@@ -571,6 +575,13 @@ function _isNativeParser(parser) {
   return false;
 }
 
+/** Lowercase the file extension so ESLint glob patterns (case-sensitive) can match it. */
+function _normalizeFilenameExt(filename) {
+  const dot = filename.lastIndexOf(".");
+  if (dot < 0) return filename;
+  return filename.slice(0, dot) + filename.slice(dot).toLowerCase();
+}
+
 function normalizeCase(c, defaultConfig = {}) {
   const defaultLO = defaultConfig.languageOptions || {};
   const defaultHasParser = !_isNativeParser(defaultLO.parser);
@@ -590,7 +601,7 @@ function normalizeCase(c, defaultConfig = {}) {
     code:            c.code || "",
     options:         c.options || [],
     languageOptions: mergedLO,
-    filename:        c.filename || null,
+    filename:        c.filename ? _normalizeFilenameExt(c.filename) : null,
     hasCustomParser: !!(c.parser && !_isNativeParser(c.parser))
       || !!(caseLO.parser && !_isNativeParser(caseLO.parser))
       || defaultHasParser,
@@ -622,24 +633,33 @@ function installCorpusIntercept() {
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
       if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
       try {
+        const oracleFilename = tc.filename || "test.js";
+        // files: explicit extensions so ESLint flat config lints non-default types (ts, tsx, jsx, etc.)
         const messages = eslintLinter.verify(tc.code, [{
+          files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
           plugins: pluginCfg,
           languageOptions: langOpts,
           rules: { [fullName]: ruleEntry },
-        }], { filename: tc.filename || "test.js" });
+        }], { filename: oracleFilename });
         if (messages.some(m => m.fatal)) continue; // espree parse error — skip case
         // ESLint flat config returns a non-fatal "No matching configuration found" warning when
         // the filename is an absolute path outside the project root. Re-run with a relative filename.
         if (messages.length === 1 && messages[0].ruleId === null && messages[0].message?.startsWith("No matching configuration found")) {
-          const ext = path.extname(tc.filename || "test.js") || ".js";
+          const ext = path.extname(oracleFilename) || ".js";
           const fallbackFilename = "test" + ext;
           const msgs2 = eslintLinter.verify(tc.code, [{
+            files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
             plugins: pluginCfg,
             languageOptions: langOpts,
             rules: { [fullName]: ruleEntry },
           }], { filename: fallbackFilename });
           if (msgs2.some(m => m.fatal)) continue;
+          // If the fallback filename also has "No matching configuration found", the extension
+          // is not supported by ESLint (e.g. .vue). Skip the case to avoid FPs.
+          if (msgs2.length === 1 && msgs2[0].ruleId === null && msgs2[0].message?.startsWith("No matching configuration found")) continue;
           tc.eslintResult = msgs2.filter(m => m.ruleId === fullName && !m.fatal).map(m => ({ rule: fullName, line: m.line }));
+          // Update filename so the runner uses the same fallback (prevents physicalFilename mismatch).
+          tc.filename = fallbackFilename;
         } else {
           tc.eslintResult = messages
             .filter(m => m.ruleId === fullName && !m.fatal)
@@ -707,7 +727,7 @@ function installCorpusIntercept() {
         code: typeof code === "string" ? code : "",
         options: ruleOptions,
         languageOptions: langOpts,
-        hasCustomParser: false,
+        hasCustomParser: !!(langOpts.parser && typeof (langOpts.parser.parseForESLint ?? langOpts.parser.parse) === 'function'),
         eslintResult,
       };
       if (!_captured) _captured = { name: ruleName, defaultConfig: {}, cases: [] };
@@ -911,7 +931,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       if (!cases) continue;
       const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
       const defaultParser = cases.defaultConfig?.languageOptions?.parser;
-      const isTypeScript = defaultParser && typeof defaultParser === 'object';
+      const isTypeScript = defaultParser && !_isNativeParser(defaultParser);
       const allCases = cases.cases;
       allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType, isTypeScript, allCases });
     }
@@ -995,6 +1015,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
             code: tc.code,
             options: tc.options,
             sourceType,
+            filename: tc.filename,
           });
         }
       }
@@ -1092,7 +1113,8 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
           const oursStr   = c.ourLines.length    ? `line(s) ${c.ourLines.join(",")}`    : "nothing";
           const opts = c.options.length ? ` options=${JSON.stringify(c.options)}` : "";
           const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
-          console.log(`    [case ${c.tcIdx}${opts}${st}]  ESLint: ${espreeStr}  ours: ${oursStr}`);
+          const fnStr = c.filename ? ` file=${c.filename}` : "";
+          console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}]  ESLint: ${espreeStr}  ours: ${oursStr}`);
           printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
         }
       }
@@ -1117,7 +1139,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     ruleGaps.sort((a, b) => b.total - a.total);
     if (ruleGaps.length > 0) {
       console.log(`\nTop gaps (runner, ${ruleGaps.length} rules with issues):`);
-      for (const g of ruleGaps.slice(0, 15)) {
+      for (const g of ruleGaps.slice(0, 60)) {
         const parts = [];
         if (g.fn > 0) parts.push(`${g.fn} FN`);
         if (g.fp > 0) parts.push(`${g.fp} FP`);
