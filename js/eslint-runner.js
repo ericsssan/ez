@@ -2379,6 +2379,52 @@ class SourceCode {
   }
 
   /**
+   * getTokensBefore(node, options) — tokens (and optionally comments) before node.range[0].
+   * options: { count, includeComments, filter } or just a number for count.
+   */
+  getTokensBefore(node, options = {}) {
+    const opts = typeof options === 'number' ? { count: options } : (options || {});
+    const includeComments = opts.includeComments || false;
+    const count = opts.count !== undefined ? opts.count : Infinity;
+    const filter = typeof opts.filter === 'function' ? opts.filter : null;
+    const nodeStart = node.range ? node.range[0] : null;
+    if (nodeStart === null) return [];
+    const all = includeComments ? this._getTokensAndCommentsMerged() : this._getAllTokens();
+    const result = [];
+    for (const tok of all) {
+      if (!tok.range) continue;
+      if (tok.range[1] <= nodeStart) {
+        if (!filter || filter(tok)) result.push(tok);
+      } else if (tok.range[0] >= nodeStart) {
+        break; // past the node start, no more tokens before it
+      }
+    }
+    return count === Infinity ? result : result.slice(-count);
+  }
+
+  /**
+   * getTokensAfter(node, options) — tokens (and optionally comments) after node.range[1].
+   */
+  getTokensAfter(node, options = {}) {
+    const opts = typeof options === 'number' ? { count: options } : (options || {});
+    const includeComments = opts.includeComments || false;
+    const count = opts.count !== undefined ? opts.count : Infinity;
+    const filter = typeof opts.filter === 'function' ? opts.filter : null;
+    const nodeEnd = node.range ? node.range[1] : null;
+    if (nodeEnd === null) return [];
+    const all = includeComments ? this._getTokensAndCommentsMerged() : this._getAllTokens();
+    const result = [];
+    for (const tok of all) {
+      if (!tok.range) continue;
+      if (tok.range[0] >= nodeEnd) {
+        if (!filter || filter(tok)) result.push(tok);
+        if (result.length >= count) break;
+      }
+    }
+    return result;
+  }
+
+  /**
    * Get array of source lines (cached).
    */
   getLines() {
