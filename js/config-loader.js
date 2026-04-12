@@ -271,13 +271,28 @@ function loadLegacyConfig(orderedPaths) {
 }
 
 /**
- * Auto-detect and load the ESLint config for the given directory.
+ * Auto-detect and load the ESLint config.
+ * If configPathOrDir is a file, loads it directly (bypasses walk-up detection).
+ * If it is a directory, walks up to find the nearest config.
  * Returns null if no config file is found.
- * @param {string} cwd  Directory to start detection from
+ * @param {string} configPathOrDir  File path or directory to start detection from
  * @returns {Promise<ConfigResolver | null>}
  */
-async function loadConfig(cwd) {
-  const detected = detectConfigFile(cwd);
+async function loadConfig(configPathOrDir) {
+  const abs = path.resolve(configPathOrDir);
+
+  // If it's a file, load directly based on filename
+  let stat;
+  try { stat = fs.statSync(abs); } catch { return null; }
+
+  if (stat.isFile()) {
+    const base = path.basename(abs);
+    if (FLAT_NAMES.includes(base)) return loadFlatConfig(abs);
+    return loadLegacyConfig([abs]);
+  }
+
+  // It's a directory — walk up
+  const detected = detectConfigFile(abs);
   if (!detected) return null;
   if (detected.type === "flat") return loadFlatConfig(detected.path);
   return loadLegacyConfig(detected.paths);
