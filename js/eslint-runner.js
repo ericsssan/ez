@@ -1307,8 +1307,21 @@ class SourceCode {
 
     // block: cheap — one index lookup + nodeView.
     const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
-    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
+    let block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
       ? nodeView(ast, scopeNodeIdx) : null;
+    // For function scopes created by getter/setter/method definitions, ESLint's scope manager
+    // sets block = FunctionExpression (not the Property/MethodDefinition node). Rules like
+    // no-accessor-recursion check scope.block.parent to find the enclosing getter/setter.
+    // Expose the synthetic FunctionExpression so scope.block.parent = Property/MethodDefinition.
+    if (kind === 2 && block !== null) {
+      const bt = block._tag;
+      if (bt === T.getter_def || bt === T.setter_def || bt === T.method_def ||
+          bt === T.constructor_def || bt === T.computed_getter_def || bt === T.computed_setter_def ||
+          bt === T.computed_method_def) {
+        const fn = block.value; // returns the synthetic FunctionExpression (parent = block)
+        if (fn && fn.type === 'FunctionExpression') block = fn;
+      }
+    }
 
     const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */;
     const isStrict = this._computeIsStrict(kind, flags16, upper, block);
