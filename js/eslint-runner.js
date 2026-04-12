@@ -479,6 +479,7 @@ class SourceCode {
     this._varCache = null;       // lazily allocated Array[symCount] — same object per symId for indexOf identity
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
+    this.parserServices = {};
   }
 
   reset(ast, sourceText, sourceType, ecmaVersion) {
@@ -502,7 +503,7 @@ class SourceCode {
     this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
     this._nodesByType = null;
-    this.parserServices = null;
+    this.parserServices = {};
     // _declSymIndex is file-specific — must be cleared so it rebuilds for the new AST.
     this._declSymIndex = null;
     this._allComments = undefined;
@@ -1324,7 +1325,7 @@ class SourceCode {
       isStrict,
       block,
       upper,
-      implicit: { variables: [] },
+      implicit: { variables: [], left: [], leftToBeResolved: [] },
       lookup(name) { return scope.set.get(name) || null; },
     };
     scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
@@ -1354,7 +1355,7 @@ class SourceCode {
         isStrict,
         block,
         upper: fenUpper,
-        implicit: { variables: [] },
+        implicit: { variables: [], left: [], leftToBeResolved: [] },
         variableScope: fenUpper ? (fenUpper.variableScope || fenUpper) : scope,
         lookup(name) { return _fenScope.set.get(name) || null; },
         references: [],
@@ -2177,7 +2178,7 @@ class SourceCode {
     const set = new Map();
     const s = {
       type: _SCOPE_KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
-      set, through: [], childScopes: [], implicit: { variables: [] },
+      set, through: [], childScopes: [], implicit: { variables: [], left: [], leftToBeResolved: [] },
       block, upper, lookup: () => null,
     };
     s.variableScope = isVarScope ? s : (upper ? upper.variableScope || upper : s);
@@ -2208,7 +2209,7 @@ class SourceCode {
     upper.variableScope = upper;
     const s = {
       variables: [], childScopes: [], references: [], through: [],
-      set: new Map(), implicit: { variables: [] }, block: null,
+      set: new Map(), implicit: { variables: [], left: [], leftToBeResolved: [] }, block: null,
       upper, isStrict: false, type: 'module', lookup: () => null,
     };
     s.variableScope = s;
