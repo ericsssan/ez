@@ -1309,6 +1309,8 @@ pub fn computeNodePositions(
                 // (already consumed at base), so the first `>` we see here is the tag closer.
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
+                // Also extend maxTok so getTokens() includes these punctuation tokens.
+                if (j > maxTok[i]) maxTok[i] = @intCast(j);
                 if (tt == .greater_than) break;
             } else {
                 // Expression/identifier: stop at non-bracket tokens

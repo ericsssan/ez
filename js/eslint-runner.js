@@ -4217,6 +4217,23 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
     }
   }
 
+  // JSX: self-closing elements (jsx_self_closing) have no JSXOpeningElement child.
+  // They serve as their own opening element — fire JSXOpeningElement handlers on them too.
+  {
+    let _jsxOpeningTag = -1, _jsxSelfClosingTag = -1, _jsxElemCount = 0;
+    for (let t = 0; t < tagCount; t++) {
+      const tn = tagNames[t];
+      if (tn === 'JSXOpeningElement' && _jsxOpeningTag < 0) _jsxOpeningTag = t;
+      if (tn === 'JSXElement' && ++_jsxElemCount === 2) _jsxSelfClosingTag = t;
+    }
+    if (_jsxSelfClosingTag >= 0 && _jsxOpeningTag >= 0) {
+      const oh = visitorMap.get('JSXOpeningElement');
+      const ox = visitorMap.get('JSXOpeningElement:exit');
+      if (oh) tagEnterHandlers[_jsxSelfClosingTag] = tagEnterHandlers[_jsxSelfClosingTag] ? [...tagEnterHandlers[_jsxSelfClosingTag], ...oh] : [...oh];
+      if (ox) tagExitHandlers[_jsxSelfClosingTag]  = tagExitHandlers[_jsxSelfClosingTag]  ? [...tagExitHandlers[_jsxSelfClosingTag],  ...ox] : [...ox];
+    }
+  }
+
   // Relevant tag set
   const relevantTag = new Uint8Array(tagCount);
   let relevantTagCount = 0;
