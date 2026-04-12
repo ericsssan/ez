@@ -1841,6 +1841,31 @@ class SourceCode {
         targetScope.implicit = { variables: [...implMap.values()] };
       }
     }
+
+    // Process /*exported a, b*/ comments — mark variables as eslintUsed so
+    // no-unused-vars and prefer-const skip them (same as eslint-scope's behavior).
+    {
+      const ast = this._ast;
+      const comments = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : [];
+      for (const comment of comments) {
+        if (comment.type !== 'Block') continue;
+        const val = comment.value;
+        if (!/^\s*exported\b/.test(val)) continue;
+        const body = val.replace(/^\s*exported\s*/, '').trim();
+        const names = body.match(/[$_a-zA-Z\u0080-\uffff][\w$\u0080-\uffff]*/g) || [];
+        for (const name of names) {
+          // Find variable in global/module scope
+          const scopesToCheck = [];
+          if (globalScope) scopesToCheck.push(globalScope);
+          const modScope = this._scopeCache ? this._scopeCache[1] : null;
+          if (modScope && modScope !== globalScope) scopesToCheck.push(modScope);
+          for (const scope of scopesToCheck) {
+            const v = scope.set?.get(name);
+            if (v) { v.eslintUsed = true; break; }
+          }
+        }
+      }
+    }
   }
 
   /** Build an ESLint Variable object for a symbol. Cached so same symId → same object (identity for indexOf). */
