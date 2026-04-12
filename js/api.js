@@ -355,4 +355,18 @@ async function fix(targets, config = {}) {
   return { results, fixedFiles };
 }
 
-module.exports = { lint, lintSource, fix, applyFixes };
+/**
+ * Create a cached linter for LSP/editor use.
+ * Resolves config once; returns async lintText(source, filename) → diags[].
+ *
+ * @param {object} [config] - Configuration options (cwd, configFile, rules, plugins)
+ * @returns {Promise<function(source: string, filename: string): Promise<Array>>}
+ */
+async function createLinter(config = {}) {
+  const resolved = await _resolveConfig(config);
+  return function lintText(source, filename) {
+    return Promise.resolve(_lintSourceOne(source, filename || "<input>", resolved));
+  };
+}
+
+module.exports = { lint, lintSource, fix, applyFixes, createLinter };

@@ -4,7 +4,8 @@
   "description": "Fast JavaScript/TypeScript linter — native Zig rules + ESLint compat",
   "main": "api.js",
   "bin": {
-    "ez": "../bin/ez.js"
+    "ez": "../bin/ez.js",
+    "ez-language-server": "../bin/ez-lsp.js"
   },
   "exports": {
     ".": "./api.js",
@@ -18,6 +19,7 @@
     "eslint-runner.js",
     "load-plugin.js",
     "lint.js",
+    "lsp-server.js",
     "rules/"
   ],
   "license": "MIT",

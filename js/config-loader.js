@@ -329,6 +329,8 @@ async function loadConfig(configPathOrDir) {
 }
 
 module.exports = {
+  FLAT_NAMES,
+  LEGACY_NAMES,
   matchesAny,
   normalizeRules,
   pluginsFromConfig,

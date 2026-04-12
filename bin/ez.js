@@ -38,6 +38,7 @@ const COMMANDS = {
   format: runFmt,
   init:   runStub,
   migrate: runStub,
+  lsp:    runLsp,
 };
 
 const handler = COMMANDS[subcommand];
@@ -60,6 +61,7 @@ Commands:
   check             Lint + format check + type-check (the CI command)
   lint              Lint files
   fmt               Format files
+  lsp               Start LSP server (stdio JSON-RPC, for editors)
   init              Create ez config
   migrate           Migrate from eslint/prettier config
 
@@ -77,6 +79,7 @@ Examples:
   ez lint --fix src/
   ez fmt .
   ez fmt --check src/
+  ez lsp
 `);
 }
 
@@ -206,6 +209,12 @@ Options:
   }
   console.error("ez fmt: coming soon");
   process.exit(1);
+}
+
+// ── ez lsp ──────────────────────────────────────────────────────
+
+function runLsp(_cmdArgs) {
+  require("../js/lsp-server");
 }
 
 // ── ez init / ez migrate ────────────────────────────────────────
