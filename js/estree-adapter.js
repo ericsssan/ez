@@ -1057,6 +1057,27 @@ const NodeProto = {
         };
       }
     }
+    // JSX: for jsx_attribute nodes whose Zig parent is jsx_self_closing,
+    // ESTree requires the parent to be JSXOpeningElement (selfClosing=true),
+    // not JSXElement. Synthesize a JSXOpeningElement wrapper so that rules
+    // checking node.parent.type === 'JSXOpeningElement' work correctly.
+    if (result && this._tag === T.jsx_attribute && result._tag === T.jsx_self_closing) {
+      const selfClosingNode = result;
+      const ast = this._ast;
+      const d = ast.extraJsxOpeningData(ast.nodeLhs(selfClosingNode._i));
+      const openingEl = {
+        type: 'JSXOpeningElement',
+        selfClosing: true,
+        get name() { return d.name !== NONE ? nodeView(ast, d.name) : null; },
+        get attributes() { return ast._nodesFromRange(d.attrs_start, d.attrs_end); },
+        range: selfClosingNode.range,
+        loc: selfClosingNode.loc,
+        get start() { return selfClosingNode.start; },
+        get end() { return selfClosingNode.end; },
+        parent: selfClosingNode,
+      };
+      result = openingEl;
+    }
     this._parent = result;
     return result;
   },
@@ -1093,6 +1114,14 @@ const NodeProto = {
     }
     // JSXIdentifier.name — the identifier text
     if (t === T.jsx_identifier) {
+      const lhs = this._ast.nodeLhs(this._i);
+      if (lhs !== NONE && this._ast._tokEnds) {
+        // Compound hyphenated name (e.g. "aria-fake"): lhs is last token index.
+        const ast = this._ast;
+        const start = ast._tokStarts[ast._mainTokens[this._i]];
+        const end = ast._tokEnds[lhs];
+        return ast.source.slice(start, end);
+      }
       return this._ast._identAt(this._ast._mainTokens[this._i]);
     }
     // JSXOpeningElement.name / JSXClosingElement.name / JSXSelfClosing.name
@@ -1284,19 +1313,13 @@ const NodeProto = {
       // so the closing ` or } is always at the end when the regex anchors run.
       const raw = ast.source.slice(start, end).trimEnd().replace(/^`|`$/g, '').replace(/^\}|\$\{$/g, '');
       v = { raw, cooked: _cookTemplate(raw) };
-    } else if (t === T.jsx_text_node) {
+    } else if (t === T.jsx_text_node || t === T.jsx_gap_node) {
       // JSXText: value is the raw text content between tags.
-      // Gap-type nodes (data.lhs != NONE) store gap positions in node_pos.starts/ends.
-      const lhs = ast.nodeLhs(this._i);
-      if (lhs !== NONE) {
-        // Gap-type: range is the gap's UTF-16 positions (set by napi.zig override).
-        const r = this.range;
-        v = ast.source.slice(r[0], r[1]);
-      } else {
-        const mt = this.mainToken;
-        const s = ast._tokStarts[mt], e = ast._tokEnds[mt];
-        v = ast.source.slice(s, e);
-      }
+      // jsx_gap_node: range fully overridden by napi.zig (lhs/rhs = byte offsets).
+      // jsx_text_node: range always overridden by napi.zig (lhs = next_tok, rhs = leading gap start).
+      // Use this.range in all cases.
+      const r = this.range;
+      v = ast.source.slice(r[0], r[1]);
     } else if (t === T.jsx_attribute) {
       // JSXAttribute: value is the rhs (string literal, expression container, or null)
       const rhs = ast.nodeRhs(this._i);
@@ -1312,8 +1335,8 @@ const NodeProto = {
    * node.raw — raw literal source text (for Literal nodes).
    */
   get raw() {
-    // Gap-type JSXText nodes: raw text comes from the gap range, not the main token.
-    if (this._tag === T.jsx_text_node && this._ast.nodeLhs(this._i) !== NONE) {
+    // JSXText nodes: raw text always from position range (set by napi.zig).
+    if (this._tag === T.jsx_gap_node || this._tag === T.jsx_text_node) {
       const r = this.range;
       return this._ast.source.slice(r[0], r[1]);
     }
@@ -2438,7 +2461,7 @@ const NodeProto = {
     const t = this._tag;
     if (t === T.expression_stmt) {
       const idx = this._ast.nodeLhs(this._i);
-      return idx === NONE ? null : nodeView(this._ast, idx);
+      return idx === NONE ? null : nodeViewChain(this._ast, idx);
     }
     if (t === T.arrow_fn || t === T.async_arrow_fn) {
       const ast = this._ast;
