@@ -582,7 +582,7 @@ function installCorpusIntercept() {
 
   // ── Plugin path: __EZ_CAPTURE__ (Bun.plugin stubs → here) ─────────────────
   // Called when plugin test files (react/promise/unicorn) are loaded.
-  // global.__EZ_CAPTURE_PREFIX__ is set by loadRuleCases* before require/import.
+  // global.__EZ_CAPTURE_PREFIX__ is set by loadRuleCases() before require/import.
   global.__EZ_CAPTURE__ = (name, rule, cases, defaultConfig = {}) => {
     const prefix   = global.__EZ_CAPTURE_PREFIX__ || null;
     const fullName = prefix ? `${prefix}/${name}` : name;
@@ -695,60 +695,39 @@ function installCorpusIntercept() {
   };
 }
 
-function loadRuleCases(testsDir, ruleName, { capturePrefix = null, captureRule = null } = {}) {
-  const testFile = path.join(testsDir, `${ruleName}.js`);
+// testFormat:
+//   "cjs"           — require() + RuleTester stub calls __EZ_CAPTURE__ (react, promise, core)
+//   "esm"           — import() + RuleTester stub calls __EZ_CAPTURE__ (unicorn)
+//   "static-export" — import() + reads export default { valid, invalid } directly (jsdoc)
+async function loadRuleCases(testsDir, baseName, { capturePrefix = null, captureRule = null, testFormat = "cjs" } = {}) {
+  const testFile = path.join(testsDir, `${baseName}.js`);
   if (!fs.existsSync(testFile)) return null;
   _captured = null;
   _linterSkipCalls = 0;
   global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
   global.__EZ_CAPTURE_RULE__   = captureRule;
-  delete require.cache[testFile];
-  try { require(testFile); } catch { /* partial captures ok */ }
-  finally {
-    global.__EZ_CAPTURE_PREFIX__ = null;
-    global.__EZ_CAPTURE_RULE__   = null;
-  }
-  return _captured;
-}
-
-// Async variant for ESM test files (unicorn). Uses dynamic import() with Bun plugin stubs.
-async function loadRuleCasesESM(testsDir, ruleName, { capturePrefix = null } = {}) {
-  const testFile = path.join(testsDir, `${ruleName}.js`);
-  if (!fs.existsSync(testFile)) return null;
-  _captured = null;
-  _linterSkipCalls = 0;
-  global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
   try {
-    // Append cache-bust query to force re-import across calls
-    await import(`${testFile}?_ez=${Date.now()}`);
-  } catch (e) {
-    global.__EZ_CAPTURE_PREFIX__ = null;
-    if (filterRule) process.stderr.write(`warn: failed to load ${path.basename(testFile)}: ${e.message}\n`);
-    return null;
-  }
-  global.__EZ_CAPTURE_PREFIX__ = null;
-  return _captured;
-}
-
-// For plugins whose test files export { valid, invalid } directly (no RuleTester.run call).
-// File names are camelCase (checkAccess.js); rule names are kebab-case (check-access).
-async function loadRuleCasesStaticExport(testsDir, fileName, { capturePrefix = null } = {}) {
-  const testFile = path.join(testsDir, `${fileName}.js`);
-  if (!fs.existsSync(testFile)) return null;
-  _captured = null;
-  _linterSkipCalls = 0;
-  global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
-  try {
-    const mod = await import(`${testFile}?_ez=${Date.now()}`);
-    const testCases = mod.default || mod;
-    if (testCases && typeof testCases === "object" && ("valid" in testCases || "invalid" in testCases)) {
-      const ruleBaseName = fileName.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
-      global.__EZ_CAPTURE__(ruleBaseName, null, testCases, {});
+    if (testFormat === "cjs") {
+      delete require.cache[testFile];
+      try { require(testFile); } catch { /* partial captures ok */ }
+    } else {
+      const mod = await import(`${testFile}?_ez=${Date.now()}`);
+      if (testFormat === "static-export") {
+        const testCases = mod.default || mod;
+        if (testCases && typeof testCases === "object" && ("valid" in testCases || "invalid" in testCases)) {
+          // File names are camelCase; rule names are kebab-case — convert for __EZ_CAPTURE__.
+          const ruleBaseName = baseName.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+          global.__EZ_CAPTURE__(ruleBaseName, null, testCases, {});
+        }
+      }
+      // "esm": __EZ_CAPTURE__ already called by RuleTester.run() stub during import
     }
   } catch (e) {
     if (filterRule) process.stderr.write(`warn: failed to load ${path.basename(testFile)}: ${e.message}\n`);
+    return null;
   } finally {
     global.__EZ_CAPTURE_PREFIX__ = null;
+    global.__EZ_CAPTURE_RULE__   = null;
   }
   return _captured;
 }
@@ -865,7 +844,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   // 1a: ESLint core rules — real RuleTester runs; Linter.prototype.verify intercept captures cases
   for (const ruleName of COMPARABLE_RULES) {
     if (ruleName.includes("/")) continue; // skip plugin rules here
-    const cases = loadRuleCases(TESTS_DIR, ruleName, { captureRule: ruleName });
+    const cases = await loadRuleCases(TESTS_DIR, ruleName, { captureRule: ruleName });
     if (!cases) continue;
     const ruleModule = (() => {
       try { return require(path.join(RULES_DIR_SUB, `${ruleName}.js`)); } catch { return null; }
@@ -893,12 +872,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       if (!ruleModule) continue;
       const canonicalName = _pluginRuleModules.has(fullName) ? fullName : fullNameKebab;
       if (filterRule && canonicalName !== filterRule) continue;
-      // Load test cases using the appropriate loader for this plugin's test format.
-      const cases = testFormat === "static-export"
-        ? await loadRuleCasesStaticExport(testsDir, baseName, { capturePrefix: prefix })
-        : testFormat === "esm"
-          ? await loadRuleCasesESM(testsDir, baseName, { capturePrefix: prefix })
-          : loadRuleCases(testsDir, baseName, { capturePrefix: prefix });
+      const cases = await loadRuleCases(testsDir, baseName, { capturePrefix: prefix, testFormat });
       if (!cases) continue;
       const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
       const defaultParser = cases.defaultConfig?.languageOptions?.parser;
