@@ -2127,7 +2127,35 @@ const NodeProto = {
     const ast = this._ast;
     const d = ast.extraClassData(ast.nodeLhs(this._i));
     // Use nodeViewChain: `class A extends obj?.foo {}` — superClass may be optional chain.
-    return d.super_class === NONE ? null : nodeViewChain(ast, d.super_class);
+    if (d.super_class !== NONE) return nodeViewChain(ast, d.super_class);
+    // TS mode: Zig parser stores super_class=NONE and creates TSTypeReference instead.
+    // Fall back: scan tokens for 'extends' keyword, then find the node whose mainToken is the identifier.
+    const mt = this.mainToken; // class keyword token
+    const tokTags = ast._tokTags;
+    const mainTokens = ast._mainTokens;
+    const nc = ast.nodeCount;
+    // Find 'extends' token (tag 19) scanning forward from class keyword
+    let extendsTok = -1;
+    for (let ti = mt + 1; ti < ast.tokenCount; ti++) {
+      const tag = tokTags[ti];
+      if (tag === 19) { extendsTok = ti; break; } // kw_extends
+      if (tag === 74) break; // '{' — class body started without extends
+    }
+    if (extendsTok < 0) return null;
+    // Find node whose mainToken is the identifier right after 'extends'
+    const heritageTok = extendsTok + 1;
+    for (let ni = 0; ni < nc; ni++) {
+      if (mainTokens[ni] === heritageTok) {
+        const nTag = ast._nodeTags[ni];
+        // TSTypeReference wraps the heritage name — return its typeName (lhs)
+        if (nTag === T.ts_type_reference) {
+          const inner = ast.nodeLhs(ni);
+          return inner === NONE ? null : nodeView(ast, inner);
+        }
+        return nodeView(ast, ni);
+      }
+    }
+    return null;
   },
 
   /**

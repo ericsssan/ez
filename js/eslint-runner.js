@@ -4441,7 +4441,6 @@ function _remapList(ruleIds, key, handlerByKey) {
  */
 function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const { map: visitorMap, selectorHandlers } = visitorMapResult;
-
   // Fast exit: no rules registered any visitors — nothing to dispatch.
   if (visitorMap.size === 0 && selectorHandlers.length === 0) {
     context._skipSet = null;
@@ -4879,7 +4878,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const plan = _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, canSkip, selectorHandlers);
   const { tagEnterHandlers, tagExitHandlers, tagFlags,
           fileLevelEnter, fileLevelExit, batchScannable } = plan;
-
   // Clone relevantTag so we can safely extend it for synthesis/remap without
   // corrupting the cached plan (relevantTag is a Uint8Array owned by the plan).
   const relevantTag = new Uint8Array(plan.relevantTag);
