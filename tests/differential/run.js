@@ -617,6 +617,7 @@ function installCorpusIntercept() {
         ? { [pluginPfx]: _espreePlugins[pluginPfx] } : {};
       const langOpts    = { ecmaVersion, sourceType };
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
+      if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
       try {
         const messages = eslintLinter.verify(tc.code, [{
           plugins: pluginCfg,
