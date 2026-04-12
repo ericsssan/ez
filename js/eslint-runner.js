@@ -2497,6 +2497,8 @@ class SourceCode {
     return false;
   }
 
+  isSpaceBetweenTokens(nodeA, nodeB) { return this.isSpaceBetween(nodeA, nodeB); }
+
   /**
    * Stub for isNotWhitespace — checks if token value has non-whitespace.
    */
