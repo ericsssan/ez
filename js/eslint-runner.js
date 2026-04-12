@@ -5141,9 +5141,83 @@ function runPlugins(ast, plugins, options = {}) {
   return context._reports;
 }
 
+// ── Disable directive suppression ───────────────────────────────
+
+function _parseRuleList(str) {
+  if (!str || !str.trim()) return []; // empty = matches all rules
+  return str.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function _parseDisableDirectives(source) {
+  const directives = [];
+  const lines = source.split('\n');
+  const blockRe = /\/\*\s*eslint-(disable-line|disable|enable)((?:[^*]|\*(?!\/))*)\*\//g;
+  const lineNextRe = /\/\/\s*eslint-disable-next-line(.*)/;
+  const lineDisableLineRe = /\/\/\s*eslint-disable-line(.*)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const lineNum = i + 1;
+    const line = lines[i];
+
+    const lineNextMatch = line.match(lineNextRe);
+    if (lineNextMatch) {
+      directives.push({ type: 'disable-next-line', line: lineNum, rules: _parseRuleList(lineNextMatch[1]) });
+    }
+
+    const lineDisableMatch = line.match(lineDisableLineRe);
+    if (lineDisableMatch && !lineNextMatch) { // avoid double-matching disable-next-line
+      directives.push({ type: 'disable-line', line: lineNum, rules: _parseRuleList(lineDisableMatch[1]) });
+    }
+
+    blockRe.lastIndex = 0;
+    let m;
+    while ((m = blockRe.exec(line)) !== null) {
+      directives.push({ type: m[1], line: lineNum, rules: _parseRuleList(m[2]) });
+    }
+  }
+
+  return directives.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * Filter violations suppressed by eslint-disable comments in source.
+ * @param {string} source - File source text
+ * @param {object[]} violations - Violation objects with ruleId and loc.start.line
+ * @returns {object[]} Violations not suppressed by disable directives
+ */
+function applyDisableDirectives(source, violations) {
+  if (!violations.length) return violations;
+  const directives = _parseDisableDirectives(source);
+  if (!directives.length) return violations;
+
+  return violations.filter(v => {
+    const line = v.loc?.start?.line ?? v.line;
+    if (!line) return true;
+
+    for (const d of directives) {
+      if (d.type === 'disable-next-line' && d.line === line - 1) {
+        if (d.rules.length === 0 || d.rules.includes(v.ruleId)) return false;
+      }
+      if (d.type === 'disable-line' && d.line === line) {
+        if (d.rules.length === 0 || d.rules.includes(v.ruleId)) return false;
+      }
+    }
+
+    let disabled = false;
+    for (const d of directives) {
+      if (d.line > line) break;
+      const ruleMatch = d.rules.length === 0 || d.rules.includes(v.ruleId);
+      if (d.type === 'disable' && ruleMatch) disabled = true;
+      if (d.type === 'enable' && ruleMatch) disabled = false;
+    }
+    return !disabled;
+  });
+}
+
 module.exports = {
   runPlugins, RuleContext,
   computeGlobals,
+  applyDisableDirectives,
   // Exported for testing
   _estimateHandlerCost, _extractParentGuard, _fuseHandlers,
   _isTrivialHandler, _isDeadHandler, _classifyRuleAccess,
