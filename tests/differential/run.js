@@ -467,9 +467,10 @@ function runRunner(filePath) {
 }
 
 // Per-rule runner call for corpus mode (forwards per-case options, sourceType, JSX mode).
-function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false) {
+function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null) {
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
+  const filename = tcFilename || ("test" + ext);
   try {
     const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
     const globals = computeGlobals(ecmaVersion, false);
@@ -480,7 +481,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
     const _p0 = Date.now();
-    const ast = parse(src, { filename: "test" + ext, globals });
+    const ast = parse(src, { filename, globals });
     _runnerParseMs += Date.now() - _p0;
     const plugin = {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
@@ -489,6 +490,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     const _pl0 = Date.now();
     const rawReports = runPlugins(ast, [plugin], {
       tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,
+      filename,
       languageOptions: { globals: tcGlobals || null, parserOptions: tcLanguageOptions.parserOptions },
     });
     // Apply disable directives — the oracle (ESLint) applies them automatically.
@@ -588,6 +590,7 @@ function normalizeCase(c, defaultConfig = {}) {
     code:            c.code || "",
     options:         c.options || [],
     languageOptions: mergedLO,
+    filename:        c.filename || null,
     hasCustomParser: !!(c.parser && !_isNativeParser(c.parser))
       || !!(caseLO.parser && !_isNativeParser(caseLO.parser))
       || defaultHasParser,
@@ -623,7 +626,7 @@ function installCorpusIntercept() {
           plugins: pluginCfg,
           languageOptions: langOpts,
           rules: { [fullName]: ruleEntry },
-        }], { filename: "test.js" });
+        }], { filename: tc.filename || "test.js" });
         if (messages.some(m => m.fatal)) continue; // espree parse error — skip case
         tc.eslintResult = messages
           .filter(m => m.ruleId === fullName && !m.fatal)
@@ -940,7 +943,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       if (!espreeResult) { skipEspreeParse++; continue; }
 
       const _rt0 = Date.now();
-      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript);
+      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript, tc.filename);
       runnerOnlyMs += Date.now() - _rt0;
       if (runnerResult === null) { crash++; continue; }
 
