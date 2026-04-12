@@ -83,3 +83,125 @@ test("pluginsFromConfig: ruleFilter narrows further", () => {
   expect(result).toHaveLength(1);
   expect(result[0].meta.name).toBe("react/jsx-key");
 });
+
+// ── ConfigResolver ───────────────────────────────────────────────
+
+const { ConfigResolver } = require("../../js/config-loader");
+
+test("resolveForFile: no files: key applies globally", () => {
+  const flat = [{ rules: { "no-console": "error" } }];
+  const resolver = new ConfigResolver(flat, "/project");
+  const result = resolver.resolveForFile("/project/src/foo.js");
+  expect(result).not.toBeNull();
+  expect(result.rules["no-console"]).toBe("error");
+});
+
+test("resolveForFile: files: glob filters correctly", () => {
+  const flat = [
+    { files: ["**/*.ts"], rules: { "@typescript-eslint/no-explicit-any": "error" } },
+    { rules: { "no-console": "warn" } },
+  ];
+  const resolver = new ConfigResolver(flat, "/project");
+
+  const tsResult = resolver.resolveForFile("/project/src/foo.ts");
+  expect(tsResult.rules["@typescript-eslint/no-explicit-any"]).toBe("error");
+  expect(tsResult.rules["no-console"]).toBe("warn");
+
+  const jsResult = resolver.resolveForFile("/project/src/bar.js");
+  expect(jsResult.rules["@typescript-eslint/no-explicit-any"]).toBeUndefined();
+  expect(jsResult.rules["no-console"]).toBe("warn");
+});
+
+test("resolveForFile: global ignores returns null", () => {
+  const flat = [
+    { ignores: ["dist/**"] },
+    { rules: { "no-console": "error" } },
+  ];
+  const resolver = new ConfigResolver(flat, "/project");
+  expect(resolver.resolveForFile("/project/dist/bundle.js")).toBeNull();
+  expect(resolver.resolveForFile("/project/src/foo.js")).not.toBeNull();
+});
+
+test("resolveForFile: later entries override earlier ones", () => {
+  const flat = [
+    { rules: { "no-console": "warn" } },
+    { rules: { "no-console": "error" } },
+  ];
+  const resolver = new ConfigResolver(flat, "/project");
+  const result = resolver.resolveForFile("/project/src/foo.js");
+  expect(result.rules["no-console"]).toBe("error");
+});
+
+test("resolveForFile: merges plugins from multiple entries", () => {
+  const pluginA = { rules: { "rule-a": { create: () => ({}) } } };
+  const pluginB = { rules: { "rule-b": { create: () => ({}) } } };
+  const flat = [
+    { plugins: { a: pluginA } },
+    { plugins: { b: pluginB } },
+  ];
+  const resolver = new ConfigResolver(flat, "/project");
+  const result = resolver.resolveForFile("/project/src/foo.js");
+  expect(result.plugins.a).toBe(pluginA);
+  expect(result.plugins.b).toBe(pluginB);
+});
+
+// ── detectConfigFile ─────────────────────────────────────────────
+
+const os = require("os");
+const { detectConfigFile } = require("../../js/config-loader");
+
+test("detectConfigFile: finds eslint.config.js (flat)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ez-test-"));
+  fs.writeFileSync(path.join(tmp, "eslint.config.js"), "module.exports = [];");
+  try {
+    const result = detectConfigFile(tmp);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe("flat");
+    expect(result.path).toBe(path.join(tmp, "eslint.config.js"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+  }
+});
+
+test("detectConfigFile: finds .eslintrc.json (legacy)", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ez-test-"));
+  fs.writeFileSync(path.join(tmp, ".eslintrc.json"), JSON.stringify({ root: true, rules: {} }));
+  try {
+    const result = detectConfigFile(tmp);
+    expect(result).not.toBeNull();
+    expect(result.type).toBe("legacy");
+    expect(result.paths).toHaveLength(1);
+    expect(result.paths[0]).toBe(path.join(tmp, ".eslintrc.json"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+  }
+});
+
+test("detectConfigFile: flat config takes priority over legacy in same dir", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ez-test-"));
+  fs.writeFileSync(path.join(tmp, "eslint.config.js"), "module.exports = [];");
+  fs.writeFileSync(path.join(tmp, ".eslintrc.json"), "{}");
+  try {
+    const result = detectConfigFile(tmp);
+    expect(result.type).toBe("flat");
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+  }
+});
+
+test("detectConfigFile: legacy cascades until root:true", () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "ez-test-"));
+  const sub = path.join(tmp, "sub");
+  fs.mkdirSync(sub);
+  fs.writeFileSync(path.join(tmp, ".eslintrc.json"), JSON.stringify({ root: true, rules: { "no-console": "error" } }));
+  fs.writeFileSync(path.join(sub, ".eslintrc.json"), JSON.stringify({ rules: { semi: "warn" } }));
+  try {
+    const result = detectConfigFile(sub);
+    expect(result.type).toBe("legacy");
+    expect(result.paths).toHaveLength(2);
+    expect(result.paths[0]).toBe(path.join(tmp, ".eslintrc.json")); // outermost first
+    expect(result.paths[1]).toBe(path.join(sub, ".eslintrc.json")); // innermost last
+  } finally {
+    fs.rmSync(tmp, { recursive: true });
+  }
+});
