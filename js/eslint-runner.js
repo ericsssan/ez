@@ -2445,17 +2445,15 @@ class SourceCode {
     if (this._astObj) return this._astObj;
     const root = nodeView(this._ast, 0);
     const sc = this;
-    // Attach a `tokens` lazy property directly on this instance
-    const obj = Object.create(Object.getPrototypeOf(root));
-    obj._ast = root._ast;
-    obj._i = root._i;
-    obj.comments = []; // no comments in ez yet
-    Object.defineProperty(obj, 'tokens', {
+    // Add tokens/comments directly on the root node instance so that
+    // rules using sourceCode.ast.tokens/body/comments all work correctly.
+    root.comments = []; // no comments in ez yet
+    Object.defineProperty(root, 'tokens', {
       get() { return sc._getAllTokens(); },
       configurable: true, enumerable: true,
     });
-    this._astObj = obj;
-    return obj;
+    this._astObj = root;
+    return root;
   }
 
   /**
@@ -2656,6 +2654,10 @@ class SourceCode {
     this._scopeManagerProxy = {
       acquire(node) { return sc.getScope(node); },
       get scopes() { return []; },
+      get globalScope() {
+        if (!sc._scopeCache) sc._precomputeScopes();
+        return sc._scopeCache ? sc._scopeCache[0] : null;
+      },
     };
     return this._scopeManagerProxy;
   }
