@@ -472,13 +472,13 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
   const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
   try {
     const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
-    const baseGlobals = computeGlobals(ecmaVersion, false);
-    // Merge test-case globals (e.g., globals.browser for browser env tests)
+    const globals = computeGlobals(ecmaVersion, false);
+    // Test-case globals (e.g., globals.node for unicorn) are passed to the runner
+    // via languageOptions so they appear in scope.set (for isGlobalReference, no-undef etc.)
+    // but NOT to Zig parse — Zig pre-declaration would create implicit-global symbols with
+    // defs=[] that make isGlobalReference return true for things like __dirname, breaking
+    // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
-    const extraGlobalNames = tcGlobals
-      ? Object.entries(tcGlobals).filter(([,v]) => v !== false && v !== 'off').map(([k]) => k)
-      : [];
-    const globals = extraGlobalNames.length ? [...baseGlobals, ...extraGlobalNames] : baseGlobals;
     const _p0 = Date.now();
     const ast = parse(src, { filename: "test" + ext, globals });
     _runnerParseMs += Date.now() - _p0;
