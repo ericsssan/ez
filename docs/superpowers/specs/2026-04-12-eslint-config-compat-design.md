@@ -21,9 +21,9 @@ lint.js CLI
   │
   ▼
 config-loader.js
-  ├── detectConfigFile(cwd)   walk up from cwd; returns {type, path}
-  ├── loadFlatConfig(path)    import() → ConfigResolver
-  └── loadLegacyConfig(path)  FlatCompat → flat array → ConfigResolver
+  ├── detectConfigFile(cwd)        walk up from cwd; returns {type:'flat', path} or {type:'legacy', paths:[...]}
+  ├── loadFlatConfig(path)         import() → ConfigResolver
+  └── loadLegacyConfig(paths[])    per-file FlatCompat → concatenate flat arrays → ConfigResolver
 
 ConfigResolver
   └── resolveForFile(absPath)
@@ -58,7 +58,7 @@ eslint.config.cjs     → flat
 
 Flat config found → stop, no cascading (ESLint 9 behavior).
 
-Legacy found → continue walking up directories, collecting files until `root: true` or filesystem root. Child configs override parents.
+Legacy found → walk up from that directory, collecting all `.eslintrc.*` files until a config with `root: true` is found or the filesystem root is reached. Return the ordered list `[root, ..., cwd]` (outermost first).
 
 **Loading:**
 
@@ -66,12 +66,19 @@ Legacy found → continue walking up directories, collecting files until `root: 
 // Flat: dynamic import handles ESM/CJS/default export transparently
 const configArray = (await import(absPath)).default;
 
-// Legacy: FlatCompat converts to flat array
-// Handles extends, plugin:X/Y resolution, overrides, env, globals
+// Legacy: cascading — convert each file independently, concatenate
+// Child config arrays are appended last so their rules win via later-entry-wins merge
 const { FlatCompat } = require('@eslint/eslintrc');
-const compat = new FlatCompat({ baseDirectory: dir });
-const configArray = compat.config(rawConfig);
+let configArray = [];
+for (const filePath of orderedPaths) {  // outermost first
+  const raw = parseRawConfig(filePath);  // JSON/YAML/JS require()
+  const compat = new FlatCompat({ baseDirectory: path.dirname(filePath) });
+  configArray = configArray.concat(compat.config(raw));
+}
+// configArray is now a single flat array; innermost config entries appear last and win
 ```
+
+`FlatCompat` converts a single `.eslintrc` object to flat format (handling `extends`, `plugin:X/Y`, `overrides`, `env`, `globals`). Directory cascading is our responsibility — we concatenate the results in outermost-first order so the per-file merge's later-entry-wins rule gives child configs precedence.
 
 `FlatCompat` is `require('@eslint/eslintrc').FlatCompat` — a direct dependency of eslint v9, already in `js/node_modules/`. No new packages needed.
 
@@ -152,6 +159,16 @@ function pluginsFromConfig(pluginsMap, enabledRules, ruleFilter) {
 }
 ```
 
+**Bare-name core rules:** A config may enable rules without any plugin namespace:
+```js
+rules: { 'no-console': 'error', 'eqeqeq': 'warn' }
+```
+These don't appear in any `plugins:` entry. After `pluginsFromConfig()`, scan `enabledRules` for names without `/`. For each, check:
+1. `getNativeRules()` — if found, route to Zig (existing native path)
+2. `loadCoreRules({ only: bareNames })` — load from bundled JS rules
+
+This is the same logic as the existing `--eslint-plugin eslint` path, factored out so both paths share it.
+
 Legacy config: `FlatCompat` requires plugins by name from the project's `node_modules/`. Plugin objects end up in the flat array in the same format. Same extraction path.
 
 Native rule routing: after extracting plugins, the existing `getNativeRules()` check in `lint.js` still runs — native rules are pulled out and routed to Zig. No change.
@@ -196,6 +213,10 @@ else →
     config = resolveForFile(file)   // null → skip (ignored)
     { enabledRules, ruleOptions } = normalizeRules(config.rules)
     plugins = pluginsFromConfig(config.plugins, enabledRules)
+    // bare-name rules (no '/') not covered by plugins: → load from bundled + native
+    bareNames = new Set([...enabledRules].filter(n => !n.includes('/')))
+    plugins += loadCoreRules({ only: bareNames })   // JS bundled rules
+    // native bare-name rules are routed to Zig via existing getNativeRules() check
     runPlugins(ast, plugins, { ruleConfig: ruleOptions, settings: config.settings })
   after violations:
     applyDisableDirectives(source, allViolations)
