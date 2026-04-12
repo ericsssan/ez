@@ -115,6 +115,7 @@ class ConfigResolver {
     let plugins = {};
     let rules = {};
     let settings = {};
+    let languageOptions = {};
     const matchedIndices = [];
 
     for (let i = 0; i < this._flatArray.length; i++) {
@@ -131,16 +132,17 @@ class ConfigResolver {
       if (cfg.files && !matchesAny(filePath, cfg.files, this._baseDir)) continue;
       if (cfg.ignores && matchesAny(filePath, cfg.ignores, this._baseDir)) continue;
 
-      if (cfg.plugins)  Object.assign(plugins, cfg.plugins);
-      if (cfg.rules)    Object.assign(rules, cfg.rules);
-      if (cfg.settings) Object.assign(settings, cfg.settings);
+      if (cfg.plugins)         Object.assign(plugins, cfg.plugins);
+      if (cfg.rules)           Object.assign(rules, cfg.rules);
+      if (cfg.settings)        Object.assign(settings, cfg.settings);
+      if (cfg.languageOptions) Object.assign(languageOptions, cfg.languageOptions);
       matchedIndices.push(i);
     }
 
     const contentKey = matchedIndices.join(',');
     let result = this._contentCache.get(contentKey);
     if (!result) {
-      result = { plugins, rules, settings };
+      result = { plugins, rules, settings, languageOptions };
       this._contentCache.set(contentKey, result);
     }
     this._cache.set(filePath, result);

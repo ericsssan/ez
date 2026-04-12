@@ -23,19 +23,21 @@ const { applyFixes } = require("./api");
 
 const _TS_ESLINT = "typescript-eslint";
 
-function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions) {
+function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions, settings, languageOptions) {
   const obj = {};
-  const opts = {};
+  const extras = {};
   for (const p of plugins) {
     const nm = p.meta?.name; if (!nm) continue;
     const info = nativeRulesMap.get(nm);
     if (!info) continue;
     obj[nm] = ruleSeverities?.[nm] ?? info.defaultSeverity;
     const o = ruleOptions?.[nm];
-    if (o && o.length > 0) opts[nm] = o;
+    if (o && o.length > 0) extras[nm] = o;
   }
   if (Object.keys(obj).length === 0) return null;
-  return buildNativeConfig(obj, Object.keys(opts).length > 0 ? opts : undefined);
+  if (settings && Object.keys(settings).length > 0) extras.$$settings = settings;
+  if (languageOptions && Object.keys(languageOptions).length > 0) extras.$$languageOptions = languageOptions;
+  return buildNativeConfig(obj, Object.keys(extras).length > 0 ? extras : undefined);
 }
 
 // ── CLI arg parsing ──────────────────────────────────────────────
@@ -241,6 +243,7 @@ async function main() {
       let filePlugins;
       let fileRuleConfig;
       let fileSettings = {};
+      let fileLanguageOptions = {};
 
       let fileNativeConfig = null;
       let jsOnlyPlugins;
@@ -267,7 +270,11 @@ async function main() {
             plugins,
             ruleConfig: ruleOptions,
             settings: fileConfig.settings,
-            nativeConfig: _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions),
+            languageOptions: fileConfig.languageOptions,
+            nativeConfig: _buildNativeConfigFromPlugins(
+              plugins, nativeRulesMap, ruleSeverities, ruleOptions,
+              fileConfig.settings, fileConfig.languageOptions,
+            ),
             jsOnlyPlugins: plugins.filter(p => !nativeRulesMap.has(p.meta?.name)),
             typeAware: plugins.some(p => p.meta?.name?.includes(_TS_ESLINT)),
           };
@@ -277,6 +284,7 @@ async function main() {
         filePlugins = cached.plugins;
         fileRuleConfig = cached.ruleConfig;
         fileSettings = cached.settings;
+        fileLanguageOptions = cached.languageOptions;
         fileNativeConfig = cached.nativeConfig;
         jsOnlyPlugins = cached.jsOnlyPlugins;
         typeAware = cached.typeAware;
@@ -318,7 +326,7 @@ async function main() {
         try {
           jsReports = runPlugins(ast, jsOnlyPlugins, {
             filename: file, tagNames, ruleConfig: fileRuleConfig,
-            typeAware, settings: fileSettings,
+            typeAware, settings: fileSettings, languageOptions: fileLanguageOptions,
           });
         } catch (e) {
           recordError(file, "Plugin error", e);

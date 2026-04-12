@@ -668,7 +668,7 @@ fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
             else => RuleSeverity.@"error",
         };
     }
-    // Parse JSON options if present: {"rule-name": { ... }, ...}
+    // Parse JSON options if present: {"rule-name": [...opts], "$$settings": {...}, "$$languageOptions": {...}}
     if (json_options) |json_str| {
         const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json_str, .{}) catch null;
         if (parsed) |p| {
@@ -677,10 +677,17 @@ fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
             if (p.value == .object) {
                 var iter = p.value.object.iterator();
                 while (iter.next()) |entry| {
-                    for (linter_mod.rule_names, 0..) |rn, ri| {
-                        if (std.mem.eql(u8, rn, entry.key_ptr.*)) {
-                            config.rule_options[ri] = entry.value_ptr;
-                            break;
+                    const key = entry.key_ptr.*;
+                    if (std.mem.eql(u8, key, "$$settings")) {
+                        config.settings = entry.value_ptr;
+                    } else if (std.mem.eql(u8, key, "$$languageOptions")) {
+                        config.language_options = entry.value_ptr;
+                    } else {
+                        for (linter_mod.rule_names, 0..) |rn, ri| {
+                            if (std.mem.eql(u8, rn, key)) {
+                                config.rule_options[ri] = entry.value_ptr;
+                                break;
+                            }
                         }
                     }
                 }

@@ -60,6 +60,10 @@ pub const LintContext = struct {
     /// null when no options are configured for the current rule.
     /// Points into the config's retained JSON parse tree.
     rule_options: ?*const std.json.Value = null,
+    /// ESLint `settings` object from config. Points into the config's retained JSON parse tree.
+    settings: ?*const std.json.Value = null,
+    /// ESLint `languageOptions` object from config. Points into the config's retained JSON parse tree.
+    language_options: ?*const std.json.Value = null,
 
     // ── AST accessors ─────────────────────────────────────
 
@@ -140,6 +144,32 @@ pub const LintContext = struct {
     /// Get the rule's JSON options value, or null if none configured.
     pub fn getOptions(self: *const LintContext) ?*const std.json.Value {
         return self.rule_options;
+    }
+
+    /// Get the ESLint settings object, or null if not configured.
+    pub fn getSettings(self: *const LintContext) ?*const std.json.Value {
+        return self.settings;
+    }
+
+    /// Get a string field from the ESLint settings object.
+    pub fn getSettingString(self: *const LintContext, key: []const u8) ?[]const u8 {
+        const s = self.settings orelse return null;
+        if (s.* != .object) return null;
+        const val = s.object.get(key) orelse return null;
+        return if (val == .string) val.string else null;
+    }
+
+    /// Get the ESLint languageOptions object, or null if not configured.
+    pub fn getLanguageOptions(self: *const LintContext) ?*const std.json.Value {
+        return self.language_options;
+    }
+
+    /// Get a string field from languageOptions.
+    pub fn getLanguageOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
+        const lo = self.language_options orelse return null;
+        if (lo.* != .object) return null;
+        const val = lo.object.get(key) orelse return null;
+        return if (val == .string) val.string else null;
     }
 
     /// Get a string field from the rule's JSON options object.

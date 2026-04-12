@@ -194,6 +194,8 @@ pub fn lint(
         .semantic = semantic,
         .diagnostics = &diagnostics,
         .allocator = allocator,
+        .settings = if (config) |cfg| cfg.settings else null,
+        .language_options = if (config) |cfg| cfg.language_options else null,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────

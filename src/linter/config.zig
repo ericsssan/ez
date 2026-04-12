@@ -59,6 +59,10 @@ pub const Config = struct {
     /// Per-rule JSON options value. null = no options configured.
     /// Points into the retained json_parsed tree — valid for the config's lifetime.
     rule_options: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
+    /// ESLint `settings` object. Points into the retained json_parsed tree.
+    settings: ?*const std.json.Value = null,
+    /// ESLint `languageOptions` object. Points into the retained json_parsed tree.
+    language_options: ?*const std.json.Value = null,
     allocator: std.mem.Allocator,
     /// Retained JSON parse tree — keeps string pointers alive when config
     /// was loaded from JSON.  Null for programmatically constructed configs.

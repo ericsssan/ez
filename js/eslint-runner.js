@@ -419,13 +419,14 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
  * Provides getText(), getTokens(), getFirstToken(), getLastToken().
  */
 class SourceCode {
-  constructor(ast, sourceText, sourceType, ecmaVersion, envGlobals = true) {
+  constructor(ast, sourceText, sourceType, ecmaVersion, envGlobals = true, configGlobals = null) {
     this._ast = ast;
     this.text = sourceText;
     this.hasBOM = ast.hasBOM; // TextDecoder strips BOM; read from Zig buffer flag instead
     this._sourceType = sourceType || 'module';
     this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
     this._envGlobals = envGlobals;
+    this._configGlobals = configGlobals;
     // Expose runtime sourceType on the AST so node.sourceType returns correctly.
     // Zig always parses in module mode, so the buffer always says 'module'.
     ast._runtimeSourceType = this._sourceType;
@@ -1387,6 +1388,29 @@ class SourceCode {
             const globalVar = { name, defs: [], references: [], identifiers: [],
               scope, eslintUsed: false, writeable: false,
               eslintImplicitGlobalSetting: 'writable',
+              isRead: () => false, isWritten: () => false };
+            set.set(name, globalVar);
+            variables.push(globalVar);
+          }
+        }
+      }
+      // Config-defined globals from languageOptions.globals
+      if (this._configGlobals) {
+        for (const [name, value] of Object.entries(this._configGlobals)) {
+          const isOff = value === 'off' || value === false;
+          if (isOff) {
+            const idx = variables.indexOf(set.get(name));
+            if (idx >= 0) variables.splice(idx, 1);
+            set.delete(name);
+            continue;
+          }
+          const isWritable = value === 'writable' || value === true;
+          if (set.has(name)) {
+            set.get(name).writeable = isWritable;
+          } else {
+            const globalVar = { name, defs: [], references: [], identifiers: [],
+              scope, eslintUsed: false, writeable: isWritable,
+              eslintImplicitGlobalSetting: isWritable ? 'writable' : 'readonly',
               isRead: () => false, isWritten: () => false };
             set.set(name, globalVar);
             variables.push(globalVar);
@@ -2584,7 +2608,17 @@ class RuleContext {
     this.settings = options.settings || {};
     // Satisfy ESLint v8 parserPath check used by getParserServices
     this.parserPath = '@typescript-eslint/parser';
-    const sc = new SourceCode(ast, sourceText, options.sourceType, options.ecmaVersion, options.envGlobals);
+    const lo = options.languageOptions;
+    if (lo) {
+      if (lo.sourceType) this.languageOptions.sourceType = lo.sourceType;
+      if (lo.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(lo.ecmaVersion);
+      if (lo.parserOptions) this.languageOptions.parserOptions = { ...this.languageOptions.parserOptions, ...lo.parserOptions };
+    }
+    if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
+    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
+    const effectiveSrcType = options.sourceType || lo?.sourceType;
+    const effectiveEcmaVer = options.ecmaVersion || lo?.ecmaVersion;
+    const sc = new SourceCode(ast, sourceText, effectiveSrcType, effectiveEcmaVer, options.envGlobals, lo?.globals ?? null);
     this.sourceCode = sc;
     // Attach TypeScript parserServices for .ts/.tsx files
     if (options.parserServices) {
@@ -2593,8 +2627,6 @@ class RuleContext {
     // Short-circuit / error budget: per-rule violation count
     this._ruleErrors = Object.create(null);
     this._errorBudget = options.errorBudget || DEFAULT_ERROR_BUDGET;
-    if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
-    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
   }
 
   reset(ast, filename, sourceText, options = {}) {
@@ -2610,11 +2642,20 @@ class RuleContext {
     this._currentNodeIdx = 0;
     this._currentRule = null;
     this._currentRuleMeta = null;
-    this.sourceCode.reset(ast, sourceText, options.sourceType, options.ecmaVersion);
+    const lo = options.languageOptions;
+    const effectiveSrcType = options.sourceType || lo?.sourceType;
+    const effectiveEcmaVer = options.ecmaVersion || lo?.ecmaVersion;
+    this.sourceCode.reset(ast, sourceText, effectiveSrcType, effectiveEcmaVer);
     this.sourceCode._envGlobals = options.envGlobals !== undefined ? options.envGlobals : true;
+    this.sourceCode._configGlobals = lo?.globals ?? null;
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
-    if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
-    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
+    if (lo) {
+      if (lo.sourceType) this.languageOptions.sourceType = lo.sourceType;
+      if (lo.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(lo.ecmaVersion);
+      if (lo.parserOptions) this.languageOptions.parserOptions = { ...this.languageOptions.parserOptions, ...lo.parserOptions };
+    }
+    if (options.sourceType) this.languageOptions.sourceType = effectiveSrcType;
+    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(effectiveEcmaVer);
     this.settings = options.settings || {};
   }
 
@@ -5024,7 +5065,7 @@ let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {} } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
@@ -5061,10 +5102,10 @@ function runPlugins(ast, plugins, options = {}) {
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;
   if (_cachedContext) {
-    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings });
+    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings, languageOptions });
     context = _cachedContext;
   } else {
-    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings });
+    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings, languageOptions });
     _cachedContext = context;
   }
 
