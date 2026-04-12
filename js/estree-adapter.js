@@ -1023,15 +1023,19 @@ const NodeProto = {
       return chainExpr;
     }
 
-    // Method/getter/setter bodies: the block's parent in ez is the method_def,
-    // but ESTree has FunctionExpression between them. Synthesize it so
-    // `isFunction(node.parent)` works for rules like no-empty.
-    if (result && this._tag === T.block_stmt) {
+    // Method/getter/setter children: in ez the block body and params are direct
+    // children of method_def, but ESTree inserts a FunctionExpression between them.
+    // Return the synthetic FunctionExpression as parent for all non-key children
+    // so `isFunction(node.parent)` works for rules like no-empty/no-object-as-default-parameter.
+    if (result) {
       const pt = result._tag;
       if (pt === T.method_def || pt === T.getter_def || pt === T.setter_def ||
           pt === T.constructor_def || pt === T.computed_method_def ||
           pt === T.computed_getter_def || pt === T.computed_setter_def) {
-        result = result.value; // .value getter returns the synthetic FunctionExpression
+        // Exclude the key (lhs = method name identifier) — its parent should stay as MethodDefinition.
+        if (this._i !== this._ast.nodeLhs(result._i)) {
+          result = result.value; // .value getter returns the synthetic FunctionExpression
+        }
       }
     }
     // ESTree requires ObjectPattern children to be wrapped in Property nodes.
