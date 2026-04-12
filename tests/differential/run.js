@@ -78,7 +78,8 @@ class RuleTester {
 }
 export { RuleTester };
 export const Linter = class {};
-export default { RuleTester, Linter };
+export const ESLint = class {};
+export default { RuleTester, Linter, ESLint };
 `,
     }));
     build.module("eslint/package.json", () => ({
@@ -124,6 +125,20 @@ export const parse = parser.parse;
       build.module(pkg, () => ({ loader: "js", contents: parserContents }));
       build.module(`${pkg}/package.json`, () => ({ loader: "js", contents: `export const version = "${PARSER_VERSION}"; export default { version: "${PARSER_VERSION}" };` }));
     }
+
+    // typescript-eslint — used by jsdoc test files (`import { parser } from 'typescript-eslint'`).
+    // parseForESLint marks it as a custom parser so cases using it are skipped in comparison.
+    build.module("typescript-eslint", () => ({
+      loader: "js",
+      contents: `
+const parser = {
+  parse() { return { type: "Program", body: [], range: [0, 0] }; },
+  parseForESLint() { return { ast: { type: "Program", body: [], range: [0, 0] }, services: {}, scopeManager: null, visitorKeys: {} }; },
+};
+export { parser };
+export default { parser };
+`,
+    }));
 
     // unicorn's snapshot-rule-tester — intercept by filename since it's a local file, not a package
     build.onLoad({ filter: /snapshot-rule-tester\.js$/ }, () => ({
@@ -274,7 +289,19 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
             break;
           }
         }
-        return { prefix, pluginDir, testsDir, useESM };
+        // Detect whether test files use static export format (e.g. jsdoc: `export default { valid, invalid }`)
+        // vs RuleTester.run() capture format (react/promise/unicorn).
+        let testFormat = useESM ? "esm" : "cjs";
+        if (testsDir) {
+          const sample = fs.readdirSync(testsDir).find(f => f.endsWith(".js") && f !== "utils.js" && f !== "utils");
+          if (sample) {
+            const peek = fs.readFileSync(path.join(testsDir, sample), "utf8");
+            if (/^\s*export default\b/m.test(peek) && !peek.includes("RuleTester")) {
+              testFormat = "static-export";
+            }
+          }
+        }
+        return { prefix, pluginDir, testsDir, useESM, testFormat };
       })
   : [];
 
@@ -703,6 +730,29 @@ async function loadRuleCasesESM(testsDir, ruleName, { capturePrefix = null } = {
   return _captured;
 }
 
+// For plugins whose test files export { valid, invalid } directly (no RuleTester.run call).
+// File names are camelCase (checkAccess.js); rule names are kebab-case (check-access).
+async function loadRuleCasesStaticExport(testsDir, fileName, { capturePrefix = null } = {}) {
+  const testFile = path.join(testsDir, `${fileName}.js`);
+  if (!fs.existsSync(testFile)) return null;
+  _captured = null;
+  _linterSkipCalls = 0;
+  global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
+  try {
+    const mod = await import(`${testFile}?_ez=${Date.now()}`);
+    const testCases = mod.default || mod;
+    if (testCases && typeof testCases === "object" && ("valid" in testCases || "invalid" in testCases)) {
+      const ruleBaseName = fileName.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+      global.__EZ_CAPTURE__(ruleBaseName, null, testCases, {});
+    }
+  } catch (e) {
+    if (filterRule) process.stderr.write(`warn: failed to load ${path.basename(testFile)}: ${e.message}\n`);
+  } finally {
+    global.__EZ_CAPTURE_PREFIX__ = null;
+  }
+  return _captured;
+}
+
 // ── Baseline ──────────────────────────────────────────────────
 
 function loadBaseline() {
@@ -829,27 +879,32 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   }
 
   // 1b: Plugin rules — load test cases from plugin submodule test dirs.
-  //     Unicorn uses ESM test files; all others use CJS via require().
-  for (const { prefix, testsDir, useESM } of PLUGIN_TEST_DIRS) {
+  for (const { prefix, testsDir, testFormat } of PLUGIN_TEST_DIRS) {
     if (!fs.existsSync(testsDir)) continue;
     const testFiles = fs.readdirSync(testsDir).filter(f => f.endsWith(".js") && f !== "utils");
     for (const file of testFiles) {
       const baseName = file.replace(/\.js$/, "");
-      const fullName = `${prefix}/${baseName}`;
-      if (filterRule && fullName !== filterRule) continue;
-      // Get the rule module from the plugin
-      const ruleModule = _pluginRuleModules.get(fullName);
+      // Rule names may be kebab-case (react/promise/unicorn) or mapped from camelCase files (jsdoc).
+      // Try direct match first, then camelCase → kebab-case conversion.
+      const kebabName = baseName.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+      const fullName     = `${prefix}/${baseName}`;
+      const fullNameKebab = `${prefix}/${kebabName}`;
+      const ruleModule = _pluginRuleModules.get(fullName) || _pluginRuleModules.get(fullNameKebab);
       if (!ruleModule) continue;
-      // Load test cases: ESM plugins use async import(); others use require()
-      const cases = useESM
-        ? await loadRuleCasesESM(testsDir, baseName, { capturePrefix: prefix })
-        : loadRuleCases(testsDir, baseName, { capturePrefix: prefix });
+      const canonicalName = _pluginRuleModules.has(fullName) ? fullName : fullNameKebab;
+      if (filterRule && canonicalName !== filterRule) continue;
+      // Load test cases using the appropriate loader for this plugin's test format.
+      const cases = testFormat === "static-export"
+        ? await loadRuleCasesStaticExport(testsDir, baseName, { capturePrefix: prefix })
+        : testFormat === "esm"
+          ? await loadRuleCasesESM(testsDir, baseName, { capturePrefix: prefix })
+          : loadRuleCases(testsDir, baseName, { capturePrefix: prefix });
       if (!cases) continue;
       const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
       const defaultParser = cases.defaultConfig?.languageOptions?.parser;
       const isTypeScript = defaultParser && typeof defaultParser === 'object';
       const allCases = cases.cases;
-      allRuleData.push({ ruleName: fullName, ruleModule, defaultSourceType, isTypeScript, allCases });
+      allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType, isTypeScript, allCases });
     }
   }
 

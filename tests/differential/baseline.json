@@ -3901,672 +3901,9 @@
         "skip": 0
       }
     },
-    "react/jsx-no-bind": {
+    "jsdoc/multiline-blocks": {
       "runner": {
         "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 35,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/style-prop-object": {
-      "runner": {
-        "fn": 0,
-        "fp": 1,
-        "crash": 0
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-comment-textnodes": {
-      "runner": {
-        "fn": 4,
-        "fp": 2,
-        "crash": 0
-      },
-      "native": {
-        "fn": 7,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-max-props-per-line": {
-      "runner": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-closing-bracket-location": {
-      "runner": {
-        "fn": 53,
-        "fp": 19,
-        "crash": 0
-      },
-      "native": {
-        "fn": 59,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-sort-default-props": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 12,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-unsafe": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/sort-default-props": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 12,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-boolean-value": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-unused-prop-types": {
-      "runner": {
-        "fn": 0,
-        "fp": 15,
-        "crash": 1
-      },
-      "native": {
-        "fn": 79,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/sort-comp": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 13,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-find-dom-node": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-multi-comp": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-closing-tag-location": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-unused-state": {
-      "runner": {
-        "fn": 0,
-        "fp": 5,
-        "crash": 0
-      },
-      "native": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/forbid-component-props": {
-      "runner": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 5
-      },
-      "native": {
-        "fn": 26,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-typos": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 129,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/forbid-elements": {
-      "runner": {
-        "fn": 6,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 16,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/function-component-definition": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 4
-      },
-      "native": {
-        "fn": 21,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-one-expression-per-line": {
-      "runner": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 11
-      },
-      "native": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/destructuring-assignment": {
-      "runner": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 29,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-deprecated": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 59,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-is-mounted": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-props-no-spreading": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 14,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-this-in-sfc": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 11,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-direct-mutation-state": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 15,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-will-update-set-state": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 13,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-arrow-function-lifecycle": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 17,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/prefer-stateless-function": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 18,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-danger-with-children": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 14,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/react-in-jsx-scope": {
-      "runner": {
-        "fn": 7,
-        "fp": 0,
-        "crash": 1
-      },
-      "native": {
-        "fn": 7,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-curly-newline": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 15,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-adjacent-inline-elements": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-indent-props": {
-      "runner": {
-        "fn": 17,
-        "fp": 0,
-        "crash": 2
-      },
-      "native": {
-        "fn": 21,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/button-has-type": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 27,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/display-name": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 39,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-set-state": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 4,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-props-no-spread-multi": {
-      "runner": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/prop-types": {
-      "runner": {
-        "fn": 3,
-        "fp": 0,
-        "crash": 1
-      },
-      "native": {
-        "fn": 116,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-useless-fragment": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 19,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-leaked-render": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 43,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-danger": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-unstable-nested-components": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 41,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/self-closing-comp": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 12,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-script-url": {
-      "runner": {
-        "fn": 1,
-        "fp": 0,
-        "crash": 1
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-handler-names": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 20,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-object-type-as-default-prop": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 27,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-props-no-multi-spaces": {
-      "runner": {
-        "fn": 15,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 15,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-first-prop-new-line": {
-      "runner": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/boolean-prop-naming": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 13,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/sort-prop-types": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 55,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-curly-spacing": {
-      "runner": {
-        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -4577,35 +3914,48 @@
         "skip": 0
       }
     },
-    "react/jsx-equals-spacing": {
+    "jsdoc/no-types": {
       "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 0
+        "crash": 2
       },
       "native": {
-        "fn": 0,
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/default-props-match-prop-types": {
+    "jsdoc/require-property": {
       "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 0
+        "crash": 1
       },
       "native": {
-        "fn": 23,
+        "fn": 5,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-no-duplicate-props": {
+    "jsdoc/require-rejects": {
       "runner": {
-        "fn": 6,
+        "fn": 2,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-returns-description": {
+      "runner": {
+        "fn": 0,
         "fp": 0,
         "crash": 1
       },
@@ -4616,59 +3966,85 @@
         "skip": 0
       }
     },
-    "react/static-property-placement": {
+    "jsdoc/require-description-complete-sentence": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 20
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-blank-block-descriptions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 3
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-line-alignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 66
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-file-overview": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 3
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-values": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 37
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/imports-as-dependencies": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 93,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-target-blank": {
-      "runner": {
-        "fn": 10,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 48,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-pascal-case": {
-      "runner": {
-        "fn": 14,
-        "fp": 0,
-        "crash": 1
-      },
-      "native": {
-        "fn": 14,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/require-default-props": {
-      "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 40,
-        "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-fragments": {
+    "jsdoc/require-property-type": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -4681,48 +4057,9 @@
         "skip": 0
       }
     },
-    "react/no-did-mount-set-state": {
+    "jsdoc/check-template-names": {
       "runner": {
         "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 22,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-child-element-spacing": {
-      "runner": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-undef": {
-      "runner": {
-        "fn": 7,
-        "fp": 0,
-        "crash": 1
-      },
-      "native": {
-        "fn": 7,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/iframe-missing-sandbox": {
-      "runner": {
-        "fn": 5,
         "fp": 0,
         "crash": 0
       },
@@ -4733,217 +4070,35 @@
         "skip": 0
       }
     },
-    "react/forbid-dom-props": {
+    "jsdoc/convert-to-jsdoc-comments": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 5
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-next-type": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 19,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/no-namespace": {
-      "runner": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 16,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-wrap-multilines": {
+    "jsdoc/check-indentation": {
       "runner": {
         "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 106,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-invalid-html-attribute": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 82,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-access-state-in-setstate": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-children-prop": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 23,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/forbid-prop-types": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 50,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-filename-extension": {
-      "runner": {
-        "fn": 0,
-        "fp": 4,
-        "crash": 0
-      },
-      "native": {
-        "fn": 8,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-unknown-property": {
-      "runner": {
-        "fn": 9,
-        "fp": 0,
-        "crash": 24
-      },
-      "native": {
-        "fn": 34,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-space-before-closing": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-array-index-key": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 40,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-render-return-value": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 7,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-tag-spacing": {
-      "runner": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 2,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/no-redundant-should-component-update": {
-      "runner": {
-        "fn": 0,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 6,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/checked-requires-onchange-or-readonly": {
-      "runner": {
-        "fn": 9,
-        "fp": 0,
-        "crash": 0
-      },
-      "native": {
-        "fn": 11,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-no-literals": {
-      "runner": {
-        "fn": 3,
-        "fp": 10,
-        "crash": 0
-      },
-      "native": {
-        "fn": 75,
-        "fp": 0,
-        "crash": 0,
-        "skip": 0
-      }
-    },
-    "react/jsx-max-depth": {
-      "runner": {
-        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -4954,59 +4109,124 @@
         "skip": 0
       }
     },
-    "react/prefer-es6-class": {
+    "jsdoc/check-param-names": {
+      "runner": {
+        "fn": 46,
+        "fp": 0,
+        "crash": 66
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-hyphen-before-param-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 4
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-throws-type": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-key": {
+    "jsdoc/require-returns-type": {
       "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 8
+        "crash": 0
       },
       "native": {
-        "fn": 38,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/state-in-constructor": {
+    "jsdoc/no-multi-asterisks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields-check": {
       "runner": {
         "fn": 1,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 16,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/no-unescaped-entities": {
+    "jsdoc/require-example": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 5,
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/void-dom-elements-no-children": {
+    "jsdoc/require-asterisk-prefix": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 24
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/empty-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-method-signature-style": {
       "runner": {
         "fn": 0,
         "fp": 0,
@@ -5019,63 +4239,167 @@
         "skip": 0
       }
     },
-    "react/prefer-exact-props": {
+    "jsdoc/require-param": {
+      "runner": {
+        "fn": 58,
+        "fp": 0,
+        "crash": 83
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-no-empty-object-type": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-curly-brace-presence": {
+    "jsdoc/require-yields-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-tag-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 26
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-next-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-missing-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-access": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 16
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-param-type": {
       "runner": {
         "fn": 9,
-        "fp": 7,
-        "crash": 5
+        "fp": 0,
+        "crash": 14
       },
       "native": {
-        "fn": 54,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/no-unused-class-component-methods": {
+    "jsdoc/reject-any-type": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 14,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-sort-props": {
+    "jsdoc/no-defaults": {
       "runner": {
-        "fn": 103,
+        "fn": 0,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/informative-docs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 7
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-bad-blocks": {
+      "runner": {
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 106,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-newline": {
+    "jsdoc/require-description": {
       "runner": {
-        "fn": 2,
-        "fp": 3,
-        "crash": 6
+        "fn": 3,
+        "fp": 0,
+        "crash": 1
       },
       "native": {
         "fn": 25,
@@ -5084,35 +4408,230 @@
         "skip": 0
       }
     },
-    "react/require-render-return": {
+    "jsdoc/check-examples": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/jsx-indent": {
+    "jsdoc/valid-types": {
       "runner": {
-        "fn": 57,
+        "fn": 0,
         "fp": 0,
-        "crash": 1
+        "crash": 36
       },
       "native": {
-        "fn": 75,
+        "fn": 54,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/async-server-action": {
+    "jsdoc/check-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 95
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/escape-inline-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-property-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-property-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-throws": {
       "runner": {
         "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/sort-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-blank-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-template": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/lines-before-block": {
+      "runner": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 30
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/text-escaping": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-returns": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 61
+      },
+      "native": {
+        "fn": 78,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-alignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 18
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/reject-function-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 11
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/type-formatting": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/match-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/prefer-import-tag": {
+      "runner": {
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -5123,11 +4642,50 @@
         "skip": 0
       }
     },
-    "react/forward-ref-uses-ref": {
+    "jsdoc/require-jsdoc": {
+      "runner": {
+        "fn": 48,
+        "fp": 6,
+        "crash": 58
+      },
+      "native": {
+        "fn": 88,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 4
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-template-description": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-param-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 2
       },
       "native": {
         "fn": 5,
@@ -5136,40 +4694,170 @@
         "skip": 0
       }
     },
-    "react/prefer-read-only-props": {
+    "jsdoc/require-returns-check": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
-        "crash": 0
+        "crash": 10
       },
       "native": {
-        "fn": 0,
+        "fn": 29,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/no-did-update-set-state": {
+    "jsdoc/require-tags": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 22,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
       }
     },
-    "react/forbid-foreign-prop-types": {
+    "jsdoc/require-param-description": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 16
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-throws-description": {
       "runner": {
         "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 8,
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/match-description": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-no-unnecessary-template-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 2
+      },
+      "native": {
+        "fn": 61,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/tag-lines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 3
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-prefer-function-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/implements-on-classes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-property-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 7
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-undefined-types": {
+      "runner": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 206
+      },
+      "native": {
+        "fn": 38,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5482,6 +5170,19 @@
       },
       "native": {
         "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-lonely-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -6990,6 +6691,1280 @@
       },
       "native": {
         "fn": 173,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-bind": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/style-prop-object": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-comment-textnodes": {
+      "runner": {
+        "fn": 4,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-max-props-per-line": {
+      "runner": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-closing-bracket-location": {
+      "runner": {
+        "fn": 53,
+        "fp": 19,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-sort-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unsafe": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-boolean-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 15,
+        "crash": 1
+      },
+      "native": {
+        "fn": 79,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-find-dom-node": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-multi-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-closing-tag-location": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 5,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-component-props": {
+      "runner": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 5
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-typos": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 129,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-elements": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/function-component-definition": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 4
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-one-expression-per-line": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 11
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/destructuring-assignment": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-deprecated": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-is-mounted": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-spreading": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-this-in-sfc": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-direct-mutation-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-will-update-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-arrow-function-lifecycle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-stateless-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-danger-with-children": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/react-in-jsx-scope": {
+      "runner": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-adjacent-inline-elements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-indent-props": {
+      "runner": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 2
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/button-has-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/display-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-spread-multi": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prop-types": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-useless-fragment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-leaked-render": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 43,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-danger": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unstable-nested-components": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/self-closing-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-script-url": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-handler-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-object-type-as-default-prop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-multi-spaces": {
+      "runner": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-first-prop-new-line": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/boolean-prop-naming": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-spacing": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-equals-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/default-props-match-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-duplicate-props": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/static-property-placement": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-target-blank": {
+      "runner": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-pascal-case": {
+      "runner": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/require-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-fragments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-did-mount-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-child-element-spacing": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-undef": {
+      "runner": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/iframe-missing-sandbox": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-dom-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-namespace": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-wrap-multilines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 106,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-invalid-html-attribute": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 82,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-access-state-in-setstate": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-children-prop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-filename-extension": {
+      "runner": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unknown-property": {
+      "runner": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 24
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-space-before-closing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-array-index-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-render-return-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-tag-spacing": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-redundant-should-component-update": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/checked-requires-onchange-or-readonly": {
+      "runner": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-literals": {
+      "runner": {
+        "fn": 3,
+        "fp": 10,
+        "crash": 0
+      },
+      "native": {
+        "fn": 75,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-max-depth": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-es6-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 8
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/state-in-constructor": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unescaped-entities": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/void-dom-elements-no-children": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-exact-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-brace-presence": {
+      "runner": {
+        "fn": 9,
+        "fp": 7,
+        "crash": 5
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-class-component-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-sort-props": {
+      "runner": {
+        "fn": 103,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 106,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-newline": {
+      "runner": {
+        "fn": 2,
+        "fp": 3,
+        "crash": 6
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/require-render-return": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-indent": {
+      "runner": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 1
+      },
+      "native": {
+        "fn": 75,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/async-server-action": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forward-ref-uses-ref": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-read-only-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-did-update-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-foreign-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
