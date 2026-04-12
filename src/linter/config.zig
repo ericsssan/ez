@@ -78,29 +78,14 @@ pub const Config = struct {
     /// Create a default configuration: every rule at its default severity,
     /// no include/exclude patterns, no overrides.
     pub fn initDefault(allocator: std.mem.Allocator) Config {
-        var config = Config{
-            .rule_severities = .{},
-            .include_patterns = &.{},
-            .exclude_patterns = &.{},
-            .overrides = &.{},
-            .rule_severity_table = undefined,
-            .allocator = allocator,
-        };
+        var config = blankConfig(allocator);
         config.buildSeverityTable();
         return config;
     }
 
-    /// Create an all-off configuration: every rule disabled,
-    /// no include/exclude patterns, no overrides.
+    /// Create an all-off configuration: every rule disabled.
     pub fn initAllOff(allocator: std.mem.Allocator) Config {
-        var config = Config{
-            .rule_severities = .{},
-            .include_patterns = &.{},
-            .exclude_patterns = &.{},
-            .overrides = &.{},
-            .rule_severity_table = undefined,
-            .allocator = allocator,
-        };
+        var config = blankConfig(allocator);
         config.buildSeverityTableWithDefault(.off);
         return config;
     }
@@ -319,6 +304,17 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
+
+fn blankConfig(allocator: std.mem.Allocator) Config {
+    return Config{
+        .rule_severities = .{},
+        .include_patterns = &.{},
+        .exclude_patterns = &.{},
+        .overrides = &.{},
+        .rule_severity_table = undefined,
+        .allocator = allocator,
+    };
+}
 
 fn parseCategoryName(name: []const u8) ?Category {
     if (std.mem.eql(u8, name, "correctness")) return .correctness;

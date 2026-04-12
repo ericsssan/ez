@@ -104,9 +104,7 @@ pub fn main(init: std.process.Init) !void {
         var single_rule_config: ?Config = null;
         defer if (single_rule_config) |*c| c.deinit();
         if (rule_filter) |name| {
-            var cfg = Config.initDefault(allocator);
-            // Turn every rule off, then re-enable the named one.
-            for (&cfg.rule_severity_table) |*sev| sev.* = .off;
+            var cfg = Config.initAllOff(allocator);
             const linter_mod = @import("linter/linter.zig");
             for (0..linter_root.rules.count) |i| {
                 if (std.mem.eql(u8, linter_mod.rule_names[i], name)) {
