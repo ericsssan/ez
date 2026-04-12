@@ -2642,7 +2642,7 @@ class RuleContext {
       // Identify as @typescript-eslint/parser so type-aware rules don't throw
       parser: { meta: { name: '@typescript-eslint/parser' } },
     };
-    this.settings = {};
+    this.settings = options.settings || {};
     // Satisfy ESLint v8 parserPath check used by getParserServices
     this.parserPath = '@typescript-eslint/parser';
     const sc = new SourceCode(ast, sourceText, options.sourceType, options.ecmaVersion, options.envGlobals);
@@ -2677,6 +2677,7 @@ class RuleContext {
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
     if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
+    this.settings = options.settings || {};
   }
 
   /**
@@ -5085,7 +5086,7 @@ let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion, envGlobals = true } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {} } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
@@ -5122,10 +5123,10 @@ function runPlugins(ast, plugins, options = {}) {
   // Items 4+5: Reuse master RuleContext; stable prototype for cached perRuleCtxs.
   let context;
   if (_cachedContext) {
-    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals });
+    _cachedContext.reset(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings });
     context = _cachedContext;
   } else {
-    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals });
+    context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings });
     _cachedContext = context;
   }
 

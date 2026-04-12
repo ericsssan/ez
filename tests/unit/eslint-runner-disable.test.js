@@ -1,5 +1,6 @@
 "use strict";
-const { applyDisableDirectives } = require("../../js/eslint-runner");
+const { applyDisableDirectives, runPlugins } = require("../../js/eslint-runner");
+const { parseSource, getTagNames } = require("../../js/index");
 const { test, expect } = require("bun:test");
 
 function v(ruleId, line) {
@@ -49,4 +50,20 @@ test("eslint-disable with no rule list suppresses all rules", () => {
 test("empty violations returns empty array", () => {
   const src = "/* eslint-disable */\n";
   expect(applyDisableDirectives(src, [])).toEqual([]);
+});
+
+test("runPlugins passes settings to rule context", () => {
+  const src = "var x = 1;";
+  const ast = parseSource(src);
+  const tagNames = getTagNames();
+  let capturedSettings = null;
+  const plugins = [{
+    meta: { name: "test/capture-settings" },
+    create(ctx) {
+      capturedSettings = ctx.settings;
+      return {};
+    }
+  }];
+  runPlugins(ast, plugins, { tagNames, settings: { myKey: "myValue" } });
+  expect(capturedSettings).toEqual({ myKey: "myValue" });
 });
