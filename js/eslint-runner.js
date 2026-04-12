@@ -7,7 +7,7 @@ const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = requir
 // 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl,
 // 5=parameter, 6=catch_param, 7=import_binding, 8=implicit_global
 const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','Variable'];
-const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
+const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer'];
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
@@ -274,7 +274,22 @@ function _findDefNode(declNode, defType) {
       // eslint-scope behaviour. def.parent will be set to specifier.parent = ImportDeclaration.
       return declNode;
     case 'Parameter':
-      while (cur) { if (_FN_TAGS.has(cur._tag)) return cur; cur = cur.parent; }
+      while (cur) {
+        if (_FN_TAGS.has(cur._tag)) {
+          // For setter/getter/method defs, def.node must be the synthetic FunctionExpression
+          // whose parent is the Property/MethodDefinition (kind="set"/"get"/"init").
+          // The method node itself has parent=ObjectExpression/ClassBody, breaking the
+          // no-unused-vars setter-param skip check (def.node.parent.kind === "set").
+          if (cur._tag === T.setter_def || cur._tag === T.getter_def ||
+              cur._tag === T.computed_setter_def || cur._tag === T.computed_getter_def ||
+              cur._tag === T.method_def || cur._tag === T.computed_method_def) {
+            const synth = cur.value;
+            if (synth && synth.type === 'FunctionExpression') return synth;
+          }
+          return cur;
+        }
+        cur = cur.parent;
+      }
       break;
     case 'CatchClause':
       while (cur) { if (cur._tag === T.catch_clause) return cur; cur = cur.parent; }
@@ -448,6 +463,7 @@ class SourceCode {
     this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
     this._envGlobals = envGlobals;
     this._configGlobals = configGlobals;
+    this._globalReturn = false;
     // Expose runtime sourceType on the AST so node.sourceType returns correctly.
     // Zig always parses in module mode, so the buffer always says 'module'.
     ast._runtimeSourceType = this._sourceType;
@@ -460,6 +476,7 @@ class SourceCode {
     this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
     this._thinScopeCache = null; // lazily allocated Array[scopeCount]
     this._thinVarCache = null;   // lazily allocated Array[symCount]
+    this._varCache = null;       // lazily allocated Array[symCount] — same object per symId for indexOf identity
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
   }
@@ -470,6 +487,7 @@ class SourceCode {
     this.hasBOM = ast.hasBOM;
     this._sourceType = sourceType || 'module';
     this._ecmaVersion = _normalizeEcmaVersion(ecmaVersion);
+    this._globalReturn = false;
     ast._runtimeSourceType = this._sourceType;
     ast._ecmaVersion = this._ecmaVersion;
     this._linesCache = null;
@@ -478,6 +496,7 @@ class SourceCode {
     this._scopeCache = null;
     this._thinScopeCache = null;
     this._thinVarCache = null;
+    this._varCache = null;       // file-specific — must be cleared so new AST gets fresh variables
     this._refCache = null;       // file-specific — ref objects hold AST node pointers
     this._tokenSkipList = null;
     this._jsxTextTokFlags = null;
@@ -1168,7 +1187,14 @@ class SourceCode {
     // For Program node in script mode, return the module scope (scope 1) not global (scope 0).
     // The Zig analyzer always creates a module-like scope for top-level decls, even in script mode.
     // ESLint rules expect getScope(Program) to contain those declarations.
+    //
+    // Exception: globalReturn:true wraps the program in a function scope, so espree returns
+    // the actual global scope (scope 0). Rules like no-shadow rely on this to detect top-level
+    // declarations shadowing builtin globals (e.g. `var Object = 0;`).
     if (nodeIdx === 0 && this._sourceType !== 'module') {
+      if (this._globalReturn) {
+        return this._buildScope(0);
+      }
       const moduleScope = this._buildScope(1);
       // Wrap scope to make global variables accessible for ReferenceTracker compatibility
       // (ReferenceTracker looks in globalScope.set for built-in globals like Math)
@@ -1283,7 +1309,7 @@ class SourceCode {
     const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
       ? nodeView(ast, scopeNodeIdx) : null;
 
-    const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */;
     const isStrict = this._computeIsStrict(kind, flags16, upper, block);
 
     // In script mode, the top-level scope (kind=1, "module") should appear as "global" to rules.
@@ -1310,11 +1336,99 @@ class SourceCode {
     const sc = this;
     let _vars = null, _set = null, _refs = null, _through = null, _children = null;
 
-    function ensureVarsSet() {
-      if (_vars !== null) return;
-      const vs = sc._buildScopeVarsAndSet(scopeId, scope, kind);
-      _vars = vs[0]; _set = vs[1];
+    // Named FunctionExpression: create a virtual function-expression-name scope that sits
+    // between this function body scope and its outer scope. eslint-scope puts the function
+    // expression name in this intermediate scope so no-shadow can detect when inner
+    // declarations shadow the function expression name.
+    //
+    // Example: `(function a() { function a(){} })()` — the inner `function a(){}` should
+    // shadow the outer named function expression `a`.
+    let _fenScope = null;
+    if (kind === 2 && block !== null && block.type === 'FunctionExpression' && block.id !== null) {
+      const fenName = block.id.name;
+      const fenUpper = upper; // original upper of this function body scope
+      // Create the FEN scope object eagerly (lazy variables populated after scope vars are built).
+      _fenScope = {
+        type: 'function-expression-name',
+        functionExpressionScope: true,
+        isStrict,
+        block,
+        upper: fenUpper,
+        implicit: { variables: [] },
+        variableScope: fenUpper ? (fenUpper.variableScope || fenUpper) : scope,
+        lookup(name) { return _fenScope.set.get(name) || null; },
+        references: [],
+        through: [],
+      };
+      // childScopes of the FEN scope is just this function body scope.
+      Object.defineProperty(_fenScope, 'childScopes', { get() { return [scope]; }, configurable: true, enumerable: true });
+      // FEN scope variables/set are populated lazily when this scope's variables are first accessed.
+      let _fenVars = null, _fenSet = null;
+      function ensureFenVars() {
+        if (_fenVars !== null) return;
+        // Compute this scope's variables first (triggers _buildScopeVarsAndSet)
+        void scope.variables;
+        if (_fenVars === null) { _fenVars = []; _fenSet = new Map(); } // fallback
+      }
+      Object.defineProperty(_fenScope, 'variables', { get() { ensureFenVars(); return _fenVars; }, configurable: true, enumerable: true });
+      Object.defineProperty(_fenScope, 'set', { get() { ensureFenVars(); return _fenSet; }, configurable: true, enumerable: true });
+      // Patch this scope's upper to the FEN scope, and expose the FEN scope so
+      // _buildScopeChildren can include it in parent scope's childScopes.
+      scope.upper = _fenScope;
+      scope._fenScope = _fenScope;
+
+      // Override ensureVarsSet to also extract the FE-name def into the FEN scope.
+      const _origEnsureVarsSet = function() {
+        if (_vars !== null) return;
+        const vs = sc._buildScopeVarsAndSet(scopeId, scope, kind);
+        _vars = vs[0]; _set = vs[1];
+        // Extract the function expression name def from this scope's variable.
+        const fenVarIdx = _vars.findIndex(v => v.name === fenName);
+        if (fenVarIdx >= 0) {
+          const v = _vars[fenVarIdx];
+          const feDefIdx = v.defs.findIndex(d => d.node !== null && d.node.type === 'FunctionExpression');
+          if (feDefIdx >= 0) {
+            const feDef = v.defs[feDefIdx];
+            const feIdentifier = feDef.name; // the Identifier node for the FE name
+            // Build the FEN variable with just the FE-name def.
+            const fenVar = {
+              name: fenName,
+              defs: [feDef],
+              identifiers: feIdentifier ? [feIdentifier] : [],
+              references: [],
+              scope: _fenScope,
+              eslintUsed: false,
+              isRead: _FALSE,
+              isWritten: _FALSE,
+            };
+            _fenVars = [fenVar];
+            _fenSet = new Map([[fenName, fenVar]]);
+            // Remove the FE-name def + identifier from the function body scope's variable.
+            v.defs.splice(feDefIdx, 1);
+            if (feIdentifier) {
+              const idIdx = v.identifiers.indexOf(feIdentifier);
+              if (idIdx >= 0) v.identifiers.splice(idIdx, 1);
+            }
+            // If the variable now has no defs/identifiers, remove it from scope 2.
+            if (v.defs.length === 0 && v.identifiers.length === 0) {
+              _vars.splice(fenVarIdx, 1);
+              _set.delete(fenName);
+            }
+          }
+        }
+        if (_fenVars === null) { _fenVars = []; _fenSet = new Map(); }
+      };
+      var ensureVarsSet = _origEnsureVarsSet; // shadow outer ensureVarsSet
     }
+
+    if (!_fenScope) {
+      var ensureVarsSet = function() {
+        if (_vars !== null) return;
+        const vs = sc._buildScopeVarsAndSet(scopeId, scope, kind);
+        _vars = vs[0]; _set = vs[1];
+      };
+    }
+
     function ensureRefsThrough() {
       if (_refs !== null) return;
       const cs = scope.childScopes; // trigger lazy children first (needed for through bubbling)
@@ -1342,8 +1456,8 @@ class SourceCode {
    * so we read the flag directly instead of scanning source text.
    */
   _computeIsStrict(kind, flags16, upper, block) {
-    // Class bodies and static blocks are always strict per spec.
-    if (kind === 4 || kind === 7) return true;
+    // Class bodies, static blocks, and class field initializers are always strict per spec.
+    if (kind === 4 || kind === 7 || kind === 9) return true;
     // Function expressions used as a class extends clause are always strict per spec.
     // (class heritage is evaluated in strict mode)
     if (kind === 2 && block !== null && block.parent !== null &&
@@ -1355,8 +1469,11 @@ class SourceCode {
     if (this._ecmaVersion === 3) return false;
     // Zig sets SF_HAS_USE_STRICT when the scope body starts with "use strict".
     if ((flags16 & SF_HAS_USE_STRICT) !== 0) return true;
-    // In script mode, inherit strict from parent scope.
-    if (this._sourceType === 'script') return !!(upper && upper.isStrict);
+    // impliedStrict: ecmaFeatures.impliedStrict=true makes the entire program strict.
+    // kind=0 is the outermost global scope; if strict, all child scopes inherit via upper.isStrict.
+    if (kind === 0 && this._impliedStrict) return true;
+    // In script/commonjs mode, inherit strict from parent scope (not forced by scope kind).
+    if (this._sourceType === 'script' || this._sourceType === 'commonjs') return !!(upper && upper.isStrict);
     // In module mode, use Zig's strict_mode flag (module scope inherits true everywhere).
     return (flags16 & SF_STRICT_MODE) !== 0;
   }
@@ -1396,9 +1513,10 @@ class SourceCode {
           const g = _mkGlobalVar(name, scope, false, 'writable');
           set.set(name, g);
           variables.push(g);
-        } else {
-          set.get(name).eslintImplicitGlobalSetting = 'writable';
         }
+        // Don't set eslintImplicitGlobalSetting on variables that already have
+        // code declarations — ECMAScript builtins don't count as env globals for
+        // no-redeclare purposes (ESLint behavior: `var Object = 0` is NOT a redeclaration).
       }
       if (this._envGlobals) {
         for (const name of _ENV_GLOBALS) {
@@ -1411,13 +1529,20 @@ class SourceCode {
       }
       if (this._configGlobals) {
         for (const [name, value] of Object.entries(this._configGlobals)) {
-          if (value === 'off' || value === false) {
+          if (value === 'off') {
             _removeGlobal(name, set, variables);
             continue;
           }
+          // false = legacy 'readonly', true = legacy 'writable'
           const isWritable = value === 'writable' || value === true;
           if (set.has(name)) {
-            set.get(name).writeable = isWritable;
+            const existing = set.get(name);
+            existing.writeable = isWritable;
+            // Mark as an env global so no-redeclare can detect redeclarations
+            // (e.g., `var top = 0` in browser env fires because `top` is a browser global).
+            if (!existing.eslintImplicitGlobalSetting) {
+              existing.eslintImplicitGlobalSetting = isWritable ? 'writable' : 'readonly';
+            }
           } else {
             const g = _mkGlobalVar(name, scope, isWritable, isWritable ? 'writable' : 'readonly');
             set.set(name, g);
@@ -1487,17 +1612,38 @@ class SourceCode {
         return globalSet;
       };
       for (const v of variables) {
-        if (!v.eslintImplicitGlobalSetting && _BUILTIN_GLOBALS_SET.has(v.name)) {
-          const minVer = _GLOBAL_MIN_VERSION[v.name];
-          if (minVer === undefined || ecmaVersion >= minVer) {
-            v.eslintImplicitGlobalSetting = 'writable';
-          }
-        }
         const gSet = getGlobalSet();
         const gVar = gSet.get(v.name);
-        if (gVar && gVar.eslintExplicitGlobalComments) {
-          if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
-          v.eslintExplicitGlobalComments.push(...gVar.eslintExplicitGlobalComments);
+        if (gVar) {
+          if (gVar.eslintExplicitGlobalComments) {
+            if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
+            v.eslintExplicitGlobalComments.push(...gVar.eslintExplicitGlobalComments);
+          }
+          // Propagate writeable so no-implicit-globals skips user vars shadowing writable globals.
+          if (gVar.writeable !== undefined && v.writeable === undefined) {
+            v.writeable = gVar.writeable;
+          }
+          // In script mode without globalReturn, top-level vars shadow globals: copy igs so
+          // no-redeclare can detect redeclarations of builtins and env globals (Object, top, etc.).
+          if (!this._globalReturn && !v.eslintImplicitGlobalSetting && gVar.eslintImplicitGlobalSetting) {
+            v.eslintImplicitGlobalSetting = gVar.eslintImplicitGlobalSetting;
+          }
+        }
+      }
+
+      // Process /* exported X, Y */ comments — mark variables as intentionally exported.
+      // This suppresses no-implicit-globals for variables listed in /* exported */ comments.
+      {
+        const comments = ast.commentsInRange(0, ast.sourceLen);
+        for (const comment of comments) {
+          if (comment.type !== 'Block') continue;
+          const val = comment.value;
+          if (!/^\s*exported\b/.test(val)) continue;
+          const body = val.replace(/^\s*exported\s*/, '').trim();
+          for (const name of (body.match(/[$_a-zA-Z][\w$]*/g) || [])) {
+            const v = set.get(name);
+            if (v) v.eslintExported = true;
+          }
         }
       }
     }
@@ -1597,7 +1743,11 @@ class SourceCode {
     const childIdsArr = ast._scopeChildIds;
     const children = [];
     for (let j = 0; j < childCount; j++) {
-      children.push(this._buildScope(childIdsArr ? childIdsArr[childStart + j] : j));
+      const childScope = this._buildScope(childIdsArr ? childIdsArr[childStart + j] : j);
+      // If the child is a named FunctionExpression body, expose its FEN scope instead.
+      // The FEN scope sits between the parent and function body (matching eslint-scope structure),
+      // allowing rules like no-shadow to visit function-expression-name scopes during traversal.
+      children.push(childScope._fenScope || childScope);
     }
     return children;
   }
@@ -1644,10 +1794,45 @@ class SourceCode {
         }
       }
     }
+
+    // Populate scope.implicit.variables from global scope's write-only through refs.
+    // These represent "global variable leaks" — undeclared writes in script mode global scope
+    // (e.g., `foo = 1` where `foo` is never declared). Used by no-implicit-globals rule.
+    if (this._sourceType !== 'module') {
+      const implMap = new Map();
+      for (const ref of globalScope.through) {
+        if (!ref.isWrite() || ref.isRead()) continue; // pure write only (not read_write)
+        // In strict mode, undeclared writes throw ReferenceError — not implicit globals.
+        if (ref.from?.isStrict) continue;
+        const name = ref.identifier?.name;
+        if (!name) continue;
+        let v = implMap.get(name);
+        if (!v) {
+          v = { name, defs: [], references: [], identifiers: [],
+            scope: globalScope, eslintUsed: false,
+            isRead: () => false, isWritten: () => true };
+          implMap.set(name, v);
+        }
+        v.references.push(ref);
+        const ident = ref.identifier;
+        const parent = ident?.parent;
+        if (parent) {
+          v.defs.push({ type: 'ImplicitGlobalVariable', node: parent, name: ident });
+        }
+      }
+      if (implMap.size > 0) {
+        // Set on the scope returned by getScope(Program) in script mode (cached scope 1 = wrapper)
+        const targetScope = (this._scopeCache && this._scopeCache[1]) || globalScope;
+        targetScope.implicit = { variables: [...implMap.values()] };
+      }
+    }
   }
 
-  /** Build an ESLint Variable object for a symbol. */
+  /** Build an ESLint Variable object for a symbol. Cached so same symId → same object (identity for indexOf). */
   _buildVariable(symId) {
+    if (!this._varCache) this._varCache = new Array(this._ast._semSymbolCount || 256);
+    const cached = this._varCache[symId];
+    if (cached !== undefined) return cached;
     const ast = this._ast;
     const name = ast._symName(symId);
     const flags16 = ast._symFlags[symId];
@@ -1846,6 +2031,7 @@ class SourceCode {
       v.writeable = false;
       v.eslintImplicitGlobalSetting = 'writable';
     }
+    if (this._varCache) this._varCache[symId] = v;
     return v;
   }
 
@@ -1978,7 +2164,7 @@ class SourceCode {
     const flags16 = ast._scopeFlags[scopeId];
     const parentId = ast._scopeParents[scopeId];
     const upper = (parentId !== NONE32) ? this._buildThinScope(parentId) : null;
-    const isAlwaysStrict = kind === 4 || kind === 7;
+    const isAlwaysStrict = kind === 4 || kind === 7 || kind === 9 /* class_field_initializer */;
     const isStrict = isAlwaysStrict || (
       this._sourceType === 'script'
         ? (flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict)
@@ -1987,7 +2173,7 @@ class SourceCode {
     const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE32;
     const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
       ? nodeView(ast, scopeNodeIdx) : null;
-    const isVarScope = kind === 0 || kind === 1 || kind === 2;
+    const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */;
     const set = new Map();
     const s = {
       type: _SCOPE_KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
@@ -2616,6 +2802,8 @@ class RuleContext {
     const effectiveSrcType = options.sourceType || lo?.sourceType;
     const effectiveEcmaVer = options.ecmaVersion || lo?.ecmaVersion;
     const sc = new SourceCode(ast, sourceText, effectiveSrcType, effectiveEcmaVer, options.envGlobals, lo?.globals ?? null);
+    sc._globalReturn = !!(lo?.parserOptions?.ecmaFeatures?.globalReturn);
+    sc._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
     this.sourceCode = sc;
     if (options.parserServices) sc.parserServices = options.parserServices;
     this._ruleErrors = Object.create(null);
@@ -2648,6 +2836,8 @@ class RuleContext {
     this.sourceCode.reset(ast, sourceText, effectiveSrcType, effectiveEcmaVer);
     this.sourceCode._envGlobals = options.envGlobals !== undefined ? options.envGlobals : true;
     this.sourceCode._configGlobals = lo?.globals ?? null;
+    this.sourceCode._globalReturn = !!(lo?.parserOptions?.ecmaFeatures?.globalReturn);
+    this.sourceCode._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
     this._applyLanguageOptions(lo);
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
@@ -5179,7 +5369,10 @@ function applyDisableDirectives(source, violations) {
     let disabled = false;
     for (const d of directives) {
       if (d.line > line) break;
-      const ruleMatch = d.rules.length === 0 || d.rules.includes(v.ruleId);
+      // Match exact rule ID or strip namespace prefix (e.g., "rule-to-test/no-fallthrough" matches "no-fallthrough")
+      const ruleMatch = d.rules.length === 0 || d.rules.some(r =>
+        r === v.ruleId || (r.includes('/') && r.slice(r.lastIndexOf('/') + 1) === v.ruleId)
+      );
       if (d.type === D_DISABLE_NEXT_LINE && d.line === line - 1 && ruleMatch) return false;
       if (d.type === D_DISABLE_LINE && d.line === line && ruleMatch) return false;
       if (d.type === D_DISABLE && ruleMatch) disabled = true;

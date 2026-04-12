@@ -356,7 +356,7 @@ for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
 const { parseSource: parse, getTagNames, lintSource: ezLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
-const { runPlugins, computeGlobals } = require(path.join(JS_ROOT, "eslint-runner"));
+const { runPlugins, computeGlobals, applyDisableDirectives } = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
 
@@ -472,7 +472,13 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
   const ext = isTypeScript ? ".ts" : jsxEnabled ? ".jsx" : ".js";
   try {
     const ecmaVersion = tcLanguageOptions.ecmaVersion ?? 2022;
-    const globals = computeGlobals(ecmaVersion, false);
+    const baseGlobals = computeGlobals(ecmaVersion, false);
+    // Merge test-case globals (e.g., globals.browser for browser env tests)
+    const tcGlobals = tcLanguageOptions.globals || null;
+    const extraGlobalNames = tcGlobals
+      ? Object.entries(tcGlobals).filter(([,v]) => v !== false && v !== 'off').map(([k]) => k)
+      : [];
+    const globals = extraGlobalNames.length ? [...baseGlobals, ...extraGlobalNames] : baseGlobals;
     const _p0 = Date.now();
     const ast = parse(src, { filename: "test" + ext, globals });
     _runnerParseMs += Date.now() - _p0;
@@ -481,12 +487,17 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
       create: ruleModule.create,
     };
     const _pl0 = Date.now();
-    const reports = runPlugins(ast, [plugin], {
+    const rawReports = runPlugins(ast, [plugin], {
       tagNames, sourceType, ruleConfig: { [ruleName]: ruleOptions }, ecmaVersion, envGlobals: false,
+      languageOptions: { globals: tcGlobals || null, parserOptions: tcLanguageOptions.parserOptions },
     });
+    // Apply disable directives — the oracle (ESLint) applies them automatically.
+    const reports = applyDisableDirectives(src, rawReports.filter(r => !r.crash));
+    // Re-add crashes (they bypass directive suppression).
+    const crashReports = rawReports.filter(r => r.crash);
     _runnerPluginMs += Date.now() - _pl0;
     const results = [];
-    for (const r of reports) {
+    for (const r of [...reports, ...crashReports]) {
       if (r.ruleId !== ruleName) continue;
       const line = r.loc?.start?.line ?? r.loc?.line ?? r.line;
       if (r.message?.startsWith("Plugin error:")) {

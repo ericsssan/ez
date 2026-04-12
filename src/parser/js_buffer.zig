@@ -1226,6 +1226,14 @@ pub fn computeNodePositions(
             }
             if (k < tc and tok_tags[k] == .l_paren) args_open_tok = k;
         }
+        // For call_expr, main_token is the opening `(` of the argument list.
+        // If maxTok falls inside a complex argument (e.g., an arrow function with a
+        // block body), the extension loop may encounter a `;` between maxTok and the
+        // closing `)` and break early. Setting args_open_tok ensures we extend through
+        // all interior tokens until the matching `)`.
+        if (tag == .call_expr) {
+            args_open_tok = main_tokens[i];
+        }
         var is_call = args_open_tok != NONE;
         // Import/export specifiers: stop before `,` or `}` (don't consume siblings)
         const is_specifier = tag == .import_specifier or tag == .import_default_specifier or
@@ -1309,6 +1317,16 @@ pub fn computeNodePositions(
             j += 1;
         }
         node_ends[i] = ext_end;
+    }
+
+    // Bottom-up end propagation: ensure every parent's end >= any child's end.
+    // This fixes expression nodes (like yield_expr, await_expr) that contain
+    // block-bodied children (like fn_expr). The general extension loop stops at
+    // `;` tokens inside the child's body before reaching the closing `}`, so
+    // the parent's computed end may be smaller than the child's actual end.
+    for (1..n) |i| {
+        const p = parent_indices[i];
+        if (p != NONE and node_ends[i] > node_ends[p]) node_ends[p] = node_ends[i];
     }
 
     // ── Sorted index for getNodeByRangeIndex: O(log n) lookup ──

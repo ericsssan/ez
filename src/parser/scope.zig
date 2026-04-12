@@ -42,6 +42,11 @@ pub const ScopeKind = enum(u8) {
     static_block,
     /// with(obj) { } — disables lexical optimisation in sloppy mode.
     with_stmt,
+    /// Class field initializer — evaluated as a separate execution context.
+    /// ESLint creates an implicit function scope for these so rules like
+    /// no-use-before-define treat references inside them as crossing a function
+    /// boundary.
+    class_field_initializer,
 };
 
 // ── Scope Flags ────────────────────────────────────────────
@@ -167,6 +172,13 @@ pub const ScopeTree = struct {
                 scope_flags.is_var_scope = true; // var declarations hoist to static block, not beyond
             },
             .block, .catch_clause, .switch_stmt, .with_stmt => {},
+            .class_field_initializer => {
+                // Treated as an implicit function scope: var declarations hoist here,
+                // this is available, always strict (class context).
+                scope_flags.is_var_scope = true;
+                scope_flags.has_this_binding = true;
+                scope_flags.strict_mode = true;
+            },
         }
 
         // Inherit strict mode from parent.

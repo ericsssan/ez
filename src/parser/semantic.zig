@@ -965,35 +965,47 @@ pub const SemanticAnalyzer = struct {
             .property_def => {
                 // Non-computed property key is a definition, not a reference.
                 // Only visit the initializer (rhs).
-                // Class field initializers have their own code path.
-                // Use the initializer node for CP events so computed keys stay in
-                // the containing code path.
-                if (data.rhs != .none and self.cpb_initialized) {
-                    const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
-                    const saved_alive = self.cfg_alive;
-                    self.cfg_alive = true;
-                    try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
-                    try self.visitNode(data.rhs);
-                    try self.cpb.exitCodePath(rhs_idx);
-                    self.cfg_alive = saved_alive;
-                } else {
-                    try self.visitNode(data.rhs);
+                // Class field initializers run in a separate execution context —
+                // create an implicit scope so scope-aware rules (e.g. no-use-before-define)
+                // treat references here as crossing a function boundary.
+                // Scope node = rhs (value expression), so scope.block.parent = property_def,
+                // which exposes .static — needed by isClassStaticInitializerScope in rules.
+                if (data.rhs != .none) {
+                    const prev_scope = self.current_scope;
+                    self.current_scope = try self.scopes.addScope(.class_field_initializer, prev_scope, data.rhs);
+                    if (self.cpb_initialized) {
+                        const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
+                        const saved_alive = self.cfg_alive;
+                        self.cfg_alive = true;
+                        try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
+                        try self.visitNode(data.rhs);
+                        try self.cpb.exitCodePath(rhs_idx);
+                        self.cfg_alive = saved_alive;
+                    } else {
+                        try self.visitNode(data.rhs);
+                    }
+                    self.current_scope = prev_scope;
                 }
             },
             .computed_property_def => {
                 // Computed key is an expression — visit both key and initializer.
-                // Key is in the containing code path; initializer gets its own.
+                // Key is in the containing code path; initializer gets its own scope.
                 try self.visitNode(data.lhs);
-                if (data.rhs != .none and self.cpb_initialized) {
-                    const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
-                    const saved_alive = self.cfg_alive;
-                    self.cfg_alive = true;
-                    try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
-                    try self.visitNode(data.rhs);
-                    try self.cpb.exitCodePath(rhs_idx);
-                    self.cfg_alive = saved_alive;
-                } else {
-                    try self.visitNode(data.rhs);
+                if (data.rhs != .none) {
+                    const prev_scope = self.current_scope;
+                    self.current_scope = try self.scopes.addScope(.class_field_initializer, prev_scope, data.rhs);
+                    if (self.cpb_initialized) {
+                        const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
+                        const saved_alive = self.cfg_alive;
+                        self.cfg_alive = true;
+                        try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
+                        try self.visitNode(data.rhs);
+                        try self.cpb.exitCodePath(rhs_idx);
+                        self.cfg_alive = saved_alive;
+                    } else {
+                        try self.visitNode(data.rhs);
+                    }
+                    self.current_scope = prev_scope;
                 }
             },
 
@@ -1098,9 +1110,19 @@ pub const SemanticAnalyzer = struct {
             .number_literal, .string_literal, .boolean_literal,
             .null_literal, .regex_literal, .bigint_literal,
             .template_element, .import_meta,
-            .export_all, .export_specifier,
+            .export_all,
             .error_node,
             => {},
+            .export_specifier => {
+                // lhs = local node (property_ident or property_literal)
+                // Create a read reference for identifier locals so rules like
+                // no-use-before-define can detect uses of variables in export lists.
+                if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .property_ident) {
+                    const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+                    const ref_id = try self.references.addReference(.read, data.lhs, self.current_scope, .none);
+                    self.resolveReference(name, ref_id);
+                }
+            },
 
             .new_target => {
                 // new.target is valid inside functions, class field initializers, and static blocks
