@@ -234,11 +234,15 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
                 if (entry.value_ptr.* == .string) {
                     sev = RuleSeverity.fromString(entry.value_ptr.string) orelse continue;
                 } else if (entry.value_ptr.* == .array) {
-                    // ESLint format: ["error", { options... }] or ["warn", "option"]
+                    // ESLint format: ["error"|0-2, { options... }]
                     const items = entry.value_ptr.array.items;
-                    if (items.len > 0 and items[0] == .string) {
+                    if (items.len == 0) continue;
+                    if (items[0] == .string) {
                         sev = RuleSeverity.fromString(items[0].string) orelse continue;
-                    }
+                    } else if (items[0] == .integer) {
+                        const n = items[0].integer;
+                        sev = if (n == 0) .off else if (n == 1) .warning else .@"error";
+                    } else continue;
                     // Store pointer to the first options value (after severity).
                     // The pointer is into the retained json_parsed tree.
                     if (items.len > 1) {
@@ -276,7 +280,17 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
         }
     }
 
-    // 7. Build the comptime-indexed severity table.
+    // 7. "settings" — ESLint settings object forwarded to rules.
+    if (root.object.getPtr("settings")) |settings_ptr| {
+        if (settings_ptr.* == .object) config.settings = settings_ptr;
+    }
+
+    // 8. "languageOptions" — ESLint languageOptions object forwarded to rules.
+    if (root.object.getPtr("languageOptions")) |lo_ptr| {
+        if (lo_ptr.* == .object) config.language_options = lo_ptr;
+    }
+
+    // 9. Build the comptime-indexed severity table.
     config.buildSeverityTable();
 
     return config;

@@ -641,62 +641,25 @@ const n = struct {
 
 // ── Config helpers ────────────────────────────────────────────────
 
-/// Reserved keys in the JSON extras blob (must match js/lint.js constants).
-const extras_settings = "$$settings";
-const extras_language_options = "$$languageOptions";
-
-/// Build a Config from a raw severity byte table.
-/// bytes[i]: 0=off, 1=warning, else=error for rule at index i.
-/// Rules beyond bytes.len default to off.
-fn configFromSeverityBytes(bytes: []const u8) linter_root.config.Config {
-    const RuleSeverity = linter_root.config.RuleSeverity;
-    var config: linter_root.config.Config = .{
-        .rule_severities = .{},
-        .include_patterns = &.{},
-        .exclude_patterns = &.{},
-        .overrides = &.{},
-        .rule_severity_table = undefined,
-        .allocator = std.heap.page_allocator,
-    };
-    // Severity bytes: one per rule. If buffer has 0xFF marker, the rest is JSON options.
-    var sev_len = bytes.len;
-    var json_options: ?[]const u8 = null;
-    for (bytes, 0..) |b, bi| {
-        if (b == 0xFF) { sev_len = bi; json_options = bytes[bi + 1 ..]; break; }
-    }
-    for (0..linter_root.rules.count) |i| {
-        const byte: u8 = if (i < sev_len) bytes[i] else 0;
-        config.rule_severity_table[i] = switch (byte) {
-            0 => RuleSeverity.off,
-            1 => RuleSeverity.warning,
-            else => RuleSeverity.@"error",
+/// Build a Config from a JSON-encoded ESLint config object.
+/// Expected format: {"rules":{"name": sev | [sev, opts...]}, "settings":{...}, "languageOptions":{...}}
+/// Unrecognised rule names are ignored. Rules not in the JSON default to .off.
+fn configFromJson(bytes: []const u8) linter_root.config.Config {
+    var config = linter_root.config.parseConfigJson(std.heap.page_allocator, bytes) catch {
+        var c: linter_root.config.Config = .{
+            .rule_severities = .{},
+            .include_patterns = &.{},
+            .exclude_patterns = &.{},
+            .overrides = &.{},
+            .rule_severity_table = undefined,
+            .allocator = std.heap.page_allocator,
         };
-    }
-    // Parse JSON options if present: {ruleName: [...opts], EXTRAS_SETTINGS: {...}, EXTRAS_LANGUAGE_OPTIONS: {...}}
-    if (json_options) |json_str| {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, json_str, .{}) catch null;
-        if (parsed) |p| {
-            // Retain the parse tree so pointers stay valid
-            config.json_parsed = p;
-            if (p.value == .object) {
-                var iter = p.value.object.iterator();
-                while (iter.next()) |entry| {
-                    const key = entry.key_ptr.*;
-                    if (std.mem.eql(u8, key, extras_settings)) {
-                        config.settings = entry.value_ptr;
-                    } else if (std.mem.eql(u8, key, extras_language_options)) {
-                        config.language_options = entry.value_ptr;
-                    } else {
-                        for (linter_mod.rule_names, 0..) |rn, ri| {
-                            if (std.mem.eql(u8, rn, key)) {
-                                config.rule_options[ri] = entry.value_ptr;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        for (&c.rule_severity_table) |*e| e.* = .off;
+        return c;
+    };
+    // Rebuild with .off as default so only explicitly configured rules run.
+    for (0..linter_mod.rule_names.len) |i| {
+        config.rule_severity_table[i] = config.rule_severities.get(linter_mod.rule_names[i]) orelse .off;
     }
     return config;
 }
@@ -882,7 +845,7 @@ fn napiParseAndLintFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value 
     var config_val: ?linter_root.config.Config = null;
     if (argc >= 5) {
         if (getOptionalConfigBytes(env, argv[4])) |bytes| {
-            config_val = configFromSeverityBytes(bytes);
+            config_val = configFromJson(bytes);
         }
     }
     const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
@@ -945,7 +908,7 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     var config_val: ?linter_root.config.Config = null;
     if (argc >= 6) {
         if (getOptionalConfigBytes(env, argv[5])) |bytes| {
-            config_val = configFromSeverityBytes(bytes);
+            config_val = configFromJson(bytes);
         }
     }
     const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
@@ -1427,7 +1390,7 @@ fn napiLintPaths(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     var config_val: ?linter_root.config.Config = null;
     if (argc >= 2) {
         if (getOptionalConfigBytes(env, argv[1])) |bytes| {
-            config_val = configFromSeverityBytes(bytes);
+            config_val = configFromJson(bytes);
         }
     }
     const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;

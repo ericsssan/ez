@@ -142,11 +142,13 @@ async function _resolveConfig(config = {}) {
     if (!name) continue;
     const info = nativeRules.get(name);
     if (info) {
-      nativeRuleObj[name] = ruleSeverities[name] || info.defaultSeverity;
+      const sev = ruleSeverities[name] || info.defaultSeverity;
+      const opts = ruleOptions[name];
+      nativeRuleObj[name] = opts && opts.length > 0 ? [sev, ...opts] : sev;
     }
   }
   const nativeConfig = Object.keys(nativeRuleObj).length > 0
-    ? buildNativeConfig(nativeRuleObj, ruleOptions)
+    ? buildNativeConfig({ rules: nativeRuleObj })
     : null;
   const jsPlugins = allPluginDescs.filter(p => !nativeRules.has(p.meta?.name));
 

@@ -22,25 +22,24 @@ const { loadConfig, normalizeRules, pluginsFromConfig } = require("./config-load
 const { applyFixes } = require("./api");
 
 const _TS_ESLINT = "typescript-eslint";
-const _EXTRAS_SETTINGS = "$$settings";
-const _EXTRAS_LANGUAGE_OPTIONS = "$$languageOptions";
 
 function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions, settings, languageOptions) {
-  const obj = {};
-  const extras = {};
-  let hasExtras = false;
+  const rules = {};
+  let hasRules = false;
   for (const p of plugins) {
     const nm = p.meta?.name; if (!nm) continue;
     const info = nativeRulesMap.get(nm);
     if (!info) continue;
-    obj[nm] = ruleSeverities?.[nm] ?? info.defaultSeverity;
-    const o = ruleOptions?.[nm];
-    if (o && o.length > 0) { extras[nm] = o; hasExtras = true; }
+    const sev = ruleSeverities?.[nm] ?? info.defaultSeverity;
+    const opts = ruleOptions?.[nm];
+    rules[nm] = opts && opts.length > 0 ? [sev, ...opts] : sev;
+    hasRules = true;
   }
-  if (Object.keys(obj).length === 0) return null;
-  if (settings && Object.keys(settings).length > 0) { extras[_EXTRAS_SETTINGS] = settings; hasExtras = true; }
-  if (languageOptions && Object.keys(languageOptions).length > 0) { extras[_EXTRAS_LANGUAGE_OPTIONS] = languageOptions; hasExtras = true; }
-  return buildNativeConfig(obj, hasExtras ? extras : undefined);
+  if (!hasRules) return null;
+  const config = { rules };
+  if (settings && Object.keys(settings).length > 0) config.settings = settings;
+  if (languageOptions && Object.keys(languageOptions).length > 0) config.languageOptions = languageOptions;
+  return buildNativeConfig(config);
 }
 
 // ── CLI arg parsing ──────────────────────────────────────────────

@@ -323,30 +323,8 @@ function getNativeRules() {
   return _nativeRulesMap;
 }
 
-function buildNativeConfig(rulesObj, optionsObj) {
-  const nativeRules = getNativeRules();
-  const sevBuf = new Uint8Array(nativeRules.size);
-  for (const [ruleName, severity] of Object.entries(rulesObj)) {
-    const info = nativeRules.get(ruleName);
-    if (!info) continue;
-    const sev = typeof severity === 'number'
-      ? Math.min(2, Math.max(0, severity))
-      : severity === 'error' || severity === '2' ? 2
-      : (severity === 'warn' || severity === 'warning' || severity === '1') ? 1
-      : 0;
-    sevBuf[info.index] = sev;
-  }
-  // If options provided, append 0xFF marker + JSON string
-  if (optionsObj && Object.keys(optionsObj).length > 0) {
-    const json = JSON.stringify(optionsObj);
-    const jsonBytes = _encoder.encode(json);
-    const combined = new Uint8Array(sevBuf.length + 1 + jsonBytes.length);
-    combined.set(sevBuf);
-    combined[sevBuf.length] = 0xFF;
-    combined.set(jsonBytes, sevBuf.length + 1);
-    return combined;
-  }
-  return sevBuf;
+function buildNativeConfig(configObj) {
+  return _encoder.encode(JSON.stringify(configObj));
 }
 
 // ── Batch IO functions ───────────────────────────────────────────
