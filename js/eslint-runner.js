@@ -507,6 +507,7 @@ class SourceCode {
     // _declSymIndex is file-specific — must be cleared so it rebuilds for the new AST.
     this._declSymIndex = null;
     this._allComments = undefined;
+    this._disableDirectivesCache = null;
     // _globalScope guards _precomputeScopes — must be cleared so it reruns for new AST.
     // Without this, getScope() skips _precomputeScopes() on subsequent files, causing
     // _buildScope(funcScope) to trigger a recursive top-down cascade that visits scopes
@@ -2680,10 +2681,61 @@ class SourceCode {
 
   /**
    * ESLint 9: getDisableDirectives() — inline disable directive info.
-   * Return empty; actual disable-comment handling is done in _execReport.
+   * Parses eslint-disable comments from the AST's comment list.
    */
   getDisableDirectives() {
-    return { directives: [], problems: [] };
+    if (this._disableDirectivesCache) return this._disableDirectivesCache;
+    const ast = this._ast;
+    const directives = [];
+    // Parse from comment tokens stored in buffer
+    const cc = ast._commentCount || 0;
+    const cs = ast._commentStarts;
+    const ce = ast._commentEnds;
+    const ck = ast._commentKinds; // 0=line, 1=block
+    const src = ast.source || '';
+    const BLOCK_RE = /^\s*eslint-(disable-next-line|disable-line|disable|enable)((?:[^*]|\*(?!\/))*)/;
+    const LINE_RE = /^\s*eslint-(disable-next-line|disable-line)(.*)/;
+
+    for (let i = 0; i < cc; i++) {
+      const start = cs[i], end = ce[i], kind = ck[i];
+      const text = src.slice(start, end);
+      // Extract the comment content (without delimiters)
+      let content, isBlock;
+      if (kind === 1) { // block comment /* ... */
+        content = text.slice(2, text.endsWith('*/') ? -2 : undefined);
+        isBlock = true;
+      } else { // line comment // ...
+        content = text.slice(2);
+        isBlock = false;
+      }
+      const re = isBlock ? BLOCK_RE : LINE_RE;
+      const m = content.match(re);
+      if (!m) continue;
+      const type = m[1]; // 'disable', 'disable-next-line', 'disable-line', 'enable'
+      const rulesPart = (m[2] || '').replace(/\s*--.*$/, '').trim(); // strip description after --
+      // Build token-like node with loc
+      const startLoc = this.getLocFromIndex(start);
+      const endLoc = this.getLocFromIndex(end);
+      const node = {
+        type: isBlock ? 'Block' : 'Line',
+        value: content,
+        range: [start, end],
+        loc: startLoc && endLoc ? { start: startLoc, end: endLoc } : null,
+      };
+      // Split rules: "rule1, rule2" → ['rule1', 'rule2'], or '' → [null] for disable-all
+      const ruleNames = rulesPart ? rulesPart.split(',').map(r => r.trim()).filter(Boolean) : [];
+      if (ruleNames.length === 0) {
+        // disable-all directive
+        directives.push({ type, value: null, node, ruleId: null });
+      } else {
+        for (const ruleName of ruleNames) {
+          directives.push({ type, value: ruleName, node, ruleId: ruleName });
+        }
+      }
+    }
+    const result = { directives, problems: [] };
+    this._disableDirectivesCache = result;
+    return result;
   }
 }
 
@@ -5457,6 +5509,9 @@ function applyDisableDirectives(source, violations) {
   return violations.filter(v => {
     const line = v.loc?.start?.line ?? v.line;
     if (!line) return true;
+    // column: -1 is a sentinel used by some rules (e.g. unicorn/no-abusive-eslint-disable)
+    // to bypass disable-directive suppression — never filter these out.
+    if (v.loc?.start?.column === -1) return true;
 
     let disabled = false;
     for (const d of directives) {
