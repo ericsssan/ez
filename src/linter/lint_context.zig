@@ -153,10 +153,7 @@ pub const LintContext = struct {
 
     /// Get a string field from the ESLint settings object.
     pub fn getSettingString(self: *const LintContext, key: []const u8) ?[]const u8 {
-        const s = self.settings orelse return null;
-        if (s.* != .object) return null;
-        const val = s.object.get(key) orelse return null;
-        return if (val == .string) val.string else null;
+        return _jsonFieldString(self.settings, key);
     }
 
     /// Get the ESLint languageOptions object, or null if not configured.
@@ -166,18 +163,12 @@ pub const LintContext = struct {
 
     /// Get a string field from languageOptions.
     pub fn getLanguageOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
-        const lo = self.language_options orelse return null;
-        if (lo.* != .object) return null;
-        const val = lo.object.get(key) orelse return null;
-        return if (val == .string) val.string else null;
+        return _jsonFieldString(self.language_options, key);
     }
 
     /// Get a string field from the rule's JSON options object.
     pub fn getOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
-        const opts = self.rule_options orelse return null;
-        if (opts.* != .object) return null;
-        const val = opts.object.get(key) orelse return null;
-        return if (val == .string) val.string else null;
+        return _jsonFieldString(self.rule_options, key);
     }
 
     /// Get a boolean field from the rule's JSON options object.
@@ -231,3 +222,11 @@ pub const LintContext = struct {
         }) catch {};
     }
 };
+
+/// Shared helper: get a string field from a JSON object pointer.
+fn _jsonFieldString(ptr: ?*const std.json.Value, key: []const u8) ?[]const u8 {
+    const obj = ptr orelse return null;
+    if (obj.* != .object) return null;
+    const val = obj.object.get(key) orelse return null;
+    return if (val == .string) val.string else null;
+}

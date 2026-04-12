@@ -26,18 +26,19 @@ const _TS_ESLINT = "typescript-eslint";
 function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions, settings, languageOptions) {
   const obj = {};
   const extras = {};
+  let hasExtras = false;
   for (const p of plugins) {
     const nm = p.meta?.name; if (!nm) continue;
     const info = nativeRulesMap.get(nm);
     if (!info) continue;
     obj[nm] = ruleSeverities?.[nm] ?? info.defaultSeverity;
     const o = ruleOptions?.[nm];
-    if (o && o.length > 0) extras[nm] = o;
+    if (o && o.length > 0) { extras[nm] = o; hasExtras = true; }
   }
   if (Object.keys(obj).length === 0) return null;
-  if (settings && Object.keys(settings).length > 0) extras.$$settings = settings;
-  if (languageOptions && Object.keys(languageOptions).length > 0) extras.$$languageOptions = languageOptions;
-  return buildNativeConfig(obj, Object.keys(extras).length > 0 ? extras : undefined);
+  if (settings) { for (const _ in settings) { extras.$$settings = settings; hasExtras = true; break; } }
+  if (languageOptions) { for (const _ in languageOptions) { extras.$$languageOptions = languageOptions; hasExtras = true; break; } }
+  return buildNativeConfig(obj, hasExtras ? extras : undefined);
 }
 
 // ── CLI arg parsing ──────────────────────────────────────────────

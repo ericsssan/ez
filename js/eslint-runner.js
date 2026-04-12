@@ -414,6 +414,24 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
   }
 }
 
+// ── Global scope helpers ─────────────────────────────────────────
+
+function _mkGlobalVar(name, scope, writeable, implicitSetting) {
+  return { name, defs: [], references: [], identifiers: [],
+    scope, eslintUsed: false, writeable,
+    eslintImplicitGlobalSetting: implicitSetting,
+    isRead: () => false, isWritten: () => false };
+}
+
+function _removeGlobal(name, set, variables) {
+  const v = set.get(name);
+  if (v) {
+    const idx = variables.indexOf(v);
+    if (idx >= 0) variables.splice(idx, 1);
+    set.delete(name);
+  }
+}
+
 /**
  * ESLint-compatible SourceCode object.
  * Provides getText(), getTokens(), getFirstToken(), getLastToken().
@@ -1372,12 +1390,9 @@ class SourceCode {
         const minVer = _GLOBAL_MIN_VERSION[name];
         if (minVer !== undefined && ecmaVersion < minVer) continue;
         if (!set.has(name)) {
-          const globalVar = { name, defs: [], references: [], identifiers: [],
-            scope, eslintUsed: false, writeable: false,
-            eslintImplicitGlobalSetting: 'writable',
-            isRead: () => false, isWritten: () => false };
-          set.set(name, globalVar);
-          variables.push(globalVar);
+          const g = _mkGlobalVar(name, scope, false, 'writable');
+          set.set(name, g);
+          variables.push(g);
         } else {
           set.get(name).eslintImplicitGlobalSetting = 'writable';
         }
@@ -1385,35 +1400,25 @@ class SourceCode {
       if (this._envGlobals) {
         for (const name of _ENV_GLOBALS) {
           if (!set.has(name)) {
-            const globalVar = { name, defs: [], references: [], identifiers: [],
-              scope, eslintUsed: false, writeable: false,
-              eslintImplicitGlobalSetting: 'writable',
-              isRead: () => false, isWritten: () => false };
-            set.set(name, globalVar);
-            variables.push(globalVar);
+            const g = _mkGlobalVar(name, scope, false, 'writable');
+            set.set(name, g);
+            variables.push(g);
           }
         }
       }
-      // Config-defined globals from languageOptions.globals
       if (this._configGlobals) {
         for (const [name, value] of Object.entries(this._configGlobals)) {
-          const isOff = value === 'off' || value === false;
-          if (isOff) {
-            const idx = variables.indexOf(set.get(name));
-            if (idx >= 0) variables.splice(idx, 1);
-            set.delete(name);
+          if (value === 'off' || value === false) {
+            _removeGlobal(name, set, variables);
             continue;
           }
           const isWritable = value === 'writable' || value === true;
           if (set.has(name)) {
             set.get(name).writeable = isWritable;
           } else {
-            const globalVar = { name, defs: [], references: [], identifiers: [],
-              scope, eslintUsed: false, writeable: isWritable,
-              eslintImplicitGlobalSetting: isWritable ? 'writable' : 'readonly',
-              isRead: () => false, isWritten: () => false };
-            set.set(name, globalVar);
-            variables.push(globalVar);
+            const g = _mkGlobalVar(name, scope, isWritable, isWritable ? 'writable' : 'readonly');
+            set.set(name, g);
+            variables.push(g);
           }
         }
       }
@@ -1423,12 +1428,9 @@ class SourceCode {
     if (kind === 0 && this._sourceType === 'commonjs') {
       for (const name of ['require', 'module', 'exports', '__dirname', '__filename', 'global', 'process', 'Buffer', 'clearImmediate', 'setImmediate']) {
         if (!set.has(name)) {
-          const globalVar = { name, defs: [], references: [], identifiers: [],
-            scope, eslintUsed: false, writeable: false,
-            eslintImplicitGlobalSetting: 'readonly',
-            isRead: () => false, isWritten: () => false };
-          set.set(name, globalVar);
-          variables.push(globalVar);
+          const g = _mkGlobalVar(name, scope, false, 'readonly');
+          set.set(name, g);
+          variables.push(g);
         }
       }
     }
@@ -1449,11 +1451,7 @@ class SourceCode {
           if (!name || !/^[$_a-zA-Z][\w$]*$/.test(name)) continue;
           const valueStr = (rawValue || 'readonly').toLowerCase();
           if (valueStr === 'off') {
-            if (set.has(name)) {
-              const idx = variables.indexOf(set.get(name));
-              if (idx >= 0) variables.splice(idx, 1);
-              set.delete(name);
-            }
+            _removeGlobal(name, set, variables);
             continue;
           }
           const isWritable = valueStr === 'writable' || valueStr === 'true' || valueStr === 'writeable';
@@ -2609,24 +2607,23 @@ class RuleContext {
     // Satisfy ESLint v8 parserPath check used by getParserServices
     this.parserPath = '@typescript-eslint/parser';
     const lo = options.languageOptions;
-    if (lo) {
-      if (lo.sourceType) this.languageOptions.sourceType = lo.sourceType;
-      if (lo.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(lo.ecmaVersion);
-      if (lo.parserOptions) this.languageOptions.parserOptions = { ...this.languageOptions.parserOptions, ...lo.parserOptions };
-    }
+    this._applyLanguageOptions(lo);
     if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
     if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
     const effectiveSrcType = options.sourceType || lo?.sourceType;
     const effectiveEcmaVer = options.ecmaVersion || lo?.ecmaVersion;
     const sc = new SourceCode(ast, sourceText, effectiveSrcType, effectiveEcmaVer, options.envGlobals, lo?.globals ?? null);
     this.sourceCode = sc;
-    // Attach TypeScript parserServices for .ts/.tsx files
-    if (options.parserServices) {
-      sc.parserServices = options.parserServices;
-    }
-    // Short-circuit / error budget: per-rule violation count
+    if (options.parserServices) sc.parserServices = options.parserServices;
     this._ruleErrors = Object.create(null);
     this._errorBudget = options.errorBudget || DEFAULT_ERROR_BUDGET;
+  }
+
+  _applyLanguageOptions(lo) {
+    if (!lo) return;
+    if (lo.sourceType) this.languageOptions.sourceType = lo.sourceType;
+    if (lo.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(lo.ecmaVersion);
+    if (lo.parserOptions) this.languageOptions.parserOptions = { ...this.languageOptions.parserOptions, ...lo.parserOptions };
   }
 
   reset(ast, filename, sourceText, options = {}) {
@@ -2649,13 +2646,9 @@ class RuleContext {
     this.sourceCode._envGlobals = options.envGlobals !== undefined ? options.envGlobals : true;
     this.sourceCode._configGlobals = lo?.globals ?? null;
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
-    if (lo) {
-      if (lo.sourceType) this.languageOptions.sourceType = lo.sourceType;
-      if (lo.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(lo.ecmaVersion);
-      if (lo.parserOptions) this.languageOptions.parserOptions = { ...this.languageOptions.parserOptions, ...lo.parserOptions };
-    }
-    if (options.sourceType) this.languageOptions.sourceType = effectiveSrcType;
-    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(effectiveEcmaVer);
+    this._applyLanguageOptions(lo);
+    if (options.sourceType) this.languageOptions.sourceType = options.sourceType;
+    if (options.ecmaVersion) this.languageOptions.ecmaVersion = _normalizeEcmaVersion(options.ecmaVersion);
     this.settings = options.settings || {};
   }
 
