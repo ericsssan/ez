@@ -23,14 +23,19 @@ const { applyFixes } = require("./api");
 
 const _TS_ESLINT = "typescript-eslint";
 
-function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities) {
+function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions) {
   const obj = {};
+  const opts = {};
   for (const p of plugins) {
     const nm = p.meta?.name; if (!nm) continue;
     const info = nativeRulesMap.get(nm);
-    if (info) obj[nm] = ruleSeverities?.[nm] ?? info.defaultSeverity;
+    if (!info) continue;
+    obj[nm] = ruleSeverities?.[nm] ?? info.defaultSeverity;
+    const o = ruleOptions?.[nm];
+    if (o && o.length > 0) opts[nm] = o;
   }
-  return Object.keys(obj).length > 0 ? buildNativeConfig(obj) : null;
+  if (Object.keys(obj).length === 0) return null;
+  return buildNativeConfig(obj, Object.keys(opts).length > 0 ? opts : undefined);
 }
 
 // ── CLI arg parsing ──────────────────────────────────────────────
@@ -262,7 +267,7 @@ async function main() {
             plugins,
             ruleConfig: ruleOptions,
             settings: fileConfig.settings,
-            nativeConfig: _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities),
+            nativeConfig: _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions),
             jsOnlyPlugins: plugins.filter(p => !nativeRulesMap.has(p.meta?.name)),
             typeAware: plugins.some(p => p.meta?.name?.includes(_TS_ESLINT)),
           };
