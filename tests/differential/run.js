@@ -481,7 +481,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
     const _p0 = Date.now();
-    const ast = parse(src, { filename, globals });
+    const ast = parse(src, { filename, globals, sourceType });
     _runnerParseMs += Date.now() - _p0;
     const plugin = {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },

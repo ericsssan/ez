@@ -228,7 +228,15 @@ function parseSource(source, options = {}) {
 
   getTagNames();
   if (options.noPrivateCopy) return new AstView(buf);
-  return new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
+  const privateBuf = _makePrivateBuf(buf, sourceStart, sourceLen);
+  // Allow caller to override source_type in the header (offset 84).
+  // Needed when parsing script-mode code (sourceType: "script").
+  if (options.sourceType === "script") {
+    new DataView(privateBuf).setUint32(84, 0, true);
+  } else if (options.sourceType === "module") {
+    new DataView(privateBuf).setUint32(84, 1, true);
+  }
+  return new AstView(privateBuf);
 }
 
 function parse(filePath, options = {}) {
