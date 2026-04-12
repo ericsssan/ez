@@ -25,7 +25,6 @@ const _TS_ESLINT = "typescript-eslint";
 
 function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions, settings, languageOptions) {
   const rules = {};
-  let hasRules = false;
   for (const p of plugins) {
     const nm = p.meta?.name; if (!nm) continue;
     const info = nativeRulesMap.get(nm);
@@ -33,9 +32,8 @@ function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, 
     const sev = ruleSeverities?.[nm] ?? info.defaultSeverity;
     const opts = ruleOptions?.[nm];
     rules[nm] = opts && opts.length > 0 ? [sev, ...opts] : sev;
-    hasRules = true;
   }
-  if (!hasRules) return null;
+  if (Object.keys(rules).length === 0) return null;
   const config = { rules };
   if (settings && Object.keys(settings).length > 0) config.settings = settings;
   if (languageOptions && Object.keys(languageOptions).length > 0) config.languageOptions = languageOptions;

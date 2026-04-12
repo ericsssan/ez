@@ -30,6 +30,11 @@ pub const RuleSeverity = enum {
         };
     }
 
+    /// Parse an integer (0=off, 1=warning, ≥2=error) into a RuleSeverity.
+    pub fn fromInt(n: i64) RuleSeverity {
+        return if (n == 0) .off else if (n == 1) .warning else .@"error";
+    }
+
     /// Map a diagnostic Severity to the corresponding RuleSeverity.
     pub fn fromSeverity(sev: Severity) RuleSeverity {
         return switch (sev) {
@@ -144,11 +149,16 @@ pub const Config = struct {
     /// is indexed by the same comptime index as `registry.all_rules`.
     pub fn buildSeverityTable(self: *Config) void {
         for (0..rule_count) |i| {
-            if (self.rule_severities.get(linter.rule_names[i])) |sev| {
-                self.rule_severity_table[i] = sev;
-            } else {
-                self.rule_severity_table[i] = linter.default_severities[i];
-            }
+            self.rule_severity_table[i] = self.rule_severities.get(linter.rule_names[i]) orelse linter.default_severities[i];
+        }
+    }
+
+    /// Like buildSeverityTable but uses a uniform `default` for rules not
+    /// in rule_severities (instead of per-rule registry defaults).
+    /// Used by configFromJson where only explicitly configured rules should run.
+    pub fn buildSeverityTableWithDefault(self: *Config, default: RuleSeverity) void {
+        for (0..rule_count) |i| {
+            self.rule_severity_table[i] = self.rule_severities.get(linter.rule_names[i]) orelse default;
         }
     }
 };
@@ -240,8 +250,7 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
                     if (items[0] == .string) {
                         sev = RuleSeverity.fromString(items[0].string) orelse continue;
                     } else if (items[0] == .integer) {
-                        const n = items[0].integer;
-                        sev = if (n == 0) .off else if (n == 1) .warning else .@"error";
+                        sev = RuleSeverity.fromInt(items[0].integer);
                     } else continue;
                     // Store pointer to the first options value (after severity).
                     // The pointer is into the retained json_parsed tree.
@@ -254,8 +263,7 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
                         }
                     }
                 } else if (entry.value_ptr.* == .integer) {
-                    const n = entry.value_ptr.integer;
-                    sev = if (n == 0) .off else if (n == 1) .warning else .@"error";
+                    sev = RuleSeverity.fromInt(entry.value_ptr.integer);
                 } else continue;
 
                 config.rule_severities.put(allocator, rule_name, sev) catch {};

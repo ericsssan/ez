@@ -646,21 +646,13 @@ const n = struct {
 /// Unrecognised rule names are ignored. Rules not in the JSON default to .off.
 fn configFromJson(bytes: []const u8) linter_root.config.Config {
     var config = linter_root.config.parseConfigJson(std.heap.page_allocator, bytes) catch {
-        var c: linter_root.config.Config = .{
-            .rule_severities = .{},
-            .include_patterns = &.{},
-            .exclude_patterns = &.{},
-            .overrides = &.{},
-            .rule_severity_table = undefined,
-            .allocator = std.heap.page_allocator,
-        };
-        for (&c.rule_severity_table) |*e| e.* = .off;
+        // On parse error: all rules off, no options.
+        var c = linter_root.config.Config.initDefault(std.heap.page_allocator);
+        c.buildSeverityTableWithDefault(.off);
         return c;
     };
-    // Rebuild with .off as default so only explicitly configured rules run.
-    for (0..linter_mod.rule_names.len) |i| {
-        config.rule_severity_table[i] = config.rule_severities.get(linter_mod.rule_names[i]) orelse .off;
-    }
+    // Override the table with .off as default: only explicitly configured rules run.
+    config.buildSeverityTableWithDefault(.off);
     return config;
 }
 
