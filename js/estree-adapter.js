@@ -1766,7 +1766,7 @@ const NodeProto = {
       if (val !== 'static' && val !== 'async' && val !== 'override' && val !== 'readonly' &&
           val !== 'abstract' && val !== 'declare' && val !== '*') break;
     }
-    return null;
+    return undefined;
   },
 
   /**
