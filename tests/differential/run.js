@@ -178,6 +178,11 @@ const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
 
 // ── Helpers ───────────────────────────────────────────────────
 
+/** Convert camelCase to kebab-case. Used to map test file names to rule names (jsdoc). */
+function camelToKebab(str) {
+  return str.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+}
+
 /** Truncate a multi-line code string to N lines, adding ellipsis. */
 function truncateCode(code, maxLines = 8) {
   const lines = code.split("\n");
@@ -242,8 +247,7 @@ const COMPARABLE_RULES = new Set(
 
 const CONFORMANCE_DIR = path.resolve(__dirname, "../conformance");
 
-// Candidate test subdirectory paths, checked in preference order.
-// Most specific paths come first to avoid picking up utility files in parent dirs.
+// Candidate test subdirectory paths, checked in order of preference per plugin convention.
 const _TEST_DIR_CANDIDATES = [
   "tests/lib/rules",        // react
   "test/rules/assertions",  // jsdoc
@@ -261,10 +265,10 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
       .map(d => {
         const pluginDir = path.join(CONFORMANCE_DIR, d);
         const prefix = d.replace(/^eslint-plugin-/, "");
-        let useESM = false;
+        let testFormat = "cjs";
         try {
           const pkgJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "package.json"), "utf8"));
-          useESM = pkgJson.type === "module";
+          if (pkgJson.type === "module") testFormat = "esm";
         } catch { /* no package.json — assume CJS */ }
         // Auto-install only when node_modules is absent AND require() would fail.
         // We skip plugins whose index.js works without installed deps (react, promise) — installing
@@ -280,20 +284,23 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
             }
           }
         }
-        // Find the test directory containing rule test files.
-        let testsDir = null;
+        // Find the test directory; cache its file listing to avoid a second readdirSync below.
+        let testsDir = null, testsDirFiles = null;
         for (const c of _TEST_DIR_CANDIDATES) {
           const d2 = path.join(pluginDir, c);
-          if (fs.existsSync(d2) && fs.readdirSync(d2).some(f => f.endsWith(".js"))) {
-            testsDir = d2;
-            break;
+          if (fs.existsSync(d2)) {
+            const files = fs.readdirSync(d2);
+            if (files.some(f => f.endsWith(".js"))) {
+              testsDir = d2;
+              testsDirFiles = files;
+              break;
+            }
           }
         }
-        // Detect whether test files use static export format (e.g. jsdoc: `export default { valid, invalid }`)
-        // vs RuleTester.run() capture format (react/promise/unicorn).
-        let testFormat = useESM ? "esm" : "cjs";
-        if (testsDir) {
-          const sample = fs.readdirSync(testsDir).find(f => f.endsWith(".js") && f !== "utils.js" && f !== "utils");
+        // Detect static-export format: test files export { valid, invalid } directly
+        // rather than calling RuleTester.run() (e.g. jsdoc vs react/promise/unicorn).
+        if (testsDirFiles) {
+          const sample = testsDirFiles.find(f => f.endsWith(".js") && f !== "utils.js" && f !== "utils");
           if (sample) {
             const peek = fs.readFileSync(path.join(testsDir, sample), "utf8");
             if (/^\s*export default\b/m.test(peek) && !peek.includes("RuleTester")) {
@@ -301,19 +308,19 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
             }
           }
         }
-        return { prefix, pluginDir, testsDir, useESM, testFormat };
+        return { prefix, pluginDir, testsDir, testFormat };
       })
   : [];
 
 const _pluginRuleModules = new Map(); // fullName → { create, meta }
 const _pluginPackages     = new Map(); // prefix  → loaded plugin package (for _espreePlugins)
 
-for (const { prefix, pluginDir, testsDir, useESM } of _discoveredPlugins) {
+for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
   let pkg = null;
   // CJS plugins: require() resolves via "main".
   // ESM plugins that lack a built CJS dist: fall back to dynamic import() of the ESM entry.
   try { pkg = require(pluginDir); } catch {
-    if (useESM) {
+    if (testFormat !== "cjs") {
       let esmEntry = null;
       try {
         const pkgJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "package.json"), "utf8"));
@@ -715,8 +722,7 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
       if (testFormat === "static-export") {
         const testCases = mod.default || mod;
         if (testCases && typeof testCases === "object" && ("valid" in testCases || "invalid" in testCases)) {
-          // File names are camelCase; rule names are kebab-case — convert for __EZ_CAPTURE__.
-          const ruleBaseName = baseName.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+          const ruleBaseName = camelToKebab(baseName);
           global.__EZ_CAPTURE__(ruleBaseName, null, testCases, {});
         }
       }
@@ -865,7 +871,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       const baseName = file.replace(/\.js$/, "");
       // Rule names may be kebab-case (react/promise/unicorn) or mapped from camelCase files (jsdoc).
       // Try direct match first, then camelCase → kebab-case conversion.
-      const kebabName = baseName.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
+      const kebabName = camelToKebab(baseName);
       const fullName     = `${prefix}/${baseName}`;
       const fullNameKebab = `${prefix}/${kebabName}`;
       const ruleModule = _pluginRuleModules.get(fullName) || _pluginRuleModules.get(fullNameKebab);
