@@ -19,6 +19,19 @@ const { parseAndLint, parse, discoverFiles, lintPaths, getTagNames, getNativeRul
 const { runPlugins, applyDisableDirectives } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
 const { loadConfig, normalizeRules, pluginsFromConfig } = require("./config-loader");
+const { applyFixes } = require("./api");
+
+const _TS_ESLINT = "typescript-eslint";
+
+function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities) {
+  const obj = {};
+  for (const p of plugins) {
+    const nm = p.meta?.name; if (!nm) continue;
+    const info = nativeRulesMap.get(nm);
+    if (info) obj[nm] = ruleSeverities?.[nm] ?? info.defaultSeverity;
+  }
+  return Object.keys(obj).length > 0 ? buildNativeConfig(obj) : null;
+}
 
 // ── CLI arg parsing ──────────────────────────────────────────────
 
@@ -85,23 +98,6 @@ Examples:
   process.exit(0);
 }
 
-// ── Apply fixes helper ───────────────────────────────────────────
-
-function applyFixes(src, fixes) {
-  if (!fixes || fixes.length === 0) return src;
-  const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
-  let result = "";
-  let lastIndex = 0;
-  for (const fix of sorted) {
-    const [start, end] = fix.range;
-    if (start < lastIndex) continue;
-    result += src.slice(lastIndex, start) + fix.text;
-    lastIndex = end;
-  }
-  return result + src.slice(lastIndex);
-}
-
-
 // ── Output helpers ───────────────────────────────────────────────
 
 function printViolations(file, violations) {
@@ -123,12 +119,21 @@ async function main() {
   let errorFiles = 0;
   let totalFixed = 0;
 
+  function recordError(file, label, e) {
+    if (formatJson) {
+      jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `${label}: ${e.message}` }] });
+    } else {
+      console.error(`${file}: ${label.toLowerCase()}: ${e.message}`);
+    }
+  }
+
   const tagNames = getTagNames();
 
   // ── Determine mode: explicit plugins vs config-driven ────────────
   let configResolver = null;
   let explicitPlugins = [];      // used only in --eslint-plugin mode
   let explicitNativeConfig = null;
+  const nativeRulesMap = getNativeRules();
 
   if (pluginNames.length > 0) {
     // ── Explicit --eslint-plugin mode ────────────────────────────
@@ -153,21 +158,23 @@ async function main() {
       console.error("error: no rules loaded");
       process.exit(1);
     }
-    const nativeRules = getNativeRules();
-    const nativeRuleObj = {};
-    for (const plugin of explicitPlugins) {
-      const name = plugin.meta?.name;
-      if (!name) continue;
-      const info = nativeRules.get(name);
-      if (info) nativeRuleObj[name] = info.defaultSeverity;
-    }
-    if (Object.keys(nativeRuleObj).length > 0) {
-      explicitNativeConfig = buildNativeConfig(nativeRuleObj);
-    }
+    explicitNativeConfig = _buildNativeConfigFromPlugins(explicitPlugins, nativeRulesMap);
   } else {
-    // ── Config-driven mode ──────────────────────────────────���────
+    // ── Config-driven mode ───────────────────────────────────────
+    // Start config detection from the first input path's directory so that
+    // `eslint.config.js` in that tree is found regardless of cwd.
+    let configStartDir = configPath;
+    if (!configStartDir) {
+      if (filePaths.length === 0) {
+        configStartDir = process.cwd();
+      } else {
+        const p = path.resolve(filePaths[0]);
+        try { configStartDir = fs.statSync(p).isDirectory() ? p : path.dirname(p); }
+        catch { configStartDir = process.cwd(); }
+      }
+    }
     try {
-      configResolver = await loadConfig(configPath || process.cwd());
+      configResolver = await loadConfig(configStartDir);
     } catch (e) {
       console.error(`error: failed to load config: ${e.message}`);
       process.exit(1);
@@ -186,9 +193,12 @@ async function main() {
     process.exit(1);
   }
 
-  // ── Native batch path (explicit --eslint-plugin mode only, no JS plugins, no --fix) ──
-  const nativeRulesMap = getNativeRules();
-  const explicitJsOnlyPlugins = explicitPlugins.filter(p => !nativeRulesMap.has(p.meta?.name));
+  // Native batch: Zig handles parallel read+lint — only valid when all rules are native.
+  const explicitJsOnlyPlugins = pluginNames.length > 0
+    ? explicitPlugins.filter(p => !nativeRulesMap.has(p.meta?.name))
+    : [];
+  const explicitTypeAware = pluginNames.length > 0 &&
+    explicitPlugins.some(p => p.meta?.name?.includes(_TS_ESLINT));
   const useNativeBatch = pluginNames.length > 0 &&
     explicitJsOnlyPlugins.length === 0 &&
     explicitNativeConfig !== null &&
@@ -211,7 +221,8 @@ async function main() {
           filePath: file,
           messages: violations.map(r => ({
             ruleId: r.ruleId || null, severity: r.severity,
-            message: r.message, line: r.loc?.start?.line ?? null, column: null,
+            message: r.message, line: r.loc?.start?.line ?? null,
+            column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
           })),
         });
       } else {
@@ -219,55 +230,62 @@ async function main() {
       }
     }
   } else {
-    // ── Sequential path ────────────────────────────────────────────
+    // Many files share the same resolved config object — cache plugin/rule derivation per config.
+    const configPluginCache = new WeakMap();
     for (const file of allFiles) {
-      // ── Resolve per-file plugins + rules ──────────────────────────
       let filePlugins;
       let fileRuleConfig;
       let fileSettings = {};
 
+      let fileNativeConfig = null;
+      let jsOnlyPlugins;
+      let typeAware = false;
+
       if (configResolver) {
-        const absFile = path.resolve(file);
-        const fileConfig = configResolver.resolveForFile(absFile);
+        const fileConfig = configResolver.resolveForFile(file);
         if (!fileConfig) continue; // globally ignored
 
-        const { enabledRules, ruleOptions } = normalizeRules(fileConfig.rules);
-        const fromConfig = pluginsFromConfig(
-          fileConfig.plugins,
-          enabledRules,
-          ruleFilters.size > 0 ? ruleFilters : undefined
-        );
+        let cached = configPluginCache.get(fileConfig);
+        if (!cached) {
+          const { enabledRules, ruleOptions, ruleSeverities } = normalizeRules(fileConfig.rules);
+          const fromConfig = pluginsFromConfig(
+            fileConfig.plugins,
+            enabledRules,
+            ruleFilters.size > 0 ? ruleFilters : undefined
+          );
+          // Bare-name rules (no '/') → load from bundled core rules
+          const bareNames = new Set();
+          for (const n of enabledRules) if (!n.includes("/")) bareNames.add(n);
+          const coreRules = bareNames.size > 0 ? loadCoreRules({ only: bareNames }) : [];
+          const plugins = [...fromConfig, ...coreRules];
+          cached = {
+            plugins,
+            ruleConfig: ruleOptions,
+            settings: fileConfig.settings,
+            nativeConfig: _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities),
+            jsOnlyPlugins: plugins.filter(p => !nativeRulesMap.has(p.meta?.name)),
+            typeAware: plugins.some(p => p.meta?.name?.includes(_TS_ESLINT)),
+          };
+          configPluginCache.set(fileConfig, cached);
+        }
 
-        // Bare-name rules (no '/') → load from bundled core rules
-        const bareNames = new Set([...enabledRules].filter(n => !n.includes("/")));
-        const coreRules = bareNames.size > 0 ? loadCoreRules({ only: bareNames }) : [];
-
-        filePlugins = [...fromConfig, ...coreRules];
-        fileRuleConfig = ruleOptions;
-        fileSettings = fileConfig.settings;
+        filePlugins = cached.plugins;
+        fileRuleConfig = cached.ruleConfig;
+        fileSettings = cached.settings;
+        fileNativeConfig = cached.nativeConfig;
+        jsOnlyPlugins = cached.jsOnlyPlugins;
+        typeAware = cached.typeAware;
       } else {
         filePlugins = explicitPlugins;
-        // In explicit mode, ruleConfig comes from --config flag or auto-detected legacy JSON
         fileRuleConfig = {};
+        fileNativeConfig = explicitNativeConfig;
+        jsOnlyPlugins = explicitJsOnlyPlugins;
+        typeAware = explicitTypeAware;
       }
 
-      // ── Per-file native routing ───────────────────────────��──────
-      const fileNativeRuleObj = {};
-      for (const plugin of filePlugins) {
-        const name = plugin.meta?.name;
-        if (!name) continue;
-        const info = nativeRulesMap.get(name);
-        if (info) fileNativeRuleObj[name] = info.defaultSeverity;
-      }
-      const fileHasNativeRules = Object.keys(fileNativeRuleObj).length > 0;
-      const fileNativeConfig = fileHasNativeRules ? buildNativeConfig(fileNativeRuleObj) : null;
-      const jsOnlyPlugins = filePlugins.filter(p => !nativeRulesMap.has(p.meta?.name));
-      const typeAware = pluginNames.some(n => n.includes("typescript-eslint"));
-
-      // ── Native lint ──────────────────────────────────────────────
       let ast;
       let nativeViolations = [];
-      if (fileHasNativeRules && fileNativeConfig) {
+      if (fileNativeConfig) {
         try {
           const result = parseAndLint(file, { config: fileNativeConfig });
           ast = result.ast;
@@ -276,11 +294,7 @@ async function main() {
             message: d.message, loc: { start: { line: d.line, column: d.col } },
           }));
         } catch (e) {
-          if (formatJson) {
-            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
-          } else {
-            console.error(`${file}: parse error: ${e.message}`);
-          }
+          recordError(file, "Parse error", e);
           errorFiles++;
           continue;
         }
@@ -288,17 +302,12 @@ async function main() {
         try {
           ast = parse(file);
         } catch (e) {
-          if (formatJson) {
-            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Parse error: ${e.message}` }] });
-          } else {
-            console.error(`${file}: parse error: ${e.message}`);
-          }
+          recordError(file, "Parse error", e);
           errorFiles++;
           continue;
         }
       }
 
-      // ── JS rules ────────────────────────────────────────────────
       let jsReports = [];
       if (jsOnlyPlugins.length > 0) {
         try {
@@ -307,17 +316,12 @@ async function main() {
             typeAware, settings: fileSettings,
           });
         } catch (e) {
-          if (formatJson) {
-            jsonResults.push({ filePath: file, messages: [{ severity: 2, message: `Plugin error: ${e.message}` }] });
-          } else {
-            console.error(`${file}: plugin error: ${e.message}`);
-          }
+          recordError(file, "Plugin error", e);
           errorFiles++;
           continue;
         }
       }
 
-      // ── Merge + apply disable directives ───────────��──────────────
       let violations = [
         ...nativeViolations,
         ...jsReports.filter(r => !r.message.startsWith("Plugin error:")),
@@ -350,10 +354,10 @@ async function main() {
         jsonResults.push({
           filePath: file,
           messages: violations.map(r => ({
-            ruleId: r.ruleId || null, severity: 2,
+            ruleId: r.ruleId || null, severity: r.severity ?? 2,
             message: r.message, line: r.loc?.start?.line ?? null,
             column: r.loc?.start?.column != null ? r.loc.start.column + 1 : null,
-            fix: r.fix ? r.fix : undefined,
+            fix: r.fix || undefined,
           })),
         });
       } else {
@@ -366,7 +370,7 @@ async function main() {
     console.log(JSON.stringify(jsonResults, null, 2));
   } else {
     const ruleLabel = configResolver ? "auto" : String(explicitPlugins.length);
-    const ruleWord = configResolver ? "rules" : (explicitPlugins.length !== 1 ? "rules" : "rule");
+    const ruleWord = !configResolver && explicitPlugins.length === 1 ? "rule" : "rules";
     if (totalViolations > 0 || errorFiles > 0) {
       const fixNote = totalFixed > 0 ? `, ${totalFixed} fixed` : "";
       console.log(`\n✖ ${totalViolations} problem${totalViolations !== 1 ? "s" : ""} (${ruleLabel} ${ruleWord}, ${totalFiles} file${totalFiles !== 1 ? "s" : ""}${fixNote})`);

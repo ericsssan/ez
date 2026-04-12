@@ -7,6 +7,7 @@ const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = requir
 // 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl,
 // 5=parameter, 6=catch_param, 7=import_binding, 8=implicit_global
 const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','Variable'];
+const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
 let _tsServices = null;
 function tsServices() {
   if (!_tsServices) {
@@ -1248,7 +1249,6 @@ class SourceCode {
       return this._stubScope();
     }
     const NONE32 = 0xFFFFFFFF;
-    const KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
     const kind = ast._scopeKinds[scopeId];
     const flags16 = ast._scopeFlags[scopeId];
     const parentId = ast._scopeParents[scopeId];
@@ -1268,7 +1268,7 @@ class SourceCode {
     // ESLint's script mode has only one global scope covering all top-level code.
     // Our Zig analyzer always creates a two-level structure (global=0, module=1), so we fix the
     // reported type here so rules like no-alert, no-implicit-globals, no-unused-vars work correctly.
-    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global' : (KIND_NAMES[kind] || 'block');
+    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global' : (_SCOPE_KIND_NAMES[kind] || 'block');
 
     // Cheap fields only — expensive arrays (variables/references/through/childScopes) are lazy.
     const scope = {
@@ -1949,7 +1949,6 @@ class SourceCode {
     if (!ast._scopeKinds || scopeId === NONE || scopeId === NONE32 || scopeId >= ast._semScopeCount) {
       return this._stubScope();
     }
-    const KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with'];
     const kind = ast._scopeKinds[scopeId];
     const flags16 = ast._scopeFlags[scopeId];
     const parentId = ast._scopeParents[scopeId];
@@ -1966,7 +1965,7 @@ class SourceCode {
     const isVarScope = kind === 0 || kind === 1 || kind === 2;
     const set = new Map();
     const s = {
-      type: KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
+      type: _SCOPE_KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
       set, through: [], childScopes: [], implicit: { variables: [] },
       block, upper, lookup: () => null,
     };
@@ -2472,56 +2471,6 @@ class RuleFixer {
 // ── Context ─────────────────────────────────────────────────────
 
 /**
- * Build a map from line number → Set<ruleId> | true (all-rules disabled)
- * by scanning inline eslint-disable-line / eslint-disable-next-line comments.
- * Lazily computed and cached on the context object.
- */
-function _buildInlineDisableMap(ctx) {
-  if (ctx._inlineDisableMap !== undefined) return ctx._inlineDisableMap;
-  const map = new Map();
-  const comments = ctx.sourceCode.getAllComments();
-  for (const comment of comments) {
-    const text = comment.value.trim();
-    const cLine = comment.loc?.start?.line;
-    if (cLine === undefined) continue;
-    let targetLine, rest;
-    if (comment.type === 'Line') {
-      if (text.startsWith('eslint-disable-line')) {
-        targetLine = cLine;
-        rest = text.slice('eslint-disable-line'.length).trim();
-      } else if (text.startsWith('eslint-disable-next-line')) {
-        targetLine = cLine + 1;
-        rest = text.slice('eslint-disable-next-line'.length).trim();
-      }
-    } else if (comment.type === 'Block') {
-      // /* eslint-disable rule1, rule2 */ – single-location block disable (not range)
-      // Only handle if the comment itself is on one line (simple case).
-      if (comment.loc.start.line === comment.loc.end.line) {
-        if (text.startsWith('eslint-disable-line')) {
-          targetLine = cLine;
-          rest = text.slice('eslint-disable-line'.length).trim();
-        } else if (text.startsWith('eslint-disable-next-line')) {
-          targetLine = cLine + 1;
-          rest = text.slice('eslint-disable-next-line'.length).trim();
-        }
-      }
-    }
-    if (targetLine === undefined) continue;
-    const ruleNames = rest ? rest.split(',').map(r => r.trim()).filter(Boolean) : null;
-    if (!ruleNames || ruleNames.length === 0) {
-      map.set(targetLine, true); // all rules disabled
-    } else {
-      let lineSet = map.get(targetLine);
-      if (lineSet === true) continue;
-      if (!lineSet) { lineSet = new Set(); map.set(targetLine, lineSet); }
-      for (const r of ruleNames) lineSet.add(r);
-    }
-  }
-  ctx._inlineDisableMap = map;
-  return map;
-}
-
-/**
  * Core report logic — called from pre-bound per-rule report functions so that
  * ruleId/ruleMeta are captured at rule-load time, not mutated per handler call.
  */
@@ -2566,16 +2515,6 @@ function _execReport(descriptor, ruleId, ruleMeta, ctx) {
         fix = fix.filter(Boolean);
       }
     } catch { /* ignore fix errors */ }
-  }
-  // Inline disable comment suppression: // eslint-disable-line [rule] or // eslint-disable-next-line [rule]
-  if (resolvedLoc) {
-    // loc can be { start: { line, column }, end: ... } OR legacy { line, column }
-    const reportLine = resolvedLoc.start != null ? resolvedLoc.start.line : resolvedLoc.line;
-    if (reportLine != null) {
-      const disableMap = _buildInlineDisableMap(ctx);
-      const lineDisable = disableMap.get(reportLine);
-      if (lineDisable === true || (lineDisable instanceof Set && lineDisable.has(ruleId))) return;
-    }
   }
   ctx._reports.push({
     ruleId,
@@ -2671,7 +2610,6 @@ class RuleContext {
     this._currentNodeIdx = 0;
     this._currentRule = null;
     this._currentRuleMeta = null;
-    this._inlineDisableMap = undefined; // Invalidate per-file inline disable cache
     this.sourceCode.reset(ast, sourceText, options.sourceType, options.ecmaVersion);
     this.sourceCode._envGlobals = options.envGlobals !== undefined ? options.envGlobals : true;
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
@@ -5144,6 +5082,11 @@ function runPlugins(ast, plugins, options = {}) {
 
 // ── Disable directive suppression ───────────────────────────────
 
+const D_DISABLE_NEXT_LINE = 'disable-next-line';
+const D_DISABLE_LINE = 'disable-line';
+const D_DISABLE = 'disable';
+const D_ENABLE = 'enable';
+
 function _parseRuleList(str) {
   if (!str || !str.trim()) return []; // empty = matches all rules
   return str.split(',').map(s => s.trim()).filter(Boolean);
@@ -5151,23 +5094,24 @@ function _parseRuleList(str) {
 
 function _parseDisableDirectives(source) {
   const directives = [];
-  const lines = source.split('\n');
-  const blockRe = /\/\*\s*eslint-(disable-line|disable|enable)((?:[^*]|\*(?!\/))*)\*\//g;
+  const lines = source.split(/\r?\n/);
+  const blockRe = /\/\*\s*eslint-(disable-next-line|disable-line|disable|enable)((?:[^*]|\*(?!\/))*)\*\//g;
   const lineNextRe = /\/\/\s*eslint-disable-next-line(.*)/;
   const lineDisableLineRe = /\/\/\s*eslint-disable-line(.*)/;
 
   for (let i = 0; i < lines.length; i++) {
     const lineNum = i + 1;
     const line = lines[i];
+    if (!line.includes('eslint-disable') && !line.includes('eslint-enable')) continue;
 
     const lineNextMatch = line.match(lineNextRe);
     if (lineNextMatch) {
-      directives.push({ type: 'disable-next-line', line: lineNum, rules: _parseRuleList(lineNextMatch[1]) });
-    }
-
-    const lineDisableMatch = line.match(lineDisableLineRe);
-    if (lineDisableMatch && !lineNextMatch) { // avoid double-matching disable-next-line
-      directives.push({ type: 'disable-line', line: lineNum, rules: _parseRuleList(lineDisableMatch[1]) });
+      directives.push({ type: D_DISABLE_NEXT_LINE, line: lineNum, rules: _parseRuleList(lineNextMatch[1]) });
+    } else {
+      const lineDisableMatch = line.match(lineDisableLineRe);
+      if (lineDisableMatch) {
+        directives.push({ type: D_DISABLE_LINE, line: lineNum, rules: _parseRuleList(lineDisableMatch[1]) });
+      }
     }
 
     blockRe.lastIndex = 0;
@@ -5177,7 +5121,7 @@ function _parseDisableDirectives(source) {
     }
   }
 
-  return directives.sort((a, b) => a.line - b.line);
+  return directives; // already in line order (iterated top-to-bottom)
 }
 
 /**
@@ -5195,21 +5139,14 @@ function applyDisableDirectives(source, violations) {
     const line = v.loc?.start?.line ?? v.line;
     if (!line) return true;
 
-    for (const d of directives) {
-      if (d.type === 'disable-next-line' && d.line === line - 1) {
-        if (d.rules.length === 0 || d.rules.includes(v.ruleId)) return false;
-      }
-      if (d.type === 'disable-line' && d.line === line) {
-        if (d.rules.length === 0 || d.rules.includes(v.ruleId)) return false;
-      }
-    }
-
     let disabled = false;
     for (const d of directives) {
       if (d.line > line) break;
       const ruleMatch = d.rules.length === 0 || d.rules.includes(v.ruleId);
-      if (d.type === 'disable' && ruleMatch) disabled = true;
-      if (d.type === 'enable' && ruleMatch) disabled = false;
+      if (d.type === D_DISABLE_NEXT_LINE && d.line === line - 1 && ruleMatch) return false;
+      if (d.type === D_DISABLE_LINE && d.line === line && ruleMatch) return false;
+      if (d.type === D_DISABLE && ruleMatch) disabled = true;
+      if (d.type === D_ENABLE && ruleMatch) disabled = false;
     }
     return !disabled;
   });
@@ -5219,7 +5156,6 @@ module.exports = {
   runPlugins, RuleContext,
   computeGlobals,
   applyDisableDirectives,
-  // Exported for testing
   _estimateHandlerCost, _extractParentGuard, _fuseHandlers,
   _isTrivialHandler, _isDeadHandler, _classifyRuleAccess,
   _profileData, DEFAULT_ERROR_BUDGET,

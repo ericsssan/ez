@@ -20,10 +20,27 @@ test("matchesAny: absolute pattern matches absolute path", () => {
   expect(matchesAny("/project/dist/foo.js", ["**/dist/**"], "/project")).toBe(true);
 });
 
+test("matchesAny: positive match without negation returns true", () => {
+  expect(matchesAny("/project/src/foo.js", ["**/*.js", "!node_modules/**"], "/project")).toBe(true);
+});
+
+test("matchesAny: negation overrides positive match", () => {
+  // dist/keep.js matches dist/**, but the negation !dist/keep.js overrides it
+  expect(matchesAny("/project/dist/keep.js", ["dist/**", "!dist/keep.js"], "/project")).toBe(false);
+});
+
+test("matchesAny: file not negated still matches positive", () => {
+  expect(matchesAny("/project/dist/bundle.js", ["dist/**", "!dist/keep.js"], "/project")).toBe(true);
+});
+
+test("matchesAny: only-negation pattern array matches nothing", () => {
+  expect(matchesAny("/project/src/foo.js", ["!node_modules/**"], "/project")).toBe(false);
+});
+
 // ── normalizeRules ───────────────────────────────────────────────
 
 test("normalizeRules: strips severity, builds enabledRules Set", () => {
-  const { enabledRules, ruleOptions } = normalizeRules({
+  const { enabledRules, ruleOptions, ruleSeverities } = normalizeRules({
     "no-console": "error",
     "no-unused-vars": ["warn", { vars: "all" }],
     "eqeqeq": 0,
@@ -35,6 +52,22 @@ test("normalizeRules: strips severity, builds enabledRules Set", () => {
   expect(enabledRules.has("semi")).toBe(false);
   expect(ruleOptions["no-console"]).toEqual([]);
   expect(ruleOptions["no-unused-vars"]).toEqual([{ vars: "all" }]);
+  expect(ruleSeverities["no-console"]).toBe(2);
+  expect(ruleSeverities["no-unused-vars"]).toBe(1);
+  expect(ruleSeverities["eqeqeq"]).toBeUndefined();
+});
+
+test("normalizeRules: numeric severity values", () => {
+  const { ruleSeverities } = normalizeRules({
+    "rule-a": 2,
+    "rule-b": 1,
+    "rule-c": ["error"],
+    "rule-d": ["warning"],
+  });
+  expect(ruleSeverities["rule-a"]).toBe(2);
+  expect(ruleSeverities["rule-b"]).toBe(1);
+  expect(ruleSeverities["rule-c"]).toBe(2);
+  expect(ruleSeverities["rule-d"]).toBe(1);
 });
 
 test("normalizeRules: empty input returns empty results", () => {

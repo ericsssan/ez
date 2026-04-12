@@ -213,7 +213,7 @@ function _discoverFiles(targets, extensions) {
 
 // ── Fix application ─────────────────────────────────────────────
 
-function _applyFixes(source, fixes) {
+function applyFixes(source, fixes) {
   if (!fixes || fixes.length === 0) return source;
   const sorted = fixes.slice().sort((a, b) => a.range[0] - b.range[0]);
   let result = "";
@@ -337,7 +337,7 @@ async function fix(targets, config = {}) {
       const fixes = diagnostics.filter(d => d.fix).flatMap(d => Array.isArray(d.fix) ? d.fix : [d.fix]);
       if (fixes.length > 0) {
         const source = ast.source;
-        const fixed = _applyFixes(source, fixes);
+        const fixed = applyFixes(source, fixes);
         if (fixed !== source) {
           fs.writeFileSync(file, fixed);
           fixedFiles.push(file);
@@ -353,4 +353,4 @@ async function fix(targets, config = {}) {
   return { results, fixedFiles };
 }
 
-module.exports = { lint, lintSource, fix };
+module.exports = { lint, lintSource, fix, applyFixes };
