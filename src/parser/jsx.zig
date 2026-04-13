@@ -530,6 +530,11 @@ fn parseJsxAttribute(p: *Parser) Error!NodeIndex {
             .main_token = brace_tok,
             .data = .{ .lhs = expr, .rhs = .none },
         });
+    } else if (p.peek() == .less_than) blk: {
+        // JSX element as attribute value (non-standard propElementValues extension).
+        _ = p.advance(); // consume '<'
+        const elem = try parseJsxElement(p);
+        break :blk elem;
     } else blk: {
         try p.emitError("Expected string literal or '{' for JSX attribute value");
         break :blk try p.makeErrorNode();

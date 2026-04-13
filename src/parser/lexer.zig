@@ -76,6 +76,10 @@ pub const Lexer = struct {
     /// 0 = not in case, 1 = saw `case` keyword, 2 = saw `case X:` colon
     case_colon_state: u2 = 0,
     language: Language,
+    /// In JSX mode: tracks depth of JSX opening tags we're currently inside.
+    /// Incremented on `<` (potential JSX open), decremented on `>` or `/>`.
+    /// Used to mark `{` in JSX attribute spread as expression context.
+    jsx_open_depth: u32 = 0,
     /// Comment positions recorded during lexing.
     /// Parallel arrays: starts[i], ends[i], kinds[i] (0=line, 1=block).
     comment_starts: std.ArrayList(u32),
@@ -1308,9 +1312,11 @@ pub const Lexer = struct {
                 }
                 continue;
             }
-            // Unescaped newline in string is invalid
+            // Unescaped newline in string is invalid in JS/TS, but allowed in JSX attribute strings.
             if (c == '\n' or c == '\r') {
-                return self.makeToken(.invalid, start);
+                if (!self.language.isJsx()) return self.makeToken(.invalid, start);
+                self.index += 1;
+                continue;
             }
             self.index += 1;
         }
@@ -2601,6 +2607,10 @@ pub const Lexer = struct {
                         .template_middle,
                         .ellipsis,
                         => true,
+                        // In JSX mode, `{` after an identifier or `}` is always an expression
+                        // container (JSX spread attribute or JSX expression container).
+                        // This prevents `/>` from being misidentified as regex `/…/`.
+                        .identifier, .r_brace => self.language.isJsx(),
                         else => false,
                     };});
                     // Track generator function context for yield/regex disambiguation
