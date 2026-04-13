@@ -696,7 +696,7 @@ fn writeCfgGraph(
     for (0..ev_count) |i| {
         events_flat[i * 4 + 0] = @intFromEnum(cpr.events[i].type);
         const node_raw = @intFromEnum(cpr.events[i].node);
-        events_flat[i * 4 + 1] = node_raw | switch (cpr.events[i].phase) { .enter => @as(u32, 0), .exit => code_path_mod.EVENT_EXIT_FLAG, .post => code_path_mod.EVENT_POST_FLAG, };
+        events_flat[i * 4 + 1] = node_raw | switch (cpr.events[i].phase) { .enter => @as(u32, 0), .exit => code_path_mod.EVENT_EXIT_FLAG, .post => code_path_mod.EVENT_POST_FLAG, .after_enter => code_path_mod.EVENT_EXIT_FLAG | code_path_mod.EVENT_POST_FLAG, };
         events_flat[i * 4 + 2] = cpr.events[i].data1;
         events_flat[i * 4 + 3] = cpr.events[i].data2;
     }
@@ -1255,8 +1255,13 @@ pub fn computeNodePositions(
                 if (opener != NONE and tok_starts[opener] >= start_p) {
                     const te = tok_ends[j];
                     if (te > ext_end) ext_end = te;
-                    // For arrays, mark that we found the closing bracket
-                    if (is_array and tt == .r_bracket) is_array = false;
+                    // For arrays, stop after the matching closing bracket.
+                    // Only break on the `]` whose opener is THIS array's `[` (main_tokens[i]).
+                    // Inner arrays' `]` tokens have a different opener and must be skipped.
+                    if (is_array and tt == .r_bracket and opener == main_tokens[i]) {
+                        is_array = false;
+                        break;
+                    }
                     // For objects, stop after the matching closing brace
                     if (is_object and tt == .r_brace and opener == main_tokens[i]) {
                         is_object = false;
@@ -1291,8 +1296,10 @@ pub fn computeNodePositions(
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
                 if ((is_expr_stmt or is_property) and tt == .semicolon) break;
-            } else if (is_array and tt == .comma) {
-                // For arrays: include trailing commas until we find the closing bracket
+            } else if (is_array) {
+                // For arrays: continue past interior tokens (`;` inside function bodies,
+                // commas between elements) to reach the closing `]`. The `isMainTok`
+                // check above prevents scanning into sibling nodes.
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
             } else if (is_object) {

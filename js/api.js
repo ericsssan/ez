@@ -23,7 +23,7 @@ const { loadCoreRules, loadPlugin } = require("./load-plugin");
 // ── Constants ───────────────────────────────────────────────────
 
 const JS_EXTS = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]);
-const SKIP_PLUGINS = new Set(["@typescript-eslint", "@typescript-eslint/eslint-plugin", "typescript-eslint"]);
+const SKIP_PLUGINS = new Set([]);
 
 // ── Config resolution ───────────────────────────────────────────
 

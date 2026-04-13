@@ -1,6 +1,2658 @@
 {
   "files": {},
   "corpus": {
+    "no-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sort-vars": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-buffer-constructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-symbol": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-compare-neg-zero": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-semi": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "padding-line-between-statements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 271,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "dot-notation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-match": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "complexity": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "guard-for-in": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "arrow-parens": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-native-nonconstructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "class-methods-use-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "object-curly-newline": {
+      "runner": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 113,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "semi-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-setter-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-undef": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-label": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "one-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 144,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "strict": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 73,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-promise-reject-errors": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-infix-ops": {
+      "runner": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "wrap-iife": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "computed-property-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-escape": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 86,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-bracket-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 127,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "function-call-argument-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "consistent-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-floating-decimal": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "newline-before-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-keys": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-unary-ops": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-fallthrough": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "nonblock-statement-body-position": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-lonely-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-const-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-array-constructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 84,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-div-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-irregular-whitespace": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 129,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-callback-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 133,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "indent-legacy": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 293,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty-character-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-implied-eval": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 79,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "lines-between-class-members": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 94,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-len": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-rename": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 107,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "for-direction": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-properties": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 45,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty-pattern": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-params": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-name-matching": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multi-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-object-has-own": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-concat": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "multiline-comment-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 100,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-constant-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 151,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-eval": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-loop-func": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-element-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "semi-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-named-capture-group": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "curly": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 117,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "operator-linebreak": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "yield-star-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-unicode-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-object-constructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-label-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-eq-null": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-shadow": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 90,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-self-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-call-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "default-case-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "spaced-comment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "padded-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-native-reassign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-wrappers": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-implicit-globals": {
+      "runner": {
+        "fn": 1,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-before-function-paren": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unmodified-loop-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-param-reassign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-nonoctal-decimal-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-mixed-operators": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-object": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-octal": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-magic-numbers": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 71,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "eol-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "arrow-body-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 63,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-obj-calls": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 52,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-else-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "preserve-caught-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-assignment": {
+      "runner": {
+        "fn": 2,
+        "fp": 7,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-warning-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-case-declarations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-labels": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "vars-on-top": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-negated-in-lhs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extend-native": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "use-isnan": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 104,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-ex-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "handle-callback-err": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "template-tag-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-cond-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-constructor-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sort-keys": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 101,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-bind": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-exponentiation-operator": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 142,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unreachable-loop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 828,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "eqeqeq": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 43,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-proto": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-process-exit": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-denylist": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 94,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "newline-after-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 36,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-alert": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "capitalized-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 63,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-sparse-arrays": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-vars": {
+      "runner": {
+        "fn": 2,
+        "fp": 4,
+        "crash": 0
+      },
+      "native": {
+        "fn": 285,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "linebreak-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-numeric-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 62,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-modules": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-sequences": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-whitespace-before-property": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 103,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-duplicate-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "yoda": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-regex-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 181,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-plusplus": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unsafe-finally": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-throw-literal": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-labels": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-reflect": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-template": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-loss-of-precision": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-control-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "logical-assignment-operators": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 184,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-backreference": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 89,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-lines-per-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "radix": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-constant-binary-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 221,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-global-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "accessor-pairs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 168,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-path-concat": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-atomic-updates": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 36,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "block-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-prototype-builtins": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-catch-shadow": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-length": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 84,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unsafe-optional-chaining": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-caller": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "consistent-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "switch-colon-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-duplicate-imports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-inner-declarations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "operator-assignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-nested-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "quotes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-boolean-cast": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 440,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-spaced-func": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "default-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "key-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 104,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "symbol-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "block-scoped-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "callback-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsx-quotes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "default-param-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "template-curly-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unreachable": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "valid-typeof": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-invalid-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "newline-per-chained-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-undef-init": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-yield": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-before-blocks": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 71,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-require": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-confusing-arrow": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 481,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "semi": {
+      "runner": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 130,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unexpected-multiline": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-exports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 88,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-new-func": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-invalid-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 152,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "quote-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-void": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-process-env": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-implicit-coercion": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "camelcase": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 95,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "init-declarations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "line-comment-position": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-await-in-loop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-expressions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unsafe-negation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-async-promise-executor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "rest-spread-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "array-bracket-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-mixed-requires": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-tabs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "arrow-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "func-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-imports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 119,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unneeded-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
     "no-use-before-define": {
       "runner": {
         "fn": 1,
@@ -9,6 +2661,7910 @@
       },
       "native": {
         "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "id-blacklist": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 90,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-debugger": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-statements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "keyword-spacing": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 305,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-lone-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "new-parens": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "getter-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-shadow-restricted-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-import-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-this-before-super": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-object-spread": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "comma-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-undefined": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-lines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-continue": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-func-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-iterator": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-else-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 78,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-mixed-spaces-and-tabs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-redeclare": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "object-curly-spacing": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 62,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "global-require": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-arrow-callback": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "generator-star-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-catch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-const": {
+      "runner": {
+        "fn": 7,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-extra-parens": {
+      "runner": {
+        "fn": 2,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 600,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-console": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "space-in-parens": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-return-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-class-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-inline-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-trailing-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-self-compare": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "grouped-accessor-pairs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "object-property-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multi-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "one-var-declaration-per-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-with": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-empty-static-block": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "constructor-super": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-negated-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-script-url": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multi-str": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-statements-per-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "multiline-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 83,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-promise-executor-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 58,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-unused-private-class-members": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-classes-per-file": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-bitwise": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicode-bom": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-delete-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-restricted-globals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "wrap-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "dot-location": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-nested-callbacks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "new-cap": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "lines-around-directive": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 141,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-regex-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-rest-params": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-template-curly-in-string": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "prefer-destructuring": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sort-imports": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "comma-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-multiple-empty-lines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-underscore-dangle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-sync": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-return-assign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "require-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-class-members": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-octal-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 60,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "max-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-dupe-args": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-misleading-character-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "no-useless-computed-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 65,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/always-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-return-wrap": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-new-statics": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-return-in-finally": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/avoid-new": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/valid-params": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/param-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-await-to-callbacks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-await-to-then": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-multiple-resolved": {
+      "runner": {
+        "fn": 5,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-callback-in-promise": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/catch-or-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/prefer-catch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-promise-in-callback": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/spec-only": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-native": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "promise/no-nesting": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/multiline-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-property": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-rejects": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-returns-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-description-complete-sentence": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-blank-block-descriptions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-line-alignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-file-overview": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-values": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/imports-as-dependencies": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-property-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-template-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/convert-to-jsdoc-comments": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-next-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-indentation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-param-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-hyphen-before-param-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-throws-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-returns-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-multi-asterisks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-example": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-asterisk-prefix": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/empty-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-method-signature-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-param": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-no-empty-object-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-tag-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-next-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-missing-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-access": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-param-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/reject-any-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-defaults": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/informative-docs": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-bad-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-examples": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/valid-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/escape-inline-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-property-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-property-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-throws": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/sort-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-blank-blocks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-template": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/lines-before-block": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/text-escaping": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-returns": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 78,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-alignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/reject-function-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/type-formatting": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/match-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/prefer-import-tag": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-jsdoc": {
+      "runner": {
+        "fn": 4,
+        "fp": 3,
+        "crash": 0
+      },
+      "native": {
+        "fn": 88,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-template-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-param-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-returns-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-tags": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-param-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-throws-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/match-description": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-no-unnecessary-template-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 61,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/require-yields-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/tag-lines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/ts-prefer-function-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/implements-on-classes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/check-property-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "jsdoc/no-undefined-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
+      },
+      "native": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-at": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 82,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/throw-new-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/template-indent": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-switch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/escape-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 86,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/catch-error-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-blob-reading-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-classlist-toggle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 61,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-json-parse-buffer": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-empty-array-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-assert": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-raw": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-switch-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-typeof-undefined": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-method-this-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unreadable-array-destructuring": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/empty-brace-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 117,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-array-flat-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/expiring-todo-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-object-from-entries": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-text-content": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-new-array": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-node-protocol": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-number-properties": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 65,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-lonely-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-code-point": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-date-clone": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/string-content": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unused-properties": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-add-event-listener": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-index-of": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-structured-clone": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-array-splice-count": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-document-cookie": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-math-trunc": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 53,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-bigint-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/better-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 45,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-response-static-json": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-includes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 36,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-object-as-default-parameter": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-invalid-remove-event-listener": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-thenable": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-iterator-to-array": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-replace-all": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 45,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-type-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-anonymous-default-export": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-reduce": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-function-scoping": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 53,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-event-target": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-remove": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-single-promise-in-promise-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-number-to-fixed-digits-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-immediate-mutation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 115,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-find": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-error-capture-stack-trace": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-process-exit": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/numeric-separators-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-modern-dom-apis": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/relative-url-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-single-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-starts-ends-with": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-default-parameters": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-set-has": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/switch-case-braces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-callback-reference": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 60,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/filename-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-this-assignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-top-level-await": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-template-literal-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-promise-resolve-reject": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-slice-end": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-slice": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 52,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-undefined": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/text-encoding-identifier-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prevent-abbreviations": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 133,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/number-literal-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-nested-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/switch-case-break-position": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-console-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-reverse": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-hex-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-empty-file": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-flat-map": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-magic-array-flat-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-global-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 88,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-optional-catch-binding": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-fallback-in-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-existence-index-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-flat": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unnecessary-polyfills": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-null": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-module-attributes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/explicit-length-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 63,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-prototype-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-invalid-fetch-options": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-module": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 101,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-native-coercion-functions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/import-style": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 49,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 109,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-query-selector": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-new-buffer": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-keyword-prefix": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/isolated-functions": {
+      "runner": {
+        "fn": 13,
+        "fp": 4,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-instanceof-builtins": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 71,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-negation-in-equality-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-simple-condition-first": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-for-each": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 275,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-unreadable-iife": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-dataset": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 65,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-await-in-promise-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-spread": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 154,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-keyboard-event-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 53,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-length-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/error-message": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/new-for-builtins": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-useless-collection-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-dom-node-append": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-negative-index": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-modern-math-apis": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-negated-condition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-for-loop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 57,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-set-size": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/consistent-destructuring": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-abusive-eslint-disable": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/custom-error-definition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-regexp-test": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 58,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-date-now": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-accessor-recursion": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-array-join-separator": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-reflect-apply": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-static-only-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-math-min-max": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/require-post-message-target-origin": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-logical-operator-over-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-class-fields": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-array-some": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-string-trim-start-end": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-array-sort": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/prefer-ternary": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "unicorn/no-zero-fractions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 173,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-bind": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 35,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/style-prop-object": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-comment-textnodes": {
+      "runner": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-max-props-per-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-closing-bracket-location": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-sort-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unsafe": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-boolean-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 79,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-find-dom-node": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-multi-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-closing-tag-location": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-component-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-typos": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 129,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-elements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/function-component-definition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-one-expression-per-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/destructuring-assignment": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-deprecated": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-is-mounted": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-spreading": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-this-in-sfc": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-direct-mutation-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-will-update-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-arrow-function-lifecycle": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-stateless-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-danger-with-children": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/react-in-jsx-scope": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-adjacent-inline-elements": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-indent-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/button-has-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/display-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-spread-multi": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-useless-fragment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-leaked-render": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 43,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-danger": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unstable-nested-components": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/self-closing-comp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-script-url": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-handler-names": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-object-type-as-default-prop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-props-no-multi-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-first-prop-new-line": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/boolean-prop-naming": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/sort-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-equals-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/default-props-match-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-duplicate-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/static-property-placement": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 93,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-target-blank": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-pascal-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/require-default-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-fragments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-did-mount-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-child-element-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-undef": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/iframe-missing-sandbox": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-dom-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-namespace": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-wrap-multilines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 106,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-invalid-html-attribute": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 82,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-access-state-in-setstate": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-children-prop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-filename-extension": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unknown-property": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-space-before-closing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-array-index-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-render-return-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-tag-spacing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-redundant-should-component-update": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/checked-requires-onchange-or-readonly": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-no-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 75,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-max-depth": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-es6-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-key": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/state-in-constructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unescaped-entities": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/void-dom-elements-no-children": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-exact-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-curly-brace-presence": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 54,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-unused-class-component-methods": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-sort-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 106,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-newline": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/require-render-return": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/jsx-indent": {
+      "runner": {
+        "fn": 4,
+        "fp": 19,
+        "crash": 0
+      },
+      "native": {
+        "fn": 75,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/async-server-action": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forward-ref-uses-ref": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/prefer-read-only-props": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/no-did-update-set-state": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "react/forbid-foreign-prop-types": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/stateful-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/prefer-promise-shorthand": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/array-constructor": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/unverified-hostname": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-literal-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/block-scoped-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-variable-usage-before-declaration": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/encryption-secure-mode": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 58,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-undefined-assignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-inverted-boolean-check": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/elseif-without-else": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/disabled-resource-integrity": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/future-reserved-words": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/bitwise-operators": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-fallthrough": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-unused-function-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/reduce-initial-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/variable-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-implicit-global": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-nested-assignment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-hardcoded-ip": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/prefer-single-boolean-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-unused-collection": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/non-existent-operator": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-labels": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-redundant-parentheses": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-globals-shadowing": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/file-uploads": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-invalid-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/updated-const-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/duplicates-in-character-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/label-position": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-intrusive-permissions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/void-use": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/unicode-aware-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/prefer-object-literal": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-hardcoded-secrets": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-nested-conditional": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/generator-without-yield": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/unused-named-groups": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-return-type-any": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/operation-returning-nan": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/insecure-jwt-token": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-empty-after-reluctant": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-alphabetical-sort": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-element-overwrite": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/anchor-precedence": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/file-permissions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 108,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-misleading-character-class": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 73,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/regular-expr": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/values-not-convertible-to-numbers": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/non-number-in-arithmetic-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/content-length": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/x-powered-by": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-associative-arrays": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/assertions-in-tests": {
+      "runner": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-nested-functions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/insecure-cookie": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/arrow-function-convention": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-collection-size-mischeck": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/csrf": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/regex-complexity": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-hardcoded-passwords": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-same-line-conditional": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-nested-incdec": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-case-label-in-switch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-ignored-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-parameter-reassignment": {
+      "runner": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/max-switch-cases": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-nested-switch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/single-character-alternation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/destructuring-assignment-syntax": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/chai-determinate-assertion": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/conditional-indentation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-empty-collection": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/empty-string-repetition": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/arguments-usage": {
+      "runner": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/cookies": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/class-prototype": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/todo-tag": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/existing-groups": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-identical-expressions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/sockets": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-useless-increment": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-inconsistent-returns": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-regex-spaces": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/standard-input": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-primitive-wrappers": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-referrer-policy": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/too-many-break-or-continue-in-loop": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/different-types-comparison": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-duplicate-string": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-in-misuse": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/max-lines": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/xpath": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/function-return-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/strings-comparison": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-use-of-empty-return-value": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/updated-loop-counter": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-small-switch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/fixme-tag": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-tab": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/strict-transport-security": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-incorrect-string-concat": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/nested-control-flow": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/for-in": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/weak-ssl": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-mixed-content": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-extra-arguments": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/certificate-transparency": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/xml-parser-xxe": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/comma-or-logical-or-case": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/comment-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-useless-catch": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-redundant-boolean": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/cyclomatic-complexity": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/inconsistent-function-call": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/dns-prefetching": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/unverified-certificate": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-reference-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-empty-group": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-weak-cipher": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/code-eval": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-global-this": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-commented-code": {
+      "runner": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/new-operator-misuse": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/concise-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/content-security-policy": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-redundant-jump": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/function-inside-loop": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/cookie-no-httponly": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/hidden-files": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-unenclosed-multiline-block": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/array-callback-without-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/file-header": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/slow-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-identical-conditions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/os-command": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-collapsible-if": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-same-argument-assert": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/pseudo-random": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/sql-queries": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-dead-store": {
+      "runner": {
+        "fn": 14,
+        "fp": 8,
+        "crash": 3
+      },
+      "native": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-sonar-comments": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/encryption": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/web-sql-database": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-implicit-dependencies": {
+      "runner": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/post-message": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/prefer-while": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-require-or-define": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/prefer-default-last": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-skipped-tests": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-built-in-override": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/expression-complexity": {
+      "runner": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/session-regeneration": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-redundant-assignments": {
+      "runner": {
+        "fn": 9,
+        "fp": 1,
+        "crash": 74
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-invariant-returns": {
+      "runner": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/null-dereference": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/constructor-for-side-effects": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/public-static-readonly": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/prefer-immediate-return": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-unused-vars": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/call-argument-line": {
+      "runner": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 12
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/production-debug": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-unsafe-unzip": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-duplicated-branches": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-angular-bypass-sanitization": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-unthrown-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/for-loop-increment-sign": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/publicly-writable-directories": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/index-of-compare-to-positive-number": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-for-in-iterable": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/in-operator-type-error": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-all-duplicated-branches": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 9,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/arguments-order": {
+      "runner": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/argument-type": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/cognitive-complexity": {
+      "runner": {
+        "fn": 6,
+        "fp": 1,
+        "crash": 0
+      },
+      "native": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/frame-ancestors": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-weak-keys": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/useless-string-operation": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-function-declaration-in-block": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-empty-test-file": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/max-lines-per-function": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/function-name": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/confidential-information-logging": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/process-argv": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-ip-forward": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-delete-var": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/class-name": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-nested-template-literals": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-undefined-argument": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/misplaced-loop-counter": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-misleading-array-reverse": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-mime-sniff": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-empty-alternatives": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 13,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-gratuitous-expressions": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-control-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-try-promise": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/shorthand-property-grouping": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      }
+    },
+    "sonarjs/no-clear-text-protocols": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0

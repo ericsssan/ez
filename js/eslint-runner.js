@@ -2773,10 +2773,32 @@ class SourceCode {
    */
   getAncestors(node) {
     const pd = this._ast._parentData;
-    if (!pd || !node || node._i === undefined) return [];
+    if (!pd || !node) return [];
     const ancestors = [];
     const nodeTags = this._ast._nodeTags;
-    let parentIdx = pd[node._i];
+    // Synthetic nodes (no _i): walk up via .parent until reaching a real node.
+    let cur = node;
+    while (cur._i === undefined && cur.parent) {
+      cur = cur.parent;
+      ancestors.unshift(cur); // cur is the first real ancestor
+    }
+    if (cur._i === undefined) return ancestors;
+    // Determine the start of the pd-based ancestor walk.
+    // invokeMethodFnHandlers borrows _i from the MethodDefinition and sets .parent
+    // to that same node, so pd[_i] would skip the MethodDefinition itself.
+    // Detect this by checking if node.parent._i === node._i, and if so start the
+    // pd walk from node._i (which adds the MethodDefinition) instead of pd[node._i].
+    let parentIdx;
+    if (cur !== node) {
+      // Already walked up via .parent; cur is in ancestors[0]. Start from cur's parent.
+      parentIdx = pd[cur._i];
+    } else if (node.parent != null && node.parent._i !== undefined && node.parent._i === node._i) {
+      // Synthetic FunctionExpression for class/object method: _i is borrowed from
+      // the MethodDefinition/Property node. Start the walk from _i so it's included.
+      parentIdx = node._i;
+    } else {
+      parentIdx = pd[node._i];
+    }
     // Skip grouping_expr (ParenthesizedExpression) parents — nodeView unwraps them,
     // which would make the node appear as its own ancestor (cycle).
     while (parentIdx !== NONE && parentIdx !== undefined && parentIdx < this._ast.nodeCount) {
@@ -5152,17 +5174,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   let _cfgEnterEvents = null;
   let _cfgExitEvents = null;
   let _cfgPostEvents = null;
+  let _cfgAfterEnterEvents = null;
   if (_cfgGraph && _cfgGraph._events && hasCodePath) {
     _cfgEnterEvents = new Map();
     _cfgExitEvents = new Map();
     _cfgPostEvents = new Map();
+    _cfgAfterEnterEvents = new Map();
     const evs = _cfgGraph._events;
     const EXIT_FLAG = 0x40000000, POST_FLAG = 0x80000000, NODE_MASK = 0x3FFFFFFF;
     for (let ei = 0; ei < evs.length; ei += 4) {
       const evType = evs[ei], nodeRaw = evs[ei + 1], d1 = evs[ei + 2], d2 = evs[ei + 3];
       const isPost = (nodeRaw & POST_FLAG) !== 0, isExit = (nodeRaw & EXIT_FLAG) !== 0;
       const nodeIdx = nodeRaw & NODE_MASK;
-      const map = isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
+      // after_enter = both flags set (fires after enter handler, before children)
+      const map = (isPost && isExit) ? _cfgAfterEnterEvents : isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
       if (!map.has(nodeIdx)) map.set(nodeIdx, []);
       map.get(nodeIdx).push({ type: evType, d1, d2 });
     }
@@ -5175,13 +5200,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     for (const idx of _cfgEnterEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
     for (const idx of _cfgExitEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
     for (const idx of _cfgPostEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
+    for (const idx of _cfgAfterEnterEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
   }
   let _cfgCurrentCp = null;
   const _cfgCpStack = [];
 
   function _fireCfgEvents(nodeIdx, phase) {
     if (!_cfgEnterEvents) return;
-    const map = phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
+    const map = phase === 3 ? _cfgAfterEnterEvents : phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
     const evts = map.get(nodeIdx);
     if (!evts) return;
     const node = nodeView(ast, nodeIdx);
@@ -5506,6 +5532,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
+      // Phase 3 (after_enter): fires after enter handler, before visiting children.
+      // Used for SwitchCase segment starts so rules can set state in SwitchCase handler first.
+      _fireCfgEvents(idx, 3);
       // Synthesize ChainExpression enter for outermost optional chain nodes.
       if (hasChainSynth && chainEnterH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);

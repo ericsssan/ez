@@ -86,11 +86,12 @@ pub const EventType = enum(u32) {
 ///   00 = fire at node ENTER (before enter handler)
 ///   01 = fire at node EXIT (before exit handler)
 ///   10 = fire at node POST (after exit handler)
+///   11 = fire at node AFTER_ENTER (after enter handler, before children)
 pub const EVENT_EXIT_FLAG: u32 = 0x40000000;
 pub const EVENT_POST_FLAG: u32 = 0x80000000;
 pub const EVENT_NODE_MASK: u32 = 0x3FFFFFFF;
 
-pub const EventPhase = enum(u2) { enter = 0, exit = 1, post = 2 };
+pub const EventPhase = enum(u2) { enter = 0, exit = 1, post = 2, after_enter = 3 };
 
 pub const Event = struct {
     type: EventType,
@@ -903,7 +904,7 @@ pub const CodePathBuilder = struct {
         }
         ctx.fork_count += 1;
 
-        // End current segments
+        // End current segments (fires before SwitchCase handler)
         try self.leaveFromCurrentSegment(node, .enter);
 
         // Each case body forks from the discriminant entry (head of the outer
@@ -926,7 +927,9 @@ pub const CodePathBuilder = struct {
             const new_segs = try self.fork_context.makeNext(-1, -1, self);
             try self.fork_context.add(new_segs, self);
         }
-        try self.forwardCurrentToHead(node, .enter);
+        // Fire SEGMENT_START after the SwitchCase handler (after_enter phase) so that
+        // sonarjs/no-fallthrough's `enteringSwitchCase` flag is set before onCodePathSegmentStart fires.
+        try self.forwardCurrentToHead(node, .after_enter);
     }
 
     // ── Try/catch/finally ────────────────────────────────────

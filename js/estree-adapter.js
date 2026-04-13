@@ -3052,10 +3052,26 @@ const _TAG_DELETE_PROPS = {
   // With prototype getters these are always true, taking wrong branches and
   // bypassing the correct handlers for each node type.
   [T.rest_element]:    ['left', 'right', 'name'],
-  // ObjectPattern/ArrayPattern: `'left' in param` must be false so jsdocUtils
-  // doesn't crash on `param.left.type` at line 282-285.
-  [T.object_pattern]:  ['left', 'right'],
-  [T.array_pattern]:   ['left', 'right'],
+  // ObjectPattern/ArrayPattern: `'left' in param` and `'name' in param` must be
+  // false so jsdocUtils takes the correct ObjectPattern/ArrayPattern branch.
+  // ESTree spec: neither node type has .left or .name properties.
+  [T.object_pattern]:  ['left', 'right', 'name'],
+  [T.array_pattern]:   ['left', 'right', 'name'],
+  // Identifier: ESTree spec has no .left/.right. The compiled jsdocUtils.cjs checks
+  // `'left' in param && 'typeAnnotation' in param.left` without a null guard, so
+  // `'left' in identifier` returning true leads to `'typeAnnotation' in undefined` crash.
+  [T.identifier]:            ['left', 'right'],
+  [T.property_ident]:        ['left', 'right'],
+  // Property/shorthand_property/computed_property: ESTree spec has no .left/.right/.name.
+  // jsdocUtils v2's compiled dist checks `'left' in prop && 'typeAnnotation' in prop.left`
+  // and `'name' in prop` without null guards on Property nodes from ObjectPattern.properties.
+  [T.property]:              ['left', 'right', 'name'],
+  [T.shorthand_property]:    ['left', 'right', 'name'],
+  [T.computed_property]:     ['left', 'right', 'name'],
+  // AssignmentPattern: ESTree spec has no .name. jsdocUtils checks `'name' in param` before
+  // `'left' in param && 'name' in param.left`, so if AP has name it returns undefined instead
+  // of the correct param.left.name (the actual param identifier name like 'code' in 'code=1').
+  [T.assignment_pattern]:    ['name'],
 };
 
 const _typeProtos = new Array(256);
@@ -3070,7 +3086,7 @@ function _getTypeProto(tag) {
     return NodeProto;
   }
   // Clone NodeProto and delete the specified getters
-  proto = Object.create(null, Object.getOwnPropertyDescriptors(NodeProto));
+  proto = Object.create(Object.prototype, Object.getOwnPropertyDescriptors(NodeProto));
   for (const prop of deletes) {
     delete proto[prop];
   }

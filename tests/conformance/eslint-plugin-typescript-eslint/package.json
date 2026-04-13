@@ -1,0 +1,9 @@
+{
+  "name": "ez-conformance-eslint-plugin-typescript-eslint",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@typescript-eslint/eslint-plugin": "8.58.1",
+    "@typescript-eslint/parser": "8.58.1"
+  }
+}

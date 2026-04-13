@@ -25,3 +25,9 @@
 [submodule "tests/conformance/eslint-plugin-jsdoc"]
 	path = tests/conformance/eslint-plugin-jsdoc
 	url = https://github.com/gajus/eslint-plugin-jsdoc.git
+[submodule "tests/conformance/eslint-plugin-sonarjs/sonarjs-src"]
+	path = tests/conformance/eslint-plugin-sonarjs/sonarjs-src
+	url = https://github.com/SonarSource/SonarJS
+[submodule "tests/conformance/eslint-plugin-typescript-eslint/typescript-eslint-src"]
+	path = tests/conformance/eslint-plugin-typescript-eslint/typescript-eslint-src
+	url = https://github.com/typescript-eslint/typescript-eslint

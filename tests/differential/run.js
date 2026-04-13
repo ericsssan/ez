@@ -79,7 +79,8 @@ class RuleTester {
 export { RuleTester };
 export const Linter = class {};
 export const ESLint = class {};
-export default { RuleTester, Linter, ESLint };
+export const SourceCode = class {};
+export default { RuleTester, Linter, ESLint, SourceCode };
 `,
     }));
     build.module("eslint/package.json", () => ({
@@ -151,6 +152,39 @@ export default { parser };
         "  }",
         "}",
       ].join("\n"),
+    }));
+
+    // ── TypeScript-eslint and sonarjs source test stubs ───────────────────────
+    // These allow loading test files directly from submodule source trees without
+    // running separate extraction scripts.
+
+    // @typescript-eslint/rule-tester — forward run() to __EZ_CAPTURE__ capture stub
+    build.module("@typescript-eslint/rule-tester", () => ({
+      loader: "js",
+      contents: `
+export class RuleTester {
+  constructor(config) { this._config = config || {}; }
+  run(name, rule, cases) {
+    if (typeof global.__EZ_CAPTURE__ === "function") global.__EZ_CAPTURE__(name, rule, cases, this._config);
+  }
+  static get describe() { return null; }
+  static get it()       { return null; }
+}
+export default RuleTester;
+`,
+    }));
+
+    // Rule source stubs — rule object is unused (oracle uses the compiled npm rule via _espreePlugins)
+    build.onLoad({ filter: /eslint-plugin[/\\]src[/\\]rules[/\\].+\.ts$/ }, () => ({
+      loader: "js",
+      contents: `const r = {}; export default r; module.exports = r;`,
+    }));
+
+    // Sonarjs shared utility stubs — scoped to sonarjs-src only to avoid clobbering
+    // @typescript-eslint/eslint-plugin's own helpers.js (which has real exports we need).
+    build.onLoad({ filter: /sonarjs-src[/\\].*[/\\](helpers|files)\.(ts|js)$/ }, () => ({
+      loader: "js",
+      contents: `export default {}; export const normalizePath = (p) => p;`,
     }));
   },
 });
@@ -255,6 +289,8 @@ const _TEST_DIR_CANDIDATES = [
   "test",                   // unicorn
   "tests/rules",
   "tests",
+  // typescript-eslint: load directly from submodule source (no extraction script needed)
+  "typescript-eslint-src/packages/eslint-plugin/tests/rules",
 ];
 
 // Scan conformance/ for eslint-plugin-* submodule directories.
@@ -290,16 +326,24 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
           const d2 = path.join(pluginDir, c);
           if (fs.existsSync(d2)) {
             const files = fs.readdirSync(d2);
-            if (files.some(f => f.endsWith(".js"))) {
+            if (files.some(f => f.endsWith(".js") || f.endsWith(".test.ts"))) {
               testsDir = d2;
               testsDirFiles = files;
               break;
             }
           }
         }
+        // sonarjs-nested: S*/unit.test.ts layout — each rule lives in its own S<N>/ subdir.
+        if (!testsDir) {
+          const sonarRulesDir = path.join(pluginDir, "sonarjs-src/packages/analysis/src/jsts/rules");
+          if (fs.existsSync(sonarRulesDir)) {
+            testsDir = sonarRulesDir;
+            testFormat = "sonarjs-nested";
+          }
+        }
         // Detect static-export format: test files export { valid, invalid } directly
         // rather than calling RuleTester.run() (e.g. jsdoc vs react/promise/unicorn).
-        if (testsDirFiles) {
+        if (testsDirFiles && testFormat !== "sonarjs-nested") {
           const sample = testsDirFiles.find(f => f.endsWith(".js") && f !== "utils.js" && f !== "utils");
           if (sample) {
             const peek = fs.readFileSync(path.join(testsDir, sample), "utf8");
@@ -779,19 +823,66 @@ function installCorpusIntercept() {
   };
 }
 
+// evalSonarjsTest — synchronous eval-based loader for sonarjs unit.test.ts files.
+// Sonarjs tests use `node:test`'s describe/it which schedule callbacks asynchronously,
+// so await import() resolves before __EZ_CAPTURE__ fires.  We work around this by:
+//   1. Transpiling the TypeScript file synchronously with Bun.Transpiler
+//   2. Stripping all import declarations (replaced by preamble stubs below)
+//   3. Injecting synchronous describe/it + RuleTester stubs + rule stub
+//   4. eval()-ing the result — the describe/it wrappers call __EZ_CAPTURE__ inline
+// ruleName: the canonical rule name (e.g. "no-all-duplicated-branches") — sonarjs tests call
+// ruleTester.run("S3923 if", ...) using descriptions, not rule names, so we inject the correct
+// name directly into the preamble instead of relying on the first arg to run().
+function evalSonarjsTest(testFile, ruleName) {
+  const content = fs.readFileSync(testFile, "utf8");
+  let js;
+  try {
+    js = new Bun.Transpiler({ loader: "ts", target: "node" }).transformSync(content);
+  } catch { return; }
+  // Strip all import/export lines so the eval scope resolves them from the preamble.
+  js = js.replace(/^import\s[^]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, "");
+  js = js.replace(/^import\s+['"][^'"]+['"]\s*;?\s*$/gm, "");
+  js = js.replace(/^export\s+\{[^}]*\}\s*;?\s*$/gm, "");
+  // Replace import.meta.dirname (used in rule-tester.ts fixtures paths — not in test files,
+  // but handle defensively).
+  js = js.replace(/import\.meta\.dirname/g, JSON.stringify(path.dirname(testFile)));
+  const PREAMBLE = [
+    "const rule = {};",
+    `const _ezRuleName = ${JSON.stringify(ruleName)};`,
+    "class _EzRuleTester {",
+    "  constructor() {}",
+    "  run(_name, r, cases) { if (typeof global.__EZ_CAPTURE__ === 'function') global.__EZ_CAPTURE__(_ezRuleName, r, cases, {}); }",
+    "}",
+    "const DefaultParserRuleTester = _EzRuleTester;",
+    "const NoTypeCheckingRuleTester = _EzRuleTester;",
+    "const RuleTester = _EzRuleTester;",
+    "const describe = (name, fn) => { try { fn(); } catch {} };",
+    "const it = (name, fn) => { try { fn(); } catch {} };",
+  ].join("\n");
+  try { eval(PREAMBLE + "\n" + js); } catch { /* partial captures ok */ }
+}
+
 // testFormat:
 //   "cjs"           — require() + RuleTester stub calls __EZ_CAPTURE__ (react, promise, core)
 //   "esm"           — import() + RuleTester stub calls __EZ_CAPTURE__ (unicorn)
 //   "static-export" — import() + reads export default { valid, invalid } directly (jsdoc)
 async function loadRuleCases(testsDir, baseName, { capturePrefix = null, captureRule = null, testFormat = "cjs" } = {}) {
-  const testFile = path.join(testsDir, `${baseName}.js`);
-  if (!fs.existsSync(testFile)) return null;
+  // Accept both .js and .test.ts (typescript-eslint source tests)
+  let testFile = path.join(testsDir, `${baseName}.js`);
+  if (!fs.existsSync(testFile)) {
+    const tsFile = path.join(testsDir, `${baseName}.test.ts`);
+    if (fs.existsSync(tsFile)) testFile = tsFile;
+    else return null;
+  }
   _captured = null;
   _linterSkipCalls = 0;
   global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
   global.__EZ_CAPTURE_RULE__   = captureRule;
   try {
-    if (testFormat === "cjs") {
+    // .ts files always use dynamic import (Bun handles TypeScript natively)
+    if (testFile.endsWith(".ts")) {
+      await import(`${testFile}?_ez=${Date.now()}`);
+    } else if (testFormat === "cjs") {
       delete require.cache[testFile];
       try { require(testFile); } catch { /* partial captures ok */ }
     } else {
@@ -941,11 +1032,54 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   }
 
   // 1b: Plugin rules — load test cases from plugin submodule test dirs.
-  for (const { prefix, testsDir, testFormat } of PLUGIN_TEST_DIRS) {
+  for (const { prefix, pluginDir, testsDir, testFormat } of PLUGIN_TEST_DIRS) {
     if (!fs.existsSync(testsDir)) continue;
-    const testFiles = fs.readdirSync(testsDir).filter(f => f.endsWith(".js") && f !== "utils");
+
+    // sonarjs-nested: S*/unit.test.ts layout — build S→ruleName map then scan subdirs
+    if (testFormat === "sonarjs-nested") {
+      const pluginPkg = _pluginPackages.get(prefix);
+      const sNumToName = new Map();
+      for (const [name, rule] of Object.entries(pluginPkg?.rules || {})) {
+        const url = rule.meta?.docs?.url || "";
+        const m = url.match(/\/S(\d+)/);
+        if (m) sNumToName.set("S" + m[1], name);
+      }
+      // Supplement with cjs/S*/meta.js (eslintId field)
+      const cjsDir = path.join(pluginDir, "node_modules/eslint-plugin-sonarjs/cjs");
+      if (fs.existsSync(cjsDir)) {
+        for (const d of fs.readdirSync(cjsDir)) {
+          if (!d.startsWith("S")) continue;
+          try {
+            const meta = require(path.join(cjsDir, d, "meta.js"));
+            if (meta.eslintId && !sNumToName.has(d)) sNumToName.set(d, meta.eslintId);
+          } catch { /* skip */ }
+        }
+      }
+      for (const sDir of fs.readdirSync(testsDir).filter(d => /^S\d+$/.test(d))) {
+        const testFile = path.join(testsDir, sDir, "unit.test.ts");
+        if (!fs.existsSync(testFile)) continue;
+        const ruleName = sNumToName.get(sDir);
+        if (!ruleName) continue;
+        const fullName = `${prefix}/${ruleName}`;
+        const ruleModule = _pluginRuleModules.get(fullName);
+        if (!ruleModule) continue;
+        if (filterRule && fullName !== filterRule) continue;
+        _captured = null;
+        _linterSkipCalls = 0;
+        global.__EZ_CAPTURE_PREFIX__ = prefix;
+        global.__EZ_CAPTURE_RULE__   = null;
+        try { evalSonarjsTest(testFile, ruleName); } finally { global.__EZ_CAPTURE_PREFIX__ = null; global.__EZ_CAPTURE_RULE__ = null; }
+        if (!_captured) continue;
+        allRuleData.push({ ruleName: fullName, ruleModule, defaultSourceType: "module", isTypeScript: false, allCases: _captured.cases });
+      }
+      continue;
+    }
+
+    // Normal flat test directory
+    const testFiles = fs.readdirSync(testsDir)
+      .filter(f => (f.endsWith(".js") || f.endsWith(".test.ts")) && f !== "utils.js" && f !== "utils");
     for (const file of testFiles) {
-      const baseName = file.replace(/\.js$/, "");
+      const baseName = file.replace(/\.(test\.ts|js)$/, "");
       // Rule names may be kebab-case (react/promise/unicorn) or mapped from camelCase files (jsdoc).
       // Try direct match first, then camelCase → kebab-case conversion.
       const kebabName = camelToKebab(baseName);
