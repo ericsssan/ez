@@ -1003,6 +1003,21 @@ pub const CodePathBuilder = struct {
             }
             try self.forwardCurrentToHead(node, .exit);
         }
+
+        // If there's a finally block and all paths into it were via return/throw
+        // (both try and catch ended unreachably), AND there were no throwable expressions
+        // in the try body (thrown_fork empty), code after the try-finally is dead.
+        // When thrown_fork is non-empty, ESLint propagates leaving segments to the
+        // enclosing return context (leavingSegments forwarding) which we don't do;
+        // applying makeUnreachable in that case causes no-useless-return FPs.
+        if (ctx.has_finalizer and ctx.thrown_fork.empty() and
+            !ctx.last_of_try_reachable and !ctx.last_of_catch_reachable)
+        {
+            try self.leaveFromCurrentSegment(node, .exit);
+            const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
+            try self.fork_context.replaceHead(unreachable_segs, self);
+            try self.forwardCurrentToHead(node, .exit);
+        }
     }
 
     pub fn makeCatchBlock(self: *CodePathBuilder, node: NodeIndex) !void {

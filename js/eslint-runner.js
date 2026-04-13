@@ -864,9 +864,10 @@ class SourceCode {
     }
     const { fn, skip } = this._normalizeFilter(filterOrOpts);
     const ast = this._ast;
-    // Use the true end position (accounts for trailing } and matched brackets)
-    // rather than the simple SCAN_CONTINUE_TAGS scan, which stops at l_brace (tag=74).
-    const nodeEnd = ast._nodeEndPos(node._i);
+    // Use the node's true range end (includes semicolons, closing brackets, etc.)
+    // node.range[1] is the exclusive end computed by Zig and includes all node tokens.
+    // _nodeEndPos stops at the last "body" token and misses trailing punctuation like `;`.
+    const nodeEnd = node.range[1];
     const starts = ast._tokStarts;
     const tc = ast.tokenCount;
     // Binary search: last token whose start position is strictly before nodeEnd
@@ -939,7 +940,19 @@ class SourceCode {
     // Token-only path (default)
     const ast = this._ast;
     const mainTok = node.mainToken;
-    if (mainTok === undefined || mainTok === null) return null;
+    if (mainTok === undefined || mainTok === null) {
+      // Synthetic node without mainToken — use range to find anchor
+      if (!node.range) return null;
+      const anchorTok = this._tokenIndexAtOrBefore(node.range[0] - 1);
+      if (anchorTok < 0 || ast._tokStarts[anchorTok] >= node.range[0]) return null;
+      if (!fn && skip === 0) {
+        for (let i = anchorTok; i >= 0; i--) { const tok = this._makeToken(i); if (tok !== null) return tok; }
+        return null;
+      }
+      let skipped2 = 0;
+      for (let i = anchorTok; i >= 0; i--) { const tok = this._makeToken(i); if (tok === null) continue; if (!fn || fn(tok)) { if (skipped2 >= skip) return tok; skipped2++; } }
+      return null;
+    }
     let anchorTok = mainTok - 1;
     if (node.range) {
       const nodeStart = node.range[0];
@@ -1266,6 +1279,10 @@ class SourceCode {
     if (this._declSymIndex) return;
     const ast = this._ast;
     const declSymIndex = new Map();
+    // varScopeNameIndex: "${scopeId}:${name}" → [symId,...] for var symbols only.
+    // Used by getDeclaredVariables to merge sibling var declarations (e.g. `var a` in
+    // two separate branches) so block-scoped-var can detect cross-scope references.
+    const varScopeNameIndex = new Map();
     if (ast._symDeclNodes && ast._parentData) {
       const pd2 = ast._parentData;
       const tags2 = ast._nodeTags;
@@ -1282,9 +1299,23 @@ class SourceCode {
           if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69) || _FN_TAGS.has(curTag)) break;
           cur = pd2[cur];
         }
+        // Build var-scope-name index for merging duplicate var declarations.
+        if (ast._symFlags && ast._symScopeIds) {
+          const flags = ast._symFlags[i];
+          const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
+          if (is_var_only) {
+            const scopeId = ast._symScopeIds[i];
+            const name = ast._symName(i);
+            const key = scopeId + ':' + name;
+            let arr2 = varScopeNameIndex.get(key);
+            if (!arr2) { arr2 = []; varScopeNameIndex.set(key, arr2); }
+            arr2.push(i);
+          }
+        }
       }
     }
     this._declSymIndex = declSymIndex;
+    this._varScopeNameIndex = varScopeNameIndex;
   }
 
   /**
@@ -1777,7 +1808,15 @@ class SourceCode {
         through.push(ref);
       } else {
         const symScopeId = _symScopeIds ? _symScopeIds[refSymId] : NONE32;
-        if (symScopeId !== scopeId) through.push(ref);
+        if (symScopeId !== scopeId) {
+          through.push(ref);
+        } else if (ast._symKinds && ast._symKinds[refSymId] === 3 && ast._scopeNodeIds) {
+          // FEN (Function Expression Name): name is bound in the function's own scope by Zig,
+          // but eslint-scope puts it in a separate parent FEN scope → treat as through-ref.
+          // Only applies when the scope was created by a fn_expr node (tags 63-66).
+          const scopeNodeTag = ast._nodeTags[ast._scopeNodeIds[scopeId]];
+          if (scopeNodeTag >= 63 && scopeNodeTag <= 66) through.push(ref);
+        }
       }
     }
 
@@ -2149,6 +2188,38 @@ class SourceCode {
               insertIdx++;
             }
             references.splice(insertIdx, 0, initRef);
+          } else {
+            // Regular `var x = init` — synthesize init-write ref (like let/const).
+            // Required so rules like block-scoped-var can detect cross-scope var usage.
+            let initNodeIdx = ast.nodeRhs(curIdx);
+            while (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount &&
+                   ast._nodeTags[initNodeIdx] === T.grouping_expr) {
+              initNodeIdx = ast.nodeLhs(initNodeIdx);
+            }
+            if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+              const thin = this._buildThinVariable(symId);
+              const initRef = {
+                identifier: declNode,
+                from: scope,
+                resolved: thin,
+                writeExpr: nodeView(ast, initNodeIdx),
+                init: true,
+                isWrite: () => true,
+                isRead: () => false,
+                isWriteOnly: () => true,
+                isReadOnly: () => false,
+                isReadWrite: () => false,
+              };
+              const declStart = ast._nodeStartPos(declNodeIdx);
+              let insertIdx = 0;
+              while (insertIdx < references.length) {
+                const rId = references[insertIdx].identifier;
+                const rStart = rId && rId.range ? rId.range[0] : (rId ? ast._nodeStartPos(rId._i) : Infinity);
+                if (rStart > declStart) break;
+                insertIdx++;
+              }
+              references.splice(insertIdx, 0, initRef);
+            }
           }
           forInOfChecked = true;
         } else if (curTag === T.property || curTag === T.shorthand_property ||
@@ -2409,7 +2480,29 @@ class SourceCode {
         // (e.g. `function foo(foo)` — don't merge function name with parameter).
         const mergeSet = new Map();
         const mergeVars = [];
-        for (const i of symIds) {
+        // Also include sibling var symbols (same name, same scope) not directly
+        // indexed under this node. Needed for block-scoped-var duplicate-declaration
+        // detection: `if (...) { var a=1; } else { var a=2; }` — each decl must
+        // report references from the OTHER branch as out-of-scope.
+        const seen = new Set(symIds);
+        const extendedIds = symIds.slice();
+        if (this._varScopeNameIndex && ast._symScopeIds && ast._symFlags) {
+          for (const i of symIds) {
+            const flags = ast._symFlags[i];
+            const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
+            if (is_var_only) {
+              const scopeId = ast._symScopeIds[i];
+              const name = ast._symName(i);
+              const siblings = this._varScopeNameIndex.get(scopeId + ':' + name);
+              if (siblings) {
+                for (const sib of siblings) {
+                  if (!seen.has(sib)) { seen.add(sib); extendedIds.push(sib); }
+                }
+              }
+            }
+          }
+        }
+        for (const i of extendedIds) {
           const v = this._buildVariable(i);
           const key = v.name + '\0' + (v.defs[0] ? v.defs[0].type : '');
           const ex = mergeSet.get(key);
@@ -4260,6 +4353,11 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
   // These must run for every node — kept separate from per-tag dispatch.
   const universalEnter = [];
   const universalExit  = [];
+  // JSX: jsx_self_closing nodes serve as their own JSXOpeningElement. Find its tag index so
+  // JSXOpeningElement selectors also fire on self-closing elements (e.g. <iframe/>).
+  // It's the second tag with name 'JSXElement' (first=jsx_element, second=jsx_self_closing).
+  let _jsxSelfClosingTagForSelectors = -1;
+  { let _jxc = 0; for (let _t = 0; _t < tagCount; _t++) { if (tagNames[_t] === 'JSXElement' && ++_jxc === 2) { _jsxSelfClosingTagForSelectors = _t; break; } } }
   for (const sh of selectorHandlers) {
     const rootType = _getSelectorRootTypes(sh.selector);
     // Compile fast matcher once per selector (cached on slot, stable across files)
@@ -4287,6 +4385,7 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
     }
     const rawTypes = Array.isArray(rootType) ? rootType : [rootType];
     const types = rawTypes.length > 1 ? [...new Set(rawTypes)] : rawTypes;
+    let isJSXOpeningElementSel = false;
     for (const rt of types) {
       // ez uses variant tags: populate ALL tag indices for this type name.
       const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;
@@ -4298,6 +4397,19 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
         if (!byTag[i]) byTag[i] = [];
         byTag[i].push(sh);
       }
+      if (rt === 'JSXOpeningElement') isJSXOpeningElementSel = true;
+    }
+    // JSX: self-closing elements (<Foo/>) serve as their own JSXOpeningElement.
+    // Add JSXOpeningElement selectors to jsx_self_closing dispatch so rules like
+    // 'JSXOpeningElement[name.name="iframe"]' fire on self-closing elements.
+    // Only fast-matcher-complete selectors work (esq.matches type check would fail otherwise).
+    if (isJSXOpeningElementSel && _jsxSelfClosingTagForSelectors >= 0 &&
+        sh._fastMatcher && sh._fastMatcher.complete) {
+      const scTag = _jsxSelfClosingTagForSelectors;
+      selectorTagArr[scTag] = 1;
+      const byTag = sh.isExit ? selectorsByTagExit : selectorsByTagEnter;
+      if (!byTag[scTag]) byTag[scTag] = [];
+      if (!byTag[scTag].includes(sh)) byTag[scTag].push(sh);
     }
   }
   _cachedSelectorPlanPlugins = plugins;
@@ -4485,6 +4597,15 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
         else { const i = tagNames.indexOf(rt); if (i >= 0) selectorRelevantTags[i] = 1; }
       }
       // unknown tag name (e.g. TSModuleDeclaration not in ez's tagNames): selector won't fire, skip
+    }
+    // JSX: self-closing elements (<Foo/>) serve as their own JSXOpeningElement.
+    // If any JSXOpeningElement selector exists, also mark jsx_self_closing as selector-relevant.
+    const _jsxOpeningElemIdx = tagNames.indexOf('JSXOpeningElement');
+    if (_jsxOpeningElemIdx >= 0 && selectorRelevantTags[_jsxOpeningElemIdx]) {
+      let _jxc2 = 0;
+      for (let _t2 = 0; _t2 < tagCount; _t2++) {
+        if (tagNames[_t2] === 'JSXElement' && ++_jxc2 === 2) { selectorRelevantTags[_t2] = 1; break; }
+      }
     }
   }
 
@@ -4705,6 +4826,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     return depths;
   })()) : null;
 
+  // Method def tags that synthesize a FunctionExpression child in ESTree.
+  // When building ancestors, insert the synthetic FunctionExpression between
+  // a method def and its non-key children so selectors like
+  // `:function > BlockStatement` work for object/class method shorthands.
+  const _methodDefTagSet = new Set([
+    T.method_def, T.getter_def, T.setter_def, T.constructor_def,
+    T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
+  ]);
+
   function getAncestorsFor(nodeIdx) {
     if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
     // Pre-size to at most depth (actual count may be smaller due to grouping_expr skips).
@@ -4715,12 +4845,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // transparently, so they must not appear in the ancestors array either — otherwise
     // a parenthesized child `(JSX)` inside a ternary would appear to have a JSXElement
     // parent (the unwrapped self) rather than the ConditionalExpression.
+    let prevP = nodeIdx; // track which child we came from (for method key exclusion)
     let p = pd[nodeIdx];
     let k = 0;
     const n = ast.nodeCount;
     while (p !== NONE && p < n) {
-      if (ast._nodeTags[p] === T.grouping_expr) { p = pd[p]; continue; }
-      _ancestorsBuf[k++] = nodeView(ast, p);
+      const ptag = ast._nodeTags[p];
+      if (ptag === T.grouping_expr) { prevP = p; p = pd[p]; continue; }
+      const pNode = nodeView(ast, p);
+      // ESTree inserts a synthetic FunctionExpression between a method definition
+      // and its non-key children (body, params). Insert it into the ancestors array
+      // so selectors like `:function[async=false] > BlockStatement` work on method bodies.
+      if (_methodDefTagSet.has(ptag) && prevP !== ast.nodeLhs(p)) {
+        _ancestorsBuf[k++] = pNode.value; // synthetic FunctionExpression
+      }
+      _ancestorsBuf[k++] = pNode;
+      prevP = p;
       p = pd[p];
     }
     _ancestorsBuf.length = k;
@@ -5139,6 +5279,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (T.optional_member_expr < relevantTag.length)        relevantTag[T.optional_member_expr] = 1;
     if (T.optional_computed_member_expr < relevantTag.length) relevantTag[T.optional_computed_member_expr] = 1;
   }
+  // JSXOpeningFragment / JSXClosingFragment are synthetic — emitted during JSXFragment enter/exit.
+  const jsxOpeningFragH  = visitorMap.get('JSXOpeningFragment') || null;
+  const jsxOpeningFragExH = visitorMap.get('JSXOpeningFragment:exit') || null;
+  const jsxClosingFragH  = visitorMap.get('JSXClosingFragment') || null;
+  const jsxClosingFragExH = visitorMap.get('JSXClosingFragment:exit') || null;
+  const hasFragSynth = jsxOpeningFragH !== null || jsxOpeningFragExH !== null ||
+                       jsxClosingFragH !== null || jsxClosingFragExH !== null;
+  if (hasFragSynth && T.jsx_fragment < relevantTag.length) relevantTag[T.jsx_fragment] = 1;
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   let _relevantCount = 0;
   for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
@@ -5294,7 +5442,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
   const _needsShorthandSynth = needsLabelSynthOpt; // true when Identifier visitors exist
-  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth) ? new Uint8Array(tagNames.length) : null;
+  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
@@ -5311,6 +5459,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // Identifier visitors exist, because we synthesize a second VALUE Identifier visit.
     if (_needsShorthandSynth && T.shorthand_property < _synthTagArr.length) {
       _synthTagArr[T.shorthand_property] = 1;
+    }
+    // JSXFragment synthesis needs jsx_fragment tag
+    if (hasFragSynth && T.jsx_fragment < _synthTagArr.length) {
+      _synthTagArr[T.jsx_fragment] = 1;
     }
   }
 
@@ -5357,6 +5509,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (hasChainSynth && chainEnterH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
         if (_chainNode) _invokeFused(chainEnterH, _chainNode, idx, context);
+      }
+      // Synthesize JSXOpeningFragment enter/exit for JSXFragment nodes.
+      if (hasFragSynth && tag === T.jsx_fragment) {
+        const _fragNode = nodeView(ast, idx);
+        const _openFrag = _fragNode.openingFragment;
+        if (_openFrag) {
+          if (!_openFrag.parent) _openFrag.parent = _fragNode;
+          if (jsxOpeningFragH)  _invokeFused(jsxOpeningFragH,  _openFrag, idx, context);
+          if (jsxOpeningFragExH) _invokeFused(jsxOpeningFragExH, _openFrag, idx, context);
+        }
       }
       // Synthesize Identifier visits for synthetic label children (optimized path).
       // MemberExpression.property and import/export specifier names are now real
@@ -5517,6 +5679,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (hasChainSynth && chainExitH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
         if (_chainNode) _invokeFused(chainExitH, _chainNode, idx, context);
+      }
+      // Synthesize JSXClosingFragment enter/exit for JSXFragment nodes.
+      if (hasFragSynth && tag === T.jsx_fragment) {
+        const _fragNode2 = nodeView(ast, idx);
+        const _closeFrag = _fragNode2.closingFragment;
+        if (_closeFrag) {
+          if (!_closeFrag.parent) _closeFrag.parent = _fragNode2;
+          if (jsxClosingFragH)  _invokeFused(jsxClosingFragH,  _closeFrag, idx, context);
+          if (jsxClosingFragExH) _invokeFused(jsxClosingFragExH, _closeFrag, idx, context);
+        }
       }
       // Synthesize Identifier:exit for synthetic label children.
       // Specifiers and MemberExpression property are real nodes and exit naturally.

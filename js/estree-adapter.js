@@ -1064,11 +1064,11 @@ const NodeProto = {
         };
       }
     }
-    // JSX: for jsx_attribute nodes whose Zig parent is jsx_self_closing,
+    // JSX: for jsx_attribute/jsx_spread_attribute nodes whose Zig parent is jsx_self_closing,
     // ESTree requires the parent to be JSXOpeningElement (selfClosing=true),
     // not JSXElement. Synthesize a JSXOpeningElement wrapper so that rules
     // checking node.parent.type === 'JSXOpeningElement' work correctly.
-    if (result && this._tag === T.jsx_attribute && result._tag === T.jsx_self_closing) {
+    if (result && (this._tag === T.jsx_attribute || this._tag === T.jsx_spread_attribute) && result._tag === T.jsx_self_closing) {
       const selfClosingNode = result;
       const ast = this._ast;
       const d = ast.extraJsxOpeningData(ast.nodeLhs(selfClosingNode._i));

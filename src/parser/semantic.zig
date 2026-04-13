@@ -2020,12 +2020,13 @@ pub const SemanticAnalyzer = struct {
         const alive_after_try = self.cfg_alive;
 
         // catch: exception may be thrown from any point in try, so start with alive_before
+        var alive_after_catch: bool = false;
         if (try_data.catch_node != .none) {
             if (self.cpb_initialized) try self.cpb.makeCatchBlock(try_data.catch_node);
+            self.cfg_alive = alive_before;
+            try self.visitNode(try_data.catch_node);
+            alive_after_catch = self.cfg_alive;
         }
-        self.cfg_alive = alive_before;
-        try self.visitNode(try_data.catch_node);
-        const alive_after_catch = self.cfg_alive;
 
         // After try+catch: either try completed normally OR catch completed
         self.cfg_alive = alive_after_try or alive_after_catch;

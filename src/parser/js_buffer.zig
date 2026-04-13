@@ -1270,9 +1270,9 @@ pub fn computeNodePositions(
                         if (j > maxTok[i]) maxTok[i] = @intCast(j);
                         break;
                     }
-                    // For block statements, stop after the matching closing `}`
-                    // to prevent including `else`, `catch`, `finally` etc.
-                    if (tag == .block_stmt and tt == .r_brace and opener == main_tokens[i]) {
+                    // For block statements and class bodies, stop after the matching
+                    // closing `}` to prevent including `else`, `catch`, `finally`, etc.
+                    if ((tag == .block_stmt or tag == .class_body) and tt == .r_brace and opener == main_tokens[i]) {
                         break;
                     }
                 } else {
