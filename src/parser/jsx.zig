@@ -128,7 +128,7 @@ fn parseJsxOpeningElement(p: *Parser) Error!NodeIndex {
 /// and namespaced names like `foo:Bar`.
 /// Returns a jsx_identifier, jsx_member_expr, or jsx_namespaced_name node.
 fn parseJsxDottedName(p: *Parser) Error!NodeIndex {
-    var name_node = try parseJsxSimpleName(p);
+    var name_node = try parseJsxHyphenatedIdent(p);
 
     // Namespaced name: foo:Bar
     if (p.peek() == .colon) {
@@ -184,6 +184,84 @@ fn parseJsxSimpleName(p: *Parser) Error!NodeIndex {
     return p.makeErrorNode();
 }
 
+/// Parse a potentially hyphenated JSX name: `ident (-ident)*`.
+/// Used for element names like `not-meta` and attribute names like `aria-fake`.
+///
+/// Returns a `jsx_identifier` node.  For compound names, `lhs` holds the
+/// end byte position (past the last character) so the adapter can extract
+/// the full text including hyphens.  For simple names, `lhs = .none`.
+fn parseJsxHyphenatedIdent(p: *Parser) Error!NodeIndex {
+    const tag = p.peek();
+    if (tag != .identifier and !tag.isKeyword()) {
+        try p.emitError("Expected JSX name");
+        return p.makeErrorNode();
+    }
+    const first_tok = p.advance();
+
+    // Check for hyphen continuation: `-` followed immediately by an identifier.
+    // Use token start positions to detect adjacent tokens (no whitespace gap).
+    const starts = p.tokens.items(.start);
+    const lens = p.tokens.items(.len);
+    var last_tok: u32 = first_tok;
+
+    while (p.peek() == .minus) {
+        // The `-` must be immediately after the previous token (no space).
+        const minus_tok = p.tok_i;
+        if (starts[minus_tok] != starts[last_tok] + lens[last_tok]) break;
+        // The next token after `-` must be an identifier immediately adjacent.
+        const next_tok_idx = minus_tok + 1;
+        if (next_tok_idx >= p.tokens.len) break;
+        const next_tag = p.tokens.items(.tag)[next_tok_idx];
+        if ((next_tag != .identifier and !next_tag.isKeyword()) or
+            starts[next_tok_idx] != starts[minus_tok] + lens[minus_tok]) break;
+        // Consume `-` and the following identifier.
+        _ = p.advance(); // consume minus
+        last_tok = p.advance(); // consume identifier
+    }
+
+    return p.addNode(.{
+        .tag = .jsx_identifier,
+        .main_token = first_tok,
+        .data = .{
+            // For compound names (e.g. aria-fake), lhs = last token index so the
+            // JS adapter can extract the full text via source.slice(start, end).
+            .lhs = if (last_tok != first_tok) NodeIndex.fromInt(last_tok) else .none,
+            .rhs = .none,
+        },
+    });
+}
+
+/// Parse a JSX attribute name: `(ident (-ident)*)(:ident(-ident)*)`.
+/// Handles both plain names (`className`, `aria-fake`) and namespaced names
+/// (`xlink:href`, `xml:lang`).
+fn parseJsxAttributeName(p: *Parser) Error!NodeIndex {
+    const tag = p.peek();
+    if (tag != .identifier and !tag.isKeyword()) {
+        try p.emitError("Expected JSX attribute name");
+        return p.makeErrorNode();
+    }
+    const name_tok = p.tok_i;
+    const prefix_node = try parseJsxHyphenatedIdent(p);
+
+    // Namespaced attribute: `xlink:href`, `xml:lang`
+    if (p.peek() == .colon) {
+        const colon_tok = p.advance(); // consume `:`
+        const local_tag = p.peek();
+        if (local_tag != .identifier and !local_tag.isKeyword()) {
+            try p.emitError("Expected JSX attribute name after ':'");
+            return p.makeErrorNode();
+        }
+        const local_node = try parseJsxHyphenatedIdent(p);
+        return p.addNode(.{
+            .tag = .jsx_namespaced_name,
+            .main_token = colon_tok,
+            .data = .{ .lhs = prefix_node, .rhs = local_node },
+        });
+    }
+    _ = name_tok;
+    return prefix_node;
+}
+
 // =====================================================================
 // Children:  text, {expr}, or nested elements between open/close
 // =====================================================================
@@ -201,54 +279,89 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
     const scratch_top = p.scratchLen();
     const starts = p.tokens.items(.start);
     const lens = p.tokens.items(.len);
+    var last_child_was_text = false;
 
     while (!p.isAtEnd()) {
         const tag = p.peek();
 
-        // Detect whitespace/irregular-whitespace gaps between tokens.
-        // These are characters the lexer skips (e.g. \u00a0, \u200b) that
-        // appear as JSX text but produce no token.  Emit a gap-type
-        // jsx_text_node so that rules like no-irregular-whitespace can find
-        // the JSXText node and suppress false positives inside JSX.
-        if (p.tok_i > 0) {
-            const prev_end = starts[p.tok_i - 1] + lens[p.tok_i - 1];
-            const next_start = starts[p.tok_i];
-            if (prev_end < next_start) {
-                const gap_node = try p.addNode(.{
-                    .tag = .jsx_text_node,
-                    .main_token = p.tok_i - 1,
-                    .data = .{
-                        .lhs = NodeIndex.fromInt(prev_end),
-                        .rhs = NodeIndex.fromInt(next_start),
-                    },
-                });
-                try p.scratchPush(gap_node);
-                // Do NOT advance — fall through to normal token handling.
-            }
-        }
-
         // `</` signals the closing tag — stop collecting children.
+        // Before breaking, emit a gap node if there is whitespace before the closing `</`
+        // that is NOT already covered by a preceding text node's range.
+        // (Text nodes absorb their trailing gap into the node end via lhs = next_tok_idx.)
         if (tag == .less_than) {
-            // Peek ahead to see if this is a closing tag.
-            if (p.peekAt(1) == .slash) break;
+            if (p.peekAt(1) == .slash) {
+                // Emit gap before closing tag only if last child wasn't a text node.
+                // (If last child was text, its end already extends to tok_starts[<].)
+                if (!last_child_was_text and p.tok_i > 0) {
+                    const prev_end = starts[p.tok_i - 1] + lens[p.tok_i - 1];
+                    const cur_start = starts[p.tok_i];
+                    if (prev_end < cur_start) {
+                        const gap_node = try p.addNode(.{
+                            .tag = .jsx_gap_node,
+                            .main_token = p.tok_i - 1,
+                            .data = .{
+                                .lhs = NodeIndex.fromInt(prev_end),
+                                .rhs = NodeIndex.fromInt(cur_start),
+                            },
+                        });
+                        try p.scratchPush(gap_node);
+                    }
+                }
+                break;
+            }
+
+            // Before consuming a child element, emit any gap from the previous token.
+            // This gap is pure whitespace (no text tokens) and needs to be a JSXText node
+            // so rules like react/jsx-newline can inspect the whitespace between elements.
+            if (!last_child_was_text and p.tok_i > 0) {
+                const prev_end = starts[p.tok_i - 1] + lens[p.tok_i - 1];
+                const cur_start = starts[p.tok_i];
+                if (prev_end < cur_start) {
+                    const gap_node = try p.addNode(.{
+                        .tag = .jsx_gap_node,
+                        .main_token = p.tok_i - 1,
+                        .data = .{
+                            .lhs = NodeIndex.fromInt(prev_end),
+                            .rhs = NodeIndex.fromInt(cur_start),
+                        },
+                    });
+                    try p.scratchPush(gap_node);
+                }
+            }
 
             // Nested JSX element or fragment: `<Foo>` or `<>`.
             _ = p.advance(); // consume `<`
             const child = try parseJsxElement(p);
             try p.scratchPush(child);
+            last_child_was_text = false;
             continue;
         }
 
         // Expression container: `{expr}` or `{}`.
         if (tag == .l_brace) {
+            // Emit gap before expression if last child wasn't a text node.
+            if (!last_child_was_text and p.tok_i > 0) {
+                const prev_end = starts[p.tok_i - 1] + lens[p.tok_i - 1];
+                const cur_start = starts[p.tok_i];
+                if (prev_end < cur_start) {
+                    const gap_node = try p.addNode(.{
+                        .tag = .jsx_gap_node,
+                        .main_token = p.tok_i - 1,
+                        .data = .{
+                            .lhs = NodeIndex.fromInt(prev_end),
+                            .rhs = NodeIndex.fromInt(cur_start),
+                        },
+                    });
+                    try p.scratchPush(gap_node);
+                }
+            }
+
             const brace_tok = p.advance(); // consume `{`
 
             // Empty expression container: `{}` or `{/*comment*/}`.
-            // Create a JSXEmptyExpression node whose range spans between the braces.
-            // The byte offsets are stored in data.lhs/rhs for UTF-16 conversion in napi.zig.
             if (p.peek() == .r_brace) {
                 const l_brace_end = starts[brace_tok] + lens[brace_tok];
-                const r_brace_start = starts[p.tok_i]; // `}` token start
+                const r_brace_start = starts[p.tok_i];
                 _ = p.advance(); // consume `}`
                 const empty_expr = try p.addNode(.{
                     .tag = .jsx_empty_expr,
@@ -264,10 +377,11 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                     .data = .{ .lhs = empty_expr, .rhs = .none },
                 });
                 try p.scratchPush(container);
+                last_child_was_text = false;
                 continue;
             }
 
-            // `{...expr}` inside children is a spread child (expression container).
+            // `{...expr}` inside children.
             const expr = try p.parseExpression();
             _ = try p.expect(.r_brace);
 
@@ -277,35 +391,55 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                 .data = .{ .lhs = expr, .rhs = .none },
             });
             try p.scratchPush(container);
-            continue;
-        }
-
-        // JSX text token produced by a JSX-aware lexer.
-        if (tag == .jsx_text) {
-            const tok = p.advance();
-            const text_node = try p.addNode(.{
-                .tag = .jsx_text_node,
-                .main_token = tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
-            try p.scratchPush(text_node);
+            last_child_was_text = false;
             continue;
         }
 
         // EOF — bail out.
         if (tag == .eof) break;
 
-        // Any other token — the regular lexer produced something that
-        // isn't `<` or `{`.  Treat it as text content by recording
-        // the current token as a jsx_text_node and advancing past it.
+        // Text content: collect everything that isn't `<`, `{`, or eof into a single
+        // JSXText node.  This includes:
+        //   - Regular tokens like identifiers, punctuation, keywords
+        //   - HTML entities split by the lexer (e.g. `&`, `nbsp`, `;`)
+        //   - Gaps (lexer-skipped chars like \u00a0) between tokens — absorbed into value
+        //
+        // Both leading AND trailing gaps are absorbed into the text node's range:
+        //   lhs = next_tok_idx (token AFTER text span): end = tok_starts[lhs], includes trailing gap
+        //   rhs = leading_gap_start byte offset (or .none): start override for napi.zig
+        // This produces a single JSXText covering e.g. "\n  foo\n  " before <a>.
         {
-            const tok = p.advance();
+            // Leading gap before first text token.
+            var leading_gap_start: ?u32 = null;
+            if (p.tok_i > 0) {
+                const prev_end = starts[p.tok_i - 1] + lens[p.tok_i - 1];
+                if (prev_end < starts[p.tok_i]) {
+                    leading_gap_start = prev_end;
+                }
+            }
+
+            const first_tok = p.tok_i;
+            _ = p.advance(); // consume first token
+
+            // Consume all subsequent text tokens (no `<`, `{`, eof).
+            while (!p.isAtEnd()) {
+                const next = p.peek();
+                if (next == .less_than or next == .l_brace or next == .eof) break;
+                _ = p.advance();
+            }
+
+            // lhs = next_tok_idx (always): end position = tok_starts[lhs], absorbs trailing gap.
+            // rhs = leading_gap_start byte (or .none): start override.
             const text_node = try p.addNode(.{
                 .tag = .jsx_text_node,
-                .main_token = tok,
-                .data = .{ .lhs = .none, .rhs = .none },
+                .main_token = first_tok,
+                .data = .{
+                    .lhs = NodeIndex.fromInt(p.tok_i), // next token after text span
+                    .rhs = if (leading_gap_start) |gs| NodeIndex.fromInt(gs) else .none,
+                },
             });
             try p.scratchPush(text_node);
+            last_child_was_text = true;
         }
     }
 
@@ -365,7 +499,7 @@ fn parseJsxAttribute(p: *Parser) Error!NodeIndex {
 
     // Named attribute.
     const name_tok = p.tok_i;
-    const name_node = try parseJsxSimpleName(p);
+    const name_node = try parseJsxAttributeName(p);
 
     // No value — boolean attribute: `<input disabled />`.
     if (p.peek() != .equal) {

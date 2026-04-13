@@ -230,6 +230,7 @@ const T = {
   jsx_identifier: 198,
   jsx_member_expr: 199,
   jsx_namespaced_name: 200,
+  jsx_gap_node: 201,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.

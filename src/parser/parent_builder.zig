@@ -421,7 +421,7 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .debugger_stmt, .this_expr, .super_expr,
             .number_literal, .string_literal, .boolean_literal, .null_literal,
             .regex_literal, .bigint_literal, .template_element,
-            .jsx_text_node, .jsx_empty_expr, .jsx_identifier, .error_node,
+            .jsx_text_node, .jsx_gap_node, .jsx_empty_expr, .jsx_identifier, .error_node,
             // TS type nodes that are true leaves (no child types to traverse)
             .ts_type_reference, .ts_infer_type,
             .ts_function_type, .ts_constructor_type,

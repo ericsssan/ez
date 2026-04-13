@@ -936,8 +936,15 @@ const NodeProto = {
     return ast._nodeStartPos(this._i);
   },
   get end() {
-    if (this._ast._nodeTags[this._i] === T.root) return this._ast.sourceUtf16Len;
-    return this._ast._nodeEndPos(this._i);
+    const ast = this._ast;
+    if (ast._nodeTags[this._i] === T.root) return ast.sourceUtf16Len;
+    // jsx_identifier with compound name (e.g. aria-haspopup): lhs = last token index.
+    // _nodeEndPos only covers the first token; use tok_ends[lhs] for the true end.
+    if (ast._nodeTags[this._i] === T.jsx_identifier) {
+      const lhs = ast.nodeLhs(this._i);
+      if (lhs !== NONE && ast._tokEnds) return ast._tokEnds[lhs];
+    }
+    return ast._nodeEndPos(this._i);
   },
   get lhs() {
     return this._ast.nodeLhs(this._i);
@@ -2225,6 +2232,15 @@ const NodeProto = {
         const nodeIdx = slice[j];
         result.push(nodeIdx === NONE ? null : nodeView(ast, nodeIdx));
       }
+      // Zig pushes a sentinel NONE after a trailing SpreadElement when there's a trailing comma
+      // (e.g. `[...a,]`), to help validatePattern detect the comma. Strip it from the ESTree view:
+      // a trailing comma is not an elision and should not add a null element.
+      if (result.length >= 2 && result[result.length - 1] === null) {
+        const prev = result[result.length - 2];
+        if (prev !== null && prev.type === 'SpreadElement') {
+          result.pop();
+        }
+      }
       return result;
     }
     return undefined;
@@ -2679,6 +2695,12 @@ const NodeProto = {
     } else {
       let end = this._ast._nodeEndPos(this._i);
       const tag = this._ast._nodeTags[this._i];
+
+      // jsx_identifier with compound name: lhs = last token index; use its end.
+      if (tag === T.jsx_identifier) {
+        const lhs = this._ast.nodeLhs(this._i);
+        if (lhs !== NONE && this._ast._tokEnds) end = this._ast._tokEnds[lhs];
+      }
 
       // For statement nodes, check if a semicolon token follows and extend the range to include it.
       // Parser computes end positions based on child nodes, which excludes trailing semicolons.

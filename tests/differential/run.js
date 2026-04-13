@@ -575,6 +575,15 @@ function _isNativeParser(parser) {
   return false;
 }
 
+/** Returns true if the parser is a TypeScript parser (ez can handle these with lang:"ts"). */
+function _isTsParser(parser) {
+  if (!parser) return false;
+  // @typescript-eslint/parser and typescript-eslint both expose parseForESLint.
+  if (typeof parser?.parseForESLint === "function") return true;
+  // typescript-eslint stub (our build.module() shim) also has parseForESLint.
+  return false;
+}
+
 /** Lowercase the file extension so ESLint glob patterns (case-sensitive) can match it. */
 function _normalizeFilenameExt(filename) {
   const dot = filename.lastIndexOf(".");
@@ -584,27 +593,36 @@ function _normalizeFilenameExt(filename) {
 
 function normalizeCase(c, defaultConfig = {}) {
   const defaultLO = defaultConfig.languageOptions || {};
-  const defaultHasParser = !_isNativeParser(defaultLO.parser);
   if (typeof c === "string") {
+    const _defParser = defaultLO.parser || null;
+    const _isCustomDef = (p) => p && !_isNativeParser(p) && !_isTsParser(p);
     return {
       code: c,
       options: [],
       languageOptions: defaultLO,
-      hasCustomParser: defaultHasParser,
+      hasCustomParser: !!_isCustomDef(_defParser),
+      isTypeScript: _isTsParser(_defParser),
       eslintResult: null,
     };
   }
   const caseLO = c.languageOptions || {};
   // Merge with default (case overrides default)
   const mergedLO = { ...defaultLO, ...caseLO };
+  const caseParser = c.parser || caseLO.parser || null;
+  const defaultParser = defaultLO.parser || null;
+  // A parser is "custom" (not handled by ez) only if it is neither espree nor a TS parser.
+  // TS parsers are treated as native because ez can parse TypeScript with lang:"ts".
+  const _isCustom = (p) => p && !_isNativeParser(p) && !_isTsParser(p);
+  const hasCustomParser = !!_isCustom(caseParser) || !!_isCustom(defaultParser);
+  // Track whether this case uses a TS parser so the runner passes lang:"ts" to ez.
+  const isTypeScript = _isTsParser(caseParser) || _isTsParser(defaultParser);
   return {
     code:            c.code || "",
     options:         c.options || [],
     languageOptions: mergedLO,
     filename:        c.filename ? _normalizeFilenameExt(c.filename) : null,
-    hasCustomParser: !!(c.parser && !_isNativeParser(c.parser))
-      || !!(caseLO.parser && !_isNativeParser(caseLO.parser))
-      || defaultHasParser,
+    hasCustomParser,
+    isTypeScript,
     eslintResult: null,  // filled during capture by running real ESLint
   };
 }
@@ -633,7 +651,8 @@ function installCorpusIntercept() {
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
       if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
       try {
-        const oracleFilename = tc.filename || "test.js";
+        const oracleExt = tc.isTypeScript ? (jsxEnabled ? ".tsx" : ".ts") : ".js";
+        const oracleFilename = tc.filename || ("test" + oracleExt);
         // files: explicit extensions so ESLint flat config lints non-default types (ts, tsx, jsx, etc.)
         const messages = eslintLinter.verify(tc.code, [{
           files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
@@ -931,7 +950,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       if (!cases) continue;
       const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
       const defaultParser = cases.defaultConfig?.languageOptions?.parser;
-      const isTypeScript = defaultParser && !_isNativeParser(defaultParser);
+      const isTypeScript = defaultParser && _isTsParser(defaultParser);
       const allCases = cases.cases;
       allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType, isTypeScript, allCases });
     }
@@ -977,7 +996,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       if (!espreeResult) { skipEspreeParse++; continue; }
 
       const _rt0 = Date.now();
-      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript, tc.filename);
+      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename);
       runnerOnlyMs += Date.now() - _rt0;
       if (runnerResult === null) { crash++; continue; }
 

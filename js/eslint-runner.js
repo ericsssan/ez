@@ -339,8 +339,9 @@ function _tokType(tag) {
 
 // ── Scope flag bit positions (must match src/parser/scope.zig ScopeFlags) ─────
 // packed struct(u16) { strict_mode, is_var_scope, has_use_strict, is_async, ... }
-const SF_STRICT_MODE    = 1; // bit 0 — strict by any cause (module mode, use strict, class body)
-const SF_HAS_USE_STRICT = 4; // bit 2 — has explicit 'use strict' directive in this scope
+const SF_STRICT_MODE    = 1;  // bit 0 — strict by any cause (module mode, use strict, class body)
+const SF_HAS_USE_STRICT = 4;  // bit 2 — has explicit 'use strict' directive in this scope
+const SF_HAS_ARGUMENTS  = 32; // bit 5 — function scope with implicit `arguments` (not arrow functions)
 
 // ── Source Code ──────────────────────────────────────────────────
 
@@ -1236,6 +1237,7 @@ class SourceCode {
             }
           });
         }
+        if (prop === 'type') return 'global';
         if (prop === 'variables') {
           if (!_mergedVars) {
             // Merge: module scope variables first, then globals not already present
@@ -1350,6 +1352,7 @@ class SourceCode {
     // Lazy state: computed once on first access, then reused.
     const sc = this;
     let _vars = null, _set = null, _refs = null, _through = null, _children = null;
+    let _fenVarRef = null; // reference to the FEN variable (for ensureRefsThrough access)
 
     // Named FunctionExpression: create a virtual function-expression-name scope that sits
     // between this function body scope and its outer scope. eslint-scope puts the function
@@ -1418,6 +1421,22 @@ class SourceCode {
             };
             _fenVars = [fenVar];
             _fenSet = new Map([[fenName, fenVar]]);
+            _fenVarRef = fenVar; // expose to outer closure for ensureRefsThrough
+            // Eagerly populate fenVar.references by scanning the function scope's refs.
+            // This allows isFunctionSelfUsedInside to detect self-references without
+            // requiring scope.references (ensureRefsThrough) to be triggered first.
+            if (ast._scopeRefStarts && ast._scopeRefCounts && ast._scopeRefIds) {
+              const refStart = ast._scopeRefStarts[scopeId];
+              const refCount = ast._scopeRefCounts[scopeId];
+              for (let ri = 0; ri < refCount; ri++) {
+                const refId = ast._scopeRefIds[refStart + ri];
+                const ref = sc._buildReference(refId);
+                if (ref.identifier?.name === fenName) {
+                  fenVar.references.push(ref);
+                  ref.resolved = fenVar;
+                }
+              }
+            }
             // Remove the FE-name def + identifier from the function body scope's variable.
             v.defs.splice(feDefIdx, 1);
             if (feIdentifier) {
@@ -1449,10 +1468,62 @@ class SourceCode {
       const cs = scope.childScopes; // trigger lazy children first (needed for through bubbling)
       const rt = sc._buildScopeRefsAndThrough(scopeId, scope, cs);
       _refs = rt[0]; _through = rt[1];
+      // Eagerly resolve through-refs upward: trigger parent's through getter so ref.resolved
+      // is populated before callers access scope.references directly
+      // (e.g. consistent-function-scoping checks ref.resolved on inner-scope references).
+      if (_through.length > 0 && upper) {
+        void upper.through; // triggers ensureRefsThrough on parent, mutates ref.resolved
+      }
+      // Populate FEN variable's references: for named FunctionExpressions, the function
+      // name (e.g. `fn` in `function fn(x){}`) resolves to the FEN variable. But since
+      // refs are pre-resolved in Zig, they bypass the normal variable.references push.
+      // Scan this scope's refs and add any that match the FEN name to fenVar.references.
+      if (_fenScope && _fenVarRef) {
+        const fenName2 = _fenVarRef.name;
+        for (const ref of _refs) {
+          if (ref.identifier?.name === fenName2 && !_fenVarRef.references.includes(ref)) {
+            _fenVarRef.references.push(ref);
+            ref.resolved = _fenVarRef;
+          }
+        }
+      }
     }
     function ensureChildren() {
       if (_children !== null) return;
       _children = sc._buildScopeChildren(scopeId);
+    }
+
+    // thisFound: true if `this` appears directly in this non-arrow function scope
+    // (not inside nested non-arrow functions). Used by rules like prefer-array-index-of.
+    // We scan _nodeTags for this_expr (tag=52) and walk _parentData up to find the
+    // closest non-arrow function, checking if it matches our block node.
+    const NON_ARROW_FN_TAGS = new Set([30, 31, 32, 33, 63, 64, 65, 66]); // fn_decl, async_fn_decl, etc., fn_expr variants
+    // thisFound only applies to function scopes (kind=2), not arrow, global, module, etc.
+    let _thisFound = null; // null = not computed yet
+    function ensureThisFound() {
+      if (_thisFound !== null) return;
+      _thisFound = false;
+      if (kind !== 2 || !ast._nodeTags || !ast._parentData || !block) return;
+      const blockIdx = block._i;
+      if (blockIdx === undefined || blockIdx === NONE) return;
+      const T_THIS_EXPR = 52; // tags.js: this_expr
+      const NONE32 = 0xFFFFFFFF;
+      for (let i = 0; i < ast.nodeCount; i++) {
+        if (ast._nodeTags[i] !== T_THIS_EXPR) continue;
+        // Walk up parent chain to find the closest non-arrow function.
+        let cur = ast._parentData[i];
+        let foundThis = false;
+        while (cur !== undefined && cur !== NONE32 && cur < ast.nodeCount) {
+          const curTag = ast._nodeTags[cur];
+          if (NON_ARROW_FN_TAGS.has(curTag)) {
+            // Found closest non-arrow function. If it's our block, this is in our scope.
+            if (cur === blockIdx) foundThis = true;
+            break;
+          }
+          cur = ast._parentData[cur];
+        }
+        if (foundThis) { _thisFound = true; break; }
+      }
     }
 
     Object.defineProperties(scope, {
@@ -1461,6 +1532,7 @@ class SourceCode {
       references:  { get() { ensureRefsThrough(); return _refs;     }, configurable: true, enumerable: true },
       through:     { get() { ensureRefsThrough(); return _through;  }, configurable: true, enumerable: true },
       childScopes: { get() { ensureChildren();    return _children; }, configurable: true, enumerable: true },
+      thisFound:   { get() { ensureThisFound();   return _thisFound; }, configurable: true, enumerable: true },
     });
 
     return scope;
@@ -1664,7 +1736,9 @@ class SourceCode {
     }
 
     // Function scope: add implicit 'arguments' variable (not for arrow functions).
-    if (kind === 2 && !set.has('arguments')) {
+    // Use SF_HAS_ARGUMENTS flag set by Zig for non-arrow function scopes only.
+    const flags16 = ast._scopeFlags ? ast._scopeFlags[scopeId] : 0;
+    if (kind === 2 && (flags16 & SF_HAS_ARGUMENTS) !== 0 && !set.has('arguments')) {
       const argsVar = { name: 'arguments', defs: [], references: [], identifiers: [],
         scope, eslintUsed: false, writeable: false,
         isRead: () => false, isWritten: () => false };
@@ -1922,7 +1996,12 @@ class SourceCode {
     //   ClassName:   def.name=Identifier, def.node=ClassDeclaration, def.parent=container
     //   ImportBinding: def.name=Identifier, def.node=ImportSpecifier, def.parent=ImportDeclaration
     let defNode = declNode ? _findDefNode(declNode, defType) : null;
-    const defs = declNode ? [{ type: defType, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
+    const is_let = (flags16 & 0x02) !== 0;
+    const is_var = (flags16 & 0x01) !== 0;
+    // kind: for Variable defs, matches the declaration keyword ('const', 'let', 'var').
+    // Rules like unicorn/prefer-set-size check `definition.kind !== 'const'` to skip non-const vars.
+    const defKind = (defType === 'Variable') ? (is_const ? 'const' : is_let ? 'let' : 'var') : undefined;
+    const defs = declNode ? [{ type: defType, kind: defKind, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
 
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
     // Use a thin scope (no variables) to avoid infinite recursion.
@@ -1938,7 +2017,33 @@ class SourceCode {
     // For destructured patterns (let {a, b} = obj), the identifier's immediate parent is
     // a property/shorthand_property/object_pattern/array_pattern, not the VariableDeclarator.
     // Walk up through destructuring nodes to find the enclosing VariableDeclarator.
-    const is_let = (flags16 & 0x02) !== 0;
+    // Also synthesize a write reference for destructured catch params with default values.
+    // e.g. `catch({nonExistsProperty = thisWillExecute()})` — ESLint sees a reference because
+    // the default initializer creates a write. Without this, `variable.references.length === 0`
+    // and `prefer-optional-catch-binding` wrongly reports a violation.
+    const is_catch_param = (flags16 & 0x40) !== 0;
+    if (is_catch_param && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+      const parentIdx = ast._parentData[declNodeIdx];
+      if (parentIdx !== undefined && parentIdx !== NONE && ast._nodeTags[parentIdx] === T.assignment_pattern) {
+        const initNodeIdx = ast.nodeRhs(parentIdx);
+        if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+          const thin = this._buildThinVariable(symId);
+          const initRef = {
+            identifier: declNode,
+            from: scope,
+            resolved: thin,
+            writeExpr: nodeView(ast, initNodeIdx),
+            init: true,
+            isWrite: () => true,
+            isRead: () => false,
+            isWriteOnly: () => true,
+            isReadOnly: () => false,
+            isReadWrite: () => false,
+          };
+          references.unshift(initRef);
+        }
+      }
+    }
     if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
       let curIdx = ast._parentData[declNodeIdx];
       let initAdded = false;
@@ -2000,7 +2105,6 @@ class SourceCode {
     // Add write reference for `var` in for-in/for-of headers (e.g. `for (var i in obj)`).
     // ESLint scope analysis creates an implicit write ref so rules like no-loop-func can detect
     // that the loop variable changes each iteration (making closures over it unsafe).
-    const is_var = (flags16 & 0x01) !== 0;
     if (is_var && !is_let && !is_const && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
       let curIdx = ast._parentData[declNodeIdx];
       let forInOfChecked = false;
@@ -2341,7 +2445,8 @@ class SourceCode {
     const starts = ast._tokStarts;
     let lo = 0, hi = ast.tokenCount - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] < start) lo = m; else hi = m - 1; }
-    const prevEnd = lo > 0 ? starts[lo] : 0;
+    // When lo=0, must check if token[0] is actually before `start`; otherwise there's no prior token.
+    const prevEnd = (lo > 0 || starts[lo] < start) ? starts[lo] : 0;
     const nativeComments = ast.commentsInRange(prevEnd, start);
     // Include synthesized Shebang comment if it falls in the gap (before first real token)
     if (prevEnd === 0 && this.text.startsWith('#!')) {
@@ -2704,7 +2809,28 @@ class SourceCode {
     if (this._scopeManagerProxy) return this._scopeManagerProxy;
     const sc = this;
     this._scopeManagerProxy = {
-      acquire(node) { return sc.getScope(node); },
+      acquire(node) {
+        // ESLint's scopeManager.acquire() (via eslint-scope) only returns a scope
+        // for the specific node that CREATED the scope (scope.block === node).
+        // Function body BlockStatements do not create their own scope in eslint-scope —
+        // the function scope's .block is the FunctionDeclaration, not its body.
+        // Rules like consistent-function-scoping rely on this to return null for
+        // function body blocks (causing the rule to skip those cases).
+        if (!node) return null;
+        const scopeCreatingTypes = new Set([
+          'Program', 'FunctionDeclaration', 'FunctionExpression',
+          'ArrowFunctionExpression', 'ClassDeclaration', 'ClassExpression',
+          'BlockStatement', 'SwitchStatement',
+          'ForStatement', 'ForInStatement', 'ForOfStatement',
+        ]);
+        if (!scopeCreatingTypes.has(node.type)) return null;
+        const scope = sc.getScope(node);
+        if (!scope || !scope.block) return null;
+        // Verify this scope was directly created by this node (scope.block === node).
+        // If the scope's block node differs, this node doesn't introduce a new scope.
+        if (scope.block._i !== node._i) return null;
+        return scope;
+      },
       get scopes() { return []; },
       get globalScope() {
         if (!sc._scopeCache) sc._precomputeScopes();
@@ -5284,6 +5410,30 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
+      // Synthesize KEY Identifier visit for shorthand_property with default (`{ a = expr }`).
+      // In Espree, `{ a = expr }` has Property.key = Identifier visited with parent=Property.
+      // Our DFS only visits the assignment_pattern.left Identifier with parent=AssignmentPattern.
+      // Emit a synthetic KEY Identifier enter (with parent=shorthand_property) so rules like
+      // unicorn/no-keyword-prefix can check parent.type==='Property' && parent.parent==='ObjectPattern'.
+      if (_needsShorthandSynth && tag === T.shorthand_property) {
+        const _childLhs = ast.nodeLhs(idx);
+        if (_childLhs !== undefined && _childLhs !== NONE && _childLhs < ast.nodeCount &&
+            nodeTags[_childLhs] === T.assignment_pattern) {
+          const _apLhs = ast.nodeLhs(_childLhs); // assignment_pattern.left = key Identifier
+          if (_apLhs !== undefined && _apLhs !== NONE && _apLhs < ast.nodeCount && _identTagBits[nodeTags[_apLhs]]) {
+            const _propNode = nodeView(ast, idx);
+            const _keyNode = nodeView(ast, _apLhs);
+            let _keyShadow = _propNode._shorthandKeyDefaultShadow;
+            if (_keyShadow === undefined) {
+              _keyShadow = Object.create(_keyNode);
+              Object.defineProperty(_keyShadow, 'parent', { get() { return _propNode; }, configurable: true });
+              _propNode._shorthandKeyDefaultShadow = _keyShadow;
+            }
+            const _identEnterH = visitorMap.get('Identifier');
+            if (_identEnterH) _invokeFused(_identEnterH, _keyShadow, _apLhs, context);
+          }
+        }
+      }
     } else {
       // Exit event
       const idx = ~ev;
@@ -5334,6 +5484,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           const _identExitH = visitorMap.get('Identifier:exit');
           if (_identEnterH) _invokeFused(_identEnterH, _shadow, _childLhs, context);
           if (_identExitH) _invokeFused(_identExitH, _shadow, _childLhs, context);
+        }
+        // Also synthesize Identifier:exit for shorthand-with-default KEY (`{ a = expr }`).
+        if (_childRhs === NONE && !_childLhsIsIdent) {
+          const _apLhs2 = _childLhs !== undefined && _childLhs !== NONE && _childLhs < ast.nodeCount
+            ? ast.nodeLhs(_childLhs) : NONE; // assignment_pattern.left
+          if (_apLhs2 !== undefined && _apLhs2 !== NONE && _apLhs2 < ast.nodeCount && _identTagBits[nodeTags[_apLhs2]]) {
+            const _propNode2 = nodeView(ast, idx);
+            let _keyShadow2 = _propNode2._shorthandKeyDefaultShadow;
+            const _identExitH2 = visitorMap.get('Identifier:exit');
+            if (_keyShadow2 !== undefined && _identExitH2) _invokeFused(_identExitH2, _keyShadow2, _apLhs2, context);
+          }
         }
       }
       // CfgGraph: code path exit events BEFORE rule exit handlers

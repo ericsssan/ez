@@ -1070,7 +1070,7 @@ pub const SemanticAnalyzer = struct {
             },
             // jsx_identifier / jsx_member_expr / jsx_namespaced_name are only visited via
             // visitJsxElementName, which handles reference creation correctly.
-            .jsx_text_node, .jsx_empty_expr, .jsx_identifier, .jsx_member_expr, .jsx_namespaced_name => {},
+            .jsx_text_node, .jsx_gap_node, .jsx_empty_expr, .jsx_identifier, .jsx_member_expr, .jsx_namespaced_name => {},
 
             // ── Leaf nodes / no-ops ────────────────────────
             .break_stmt => {

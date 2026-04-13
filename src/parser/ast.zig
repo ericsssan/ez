@@ -504,6 +504,9 @@ pub const Node = struct {
         /// JSX namespaced name (foo:bar). Type=JSXNamespacedName in ESTree.
         /// main_token = colon token. lhs = namespace (jsx_identifier), rhs = name (jsx_identifier).
         jsx_namespaced_name,
+        /// Lexer-skipped gap (irregular whitespace) inside JSX children.
+        /// lhs = gap_start_byte, rhs = gap_end_byte (both as NodeIndex.fromInt byte offsets).
+        jsx_gap_node,
     };
 };
 

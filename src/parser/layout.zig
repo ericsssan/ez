@@ -173,7 +173,7 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
         .jsx_attribute => "JSXAttribute",
         .jsx_spread_attribute => "JSXSpreadAttribute",
         .jsx_expression_container => "JSXExpressionContainer",
-        .jsx_text_node => "JSXText",
+        .jsx_text_node, .jsx_gap_node => "JSXText",
         .jsx_fragment => "JSXFragment",
 
         // ── Special ──────────────────────────────────────────

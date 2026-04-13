@@ -130,19 +130,24 @@ fn parseImpl(
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Collect JSX position-override nodes (byte offsets) for UTF-16 conversion.
-    // - Gap-type jsx_text_node: data.lhs = gap_start, data.rhs = gap_end (byte offsets)
+    // - jsx_gap_node: data.lhs = gap_start, data.rhs = gap_end (byte offsets)
     // - jsx_empty_expr: data.lhs = after '{', data.rhs = start of '}' (byte offsets)
-    // Both need their node_pos overridden with UTF-16 positions after conversion.
+    // - jsx_text_node with rhs != .none: rhs = leading_gap_start byte offset (start override only)
+    //   End is already handled via tok_ends (lhs = last token index).
     const node_count: u32 = @intCast(tree.nodes.len);
     const node_tag_items = tree.nodes.items(.tag);
     const node_data_items = tree.nodes.items(.data);
     var gap_node_indices: []u32 = &.{};
     var gap_starts_u32: []u32 = &.{};
     var gap_ends_u32: []u32 = &.{};
+    var text_gap_node_indices: []u32 = &.{};
+    var text_gap_starts_u32: []u32 = &.{};
     {
         var gap_count: usize = 0;
+        var text_gap_count: usize = 0;
         for (node_tag_items[0..node_count], node_data_items[0..node_count]) |nt, nd| {
-            if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) gap_count += 1;
+            if (nt == .jsx_gap_node or nt == .jsx_empty_expr) gap_count += 1
+            else if (nt == .jsx_text_node and nd.rhs != .none) text_gap_count += 1;
         }
         if (gap_count > 0) {
             gap_node_indices = try alloc.alloc(u32, gap_count);
@@ -150,7 +155,7 @@ fn parseImpl(
             gap_ends_u32 = try alloc.alloc(u32, gap_count);
             var gi: usize = 0;
             for (node_tag_items[0..node_count], node_data_items[0..node_count], 0..) |nt, nd, ni| {
-                if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) {
+                if (nt == .jsx_gap_node or nt == .jsx_empty_expr) {
                     gap_node_indices[gi] = @intCast(ni);
                     gap_starts_u32[gi] = nd.lhs.toInt();
                     gap_ends_u32[gi] = nd.rhs.toInt();
@@ -158,12 +163,24 @@ fn parseImpl(
                 }
             }
         }
+        if (text_gap_count > 0) {
+            text_gap_node_indices = try alloc.alloc(u32, text_gap_count);
+            text_gap_starts_u32 = try alloc.alloc(u32, text_gap_count);
+            var tgi: usize = 0;
+            for (node_tag_items[0..node_count], node_data_items[0..node_count], 0..) |nt, nd, ni| {
+                if (nt == .jsx_text_node and nd.rhs != .none) {
+                    text_gap_node_indices[tgi] = @intCast(ni);
+                    text_gap_starts_u32[tgi] = nd.rhs.toInt();
+                    tgi += 1;
+                }
+            }
+        }
     }
 
     // Convert ALL byte-offset arrays to UTF-16 in a single source scan.
-    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32 };
+    var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
-    // After this: gap_starts_u32 and gap_ends_u32 contain UTF-16 positions.
+    // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
 
     // Compute node start/end positions (UTF-16) — uses already-converted tok_starts/tok_ends.
     const token_count: u32 = @intCast(tokens.len);
@@ -179,13 +196,32 @@ fn parseImpl(
         token_count,
     );
 
-    // Override positions for gap-type jsx_text_node nodes.
-    // computeNodePositions uses main_token (the preceding token) — wrong for gaps.
+    // Override positions for jsx_gap_node and jsx_text_node.
+    // computeNodePositions uses main_token alone — wrong for text/gap nodes.
+    var needs_resort = false;
+    for (0..node_count) |i| {
+        const nt = node_tag_items[i];
+        const nd = node_data_items[i];
+        if (nt == .jsx_text_node) {
+            // lhs = next_tok_idx (always): end = tok_starts[lhs], absorbs trailing gap.
+            node_pos.ends[i] = tok_starts[nd.lhs.toInt()];
+            needs_resort = true;
+        }
+    }
     if (gap_node_indices.len > 0) {
         for (gap_node_indices, gap_starts_u32, gap_ends_u32) |ni, gs, ge| {
             node_pos.starts[ni] = gs;
             node_pos.ends[ni] = ge;
         }
+        needs_resort = true;
+    }
+    if (text_gap_node_indices.len > 0) {
+        for (text_gap_node_indices, text_gap_starts_u32) |ni, gs| {
+            node_pos.starts[ni] = gs;
+        }
+        needs_resort = true;
+    }
+    if (needs_resort) {
         // Re-sort sorted_by_start after position overrides.
         const GapSortCtx = struct {
             starts: []const u32,
@@ -397,10 +433,14 @@ fn parseAndLintImpl(
     var gap_node_indices2: []u32 = &.{};
     var gap_starts_u322: []u32 = &.{};
     var gap_ends_u322: []u32 = &.{};
+    var text_gap_node_indices2: []u32 = &.{};
+    var text_gap_starts_u322: []u32 = &.{};
     {
         var gap_count: usize = 0;
+        var text_gap_count: usize = 0;
         for (node_tag_items2[0..node_count], node_data_items2[0..node_count]) |nt, nd| {
-            if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) gap_count += 1;
+            if (nt == .jsx_gap_node or nt == .jsx_empty_expr) gap_count += 1
+            else if (nt == .jsx_text_node and nd.rhs != .none) text_gap_count += 1;
         }
         if (gap_count > 0) {
             gap_node_indices2 = try alloc.alloc(u32, gap_count);
@@ -408,7 +448,7 @@ fn parseAndLintImpl(
             gap_ends_u322 = try alloc.alloc(u32, gap_count);
             var gi: usize = 0;
             for (node_tag_items2[0..node_count], node_data_items2[0..node_count], 0..) |nt, nd, ni| {
-                if ((nt == .jsx_text_node and nd.lhs != .none) or nt == .jsx_empty_expr) {
+                if (nt == .jsx_gap_node or nt == .jsx_empty_expr) {
                     gap_node_indices2[gi] = @intCast(ni);
                     gap_starts_u322[gi] = nd.lhs.toInt();
                     gap_ends_u322[gi] = nd.rhs.toInt();
@@ -416,10 +456,22 @@ fn parseAndLintImpl(
                 }
             }
         }
+        if (text_gap_count > 0) {
+            text_gap_node_indices2 = try alloc.alloc(u32, text_gap_count);
+            text_gap_starts_u322 = try alloc.alloc(u32, text_gap_count);
+            var tgi: usize = 0;
+            for (node_tag_items2[0..node_count], node_data_items2[0..node_count], 0..) |nt, nd, ni| {
+                if (nt == .jsx_text_node and nd.rhs != .none) {
+                    text_gap_node_indices2[tgi] = @intCast(ni);
+                    text_gap_starts_u322[tgi] = nd.rhs.toInt();
+                    tgi += 1;
+                }
+            }
+        }
     }
 
     // Single-pass UTF-16 conversion for all byte-offset arrays.
-    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322 };
+    var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322, text_gap_starts_u322 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans2);
 
     const token_count: u32 = @intCast(tokens.len);
@@ -435,12 +487,30 @@ fn parseAndLintImpl(
         token_count,
     );
 
-    // Override positions for gap-type jsx_text_node nodes.
+    // Override positions for jsx_gap_node and jsx_text_node.
+    var needs_resort2 = false;
+    for (0..node_count) |i| {
+        const nt = node_tag_items2[i];
+        const nd = node_data_items2[i];
+        if (nt == .jsx_text_node) {
+            node_pos.ends[i] = tok_starts[nd.lhs.toInt()];
+            needs_resort2 = true;
+        }
+    }
     if (gap_node_indices2.len > 0) {
         for (gap_node_indices2, gap_starts_u322, gap_ends_u322) |ni, gs, ge| {
             node_pos.starts[ni] = gs;
             node_pos.ends[ni] = ge;
         }
+        needs_resort2 = true;
+    }
+    if (text_gap_node_indices2.len > 0) {
+        for (text_gap_node_indices2, text_gap_starts_u322) |ni, gs| {
+            node_pos.starts[ni] = gs;
+        }
+        needs_resort2 = true;
+    }
+    if (needs_resort2) {
         const GapSortCtx2 = struct {
             starts: []const u32,
             ends: []const u32,

@@ -1104,7 +1104,7 @@ pub fn computeNodePositions(
     const isMainTok = try alloc.alloc(u8, tc);
     @memset(isMainTok, 0);
     for (0..n) |i| {
-        if (node_tags[i] != .jsx_text_node) isMainTok[main_tokens[i]] = 1;
+        if (node_tags[i] != .jsx_text_node and node_tags[i] != .jsx_gap_node) isMainTok[main_tokens[i]] = 1;
     }
 
     // Compute node end positions
@@ -1266,6 +1266,8 @@ pub fn computeNodePositions(
                     // Use args_open_tok so we don't stop on the callee's paren `)`.
                     if (is_call and tt == .r_paren and opener == args_open_tok) {
                         is_call = false;
+                        // Extend maxTok to include the closing `)` so getTokens() returns it.
+                        if (j > maxTok[i]) maxTok[i] = @intCast(j);
                         break;
                     }
                     // For block statements, stop after the matching closing `}`
