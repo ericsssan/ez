@@ -1611,18 +1611,9 @@ pub const Lexer = struct {
             if (result == .invalid) return false;
 
             // Post-parse: validate group references
-            // Check duplicate group definitions (always)
-            if (v.group_def_count > 1) {
-                var i: usize = 0;
-                while (i < v.group_def_count) : (i += 1) {
-                    var j = i + 1;
-                    while (j < v.group_def_count) : (j += 1) {
-                        const a = v.body[v.group_defs[i][0]..v.group_defs[i][1]];
-                        const b = v.body[v.group_defs[j][0]..v.group_defs[j][1]];
-                        if (std.mem.eql(u8, a, b)) return false;
-                    }
-                }
-            }
+            // Note: ES2025 allows duplicate named groups in different alternatives of a disjunction,
+            // so we do NOT reject duplicate group names here. Rules like no-useless-backreference
+            // handle the semantic validity check via regexpp.
             // Check dangling references — only when named groups exist
             // (in non-/u without named groups, \k<x> is just an identity escape)
             if (v.has_named_group and v.group_ref_count > 0) {

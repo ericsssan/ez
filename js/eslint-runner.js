@@ -2051,7 +2051,14 @@ class SourceCode {
       while (!initAdded && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
         const curTag = ast._nodeTags[curIdx];
         if (curTag === T.declarator) {
-          const initNodeIdx = ast.nodeRhs(curIdx);
+          // Unwrap grouping_expr (parenthesized expression) so writeExpr points to the actual
+          // expression, not the grouping wrapper. Needed for e.g. `const x = (<JSX/>)` where
+          // jsx-max-depth uses isJSX(writeExpr) and can't see through ParenthesizedExpression.
+          let initNodeIdx = ast.nodeRhs(curIdx);
+          while (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount &&
+                 ast._nodeTags[initNodeIdx] === T.grouping_expr) {
+            initNodeIdx = ast.nodeLhs(initNodeIdx);
+          }
           // Check if this declarator is in a for-in/for-of statement (no initializer,
           // but the loop itself provides the write each iteration).
           const declParentIdx = ast._parentData ? ast._parentData[curIdx] : NONE;
@@ -2212,9 +2219,9 @@ class SourceCode {
       const weIdx = ast._refWriteExprIds ? ast._refWriteExprIds[refIdx] : NONE32;
       ref.writeExpr = (weIdx !== undefined && weIdx !== NONE32 && weIdx < ast.nodeCount)
         ? nodeView(ast, weIdx) : null;
-    } else {
-      ref.writeExpr = null;
     }
+    // Read-only refs: leave writeExpr as undefined (not null). ESLint scope convention:
+    // `typeof ref.writeExpr !== 'undefined'` is how code checks if a ref is a write.
     this._refCache[refIdx] = ref;
     return ref;
   }
