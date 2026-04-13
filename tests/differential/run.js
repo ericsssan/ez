@@ -66,13 +66,13 @@ _bunPlugin({
     // ESM syntax: provides `default` export for jsdoc's `import eslint from 'eslint'`
     // and named exports accessible via CJS `require('eslint').RuleTester`.
     // CJS/ESM conflict is handled by the `require("eslint")` pre-load below setup().
-    // RuleTester.run() delegates to __EZ_CAPTURE__ for case capture.
+    // RuleTester.run() delegates to __EZ_SILENT_RUN__ for case capture.
     build.module("eslint", () => ({
       loader: "js",
       contents: `
 class RuleTester {
   constructor(config) { this._config = config || {}; }
-  run(name, rule, cases) { if (typeof global.__EZ_CAPTURE__ === "function") global.__EZ_CAPTURE__(name, rule, cases, this._config); }
+  run(name, rule, cases) { if (typeof global.__EZ_SILENT_RUN__ === "function") global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, this._config); }
   static get describe() { return null; }
   static get it()       { return null; }
 }
@@ -109,7 +109,7 @@ export default avaStub;
       contents: `
 export default class FakeAvaRuleTester {
   constructor(_t, config) { this._config = config || {}; }
-  run(name, rule, cases) { if (typeof global.__EZ_CAPTURE__ === "function") global.__EZ_CAPTURE__(name, rule, cases, this._config); }
+  run(name, rule, cases) { if (typeof global.__EZ_SILENT_RUN__ === "function") global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, this._config); }
 }
 `,
     }));
@@ -148,7 +148,7 @@ export default { parser };
         "export default class FakeSnapshotRuleTester {",
         "  constructor(_t, config) { this._config = config || {}; }",
         "  run(name, rule, cases) {",
-        "    if (typeof global.__EZ_CAPTURE__ === 'function') global.__EZ_CAPTURE__(name, rule, cases, this._config);",
+        "    if (typeof global.__EZ_SILENT_RUN__ === 'function') global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, this._config);",
         "  }",
         "}",
       ].join("\n"),
@@ -158,14 +158,21 @@ export default { parser };
     // These allow loading test files directly from submodule source trees without
     // running separate extraction scripts.
 
-    // @typescript-eslint/rule-tester — forward run() to __EZ_CAPTURE__ capture stub
+    // @typescript-eslint/rule-tester — forward run() to __EZ_SILENT_RUN__ capture stub.
+    // Always passes @typescript-eslint/parser as the default parser so TypeScript syntax parses.
     build.module("@typescript-eslint/rule-tester", () => ({
       loader: "js",
       contents: `
 export class RuleTester {
   constructor(config) { this._config = config || {}; }
   run(name, rule, cases) {
-    if (typeof global.__EZ_CAPTURE__ === "function") global.__EZ_CAPTURE__(name, rule, cases, this._config);
+    if (typeof global.__EZ_SILENT_RUN__ === "function") {
+      const tsParser = global.__EZ_TS_PARSER__;
+      const defaultCfg = tsParser
+        ? { ...this._config, languageOptions: { ...(this._config.languageOptions || {}), parser: tsParser } }
+        : this._config;
+      global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, defaultCfg);
+    }
   }
   static get describe() { return null; }
   static get it()       { return null; }
@@ -177,7 +184,7 @@ export default RuleTester;
     // Rule source stubs — rule object is unused (oracle uses the compiled npm rule via _espreePlugins)
     build.onLoad({ filter: /eslint-plugin[/\\]src[/\\]rules[/\\].+\.ts$/ }, () => ({
       loader: "js",
-      contents: `const r = {}; export default r; module.exports = r;`,
+      contents: `const r = {}; export default r;`,
     }));
 
     // Sonarjs shared utility stubs — scoped to sonarjs-src only to avoid clobbering
@@ -300,11 +307,13 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
       .filter(d => d.startsWith("eslint-plugin-"))
       .map(d => {
         const pluginDir = path.join(CONFORMANCE_DIR, d);
-        const prefix = d.replace(/^eslint-plugin-/, "");
+        let prefix = d.replace(/^eslint-plugin-/, "");
         let testFormat = "cjs";
         try {
           const pkgJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "package.json"), "utf8"));
           if (pkgJson.type === "module") testFormat = "esm";
+          // Allow conformance package.json to override the prefix (e.g. scoped packages like @typescript-eslint).
+          if (pkgJson.prefix) prefix = pkgJson.prefix;
         } catch { /* no package.json — assume CJS */ }
         // Auto-install only when node_modules is absent AND require() would fail.
         // We skip plugins whose index.js works without installed deps (react, promise) — installing
@@ -405,10 +414,19 @@ const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
 
 // @typescript-eslint/parser for oracle: used when test cases specify a TS parser.
+// Load by absolute path so the build.module() stub for "@typescript-eslint/parser" is bypassed.
+// The stub (used by react/promise/unicorn) lacks parseForESLint, making all TS cases appear custom.
 let _tsParser = null;
-try { _tsParser = require("@typescript-eslint/parser"); } catch { /* not installed */ }
+{
+  const _tsParserDist = path.join(CONFORMANCE_DIR, "eslint-plugin-typescript-eslint/node_modules/@typescript-eslint/parser/dist/index.js");
+  try { _tsParser = require(_tsParserDist); } catch { /* not installed */ }
+  // Sanity-check: the real parser exposes parseForESLint; stubs don't.
+  if (typeof _tsParser?.parseForESLint !== "function") _tsParser = null;
+}
+global.__EZ_TS_PARSER__ = _tsParser;
 
 const eslintLinter = new Linter();
+global.__EZ_LINTER_CLASS__ = Linter;
 
 // Timing accumulators for runner breakdown (parse vs plugin).
 let _runnerParseMs = 0, _runnerPluginMs = 0;
@@ -678,15 +696,65 @@ function normalizeCase(c, defaultConfig = {}) {
 function installCorpusIntercept() {
   const TESTS_DIR = path.join(ESLINT_ROOT, "tests/lib/rules");
 
-  // ── Plugin path: __EZ_CAPTURE__ (Bun.plugin stubs → here) ─────────────────
-  // Called when plugin test files (react/promise/unicorn) are loaded.
-  // global.__EZ_CAPTURE_PREFIX__ is set by loadRuleCases() before require/import.
-  global.__EZ_CAPTURE__ = (name, rule, cases, defaultConfig = {}) => {
-    const prefix   = global.__EZ_CAPTURE_PREFIX__ || null;
+  // ── Plugin path: universal Linter.prototype.verify intercept ─────────────
+  // Patch the real Linter (npm-installed eslint) so any verify() call during
+  // corpus capture is recorded inline.  __EZ_CAPTURE_PREFIX__ activates capture.
+  const _realVerifyOrig = Linter.prototype.verify;
+  Linter.prototype.verify = function patchedVerify(code, config, options) {
+    const result = _realVerifyOrig.call(this, code, config, options);
+
+    if (!global.__EZ_CAPTURE_PREFIX__) return result;
+    // Skip "No matching configuration found" — __EZ_SILENT_RUN__ will retry with fallback filename
+    if (result.length === 1 && result[0].ruleId === null &&
+        result[0].message?.startsWith("No matching configuration found")) return result;
+    // Skip fatal parse errors
+    if (result.some(m => m.fatal)) return result;
+    // Extract rule name + options from flat config
+    const flatConfig = Array.isArray(config) ? config : [config];
+    let fullName = null, ruleOptions = [], langOpts = {};
+    for (const cfg of flatConfig) {
+      if (cfg.rules && !fullName) {
+        const names = Object.keys(cfg.rules);
+        if (names.length > 0) {
+          fullName = names[0];
+          const entry = cfg.rules[fullName];
+          ruleOptions = Array.isArray(entry) ? entry.slice(1) : [];
+        }
+      }
+      if (cfg.languageOptions) langOpts = cfg.languageOptions;
+    }
+    if (!fullName) return result;
+    const _isTsCase = typeof langOpts.parser?.parseForESLint === "function";
+    const filename = typeof options === "string" ? options : options?.filename;
+    const eslintResult = result
+      .filter(m => !m.fatal && m.ruleId === fullName)
+      .map(m => ({ rule: fullName, line: m.line }));
+    const tc = {
+      code: typeof code === "string" ? code : "",
+      options: ruleOptions,
+      languageOptions: langOpts,
+      filename: filename ? _normalizeFilenameExt(filename) : null,
+      hasCustomParser: false,
+      isTypeScript: _isTsCase,
+      eslintResult,
+    };
+    if (!_captured) _captured = { name: fullName, defaultConfig: {}, cases: [] };
+    _captured.cases.push(tc);
+    return result;
+  };
+
+  // __EZ_SILENT_RUN__ — called by all RuleTester stubs.
+  // Iterates test cases, calls linter.verify() per case; the intercept above captures inline.
+  // global.__EZ_CAPTURE_PREFIX__ must be set by the caller before invoking.
+  global.__EZ_SILENT_RUN__ = (linterInst, name, cases, defaultConfig = {}) => {
+    const prefix = global.__EZ_CAPTURE_PREFIX__ || null;
     const fullName = prefix ? `${prefix}/${name}` : name;
+
     const allInputCases = [...(cases.valid || []), ...(cases.invalid || [])];
-    for (const c of allInputCases) {
+    for (let _cIdx = 0; _cIdx < allInputCases.length; _cIdx++) {
+      const c = allInputCases[_cIdx];
       const tc = normalizeCase(c, defaultConfig);
+
       if (tc.hasCustomParser) continue;
       const sourceType  = tc.languageOptions?.sourceType  || "script";
       const ecmaVersion = tc.languageOptions?.ecmaVersion ?? 2022;
@@ -698,46 +766,26 @@ function installCorpusIntercept() {
       const langOpts    = { ecmaVersion, sourceType };
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
       if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
-      // Use @typescript-eslint/parser for TS cases so the oracle correctly
-      // parses TypeScript syntax and produces accurate expected diagnostics.
       if (tc.isTypeScript && _tsParser) langOpts.parser = _tsParser;
       try {
-        const oracleExt = tc.isTypeScript ? (jsxEnabled ? ".tsx" : ".ts") : ".js";
+        const oracleExt      = tc.isTypeScript ? (jsxEnabled ? ".tsx" : ".ts") : ".js";
         const oracleFilename = tc.filename || ("test" + oracleExt);
-        // files: explicit extensions so ESLint flat config lints non-default types (ts, tsx, jsx, etc.)
-        const messages = eslintLinter.verify(tc.code, [{
+        const flatCfg = [{
           files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
           plugins: pluginCfg,
           languageOptions: langOpts,
           rules: { [fullName]: ruleEntry },
-        }], { filename: oracleFilename });
-        if (messages.some(m => m.fatal)) continue; // espree parse error — skip case
-        // ESLint flat config returns a non-fatal "No matching configuration found" warning when
-        // the filename is an absolute path outside the project root. Re-run with a relative filename.
-        if (messages.length === 1 && messages[0].ruleId === null && messages[0].message?.startsWith("No matching configuration found")) {
+        }];
+
+        // Primary call — intercept fires and captures inline
+        const messages = linterInst.verify(tc.code, flatCfg, { filename: oracleFilename });
+        // Retry with relative filename if "No matching configuration found"
+        if (messages.length === 1 && messages[0].ruleId === null &&
+            messages[0].message?.startsWith("No matching configuration found")) {
           const ext = path.extname(oracleFilename) || ".js";
-          const fallbackFilename = "test" + ext;
-          const msgs2 = eslintLinter.verify(tc.code, [{
-            files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
-            plugins: pluginCfg,
-            languageOptions: langOpts,
-            rules: { [fullName]: ruleEntry },
-          }], { filename: fallbackFilename });
-          if (msgs2.some(m => m.fatal)) continue;
-          // If the fallback filename also has "No matching configuration found", the extension
-          // is not supported by ESLint (e.g. .vue). Skip the case to avoid FPs.
-          if (msgs2.length === 1 && msgs2[0].ruleId === null && msgs2[0].message?.startsWith("No matching configuration found")) continue;
-          tc.eslintResult = msgs2.filter(m => m.ruleId === fullName && !m.fatal).map(m => ({ rule: fullName, line: m.line }));
-          // Update filename so the runner uses the same fallback (prevents physicalFilename mismatch).
-          tc.filename = fallbackFilename;
-        } else {
-          tc.eslintResult = messages
-            .filter(m => m.ruleId === fullName && !m.fatal)
-            .map(m => ({ rule: fullName, line: m.line }));
+          linterInst.verify(tc.code, flatCfg, { filename: "test" + ext });
         }
       } catch { continue; }
-      if (!_captured) _captured = { name: fullName, defaultConfig, cases: [] };
-      _captured.cases.push(tc);
     }
   };
 
@@ -816,7 +864,8 @@ function installCorpusIntercept() {
     TESTS_DIR,
     restore: () => {
       if (_SubmoduleLinter && _linterOrig) _SubmoduleLinter.prototype.verify = _linterOrig;
-      delete global.__EZ_CAPTURE__;
+      Linter.prototype.verify = _realVerifyOrig;
+      delete global.__EZ_SILENT_RUN__;
       delete global.__EZ_CAPTURE_RULE__;
       delete global.__EZ_CAPTURE_PREFIX__;
     },
@@ -825,11 +874,11 @@ function installCorpusIntercept() {
 
 // evalSonarjsTest — synchronous eval-based loader for sonarjs unit.test.ts files.
 // Sonarjs tests use `node:test`'s describe/it which schedule callbacks asynchronously,
-// so await import() resolves before __EZ_CAPTURE__ fires.  We work around this by:
+// so await import() resolves before stubs fire.  We work around this by:
 //   1. Transpiling the TypeScript file synchronously with Bun.Transpiler
 //   2. Stripping all import declarations (replaced by preamble stubs below)
 //   3. Injecting synchronous describe/it + RuleTester stubs + rule stub
-//   4. eval()-ing the result — the describe/it wrappers call __EZ_CAPTURE__ inline
+//   4. eval()-ing the result — the describe/it wrappers call __EZ_SILENT_RUN__ inline
 // ruleName: the canonical rule name (e.g. "no-all-duplicated-branches") — sonarjs tests call
 // ruleTester.run("S3923 if", ...) using descriptions, not rule names, so we inject the correct
 // name directly into the preamble instead of relying on the first arg to run().
@@ -851,7 +900,7 @@ function evalSonarjsTest(testFile, ruleName) {
     `const _ezRuleName = ${JSON.stringify(ruleName)};`,
     "class _EzRuleTester {",
     "  constructor() {}",
-    "  run(_name, r, cases) { if (typeof global.__EZ_CAPTURE__ === 'function') global.__EZ_CAPTURE__(_ezRuleName, r, cases, {}); }",
+    "  run(_name, r, cases) { if (typeof global.__EZ_SILENT_RUN__ === 'function') global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), _ezRuleName, cases, {}); }",
     "}",
     "const DefaultParserRuleTester = _EzRuleTester;",
     "const NoTypeCheckingRuleTester = _EzRuleTester;",
@@ -863,8 +912,8 @@ function evalSonarjsTest(testFile, ruleName) {
 }
 
 // testFormat:
-//   "cjs"           — require() + RuleTester stub calls __EZ_CAPTURE__ (react, promise, core)
-//   "esm"           — import() + RuleTester stub calls __EZ_CAPTURE__ (unicorn)
+//   "cjs"           — require() + RuleTester stub calls __EZ_SILENT_RUN__ (react, promise, core)
+//   "esm"           — import() + RuleTester stub calls __EZ_SILENT_RUN__ (unicorn)
 //   "static-export" — import() + reads export default { valid, invalid } directly (jsdoc)
 async function loadRuleCases(testsDir, baseName, { capturePrefix = null, captureRule = null, testFormat = "cjs" } = {}) {
   // Accept both .js and .test.ts (typescript-eslint source tests)
@@ -891,7 +940,7 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
         const testCases = mod.default || mod;
         if (testCases && typeof testCases === "object" && ("valid" in testCases || "invalid" in testCases)) {
           const ruleBaseName = camelToKebab(baseName);
-          global.__EZ_CAPTURE__(ruleBaseName, null, testCases, {});
+          global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), ruleBaseName, testCases, {});
         }
       }
       // "esm": __EZ_CAPTURE__ already called by RuleTester.run() stub during import
