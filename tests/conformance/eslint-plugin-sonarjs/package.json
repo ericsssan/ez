@@ -1,0 +1,8 @@
+{
+  "name": "ez-conformance-eslint-plugin-sonarjs",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "eslint-plugin-sonarjs": "4.0.2"
+  }
+}

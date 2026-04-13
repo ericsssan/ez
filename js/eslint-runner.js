@@ -3277,6 +3277,7 @@ class RuleContext {
  */
 function _isSelector(key) {
   const base = key.endsWith(':exit') ? key.slice(0, -5) : key;
+  if (base === '*') return true; // wildcard — routes to selectorHandlers (hasUniversalSelectors)
   // Comma-only union of plain type names like "MethodDefinition, PropertyDefinition"
   // These should be expanded, not sent to esquery.
   if (base.includes(',')) {
