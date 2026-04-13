@@ -3037,7 +3037,48 @@ function _getChainExpr(ast, idx) {
   return c;
 }
 
-/** Raw nodeView — returns the NodeProto directly, no ChainExpression wrapping. */
+// ── Per-type prototypes ──────────────────────────────────────────
+// ESLint plugins use `'prop' in node` to distinguish node types. With a shared
+// prototype, every getter is visible on every node, breaking that contract.
+// Fix: for specific node types where plugins check with `in` and the property
+// doesn't belong, create a variant prototype with that getter removed.
+// Conservative approach: only remove properties we KNOW cause bugs, not all.
+
+// Map: tag → array of property names to delete from NodeProto for that type.
+// Only list properties where plugins use `'prop' in node` and the prop doesn't
+// belong to that node type per the ESTree spec.
+const _TAG_DELETE_PROPS = {
+  // jsdocUtils checks `'left' in param` and `'name' in param` to route code paths.
+  // With prototype getters these are always true, taking wrong branches and
+  // bypassing the correct handlers for each node type.
+  [T.rest_element]:    ['left', 'right', 'name'],
+  // ObjectPattern/ArrayPattern: `'left' in param` must be false so jsdocUtils
+  // doesn't crash on `param.left.type` at line 282-285.
+  [T.object_pattern]:  ['left', 'right'],
+  [T.array_pattern]:   ['left', 'right'],
+};
+
+const _typeProtos = new Array(256);
+
+function _getTypeProto(tag) {
+  let proto = _typeProtos[tag];
+  if (proto) return proto;
+  const deletes = _TAG_DELETE_PROPS[tag];
+  if (!deletes) {
+    // No overrides needed — use NodeProto directly
+    _typeProtos[tag] = NodeProto;
+    return NodeProto;
+  }
+  // Clone NodeProto and delete the specified getters
+  proto = Object.create(null, Object.getOwnPropertyDescriptors(NodeProto));
+  for (const prop of deletes) {
+    delete proto[prop];
+  }
+  _typeProtos[tag] = proto;
+  return proto;
+}
+
+/** Raw nodeView — returns per-type proto node, no ChainExpression wrapping. */
 function _nodeViewRaw(ast, index) {
   let cache = ast._nodeCache;
   if (cache === null) {
@@ -3046,7 +3087,8 @@ function _nodeViewRaw(ast, index) {
   }
   let n = cache[index];
   if (n === undefined) {
-    n = Object.create(NodeProto);
+    const tag = ast._nodeTags[index];
+    n = Object.create(_getTypeProto(tag));
     n._ast = ast;
     n._i = index;
     n._parent = _PARENT_UNSET;
@@ -3056,7 +3098,6 @@ function _nodeViewRaw(ast, index) {
     n._body = _BODY_UNSET;
     n._value = _VALUE_UNSET;
     // Make regex/bigint own properties so Object.hasOwn() works (ESLint uses this)
-    const tag = ast._nodeTags[index];
     if (tag === T.regex_literal) {
       const _n = n;
       const _regexGetter = Object.getOwnPropertyDescriptor(NodeProto, 'regex').get;
