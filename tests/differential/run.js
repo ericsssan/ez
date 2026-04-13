@@ -360,6 +360,10 @@ const { runPlugins, computeGlobals, applyDisableDirectives } = require(path.join
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
 
+// @typescript-eslint/parser for oracle: used when test cases specify a TS parser.
+let _tsParser = null;
+try { _tsParser = require("@typescript-eslint/parser"); } catch { /* not installed */ }
+
 const eslintLinter = new Linter();
 
 // Timing accumulators for runner breakdown (parse vs plugin).
@@ -650,6 +654,9 @@ function installCorpusIntercept() {
       const langOpts    = { ecmaVersion, sourceType };
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
       if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
+      // Use @typescript-eslint/parser for TS cases so the oracle correctly
+      // parses TypeScript syntax and produces accurate expected diagnostics.
+      if (tc.isTypeScript && _tsParser) langOpts.parser = _tsParser;
       try {
         const oracleExt = tc.isTypeScript ? (jsxEnabled ? ".tsx" : ".ts") : ".js";
         const oracleFilename = tc.filename || ("test" + oracleExt);
@@ -729,9 +736,10 @@ function installCorpusIntercept() {
           if (normalized.languageOptions) langOpts = normalized.languageOptions;
         }
       } catch { /* skip if config extraction fails */ }
-      // TypeScript/Babel parsers expose parseForESLint; espree wrapper {parse:fn} does not.
-      if (typeof langOpts.parser?.parseForESLint === "function") return result;
       // Single pass: detect fatal parse errors, collect fix flag, and build eslintResult.
+      const _isTsCase = typeof langOpts.parser?.parseForESLint === "function";
+      // Babel parsers (no latestEcmaVersion, no parseForESLint-that-we-trust) — skip.
+      // TS parser cases: capture using oracle result (already ran with TS parser).
       let hasFatal = false, hasFix = false;
       const eslintResult = [];
       for (const m of result) {
@@ -746,7 +754,8 @@ function installCorpusIntercept() {
         code: typeof code === "string" ? code : "",
         options: ruleOptions,
         languageOptions: langOpts,
-        hasCustomParser: !!(langOpts.parser && typeof (langOpts.parser.parseForESLint ?? langOpts.parser.parse) === 'function'),
+        hasCustomParser: false,
+        isTypeScript: _isTsCase,
         eslintResult,
       };
       if (!_captured) _captured = { name: ruleName, defaultConfig: {}, cases: [] };
