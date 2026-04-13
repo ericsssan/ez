@@ -550,11 +550,12 @@ class SourceCode {
     const jsxTextTag = T.jsx_text_node; // 190
     for (let i = 0; i < nodeCount; i++) {
       if (nodeTags[i] === jsxTextTag) {
-        // Only non-gap nodes (lhs === NONE) own a real token as JSX text
-        if (ast.nodeLhs(i) === NONE) {
-          const mt = mainTokens[i];
-          if (mt < ast.tokenCount) flags[mt] = 1;
-        }
+        // lhs = next token index after the text span (always set, not NONE).
+        // Mark all tokens from mainToken up to (but not including) lhs as JSX text.
+        const mt = mainTokens[i];
+        const end = ast.nodeLhs(i); // next token after text span
+        const limit = (end !== NONE && end < ast.tokenCount) ? end : mt + 1;
+        for (let t = mt; t < limit; t++) flags[t] = 1;
       }
     }
     this._jsxTextTokFlags = flags;
