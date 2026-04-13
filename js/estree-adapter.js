@@ -1534,10 +1534,9 @@ const NodeProto = {
     if (t === T.assignment_pattern) {
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
-    // VariableDeclarator has no 'left' property in ESLint's AST. Return undefined
-    // so that `node.left !== void 0` correctly distinguishes it from AssignmentExpression.
-    if (t === T.declarator) return undefined;
-    return null;
+    // Node types without 'left' property (VariableDeclarator, etc.) return undefined
+    // so that `node.left !== void 0` correctly distinguishes them from AssignmentExpression.
+    return undefined;
   },
 
   /**
