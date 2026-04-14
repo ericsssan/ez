@@ -657,6 +657,28 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
         .property_ident, .property_literal => {
             // main_token holds the name/string; no children to dump.
         },
+
+        // ── TypeScript interface member kinds ─────────────────
+        .ts_call_signature, .ts_construct_signature => {
+            // lhs = .none, rhs = return type (or .none)
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+        .ts_method_signature, .ts_property_signature => {
+            // lhs = name node, rhs = return/value type (or .none)
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+        .ts_index_signature => {
+            // lhs = param identifier, rhs = value type
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
+
+        // ── Decorator ─────────────────────────────────────────
+        .decorator => {
+            // lhs = expression node
+            try dumpNode(tree, data.lhs, child_indent, writer);
+        },
     }
 }
 

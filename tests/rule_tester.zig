@@ -50,8 +50,9 @@ pub const RuleTester = struct {
         defer testing.allocator.free(diags);
 
         for (diags) |d| {
-            if (std.mem.eql(u8, d.rule_name, rule)) {
-                std.debug.print("\n  FAIL (valid): '{s}' should not fire on:\n    {s}\n  Got: {s}\n", .{ rule, code, d.message });
+            const name = linter.rule_names[d.rule_index];
+            if (std.mem.eql(u8, name, rule)) {
+                std.debug.print("\n  FAIL (valid): '{s}' should not fire on:\n    {s}\n", .{ rule, code });
                 return error.TestExpectedEqual;
             }
         }
@@ -63,7 +64,7 @@ pub const RuleTester = struct {
 
         var actual: usize = 0;
         for (diags) |d| {
-            if (std.mem.eql(u8, d.rule_name, rule)) actual += 1;
+            if (std.mem.eql(u8, linter.rule_names[d.rule_index], rule)) actual += 1;
         }
 
         if (actual != expected) {
@@ -71,7 +72,7 @@ pub const RuleTester = struct {
             if (actual == 0) {
                 std.debug.print("  All diagnostics ({d}):\n", .{diags.len});
                 for (diags) |d| {
-                    std.debug.print("    - {s}: {s}\n", .{ d.rule_name, d.message });
+                    std.debug.print("    - {s}\n", .{linter.rule_names[d.rule_index]});
                 }
             }
             return error.TestExpectedEqual;

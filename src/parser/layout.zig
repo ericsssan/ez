@@ -183,6 +183,16 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
         .jsx_identifier => "JSXIdentifier",
         .jsx_member_expr => "JSXMemberExpression",
         .jsx_namespaced_name => "JSXNamespacedName",
+
+        // ── TypeScript interface member kinds ─────────────────
+        .ts_call_signature => "TSCallSignatureDeclaration",
+        .ts_construct_signature => "TSConstructSignatureDeclaration",
+        .ts_method_signature => "TSMethodSignature",
+        .ts_property_signature => "TSPropertySignature",
+        .ts_index_signature => "TSIndexSignature",
+
+        // ── Decorator ─────────────────────────────────────────
+        .decorator => "Decorator",
     };
 }
 

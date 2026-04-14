@@ -317,6 +317,12 @@ const BreakContext = struct {
 // ── CodePathBuilder ──────────────────────────────────────────────
 
 pub const CodePathBuilder = struct {
+    /// Parent allocator — used only for copying result slices out in finish().
+    parent_allocator: Allocator,
+    /// Arena owns all internal allocations (ArrayLists backing, ForkContexts, etc.).
+    /// Freed as a unit in deinit().
+    arena: std.heap.ArenaAllocator,
+    /// Shortcut to arena.allocator() — set in init().
     allocator: Allocator,
 
     // Results
@@ -350,7 +356,9 @@ pub const CodePathBuilder = struct {
 
     pub fn init(alloc: Allocator) CodePathBuilder {
         return .{
-            .allocator = alloc,
+            .parent_allocator = alloc,
+            .arena = std.heap.ArenaAllocator.init(alloc),
+            .allocator = undefined, // fixed up by caller: self.cpb.allocator = self.cpb.arena.allocator()
             .segments = .empty,
             .codepaths = .empty,
             .events = .empty,
@@ -371,6 +379,12 @@ pub const CodePathBuilder = struct {
             .break_context = null,
             .seg_counter = 0,
         };
+    }
+
+    /// Free all internal allocations. Call after finish() returns the Result.
+    pub fn deinit(self: *CodePathBuilder) void {
+        self.arena.deinit();
+        self.* = undefined;
     }
 
     // ── Segment creation ─────────────────────────────────────
@@ -1520,21 +1534,40 @@ pub const CodePathBuilder = struct {
         cp_final_pool: []const SegmentId,
         cp_returned_pool: []const SegmentId,
         cp_thrown_pool: []const SegmentId,
+
+        pub fn deinit(self: *Result, allocator: std.mem.Allocator) void {
+            allocator.free(self.segments);
+            allocator.free(self.codepaths);
+            allocator.free(self.events);
+            allocator.free(self.all_prev_targets);
+            allocator.free(self.prev_targets);
+            allocator.free(self.all_next_targets);
+            allocator.free(self.next_targets);
+            allocator.free(self.looped_targets);
+            allocator.free(self.cp_final_pool);
+            allocator.free(self.cp_returned_pool);
+            allocator.free(self.cp_thrown_pool);
+            self.* = undefined;
+        }
     };
 
-    pub fn finish(self: *CodePathBuilder) Result {
+    /// Copy all result arrays to the parent allocator and return them.
+    /// Caller owns the returned Result and must call Result.deinit(parent_allocator).
+    /// After finish(), call deinit() to free the builder's internal arena.
+    pub fn finish(self: *CodePathBuilder) !Result {
+        const a = self.parent_allocator;
         return .{
-            .segments = self.segments.items,
-            .codepaths = self.codepaths.items,
-            .events = self.events.items,
-            .all_prev_targets = self.all_prev_targets.items,
-            .prev_targets = self.prev_targets.items,
-            .all_next_targets = self.all_next_targets.items,
-            .next_targets = self.next_targets.items,
-            .looped_targets = self.looped_targets.items,
-            .cp_final_pool = self.cp_final_pool.items,
-            .cp_returned_pool = self.cp_returned_pool.items,
-            .cp_thrown_pool = self.cp_thrown_pool.items,
+            .segments = try a.dupe(Segment, self.segments.items),
+            .codepaths = try a.dupe(CodePath, self.codepaths.items),
+            .events = try a.dupe(Event, self.events.items),
+            .all_prev_targets = try a.dupe(SegmentId, self.all_prev_targets.items),
+            .prev_targets = try a.dupe(SegmentId, self.prev_targets.items),
+            .all_next_targets = try a.dupe(SegmentId, self.all_next_targets.items),
+            .next_targets = try a.dupe(SegmentId, self.next_targets.items),
+            .looped_targets = try a.dupe(SegmentId, self.looped_targets.items),
+            .cp_final_pool = try a.dupe(SegmentId, self.cp_final_pool.items),
+            .cp_returned_pool = try a.dupe(SegmentId, self.cp_returned_pool.items),
+            .cp_thrown_pool = try a.dupe(SegmentId, self.cp_thrown_pool.items),
         };
     }
 };

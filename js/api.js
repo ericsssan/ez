@@ -20,6 +20,11 @@ const {
 const { runPlugins } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
+// Eager-init type-aware services when tsconfig.json exists
+let _tsServices = null;
+try { _tsServices = require("./ts-services"); } catch { _tsServices = null; }
+if (_tsServices) _tsServices.init();
+
 // ── Constants ───────────────────────────────────────────────────
 
 const JS_EXTS = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]);

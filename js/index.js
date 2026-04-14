@@ -39,9 +39,11 @@ function ensureBuffer(sourceLen) {
   const needed = HEADER_SIZE + sourceLen * 30;
   const minSize = Math.max(needed, DEFAULT_BUFFER_SIZE);
 
+  // Grow-only: never shrink. Shrinking would orphan the old buffer, and any
+  // AstView with noPrivateCopy wrapping it would hold an unreachable reference.
+  // Staying at the high-water mark costs at most one large allocation; resize
+  // events are O(log n) over any bounded corpus so the cost is negligible.
   if (!sharedBuffer || sharedBuffer.byteLength < minSize) {
-    sharedBuffer = new ArrayBuffer(minSize);
-  } else if (sharedBuffer.byteLength > minSize * 4) {
     sharedBuffer = new ArrayBuffer(minSize);
   }
   return sharedBuffer;

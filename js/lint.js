@@ -21,7 +21,10 @@ const { loadCoreRules, loadPlugin } = require("./load-plugin");
 const { loadConfig, normalizeRules, pluginsFromConfig } = require("./config-loader");
 const { applyFixes } = require("./api");
 
-const _TS_ESLINT = "typescript-eslint";
+// Eager-init type-aware services when tsconfig.json exists
+let _tsServices = null;
+try { _tsServices = require("./ts-services"); } catch { _tsServices = null; }
+if (_tsServices) _tsServices.init();
 
 function _buildNativeConfigFromPlugins(plugins, nativeRulesMap, ruleSeverities, ruleOptions, settings, languageOptions) {
   const rules = {};
@@ -204,8 +207,6 @@ async function main() {
   const explicitJsOnlyPlugins = pluginNames.length > 0
     ? explicitPlugins.filter(p => !nativeRulesMap.has(p.meta?.name))
     : [];
-  const explicitTypeAware = pluginNames.length > 0 &&
-    explicitPlugins.some(p => p.meta?.name?.includes(_TS_ESLINT));
   const useNativeBatch = pluginNames.length > 0 &&
     explicitJsOnlyPlugins.length === 0 &&
     explicitNativeConfig !== null &&
@@ -247,7 +248,6 @@ async function main() {
 
       let fileNativeConfig = null;
       let jsOnlyPlugins;
-      let typeAware = false;
 
       if (configResolver) {
         const fileConfig = configResolver.resolveForFile(file);
@@ -276,7 +276,6 @@ async function main() {
               fileConfig.settings, fileConfig.languageOptions,
             ),
             jsOnlyPlugins: plugins.filter(p => !nativeRulesMap.has(p.meta?.name)),
-            typeAware: plugins.some(p => p.meta?.name?.includes(_TS_ESLINT)),
           };
           configPluginCache.set(fileConfig, cached);
         }
@@ -287,13 +286,11 @@ async function main() {
         fileLanguageOptions = cached.languageOptions;
         fileNativeConfig = cached.nativeConfig;
         jsOnlyPlugins = cached.jsOnlyPlugins;
-        typeAware = cached.typeAware;
       } else {
         filePlugins = explicitPlugins;
         fileRuleConfig = {};
         fileNativeConfig = explicitNativeConfig;
         jsOnlyPlugins = explicitJsOnlyPlugins;
-        typeAware = explicitTypeAware;
       }
 
       let ast;
@@ -326,7 +323,7 @@ async function main() {
         try {
           jsReports = runPlugins(ast, jsOnlyPlugins, {
             filename: file, tagNames, ruleConfig: fileRuleConfig,
-            typeAware, settings: fileSettings, languageOptions: fileLanguageOptions,
+            settings: fileSettings, languageOptions: fileLanguageOptions,
           });
         } catch (e) {
           recordError(file, "Plugin error", e);

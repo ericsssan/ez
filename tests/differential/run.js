@@ -533,7 +533,10 @@ function runRunner(filePath) {
 }
 
 // Per-rule runner call for corpus mode (forwards per-case options, sourceType, JSX mode).
-function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null) {
+// rulePlugin: pre-created { meta, create } object shared across all cases of the same rule.
+//   Passing the same object identity across calls triggers the buildVisitorMap fast path,
+//   avoiding a new _cachedVM allocation (and new closure set) per case.
+function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null, rulePlugin = null) {
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   // Use the same filename as the oracle (tc.filename || "test.js") so filename-checking
   // rules (e.g. react/jsx-filename-extension) see the same path and produce matching results.
@@ -551,9 +554,11 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
     const _p0 = Date.now();
-    const ast = parse(src, { filename, lang: parseLang, globals, sourceType });
+    const ast = parse(src, { filename, lang: parseLang, globals, sourceType, noPrivateCopy: true });
     _runnerParseMs += Date.now() - _p0;
-    const plugin = {
+    // Re-use the caller-provided plugin identity (same object → buildVisitorMap fast path),
+    // or create a fresh one (cold path, for backward compatibility if called standalone).
+    const plugin = rulePlugin || {
       meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
       create: ruleModule.create,
     };
@@ -1166,6 +1171,13 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       ? buildNativeConfig({ [ruleName]: "warn" })
       : null;
 
+    // Create plugin once per rule so runPlugins can take the fast path on all subsequent cases.
+    // The fast path skips _cachedVM rebuild and updates options per-case via ruleConfig.
+    const rulePlugin = {
+      meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
+      create: ruleModule.create,
+    };
+
     let fn = 0, fp = 0, crash = 0, pass = 0, skipCustomParser = 0, skipEspreeParse = 0;
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkipOptions = 0;
     // Collect failing cases for --fails / --verbose output
@@ -1188,7 +1200,7 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       if (!espreeResult) { skipEspreeParse++; continue; }
 
       const _rt0 = Date.now();
-      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename);
+      const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
       runnerOnlyMs += Date.now() - _rt0;
       if (runnerResult === null) { crash++; continue; }
 
@@ -1260,6 +1272,11 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     totalNativeFp    += nativeFp;
     totalNativeSkip  += nativeSkipOptions;
     totalNativeCrash += nativeCrash;
+
+    // Free the old _cachedVM (rule closures from create()). JSC under-counts external
+    // TypedArray backing stores toward GC budget, so GC never fires spontaneously when
+    // switching rules. Each rule creates a new _cachedVM (~10-40 MB for jsdoc-sized rules);
+    // without explicit collection, 1039 rules × 40 MB = 40 GB accumulates before GC.
 
     // Baseline — supports old flat format {fn,fp,crash} and new nested format.
     newBaseline.corpus[ruleName] = {
@@ -1384,7 +1401,11 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
 // ── Save baseline / exit ──────────────────────────────────────
 
 const elapsed = ((Date.now() - _startTime) / 1000).toFixed(2);
-console.log(`\nTotal time: ${elapsed}s`);
+const mem = process.memoryUsage();
+const rss = (mem.rss / 1024 / 1024).toFixed(0);
+const heap = (mem.heapUsed / 1024 / 1024).toFixed(0);
+const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(0);
+console.log(`\nTotal time: ${elapsed}s  |  RSS: ${rss} MB  heap: ${heap}/${heapTotal} MB`);
 
 if (saveBaseline) {
   fs.writeFileSync(BASELINE_FILE, JSON.stringify(newBaseline, null, 2));

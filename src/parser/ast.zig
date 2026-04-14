@@ -507,6 +507,23 @@ pub const Node = struct {
         /// Lexer-skipped gap (irregular whitespace) inside JSX children.
         /// lhs = gap_start_byte, rhs = gap_end_byte (both as NodeIndex.fromInt byte offsets).
         jsx_gap_node,
+
+        // ── TypeScript interface member kinds ─────────────────────
+        // Distinct tags eliminate JS-side type detection via charCode checks.
+        // Data layout: same as ts_type_annotation (lhs = name/param, rhs = return/value type).
+        /// Call signature: (): ReturnType. lhs = .none, rhs = return type (or .none)
+        ts_call_signature,
+        /// Construct signature: new(): ReturnType. lhs = .none, rhs = return type (or .none)
+        ts_construct_signature,
+        /// Method signature: name(): ReturnType. lhs = name node, rhs = return type (or .none)
+        ts_method_signature,
+        /// Property signature: name: Type. lhs = name node, rhs = type annotation (or .none)
+        ts_property_signature,
+        /// Index signature: [key: Type]: Type. lhs = param identifier, rhs = value type
+        ts_index_signature,
+
+        /// Decorator: @expression. main_token = @ token, lhs = expression node
+        decorator,
     };
 };
 
@@ -545,6 +562,23 @@ pub const TryData = struct {
     finally_body: NodeIndex, // .none if no finally
 };
 
+/// Packed modifier bits for class members (methods, constructors).
+/// Stored in MethodData.modifiers.
+pub const ModifierBit = struct {
+    pub const accessibility_mask: u32 = 0x3; // bits 0-1
+    pub const acc_none:      u32 = 0x0;
+    pub const acc_public:    u32 = 0x1;
+    pub const acc_private:   u32 = 0x2;
+    pub const acc_protected: u32 = 0x3;
+    pub const readonly:    u32 = 1 << 2;
+    pub const @"override": u32 = 1 << 3;
+    pub const declare:     u32 = 1 << 4;
+    pub const abstract:    u32 = 1 << 5;
+    pub const @"static":   u32 = 1 << 6;
+    pub const @"async":    u32 = 1 << 7;
+    pub const generator:   u32 = 1 << 8;
+};
+
 /// function name(params) { body }
 pub const FnData = struct {
     name: NodeIndex, // .none for anonymous
@@ -559,7 +593,8 @@ pub const ClassData = struct {
     name: NodeIndex, // .none for anonymous
     super_class: NodeIndex, // .none if no extends
     body: NodeIndex, // class_body node (contains members as SubRange lhs..rhs)
-    _pad: u32 = 0, // keep size at 4 u32s for ABI stability
+    impls_start: ExtraIndex = 0, // SubRange start into extra_data; each entry = TokenIndex (main_token) of ts_type_reference
+    impls_end: ExtraIndex = 0,   // SubRange end (impls_start == impls_end means no implements clause)
 };
 
 /// (params) => body
@@ -589,6 +624,7 @@ pub const MethodData = struct {
     params_end: ExtraIndex,
     body: NodeIndex,
     return_type: NodeIndex = .none, // .none if no return type annotation
+    modifiers: u32 = 0, // packed ModifierBit flags
 };
 
 // ── TypeScript ExtraData structs ────────────────────────────

@@ -16,6 +16,10 @@ const { createLinter, applyFixes } = require("./api");
 const { FLAT_NAMES, LEGACY_NAMES } = require("./config-loader");
 const path = require("path");
 
+// ts-services: update file contents on open/change so tsc stays in sync
+let _tsServices = null;
+try { _tsServices = require("./ts-services"); } catch { _tsServices = null; }
+
 const CONFIG_FILENAMES = new Set([...FLAT_NAMES, ...LEGACY_NAMES]);
 
 // ── stdio JSON-RPC transport ────────────────────────────────────
@@ -164,6 +168,7 @@ function _onInitialized() {
 function _onDidOpen({ textDocument }) {
   const { uri, text, version } = textDocument;
   docs.set(uri, { text, version, diags: null });
+  if (_tsServices) { try { _tsServices.updateFile(_uriToPath(uri), text); } catch {} }
   _scheduleLint(uri);
 }
 
@@ -178,6 +183,7 @@ function _onDidChange({ textDocument, contentChanges }) {
   } else {
     docs.set(uri, { text, version, diags: null });
   }
+  if (_tsServices) { try { _tsServices.updateFile(_uriToPath(uri), text); } catch {} }
   _scheduleLint(uri);
 }
 

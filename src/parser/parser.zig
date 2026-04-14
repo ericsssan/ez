@@ -2242,14 +2242,21 @@ pub const Parser = struct {
         } else .none;
 
         // TS implements clause: class Foo implements Bar, Baz<T>
+        // Store the main_token of each ts_type_reference (= the name identifier token).
+        // JS reads these as plain token-index lookups into tokStarts/tokEnds.
+        var impls_range = ast.SubRange{ .start = 0, .end = 0 };
         if (self.language.isTs() and self.peek() == .kw_implements) {
             _ = self.advance(); // eat 'implements'
-            // Parse comma-separated type list
-            _ = try typescript.parseType(self);
+            const scratch_top = self.scratch.items.len;
+            const first_impl = try typescript.parseType(self);
+            try self.scratch.append(self.gpa, self.nodes.items(.main_token)[@intFromEnum(first_impl)]);
             while (self.peek() == .comma) {
                 _ = self.advance();
-                _ = try typescript.parseType(self);
+                const impl = try typescript.parseType(self);
+                try self.scratch.append(self.gpa, self.nodes.items(.main_token)[@intFromEnum(impl)]);
             }
+            impls_range = try self.listToSubRange(self.scratch.items[scratch_top..]);
+            self.scratch.shrinkRetainingCapacity(scratch_top);
         }
 
         const l_brace_tok = try self.expect(.l_brace);
@@ -2268,6 +2275,8 @@ pub const Parser = struct {
             .name = name,
             .super_class = super_class,
             .body = class_body_node,
+            .impls_start = impls_range.start,
+            .impls_end = impls_range.end,
         });
 
         return self.addNode(.{
@@ -2420,6 +2429,22 @@ pub const Parser = struct {
             _ = self.advance();
         }
         return flags;
+    }
+
+    /// Pack TsModifierFlags + is_static/is_async/is_generator into a u32 ModifierBit word.
+    fn packMemberModifiers(ts: TsModifierFlags, is_static_m: bool, is_async_m: bool, is_generator_m: bool) u32 {
+        var m: u32 = 0;
+        if (ts.has_public) m |= ast.ModifierBit.acc_public
+        else if (ts.has_private) m |= ast.ModifierBit.acc_private
+        else if (ts.has_protected) m |= ast.ModifierBit.acc_protected;
+        if (ts.has_readonly) m |= ast.ModifierBit.readonly;
+        if (ts.has_override) m |= ast.ModifierBit.@"override";
+        if (ts.has_declare) m |= ast.ModifierBit.declare;
+        if (ts.has_abstract) m |= ast.ModifierBit.abstract;
+        if (is_static_m) m |= ast.ModifierBit.@"static";
+        if (is_async_m) m |= ast.ModifierBit.@"async";
+        if (is_generator_m) m |= ast.ModifierBit.generator;
+        return m;
     }
 
     /// Parse a single class member.
@@ -2651,6 +2676,7 @@ pub const Parser = struct {
                     .params_end = params.end,
                     .body = body,
                     .return_type = computed_method_return_type,
+                    .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
                 });
 
                 const node_tag: Node.Tag = if (is_getter)
@@ -2833,6 +2859,7 @@ pub const Parser = struct {
                 .params_end = params.end,
                 .body = body,
                 .return_type = method_return_type,
+                .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
             });
 
             const node_tag: Node.Tag = if (is_getter)
@@ -3101,12 +3128,12 @@ pub const Parser = struct {
                 _ = self.advance(); // eat name
                 _ = self.advance(); // eat '='
                 // `require('...')` or qualified name `A.B.C`
-                _ = try self.parseAssignmentExpression();
+                const module_ref = try self.parseAssignmentExpression();
                 _ = self.eat(.semicolon);
                 return self.addNode(.{
                     .tag = .import_decl,
                     .main_token = import_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
+                    .data = .{ .lhs = .none, .rhs = module_ref },
                 });
             }
             // Not an import alias — reset position

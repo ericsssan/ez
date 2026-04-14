@@ -1066,6 +1066,32 @@ class SourceCode {
     return null;
   }
 
+  getLastTokenBetween(nodeA, nodeB, filterOrOpts) {
+    if (!nodeA || !nodeB) return null;
+    const ast = this._ast;
+    const { fn } = this._normalizeFilter(filterOrOpts);
+    const gapStart = nodeA.range ? nodeA.range[1] : (nodeA.end != null ? nodeA.end : 0);
+    const gapEnd   = nodeB.range ? nodeB.range[0] : (nodeB.start != null ? nodeB.start : 0);
+    if (gapStart >= gapEnd) return null;
+    const starts = ast._tokStarts;
+    const tc = ast.tokenCount;
+    // Last token with start strictly before gapEnd
+    let lo = 0, hi = tc - 1, endTok = -1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (starts[mid] < gapEnd) { endTok = mid; lo = mid + 1; }
+      else hi = mid - 1;
+    }
+    if (endTok < 0) return null;
+    for (let i = endTok; i >= 0; i--) {
+      if (starts[i] < gapStart) break;
+      const tok = this._makeToken(i);
+      if (tok === null) continue;
+      if (!fn || fn(tok)) return tok;
+    }
+    return null;
+  }
+
   /**
    * Get all tokens strictly between two nodes (i.e., after nodeA ends, before nodeB starts).
    * ESLint getTokensBetween does NOT include tokens inside either node.
@@ -3343,6 +3369,13 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     for (let pi = 0; pi < plugins.length && !mismatch; pi++) {
       const recipe = perPluginRecipe[pi];
       if (!recipe || recipe.length === 0) continue;
+      // Update per-case options so the rule sees correct configuration on each call.
+      // ruleConfig may carry different options per file/case even when the plugin is reused.
+      const ruleId = plugins[pi].meta?.name || "unknown";
+      const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
+      const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
+      const merged = _mergeRuleOptions(plugins[pi].meta?.defaultOptions, configured);
+      perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
       let visitors;
       try { visitors = plugins[pi].create(perRuleCtxs[pi]); }
       catch { mismatch = true; break; }
@@ -4090,21 +4123,28 @@ function _compileSelectorFastMatcher(parsedSelector) {
 
   if (t === 'compound') {
     // compound: identifier + zero or more attribute selectors
+    let typeValue = null;
     const attrChecks = [];
     for (const s of parsedSelector.selectors) {
-      if (s.type === 'identifier') continue; // type already guaranteed by per-tag dispatch
+      if (s.type === 'identifier') { typeValue = s.value !== '*' ? s.value : null; continue; }
       if (s.type !== 'attribute') return null; // pseudo-class, field, etc. — can't compile
       const check = _compileAttrCheck(s);
       if (!check) return null;
       attrChecks.push(check);
     }
+    // Always include the type check. When used in per-tag dispatch the type is guaranteed,
+    // but when used as a branch inside :matches() the universal handler sees all node types.
+    const typeCheck = typeValue ? (n) => n.type === typeValue : null;
     if (attrChecks.length === 0) {
+      if (typeCheck) return { fn: (n, _a) => typeCheck(n), complete: true };
       return { fn: (_n, _a) => true, complete: true };
     }
     if (attrChecks.length === 1) {
       const c = attrChecks[0];
+      if (typeCheck) return { fn: (n, _a) => typeCheck(n) && c(n), complete: true };
       return { fn: (n, _a) => c(n), complete: true };
     }
+    if (typeCheck) return { fn: (n, _a) => { if (!typeCheck(n)) return false; for (const c of attrChecks) if (!c(n)) return false; return true; }, complete: true };
     return { fn: (n, _a) => { for (const c of attrChecks) if (!c(n)) return false; return true; }, complete: true };
   }
 
@@ -5441,12 +5481,29 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   const _hasMdRemap = _propertyTagNum >= 0 && _methodDefTagBits.some(v => v);
 
-  /** Resolve actual enter/exit handlers accounting for MethodDef-in-object-literal remap. */
+  // Pre-compute import_decl → TSImportEqualsDeclaration remap.
+  // `import X = require(...)` is stored as import_decl with lhs=NONE, rhs=module_ref.
+  // The adapter's .type getter remaps it at read time, but the runner dispatches by raw
+  // tag → we must intercept and call TSImportEqualsDeclaration handlers instead of
+  // ImportDeclaration handlers for these nodes.
+  const _importDeclTagNum = tagNames.indexOf('ImportDeclaration');
+  const _tsImportEqualsEnterH = _importDeclTagNum >= 0 ? (visitorMap.get('TSImportEqualsDeclaration') || null) : null;
+  const _tsImportEqualsExitH  = _importDeclTagNum >= 0 ? (visitorMap.get('TSImportEqualsDeclaration:exit') || null) : null;
+  const _hasTsImportEqualsRemap = _importDeclTagNum >= 0 && (_tsImportEqualsEnterH || _tsImportEqualsExitH);
+
+  /** Resolve actual enter/exit handlers accounting for MethodDef-in-object-literal and
+   *  import_decl → TSImportEqualsDeclaration remaps. */
   function _resolveHandlers(handlersArr, tag, idx) {
     if (_hasMdRemap && _methodDefTagBits[tag] && pd) {
       const parentIdx = pd[idx];
       if (parentIdx !== undefined && parentIdx !== NONE && _objContainerTagBits[nodeTags[parentIdx]]) {
         return _propertyTagNum >= 0 ? handlersArr[_propertyTagNum] : null;
+      }
+    }
+    if (_hasTsImportEqualsRemap && tag === _importDeclTagNum) {
+      // TSImportEqualsDeclaration: lhs=NONE, rhs!=NONE
+      if (ast.nodeLhs(idx) === NONE && ast.nodeRhs(idx) !== NONE) {
+        return handlersArr === tagEnterHandlers ? _tsImportEqualsEnterH : _tsImportEqualsExitH;
       }
     }
     return handlersArr[tag];
@@ -5801,14 +5858,14 @@ let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, typeAware = false, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
   }
 
   let parserServices = null;
-  if (typeAware && filename !== "<input>" && /\.[mc]?tsx?$/.test(filename)) {
+  if (filename !== "<input>" && /\.[mc]?tsx?$/.test(filename)) {
     const svc = tsServices();
     if (svc) {
       try { parserServices = svc.buildParserServices(filename); } catch {}
@@ -5853,6 +5910,11 @@ function runPlugins(ast, plugins, options = {}) {
   }
 
   walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);
+
+  // Clear ALL pool slots (not just 0..nc-1) so node views from this AST don't
+  // outlive the call. Without this, large-AST views in slots nc..poolSize-1
+  // retain back-refs to prior ASTs when a smaller AST is processed next.
+  if (_nodeCachePool !== null) _nodeCachePool.fill(undefined, 0, _nodeCachePoolSize);
 
   return context._reports;
 }

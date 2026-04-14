@@ -8,7 +8,6 @@
         "@eslint-community/regexpp": "^4.12.0",
         "@eslint/eslintrc": "^3.3.5",
         "@typescript-eslint/eslint-plugin": "^8.58.1",
-        "@typescript-eslint/parser": "^8.58.1",
         "escape-string-regexp": "^4.0.0",
         "eslint-plugin-jsdoc": "^62.9.0",
         "eslint-plugin-promise": "^7.2.1",

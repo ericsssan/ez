@@ -40,7 +40,7 @@ fn lintWithInlineDisables(source: []const u8) ![]const LintDiagnostic {
 
 fn hasRule(diags: []const LintDiagnostic, rule: []const u8) bool {
     for (diags) |d| {
-        if (std.mem.eql(u8, d.rule_name, rule)) return true;
+        if (std.mem.eql(u8, linter.rule_names[d.rule_index], rule)) return true;
     }
     return false;
 }
@@ -123,7 +123,7 @@ test "inline disable: block disable/enable range" {
 
     var count: usize = 0;
     for (diags) |d| {
-        if (std.mem.eql(u8, d.rule_name, "no-debugger")) count += 1;
+        if (std.mem.eql(u8, linter.rule_names[d.rule_index], "no-debugger")) count += 1;
     }
     try testing.expectEqual(@as(usize, 1), count);
 }

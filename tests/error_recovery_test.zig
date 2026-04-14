@@ -134,7 +134,7 @@ test "recovery: lint fires on valid nodes despite errors" {
 
     var found_debugger = false;
     for (diags) |d| {
-        if (std.mem.eql(u8, d.rule_name, "no-debugger")) found_debugger = true;
+        if (std.mem.eql(u8, linter.rule_names[d.rule_index], "no-debugger")) found_debugger = true;
     }
     try testing.expect(found_debugger);
 }

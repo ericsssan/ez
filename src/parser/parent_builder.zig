@@ -462,6 +462,28 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .ts_union_type, .ts_intersection_type, .ts_tuple_type, .ts_conditional_type => {
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
             },
+
+            // ── TypeScript interface member kinds ─────────────────
+            .ts_call_signature, .ts_construct_signature => {
+                // lhs = .none, rhs = return type (or .none)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+            },
+            .ts_method_signature, .ts_property_signature => {
+                // lhs = name node, rhs = return/value type (or .none)
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            .ts_index_signature => {
+                // lhs = param identifier, rhs = value type
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+
+            // ── Decorator ─────────────────────────────────────────
+            .decorator => {
+                // lhs = expression node
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
         }
     }
 

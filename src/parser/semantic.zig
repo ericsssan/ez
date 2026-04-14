@@ -113,6 +113,7 @@ pub const SemanticResult = struct {
         allocator.free(self.diagnostics);
         if (self.node_reachable.len > 0) allocator.free(self.node_reachable);
         if (self.loop_exit_reachable.len > 0) allocator.free(self.loop_exit_reachable);
+        if (self.code_path_result) |*cpr| cpr.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -242,8 +243,10 @@ pub const SemanticAnalyzer = struct {
 
         self.loop_exit_reachable = loop_exit_reachable;
 
-        // Full code path builder
+        // Full code path builder — init places cpb at stable address (field of self),
+        // then fix up the self-referential arena allocator pointer.
         self.cpb = CodePathBuilder.init(allocator);
+        self.cpb.allocator = self.cpb.arena.allocator();
         self.cpb_initialized = true;
 
         const root_data = self.ast.nodeData(.root);
@@ -253,6 +256,12 @@ pub const SemanticAnalyzer = struct {
         try self.buildScopeBindings();
         try self.validateExports();
 
+        const cpb_result = if (self.cpb_initialized) blk: {
+            const r = try self.cpb.finish();
+            self.cpb.deinit();
+            break :blk r;
+        } else null;
+
         return .{
             .scopes = self.scopes,
             .symbols = self.symbols,
@@ -260,7 +269,7 @@ pub const SemanticAnalyzer = struct {
             .diagnostics = try self.diagnostics.toOwnedSlice(self.allocator),
             .node_reachable = node_reachable,
             .loop_exit_reachable = loop_exit_reachable,
-            .code_path_result = if (self.cpb_initialized) self.cpb.finish() else null,
+            .code_path_result = cpb_result,
         };
     }
 
@@ -1042,6 +1051,11 @@ pub const SemanticAnalyzer = struct {
             .ts_indexed_access_type, .ts_template_literal_type,
             .ts_type_query, .ts_parenthesized_type,
             .ts_parameter_property,
+            // TS interface member kinds — treat as type-level, skip
+            .ts_call_signature, .ts_construct_signature,
+            .ts_method_signature, .ts_property_signature, .ts_index_signature,
+            // Decorator — expression; skip (decorators are not visited for scope/ref)
+            .decorator,
             => {},
 
             // ── TypeScript expressions ───────────────────────

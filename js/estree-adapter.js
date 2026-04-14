@@ -2,6 +2,23 @@
 
 const { T, OPERATOR_BY_TAG } = require("./tags");
 
+// ── Token tag constants ───────────────────────────────────────────
+const TOK_KW_TYPE = 58;   // kw_type token tag
+
+// ── Packed modifier bit constants ────────────────────────────────
+// Match ast.zig ModifierBit
+const MOD_ACC_MASK  = 0x3;
+const MOD_ACC_PUBLIC    = 0x1;
+const MOD_ACC_PRIVATE   = 0x2;
+const MOD_ACC_PROTECTED = 0x3;
+const MOD_READONLY  = 1 << 2;
+const MOD_OVERRIDE  = 1 << 3;
+const MOD_DECLARE   = 1 << 4;
+const MOD_ABSTRACT  = 1 << 5;
+const MOD_STATIC    = 1 << 6;
+const MOD_ASYNC     = 1 << 7;
+const MOD_GENERATOR = 1 << 8;
+
 // ── Template literal cooked value processor ──────────────────────
 // Processes escape sequences in a template literal quasi raw string,
 // returning the cooked string or null for illegal escapes.
@@ -652,22 +669,22 @@ class AstView {
     return { catch_node: e[i], finally_body: e[i + 1] };
   }
 
-  /** FnData { name, params, params_end, body } */
+  /** FnData { name, params, params_end, body, return_type } */
   extraFnData(i) {
     const e = this._extraData;
-    return { name: e[i], params: e[i + 1], params_end: e[i + 2], body: e[i + 3] };
+    return { name: e[i], params: e[i + 1], params_end: e[i + 2], body: e[i + 3], return_type: e[i + 4] };
   }
 
-  /** ClassData { name, super_class, body, _pad } */
+  /** ClassData { name, super_class, body, impls_start, impls_end } */
   extraClassData(i) {
     const e = this._extraData;
-    return { name: e[i], super_class: e[i + 1], body: e[i + 2] };
+    return { name: e[i], super_class: e[i + 1], body: e[i + 2], impls_start: e[i + 3], impls_end: e[i + 4] };
   }
 
-  /** ArrowData { params_start, params_end, body } */
+  /** ArrowData { params_start, params_end, body, return_type } */
   extraArrowData(i) {
     const e = this._extraData;
-    return { params_start: e[i], params_end: e[i + 1], body: e[i + 2] };
+    return { params_start: e[i], params_end: e[i + 1], body: e[i + 2], return_type: e[i + 3] };
   }
 
   /** Conditional { consequent, alternate } */
@@ -682,10 +699,10 @@ class AstView {
     return { specifiers_start: e[i], specifiers_end: e[i + 1], source: e[i + 2] };
   }
 
-  /** MethodData { params_start, params_end, body } */
+  /** MethodData { params_start, params_end, body, return_type, modifiers } */
   extraMethodData(i) {
     const e = this._extraData;
-    return { params_start: e[i], params_end: e[i + 1], body: e[i + 2] };
+    return { params_start: e[i], params_end: e[i + 1], body: e[i + 2], return_type: e[i + 3], modifiers: e[i + 4] };
   }
 
   /** JsxElementData { opening, children_start, children_end, closing } */
@@ -698,6 +715,24 @@ class AstView {
   extraJsxOpeningData(i) {
     const e = this._extraData;
     return { name: e[i], attrs_start: e[i + 1], attrs_end: e[i + 2] };
+  }
+
+  /** InterfaceData { name, type_params, type_params_end, extends_start, extends_end, body_start, body_end } */
+  extraInterfaceData(i) {
+    const e = this._extraData;
+    return { name: e[i], type_params: e[i + 1], type_params_end: e[i + 2], extends_start: e[i + 3], extends_end: e[i + 4], body_start: e[i + 5], body_end: e[i + 6] };
+  }
+
+  /** TypeAliasData { name, type_params, type_params_end, type_node } */
+  extraTypeAliasData(i) {
+    const e = this._extraData;
+    return { name: e[i], type_params: e[i + 1], type_params_end: e[i + 2], type_node: e[i + 3] };
+  }
+
+  /** EnumData { name, members_start, members_end } */
+  extraEnumData(i) {
+    const e = this._extraData;
+    return { name: e[i], members_start: e[i + 1], members_end: e[i + 2] };
   }
 
   // ── Token text helpers ─────────────────────────────────────────
@@ -854,6 +889,67 @@ const _BODY_UNSET = Object.create(null);
 // and from false/0/"" (valid for boolean/number/string literals).
 const _VALUE_UNSET = Object.create(null);
 
+// ── TypeScript synthetic node helpers ─────────────────────────
+
+/** Read packed modifiers from MethodData. Returns 0 if node has no modifiers. */
+function _nodeMods(ast, nodeIdx) {
+  const t = ast._nodeTags[nodeIdx];
+  if (t === T.method_def || t === T.getter_def || t === T.setter_def ||
+      t === T.constructor_def || t === T.computed_method_def ||
+      t === T.computed_getter_def || t === T.computed_setter_def) {
+    return ast.extraMethodData(ast.nodeRhs(nodeIdx)).modifiers;
+  }
+  return 0;
+}
+
+/** Determine ESTree member type for a ts_type_annotation used as interface member. */
+function _tsInterfaceMemberType(ast, idx) {
+  const mt = ast._mainTokens[idx];
+  const c = ast.source.charCodeAt(ast._tokStarts[mt]);
+  // TSIndexSignature: main_token is '[' — check BEFORE lhs (lhs is now the param identifier)
+  if (c === 91) return 'TSIndexSignature';
+  const lhs = ast.nodeLhs(idx);
+  if (lhs === NONE) {
+    if (c === 110) return 'TSConstructSignatureDeclaration'; // 'n' for new
+    return 'TSCallSignatureDeclaration';
+  }
+  // Has a name — check token after name for '(' or '<' (method) vs ':' (property)
+  const nameMt = ast._mainTokens[lhs];
+  let next = nameMt + 1;
+  if (next < ast.tokenCount && ast.source.charCodeAt(ast._tokStarts[next]) === 63) next++; // skip '?'
+  if (next < ast.tokenCount) {
+    const nc = ast.source.charCodeAt(ast._tokStarts[next]);
+    if (nc === 40 || nc === 60) return 'TSMethodSignature'; // '(' or '<'
+  }
+  return 'TSPropertySignature';
+}
+
+/** Create a synthetic AST node (plain object, not a NodeView). */
+function _syntheticNode(type, start, end, props, ast) {
+  const ls = ast._lineStarts();
+  const sli = ast._findLineIdx(start);
+  const eli = ast._findLineIdx(end > 0 ? end - 1 : 0);
+  return Object.assign({
+    type,
+    start,
+    end,
+    range: [start, end],
+    loc: {
+      start: { line: sli + 1, column: start - ls[sli] },
+      end:   { line: eli + 1, column: end   - ls[eli] },
+    },
+    parent: null,
+  }, props);
+}
+
+/** Create a synthetic Identifier node from a token index. */
+function _tokenIdentifier(ast, tokIdx) {
+  const name = ast._identAt(tokIdx);
+  const start = ast._tokStarts[tokIdx];
+  const end = ast._tokEnds ? ast._tokEnds[tokIdx] : start + name.length;
+  return _syntheticNode('Identifier', start, end, { name, typeAnnotation: undefined }, ast);
+}
+
 const NodeProto = {
   // ── Low-level ez accessors (existing) ──────────────────────
 
@@ -882,6 +978,12 @@ const NodeProto = {
           result = 'Property';
         }
       }
+    }
+    // Remap ImportDeclaration → TSImportEqualsDeclaration for `import X = require('...')`:
+    // These have lhs=NONE (no ImportData) and rhs=module_ref expression (not NONE).
+    if (tagName === 'ImportDeclaration' && this._ast.nodeLhs(this._i) === NONE &&
+        this._ast.nodeRhs(this._i) !== NONE) {
+      result = 'TSImportEqualsDeclaration';
     }
     // Remap TSTypeReference to TS*Keyword when it's a built-in keyword type
     // (no type arguments, and main token text matches a TS keyword type).
@@ -1085,6 +1187,16 @@ const NodeProto = {
       };
       result = openingEl;
     }
+    // TSEnumMember: parent should be the synthetic TSEnumBody, not TSEnumDeclaration.
+    // ESLint rules use node.parent.parent to get from TSEnumMember → TSEnumBody → TSEnumDeclaration.
+    if (result && result._tag === T.ts_enum_decl && this._tag === T.ts_enum_member) {
+      // Trigger body getter to ensure _syntheticEnumBody is populated on this node.
+      if (this._syntheticEnumBody === undefined) void result.body;
+      if (this._syntheticEnumBody !== undefined) {
+        this._parent = this._syntheticEnumBody;
+        return this._syntheticEnumBody;
+      }
+    }
     this._parent = result;
     return result;
   },
@@ -1253,7 +1365,9 @@ const NodeProto = {
         v = this._syntheticFn;
       } else {
         const md = ast.extraMethodData(ast.nodeRhs(this._i));
-        const flags = _methodFlags(ast, this.mainToken);
+        const mods = md.modifiers;
+        const isAsync = !!(mods & MOD_ASYNC);
+        const isGenerator = !!(mods & MOD_GENERATOR);
         const params = ast._nodesFromRange(md.params_start, md.params_end);
         const body = md.body === NONE ? null : nodeView(ast, md.body);
         // Use the method node's own range/loc so ESLint's SourceCode token
@@ -1285,8 +1399,8 @@ const NodeProto = {
         const synth = {
           type: 'FunctionExpression',
           id: null,
-          async: flags.async,
-          generator: flags.generator,
+          async: isAsync,
+          generator: isGenerator,
           params: params || [],
           body,
           mainToken: this.mainToken,
@@ -1502,6 +1616,34 @@ const NodeProto = {
       result = ast._nodesFromRange(lhs, rhs);
     } else if (t === T.root) {
       result = ast._nodesFromRange(lhs, rhs);
+    } else if (t === T.ts_interface_decl) {
+      // TSInterfaceDeclaration.body → synthetic TSInterfaceBody { type, body: members[] }
+      const d = ast.extraInterfaceData(lhs);
+      const memberIdxs = ast._extraData.subarray(d.body_start, d.body_end);
+      const members = [];
+      for (let mi = 0; mi < memberIdxs.length; mi++) {
+        const n = nodeView(ast, memberIdxs[mi]);
+        // Type is derived from the node tag (ts_method_signature, ts_property_signature, etc.)
+        // No need to set n._type — the tag-based type getter handles it.
+        members.push(n);
+      }
+      const bodyStart = members.length > 0 ? members[0].start : this.end;
+      const bodyEnd   = members.length > 0 ? members[members.length - 1].end : this.end;
+      result = _syntheticNode('TSInterfaceBody', bodyStart, bodyEnd, { body: members, parent: this }, ast);
+    } else if (t === T.ts_enum_decl) {
+      // TSEnumDeclaration.body → synthetic TSEnumBody { type, members: TSEnumMember[] }
+      const d = ast.extraEnumData(lhs);
+      const memberIdxs = ast._extraData.subarray(d.members_start, d.members_end);
+      const members = [];
+      for (let mi = 0; mi < memberIdxs.length; mi++) members.push(nodeView(ast, memberIdxs[mi]));
+      const bodyStart = members.length > 0 ? members[0].start : this.end;
+      const bodyEnd   = members.length > 0 ? members[members.length - 1].end : this.end;
+      result = _syntheticNode('TSEnumBody', bodyStart, bodyEnd, { members, parent: this }, ast);
+      // Back-ref: TSEnumMember.parent must return TSEnumBody, not TSEnumDeclaration.
+      // Set _syntheticEnumBody on each member so the parent getter can intercept it.
+      for (const m of members) m._syntheticEnumBody = result;
+    } else if (t === T.ts_module_decl || t === T.ts_namespace_decl) {
+      result = rhs === NONE ? null : nodeView(ast, rhs);
     }
     this._body = result;
     return result;
@@ -1808,6 +1950,10 @@ const NodeProto = {
    */
   get decorators() {
     const t = this._tag;
+    // TS param/pattern nodes can have decorators (TSParameterProperty), return [] when none
+    if (t === T.identifier || t === T.rest_element || t === T.object_pattern ||
+        t === T.array_pattern || t === T.assignment_pattern || t === T.ts_parameter_property ||
+        t === T.function_decl || t === T.function_expr || t === T.static_block) return [];
     if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
         t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def &&
@@ -1839,7 +1985,7 @@ const NodeProto = {
         break; // not a decorator or modifier
       }
     }
-    return decorators.length > 0 ? decorators : undefined;
+    return decorators.length > 0 ? decorators : [];
   },
 
   /**
@@ -1955,7 +2101,105 @@ const NodeProto = {
       const d = ast.extraClassData(lhs);
       return d.name === NONE ? null : nodeView(ast, d.name);
     }
+    // TSInterfaceDeclaration / TSTypeAliasDeclaration / TSEnumDeclaration:
+    // name is stored as a token index in extra data (first field).
+    if (t === T.ts_interface_decl || t === T.ts_type_alias_decl || t === T.ts_enum_decl) {
+      const name_tok = ast._extraData[lhs]; // first field of InterfaceData/TypeAliasData/EnumData
+      return _tokenIdentifier(ast, name_tok);
+    }
+    // TSModuleDeclaration / TSNamespaceDeclaration: id is lhs (Identifier node).
+    if (t === T.ts_module_decl || t === T.ts_namespace_decl) {
+      return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    // TSEnumMember: id is lhs (Identifier or StringLiteral).
+    if (t === T.ts_enum_member) {
+      return lhs === NONE ? null : nodeView(ast, lhs);
+    }
+    // TSImportEqualsDeclaration: id is the bound identifier (`foo` in `import foo = ...`).
+    // Stored as import_decl with lhs=NONE, rhs=module_ref. The name is the token
+    // immediately after `import` (or after `import type` for type imports).
+    if (t === T.import_decl && lhs === NONE && ast.nodeRhs(this._i) !== NONE) {
+      const mt = ast._mainTokens[this._i]; // 'import' token
+      let nameTok = mt + 1;
+      // Skip optional 'type' keyword
+      const nameText = ast._rawTokenText(nameTok);
+      if (nameText === 'type') nameTok++;
+      return _tokenIdentifier(ast, nameTok);
+    }
     return undefined;
+  },
+
+  /**
+   * node.typeName — qualified name of TSTypeReference (Identifier or MemberExpression).
+   */
+  get typeName() {
+    if (this._tag !== T.ts_type_reference) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    if (lhs !== NONE) return nodeView(this._ast, lhs);
+    // No separate name node (e.g., `as const` / `as readonly`): synthesize Identifier
+    // from the source text so rules can access node.typeName.type and node.typeName.name.
+    const start = this.start;
+    const end = this.end;
+    const name = this._ast.source.slice(start, end);
+    return _syntheticNode('Identifier', start, end, { name }, this._ast);
+  },
+
+  /**
+   * node.typeArguments — TSTypeParameterInstantiation for TSTypeReference.
+   * Returns synthetic node { type: 'TSTypeParameterInstantiation', params: [...] }
+   * or null if no type arguments.
+   */
+  get typeArguments() {
+    if (this._tag !== T.ts_type_reference) return undefined;
+    const rhs = this._ast.nodeRhs(this._i);
+    if (rhs === NONE) return null;
+    const sub = this._ast.extraSubRange(rhs);
+    const params = this._ast._nodesFromRange(sub.start, sub.end);
+    return _syntheticNode('TSTypeParameterInstantiation', this.start, this.end, { params }, this._ast);
+  },
+
+  /**
+   * node.types — constituent types of TSUnionType or TSIntersectionType.
+   * Returns array of type NodeViews.
+   */
+  get types() {
+    const t = this._tag;
+    if (t !== T.ts_union_type && t !== T.ts_intersection_type) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    const rhs = this._ast.nodeRhs(this._i);
+    return this._ast._nodesFromRange(lhs, rhs);
+  },
+
+  /**
+   * node.extends — heritage clauses of TSInterfaceDeclaration.
+   * Returns array of TSExpressionWithTypeArguments NodeViews.
+   */
+  get extends() {
+    const t = this._tag;
+    if (t !== T.ts_interface_decl) return undefined;
+    const ast = this._ast;
+    const lhs = ast.nodeLhs(this._i);
+    const d = ast.extraInterfaceData(lhs);
+    return ast._nodesFromRange(d.extends_start, d.extends_end);
+  },
+
+  /**
+   * node.members — members of TSTypeLiteral (object type body).
+   * Returns array of interface-member NodeViews.
+   */
+  get members() {
+    const t = this._tag;
+    if (t !== T.ts_type_literal) return undefined;
+    const ast = this._ast;
+    const lhs = ast.nodeLhs(this._i);
+    const rhs = ast.nodeRhs(this._i);
+    const memberIdxs = ast._extraData.subarray(lhs, rhs);
+    const members = [];
+    for (let mi = 0; mi < memberIdxs.length; mi++) {
+      // Type is derived from the node tag — no need to set n._type.
+      members.push(nodeView(ast, memberIdxs[mi]));
+    }
+    return members;
   },
 
   /**
@@ -1977,6 +2221,35 @@ const NodeProto = {
       const d = ast.extraArrowData(lhs);
       return ast._nodesFromRange(d.params_start, d.params_end);
     }
+    return undefined;
+  },
+
+  /**
+   * node.parameters — TSIndexSignature parameter list.
+   * TSIndexSignature: lhs holds the identifier.
+   * TSCallSignatureDeclaration / TSConstructSignatureDeclaration: params not stored, return [].
+   * TSMethodSignature: params not stored, return [].
+   */
+  get parameters() {
+    const t = this._tag;
+    if (t === T.ts_index_signature) {
+      const lhs = this._ast.nodeLhs(this._i);
+      return lhs === NONE ? [] : [nodeView(this._ast, lhs)];
+    }
+    if (t === T.ts_call_signature || t === T.ts_construct_signature || t === T.ts_method_signature) {
+      return [];
+    }
+    // Legacy fallback for old ts_type_annotation-encoded interface members
+    if (t !== T.ts_type_annotation) return undefined;
+    const ast = this._ast;
+    const mt = ast._mainTokens[this._i];
+    const c = ast.source.charCodeAt(ast._tokStarts[mt]);
+    if (c === 91) { // '[' → TSIndexSignature
+      const lhs = ast.nodeLhs(this._i);
+      return lhs === NONE ? [] : [nodeView(ast, lhs)];
+    }
+    // '(' → TSCallSignatureDeclaration, 'n' → TSConstructSignatureDeclaration
+    if (c === 40 || c === 110) return [];
     return undefined;
   },
 
@@ -2028,7 +2301,7 @@ const NodeProto = {
       if (t === T.method_def) {
         const ast = this._ast;
         const mainTok = this.mainToken;
-        if (!_methodFlags(ast, mainTok).static) {
+        if (!(_nodeMods(ast, this._i) & MOD_STATIC)) {
           const rawText = ast._rawTokenText(mainTok);
           // identifier token (tag 8) with text "constructor"
           // or string literal 'constructor'/"constructor" — both name the constructor
@@ -2048,15 +2321,81 @@ const NodeProto = {
    * node.typeAnnotation — TS type annotation on identifiers, params, etc.
    */
   get typeAnnotation() {
+    const t = this._tag;
     const ast = this._ast;
+    if (t === T.ts_type_annotation) {
+      // Distinguish TSTypeAnnotation wrapper (main_token = ':', charCode 58) from interface
+      // member nodes (TSPropertySignature/TSMethodSignature, main_token = member name).
+      // Wrapper: return inner type (lhs). Interface member: return type annotation (rhs).
+      const mt = ast._mainTokens[this._i];
+      if (ast.source.charCodeAt(ast._tokStarts[mt]) === 58) { // ':'
+        const idx = ast.nodeLhs(this._i);
+        return idx === NONE ? undefined : nodeView(ast, idx);
+      }
+      const idx = ast.nodeRhs(this._i);
+      return idx === NONE ? undefined : nodeView(ast, idx);
+    }
+    // New interface member tags: ts_property_signature rhs is type annotation
+    if (t === T.ts_property_signature || t === T.ts_index_signature) {
+      const idx = ast.nodeRhs(this._i);
+      return idx === NONE ? undefined : nodeView(ast, idx);
+    }
+    // TSTypeAliasDeclaration: typeAnnotation = the aliased type
+    if (t === T.ts_type_alias_decl) {
+      const d = ast.extraTypeAliasData(ast.nodeLhs(this._i));
+      return d.type_node === NONE ? undefined : nodeView(ast, d.type_node);
+    }
+    // TSAsExpression / TSSatisfiesExpression: typeAnnotation = rhs (the cast type)
+    if (t === T.ts_as_expr || t === T.ts_satisfies_expr) {
+      const idx = ast.nodeRhs(this._i);
+      return idx === NONE ? undefined : nodeView(ast, idx);
+    }
+    // TSTypeAssertion (<Type>expr): typeAnnotation = lhs (the type)
+    if (t === T.ts_type_assertion) {
+      const idx = ast.nodeLhs(this._i);
+      return idx === NONE ? undefined : nodeView(ast, idx);
+    }
+    // General case: find a TSTypeAnnotation child
     const pd = ast._parentData;
     if (!pd) return undefined;
-    // Find a TSTypeAnnotation child of this node
     const myIdx = this._i;
     for (let c = myIdx + 1; c < ast.nodeCount; c++) {
       if (pd[c] !== myIdx) continue;
       if (ast._nodeTags[c] === T.ts_type_annotation) return nodeView(ast, c);
-      // Only check direct children (not grandchildren)
+    }
+    return undefined;
+  },
+
+  /**
+   * node.returnType — TS return type annotation on functions/arrows/methods.
+   * Returns the TSTypeAnnotation NodeView or undefined.
+   */
+  get returnType() {
+    const t = this._tag;
+    const ast = this._ast;
+    const lhs = ast.nodeLhs(this._i);
+    if (t === T.fn_decl || t === T.async_fn_decl ||
+        t === T.generator_fn_decl || t === T.async_generator_fn_decl ||
+        t === T.fn_expr || t === T.async_fn_expr ||
+        t === T.generator_fn_expr || t === T.async_generator_fn_expr) {
+      const d = ast.extraFnData(lhs);
+      return d.return_type === NONE ? undefined : nodeView(ast, d.return_type);
+    }
+    if (t === T.arrow_fn || t === T.async_arrow_fn) {
+      const d = ast.extraArrowData(lhs);
+      return d.return_type === NONE ? undefined : nodeView(ast, d.return_type);
+    }
+    if (t === T.method_def || t === T.computed_method_def ||
+        t === T.getter_def || t === T.setter_def ||
+        t === T.computed_getter_def || t === T.computed_setter_def ||
+        t === T.constructor_def) {
+      const d = ast.extraMethodData(ast.nodeRhs(this._i));
+      return d.return_type === NONE ? undefined : nodeView(ast, d.return_type);
+    }
+    // TS interface member signatures: rhs is the return type
+    if (t === T.ts_method_signature || t === T.ts_call_signature || t === T.ts_construct_signature) {
+      const idx = ast.nodeRhs(this._i);
+      return idx === NONE ? undefined : nodeView(ast, idx);
     }
     return undefined;
   },
@@ -2081,6 +2420,38 @@ const NodeProto = {
   },
 
   /**
+   * node.abstract — true for TS abstract class members / abstract classes.
+   */
+  get abstract() {
+    const t = this._tag;
+    if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
+        t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
+        t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def &&
+        t !== T.class_decl && t !== T.class_expr) return undefined;
+    // For class_decl/class_expr: check if 'abstract' precedes 'class' keyword via token scan
+    if (t === T.class_decl || t === T.class_expr) {
+      const ast = this._ast;
+      const mt = this.mainToken;
+      if (mt > 0 && ast._tokEnds && ast.source.slice(ast._tokStarts[mt - 1], ast._tokEnds[mt - 1]) === 'abstract') return true;
+      return false;
+    }
+    // For property_def/computed_property_def: no extra data, use token scan
+    if (t === T.property_def || t === T.computed_property_def) {
+      const ast = this._ast;
+      const mt = this.mainToken;
+      for (let i = mt - 1; i >= 0 && i >= mt - 5; i--) {
+        const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds ? ast._tokEnds[i] : ast._tokStarts[i + 1]);
+        if (val === 'abstract') return true;
+        if (val !== 'static' && val !== 'public' && val !== 'private' && val !== 'protected' &&
+            val !== 'override' && val !== 'readonly' && val !== 'declare') break;
+      }
+      return false;
+    }
+    // For methods: read from MethodData.modifiers
+    return !!(_nodeMods(this._ast, this._i) & MOD_ABSTRACT);
+  },
+
+  /**
    * node.importKind — 'type' for `import type`, 'value' otherwise.
    */
   get importKind() {
@@ -2088,19 +2459,13 @@ const NodeProto = {
     if (t !== T.import_decl && t !== T.import_specifier) return undefined;
     const ast = this._ast;
     const mt = this.mainToken;
-    // For ImportDeclaration: check if token after 'import' is 'type'
     if (t === T.import_decl) {
-      if (mt + 1 < ast.tokenCount) {
-        const next = ast.source.slice(ast._tokStarts[mt + 1], ast._tokEnds[mt + 1]);
-        if (next === 'type') return 'type';
-      }
+      // import type { ... } — 'type' token is immediately after 'import'
+      if (mt + 1 < ast.tokenCount && ast._tokTags[mt + 1] === TOK_KW_TYPE) return 'type';
       return 'value';
     }
-    // For ImportSpecifier: check if token before name is 'type'
-    if (mt > 0) {
-      const prev = ast.source.slice(ast._tokStarts[mt - 1], ast._tokEnds[mt - 1]);
-      if (prev === 'type') return 'type';
-    }
+    // ImportSpecifier { type Foo } — 'type' token immediately before the name
+    if (mt > 0 && ast._tokTags[mt - 1] === TOK_KW_TYPE) return 'type';
     return 'value';
   },
 
@@ -2113,10 +2478,7 @@ const NodeProto = {
     const ast = this._ast;
     const mt = this.mainToken;
     if (t === T.export_named || t === T.export_named_from || t === T.export_all) {
-      if (mt + 1 < ast.tokenCount) {
-        const next = ast.source.slice(ast._tokStarts[mt + 1], ast._tokEnds[mt + 1]);
-        if (next === 'type') return 'type';
-      }
+      if (mt + 1 < ast.tokenCount && ast._tokTags[mt + 1] === TOK_KW_TYPE) return 'type';
       return 'value';
     }
     return 'value';
@@ -2192,27 +2554,24 @@ const NodeProto = {
   },
 
   /**
-   * node.implements — TS implements clause. Returns array of type references
-   * or empty array. Detected via token scanning for 'implements' keyword.
+   * node.implements — TS implements clause.
+   * Returns array of TSClassImplements objects with .expression = Identifier.
+   * Data comes from ClassData.impls_start/impls_end in the Zig buffer.
+   * Each extra_data entry is the main_token index of the type reference (precomputed by Zig).
    */
   get implements() {
     const t = this._tag;
     if (t !== T.class_decl && t !== T.class_expr) return undefined;
     const ast = this._ast;
-    const mt = this.mainToken;
-    // Scan forward from class keyword to opening brace looking for 'implements'
-    for (let i = mt + 1; i < ast.tokenCount; i++) {
-      const tag = ast._tokTags[i];
-      if (tag === 74) break; // '{' — opening brace
-      const start = ast._tokStarts[i];
-      const end = ast._tokEnds ? ast._tokEnds[i] : ast._tokStarts[i + 1];
-      if (ast.source.slice(start, end) === 'implements') {
-        // Return non-empty array to indicate implements exists
-        // (rules just check .implements?.length > 0)
-        return [{ type: 'TSClassImplements' }];
-      }
+    const d = ast.extraClassData(ast.nodeLhs(this._i));
+    if (d.impls_start === d.impls_end) return [];
+    const result = [];
+    const ed = ast._extraData;
+    for (let i = d.impls_start; i < d.impls_end; i++) {
+      const tok = ed[i]; // main_token index precomputed by Zig
+      result.push({ type: 'TSClassImplements', expression: _tokenIdentifier(ast, tok) });
     }
-    return [];
+    return result;
   },
 
   /**
@@ -2360,7 +2719,32 @@ const NodeProto = {
         t === T.computed_setter_def) {
       return lhs === NONE ? null : nodeView(ast, lhs);
     }
+    // TS interface members (TSPropertySignature/TSMethodSignature) — lhs is the key.
+    // Call/construct/index signatures have no key (lhs === NONE): return a dummy Identifier
+    // to prevent "null.type" crashes in rules that do `'key' in node && node.key.type`.
+    if (t === T.ts_method_signature || t === T.ts_property_signature) {
+      if (lhs === NONE) return { type: 'Identifier', name: '', start: this.start, end: this.start };
+      return nodeView(ast, lhs);
+    }
+    if (t === T.ts_call_signature || t === T.ts_construct_signature || t === T.ts_index_signature) {
+      return { type: 'Identifier', name: '', start: this.start, end: this.start };
+    }
+    if (t === T.ts_type_annotation || t === T.ts_enum_member) {
+      if (lhs === NONE) return { type: 'Identifier', name: '', start: this.start, end: this.start };
+      return nodeView(ast, lhs);
+    }
+    // StaticBlock has no key; return dummy to prevent `node.key.type` crashes.
+    if (t === T.static_block) return { type: 'Identifier', name: '', start: this.start, end: this.start };
     return null;
+  },
+
+  /**
+   * node.initializer — TSEnumMember initializer expression.
+   */
+  get initializer() {
+    if (this._tag !== T.ts_enum_member) return undefined;
+    const rhs = this._ast.nodeRhs(this._i);
+    return rhs === NONE ? null : nodeView(this._ast, rhs);
   },
 
   /**
@@ -2487,6 +2871,21 @@ const NodeProto = {
       const idx = this._ast.nodeLhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
     }
+    // TSAsExpression / TSSatisfiesExpression: expression = lhs (the wrapped expression)
+    if (t === T.ts_as_expr || t === T.ts_satisfies_expr) {
+      const idx = this._ast.nodeLhs(this._i);
+      return idx === NONE ? null : nodeView(this._ast, idx);
+    }
+    // TSTypeAssertion (<Type>expr): expression = rhs
+    if (t === T.ts_type_assertion) {
+      const idx = this._ast.nodeRhs(this._i);
+      return idx === NONE ? null : nodeView(this._ast, idx);
+    }
+    // TSNonNullExpression: expression = lhs (already handled by argument getter, also expose here)
+    if (t === T.ts_non_null_expr) {
+      const idx = this._ast.nodeLhs(this._i);
+      return idx === NONE ? null : nodeView(this._ast, idx);
+    }
     return null;
   },
 
@@ -2569,7 +2968,9 @@ const NodeProto = {
     const t = this._tag;
     const ast = this._ast;
     if (t === T.import_decl) {
-      const d = ast.extraImportData(ast.nodeLhs(this._i));
+      const lhs = ast.nodeLhs(this._i);
+      if (lhs === NONE) return []; // TSImportEqualsDeclaration — no specifiers
+      const d = ast.extraImportData(lhs);
       return ast._nodesFromRange(d.specifiers_start, d.specifiers_end);
     }
     if (t === T.export_named) {
@@ -2612,6 +3013,25 @@ const NodeProto = {
       return argIdx === NONE ? null : nodeView(ast, argIdx);
     }
     return undefined;
+  },
+
+  /**
+   * node.moduleReference — TSImportEqualsDeclaration module reference.
+   * For `import X = require('...')`: rhs is the require() call; extract string literal.
+   */
+  get moduleReference() {
+    const t = this._tag;
+    if (t !== T.import_decl) return undefined;
+    const ast = this._ast;
+    const lhs = ast.nodeLhs(this._i);
+    if (lhs !== NONE) return undefined; // regular ImportDeclaration
+    const rhs = ast.nodeRhs(this._i);
+    if (rhs === NONE) return undefined;
+    const callNode = nodeView(ast, rhs);
+    // Get expression: first argument of require('...') call, or the rhs itself for qualified names
+    const args = callNode.arguments;
+    const expr = (args && args.length > 0) ? args[0] : callNode;
+    return _syntheticNode('TSExternalModuleReference', callNode.start, callNode.end, { expression: expr }, ast);
   },
 
   /**

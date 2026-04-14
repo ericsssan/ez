@@ -24,11 +24,11 @@ fn lintSource(source: []const u8) ![]const LintDiagnostic {
 
 fn expectRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) !void {
     for (diagnostics) |d| {
-        if (std.mem.eql(u8, d.rule_name, rule_name)) return;
+        if (std.mem.eql(u8, linter.rule_names[d.rule_index], rule_name)) return;
     }
     std.debug.print("Expected rule '{s}' to fire, but it didn't. Got {d} diagnostic(s):\n", .{ rule_name, diagnostics.len });
     for (diagnostics) |d| {
-        std.debug.print("  - {s}: {s}\n", .{ d.rule_name, d.message });
+        std.debug.print("  - {s}\n", .{linter.rule_names[d.rule_index]});
     }
     return error.TestExpectedEqual;
 }
@@ -36,7 +36,7 @@ fn expectRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) !void 
 fn countRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) usize {
     var n: usize = 0;
     for (diagnostics) |d| {
-        if (std.mem.eql(u8, d.rule_name, rule_name)) n += 1;
+        if (std.mem.eql(u8, linter.rule_names[d.rule_index], rule_name)) n += 1;
     }
     return n;
 }

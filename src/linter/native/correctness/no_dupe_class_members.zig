@@ -81,7 +81,11 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const members = ctx.extraSlice(sub_range);
 
     var seen = std.StringHashMap(MemberState).init(ctx.allocator);
-    defer seen.deinit();
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k| ctx.allocator.free(k.*);
+        seen.deinit();
+    }
 
     for (members) |member_idx| {
         const member_node: NodeIndex = @enumFromInt(member_idx);

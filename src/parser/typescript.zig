@@ -1544,13 +1544,13 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
 
     // ── Call signature: `(params): ReturnType;` or `<T>(params): ReturnType;`
     if (p.peek() == .l_paren or p.peek() == .less_than) {
-        return parseCallOrConstructSignature(p, member_tok);
+        return parseCallOrConstructSignature(p, member_tok, false);
     }
 
     // ── Construct signature: `new (params): ReturnType;` or `new <T>(params): ReturnType;`
     if (p.peek() == .kw_new and (p.peekAt(1) == .l_paren or p.peekAt(1) == .less_than)) {
         _ = p.advance(); // consume `new`
-        return parseCallOrConstructSignature(p, member_tok);
+        return parseCallOrConstructSignature(p, member_tok, true);
     }
 
     // ── Index signature: `[key: Type]: Type;` ────────────────
@@ -1629,40 +1629,33 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
 
         _ = try p.expect(.r_paren);
 
-        // Optional return type annotation
-        var return_type: NodeIndex = .none;
-        if (p.peek() == .colon) {
-            _ = p.advance();
-            return_type = try parseType(p);
-        }
+        // Optional return type annotation (wrapped in TSTypeAnnotation node)
+        const return_type = try p.parseOptionalTypeAnnotation();
 
         consumeMemberSeparator(p);
 
         return p.addNode(.{
-            .tag = .ts_type_annotation,
+            .tag = .ts_method_signature,
             .main_token = member_tok,
             .data = .{ .lhs = name_node, .rhs = return_type },
         });
     }
 
     // ── Property signature: `name: Type` ─────────────────────
-    var type_node: NodeIndex = .none;
-    if (p.peek() == .colon) {
-        _ = p.advance(); // consume `:`
-        type_node = try parseType(p);
-    }
+    const type_node = try p.parseOptionalTypeAnnotation();
 
     consumeMemberSeparator(p);
 
     return p.addNode(.{
-        .tag = .ts_type_annotation,
+        .tag = .ts_property_signature,
         .main_token = member_tok,
         .data = .{ .lhs = name_node, .rhs = type_node },
     });
 }
 
 /// Parse a call or construct signature (shared logic).
-fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex) Error!NodeIndex {
+/// is_construct: true for `new ()` (construct), false for `()` (call).
+fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex, is_construct: bool) Error!NodeIndex {
     // Optional type parameters
     if (p.peek() == .less_than) {
         _ = try parseTypeParameterList(p);
@@ -1694,8 +1687,9 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex) Error!NodeI
 
     consumeMemberSeparator(p);
 
+    const sig_tag: @import("ast.zig").Node.Tag = if (is_construct) .ts_construct_signature else .ts_call_signature;
     return p.addNode(.{
-        .tag = .ts_type_annotation,
+        .tag = sig_tag,
         .main_token = member_tok,
         .data = .{ .lhs = .none, .rhs = return_type },
     });
@@ -1705,8 +1699,8 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex) Error!NodeI
 pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
     const bracket_tok = p.advance(); // consume `[`
 
-    // Parameter name
-    _ = try p.parseIdentifier();
+    // Parameter name — stored in lhs so JS can expose `parameters: [identifier]`
+    const param_ident = try p.parseIdentifier();
 
     // Colon and key type
     _ = try p.expect(.colon);
@@ -1721,9 +1715,9 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
     consumeMemberSeparator(p);
 
     return p.addNode(.{
-        .tag = .ts_type_annotation,
+        .tag = .ts_index_signature,
         .main_token = bracket_tok,
-        .data = .{ .lhs = .none, .rhs = value_type },
+        .data = .{ .lhs = param_ident, .rhs = value_type },
     });
 }
 

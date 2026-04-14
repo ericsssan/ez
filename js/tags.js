@@ -231,6 +231,14 @@ const T = {
   jsx_member_expr: 199,
   jsx_namespaced_name: 200,
   jsx_gap_node: 201,
+  // TypeScript interface member node tags (added at end to preserve ABI)
+  ts_call_signature: 202,
+  ts_construct_signature: 203,
+  ts_method_signature: 204,
+  ts_property_signature: 205,
+  ts_index_signature: 206,
+  // Decorator node tag
+  decorator: 207,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.
