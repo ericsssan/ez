@@ -8,20 +8,18 @@ if (typeof Bun === "undefined") {
 /**
  * Differential test — compares Ez backends against ESLint+Espree.
  *
- * Two input sources:
- *   1. Fixture files (tests/differential/fixtures/) — all 3 backends
- *      espree (oracle), native Zig binary, JS runner
- *   2. ESLint submodule test cases — espree + runner only
- *      Per-case options and sourceType forwarded to both sides.
+ * Input: ESLint submodule test cases + plugin conformance tests.
+ * Compares Ez backends (runner, native, hybrid) against ESLint+Espree oracle.
+ * Per-case options and sourceType forwarded to both sides.
  *
  * Flags:
  *   --save-baseline  Write current results as tests/differential/baseline.json
  *   --strict         Fail on any mismatch regardless of baseline
- *   --fixtures-only  Skip corpus extraction
- *   --corpus-only    Skip fixture files
  *   --rule <name>    Run only this rule; show all failing cases with code snippets
  *   --fails          Show code snippets for up to 3 failing cases per rule
  *   --verbose / -v   Show all cases (pass and fail) with details
+ *   --json           Output results as JSON (for CI/dashboards)
+ *   --diff <file>    Compare current baseline with another baseline file
  *
  * Default: load baseline.json; fail only on new regressions.
  *
@@ -36,7 +34,6 @@ const path = require("path");
 
 const JS_ROOT      = path.resolve(__dirname, "../../js");
 const ESLINT_ROOT  = path.resolve(__dirname, "../conformance/eslint");
-const FIXTURES_DIR = path.resolve(__dirname, "fixtures");
 const BASELINE_FILE = path.resolve(__dirname, "baseline.json");
 
 // ── Bun plugin stubs ─────────────────────────────────────────
@@ -126,12 +123,13 @@ require("eslint");
 const args         = process.argv.slice(2);
 const saveBaseline = args.includes("--save-baseline");
 const strict       = args.includes("--strict");
-const fixturesOnly = args.includes("--fixtures-only");
-const corpusOnly   = args.includes("--corpus-only");
 const showFails    = args.includes("--fails") || args.includes("--show-fails");
 const verboseAll   = args.includes("--verbose") || args.includes("-v");
+const jsonOutput   = args.includes("--json");
 const _ruleIdx     = args.indexOf("--rule");
 const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
+const _diffIdx     = args.indexOf("--diff");
+const diffFile     = _diffIdx >= 0 ? args[_diffIdx + 1] : null;
 
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -188,6 +186,22 @@ function offsetToLine(source, offset) {
     if (source.charCodeAt(i) === 10) line++;
   }
   return line;
+}
+
+/** Apply ESLint-style fix objects to source code. Mirrors api.js applyFixes(). */
+function _applyFixes(source, fixes) {
+  if (!fixes || fixes.length === 0) return source;
+  const sorted = fixes.slice().sort((a, b) => (a.range?.[0] ?? a[0]) - (b.range?.[0] ?? b[0]));
+  let result = "", lastIndex = 0;
+  for (const fix of sorted) {
+    const range = fix.range || [fix[0], fix[1]];
+    const text  = fix.text ?? fix[2] ?? "";
+    const [start, end] = range;
+    if (start < lastIndex) continue; // skip overlapping
+    result += source.slice(lastIndex, start) + text;
+    lastIndex = end;
+  }
+  return result + source.slice(lastIndex);
 }
 
 // ── Rules ─────────────────────────────────────────────────────
@@ -283,7 +297,7 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
   : [];
 
 const _pluginRuleModules = new Map(); // fullName → { create, meta }
-const _pluginPackages     = new Map(); // prefix  → loaded plugin package (for _espreePlugins)
+const _pluginPackages     = new Map(); // prefix  → loaded plugin package
 
 for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
   let pkg = null;
@@ -325,7 +339,7 @@ for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
 // ── ESLint + Ez runner setup ────────────────────────────────
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
-const { parseSource: parse, getTagNames, lintSource: ezLint, buildNativeConfig } = require(path.join(JS_ROOT, "index"));
+const { parseSource: parse, getTagNames, lintSource: ezLint, buildNativeConfig, getNativeRules } = require(path.join(JS_ROOT, "index"));
 const { runPlugins, computeGlobals, applyDisableDirectives } = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
@@ -348,26 +362,6 @@ global.__EZ_LINTER_CLASS__ = Linter;
 // Timing accumulators for runner breakdown (parse vs plugin).
 let _runnerParseMs = 0, _runnerPluginMs = 0;
 
-// Pre-load runner plugins for fixture-file mode (all rules at once).
-const _runnerPlugins = [];
-for (const ruleName of COMPARABLE_RULES) {
-  if (_pluginRuleModules.has(ruleName)) {
-    const mod = _pluginRuleModules.get(ruleName);
-    _runnerPlugins.push({
-      meta: { name: ruleName, defaultOptions: mod.meta?.defaultOptions },
-      create: mod.create,
-    });
-    continue;
-  }
-  try {
-    const mod = require(path.join(RULES_DIR_NM, `${ruleName}.js`));
-    _runnerPlugins.push({
-      meta: { name: ruleName, defaultOptions: mod.meta?.defaultOptions },
-      create: mod.create,
-    });
-  } catch { /* rule file not found */ }
-}
-
 // ── Espree (reference) ────────────────────────────────────────
 
 // Register plugin rules with ESLint Linter so espree can run them.
@@ -376,34 +370,6 @@ for (const [prefix, pkg] of _pluginPackages) {
   _espreePlugins[prefix] = pkg;
 }
 
-const _espreeRules = {};
-for (const r of COMPARABLE_RULES) _espreeRules[r] = "error";
-
-function runEspree(filePath) {
-  const source = fs.readFileSync(filePath, "utf-8");
-  const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
-  const messages = eslintLinter.verify(source, [{
-    plugins: _espreePlugins,
-    languageOptions: { ecmaVersion: 2022, sourceType },
-    rules: _espreeRules,
-  }], { filename: filePath });
-  return messages
-    .filter(m => !m.fatal && COMPARABLE_RULES.has(m.ruleId))
-    .map(m => ({ rule: m.ruleId, line: m.line }));
-}
-
-
-// ── Native (NAPI) ─────────────────────────────────────────────
-
-function runNative(filePath) {
-  const source = fs.readFileSync(filePath, "utf-8");
-  try {
-    const diags = ezLint(source, {});
-    return diags
-      .filter(d => COMPARABLE_RULES.has(d.ruleName))
-      .map(d => ({ rule: d.ruleName, line: offsetToLine(source, d.offset) }));
-  } catch { return []; }
-}
 
 // Run native for a single corpus test case (in-process, no subprocess).
 // ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
@@ -425,31 +391,7 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
   } catch { return null; }
 }
 
-// ── ESLint-runner (JS path) ───────────────────────────────────
-
-function runRunner(filePath) {
-  const source = fs.readFileSync(filePath, "utf-8");
-  try {
-    const sourceType = /^(import |export )/m.test(source) ? "module" : "script";
-    const globals = computeGlobals(2022, false);
-    const ast = parse(source, { filename: filePath, globals });
-    const reports = runPlugins(ast, _runnerPlugins, { tagNames, sourceType });
-    const results = [];
-    for (const r of reports) {
-      if (!r.ruleId || !COMPARABLE_RULES.has(r.ruleId)) continue;
-      const line = r.loc?.start?.line ?? r.loc?.line ?? r.line;
-      if (r.message?.startsWith("Plugin error:"))
-        results.push({ rule: r.ruleId, line, crash: r.message });
-      else
-        results.push({ rule: r.ruleId, line });
-    }
-    return results;
-  } catch (e) {
-    return [{ crash: e.message }];
-  }
-}
-
-// Per-rule runner call for corpus mode (forwards per-case options, sourceType, JSX mode).
+// Per-rule runner call (forwards per-case options, sourceType, JSX mode).
 // rulePlugin: pre-created { meta, create } object shared across all cases of the same rule.
 //   Passing the same object identity across calls triggers the buildVisitorMap fast path,
 //   avoiding a new _cachedVM allocation (and new closure set) per case.
@@ -497,7 +439,7 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
       if (r.message?.startsWith("Plugin error:")) {
         results.push({ rule: r.ruleId, line, crash: r.message.slice("Plugin error: ".length) });
       } else {
-        results.push({ rule: r.ruleId, line });
+        results.push({ rule: r.ruleId, line, fix: r.fix || null });
       }
     }
     return results;
@@ -520,18 +462,6 @@ function diff(reference, candidate) {
     .map(k => { const [rule, line] = k.split(":"); return { rule, line: +line }; });
 
   return { fn, fp, crashes };
-}
-
-// ── File discovery ────────────────────────────────────────────
-
-function discoverFiles(dir) {
-  const files = [];
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const full = path.join(dir, e.name);
-    if (e.isDirectory()) files.push(...discoverFiles(full));
-    else if (/\.(js|mjs)$/.test(e.name)) files.push(full);
-  }
-  return files;
 }
 
 // ── ESLint submodule corpus extraction ────────────────────────
@@ -651,6 +581,10 @@ function installCorpusIntercept() {
     const eslintResult = result
       .filter(m => !m.fatal && m.ruleId === fullName)
       .map(m => ({ rule: fullName, line: m.line }));
+    // Capture ESLint's autofix output for fix verification.
+    const eslintFixes = result
+      .filter(m => m.fix && m.ruleId === fullName)
+      .map(m => m.fix);
     const tc = {
       code: typeof code === "string" ? code : "",
       options: ruleOptions,
@@ -659,6 +593,7 @@ function installCorpusIntercept() {
       hasCustomParser: false,
       isTypeScript: _isTsCase,
       eslintResult,
+      eslintFixes: eslintFixes.length > 0 ? eslintFixes : null,
     };
     if (!_captured) _captured = { name: fullName, defaultConfig: {}, cases: [] };
     _captured.cases.push(tc);
@@ -770,6 +705,9 @@ function installCorpusIntercept() {
         }
       }
       if (hasFatal) return result; // parse error — skip
+      const eslintFixes = result
+        .filter(m => m.fix && (m.ruleId === fullRuleId || m.ruleId === ruleName))
+        .map(m => m.fix);
       const tc = {
         code: typeof code === "string" ? code : "",
         options: ruleOptions,
@@ -777,6 +715,7 @@ function installCorpusIntercept() {
         hasCustomParser: false,
         isTypeScript: _isTsCase,
         eslintResult,
+        eslintFixes: eslintFixes.length > 0 ? eslintFixes : null,
       };
       if (!_captured) _captured = { name: ruleName, defaultConfig: {}, cases: [] };
       _captured.cases.push(tc);
@@ -888,16 +827,70 @@ function loadBaseline() {
   return JSON.parse(fs.readFileSync(BASELINE_FILE, "utf8"));
 }
 
+// ── Baseline diff (--diff) ────────────────────────────────────
+// Compare two baselines without running any tests.
+
+if (diffFile) {
+  const a = JSON.parse(fs.readFileSync(BASELINE_FILE, "utf8"));
+  const b = JSON.parse(fs.readFileSync(diffFile, "utf8"));
+  const allRules = new Set([...Object.keys(a.corpus || {}), ...Object.keys(b.corpus || {})]);
+  const improved = [], regressed = [], newRules = [], removedRules = [];
+  for (const rule of [...allRules].sort()) {
+    const da = a.corpus[rule], db = b.corpus[rule];
+    if (!da) { newRules.push(rule); continue; }
+    if (!db) { removedRules.push(rule); continue; }
+    const aRunner = da.runner || da, bRunner = db.runner || db;
+    const aNative = da.native || {}, bNative = db.native || {};
+    const aHybrid = da.hybrid || {}, bHybrid = db.hybrid || {};
+    const aTotal = (aRunner.fn||0) + (aRunner.fp||0) + (aRunner.crash||0) + (aNative.fn||0) + (aNative.fp||0);
+    const bTotal = (bRunner.fn||0) + (bRunner.fp||0) + (bRunner.crash||0) + (bNative.fn||0) + (bNative.fp||0);
+    if (bTotal < aTotal) {
+      improved.push({ rule, delta: aTotal - bTotal, from: aTotal, to: bTotal });
+    } else if (bTotal > aTotal) {
+      regressed.push({ rule, delta: bTotal - aTotal, from: aTotal, to: bTotal });
+    }
+  }
+  console.log(`Baseline diff: ${path.basename(BASELINE_FILE)} → ${path.basename(diffFile)}`);
+  console.log(`  Rules: ${allRules.size} total, ${newRules.length} new, ${removedRules.length} removed\n`);
+  if (a.perf && b.perf) {
+    const aCps = a.perf.runnerCasesPerSec || 0, bCps = b.perf.runnerCasesPerSec || 0;
+    const aNCps = a.perf.nativeCasesPerSec || 0, bNCps = b.perf.nativeCasesPerSec || 0;
+    console.log(`  Perf: runner ${aCps.toLocaleString()} → ${bCps.toLocaleString()} cases/s  native ${aNCps.toLocaleString()} → ${bNCps.toLocaleString()} cases/s`);
+  }
+  if (improved.length > 0) {
+    improved.sort((a, b) => b.delta - a.delta);
+    console.log(`\nImproved (${improved.length} rules, ${improved.reduce((s, r) => s + r.delta, 0)} fewer gaps):`);
+    for (const r of improved.slice(0, 30)) {
+      console.log(`  -${String(r.delta).padStart(4)}  ${r.rule.padEnd(40)} ${r.from} → ${r.to}`);
+    }
+    if (improved.length > 30) console.log(`  ... and ${improved.length - 30} more`);
+  }
+  if (regressed.length > 0) {
+    regressed.sort((a, b) => b.delta - a.delta);
+    console.log(`\nRegressed (${regressed.length} rules, ${regressed.reduce((s, r) => s + r.delta, 0)} more gaps):`);
+    for (const r of regressed.slice(0, 30)) {
+      console.log(`  +${String(r.delta).padStart(4)}  ${r.rule.padEnd(40)} ${r.from} → ${r.to}`);
+    }
+    if (regressed.length > 30) console.log(`  ... and ${regressed.length - 30} more`);
+  }
+  if (improved.length === 0 && regressed.length === 0) console.log("No changes.");
+  process.exit(regressed.length > 0 ? 1 : 0);
+}
+
 // ── Main ──────────────────────────────────────────────────────
 
 const nativeAvailable = typeof ezLint === "function";
+const _nativeRuleSet = nativeAvailable ? getNativeRules() : new Map();
 
 const baseline = loadBaseline();
-const newBaseline = { files: {}, corpus: {}, perf: null };
+const newBaseline = { corpus: {}, perf: null };
 
 let anyRegression = false;
 const regressedRules = [];
 const _startTime = Date.now();
+// Top-level accumulators (populated inside corpus IIFE, read in JSON output).
+let _topFlakyRules = new Map();
+let _topFixable = 0, _topFixMatch = 0, _topFixMismatch = 0;
 
 // Wall-clock timeout: if elapsed > baseline.perf.totalElapsedMs × 1.3, kill the run.
 // Only active when baseline has perf data and we're not saving a new baseline.
@@ -905,86 +898,11 @@ const _timeoutMs = !saveBaseline && baseline?.perf?.totalElapsedMs > 0
   ? Math.ceil(baseline.perf.totalElapsedMs * 1.3)
   : 0;
 
-// ── Source 1: Fixture files — all 3 backends ──────────────────
-
-if (!corpusOnly) {
-  const files = discoverFiles(FIXTURES_DIR);
-  const nativeTotals  = { fn: 0, fp: 0, crash: 0 };
-  const runnerTotals  = { fn: 0, fp: 0, crash: 0 };
-
-  console.log(`Fixture files: ${files.length}, ${COMPARABLE_RULES.size} rules\n`);
-
-  for (const file of files) {
-    const rel = path.relative(path.resolve(__dirname, "../.."), file);
-
-    const espreeResults = runEspree(file);
-    const nativeResults = runNative(file);
-    const runnerResults = runRunner(file);
-
-    const nativeDiff = diff(espreeResults, nativeResults);
-    const runnerDiff = diff(espreeResults, runnerResults);
-
-    nativeTotals.fn += nativeDiff.fn.length;
-    nativeTotals.fp += nativeDiff.fp.length;
-    nativeTotals.crash += nativeDiff.crashes.length;
-    runnerTotals.fn += runnerDiff.fn.length;
-    runnerTotals.fp += runnerDiff.fp.length;
-    runnerTotals.crash += runnerDiff.crashes.length;
-
-    newBaseline.files[rel] = {
-      native: { fn: nativeDiff.fn.map(r => `${r.rule}:${r.line}`).sort(), fp: nativeDiff.fp.map(r => `${r.rule}:${r.line}`).sort() },
-      runner: { fn: runnerDiff.fn.map(r => `${r.rule}:${r.line}`).sort(), fp: runnerDiff.fp.map(r => `${r.rule}:${r.line}`).sort() },
-    };
-
-    const basefile  = baseline?.files?.[rel];
-    const nativeOk  = !nativeAvailable || (nativeDiff.fn.length === 0 && nativeDiff.fp.length === 0 && nativeDiff.crashes.length === 0);
-    const runnerOk  = runnerDiff.fn.length === 0 && runnerDiff.fp.length === 0 && runnerDiff.crashes.length === 0;
-
-    let fileRegression = false;
-    if (!strict && basefile) {
-      const baseNativeFn = new Set(basefile.native?.fn || []);
-      const baseNativeFp = new Set(basefile.native?.fp || []);
-      const baseRunnerFn = new Set(basefile.runner?.fn || []);
-      const baseRunnerFp = new Set(basefile.runner?.fp || []);
-      const newNativeFn  = nativeDiff.fn.filter(r => !baseNativeFn.has(`${r.rule}:${r.line}`));
-      const newNativeFp  = nativeDiff.fp.filter(r => !baseNativeFp.has(`${r.rule}:${r.line}`));
-      const newRunnerFn  = runnerDiff.fn.filter(r => !baseRunnerFn.has(`${r.rule}:${r.line}`));
-      const newRunnerFp  = runnerDiff.fp.filter(r => !baseRunnerFp.has(`${r.rule}:${r.line}`));
-      fileRegression = newNativeFn.length > 0 || newNativeFp.length > 0 ||
-                       newRunnerFn.length > 0 || newRunnerFp.length > 0 ||
-                       nativeDiff.crashes.length > 0 || runnerDiff.crashes.length > 0;
-    } else {
-      fileRegression = !nativeOk || !runnerOk;
-    }
-
-    if (fileRegression) anyRegression = true;
-
-    if (nativeOk && runnerOk) {
-      console.log(`  ✓ ${rel} (${espreeResults.length} violations, both backends match)`);
-    } else if (!fileRegression) {
-      console.log(`  ~ ${rel} (known mismatches in baseline)`);
-    } else {
-      console.log(`  ✗ ${rel} (${espreeResults.length} espree violations)`);
-      function printDiff(label, { fn, fp, crashes }) {
-        if (fn.length === 0 && fp.length === 0 && crashes.length === 0) return;
-        for (const { rule, line } of fn)   console.log(`    ${label} MISS:  ${rule} at line ${line}`);
-        for (const { rule, line } of fp)   console.log(`    ${label} EXTRA: ${rule} at line ${line}`);
-        for (const { rule, crash } of crashes) console.log(`    ${label} CRASH: ${rule || "?"} — ${crash}`);
-      }
-      printDiff("native", nativeDiff);
-      printDiff("runner", runnerDiff);
-    }
-  }
-
-  console.log(`\nnative: ${nativeTotals.fn} FN, ${nativeTotals.fp} FP, ${nativeTotals.crash} crashes`);
-  console.log(`runner: ${runnerTotals.fn} FN, ${runnerTotals.fp} FP, ${runnerTotals.crash} crashes`);
-}
-
-// ── Source 2: ESLint submodule corpus — espree + runner + native ──
+// ── Corpus — espree + runner + native + hybrid ───────────────
 
 // Wrapped in async IIFE so unicorn ESM test files can be loaded with await import().
 (async () => {
-if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
+if (fs.existsSync(ESLINT_ROOT)) {
   const nativeLabel = nativeAvailable ? "espree + runner + native" : "espree + runner";
   console.log(`\nESLint corpus (${COMPARABLE_RULES.size} rules, ${nativeLabel})\n`);
 
@@ -1088,15 +1006,24 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
   let totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
       totalNativeSkip = 0, totalNativeCrash = 0;
+  let totalHybridPass = 0, totalHybridFn = 0, totalHybridFp = 0, totalHybridCrash = 0;
   let runnerOnlyMs = 0, nativeOnlyMs = 0;
+  // TS vs JS breakdown
+  let tsCases = 0, tsPass = 0, jsCases = 0, jsPass = 0;
+  // Fix verification
+  let totalFixable = 0, totalFixMatch = 0, totalFixMismatch = 0;
+  // Flaky detection
+  const flakyRules = new Map(); // ruleName → count of flaky cases
 
   const _showCases = showFails || verboseAll || filterRule !== null;
   let _processed = 0, _total = allRuleData.reduce((s, r) => s + r.allCases.length, 0);
+  const _ruleTimes = []; // { rule, runnerMs, nativeMs, cases }
 
   for (const { ruleName, ruleModule, defaultSourceType, isTypeScript, allCases } of allRuleData) {
     if (filterRule && ruleName !== filterRule) continue;
 
     // Pre-build native config for this rule (one per rule, reused across cases).
+    const _ruleHasNativeImpl = _nativeRuleSet.has(ruleName);
     const nativeRuleConfig = nativeAvailable
       ? buildNativeConfig({ [ruleName]: "warn" })
       : null;
@@ -1110,9 +1037,14 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
 
     let fn = 0, fp = 0, crash = 0, pass = 0, skipCustomParser = 0, skipEspreeParse = 0;
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkipOptions = 0;
+    let hybridFn = 0, hybridFp = 0, hybridCrash = 0, hybridPass = 0;
+    let ruleFixable = 0, ruleFixMatch = 0, ruleFixMismatch = 0;
+    let _ruleRunnerMs = 0, _ruleNativeMs = 0;
+    const _ruleParseSnap = _runnerParseMs, _rulePluginSnap = _runnerPluginMs;
     // Collect failing cases for --fails / --verbose output
     const failedCases = [];  // { tcIdx, kind:"runner"|"native", espreeLines, ourLines, code }
 
+    let _caseLoopT0 = performance.now();
     for (let tcIdx = 0; tcIdx < allCases.length; tcIdx++) {
       const tc = allCases[tcIdx];
       if (tc.hasCustomParser) { skipCustomParser++; continue; }
@@ -1131,7 +1063,9 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
 
       const _rt0 = Date.now();
       const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
-      runnerOnlyMs += Date.now() - _rt0;
+      const _rtDelta = Date.now() - _rt0;
+      runnerOnlyMs += _rtDelta;
+      _ruleRunnerMs += _rtDelta;
       if (runnerResult === null) { crash++; continue; }
 
       // Separate crashes from normal results
@@ -1173,22 +1107,63 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
         }
       }
 
+      // TS vs JS tracking
+      const _isTsCase = isTypeScript || !!tc.isTypeScript;
+      if (_isTsCase) { tsCases++; if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) tsPass++; }
+      else { jsCases++; if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) jsPass++; }
+
+      // Fix verification: compare runner autofix output vs ESLint autofix output.
+      // Only check cases where diagnostics match (caseFn===0, caseFp===0) so fix
+      // comparison is meaningful — otherwise different diagnostics produce different fixes.
+      if (tc.eslintFixes && caseFn === 0 && caseFp === 0) {
+        ruleFixable++;
+        // Apply ESLint fixes to get expected output
+        const eslintFixed = _applyFixes(tc.code, tc.eslintFixes);
+        // Apply runner fixes to get our output
+        const runnerFixes = runnerNormal.filter(r => r.fix).flatMap(r => r.fix);
+        if (runnerFixes.length > 0) {
+          const runnerFixed = _applyFixes(tc.code, runnerFixes);
+          if (runnerFixed === eslintFixed) ruleFixMatch++;
+          else ruleFixMismatch++;
+        } else {
+          // Runner didn't produce fixes but ESLint did — mismatch
+          ruleFixMismatch++;
+        }
+      }
+
       // Native comparison (in-process NAPI call).
       const _nt0 = Date.now();
       const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options);
-      nativeOnlyMs += Date.now() - _nt0;
+      const _ntDelta = Date.now() - _nt0;
+      nativeOnlyMs += _ntDelta;
+      _ruleNativeMs += _ntDelta;
+      let nativeUsable = false; // did native produce a usable result for this case?
       if (nativeResult === "skip") {
         nativeSkipOptions++;
       } else if (nativeResult === null) {
         nativeCrash++;
       } else {
+        nativeUsable = true;
         const nativeKeys = new Set(nativeResult.map(r => `${r.rule}:${r.line}`));
         const caseNativeFn = [...espreeKeys].filter(k => !nativeKeys.has(k)).length;
         const caseNativeFp = [...nativeKeys].filter(k => !espreeKeys.has(k)).length;
         if (caseNativeFn === 0 && caseNativeFp === 0) nativePass++;
         else { nativeFn += caseNativeFn; nativeFp += caseNativeFp; }
       }
+
+      // Hybrid comparison: prefer native when usable AND rule has native impl, else runner.
+      // Mirrors production path in api.js: native rules via Zig, JS-only rules via runner.
+      if (nativeAvailable) {
+        const hybridResult = (_ruleHasNativeImpl && nativeUsable) ? nativeResult : runnerNormal;
+        const hybridKeys = new Set(hybridResult.map(r => `${r.rule}:${r.line}`));
+        const caseHybridFn = [...espreeKeys].filter(k => !hybridKeys.has(k)).length;
+        const caseHybridFp = [...hybridKeys].filter(k => !espreeKeys.has(k)).length;
+        if (caseHybridFn === 0 && caseHybridFp === 0) hybridPass++;
+        else { hybridFn += caseHybridFn; hybridFp += caseHybridFp; }
+      }
     }
+
+    const _caseLoopMs = performance.now() - _caseLoopT0;
 
     const skip = skipCustomParser + skipEspreeParse;
     const total = pass + fn + fp + crash;
@@ -1202,6 +1177,34 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     totalNativeFp    += nativeFp;
     totalNativeSkip  += nativeSkipOptions;
     totalNativeCrash += nativeCrash;
+    totalHybridPass  += hybridPass;
+    totalHybridFn    += hybridFn;
+    totalHybridFp    += hybridFp;
+    totalHybridCrash += hybridCrash;
+    totalFixable     += ruleFixable;
+    totalFixMatch    += ruleFixMatch;
+    totalFixMismatch += ruleFixMismatch;
+
+    // Flaky detection: re-run a sample of failed cases to detect non-determinism.
+    if (failedCases.length > 0 && failedCases.length <= 50) {
+      let ruleFlaky = 0;
+      for (const fc of failedCases.slice(0, 10)) {
+        if (fc.kind === "crash") continue;
+        const tcr = allCases[fc.tcIdx];
+        if (!tcr) continue;
+        const st = tcr.languageOptions?.sourceType || defaultSourceType;
+        const r2 = runRunnerForRule(tcr.code, ruleName, ruleModule, tcr.options, st, tcr.languageOptions, isTypeScript || !!tcr.isTypeScript, tcr.filename, rulePlugin);
+        if (!r2) continue;
+        const r2Normal = r2.filter(r => !r.crash);
+        const r2Keys = new Set(r2Normal.map(r => `${r.rule}:${r.line}`));
+        const runnerKeys2 = new Set((fc.ourLines || []).map(l => `${ruleName}:${l}`));
+        // Compare re-run to original run — if different, it's flaky
+        if (r2Keys.size !== runnerKeys2.size || [...r2Keys].some(k => !runnerKeys2.has(k))) {
+          ruleFlaky++;
+        }
+      }
+      if (ruleFlaky > 0) flakyRules.set(ruleName, ruleFlaky);
+    }
 
     // Free the old _cachedVM (rule closures from create()). JSC under-counts external
     // TypedArray backing stores toward GC budget, so GC never fires spontaneously when
@@ -1212,20 +1215,25 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
     newBaseline.corpus[ruleName] = {
       runner: { fn, fp, crash },
       native: { fn: nativeFn, fp: nativeFp, crash: nativeCrash, skip: nativeSkipOptions },
+      hybrid: { fn: hybridFn, fp: hybridFp, crash: hybridCrash },
     };
     const baseRule   = baseline?.corpus?.[ruleName];
     const baseRunner = baseRule?.runner ?? baseRule ?? null;  // old: flat, new: nested
     const baseNative = baseRule?.native ?? null;
+    const baseHybrid = baseRule?.hybrid ?? null;
 
     let ruleRegression = false;
-    if (!strict && (baseRunner || baseNative)) {
+    if (!strict && (baseRunner || baseNative || baseHybrid)) {
       if (baseRunner)
         ruleRegression = fn > baseRunner.fn || fp > baseRunner.fp || crash > baseRunner.crash;
       if (nativeAvailable && baseNative)
-        ruleRegression = ruleRegression || nativeFn > baseNative.fn || nativeFp > baseNative.fp;
+        ruleRegression = ruleRegression || nativeFn > baseNative.fn || nativeFp > baseNative.fp || nativeCrash > baseNative.crash;
+      if (nativeAvailable && baseHybrid)
+        ruleRegression = ruleRegression || hybridFn > baseHybrid.fn || hybridFp > baseHybrid.fp || hybridCrash > baseHybrid.crash;
     } else if (strict) {
       ruleRegression = fn > 0 || fp > 0 || crash > 0 ||
-                       (nativeAvailable && (nativeFn > 0 || nativeFp > 0));
+                       (nativeAvailable && (nativeFn > 0 || nativeFp > 0 || nativeCrash > 0)) ||
+                       (nativeAvailable && (hybridFn > 0 || hybridFp > 0 || hybridCrash > 0));
     }
 
     if (ruleRegression) {
@@ -1233,11 +1241,18 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       const deltaFn   = baseRunner ? fn   - baseRunner.fn   : fn;
       const deltaFp   = baseRunner ? fp   - baseRunner.fp   : fp;
       const deltaCr   = baseRunner ? crash - baseRunner.crash : crash;
-      regressedRules.push({ rule: ruleName, deltaFn, deltaFp, deltaCr });
+      const nDeltaFn  = baseNative ? nativeFn    - baseNative.fn    : nativeFn;
+      const nDeltaFp  = baseNative ? nativeFp    - baseNative.fp    : nativeFp;
+      const nDeltaCr  = baseNative ? nativeCrash - baseNative.crash : nativeCrash;
+      const hDeltaFn  = baseHybrid ? hybridFn    - baseHybrid.fn    : hybridFn;
+      const hDeltaFp  = baseHybrid ? hybridFp    - baseHybrid.fp    : hybridFp;
+      const hDeltaCr  = baseHybrid ? hybridCrash - baseHybrid.crash : hybridCrash;
+      regressedRules.push({ rule: ruleName, deltaFn, deltaFp, deltaCr, nDeltaFn, nDeltaFp, nDeltaCr, hDeltaFn, hDeltaFp, hDeltaCr });
     }
 
     const allClean = (fn + fp + crash) === 0 &&
-                     (!nativeAvailable || (nativeFn + nativeFp + nativeCrash) === 0);
+                     (!nativeAvailable || (nativeFn + nativeFp + nativeCrash) === 0) &&
+                     (!nativeAvailable || (hybridFn + hybridFp + hybridCrash) === 0);
     const status = allClean ? "✓" : ruleRegression ? "✗" : "~";
 
     const skipDetail = [];
@@ -1257,8 +1272,15 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
         nativeCrash    > 0 ? `${nativeCrash} crash`       : "",
         nativeSkipOptions > 0 ? `${nativeSkipOptions} skip` : "",
       ].filter(Boolean).join(", ");
+      const hybridTotal = hybridPass + hybridFn + hybridFp + hybridCrash;
+      const hybridDetail = [
+        hybridFn    > 0 ? `${hybridFn} FN`    : "",
+        hybridFp    > 0 ? `${hybridFp} FP`    : "",
+        hybridCrash > 0 ? `${hybridCrash} crash` : "",
+      ].filter(Boolean).join(", ");
       const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
-      console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}`);
+      const hybridStr = `hybrid ${hybridPass}/${hybridTotal}${hybridDetail ? ` (${hybridDetail})` : ""}`;
+      console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}  ${hybridStr}`);
     } else {
       console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
     }
@@ -1287,6 +1309,11 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
       }
     }
 
+    _ruleTimes.push({
+      rule: ruleName, runnerMs: _ruleRunnerMs, nativeMs: _ruleNativeMs, cases: total,
+      parseMs: _runnerParseMs - _ruleParseSnap, pluginMs: _runnerPluginMs - _rulePluginSnap,
+    });
+
     // Wall-clock timeout guard: check at each rule boundary.
     if (_timeoutMs > 0) {
       const _elapsed = Date.now() - _startTime;
@@ -1302,10 +1329,15 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   restore();
   const runnerMs = Date.now() - runnerT0;
 
+  // Derived totals reused in perf + summary output.
+  const _nativeTotal = totalNativePass + totalNativeFn + totalNativeFp + totalNativeCrash;
+  const _hybridTotal = totalHybridPass + totalHybridFn + totalHybridFp + totalHybridCrash;
+
   // Store perf data in newBaseline so --save-baseline captures throughput.
   newBaseline.perf = {
     totalElapsedMs: Date.now() - _startTime,
     runnerCasesPerSec: runnerOnlyMs > 0 ? Math.round(totalCases / (runnerOnlyMs / 1000)) : 0,
+    nativeCasesPerSec: nativeOnlyMs > 0 ? Math.round(_nativeTotal / (nativeOnlyMs / 1000)) : 0,
     totalCases,
   };
 
@@ -1332,23 +1364,74 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
   }
 
   if (nativeAvailable) {
-    const nativeTotal    = totalNativePass + totalNativeFn + totalNativeFp + totalNativeCrash;
     const runnerCasesSec = runnerOnlyMs > 0 ? Math.round(totalCases / (runnerOnlyMs / 1000)).toLocaleString() : "∞";
-    const nativeCasesSec = nativeOnlyMs > 0 ? Math.round(nativeTotal / (nativeOnlyMs / 1000)).toLocaleString() : "∞";
+    const nativeCasesSec = nativeOnlyMs > 0 ? Math.round(_nativeTotal / (nativeOnlyMs / 1000)).toLocaleString() : "∞";
     const runnerPct = totalCases > 0 ? (totalPass / totalCases * 100).toFixed(1) : "0";
-    const nativePct = nativeTotal > 0 ? (totalNativePass / nativeTotal * 100).toFixed(1) : "0";
+    const nativePct = _nativeTotal > 0 ? (totalNativePass / _nativeTotal * 100).toFixed(1) : "0";
+    const hybridPct = _hybridTotal > 0 ? (totalHybridPass / _hybridTotal * 100).toFixed(1) : "0";
     const runnerGaps = totalCases - totalPass;
-    const nativeGaps = nativeTotal - totalNativePass;
+    const nativeGaps = _nativeTotal - totalNativePass;
+    const hybridGaps = _hybridTotal - totalHybridPass;
     console.log(`\nCorpus runner:  ${totalPass}/${totalCases} pass (${runnerPct}%), ${totalSkip} skipped, ${totalCrash} crashes, ${runnerGaps} gaps`);
-    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)  [parse: ${(_runnerParseMs/1000).toFixed(2)}s, plugin: ${(_runnerPluginMs/1000).toFixed(2)}s]`);
-    console.log(`Corpus native:  ${totalNativePass}/${nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps`);
+    console.log(`  linting: ${(runnerOnlyMs/1000).toFixed(2)}s  (${runnerCasesSec} cases/s)  [parse: ${(_runnerParseMs/1000).toFixed(2)}s, js-rules: ${(_runnerPluginMs/1000).toFixed(2)}s]`);
+    console.log(`Corpus native:  ${totalNativePass}/${_nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps`);
     console.log(`  linting: ${(nativeOnlyMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s)`);
+    console.log(`Corpus hybrid:  ${totalHybridPass}/${_hybridTotal} pass (${hybridPct}%), ${hybridGaps} gaps  (native when available, runner fallback)`);
+
+    // Top 10 slowest rules by total time (runner + native).
+    if (_ruleTimes.length > 0 && !filterRule) {
+      const sorted = [..._ruleTimes].sort((a, b) => (b.runnerMs + b.nativeMs) - (a.runnerMs + a.nativeMs));
+      console.log(`\nSlowest rules (runner + native):`);
+      for (const t of sorted.slice(0, 10)) {
+        const totalMs = Math.round(t.runnerMs + t.nativeMs);
+        const perCase = t.cases > 0 ? (totalMs / t.cases * 1000).toFixed(0) : "—";
+        console.log(`  ${String(totalMs).padStart(5)}ms  ${t.rule.padEnd(40)} ${t.cases} cases  (${perCase} µs/case)  [parse ${Math.round(t.parseMs)}ms, js-rules ${Math.round(t.pluginMs)}ms, native ${Math.round(t.nativeMs)}ms]`);
+      }
+    }
+
+    // TS vs JS breakdown
+    if (!filterRule && (tsCases + jsCases > 0)) {
+      const jsPct = jsCases > 0 ? (jsPass / jsCases * 100).toFixed(1) : "—";
+      const tsPct = tsCases > 0 ? (tsPass / tsCases * 100).toFixed(1) : "—";
+      console.log(`\nJS cases:  ${jsPass}/${jsCases} pass (${jsPct}%)`);
+      console.log(`TS cases:  ${tsPass}/${tsCases} pass (${tsPct}%)`);
+    }
+
+    // Native coverage dashboard
+    if (!filterRule) {
+      const totalRules = allRuleData.length;
+      let nativeImplCount = 0, nativeImplCases = 0, totalAllCases = 0;
+      for (const { ruleName, allCases: ac } of allRuleData) {
+        const cases = ac.length;
+        totalAllCases += cases;
+        if (_nativeRuleSet.has(ruleName)) { nativeImplCount++; nativeImplCases += cases; }
+      }
+      const coveragePct = totalAllCases > 0 ? (nativeImplCases / totalAllCases * 100).toFixed(1) : "0";
+      console.log(`\nNative coverage: ${nativeImplCount}/${totalRules} rules (${coveragePct}% of cases)`);
+    }
+
+    // Fix verification summary
+    if (!filterRule && totalFixable > 0) {
+      const fixPct = (totalFixMatch / totalFixable * 100).toFixed(1);
+      console.log(`\nFix verification: ${totalFixMatch}/${totalFixable} match (${fixPct}%), ${totalFixMismatch} mismatch`);
+    }
+
+    // Flaky rules
+    if (flakyRules.size > 0) {
+      console.log(`\nFlaky rules (${flakyRules.size} rules with non-deterministic results):`);
+      for (const [rule, count] of [...flakyRules.entries()].sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${rule}: ${count} flaky cases`);
+      }
+    }
   } else {
     const pct = totalCases > 0 ? (totalPass / totalCases * 100).toFixed(1) : "0";
     console.log(`\nCorpus: ${totalPass}/${totalCases} pass (${pct}%), ${totalSkip} skipped, ${totalCrash} crashes  (${(runnerMs/1000).toFixed(2)}s)`);
   }
-} else if (!fixturesOnly) {
-  console.log("\n(ESLint submodule not found — skipping corpus. Run: git submodule update --init tests/conformance/eslint)");
+  // Export IIFE-local accumulators to top-level for JSON output.
+  _topFlakyRules = flakyRules;
+  _topFixable = totalFixable; _topFixMatch = totalFixMatch; _topFixMismatch = totalFixMismatch;
+} else {
+  console.log("\n(ESLint submodule not found. Run: git submodule update --init tests/conformance/eslint)");
 }
 
 // ── Save baseline / exit ──────────────────────────────────────
@@ -1366,11 +1449,42 @@ if (!saveBaseline && baseline?.perf?.runnerCasesPerSec > 0 && newBaseline.perf?.
   if (perfRatio < 0.7) {
     anyRegression = true;
     regressedRules.push({
-      rule: "(throughput)",
-      deltaFn: 0, deltaFp: 0, deltaCr: 0,
+      rule: "(runner throughput)",
+      deltaFn: 0, deltaFp: 0, deltaCr: 0, nDeltaFn: 0, nDeltaFp: 0, nDeltaCr: 0, hDeltaFn: 0, hDeltaFp: 0, hDeltaCr: 0,
       _perfNote: `${newBaseline.perf.runnerCasesPerSec.toLocaleString()} cases/s vs baseline ${baseline.perf.runnerCasesPerSec.toLocaleString()} cases/s (${(perfRatio * 100).toFixed(0)}%)`,
     });
   }
+}
+if (!saveBaseline && baseline?.perf?.nativeCasesPerSec > 0 && newBaseline.perf?.nativeCasesPerSec > 0) {
+  const perfRatio = newBaseline.perf.nativeCasesPerSec / baseline.perf.nativeCasesPerSec;
+  if (perfRatio < 0.7) {
+    anyRegression = true;
+    regressedRules.push({
+      rule: "(native throughput)",
+      deltaFn: 0, deltaFp: 0, deltaCr: 0, nDeltaFn: 0, nDeltaFp: 0, nDeltaCr: 0, hDeltaFn: 0, hDeltaFp: 0, hDeltaCr: 0,
+      _perfNote: `${newBaseline.perf.nativeCasesPerSec.toLocaleString()} cases/s vs baseline ${baseline.perf.nativeCasesPerSec.toLocaleString()} cases/s (${(perfRatio * 100).toFixed(0)}%)`,
+    });
+  }
+}
+
+// JSON output (--json): machine-readable results for CI/dashboards.
+if (jsonOutput) {
+  const jsonResult = {
+    baseline: newBaseline,
+    regressions: regressedRules.map(r => ({
+      rule: r.rule,
+      runner: { fn: r.deltaFn, fp: r.deltaFp, crash: r.deltaCr },
+      native: { fn: r.nDeltaFn, fp: r.nDeltaFp, crash: r.nDeltaCr },
+      hybrid: { fn: r.hDeltaFn, fp: r.hDeltaFp, crash: r.hDeltaCr },
+      perfNote: r._perfNote || null,
+    })),
+    anyRegression,
+    elapsedMs: Date.now() - _startTime,
+    flaky: Object.fromEntries(_topFlakyRules),
+    fixes: { fixable: _topFixable, match: _topFixMatch, mismatch: _topFixMismatch },
+  };
+  console.log(JSON.stringify(jsonResult, null, 2));
+  process.exit(anyRegression ? 1 : 0);
 }
 
 if (saveBaseline) {
@@ -1383,9 +1497,15 @@ if (saveBaseline) {
       console.log(`  ${r.rule}: throughput regression — ${r._perfNote}`);
     } else {
       const parts = [];
-      if (r.deltaFn > 0) parts.push(`+${r.deltaFn} FN`);
-      if (r.deltaFp > 0) parts.push(`+${r.deltaFp} FP`);
-      if (r.deltaCr > 0) parts.push(`+${r.deltaCr} crash`);
+      if (r.deltaFn > 0) parts.push(`runner +${r.deltaFn} FN`);
+      if (r.deltaFp > 0) parts.push(`runner +${r.deltaFp} FP`);
+      if (r.deltaCr > 0) parts.push(`runner +${r.deltaCr} crash`);
+      if (r.nDeltaFn > 0) parts.push(`native +${r.nDeltaFn} FN`);
+      if (r.nDeltaFp > 0) parts.push(`native +${r.nDeltaFp} FP`);
+      if (r.nDeltaCr > 0) parts.push(`native +${r.nDeltaCr} crash`);
+      if (r.hDeltaFn > 0) parts.push(`hybrid +${r.hDeltaFn} FN`);
+      if (r.hDeltaFp > 0) parts.push(`hybrid +${r.hDeltaFp} FP`);
+      if (r.hDeltaCr > 0) parts.push(`hybrid +${r.hDeltaCr} crash`);
       console.log(`  ${r.rule}: ${parts.join(", ")}`);
     }
   }
