@@ -114,11 +114,15 @@ const _GLOBAL_MIN_VERSION = {
 // per reference (previously each ref had isWrite/isRead/etc. as own closures over `kind`).
 // _kind is stored as an own property; methods read it via `this._kind`.
 const _refProto = {
-  isWrite:     function() { return this._kind === 1 || this._kind === 2; },
-  isRead:      function() { return this._kind === 0 || this._kind === 2 || this._kind === 3; },
-  isWriteOnly: function() { return this._kind === 1; },
-  isReadOnly:  function() { return this._kind === 0 || this._kind === 3; },
-  isReadWrite: function() { return this._kind === 2; },
+  isWrite:          function() { return this._kind === 1 || this._kind === 2; },
+  isRead:           function() { return this._kind === 0 || this._kind === 2 || this._kind === 3; },
+  isWriteOnly:      function() { return this._kind === 1; },
+  isReadOnly:       function() { return this._kind === 0 || this._kind === 3; },
+  isReadWrite:      function() { return this._kind === 2; },
+  // typescript-eslint scope-manager compat: isValueReference / isTypeReference getters.
+  // _isTypeRef flag is set explicitly on export-specifier refs (see _buildReference).
+  get isValueReference() { return !this._isTypeRef; },
+  get isTypeReference()  { return !!this._isTypeRef; },
 };
 
 // ── ES2022 built-in globals ─────────────────────────────────────
@@ -1942,9 +1946,50 @@ class SourceCode {
         if (wrapper !== moduleScope) {
           // Replace in cache so _buildScope(1) always returns the wrapper.
           if (this._scopeCache) this._scopeCache[1] = wrapper;
+          // Replace in thin-scope cache too, so _buildThinScope(1) returns wrapper.
+          if (this._thinScopeCache) this._thinScopeCache[1] = wrapper;
           // Update all top-level references' from pointer to the wrapper.
+          // This covers refs in scope.references (Zig-generated refs built during
+          // `void globalScope.through` above).
           for (const ref of moduleScope.references) {
             if (ref.from === moduleScope) ref.from = wrapper;
+          }
+          // Also update variable.scope and all variable.references[].from so that
+          // identity checks like `variable.scope !== reference.from` (used in
+          // no-use-before-define's isInInitializer) work correctly.
+          // Full variables (from _buildVariable) and thin variables (from _buildThinVariable)
+          // were both built eagerly during `void globalScope.through` above, before the
+          // wrapper was created, so they point to moduleScope instead of wrapper.
+          for (const v of moduleScope.variables) {
+            if (v.scope === moduleScope) v.scope = wrapper;
+            for (const ref of v.references) {
+              if (ref.from === moduleScope) ref.from = wrapper;
+            }
+          }
+          // Thin variables (used as ref.resolved) also need scope updated.
+          if (this._thinVarCache) {
+            const ast2 = this._ast;
+            const symCount = ast2._semSymbolCount || 0;
+            for (let si = 0; si < symCount; si++) {
+              const tv = this._thinVarCache[si];
+              if (tv && tv.scope === moduleScope) tv.scope = wrapper;
+            }
+          }
+          // Update scope.upper for child scopes that point to moduleScope.
+          // Required so rules like no-shadow can do getOuterScope(innerScope) === outerVar.scope
+          // (both should be wrapper, not a mix of scope1 and wrapper).
+          const scopeCount = this._ast._semScopeCount || 0;
+          if (this._thinScopeCache) {
+            for (let si = 0; si < scopeCount; si++) {
+              const ts = this._thinScopeCache[si];
+              if (ts && ts.upper === moduleScope) ts.upper = wrapper;
+            }
+          }
+          if (this._scopeCache) {
+            for (let si = 0; si < scopeCount; si++) {
+              const fs = this._scopeCache[si];
+              if (fs && fs !== wrapper && fs.upper === moduleScope) fs.upper = wrapper;
+            }
           }
         }
       }
@@ -2319,6 +2364,18 @@ class SourceCode {
     }
     // Read-only refs: leave writeExpr as undefined (not null). ESLint scope convention:
     // `typeof ref.writeExpr !== 'undefined'` is how code checks if a ref is a write.
+
+    // typescript-eslint scope-manager uses referenceDualValueType() for export specifier
+    // locals, which sets isTypeReference=true. Rules like no-use-before-define check
+    // `isTypeReference` to skip UBD checks when ignoreTypeReferences:true (default).
+    // Replicate: if this ref's identifier is the `local` of an ExportSpecifier, mark it.
+    if (refNode && kind === 0 /* read */) {
+      const parent = refNode.parent;
+      if (parent && parent.type === 'ExportSpecifier' && parent.local === refNode) {
+        ref._isTypeRef = true;
+      }
+    }
+
     this._refCache[refIdx] = ref;
     return ref;
   }
