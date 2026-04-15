@@ -3747,7 +3747,7 @@
     },
     "@typescript-eslint/no-explicit-any": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3877,7 +3877,7 @@
     },
     "@typescript-eslint/no-use-before-define": {
       "runner": {
-        "fn": 9,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -3903,7 +3903,7 @@
     },
     "@typescript-eslint/unified-signatures": {
       "runner": {
-        "fn": 7,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       },
@@ -4059,7 +4059,7 @@
     },
     "@typescript-eslint/no-unsafe-declaration-merging": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -4086,7 +4086,7 @@
     "@typescript-eslint/max-params": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4124,7 +4124,7 @@
     },
     "@typescript-eslint/no-redeclare": {
       "runner": {
-        "fn": 10,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -4176,7 +4176,7 @@
     },
     "@typescript-eslint/no-magic-numbers": {
       "runner": {
-        "fn": 33,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -4319,8 +4319,8 @@
     },
     "@typescript-eslint/default-param-last": {
       "runner": {
-        "fn": 10,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4714,7 +4714,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 13,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5091,7 +5091,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 57,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5312,7 +5312,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 22,
+        "fn": 47,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -5529,7 +5529,7 @@
     "jsdoc/no-undefined-types": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 13,
         "crash": 0
       },
       "native": {
@@ -5919,7 +5919,7 @@
     "unicorn/prefer-export-from": {
       "runner": {
         "fn": 8,
-        "fp": 3,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -6555,8 +6555,8 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 10,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11298,5 +11298,10 @@
         "skip": 0
       }
     }
+  },
+  "perf": {
+    "totalElapsedMs": 21400,
+    "runnerCasesPerSec": 10939,
+    "totalCases": 53711
   }
 }

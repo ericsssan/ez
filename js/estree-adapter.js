@@ -1119,12 +1119,16 @@ const NodeProto = {
     if (this._parent !== _PARENT_UNSET) return this._parent;
     const pd = this._ast._parentData;
     if (!pd) { this._parent = null; return null; }
-    // Walk past grouping_expr (ParenthesizedExpression) parents since nodeView
+    // Walk past grouping_expr and ts_parenthesized_type parents since nodeView
     // unwraps them — without this skip the parent chain would cycle:
     //   child → ParenthesizedExpression parent → nodeView unwraps back to child
+    //   child → TSParenthesizedType parent → nodeView unwraps back to child
     let parentIdx = pd[this._i];
-    while (parentIdx !== NONE && this._ast._nodeTags[parentIdx] === T.grouping_expr) {
+    let _skipGuard = 0;
+    while (parentIdx !== NONE && (this._ast._nodeTags[parentIdx] === T.grouping_expr ||
+                                   this._ast._nodeTags[parentIdx] === T.ts_parenthesized_type)) {
       parentIdx = pd[parentIdx];
+      if (++_skipGuard > 64) { parentIdx = NONE; break; } // cycle guard
     }
     let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
 

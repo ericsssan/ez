@@ -55,153 +55,70 @@ const { plugin: _bunPlugin } = require("bun");
 _bunPlugin({
   name: "ez-capture",
   setup(build) {
-    // Version strings used in package.json stubs — bumped high so semver
-    // checks in plugin test helpers (e.g. `eslint >= 9`) always pass.
-    const ESLINT_VERSION  = "9.99.0";
     const PARSER_VERSION  = "99.0.0";
-    // Parser packages that react/promise/unicorn test files try to require.
     const PARSER_PACKAGES = ["@typescript-eslint/parser", "typescript-eslint-parser", "babel-eslint", "@babel/eslint-parser"];
 
-    // ── eslint stub ───────────────────────────────────────────
-    // ESM syntax: provides `default` export for jsdoc's `import eslint from 'eslint'`
-    // and named exports accessible via CJS `require('eslint').RuleTester`.
-    // CJS/ESM conflict is handled by the `require("eslint")` pre-load below setup().
-    // RuleTester.run() delegates to __EZ_SILENT_RUN__ for case capture.
+    // ── eslint redirect with stub RuleTester ────────────────────
+    // All plugins must use the SAME eslint Linter so our verify() intercept works.
+    // Re-export real Linter/ESLint/SourceCode but replace RuleTester with our stub
+    // that delegates to __EZ_SILENT_RUN__ for reliable case capture.
+    // Real RuleTester has complex fix/suggestion re-verification that doesn't match
+    // our capture model — the stub gives consistent single-verify-per-case behavior.
+    const ESLINT_PATH = JSON.stringify(path.join(JS_ROOT, "node_modules/eslint"));
     build.module("eslint", () => ({
       loader: "js",
       contents: `
+const _eslint = require(${ESLINT_PATH});
 class RuleTester {
-  constructor(config) { this._config = config || {}; }
-  run(name, rule, cases) { if (typeof global.__EZ_SILENT_RUN__ === "function") global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, this._config); }
+  constructor(...args) { this._config = typeof args[0] === 'function' ? (args[1] || {}) : (args[0] || {}); }
+  run(name, rule, cases) { if (typeof global.__EZ_SILENT_RUN__ === "function") global.__EZ_SILENT_RUN__(new _eslint.Linter(), name, cases, this._config); }
   static get describe() { return null; }
   static get it()       { return null; }
 }
 export { RuleTester };
-export const Linter = class {};
-export const ESLint = class {};
-export const SourceCode = class {};
-export default { RuleTester, Linter, ESLint, SourceCode };
+export const Linter = _eslint.Linter;
+export const ESLint = _eslint.ESLint;
+export const SourceCode = _eslint.SourceCode;
+export default { RuleTester, Linter: _eslint.Linter, ESLint: _eslint.ESLint, SourceCode: _eslint.SourceCode };
 `,
     }));
-    build.module("eslint/package.json", () => ({
-      loader: "js",
-      // Named exports so CJS `require('eslint/package.json').version` works.
-      // (CJS require of an ESM module gets named exports directly, not default.)
-      contents: `export const name = "eslint"; export const version = "${ESLINT_VERSION}"; export default { name: "eslint", version: "${ESLINT_VERSION}" };`,
-    }));
 
-    // ── ava + eslint-ava-rule-tester stubs (unicorn ESM tests) ───
-    // ESM syntax so `import test from 'ava'` and
-    // `import RuleTester from 'eslint-ava-rule-tester'` get proper default exports.
+    // ── ava stub ──────────────────────────────────────────────
+    // ava is not installed. Stub as no-op so import doesn't crash.
     build.module("ava", () => ({
       loader: "js",
-      contents: `
-const avaStub = Object.assign(function avaStub() {}, {
-  before: () => {}, after: () => {}, beforeEach: () => {}, afterEach: () => {},
-  serial: () => {}, skip: () => {}, failing: () => {}, only: () => {},
-});
-export default avaStub;
-`,
+      contents: `const s = Object.assign(function(){}, { before:()=>{}, after:()=>{}, beforeEach:()=>{}, afterEach:()=>{}, serial:()=>{}, skip:()=>{}, failing:()=>{}, only:()=>{} }); export default s;`,
     }));
 
-    build.module("eslint-ava-rule-tester", () => ({
-      loader: "js",
-      contents: `
-export default class FakeAvaRuleTester {
-  constructor(_t, config) { this._config = config || {}; }
-  run(name, rule, cases) { if (typeof global.__EZ_SILENT_RUN__ === "function") global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, this._config); }
-}
-`,
-    }));
+    // ── Test framework redirects ────────────────────────────────
+    // These frameworks import from 'eslint' — our redirect gives them the stub
+    // RuleTester. But they may also have structural differences (extra constructor
+    // args, etc.) so re-export the stub from 'eslint' directly.
+    build.module("eslint-ava-rule-tester", () => ({ loader: "js", contents: `export { RuleTester as default } from 'eslint';` }));
+    build.module("@typescript-eslint/rule-tester", () => ({ loader: "js", contents: `export { RuleTester } from 'eslint'; export { RuleTester as default } from 'eslint';` }));
+    build.onLoad({ filter: /snapshot-rule-tester\.js$/ }, () => ({ loader: "js", contents: `export { RuleTester as default } from 'eslint';` }));
 
-    // ── parser stubs ──────────────────────────────────────────
-    // ESM syntax with named + default exports for compatibility with both
-    // CJS require() and ESM import() from react/promise/unicorn test files.
-    const parserContents = `
-const parser = { parse() { return { type: "Program", body: [], range: [0, 0] }; } };
-export default parser;
-export const parse = parser.parse;
-`;
+    // ── Parser stubs ──────────────────────────────────────────
+    // Prevent loading heavy real parsers. Stub parser cases are detected as
+    // custom-parser and skipped in comparison.
+    const parserContents = `const parser = { parse() { return { type: "Program", body: [], range: [0, 0] }; } }; export default parser; export const parse = parser.parse;`;
     for (const pkg of PARSER_PACKAGES) {
       build.module(pkg, () => ({ loader: "js", contents: parserContents }));
       build.module(`${pkg}/package.json`, () => ({ loader: "js", contents: `export const version = "${PARSER_VERSION}"; export default { version: "${PARSER_VERSION}" };` }));
     }
-
-    // typescript-eslint — used by jsdoc test files (`import { parser } from 'typescript-eslint'`).
-    // parseForESLint marks it as a custom parser so cases using it are skipped in comparison.
+    // typescript-eslint — jsdoc uses `import { parser } from 'typescript-eslint'`.
     build.module("typescript-eslint", () => ({
       loader: "js",
-      contents: `
-const parser = {
-  parse() { return { type: "Program", body: [], range: [0, 0] }; },
-  parseForESLint() { return { ast: { type: "Program", body: [], range: [0, 0] }, services: {}, scopeManager: null, visitorKeys: {} }; },
-};
-export { parser };
-export default { parser };
-`,
+      contents: `const parser = { parse() { return { type: "Program", body: [], range: [0,0] }; }, parseForESLint() { return { ast: { type: "Program", body: [], range: [0,0] }, services: {}, scopeManager: null, visitorKeys: {} }; } }; export { parser }; export default { parser };`,
     }));
 
-    // unicorn's snapshot-rule-tester — intercept by filename since it's a local file, not a package
-    build.onLoad({ filter: /snapshot-rule-tester\.js$/ }, () => ({
-      loader: "js",
-      contents: [
-        "export default class FakeSnapshotRuleTester {",
-        "  constructor(_t, config) { this._config = config || {}; }",
-        "  run(name, rule, cases) {",
-        "    if (typeof global.__EZ_SILENT_RUN__ === 'function') global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, this._config);",
-        "  }",
-        "}",
-      ].join("\n"),
-    }));
-
-    // ── TypeScript-eslint and sonarjs source test stubs ───────────────────────
-    // These allow loading test files directly from submodule source trees without
-    // running separate extraction scripts.
-
-    // @typescript-eslint/rule-tester — forward run() to __EZ_SILENT_RUN__ capture stub.
-    // Always passes @typescript-eslint/parser as the default parser so TypeScript syntax parses.
-    build.module("@typescript-eslint/rule-tester", () => ({
-      loader: "js",
-      contents: `
-export class RuleTester {
-  constructor(config) { this._config = config || {}; }
-  run(name, rule, cases) {
-    if (typeof global.__EZ_SILENT_RUN__ === "function") {
-      const tsParser = global.__EZ_TS_PARSER__;
-      const defaultCfg = tsParser
-        ? { ...this._config, languageOptions: { ...(this._config.languageOptions || {}), parser: tsParser } }
-        : this._config;
-      global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), name, cases, defaultCfg);
-    }
-  }
-  static get describe() { return null; }
-  static get it()       { return null; }
-}
-export default RuleTester;
-`,
-    }));
-
-    // Rule source stubs — rule object is unused (oracle uses the compiled npm rule via _espreePlugins)
-    build.onLoad({ filter: /eslint-plugin[/\\]src[/\\]rules[/\\].+\.ts$/ }, () => ({
-      loader: "js",
-      contents: `const r = {}; export default r;`,
-    }));
-
-    // Sonarjs shared utility stubs — scoped to sonarjs-src only to avoid clobbering
-    // @typescript-eslint/eslint-plugin's own helpers.js (which has real exports we need).
-    build.onLoad({ filter: /sonarjs-src[/\\].*[/\\](helpers|files)\.(ts|js)$/ }, () => ({
-      loader: "js",
-      contents: `export default {}; export const normalizePath = (p) => p;`,
-    }));
+    // ── Source file stubs (avoid loading real TS rule sources) ─
+    build.onLoad({ filter: /eslint-plugin[/\\]src[/\\]rules[/\\].+\.ts$/ }, () => ({ loader: "js", contents: `export default {};` }));
+    build.onLoad({ filter: /sonarjs-src[/\\].*[/\\](helpers|files)\.(ts|js)$/ }, () => ({ loader: "js", contents: `export default {}; export const normalizePath = (p) => p;` }));
   },
 });
 
-// Pre-load the eslint stub into CJS require.cache immediately after registration.
-// This must happen before any ESM import() (e.g. jsdoc's await import()) runs.
-// Sequence: CJS require first → stub in CJS cache → jsdoc's ESM import interops
-// with the CJS cache entry rather than creating a fresh ESM registry entry,
-// avoiding "Requested module is already fetched" for later CJS require() callers
-// (react, promise test files).
+// Pre-load eslint redirect into CJS cache so ESM/CJS interop works.
 require("eslint");
 
 // ── CLI flags ─────────────────────────────────────────────────
@@ -709,7 +626,7 @@ function installCorpusIntercept() {
     const result = _realVerifyOrig.call(this, code, config, options);
 
     if (!global.__EZ_CAPTURE_PREFIX__) return result;
-    // Skip "No matching configuration found" — __EZ_SILENT_RUN__ will retry with fallback filename
+    // Skip "No matching configuration found"
     if (result.length === 1 && result[0].ruleId === null &&
         result[0].message?.startsWith("No matching configuration found")) return result;
     // Skip fatal parse errors
@@ -759,7 +676,11 @@ function installCorpusIntercept() {
     for (let _cIdx = 0; _cIdx < allInputCases.length; _cIdx++) {
       const c = allInputCases[_cIdx];
       const tc = normalizeCase(c, defaultConfig);
-
+      // @typescript-eslint rules: stub parser lacks parseForESLint so normalizeCase
+      // can't detect TS mode. Override based on prefix.
+      if (!tc.isTypeScript && _tsParser && prefix && prefix.startsWith("@typescript-eslint")) {
+        tc.isTypeScript = true;
+      }
       if (tc.hasCustomParser) continue;
       const sourceType  = tc.languageOptions?.sourceType  || "script";
       const ecmaVersion = tc.languageOptions?.ecmaVersion ?? 2022;
@@ -771,7 +692,9 @@ function installCorpusIntercept() {
       const langOpts    = { ecmaVersion, sourceType };
       if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
       if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
-      if (tc.isTypeScript && _tsParser) langOpts.parser = _tsParser;
+      // Inject real TS parser for @typescript-eslint rules (stub parser lacks parseForESLint,
+      // so normalizeCase can't detect TS mode — detect by prefix instead).
+      if (_tsParser && (tc.isTypeScript || (prefix && prefix.startsWith("@typescript-eslint")))) langOpts.parser = _tsParser;
       try {
         const oracleExt      = tc.isTypeScript ? (jsxEnabled ? ".tsx" : ".ts") : ".js";
         const oracleFilename = tc.filename || ("test" + oracleExt);
@@ -878,15 +801,13 @@ function installCorpusIntercept() {
 }
 
 // evalSonarjsTest — synchronous eval-based loader for sonarjs unit.test.ts files.
-// Sonarjs tests use `node:test`'s describe/it which schedule callbacks asynchronously,
-// so await import() resolves before stubs fire.  We work around this by:
-//   1. Transpiling the TypeScript file synchronously with Bun.Transpiler
-//   2. Stripping all import declarations (replaced by preamble stubs below)
-//   3. Injecting synchronous describe/it + RuleTester stubs + rule stub
-//   4. eval()-ing the result — the describe/it wrappers call __EZ_SILENT_RUN__ inline
-// ruleName: the canonical rule name (e.g. "no-all-duplicated-branches") — sonarjs tests call
-// ruleTester.run("S3923 if", ...) using descriptions, not rule names, so we inject the correct
-// name directly into the preamble instead of relying on the first arg to run().
+// Sonarjs is a special case: tests use `node:test`'s describe/it which Bun.plugin cannot
+// intercept (built-in module). Callbacks schedule asynchronously, so await import() resolves
+// before stubs fire. Workaround: transpile TS → strip imports → inject preamble → eval().
+// The preamble uses the same __EZ_SILENT_RUN__ mechanism as all other plugin stubs.
+// Two sonarjs-specific details:
+//   - describe/it wrappers fire callbacks synchronously (can't stub node:test)
+//   - _ezRuleName overrides run()'s first arg (sonarjs passes descriptions, not rule names)
 function evalSonarjsTest(testFile, ruleName) {
   const content = fs.readFileSync(testFile, "utf8");
   let js;
@@ -972,11 +893,17 @@ function loadBaseline() {
 const nativeAvailable = typeof ezLint === "function";
 
 const baseline = loadBaseline();
-const newBaseline = { files: {}, corpus: {} };
+const newBaseline = { files: {}, corpus: {}, perf: null };
 
 let anyRegression = false;
 const regressedRules = [];
 const _startTime = Date.now();
+
+// Wall-clock timeout: if elapsed > baseline.perf.totalElapsedMs × 1.3, kill the run.
+// Only active when baseline has perf data and we're not saving a new baseline.
+const _timeoutMs = !saveBaseline && baseline?.perf?.totalElapsedMs > 0
+  ? Math.ceil(baseline.perf.totalElapsedMs * 1.3)
+  : 0;
 
 // ── Source 1: Fixture files — all 3 backends ──────────────────
 
@@ -1359,11 +1286,28 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
         console.log(`    ... and ${failedCases.length - maxShow} more failing cases (use --rule ${ruleName} to see all)`);
       }
     }
+
+    // Wall-clock timeout guard: check at each rule boundary.
+    if (_timeoutMs > 0) {
+      const _elapsed = Date.now() - _startTime;
+      if (_elapsed > _timeoutMs) {
+        process.stderr.write("\r\x1B[K");
+        console.error(`\nTimeout: elapsed ${(_elapsed / 1000).toFixed(1)}s exceeds baseline ${(baseline.perf.totalElapsedMs / 1000).toFixed(1)}s × 1.3. Possible performance regression.`);
+        process.exit(2);
+      }
+    }
   }
   if (!filterRule && !verboseAll) process.stderr.write("\r\x1B[K"); // clear progress line
 
   restore();
   const runnerMs = Date.now() - runnerT0;
+
+  // Store perf data in newBaseline so --save-baseline captures throughput.
+  newBaseline.perf = {
+    totalElapsedMs: Date.now() - _startTime,
+    runnerCasesPerSec: runnerOnlyMs > 0 ? Math.round(totalCases / (runnerOnlyMs / 1000)) : 0,
+    totalCases,
+  };
 
   // Top gaps summary — show rules with most remaining failures
   if (!filterRule) {
@@ -1416,17 +1360,34 @@ const heap = (mem.heapUsed / 1024 / 1024).toFixed(0);
 const heapTotal = (mem.heapTotal / 1024 / 1024).toFixed(0);
 console.log(`\nTotal time: ${elapsed}s  |  RSS: ${rss} MB  heap: ${heap}/${heapTotal} MB`);
 
+// Perf regression check (>30% throughput drop vs baseline).
+if (!saveBaseline && baseline?.perf?.runnerCasesPerSec > 0 && newBaseline.perf?.runnerCasesPerSec > 0) {
+  const perfRatio = newBaseline.perf.runnerCasesPerSec / baseline.perf.runnerCasesPerSec;
+  if (perfRatio < 0.7) {
+    anyRegression = true;
+    regressedRules.push({
+      rule: "(throughput)",
+      deltaFn: 0, deltaFp: 0, deltaCr: 0,
+      _perfNote: `${newBaseline.perf.runnerCasesPerSec.toLocaleString()} cases/s vs baseline ${baseline.perf.runnerCasesPerSec.toLocaleString()} cases/s (${(perfRatio * 100).toFixed(0)}%)`,
+    });
+  }
+}
+
 if (saveBaseline) {
   fs.writeFileSync(BASELINE_FILE, JSON.stringify(newBaseline, null, 2));
   console.log(`Baseline saved → ${path.relative(path.resolve(__dirname, "../.."), BASELINE_FILE)}`);
 } else if (anyRegression) {
   console.log("Regressions detected:");
   for (const r of regressedRules) {
-    const parts = [];
-    if (r.deltaFn > 0) parts.push(`+${r.deltaFn} FN`);
-    if (r.deltaFp > 0) parts.push(`+${r.deltaFp} FP`);
-    if (r.deltaCr > 0) parts.push(`+${r.deltaCr} crash`);
-    console.log(`  ${r.rule}: ${parts.join(", ")}`);
+    if (r._perfNote) {
+      console.log(`  ${r.rule}: throughput regression — ${r._perfNote}`);
+    } else {
+      const parts = [];
+      if (r.deltaFn > 0) parts.push(`+${r.deltaFn} FN`);
+      if (r.deltaFp > 0) parts.push(`+${r.deltaFp} FP`);
+      if (r.deltaCr > 0) parts.push(`+${r.deltaCr} crash`);
+      console.log(`  ${r.rule}: ${parts.join(", ")}`);
+    }
   }
   console.log("Run with --save-baseline to update baseline after intentional changes.");
   process.exit(1);

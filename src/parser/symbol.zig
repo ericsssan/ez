@@ -90,6 +90,14 @@ pub const BindingKind = enum {
     catch_param,
     import_binding,
     implicit_global,
+    /// TypeScript: type T = ...
+    type_decl,
+    /// TypeScript: interface T { ... }  (merging allowed in TS)
+    interface_decl,
+    /// TypeScript: enum T { ... }
+    enum_decl,
+    /// TypeScript: namespace T { } / declare module 'foo' { }
+    namespace_decl,
 
     /// Returns true if the binding introduces a TDZ (temporal dead zone).
     pub fn hasTDZ(self: BindingKind) bool {
@@ -110,9 +118,12 @@ pub const BindingKind = enum {
     /// Returns true if the binding can be redeclared in the same scope.
     /// Parameters are redeclarable to support duplicate params in sloppy mode
     /// (`function f(a, a) {}`). Strict mode duplicate params are caught by the parser.
+    /// TS declarations use canRedeclare=true so semantic.zig doesn't emit spurious
+    /// diagnostics — ESLint rules handle redeclaration checking themselves.
     pub fn canRedeclare(self: BindingKind) bool {
         return switch (self) {
             .@"var", .function_decl, .parameter => true,
+            .type_decl, .interface_decl, .enum_decl, .namespace_decl => true,
             else => false,
         };
     }
@@ -365,6 +376,8 @@ pub fn flagsFromBindingKind(kind: BindingKind) SymbolFlags {
         .implicit_global => {
             f.is_implicit_global = true;
         },
+        // TS type declarations: no JS-visible flags (tracked for ESLint scope only)
+        .type_decl, .interface_decl, .enum_decl, .namespace_decl => {},
     }
     return f;
 }

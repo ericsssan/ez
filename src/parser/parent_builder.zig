@@ -392,6 +392,7 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             },
             .ts_namespace_decl, .ts_module_decl => {
                 push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
 
             // ── JSX ───────────────────────────────────────────
@@ -468,8 +469,10 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             },
 
             // ── TypeScript type annotation traversal ──────────
-            // ts_type_annotation: lhs = inner type node
+            // ts_type_annotation: lhs = inner type (or constraint for type params)
+            //                     rhs = default type for type parameters (or .none)
             .ts_type_annotation => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             // ts_array_type: lhs = element type

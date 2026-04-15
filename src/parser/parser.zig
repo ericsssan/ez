@@ -3112,13 +3112,11 @@ pub const Parser = struct {
             const next = self.peekAt(1);
             if (next == .colon or next == .comma or next == .r_paren) {
                 const this_tok = self.advance(); // eat 'this'
-                if (self.peek() == .colon) {
-                    _ = try self.parseOptionalTypeAnnotation();
-                }
+                const this_type_ann = try self.parseOptionalTypeAnnotation();
                 return self.addNode(.{
                     .tag = .identifier,
                     .main_token = this_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
+                    .data = .{ .lhs = .none, .rhs = this_type_ann },
                 });
             }
         }

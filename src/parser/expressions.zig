@@ -3656,7 +3656,7 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
 
     // TS optional parameter marker and type annotation
     if (p.language.isTs()) {
-        _ = p.eat(.question);
+        const is_optional_ts = p.eat(.question) != null;
         const type_ann = try p.parseOptionalTypeAnnotation();
         // Attach type annotation to identifier binding so typeAnnotation getter works.
         // Skip if wrapped in TSParameterProperty — jsdocUtils path diverges for that case
@@ -3665,6 +3665,13 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
             const node_tag = p.nodes.items(.tag)[node.toInt()];
             if (node_tag == .identifier) {
                 p.nodes.items(.data)[node.toInt()].rhs = type_ann;
+            }
+        }
+        // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
+        if (is_optional_ts) {
+            const node_tag = p.nodes.items(.tag)[node.toInt()];
+            if (node_tag == .identifier) {
+                p.nodes.items(.data)[node.toInt()].lhs = .root;
             }
         }
     }
@@ -4387,17 +4394,43 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
             (next == .identifier or next == .l_brace or next == .l_bracket))
             return true;
     }
-    // Scan ahead for ident: pattern in later params
-    // Handles (a, b: T), (a, b, c: T), (a, private b), etc.
-    if (tag == .identifier and p.peekAt(1) == .comma) {
-        var i: u32 = 2;
-        while (i + 1 < p.tokens.len) {
+    // Scan ahead for ident: pattern in later params with bracket-depth tracking.
+    // Handles (a, b: T), (a = 1, b: T), (a, b, c: T), (a, private b), etc.
+    // Skip over nested brackets to find typed params at depth 0.
+    {
+        var i: u32 = 0;
+        var depth: i32 = 0;
+        // Track whether we're at the start of a parameter (after open-paren or comma at depth 0).
+        var at_param_start = true;
+        const max_scan: u32 = 64; // limit scan to avoid O(n) on large args
+        while (i < max_scan) : (i += 1) {
             const t = p.peekAt(i);
-            if (t == .r_paren or t == .eof) break;
-            if (t == .identifier) {
+            if (t == .eof) break;
+            if (t == .r_paren and depth == 0) break;
+            // Track bracket depth
+            if (t == .l_paren or t == .l_bracket or t == .l_brace) {
+                depth += 1;
+                at_param_start = false;
+                continue;
+            }
+            if (t == .r_paren or t == .r_bracket or t == .r_brace) {
+                depth -= 1;
+                at_param_start = false;
+                continue;
+            }
+            if (depth != 0) {
+                continue; // inside nested expression — skip
+            }
+            // At depth 0: comma resets param-start flag
+            if (t == .comma) {
+                at_param_start = true;
+                continue;
+            }
+            // At param start: check for typed pattern
+            if (at_param_start and t == .identifier and i + 1 < max_scan) {
                 const nt = p.peekAt(i + 1);
                 if (nt == .colon) return true;
-                if (nt == .question and i + 2 < p.tokens.len) {
+                if (nt == .question and i + 2 < max_scan) {
                     const after_q = p.peekAt(i + 2);
                     if (after_q == .colon or after_q == .r_paren or after_q == .comma) return true;
                 }
@@ -4405,10 +4438,10 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
                 const txt = p.tokenText(p.tok_i + i);
                 if ((std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "private") or
                     std.mem.eql(u8, txt, "protected") or std.mem.eql(u8, txt, "readonly")) and
-                    nt == .identifier)
+                    (nt == .identifier or nt == .l_brace or nt == .l_bracket))
                     return true;
             }
-            i += 1;
+            at_param_start = false;
         }
     }
     // (this : — this parameter

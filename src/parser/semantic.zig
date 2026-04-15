@@ -1027,7 +1027,10 @@ pub const SemanticAnalyzer = struct {
 
             // ── TypeScript declarations ──────────────────────
             .ts_interface_decl => {
+                // Register interface name in scope (for ESLint no-redeclare etc.)
                 const iface_data = self.ast.extraData(ast_mod.InterfaceData, @intFromEnum(data.lhs));
+                const iface_name = self.ast.tokenText(iface_data.name);
+                _ = try self.declareBinding(iface_name, idx, .interface_decl, self.current_scope);
                 if (iface_data.extends_start != iface_data.extends_end) {
                     try self.visitSubRange(.{ .start = iface_data.extends_start, .end = iface_data.extends_end });
                 }
@@ -1035,13 +1038,28 @@ pub const SemanticAnalyzer = struct {
                     try self.visitSubRange(.{ .start = iface_data.body_start, .end = iface_data.body_end });
                 }
             },
-            .ts_type_alias_decl => {},
+            .ts_type_alias_decl => {
+                // Register type alias name in scope (for ESLint no-redeclare etc.)
+                const alias_data = self.ast.extraData(ast_mod.TypeAliasData, @intFromEnum(data.lhs));
+                const alias_name = self.ast.tokenText(alias_data.name);
+                _ = try self.declareBinding(alias_name, idx, .type_decl, self.current_scope);
+            },
             .ts_enum_decl => {
+                // Register enum name in scope
                 const enum_data = self.ast.extraData(ast_mod.EnumData, @intFromEnum(data.lhs));
+                const enum_name = self.ast.tokenText(enum_data.name);
+                _ = try self.declareBinding(enum_name, idx, .enum_decl, self.current_scope);
                 try self.visitSubRange(.{ .start = enum_data.members_start, .end = enum_data.members_end });
             },
             .ts_enum_member => try self.visitNode(data.rhs),
-            .ts_namespace_decl, .ts_module_decl => try self.visitNode(data.rhs),
+            .ts_namespace_decl, .ts_module_decl => {
+                // Register namespace/module name in scope if the id is an identifier node
+                if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
+                    const ns_name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+                    _ = try self.declareBinding(ns_name, data.lhs, .namespace_decl, self.current_scope);
+                }
+                try self.visitNode(data.rhs);
+            },
             .ts_declare_function => {
                 // Register name in current scope (hoisted), but do not create a function scope.
                 const fn_data = self.ast.extraData(ast_mod.FnData, @intFromEnum(data.lhs));

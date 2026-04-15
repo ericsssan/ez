@@ -6,7 +6,12 @@ const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = requir
 // Must match BindingKind enum in src/parser/symbol.zig (values 0-8 in enum order).
 // 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl,
 // 5=parameter, 6=catch_param, 7=import_binding, 8=implicit_global
-const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','Variable'];
+// Indices match BindingKind enum order in symbol.zig:
+// 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl, 5=parameter, 6=catch_param,
+// 7=import_binding, 8=implicit_global, 9=type_decl, 10=interface_decl, 11=enum_decl, 12=namespace_decl
+// TS def type strings match @typescript-eslint/scope-manager DefinitionType values:
+// 'Type' for type aliases/interfaces, 'TSEnumName' for enums, 'TSModuleName' for namespaces
+const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName'];
 const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer'];
 let _tsServices = null;
 function tsServices() {
@@ -256,6 +261,8 @@ const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
  */
 function _findDefNode(declNode, defType) {
   if (!declNode) return null;
+  // For TypeDefinition (TS type alias/interface/enum), the declaration IS the def node.
+  if (defType === 'Type' || defType === 'TSEnumName' || defType === 'TSModuleName') return declNode;
   let cur = declNode.parent;
   switch (defType) {
     case 'Variable':
@@ -2106,7 +2113,20 @@ class SourceCode {
     //   FunctionName:def.name=Identifier, def.node=FunctionDeclaration, def.parent=container
     //   ClassName:   def.name=Identifier, def.node=ClassDeclaration, def.parent=container
     //   ImportBinding: def.name=Identifier, def.node=ImportSpecifier, def.parent=ImportDeclaration
+    //   TypeDefinition: def.name=Identifier(synthetic), def.node=TSTypeAliasDeclaration etc., def.parent=container
     let defNode = declNode ? _findDefNode(declNode, defType) : null;
+    // For TypeDefinition (TS type alias / interface / enum declared with declaration node as decl):
+    // declNode IS the declaration; extract id as a synthetic identifier with parent=declNode.
+    // For namespace_decl, declNode is already the identifier node (lhs of ts_namespace_decl),
+    // so its .parent getter already returns TSModuleDeclaration — skip synthesis in that case.
+    if ((defType === 'Type' || defType === 'TSEnumName' || defType === 'TSModuleName') && declNode && declNode.type !== 'Identifier') {
+      const tsId = declNode.id;
+      if (tsId && tsId.type === 'Identifier') {
+        tsId.parent = declNode;
+        identNode = tsId;
+      }
+      // defNode is already declNode from _findDefNode
+    }
     const is_let = (flags16 & 0x02) !== 0;
     const is_var = (flags16 & 0x01) !== 0;
     // kind: for Variable defs, matches the declaration keyword ('const', 'let', 'var').
@@ -5420,6 +5440,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   if (_hasTsInterfaceBodySynthE && _tsInterfaceDeclTagNumE < relevantTag.length) {
     relevantTag[_tsInterfaceDeclTagNumE] = 1;
   }
+  // TSModuleBlock synthesis: TSModuleDeclaration/TSNamespaceDeclaration body is a block_stmt in the Zig
+  // buffer, but ESTree rules expect it to fire as TSModuleBlock (not BlockStatement).
+  // Detect when TSModuleBlock or TSModuleBlock:exit handlers are registered and synthesize the events
+  // for block_stmt nodes whose parent is a module/namespace decl.
+  const _tsModuleBlockEnterH = visitorMap.get('TSModuleBlock') || null;
+  const _tsModuleBlockExitH  = visitorMap.get('TSModuleBlock:exit') || null;
+  const _hasTsModuleBlockSynth = _tsModuleBlockEnterH !== null || _tsModuleBlockExitH !== null;
+  if (_hasTsModuleBlockSynth && T.block_stmt < relevantTag.length) relevantTag[T.block_stmt] = 1;
   // TS keyword type remap: TSTypeReference nodes may dispatch as TSAnyKeyword etc.
   // Mark TSTypeReference relevant if any keyword or literal type visitor is registered so pruning
   // doesn't skip the node before _resolveHandlers gets a chance to remap.
@@ -5434,6 +5462,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
     if (_hasKw && T.ts_type_reference < relevantTag.length) relevantTag[T.ts_type_reference] = 1;
   }
+  // TSLiteralType → Literal child synthesis is handled in a post-DFS CSR pass (below).
+  // Do NOT add ts_type_reference to relevantTag here — that would inflate _relevantCount
+  // and disable subtree pruning for TS-heavy rules. The CSR pass uses _tagNodeStarts
+  // to iterate ts_type_reference nodes directly without touching the DFS pruning logic.
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   let _relevantCount = 0;
   for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
@@ -5588,6 +5620,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   const _hasTsKwRemap = _tsTypeRefTagNum >= 0 && (_tsKwEnterMap.size > 0 || _tsKwExitMap.size > 0);
 
+  // TSLiteralType → synthetic Literal child events.
+  // TSLiteralType nodes (ts_type_reference, no rhs, literal main token) have no real Literal
+  // child in the buffer. Synthesize Literal enter/exit so rules like no-magic-numbers work.
+  const _tsLitLiteralEnterH = (_tsTypeRefTagNum >= 0) ? (visitorMap.get('Literal') || null) : null;
+  const _tsLitLiteralExitH  = (_tsTypeRefTagNum >= 0) ? (visitorMap.get('Literal:exit') || null) : null;
+  const _hasTsLitLiteralSynth = _tsLitLiteralEnterH !== null || _tsLitLiteralExitH !== null;
+
   // Aliases for DFS loop (the early-setup vars have "E" suffix; use shorter names here)
   const _tsInterfaceDeclTagNum = _tsInterfaceDeclTagNumE;
   const _tsInterfaceBodyEnterH = _tsInterfaceBodyEnterHE;
@@ -5636,7 +5675,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
   const _needsShorthandSynth = needsLabelSynthOpt; // true when Identifier visitors exist
-  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth || _hasTsInterfaceBodySynth) ? new Uint8Array(tagNames.length) : null;
+  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth || _hasTsInterfaceBodySynth || _hasTsModuleBlockSynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
@@ -5661,6 +5700,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // TSInterfaceBody synthesis needs ts_interface_decl tag
     if (_hasTsInterfaceBodySynth && _tsInterfaceDeclTagNum >= 0 && _tsInterfaceDeclTagNum < _synthTagArr.length) {
       _synthTagArr[_tsInterfaceDeclTagNum] = 1;
+    }
+    // TSLiteralType Literal synthesis is handled in a post-DFS CSR pass — no synthTagArr entry needed.
+    // TSModuleBlock synthesis needs block_stmt tag
+    if (_hasTsModuleBlockSynth && T.block_stmt < _synthTagArr.length) {
+      _synthTagArr[T.block_stmt] = 1;
     }
   }
 
@@ -5732,6 +5776,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           _invokeFused(_tsInterfaceBodyEnterH, _ifaceBody, idx, context);
         }
       }
+      // Synthesize TSModuleBlock enter for block_stmt nodes whose parent is a module/namespace decl.
+      // ESLint ASTs expose declare module bodies as TSModuleBlock, not BlockStatement.
+      if (_hasTsModuleBlockSynth && tag === T.block_stmt && pd && _tsModuleBlockEnterH) {
+        const _parentIdx = pd[idx];
+        if (_parentIdx !== NONE && (_parentIdx < ast.nodeCount) &&
+            (nodeTags[_parentIdx] === T.ts_module_decl || nodeTags[_parentIdx] === T.ts_namespace_decl)) {
+          const _mbNode = nodeView(ast, idx);
+          _mbNode._type = 'TSModuleBlock';
+          _invokeFused(_tsModuleBlockEnterH, _mbNode, idx, context);
+        }
+      }
       // Synthesize Identifier visits for synthetic label children (optimized path).
       // MemberExpression.property and import/export specifier names are now real
       // nodes in the buffer and get visited naturally via DFS.
@@ -5792,6 +5847,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, false);
+      // TSLiteralType Literal synthesis is handled in a post-DFS CSR pass (see below).
       // Synthesize KEY Identifier visit for shorthand_property with default (`{ a = expr }`).
       // In Espree, `{ a = expr }` has Property.key = Identifier visited with parent=Property.
       // Our DFS only visits the assignment_pattern.left Identifier with parent=AssignmentPattern.
@@ -5879,6 +5935,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
+      // TSLiteralType Literal:exit synthesis is handled in a post-DFS CSR pass (see below).
       // CfgGraph: code path exit events BEFORE rule exit handlers
       _fireCfgEvents(idx, 1);
       // ESLint fires CSS selector exit handlers (e.g. `:statement:exit`) BEFORE type-specific
@@ -5909,6 +5966,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         const _ifaceBody2 = _ifaceNode2._body; // use cached value to avoid recompute
         if (_ifaceBody2 && _tsInterfaceBodyExitH) {
           _invokeFused(_tsInterfaceBodyExitH, _ifaceBody2, idx, context);
+        }
+      }
+      // Synthesize TSModuleBlock:exit for block_stmt nodes whose parent is a module/namespace decl.
+      if (_hasTsModuleBlockSynth && tag === T.block_stmt && pd && _tsModuleBlockExitH) {
+        const _parentIdx = pd[idx];
+        if (_parentIdx !== NONE && (_parentIdx < ast.nodeCount) &&
+            (nodeTags[_parentIdx] === T.ts_module_decl || nodeTags[_parentIdx] === T.ts_namespace_decl)) {
+          const _mbNode2 = nodeView(ast, idx);
+          if (!_mbNode2._type) _mbNode2._type = 'TSModuleBlock';
+          _invokeFused(_tsModuleBlockExitH, _mbNode2, idx, context);
         }
       }
       // Synthesize Identifier:exit for synthetic label children.
@@ -5944,6 +6011,93 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
       _fireCfgEvents(idx, 2);
+    }
+  }
+
+  // ── TSLiteralType → synthetic Literal pass (CSR) ─────────────
+  // TSLiteralType nodes (ts_type_reference with no rhs, literal main token) have no real Literal
+  // child in the buffer. Fire synthetic Literal enter/exit so rules like no-magic-numbers work.
+  // Uses _tagNodeStarts CSR to iterate only ts_type_reference nodes — zero overhead for JS files.
+  // Does NOT touch relevantTag or _synthTagArr to avoid inflating _relevantCount and disabling pruning.
+  if (_hasTsLitLiteralSynth && _tagNodeStarts && _tagNodeIds && _tsTypeRefTagNum >= 0 &&
+      _tsTypeRefTagNum < _tagNodeStarts.length - 1) {
+    const _tsLitStart = _tagNodeStarts[_tsTypeRefTagNum];
+    const _tsLitEnd   = _tagNodeStarts[_tsTypeRefTagNum + 1];
+    for (let j = _tsLitStart; j < _tsLitEnd; j++) {
+      const nodeIdx = _tagNodeIds[j];
+      if (ast.nodeRhs(nodeIdx) !== NONE) continue; // not a leaf TSTypeReference
+      const eff = effectiveTypeName(ast, nodeIdx, 'TSTypeReference');
+      if (eff !== 'TSLiteralType') continue;
+      const _tsLitParent = nodeView(ast, nodeIdx);
+      let _litChild = _tsLitParent.literal;
+      // Negative literal type: main token is '-', literal getter returns undefined.
+      // Build synthetic UnaryExpression { operator:'-', argument: Literal }
+      // so rules like no-magic-numbers can navigate node.parent.type === 'UnaryExpression'.
+      if (!_litChild) {
+        const _tok = ast._mainTokens[nodeIdx];
+        const _tokStart = ast._tokStarts[_tok];
+        if (ast.source.charCodeAt(_tokStart) === 45 /* '-' */ && _tok + 1 < ast.tokenCount) {
+          const _numTok = _tok + 1;
+          const _numStart = ast._tokStarts[_numTok];
+          const _numEnd = ast._tokEnds ? ast._tokEnds[_numTok]
+            : (_numTok + 1 < ast.tokenCount ? ast._tokStarts[_numTok + 1] : ast.source.length);
+          const _numText = ast.source.slice(_numStart, _numEnd);
+          const _numValue = _numText.endsWith('n') ? BigInt(_numText.slice(0, -1)) : Number(_numText);
+          if (typeof _numValue === 'bigint' || !isNaN(_numValue)) {
+            const _tokEnd = ast._tokEnds ? ast._tokEnds[_tok] : _tokStart + 1;
+            const _innerLit = { type: 'Literal', value: _numValue, raw: _numText,
+              start: _numStart, end: _numEnd, range: [_numStart, _numEnd], parent: null };
+            const _unaryExpr = { type: 'UnaryExpression', operator: '-', prefix: true,
+              argument: _innerLit, start: _tokStart, end: _numEnd,
+              range: [_tokStart, _numEnd], parent: _tsLitParent };
+            _innerLit.parent = _unaryExpr;
+            _litChild = _innerLit;
+          }
+        }
+      }
+      if (_litChild) {
+        if (!_litChild.parent) _litChild.parent = _tsLitParent;
+        context._currentNodeIdx = nodeIdx;
+        if (_tsLitLiteralEnterH) _invokeFused(_tsLitLiteralEnterH, _litChild, nodeIdx, context);
+        if (_tsLitLiteralExitH)  _invokeFused(_tsLitLiteralExitH,  _litChild, nodeIdx, context);
+      }
+    }
+  }
+
+  // ── Orphaned TS type node pass ────────────────────────────────
+  // Nodes created by tryParseTsTypeArguments (call/new type args) and class extends clauses
+  // are not connected to the AST parent tree (pd[i] === NONE). Visit them now so rules like
+  // no-explicit-any can report TSAnyKeyword inside `Foo<any>()` and `new Foo<any>()`.
+  // Also covers type parameter defaults left orphaned before Fix A (belt-and-suspenders).
+  //
+  // Synthetic parent: orphaned nodes have no parent pointer, but rules like no-explicit-any
+  // call node.parent.type unconditionally. Assign a minimal synthetic parent so those checks
+  // don't crash. TSTypeParameterInstantiation is the natural parent for type-arg positions.
+  if (pd && _hasTsKwRemap && _tsTypeRefTagNum >= 0) {
+    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [] };
+    const n = ast.nodeCount;
+    for (let i = 1; i < n; i++) {
+      if (pd[i] !== NONE) continue;
+      const tag = nodeTags[i];
+      if (tag !== _tsTypeRefTagNum) continue;
+      // Only keyword/literal type refs (rhs === NONE) need remapping here.
+      if (ast.nodeRhs(i) !== NONE) continue;
+      const nv = nodeView(ast, i);
+      // Set synthetic parent so rule handlers don't crash on node.parent.type.
+      // pd[i] === NONE so the real parent getter would return null; override it
+      // with a non-null stub. Use a non-TSTypeOperator type so keyof-any suggestions
+      // are not triggered (we can't reconstruct the exact parent here).
+      nv._parent = _synthParent;
+      const handlers = _resolveHandlers(tagEnterHandlers, tag, i);
+      if (handlers) {
+        context._currentNodeIdx = i;
+        _invokeFused(handlers, nv, i, context);
+      }
+      const xHandlers = _resolveHandlers(tagExitHandlers, tag, i);
+      if (xHandlers) {
+        context._currentNodeIdx = i;
+        _invokeFused(xHandlers, nv, i, context);
+      }
     }
   }
 
