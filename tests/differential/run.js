@@ -1099,8 +1099,10 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
         const m = url.match(/\/S(\d+)/);
         if (m) sNumToName.set("S" + m[1], name);
       }
-      // Supplement with cjs/S*/meta.js (eslintId field)
-      const cjsDir = path.join(pluginDir, "node_modules/eslint-plugin-sonarjs/cjs");
+      // Supplement with cjs/S*/meta.js (eslintId field) — look in js/node_modules first, fall back to pluginDir
+      const cjsDir = fs.existsSync(path.join(JS_ROOT, "node_modules/eslint-plugin-sonarjs/cjs"))
+        ? path.join(JS_ROOT, "node_modules/eslint-plugin-sonarjs/cjs")
+        : path.join(pluginDir, "node_modules/eslint-plugin-sonarjs/cjs");
       if (fs.existsSync(cjsDir)) {
         for (const d of fs.readdirSync(cjsDir)) {
           if (!d.startsWith("S")) continue;
