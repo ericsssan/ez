@@ -1386,14 +1386,14 @@ if (fs.existsSync(ESLINT_ROOT)) {
     ruleGaps.sort((a, b) => b.total - a.total);
     if (ruleGaps.length > 0) {
       console.log(`\nTop gaps (runner, ${ruleGaps.length} rules with issues):`);
-      for (const g of ruleGaps.slice(0, 60)) {
+      for (const g of ruleGaps.slice(0, 20)) {
         const parts = [];
         if (g.fn > 0) parts.push(`${g.fn} FN`);
         if (g.fp > 0) parts.push(`${g.fp} FP`);
         if (g.crash > 0) parts.push(`${g.crash} crash`);
         console.log(`  ${String(g.total).padStart(4)}  ${g.rule.padEnd(35)} ${parts.join(", ")}`);
       }
-      if (ruleGaps.length > 15) console.log(`  ... and ${ruleGaps.length - 15} more rules`);
+      if (ruleGaps.length > 20) console.log(`  ... and ${ruleGaps.length - 20} more rules`);
     }
   }
 
