@@ -1051,16 +1051,16 @@ if (fs.existsSync(ESLINT_ROOT)) {
     // Collect failing cases for --fails / --verbose output
     const failedCases = [];  // { tcIdx, kind:"runner"|"native", espreeLines, ourLines, code }
 
+    if (!filterRule && !verboseAll) {
+      const pct = _total > 0 ? (_processed / _total * 100).toFixed(0) : "0";
+      process.stderr.write(`\r  ${pct}% (${_processed}/${_total})  ${ruleName}  \x1B[K`);
+    }
     let _caseLoopT0 = performance.now();
     for (let tcIdx = 0; tcIdx < allCases.length; tcIdx++) {
       const tc = allCases[tcIdx];
       if (tc.hasCustomParser) { skipCustomParser++; continue; }
       const sourceType = tc.languageOptions?.sourceType || defaultSourceType;
 
-      // Progress indicator when running all rules (no filter)
-      if (!filterRule && !verboseAll && (_processed % 200 === 0)) {
-        process.stderr.write(`\r  [${_processed}/${_total}]  ${ruleName}...  \x1B[K`);
-      }
       _processed++;
 
       // Oracle: ESLint's actual output, captured during test-file loading.
@@ -1295,24 +1295,28 @@ if (fs.existsSync(ESLINT_ROOT)) {
       skipDetail.length > 0 ? `skip: ${skipDetail.join(", ")}` : "",
     ].filter(Boolean).join(", ");
 
-    if (nativeAvailable) {
-      const nativeDetail = [
-        nativeFn       > 0 ? `${nativeFn} FN`             : "",
-        nativeFp       > 0 ? `${nativeFp} FP`             : "",
-        nativeCrash    > 0 ? `${nativeCrash} crash`       : "",
-        nativeSkipOptions > 0 ? `${nativeSkipOptions} skip` : "",
-      ].filter(Boolean).join(", ");
-      const hybridTotal = hybridPass + hybridFn + hybridFp + hybridCrash;
-      const hybridDetail = [
-        hybridFn    > 0 ? `${hybridFn} FN`    : "",
-        hybridFp    > 0 ? `${hybridFp} FP`    : "",
-        hybridCrash > 0 ? `${hybridCrash} crash` : "",
-      ].filter(Boolean).join(", ");
-      const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
-      const hybridStr = `hybrid ${hybridPass}/${hybridTotal}${hybridDetail ? ` (${hybridDetail})` : ""}`;
-      console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}  ${hybridStr}`);
-    } else {
-      console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
+    // Per-rule output: show regressions always, others only with --verbose or --rule
+    const _showRule = ruleRegression || verboseAll || filterRule;
+    if (_showRule) {
+      if (nativeAvailable) {
+        const nativeDetail = [
+          nativeFn       > 0 ? `${nativeFn} FN`             : "",
+          nativeFp       > 0 ? `${nativeFp} FP`             : "",
+          nativeCrash    > 0 ? `${nativeCrash} crash`       : "",
+          nativeSkipOptions > 0 ? `${nativeSkipOptions} skip` : "",
+        ].filter(Boolean).join(", ");
+        const hybridTotal = hybridPass + hybridFn + hybridFp + hybridCrash;
+        const hybridDetail = [
+          hybridFn    > 0 ? `${hybridFn} FN`    : "",
+          hybridFp    > 0 ? `${hybridFp} FP`    : "",
+          hybridCrash > 0 ? `${hybridCrash} crash` : "",
+        ].filter(Boolean).join(", ");
+        const nativeStr = `native ${nativePass}/${nativeTotal}${nativeDetail ? ` (${nativeDetail})` : ""}`;
+        const hybridStr = `hybrid ${hybridPass}/${hybridTotal}${hybridDetail ? ` (${hybridDetail})` : ""}`;
+        console.log(`  ${status} ${ruleName}: runner ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}  ${nativeStr}  ${hybridStr}`);
+      } else {
+        console.log(`  ${status} ${ruleName}: ${pass}/${total}${runnerDetail ? ` (${runnerDetail})` : ""}`);
+      }
     }
 
     // Print failing cases when --fails / --verbose / --rule
