@@ -1,5 +1,4 @@
 {
-  "files": {},
   "corpus": {
     "no-var": {
       "runner": {
@@ -12,6 +11,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 51,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sort-vars": {
@@ -25,6 +29,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-buffer-constructor": {
@@ -38,6 +47,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-new-symbol": {
@@ -51,6 +65,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-compare-neg-zero": {
@@ -64,6 +83,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-extra-semi": {
@@ -77,6 +101,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0
       }
     },
     "padding-line-between-statements": {
@@ -90,6 +119,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "dot-notation": {
@@ -103,6 +137,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0
       }
     },
     "id-match": {
@@ -116,6 +155,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "complexity": {
@@ -129,6 +173,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0
       }
     },
     "guard-for-in": {
@@ -142,6 +191,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "arrow-parens": {
@@ -155,6 +209,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "no-new-native-nonconstructor": {
@@ -168,6 +227,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "class-methods-use-this": {
@@ -181,6 +245,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "object-curly-newline": {
@@ -194,6 +263,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "semi-spacing": {
@@ -207,6 +281,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-setter-return": {
@@ -220,6 +299,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 56,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-undef": {
@@ -233,6 +317,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-extra-label": {
@@ -246,6 +335,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0
       }
     },
     "one-var": {
@@ -259,6 +353,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "strict": {
@@ -272,6 +371,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-promise-reject-errors": {
@@ -285,6 +389,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 39,
+        "fp": 0,
+        "crash": 0
       }
     },
     "space-infix-ops": {
@@ -298,6 +407,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
       }
     },
     "wrap-iife": {
@@ -311,6 +425,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "computed-property-spacing": {
@@ -324,6 +443,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-escape": {
@@ -337,6 +461,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 86,
+        "fp": 0,
+        "crash": 0
       }
     },
     "array-bracket-newline": {
@@ -350,6 +479,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "function-call-argument-newline": {
@@ -363,6 +497,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "consistent-this": {
@@ -376,6 +515,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-floating-decimal": {
@@ -389,6 +533,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "newline-before-return": {
@@ -402,6 +551,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-dupe-keys": {
@@ -415,6 +569,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0
       }
     },
     "space-unary-ops": {
@@ -428,6 +587,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-fallthrough": {
@@ -441,6 +605,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0
       }
     },
     "nonblock-statement-body-position": {
@@ -454,6 +623,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-lonely-if": {
@@ -467,6 +641,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-const-assign": {
@@ -480,6 +659,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-array-constructor": {
@@ -493,6 +677,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 84,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-div-regex": {
@@ -506,6 +695,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-irregular-whitespace": {
@@ -519,6 +713,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 129,
+        "fp": 0,
+        "crash": 0
       }
     },
     "array-callback-return": {
@@ -532,6 +731,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 133,
+        "fp": 0,
+        "crash": 0
       }
     },
     "indent-legacy": {
@@ -545,6 +749,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-empty-character-class": {
@@ -558,6 +767,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-implied-eval": {
@@ -571,6 +785,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 79,
+        "fp": 0,
+        "crash": 0
       }
     },
     "lines-between-class-members": {
@@ -584,6 +803,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-len": {
@@ -597,6 +821,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-rename": {
@@ -610,6 +839,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 107,
+        "fp": 0,
+        "crash": 0
       }
     },
     "for-direction": {
@@ -623,6 +857,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-restricted-properties": {
@@ -636,6 +875,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-empty-pattern": {
@@ -649,6 +893,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-params": {
@@ -662,6 +911,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
       }
     },
     "func-name-matching": {
@@ -675,6 +929,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-multi-spaces": {
@@ -688,6 +947,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-object-has-own": {
@@ -701,6 +965,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-concat": {
@@ -714,6 +983,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
       }
     },
     "multiline-comment-style": {
@@ -727,6 +1001,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-constant-condition": {
@@ -740,6 +1019,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 151,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-eval": {
@@ -753,6 +1037,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-loop-func": {
@@ -766,6 +1055,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 37,
+        "fp": 0,
+        "crash": 0
       }
     },
     "array-element-newline": {
@@ -779,6 +1073,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "semi-style": {
@@ -792,6 +1091,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-named-capture-group": {
@@ -805,6 +1109,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0
       }
     },
     "curly": {
@@ -818,6 +1127,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "operator-linebreak": {
@@ -831,6 +1145,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "yield-star-spacing": {
@@ -844,6 +1163,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "require-unicode-regexp": {
@@ -857,6 +1181,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-new": {
@@ -870,6 +1199,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-object-constructor": {
@@ -883,6 +1217,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 50,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-label-var": {
@@ -896,6 +1235,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-eq-null": {
@@ -909,6 +1253,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-shadow": {
@@ -922,6 +1271,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 90,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-self-assign": {
@@ -935,6 +1289,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-ternary": {
@@ -948,6 +1307,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "func-call-spacing": {
@@ -961,6 +1325,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "default-case-last": {
@@ -974,6 +1343,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0
       }
     },
     "spaced-comment": {
@@ -987,6 +1361,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "padded-blocks": {
@@ -1000,6 +1379,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-native-reassign": {
@@ -1013,6 +1397,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-new-wrappers": {
@@ -1026,6 +1415,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-implicit-globals": {
@@ -1039,6 +1433,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 116,
+        "fp": 0,
+        "crash": 0
       }
     },
     "space-before-function-paren": {
@@ -1052,6 +1451,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unmodified-loop-condition": {
@@ -1065,6 +1469,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-param-reassign": {
@@ -1078,6 +1487,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 38,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-nonoctal-decimal-escape": {
@@ -1091,6 +1505,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-mixed-operators": {
@@ -1104,6 +1523,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-new-object": {
@@ -1117,6 +1541,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-octal": {
@@ -1130,6 +1559,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-magic-numbers": {
@@ -1143,6 +1577,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "eol-last": {
@@ -1156,6 +1595,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "arrow-body-style": {
@@ -1169,6 +1613,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 63,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-obj-calls": {
@@ -1182,6 +1631,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 52,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-dupe-else-if": {
@@ -1195,6 +1649,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0
       }
     },
     "preserve-caught-error": {
@@ -1208,6 +1667,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-assignment": {
@@ -1221,6 +1685,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 7,
+        "crash": 0
       }
     },
     "no-warning-comments": {
@@ -1234,6 +1703,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-case-declarations": {
@@ -1247,6 +1721,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unused-labels": {
@@ -1260,6 +1739,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0
       }
     },
     "vars-on-top": {
@@ -1273,6 +1757,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 27,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-negated-in-lhs": {
@@ -1286,6 +1775,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-extend-native": {
@@ -1299,6 +1793,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0
       }
     },
     "use-isnan": {
@@ -1312,6 +1811,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 104,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-ex-assign": {
@@ -1325,6 +1829,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "handle-callback-err": {
@@ -1338,6 +1847,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "template-tag-spacing": {
@@ -1351,6 +1865,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-cond-assign": {
@@ -1364,6 +1883,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-constructor-return": {
@@ -1377,6 +1901,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sort-keys": {
@@ -1390,6 +1919,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 101,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-extra-bind": {
@@ -1403,6 +1937,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 32,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-exponentiation-operator": {
@@ -1416,6 +1955,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 142,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unreachable-loop": {
@@ -1429,6 +1973,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 828,
+        "fp": 0,
+        "crash": 0
       }
     },
     "eqeqeq": {
@@ -1442,6 +1991,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 43,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-proto": {
@@ -1455,6 +2009,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-process-exit": {
@@ -1468,6 +2027,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "id-denylist": {
@@ -1481,6 +2045,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "newline-after-var": {
@@ -1494,6 +2063,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-alert": {
@@ -1507,6 +2081,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0
       }
     },
     "func-style": {
@@ -1520,6 +2099,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0
       }
     },
     "capitalized-comments": {
@@ -1533,6 +2117,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-sparse-arrays": {
@@ -1546,11 +2135,16 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unused-vars": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 4,
         "crash": 0
       },
@@ -1559,6 +2153,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 285,
+        "fp": 0,
+        "crash": 0
       }
     },
     "linebreak-style": {
@@ -1572,6 +2171,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-numeric-literals": {
@@ -1585,6 +2189,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 62,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-restricted-modules": {
@@ -1598,6 +2207,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-sequences": {
@@ -1611,6 +2225,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-whitespace-before-property": {
@@ -1624,6 +2243,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-duplicate-case": {
@@ -1637,6 +2261,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0
       }
     },
     "yoda": {
@@ -1650,6 +2279,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 85,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-regex-literals": {
@@ -1663,6 +2297,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 181,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-plusplus": {
@@ -1676,6 +2315,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unsafe-finally": {
@@ -1689,6 +2333,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-throw-literal": {
@@ -1702,6 +2351,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-labels": {
@@ -1715,6 +2369,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-reflect": {
@@ -1728,6 +2387,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-template": {
@@ -1741,6 +2405,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-loss-of-precision": {
@@ -1754,6 +2423,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 42,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-control-regex": {
@@ -1767,6 +2441,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0
       }
     },
     "logical-assignment-operators": {
@@ -1780,6 +2459,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 184,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-backreference": {
@@ -1793,6 +2477,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 89,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-lines-per-function": {
@@ -1806,6 +2495,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "radix": {
@@ -1819,6 +2513,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-constant-binary-expression": {
@@ -1832,6 +2531,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 221,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-global-assign": {
@@ -1845,6 +2549,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
       }
     },
     "accessor-pairs": {
@@ -1858,6 +2567,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 168,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-path-concat": {
@@ -1871,6 +2585,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "require-atomic-updates": {
@@ -1884,6 +2603,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "block-spacing": {
@@ -1897,6 +2621,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-prototype-builtins": {
@@ -1910,6 +2639,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 20,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-catch-shadow": {
@@ -1923,6 +2657,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-call": {
@@ -1936,6 +2675,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0
       }
     },
     "id-length": {
@@ -1949,6 +2693,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 84,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unsafe-optional-chaining": {
@@ -1962,6 +2711,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 96,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-caller": {
@@ -1975,6 +2729,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "consistent-return": {
@@ -1988,6 +2747,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0
       }
     },
     "switch-colon-spacing": {
@@ -2001,6 +2765,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-duplicate-imports": {
@@ -2014,6 +2783,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-inner-declarations": {
@@ -2027,6 +2801,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0
       }
     },
     "operator-assignment": {
@@ -2040,6 +2819,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-nested-ternary": {
@@ -2053,6 +2837,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "quotes": {
@@ -2066,6 +2855,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-extra-boolean-cast": {
@@ -2079,6 +2873,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 440,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-spaced-func": {
@@ -2092,6 +2891,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "default-case": {
@@ -2105,6 +2909,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "key-spacing": {
@@ -2118,6 +2927,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "symbol-description": {
@@ -2131,6 +2945,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "block-scoped-var": {
@@ -2144,6 +2963,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "callback-return": {
@@ -2157,6 +2981,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsx-quotes": {
@@ -2170,6 +2999,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "default-param-last": {
@@ -2183,6 +3017,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
       }
     },
     "template-curly-spacing": {
@@ -2196,6 +3035,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unreachable": {
@@ -2209,6 +3053,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 40,
+        "fp": 0,
+        "crash": 0
       }
     },
     "valid-typeof": {
@@ -2222,6 +3071,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-invalid-regexp": {
@@ -2235,6 +3089,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "newline-per-chained-call": {
@@ -2248,6 +3107,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-undef-init": {
@@ -2261,6 +3125,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 21,
+        "fp": 0,
+        "crash": 0
       }
     },
     "require-yield": {
@@ -2274,6 +3143,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "space-before-blocks": {
@@ -2287,6 +3161,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-new-require": {
@@ -2300,6 +3179,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-confusing-arrow": {
@@ -2313,6 +3197,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-empty-function": {
@@ -2326,6 +3215,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 481,
+        "fp": 0,
+        "crash": 0
       }
     },
     "semi": {
@@ -2339,6 +3233,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
       }
     },
     "no-unexpected-multiline": {
@@ -2352,6 +3251,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-restricted-exports": {
@@ -2365,6 +3269,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-new-func": {
@@ -2378,6 +3287,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 10,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-invalid-this": {
@@ -2391,6 +3305,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "quote-props": {
@@ -2404,6 +3323,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-void": {
@@ -2417,6 +3341,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-process-env": {
@@ -2430,6 +3359,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-restricted-syntax": {
@@ -2443,6 +3377,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-implicit-coercion": {
@@ -2456,6 +3395,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0
       }
     },
     "camelcase": {
@@ -2469,6 +3413,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 95,
+        "fp": 0,
+        "crash": 0
       }
     },
     "init-declarations": {
@@ -2482,6 +3431,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "line-comment-position": {
@@ -2495,6 +3449,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-await-in-loop": {
@@ -2508,6 +3467,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 17,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unused-expressions": {
@@ -2521,6 +3485,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 41,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unsafe-negation": {
@@ -2534,6 +3503,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-async-promise-executor": {
@@ -2547,6 +3521,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "rest-spread-spacing": {
@@ -2560,6 +3539,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "array-bracket-spacing": {
@@ -2573,6 +3557,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-mixed-requires": {
@@ -2586,6 +3575,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-tabs": {
@@ -2599,6 +3593,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "arrow-spacing": {
@@ -2612,6 +3611,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "func-names": {
@@ -2625,6 +3629,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-restricted-imports": {
@@ -2638,6 +3647,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unneeded-ternary": {
@@ -2651,6 +3665,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-use-before-define": {
@@ -2664,6 +3683,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "id-blacklist": {
@@ -2677,6 +3701,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "no-debugger": {
@@ -2690,6 +3719,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-statements": {
@@ -2703,6 +3737,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 22,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-spread": {
@@ -2716,6 +3755,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0
       }
     },
     "keyword-spacing": {
@@ -2729,6 +3773,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-lone-blocks": {
@@ -2742,6 +3791,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 30,
+        "fp": 0,
+        "crash": 0
       }
     },
     "new-parens": {
@@ -2755,6 +3809,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "getter-return": {
@@ -2768,6 +3827,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-empty": {
@@ -2781,6 +3845,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 12,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-shadow-restricted-names": {
@@ -2794,6 +3863,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 26,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-import-assign": {
@@ -2807,6 +3881,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 59,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-this-before-super": {
@@ -2820,6 +3899,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 23,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-object-spread": {
@@ -2833,6 +3917,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 55,
+        "fp": 0,
+        "crash": 0
       }
     },
     "comma-style": {
@@ -2846,6 +3935,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-undefined": {
@@ -2859,6 +3953,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
       }
     },
     "max-lines": {
@@ -2872,6 +3971,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 31,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-continue": {
@@ -2885,6 +3989,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-func-assign": {
@@ -2898,6 +4007,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-iterator": {
@@ -2911,6 +4025,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-else-return": {
@@ -2924,6 +4043,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 78,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-mixed-spaces-and-tabs": {
@@ -2937,6 +4061,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 19,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-redeclare": {
@@ -2950,6 +4079,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 47,
+        "fp": 0,
+        "crash": 0
       }
     },
     "object-curly-spacing": {
@@ -2963,6 +4097,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "global-require": {
@@ -2976,6 +4115,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-arrow-callback": {
@@ -2989,6 +4133,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0
       }
     },
     "generator-star-spacing": {
@@ -3002,6 +4151,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-catch": {
@@ -3015,6 +4169,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-const": {
@@ -3028,6 +4187,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 69,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-extra-parens": {
@@ -3041,6 +4205,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 2,
+        "crash": 0
       }
     },
     "no-console": {
@@ -3054,6 +4223,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 34,
+        "fp": 0,
+        "crash": 0
       }
     },
     "space-in-parens": {
@@ -3067,6 +4241,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-return-await": {
@@ -3080,6 +4259,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 33,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-class-assign": {
@@ -3093,6 +4277,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-inline-comments": {
@@ -3106,6 +4295,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-trailing-spaces": {
@@ -3119,6 +4313,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-self-compare": {
@@ -3132,6 +4331,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 15,
+        "fp": 0,
+        "crash": 0
       }
     },
     "grouped-accessor-pairs": {
@@ -3145,6 +4349,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "object-property-newline": {
@@ -3158,6 +4367,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-multi-assign": {
@@ -3171,6 +4385,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 18,
+        "fp": 0,
+        "crash": 0
       }
     },
     "one-var-declaration-per-line": {
@@ -3184,6 +4403,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-with": {
@@ -3197,6 +4421,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-empty-static-block": {
@@ -3210,6 +4439,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "constructor-super": {
@@ -3223,6 +4457,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-negated-condition": {
@@ -3236,6 +4475,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-script-url": {
@@ -3249,6 +4493,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-multi-str": {
@@ -3262,6 +4511,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-statements-per-line": {
@@ -3275,6 +4529,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "multiline-ternary": {
@@ -3288,6 +4547,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-promise-executor-return": {
@@ -3301,6 +4565,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 58,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-unused-private-class-members": {
@@ -3314,6 +4583,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-classes-per-file": {
@@ -3327,6 +4601,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-bitwise": {
@@ -3340,6 +4619,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicode-bom": {
@@ -3353,6 +4637,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-return": {
@@ -3366,6 +4655,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 25,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-delete-var": {
@@ -3379,6 +4673,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-restricted-globals": {
@@ -3392,6 +4691,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 67,
+        "fp": 0,
+        "crash": 0
       }
     },
     "wrap-regex": {
@@ -3405,6 +4709,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "dot-location": {
@@ -3418,6 +4727,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-nested-callbacks": {
@@ -3431,6 +4745,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "new-cap": {
@@ -3444,6 +4763,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 24,
+        "fp": 0,
+        "crash": 0
       }
     },
     "lines-around-directive": {
@@ -3457,6 +4781,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-regex-spaces": {
@@ -3470,6 +4799,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-rest-params": {
@@ -3483,6 +4817,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-template-curly-in-string": {
@@ -3496,6 +4835,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 7,
+        "fp": 0,
+        "crash": 0
       }
     },
     "prefer-destructuring": {
@@ -3509,6 +4853,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 48,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sort-imports": {
@@ -3522,6 +4871,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "comma-spacing": {
@@ -3535,6 +4889,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-multiple-empty-lines": {
@@ -3548,6 +4907,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-underscore-dangle": {
@@ -3561,6 +4925,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-sync": {
@@ -3574,6 +4943,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-return-assign": {
@@ -3587,6 +4961,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0
       }
     },
     "require-await": {
@@ -3600,6 +4979,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-dupe-class-members": {
@@ -3613,6 +4997,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-octal-escape": {
@@ -3626,6 +5015,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 60,
+        "fp": 0,
+        "crash": 0
       }
     },
     "max-depth": {
@@ -3639,6 +5033,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 14,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-dupe-args": {
@@ -3652,6 +5051,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-misleading-character-class": {
@@ -3665,6 +5069,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 44,
+        "fp": 0,
+        "crash": 0
       }
     },
     "no-useless-computed-key": {
@@ -3678,6 +5087,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 65,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-misused-new": {
@@ -3691,6 +5105,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-this-alias": {
@@ -3704,6 +5123,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/class-literal-property-style": {
@@ -3717,6 +5141,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-useless-constructor": {
@@ -3730,6 +5159,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-loss-of-precision": {
@@ -3743,6 +5177,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-explicit-any": {
@@ -3756,6 +5195,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-namespace": {
@@ -3769,6 +5213,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-unsafe-function-type": {
@@ -3782,6 +5231,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "@typescript-eslint/prefer-enum-initializers": {
@@ -3795,6 +5249,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-duplicate-enum-values": {
@@ -3808,6 +5267,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/triple-slash-reference": {
@@ -3821,6 +5285,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-type-alias": {
@@ -3834,6 +5303,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-useless-empty-export": {
@@ -3847,6 +5321,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-empty-function": {
@@ -3860,6 +5339,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/prefer-ts-expect-error": {
@@ -3873,6 +5357,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-use-before-define": {
@@ -3886,6 +5375,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/prefer-namespace-keyword": {
@@ -3899,6 +5393,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/unified-signatures": {
@@ -3912,6 +5411,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-array-constructor": {
@@ -3925,6 +5429,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 4,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-var-requires": {
@@ -3938,6 +5447,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/ban-tslint-comment": {
@@ -3951,6 +5465,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/typedef": {
@@ -3964,12 +5483,17 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-extraneous-class": {
       "runner": {
         "fn": 2,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3977,6 +5501,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-invalid-this": {
@@ -3990,6 +5519,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/explicit-function-return-type": {
@@ -4003,6 +5537,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/adjacent-overload-signatures": {
@@ -4016,6 +5555,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "@typescript-eslint/parameter-properties": {
@@ -4029,6 +5573,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-empty-object-type": {
@@ -4042,6 +5591,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/consistent-type-assertions": {
@@ -4055,6 +5609,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-unsafe-declaration-merging": {
@@ -4068,6 +5627,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-unused-private-class-members": {
@@ -4081,6 +5645,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 9,
+        "crash": 0
       }
     },
     "@typescript-eslint/max-params": {
@@ -4094,6 +5663,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/prefer-for-of": {
@@ -4107,6 +5681,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "@typescript-eslint/init-declarations": {
@@ -4120,6 +5699,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-redeclare": {
@@ -4133,6 +5717,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/explicit-module-boundary-types": {
@@ -4146,6 +5735,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-dynamic-delete": {
@@ -4159,6 +5753,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-loop-func": {
@@ -4172,6 +5771,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-magic-numbers": {
@@ -4185,6 +5789,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-restricted-imports": {
@@ -4198,6 +5807,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 1,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-require-imports": {
@@ -4211,6 +5825,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-unused-expressions": {
@@ -4224,6 +5843,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 5,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-import-type-side-effects": {
@@ -4237,12 +5861,17 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/member-ordering": {
       "runner": {
-        "fn": 46,
-        "fp": 35,
+        "fn": 45,
+        "fp": 13,
         "crash": 0
       },
       "native": {
@@ -4250,6 +5879,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 45,
+        "fp": 13,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-unsafe-unary-minus": {
@@ -4263,6 +5897,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/prefer-as-const": {
@@ -4276,6 +5915,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-wrapper-object-types": {
@@ -4289,6 +5933,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-empty-interface": {
@@ -4302,6 +5951,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-inferrable-types": {
@@ -4315,6 +5969,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "@typescript-eslint/default-param-last": {
@@ -4328,6 +5987,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/no-unnecessary-parameter-property-assignment": {
@@ -4341,6 +6005,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "@typescript-eslint/prefer-literal-enum-member": {
@@ -4354,6 +6023,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/always-return": {
@@ -4367,6 +6041,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-return-wrap": {
@@ -4380,6 +6059,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-new-statics": {
@@ -4393,6 +6077,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-return-in-finally": {
@@ -4406,6 +6095,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/avoid-new": {
@@ -4419,6 +6113,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/valid-params": {
@@ -4432,6 +6131,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/param-names": {
@@ -4445,6 +6149,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/prefer-await-to-callbacks": {
@@ -4458,6 +6167,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/prefer-await-to-then": {
@@ -4471,6 +6185,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-multiple-resolved": {
@@ -4484,6 +6203,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 1,
+        "crash": 0
       }
     },
     "promise/no-callback-in-promise": {
@@ -4497,6 +6221,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/catch-or-return": {
@@ -4510,6 +6239,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/prefer-catch": {
@@ -4523,6 +6257,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-promise-in-callback": {
@@ -4536,6 +6275,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/spec-only": {
@@ -4549,6 +6293,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-native": {
@@ -4562,6 +6311,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "promise/no-nesting": {
@@ -4575,6 +6329,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/multiline-blocks": {
@@ -4588,6 +6347,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-types": {
@@ -4601,6 +6365,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-property": {
@@ -4614,6 +6383,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-rejects": {
@@ -4627,6 +6401,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-returns-description": {
@@ -4640,6 +6419,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-description-complete-sentence": {
@@ -4653,6 +6437,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-blank-block-descriptions": {
@@ -4666,6 +6455,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-line-alignment": {
@@ -4679,6 +6473,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-file-overview": {
@@ -4692,6 +6491,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-values": {
@@ -4705,6 +6509,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/imports-as-dependencies": {
@@ -4718,6 +6527,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-property-type": {
@@ -4731,6 +6545,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-template-names": {
@@ -4744,6 +6563,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/convert-to-jsdoc-comments": {
@@ -4757,6 +6581,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-next-type": {
@@ -4770,6 +6599,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-indentation": {
@@ -4783,6 +6617,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-param-names": {
@@ -4796,6 +6635,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-hyphen-before-param-description": {
@@ -4809,6 +6653,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-throws-type": {
@@ -4822,6 +6671,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-returns-type": {
@@ -4835,6 +6689,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-multi-asterisks": {
@@ -4848,6 +6707,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-yields-check": {
@@ -4861,6 +6725,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-example": {
@@ -4874,6 +6743,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-asterisk-prefix": {
@@ -4887,6 +6761,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/empty-tags": {
@@ -4900,6 +6779,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/ts-method-signature-style": {
@@ -4913,6 +6797,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-param": {
@@ -4926,6 +6815,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 7,
+        "fp": 1,
+        "crash": 0
       }
     },
     "jsdoc/ts-no-empty-object-type": {
@@ -4939,6 +6833,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-yields-description": {
@@ -4952,6 +6851,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-tag-names": {
@@ -4965,6 +6869,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-next-description": {
@@ -4978,6 +6887,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-missing-syntax": {
@@ -4991,6 +6905,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-access": {
@@ -5004,6 +6923,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-param-type": {
@@ -5017,6 +6941,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/reject-any-type": {
@@ -5030,6 +6959,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-defaults": {
@@ -5043,6 +6977,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/informative-docs": {
@@ -5056,6 +6995,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-bad-blocks": {
@@ -5069,6 +7013,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-description": {
@@ -5082,6 +7031,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-examples": {
@@ -5095,6 +7049,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/valid-types": {
@@ -5108,6 +7067,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-types": {
@@ -5121,6 +7085,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/escape-inline-tags": {
@@ -5134,6 +7103,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-property-description": {
@@ -5147,6 +7121,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-property-name": {
@@ -5160,6 +7139,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-throws": {
@@ -5173,6 +7157,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/sort-tags": {
@@ -5186,6 +7175,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-blank-blocks": {
@@ -5199,6 +7193,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-template": {
@@ -5212,6 +7211,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/lines-before-block": {
@@ -5225,6 +7229,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/text-escaping": {
@@ -5238,6 +7247,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-returns": {
@@ -5251,6 +7265,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 2,
+        "crash": 0
       }
     },
     "jsdoc/check-alignment": {
@@ -5264,6 +7283,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/reject-function-type": {
@@ -5277,6 +7301,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/type-formatting": {
@@ -5290,6 +7319,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/match-name": {
@@ -5303,6 +7337,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/prefer-import-tag": {
@@ -5316,6 +7355,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-jsdoc": {
@@ -5329,6 +7373,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 7,
+        "fp": 11,
+        "crash": 0
       }
     },
     "jsdoc/check-syntax": {
@@ -5342,6 +7391,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-template-description": {
@@ -5355,6 +7409,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-param-name": {
@@ -5368,6 +7427,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-returns-check": {
@@ -5381,6 +7445,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-tags": {
@@ -5394,6 +7463,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-param-description": {
@@ -5407,6 +7481,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-throws-description": {
@@ -5420,6 +7499,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/match-description": {
@@ -5433,6 +7517,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/ts-no-unnecessary-template-expression": {
@@ -5446,6 +7535,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-yields": {
@@ -5459,6 +7553,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/require-yields-type": {
@@ -5472,6 +7571,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/tag-lines": {
@@ -5485,6 +7589,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/ts-prefer-function-type": {
@@ -5498,6 +7607,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/implements-on-classes": {
@@ -5511,6 +7625,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/check-property-names": {
@@ -5524,6 +7643,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "jsdoc/no-undefined-types": {
@@ -5537,6 +7661,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 13,
+        "crash": 0
       }
     },
     "unicorn/prefer-at": {
@@ -5550,6 +7679,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/throw-new-error": {
@@ -5563,6 +7697,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/template-indent": {
@@ -5576,6 +7715,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-switch": {
@@ -5589,6 +7733,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/escape-case": {
@@ -5602,6 +7751,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/catch-error-name": {
@@ -5615,6 +7769,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-blob-reading-methods": {
@@ -5628,6 +7787,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-classlist-toggle": {
@@ -5641,6 +7805,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-json-parse-buffer": {
@@ -5654,6 +7823,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-empty-array-spread": {
@@ -5667,6 +7841,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-assert": {
@@ -5680,6 +7859,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-string-raw": {
@@ -5693,6 +7877,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "unicorn/no-useless-switch-case": {
@@ -5706,6 +7895,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-typeof-undefined": {
@@ -5719,6 +7913,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-array-method-this-argument": {
@@ -5732,6 +7931,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unreadable-array-destructuring": {
@@ -5745,6 +7949,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/empty-brace-spaces": {
@@ -5758,6 +7967,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unnecessary-array-flat-depth": {
@@ -5771,6 +7985,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/expiring-todo-comments": {
@@ -5784,6 +8003,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "unicorn/prefer-object-from-entries": {
@@ -5797,6 +8021,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-dom-node-text-content": {
@@ -5810,6 +8039,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-new-array": {
@@ -5823,6 +8057,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-node-protocol": {
@@ -5836,6 +8075,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-number-properties": {
@@ -5849,6 +8093,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-lonely-if": {
@@ -5862,6 +8111,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-code-point": {
@@ -5875,6 +8129,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-date-clone": {
@@ -5888,6 +8147,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/string-content": {
@@ -5901,6 +8165,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unused-properties": {
@@ -5914,6 +8183,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-export-from": {
@@ -5927,6 +8201,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 8,
+        "fp": 2,
+        "crash": 0
       }
     },
     "unicorn/prefer-add-event-listener": {
@@ -5940,6 +8219,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-array-index-of": {
@@ -5953,6 +8237,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-structured-clone": {
@@ -5966,6 +8255,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unnecessary-array-splice-count": {
@@ -5979,6 +8273,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-document-cookie": {
@@ -5992,6 +8291,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-math-trunc": {
@@ -6005,6 +8309,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-bigint-literals": {
@@ -6018,6 +8327,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/better-regex": {
@@ -6031,6 +8345,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-response-static-json": {
@@ -6044,6 +8363,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-includes": {
@@ -6057,6 +8381,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-object-as-default-parameter": {
@@ -6070,6 +8399,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-invalid-remove-event-listener": {
@@ -6083,6 +8417,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-thenable": {
@@ -6096,6 +8435,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-iterator-to-array": {
@@ -6109,6 +8453,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-string-replace-all": {
@@ -6122,6 +8471,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-type-error": {
@@ -6135,6 +8489,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-anonymous-default-export": {
@@ -6148,6 +8507,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-array-reduce": {
@@ -6161,6 +8525,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unnecessary-await": {
@@ -6174,6 +8543,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-function-scoping": {
@@ -6187,6 +8561,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "unicorn/prefer-event-target": {
@@ -6200,6 +8579,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-dom-node-remove": {
@@ -6213,6 +8597,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-single-promise-in-promise-methods": {
@@ -6226,6 +8615,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/require-number-to-fixed-digits-argument": {
@@ -6239,6 +8633,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-immediate-mutation": {
@@ -6252,6 +8651,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/require-module-specifiers": {
@@ -6265,6 +8669,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-array-find": {
@@ -6278,6 +8687,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-await-expression-member": {
@@ -6291,6 +8705,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-error-capture-stack-trace": {
@@ -6304,6 +8723,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-process-exit": {
@@ -6317,6 +8741,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/numeric-separators-style": {
@@ -6330,6 +8759,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-modern-dom-apis": {
@@ -6343,6 +8777,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/relative-url-style": {
@@ -6356,6 +8795,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-single-call": {
@@ -6369,6 +8813,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-string-starts-ends-with": {
@@ -6382,6 +8831,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-default-parameters": {
@@ -6395,6 +8849,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-set-has": {
@@ -6408,6 +8867,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/switch-case-braces": {
@@ -6421,6 +8885,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-array-callback-reference": {
@@ -6434,6 +8903,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/filename-case": {
@@ -6447,6 +8921,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-this-assignment": {
@@ -6460,6 +8939,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-top-level-await": {
@@ -6473,6 +8957,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-template-literal-escape": {
@@ -6486,6 +8975,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-promise-resolve-reject": {
@@ -6499,6 +8993,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unnecessary-slice-end": {
@@ -6512,6 +9011,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-string-slice": {
@@ -6525,6 +9029,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-undefined": {
@@ -6538,6 +9047,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/text-encoding-identifier-case": {
@@ -6551,6 +9065,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prevent-abbreviations": {
@@ -6564,6 +9083,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/number-literal-case": {
@@ -6577,6 +9101,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-nested-ternary": {
@@ -6590,6 +9119,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/switch-case-break-position": {
@@ -6603,6 +9137,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-console-spaces": {
@@ -6616,6 +9155,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-array-reverse": {
@@ -6629,6 +9173,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-hex-escape": {
@@ -6642,6 +9191,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-empty-file": {
@@ -6655,6 +9209,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-array-flat-map": {
@@ -6668,6 +9227,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-magic-array-flat-depth": {
@@ -6681,6 +9245,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-global-this": {
@@ -6694,6 +9263,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-optional-catch-binding": {
@@ -6707,6 +9281,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-fallback-in-spread": {
@@ -6720,6 +9299,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-existence-index-check": {
@@ -6733,6 +9317,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-array-flat": {
@@ -6746,6 +9335,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "unicorn/no-unnecessary-polyfills": {
@@ -6759,6 +9353,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-null": {
@@ -6772,6 +9371,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/require-module-attributes": {
@@ -6785,6 +9389,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/explicit-length-check": {
@@ -6798,6 +9407,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-prototype-methods": {
@@ -6811,6 +9425,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-invalid-fetch-options": {
@@ -6824,6 +9443,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-module": {
@@ -6837,6 +9461,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 2,
+        "crash": 0
       }
     },
     "unicorn/prefer-native-coercion-functions": {
@@ -6850,6 +9479,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 3,
+        "crash": 0
       }
     },
     "unicorn/import-style": {
@@ -6863,6 +9497,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-spread": {
@@ -6876,6 +9515,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-query-selector": {
@@ -6889,6 +9533,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-new-buffer": {
@@ -6902,6 +9551,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-named-default": {
@@ -6915,6 +9569,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-keyword-prefix": {
@@ -6928,6 +9587,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/isolated-functions": {
@@ -6941,6 +9605,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 13,
+        "fp": 5,
+        "crash": 0
       }
     },
     "unicorn/no-instanceof-builtins": {
@@ -6954,6 +9623,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-negation-in-equality-check": {
@@ -6967,6 +9641,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-simple-condition-first": {
@@ -6980,6 +9659,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-array-for-each": {
@@ -6993,6 +9677,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-unreadable-iife": {
@@ -7006,6 +9695,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-dom-node-dataset": {
@@ -7019,6 +9713,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-await-in-promise-methods": {
@@ -7032,6 +9731,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-spread": {
@@ -7045,6 +9749,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-keyboard-event-key": {
@@ -7058,6 +9767,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-length-check": {
@@ -7071,6 +9785,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/error-message": {
@@ -7084,6 +9803,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/new-for-builtins": {
@@ -7097,6 +9821,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-useless-collection-argument": {
@@ -7110,6 +9839,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-dom-node-append": {
@@ -7123,6 +9857,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-negative-index": {
@@ -7136,6 +9875,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-modern-math-apis": {
@@ -7149,6 +9893,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-negated-condition": {
@@ -7162,6 +9911,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-for-loop": {
@@ -7175,6 +9929,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-set-size": {
@@ -7188,6 +9947,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/consistent-destructuring": {
@@ -7201,6 +9965,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-abusive-eslint-disable": {
@@ -7214,6 +9983,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/custom-error-definition": {
@@ -7227,6 +10001,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
       }
     },
     "unicorn/prefer-regexp-test": {
@@ -7240,6 +10019,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-date-now": {
@@ -7253,6 +10037,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-accessor-recursion": {
@@ -7266,6 +10055,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/require-array-join-separator": {
@@ -7279,6 +10073,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-reflect-apply": {
@@ -7292,6 +10091,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-static-only-class": {
@@ -7305,6 +10109,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-math-min-max": {
@@ -7318,6 +10127,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/require-post-message-target-origin": {
@@ -7331,6 +10145,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-logical-operator-over-ternary": {
@@ -7344,6 +10163,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-class-fields": {
@@ -7357,6 +10181,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-array-some": {
@@ -7370,6 +10199,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-string-trim-start-end": {
@@ -7383,6 +10217,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-array-sort": {
@@ -7396,6 +10235,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/prefer-ternary": {
@@ -7409,6 +10253,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "unicorn/no-zero-fractions": {
@@ -7422,6 +10271,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-bind": {
@@ -7435,6 +10289,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/style-prop-object": {
@@ -7448,6 +10307,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-comment-textnodes": {
@@ -7461,6 +10325,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 3,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-max-props-per-line": {
@@ -7474,6 +10343,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-closing-bracket-location": {
@@ -7487,6 +10361,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-sort-default-props": {
@@ -7500,6 +10379,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unsafe": {
@@ -7513,6 +10397,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/sort-default-props": {
@@ -7526,6 +10415,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-boolean-value": {
@@ -7539,6 +10433,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unused-prop-types": {
@@ -7552,6 +10451,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/sort-comp": {
@@ -7565,6 +10469,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-find-dom-node": {
@@ -7578,6 +10487,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-multi-comp": {
@@ -7591,6 +10505,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-closing-tag-location": {
@@ -7604,6 +10523,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unused-state": {
@@ -7617,6 +10541,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/forbid-component-props": {
@@ -7630,6 +10559,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-typos": {
@@ -7643,6 +10577,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/forbid-elements": {
@@ -7656,6 +10595,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/function-component-definition": {
@@ -7669,6 +10613,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-one-expression-per-line": {
@@ -7682,6 +10631,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/destructuring-assignment": {
@@ -7695,6 +10649,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-deprecated": {
@@ -7708,6 +10667,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-is-mounted": {
@@ -7721,6 +10685,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-props-no-spreading": {
@@ -7734,6 +10703,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-this-in-sfc": {
@@ -7747,6 +10721,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-direct-mutation-state": {
@@ -7760,6 +10739,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-will-update-set-state": {
@@ -7773,6 +10757,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-arrow-function-lifecycle": {
@@ -7786,6 +10775,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/prefer-stateless-function": {
@@ -7799,6 +10793,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-danger-with-children": {
@@ -7812,6 +10811,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/react-in-jsx-scope": {
@@ -7825,6 +10829,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-curly-newline": {
@@ -7838,6 +10847,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-adjacent-inline-elements": {
@@ -7851,6 +10865,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-indent-props": {
@@ -7864,6 +10883,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/button-has-type": {
@@ -7877,6 +10901,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/display-name": {
@@ -7890,6 +10919,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-set-state": {
@@ -7903,6 +10937,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-props-no-spread-multi": {
@@ -7916,6 +10955,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/prop-types": {
@@ -7929,6 +10973,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-useless-fragment": {
@@ -7942,6 +10991,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-leaked-render": {
@@ -7955,6 +11009,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-danger": {
@@ -7968,6 +11027,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unstable-nested-components": {
@@ -7981,6 +11045,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/self-closing-comp": {
@@ -7994,6 +11063,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-script-url": {
@@ -8007,6 +11081,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-handler-names": {
@@ -8020,6 +11099,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-object-type-as-default-prop": {
@@ -8033,6 +11117,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-props-no-multi-spaces": {
@@ -8046,6 +11135,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-first-prop-new-line": {
@@ -8059,6 +11153,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/boolean-prop-naming": {
@@ -8072,6 +11171,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/sort-prop-types": {
@@ -8085,6 +11189,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-curly-spacing": {
@@ -8098,6 +11207,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-equals-spacing": {
@@ -8111,6 +11225,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/default-props-match-prop-types": {
@@ -8124,6 +11243,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-duplicate-props": {
@@ -8137,6 +11261,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/static-property-placement": {
@@ -8150,6 +11279,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-target-blank": {
@@ -8163,6 +11297,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-pascal-case": {
@@ -8176,6 +11315,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/require-default-props": {
@@ -8189,6 +11333,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-fragments": {
@@ -8202,6 +11351,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-did-mount-set-state": {
@@ -8215,6 +11369,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-child-element-spacing": {
@@ -8228,6 +11387,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-undef": {
@@ -8241,6 +11405,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/iframe-missing-sandbox": {
@@ -8254,6 +11423,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/forbid-dom-props": {
@@ -8267,6 +11441,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-namespace": {
@@ -8280,6 +11459,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-wrap-multilines": {
@@ -8293,6 +11477,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-invalid-html-attribute": {
@@ -8306,6 +11495,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-access-state-in-setstate": {
@@ -8319,6 +11513,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-children-prop": {
@@ -8332,6 +11531,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/forbid-prop-types": {
@@ -8345,6 +11549,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-filename-extension": {
@@ -8358,6 +11567,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unknown-property": {
@@ -8371,6 +11585,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-space-before-closing": {
@@ -8384,6 +11603,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-array-index-key": {
@@ -8397,6 +11621,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-render-return-value": {
@@ -8410,6 +11639,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-tag-spacing": {
@@ -8423,6 +11657,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-redundant-should-component-update": {
@@ -8436,6 +11675,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/checked-requires-onchange-or-readonly": {
@@ -8449,6 +11693,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-no-literals": {
@@ -8462,6 +11711,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-max-depth": {
@@ -8475,6 +11729,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/prefer-es6-class": {
@@ -8488,6 +11747,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-key": {
@@ -8501,6 +11765,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/state-in-constructor": {
@@ -8514,6 +11783,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unescaped-entities": {
@@ -8527,6 +11801,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/void-dom-elements-no-children": {
@@ -8540,6 +11819,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/prefer-exact-props": {
@@ -8553,6 +11837,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-curly-brace-presence": {
@@ -8566,6 +11855,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-unused-class-component-methods": {
@@ -8579,6 +11873,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-sort-props": {
@@ -8592,6 +11891,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-newline": {
@@ -8605,6 +11909,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/require-render-return": {
@@ -8618,6 +11927,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/jsx-indent": {
@@ -8631,6 +11945,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 4,
+        "fp": 19,
+        "crash": 0
       }
     },
     "react/async-server-action": {
@@ -8644,6 +11963,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/forward-ref-uses-ref": {
@@ -8657,6 +11981,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/prefer-read-only-props": {
@@ -8670,6 +11999,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/no-did-update-set-state": {
@@ -8683,6 +12017,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "react/forbid-foreign-prop-types": {
@@ -8696,6 +12035,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/stateful-regex": {
@@ -8709,6 +12053,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/prefer-promise-shorthand": {
@@ -8722,6 +12071,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/array-constructor": {
@@ -8735,6 +12089,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/unverified-hostname": {
@@ -8748,6 +12107,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-literal-call": {
@@ -8761,6 +12125,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/block-scoped-var": {
@@ -8774,6 +12143,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-variable-usage-before-declaration": {
@@ -8787,6 +12161,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/encryption-secure-mode": {
@@ -8800,6 +12179,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-undefined-assignment": {
@@ -8813,6 +12197,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-inverted-boolean-check": {
@@ -8826,6 +12215,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/elseif-without-else": {
@@ -8839,6 +12233,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/disabled-resource-integrity": {
@@ -8852,6 +12251,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/future-reserved-words": {
@@ -8865,6 +12269,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/bitwise-operators": {
@@ -8878,6 +12287,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-fallthrough": {
@@ -8891,6 +12305,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-unused-function-argument": {
@@ -8904,6 +12323,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/reduce-initial-value": {
@@ -8917,6 +12341,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/variable-name": {
@@ -8930,6 +12359,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-implicit-global": {
@@ -8943,6 +12377,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-nested-assignment": {
@@ -8956,6 +12395,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-hardcoded-ip": {
@@ -8969,6 +12413,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/prefer-single-boolean-return": {
@@ -8982,6 +12431,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-unused-collection": {
@@ -8995,6 +12449,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/non-existent-operator": {
@@ -9008,6 +12467,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-labels": {
@@ -9021,6 +12485,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-redundant-parentheses": {
@@ -9034,6 +12503,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-globals-shadowing": {
@@ -9047,6 +12521,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/file-uploads": {
@@ -9060,6 +12539,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-invalid-regexp": {
@@ -9073,6 +12557,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/updated-const-var": {
@@ -9086,6 +12575,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/duplicates-in-character-class": {
@@ -9099,6 +12593,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/label-position": {
@@ -9112,6 +12611,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-intrusive-permissions": {
@@ -9125,6 +12629,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/void-use": {
@@ -9138,6 +12647,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/unicode-aware-regex": {
@@ -9151,6 +12665,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/prefer-object-literal": {
@@ -9164,6 +12683,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-hardcoded-secrets": {
@@ -9177,6 +12701,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-nested-conditional": {
@@ -9190,6 +12719,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/generator-without-yield": {
@@ -9203,6 +12737,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/unused-named-groups": {
@@ -9216,6 +12755,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-return-type-any": {
@@ -9229,6 +12773,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/operation-returning-nan": {
@@ -9242,6 +12791,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/insecure-jwt-token": {
@@ -9255,6 +12809,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-empty-after-reluctant": {
@@ -9268,6 +12827,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-alphabetical-sort": {
@@ -9281,6 +12845,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-element-overwrite": {
@@ -9294,6 +12863,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/anchor-precedence": {
@@ -9307,6 +12881,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/file-permissions": {
@@ -9320,6 +12899,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-misleading-character-class": {
@@ -9333,6 +12917,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/regular-expr": {
@@ -9346,6 +12935,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/values-not-convertible-to-numbers": {
@@ -9359,6 +12953,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/non-number-in-arithmetic-expression": {
@@ -9372,6 +12971,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/content-length": {
@@ -9385,6 +12989,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/x-powered-by": {
@@ -9398,6 +13007,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-associative-arrays": {
@@ -9411,6 +13025,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/assertions-in-tests": {
@@ -9424,6 +13043,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 8,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-nested-functions": {
@@ -9437,6 +13061,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/insecure-cookie": {
@@ -9450,6 +13079,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/arrow-function-convention": {
@@ -9463,6 +13097,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-collection-size-mischeck": {
@@ -9476,6 +13115,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/csrf": {
@@ -9489,6 +13133,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/regex-complexity": {
@@ -9502,6 +13151,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-hardcoded-passwords": {
@@ -9515,6 +13169,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-same-line-conditional": {
@@ -9528,6 +13187,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-nested-incdec": {
@@ -9541,6 +13205,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-case-label-in-switch": {
@@ -9554,6 +13223,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-ignored-return": {
@@ -9567,6 +13241,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-parameter-reassignment": {
@@ -9580,6 +13259,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/max-switch-cases": {
@@ -9593,6 +13277,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-nested-switch": {
@@ -9606,6 +13295,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/single-character-alternation": {
@@ -9619,6 +13313,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/destructuring-assignment-syntax": {
@@ -9632,6 +13331,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/chai-determinate-assertion": {
@@ -9645,6 +13349,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/conditional-indentation": {
@@ -9658,6 +13367,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-empty-collection": {
@@ -9671,6 +13385,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/empty-string-repetition": {
@@ -9684,6 +13403,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/arguments-usage": {
@@ -9697,6 +13421,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 1,
+        "crash": 0
       }
     },
     "sonarjs/cookies": {
@@ -9710,6 +13439,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/class-prototype": {
@@ -9723,6 +13457,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/todo-tag": {
@@ -9736,6 +13475,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/existing-groups": {
@@ -9749,6 +13493,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-identical-expressions": {
@@ -9762,6 +13511,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/sockets": {
@@ -9775,6 +13529,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-useless-increment": {
@@ -9788,6 +13547,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-inconsistent-returns": {
@@ -9801,6 +13565,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-regex-spaces": {
@@ -9814,6 +13583,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/standard-input": {
@@ -9827,6 +13601,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-primitive-wrappers": {
@@ -9840,6 +13619,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-referrer-policy": {
@@ -9853,6 +13637,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/too-many-break-or-continue-in-loop": {
@@ -9866,6 +13655,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/different-types-comparison": {
@@ -9879,6 +13673,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-duplicate-string": {
@@ -9892,6 +13691,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-in-misuse": {
@@ -9905,6 +13709,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/max-lines": {
@@ -9918,6 +13727,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/xpath": {
@@ -9931,6 +13745,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/function-return-type": {
@@ -9944,6 +13763,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/strings-comparison": {
@@ -9957,6 +13781,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-use-of-empty-return-value": {
@@ -9970,6 +13799,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/updated-loop-counter": {
@@ -9983,6 +13817,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-small-switch": {
@@ -9996,6 +13835,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/fixme-tag": {
@@ -10009,6 +13853,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-tab": {
@@ -10022,6 +13871,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/strict-transport-security": {
@@ -10035,6 +13889,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-incorrect-string-concat": {
@@ -10048,6 +13907,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/nested-control-flow": {
@@ -10061,6 +13925,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/for-in": {
@@ -10074,6 +13943,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/weak-ssl": {
@@ -10087,6 +13961,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-mixed-content": {
@@ -10100,6 +13979,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-extra-arguments": {
@@ -10113,6 +13997,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/certificate-transparency": {
@@ -10126,6 +14015,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/xml-parser-xxe": {
@@ -10139,6 +14033,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/comma-or-logical-or-case": {
@@ -10152,6 +14051,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/comment-regex": {
@@ -10165,6 +14069,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-useless-catch": {
@@ -10178,6 +14087,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-redundant-boolean": {
@@ -10191,6 +14105,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/cyclomatic-complexity": {
@@ -10204,6 +14123,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/inconsistent-function-call": {
@@ -10217,6 +14141,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/dns-prefetching": {
@@ -10230,6 +14159,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/unverified-certificate": {
@@ -10243,6 +14177,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-reference-error": {
@@ -10256,6 +14195,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-empty-group": {
@@ -10269,6 +14213,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-weak-cipher": {
@@ -10282,6 +14231,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/code-eval": {
@@ -10295,6 +14249,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-global-this": {
@@ -10308,6 +14267,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-commented-code": {
@@ -10321,6 +14285,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/new-operator-misuse": {
@@ -10334,6 +14303,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/concise-regex": {
@@ -10347,6 +14321,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/content-security-policy": {
@@ -10360,6 +14339,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-redundant-jump": {
@@ -10373,6 +14357,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/function-inside-loop": {
@@ -10386,6 +14375,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/cookie-no-httponly": {
@@ -10399,6 +14393,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/hidden-files": {
@@ -10412,6 +14411,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-unenclosed-multiline-block": {
@@ -10425,6 +14429,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/array-callback-without-return": {
@@ -10438,6 +14447,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/file-header": {
@@ -10451,6 +14465,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/slow-regex": {
@@ -10464,6 +14483,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-identical-conditions": {
@@ -10477,6 +14501,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/os-command": {
@@ -10490,6 +14519,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-collapsible-if": {
@@ -10503,6 +14537,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-same-argument-assert": {
@@ -10516,6 +14555,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/pseudo-random": {
@@ -10529,6 +14573,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/sql-queries": {
@@ -10542,6 +14591,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-dead-store": {
@@ -10555,6 +14609,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 14,
+        "fp": 7,
+        "crash": 0
       }
     },
     "sonarjs/no-sonar-comments": {
@@ -10568,6 +14627,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/encryption": {
@@ -10581,6 +14645,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/web-sql-database": {
@@ -10594,6 +14663,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-implicit-dependencies": {
@@ -10607,6 +14681,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/post-message": {
@@ -10620,6 +14699,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/prefer-while": {
@@ -10633,6 +14717,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-require-or-define": {
@@ -10646,6 +14735,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/prefer-default-last": {
@@ -10659,6 +14753,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-skipped-tests": {
@@ -10672,6 +14771,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-built-in-override": {
@@ -10685,6 +14789,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/expression-complexity": {
@@ -10698,6 +14807,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 1,
+        "crash": 0
       }
     },
     "sonarjs/session-regeneration": {
@@ -10711,6 +14825,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-redundant-assignments": {
@@ -10724,6 +14843,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 9,
+        "fp": 4,
+        "crash": 0
       }
     },
     "sonarjs/no-invariant-returns": {
@@ -10737,6 +14861,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/null-dereference": {
@@ -10750,6 +14879,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/constructor-for-side-effects": {
@@ -10763,6 +14897,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/public-static-readonly": {
@@ -10776,6 +14915,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/prefer-immediate-return": {
@@ -10789,6 +14933,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-unused-vars": {
@@ -10802,6 +14951,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/call-argument-line": {
@@ -10815,6 +14969,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/production-debug": {
@@ -10828,6 +14987,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-unsafe-unzip": {
@@ -10841,6 +15005,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-duplicated-branches": {
@@ -10854,6 +15023,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-angular-bypass-sanitization": {
@@ -10867,6 +15041,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-unthrown-error": {
@@ -10880,6 +15059,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/for-loop-increment-sign": {
@@ -10893,6 +15077,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/publicly-writable-directories": {
@@ -10906,6 +15095,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/index-of-compare-to-positive-number": {
@@ -10919,6 +15113,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-for-in-iterable": {
@@ -10932,6 +15131,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/in-operator-type-error": {
@@ -10945,6 +15149,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-all-duplicated-branches": {
@@ -10958,6 +15167,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/arguments-order": {
@@ -10971,6 +15185,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 28,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/argument-type": {
@@ -10984,6 +15203,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/cognitive-complexity": {
@@ -10997,6 +15221,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 6,
+        "fp": 1,
+        "crash": 0
       }
     },
     "sonarjs/frame-ancestors": {
@@ -11010,6 +15239,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-weak-keys": {
@@ -11023,6 +15257,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/useless-string-operation": {
@@ -11036,6 +15275,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-function-declaration-in-block": {
@@ -11049,6 +15293,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-empty-test-file": {
@@ -11062,6 +15311,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/max-lines-per-function": {
@@ -11075,6 +15329,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/function-name": {
@@ -11088,6 +15347,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/confidential-information-logging": {
@@ -11101,6 +15365,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/process-argv": {
@@ -11114,6 +15383,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-ip-forward": {
@@ -11127,6 +15401,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-delete-var": {
@@ -11140,6 +15419,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/class-name": {
@@ -11153,6 +15437,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-nested-template-literals": {
@@ -11166,6 +15455,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-undefined-argument": {
@@ -11179,6 +15473,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/misplaced-loop-counter": {
@@ -11192,6 +15491,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-misleading-array-reverse": {
@@ -11205,6 +15509,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-mime-sniff": {
@@ -11218,6 +15527,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-empty-alternatives": {
@@ -11231,6 +15545,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-gratuitous-expressions": {
@@ -11244,6 +15563,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-control-regex": {
@@ -11257,6 +15581,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-try-promise": {
@@ -11270,6 +15599,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/shorthand-property-grouping": {
@@ -11283,6 +15617,11 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     },
     "sonarjs/no-clear-text-protocols": {
@@ -11296,12 +15635,18 @@
         "fp": 0,
         "crash": 0,
         "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
       }
     }
   },
   "perf": {
-    "totalElapsedMs": 21400,
-    "runnerCasesPerSec": 10939,
-    "totalCases": 53711
+    "totalElapsedMs": 20984,
+    "runnerCasesPerSec": 11819,
+    "nativeCasesPerSec": 149655,
+    "totalCases": 53691
   }
 }
