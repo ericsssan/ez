@@ -1727,12 +1727,12 @@ class SourceCode {
         const val = comment.value;
         if (!/^\s*globals?\b/.test(val)) continue;
         const body = val.replace(/^\s*globals?\s*/, '').replace(/\s*$/, '');
-        for (const entry of body.match(/[$_a-zA-Z][\w$]*(?:\s*:\s*[^,\s]+)?/g) || []) {
+        for (const entry of body.match(/[$_\p{ID_Start}][$\w\p{ID_Continue}]*(?:\s*:\s*[^,\s]+)?/gu) || []) {
           const trimmed = entry.trim();
           if (!trimmed) continue;
           const [rawName, rawValue] = trimmed.split(':').map(s => s.trim());
           const name = rawName;
-          if (!name || !/^[$_a-zA-Z][\w$]*$/.test(name)) continue;
+          if (!name || !/^[$_\p{ID_Start}][$\w\p{ID_Continue}]*$/u.test(name)) continue;
           const valueStr = (rawValue || 'readonly').toLowerCase();
           if (valueStr === 'off') {
             _removeGlobal(name, set, variables);
@@ -3379,7 +3379,21 @@ class RuleContext {
    * Mark a variable as used in the current scope (stub — used by some rules).
    */
   markVariableAsUsed(name) {
-    // No-op stub; real implementation would mark the variable in scope analysis.
+    const refNode = this._currentNodeIdx > 0 ? nodeView(this._ast, this._currentNodeIdx) : this._ast;
+    const currentScope = this.sourceCode.getScope(refNode);
+    let initialScope = currentScope;
+    // In ESM/CommonJS, start from the top-level scope (module/function), not global.
+    if (currentScope.type === "global" && currentScope.childScopes.length > 0 &&
+        currentScope.childScopes[0].block === this._ast) {
+      initialScope = currentScope.childScopes[0];
+    }
+    for (let scope = initialScope; scope; scope = scope.upper) {
+      const variable = scope.variables.find(v => v.name === name);
+      if (variable) {
+        variable.eslintUsed = true;
+        return true;
+      }
+    }
     return false;
   }
 
