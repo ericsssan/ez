@@ -2034,9 +2034,11 @@ const NodeProto = {
     for (let i = mt - 1; i >= 0; i--) {
       const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
       if (val === '@') {
-        decorators.push({ type: 'Decorator', start: ast._tokStarts[i], end: ast._tokEnds[i + 1] || ast._tokEnds[i] });
+        // @ followed by decorator name — use end of the expression (next meaningful token)
+        const decEnd = (i + 1 < ast.tokenCount) ? ast._tokEnds[i + 1] : ast._tokEnds[i];
+        decorators.push({ type: 'Decorator', start: ast._tokStarts[i], end: decEnd });
       } else if (val === ')') {
-        // Skip decorator arguments: @dec(args)
+        // Skip decorator arguments: @dec(args) — walk back to matching '('
         let depth = 1;
         i--;
         while (i >= 0 && depth > 0) {
@@ -2045,12 +2047,34 @@ const NodeProto = {
           else if (c === '(') depth--;
           i--;
         }
-        // i now points before '(' — next iteration checks for @
+        // i now points before '(' — check if this is a decorator name
+        if (i >= 0) {
+          const nameVal = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
+          // Decorator name or member expression: skip so loop continues to find '@'
+          if (nameVal !== '@') continue;
+          // It's '@' directly before '(' — parameterless decorator with parens? Re-process.
+          i++; // undo so the loop will see '@' next iteration
+        }
       } else if (val === 'static' || val === 'async' || val === 'get' || val === 'set' || val === '*' ||
                  val === 'public' || val === 'private' || val === 'protected' || val === 'readonly' ||
                  val === 'abstract' || val === 'declare' || val === 'override') {
         continue; // skip modifiers between decorator and method name
+      } else if (val === '.') {
+        // Member expression in decorator: @ns.Dec — skip dot and continue
+        continue;
       } else {
+        // Could be a decorator name/identifier — peek backward past dots and identifiers to find '@'
+        let isDecoratorPart = false;
+        let j = i - 1;
+        while (j >= 0) {
+          const prev = ast.source.slice(ast._tokStarts[j], ast._tokEnds[j]);
+          if (prev === '.') { j--; continue; }  // skip dots in member expressions
+          if (prev === '@') { isDecoratorPart = true; break; }
+          // Another identifier in the chain (e.g. 'ns' in @ns.Dec)
+          if (/^[_$a-zA-Z]/.test(prev)) { j--; continue; }
+          break;
+        }
+        if (isDecoratorPart) continue; // part of a decorator expression, keep scanning
         break; // not a decorator or modifier
       }
     }
