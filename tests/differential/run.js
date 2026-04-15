@@ -20,6 +20,7 @@ if (typeof Bun === "undefined") {
  *   --verbose / -v   Show all cases (pass and fail) with details
  *   --json           Output results as JSON (for CI/dashboards)
  *   --diff <file>    Compare current baseline with another baseline file
+ *   --bench-eslint   A/B timing: run ESLint on every case, report slower/faster rules
  *
  * Default: load baseline.json; fail only on new regressions.
  *
@@ -126,6 +127,7 @@ const strict       = args.includes("--strict");
 const showFails    = args.includes("--fails") || args.includes("--show-fails");
 const verboseAll   = args.includes("--verbose") || args.includes("-v");
 const jsonOutput   = args.includes("--json");
+const benchEslint  = args.includes("--bench-eslint");
 const _ruleIdx     = args.indexOf("--rule");
 const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
 const _diffIdx     = args.indexOf("--diff");
@@ -1007,7 +1009,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
   let totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
       totalNativeSkip = 0, totalNativeCrash = 0;
   let totalHybridPass = 0, totalHybridFn = 0, totalHybridFp = 0, totalHybridCrash = 0;
-  let runnerOnlyMs = 0, nativeOnlyMs = 0;
+  let runnerOnlyMs = 0, nativeOnlyMs = 0, eslintOnlyMs = 0;
   // TS vs JS breakdown
   let tsCases = 0, tsPass = 0, jsCases = 0, jsPass = 0;
   // Fix verification
@@ -1039,8 +1041,13 @@ if (fs.existsSync(ESLINT_ROOT)) {
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkipOptions = 0;
     let hybridFn = 0, hybridFp = 0, hybridCrash = 0, hybridPass = 0;
     let ruleFixable = 0, ruleFixMatch = 0, ruleFixMismatch = 0;
-    let _ruleRunnerMs = 0, _ruleNativeMs = 0;
+    let _ruleRunnerMs = 0, _ruleNativeMs = 0, _ruleEslintMs = 0;
     const _ruleParseSnap = _runnerParseMs, _rulePluginSnap = _runnerPluginMs;
+
+    // Build reusable ESLint flat config for this rule's A/B timing.
+    const _pluginPfx = ruleName.includes("/") ? ruleName.split("/")[0] : null;
+    const _eslintPluginCfg = _pluginPfx && _espreePlugins[_pluginPfx]
+      ? { [_pluginPfx]: _espreePlugins[_pluginPfx] } : {};
     // Collect failing cases for --fails / --verbose output
     const failedCases = [];  // { tcIdx, kind:"runner"|"native", espreeLines, ourLines, code }
 
@@ -1061,11 +1068,34 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const espreeResult = tc.eslintResult;
       if (!espreeResult) { skipEspreeParse++; continue; }
 
-      const _rt0 = Date.now();
+      const _rt0 = performance.now();
       const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
-      const _rtDelta = Date.now() - _rt0;
+      const _rtDelta = performance.now() - _rt0;
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;
+
+      // A/B timing: run ESLint on the same case (opt-in via --bench-eslint)
+      if (benchEslint) {
+        const _et0 = performance.now();
+        const ecmaVersion = tc.languageOptions?.ecmaVersion ?? 2022;
+        const jsxEnabled = !!(tc.languageOptions?.parserOptions?.ecmaFeatures?.jsx);
+        const langOpts = { ecmaVersion, sourceType };
+        if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
+        if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
+        const ruleEntry = tc.options.length > 0 ? ["error", ...tc.options] : "error";
+        const oracleExt = (isTypeScript || tc.isTypeScript) ? ".ts" : ".js";
+        const oracleFilename = tc.filename || ("test" + oracleExt);
+        eslintLinter.verify(tc.code, [{
+          files: ["**/*"],
+          plugins: _eslintPluginCfg,
+          languageOptions: langOpts,
+          rules: { [ruleName]: ruleEntry },
+        }], { filename: oracleFilename });
+        const _etDelta = performance.now() - _et0;
+        eslintOnlyMs += _etDelta;
+        _ruleEslintMs += _etDelta;
+      }
+
       if (runnerResult === null) { crash++; continue; }
 
       // Separate crashes from normal results
@@ -1310,7 +1340,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
     }
 
     _ruleTimes.push({
-      rule: ruleName, runnerMs: _ruleRunnerMs, nativeMs: _ruleNativeMs, cases: total,
+      rule: ruleName, runnerMs: _ruleRunnerMs, nativeMs: _ruleNativeMs, eslintMs: _ruleEslintMs, cases: total,
       parseMs: _runnerParseMs - _ruleParseSnap, pluginMs: _runnerPluginMs - _rulePluginSnap,
     });
 
@@ -1377,15 +1407,45 @@ if (fs.existsSync(ESLINT_ROOT)) {
     console.log(`Corpus native:  ${totalNativePass}/${_nativeTotal} pass (${nativePct}%), ${totalNativeSkip} skipped, ${totalNativeCrash} crashes, ${nativeGaps} gaps`);
     console.log(`  linting: ${(nativeOnlyMs/1000).toFixed(2)}s  (${nativeCasesSec} cases/s)`);
     console.log(`Corpus hybrid:  ${totalHybridPass}/${_hybridTotal} pass (${hybridPct}%), ${hybridGaps} gaps  (native when available, runner fallback)`);
+    if (benchEslint) console.log(`Corpus eslint:  ${(eslintOnlyMs/1000).toFixed(2)}s  (runner/eslint ratio: ${(runnerOnlyMs / eslintOnlyMs).toFixed(2)}x)`);
 
-    // Top 10 slowest rules by total time (runner + native).
     if (_ruleTimes.length > 0 && !filterRule) {
+      // Top 10 slowest rules by total time (runner + native).
       const sorted = [..._ruleTimes].sort((a, b) => (b.runnerMs + b.nativeMs) - (a.runnerMs + a.nativeMs));
       console.log(`\nSlowest rules (runner + native):`);
       for (const t of sorted.slice(0, 10)) {
         const totalMs = Math.round(t.runnerMs + t.nativeMs);
         const perCase = t.cases > 0 ? (totalMs / t.cases * 1000).toFixed(0) : "—";
-        console.log(`  ${String(totalMs).padStart(5)}ms  ${t.rule.padEnd(40)} ${t.cases} cases  (${perCase} µs/case)  [parse ${Math.round(t.parseMs)}ms, js-rules ${Math.round(t.pluginMs)}ms, native ${Math.round(t.nativeMs)}ms]`);
+        const eslintCmp = benchEslint && t.eslintMs > 0 ? `  vs eslint ${Math.round(t.eslintMs)}ms (${(t.runnerMs / t.eslintMs).toFixed(1)}x)` : "";
+        console.log(`  ${String(totalMs).padStart(5)}ms  ${t.rule.padEnd(40)} ${t.cases} cases  (${perCase} µs/case)  [parse ${Math.round(t.parseMs)}ms, js-rules ${Math.round(t.pluginMs)}ms, native ${Math.round(t.nativeMs)}ms]${eslintCmp}`);
+      }
+
+      if (benchEslint) {
+        // Rules slower than ESLint (ratio > 1.0, sorted by absolute delta).
+        const slower = _ruleTimes
+          .filter(t => t.eslintMs > 1 && t.runnerMs > t.eslintMs)
+          .map(t => ({ ...t, delta: t.runnerMs - t.eslintMs, ratio: t.runnerMs / t.eslintMs }))
+          .sort((a, b) => b.delta - a.delta);
+        if (slower.length > 0) {
+          console.log(`\nSlower than ESLint (${slower.length} rules):`);
+          for (const t of slower.slice(0, 20)) {
+            console.log(`  +${String(Math.round(t.delta)).padStart(4)}ms  ${t.rule.padEnd(40)} ez ${Math.round(t.runnerMs)}ms vs eslint ${Math.round(t.eslintMs)}ms  (${t.ratio.toFixed(1)}x)  ${t.cases} cases`);
+          }
+          if (slower.length > 20) console.log(`  ... and ${slower.length - 20} more`);
+        }
+
+        // Rules faster than ESLint.
+        const faster = _ruleTimes
+          .filter(t => t.eslintMs > 1 && t.runnerMs < t.eslintMs)
+          .map(t => ({ ...t, delta: t.eslintMs - t.runnerMs, ratio: t.eslintMs / t.runnerMs }))
+          .sort((a, b) => b.delta - a.delta);
+        if (faster.length > 0) {
+          const totalSaved = faster.reduce((s, t) => s + t.delta, 0);
+          console.log(`\nFaster than ESLint (${faster.length} rules, ${Math.round(totalSaved)}ms saved):`);
+          for (const t of faster.slice(0, 10)) {
+            console.log(`  -${String(Math.round(t.delta)).padStart(4)}ms  ${t.rule.padEnd(40)} ez ${Math.round(t.runnerMs)}ms vs eslint ${Math.round(t.eslintMs)}ms  (${t.ratio.toFixed(1)}x faster)  ${t.cases} cases`);
+          }
+        }
       }
     }
 
