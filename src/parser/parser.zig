@@ -2065,7 +2065,7 @@ pub const Parser = struct {
         self.in_async = is_async;
         self.in_generator = is_generator;
 
-        _ = try self.parseOptionalTypeParameters();
+        const fn_type_params = try self.parseOptionalTypeParameters();
         const params = try self.parseFormalParameters();
         const fn_return_type = try self.parseOptionalTypeAnnotation();
         defer {
@@ -2099,10 +2099,26 @@ pub const Parser = struct {
         // TS ambient/declare functions and overload signatures have no body.
         if (self.language.isTs() and self.peek() != .l_brace) {
             _ = self.eat(.semicolon);
+            const decl_extra = try self.addExtra(ast.FnData, .{
+                .name = name,
+                .params = params.start,
+                .params_end = params.end,
+                .body = .none,
+                .return_type = fn_return_type,
+                .type_params = fn_type_params.start,
+                .type_params_end = fn_type_params.end,
+            });
+            // If preceded by 'declare' keyword, use that as main_token so the node
+            // starts at 'declare' (important for comment attachment by ESLint).
+            const decl_main_tok = if (main_tok > 0 and
+                self.tokenTagAt(main_tok - 1) == .kw_declare)
+                main_tok - 1
+            else
+                main_tok;
             return self.addNode(.{
-                .tag = .ts_type_annotation,
-                .main_token = main_tok,
-                .data = .{ .lhs = name, .rhs = .none },
+                .tag = .ts_declare_function,
+                .main_token = decl_main_tok,
+                .data = .{ .lhs = NodeIndex.fromInt(decl_extra), .rhs = .none },
             });
         }
 
@@ -2123,6 +2139,8 @@ pub const Parser = struct {
             .params_end = params.end,
             .body = body,
             .return_type = fn_return_type,
+            .type_params = fn_type_params.start,
+            .type_params_end = fn_type_params.end,
         });
 
         return self.addNode(.{
@@ -2158,9 +2176,9 @@ pub const Parser = struct {
         }
 
         // TS type parameters: class Foo<T, U>
-        if (self.language.isTs() and self.peek() == .less_than) {
-            _ = try typescript.parseTypeParameterList(self);
-        }
+        const class_type_params = if (self.language.isTs() and self.peek() == .less_than) blk: {
+            break :blk try typescript.parseTypeParameterList(self);
+        } else ast.SubRange{ .start = 0, .end = 0 };
 
         // Optional: extends superClass (must be LeftHandSideExpression)
         const super_class: NodeIndex = if (self.eat(.kw_extends) != null) blk: {
@@ -2277,6 +2295,8 @@ pub const Parser = struct {
             .body = class_body_node,
             .impls_start = impls_range.start,
             .impls_end = impls_range.end,
+            .type_params = class_type_params.start,
+            .type_params_end = class_type_params.end,
         });
 
         return self.addNode(.{
@@ -2662,10 +2682,11 @@ pub const Parser = struct {
                 // TS abstract/declare computed methods may have no body
                 if (self.language.isTs() and self.peek() != .l_brace) {
                     _ = self.eat(.semicolon);
+                    const prop_extra = try self.addExtra(ast.PropertyData, .{});
                     return self.addNode(.{
                         .tag = .computed_property_def,
                         .main_token = computed_main_tok,
-                        .data = .{ .lhs = key_expr, .rhs = .none },
+                        .data = .{ .lhs = key_expr, .rhs = NodeIndex.fromInt(prop_extra) },
                     });
                 }
 
@@ -2696,18 +2717,14 @@ pub const Parser = struct {
                 });
             }
 
-            // Skip TS optional marker and type annotation on computed field
+            // TS optional marker and type annotation on computed field
             if (self.language.isTs()) {
                 _ = self.eat(.question);
-                _ = self.eat(.bang);
-                if (self.peek() == .colon) {
-                    _ = self.advance();
-                    _ = try typescript.parseType(self);
-                }
             }
+            const computed_type_ann = try self.parseOptionalTypeAnnotation();
 
             // Computed property
-            const value: NodeIndex = if (self.eat(.equal) != null) blk: {
+            const comp_value: NodeIndex = if (self.eat(.equal) != null) blk: {
                 const prev_in_class_field = self.in_class_field;
                 self.in_class_field = true;
                 defer self.in_class_field = prev_in_class_field;
@@ -2719,12 +2736,16 @@ pub const Parser = struct {
                 return error.ParseError;
             }
 
+            const comp_prop_extra = try self.addExtra(ast.PropertyData, .{
+                .value = comp_value,
+                .type_annotation = computed_type_ann,
+            });
             return self.addNode(.{
                 .tag = .computed_property_def,
                 .main_token = computed_main_tok,
                 .data = .{
                     .lhs = key_expr,
-                    .rhs = value,
+                    .rhs = NodeIndex.fromInt(comp_prop_extra),
                 },
             });
         }
@@ -2842,13 +2863,28 @@ pub const Parser = struct {
             const method_return_type = try self.parseOptionalTypeAnnotation();
 
             // TS abstract/declare methods may have no body (semicolon instead).
-            // Emit as a property_def since there's no MethodData to store.
+            // Emit as method_def / constructor_def / getter_def / setter_def with body = .none.
             if (self.language.isTs() and self.peek() != .l_brace) {
                 _ = self.eat(.semicolon);
+                const no_body_extra = try self.addExtra(ast.MethodData, .{
+                    .params_start = params.start,
+                    .params_end = params.end,
+                    .body = .none,
+                    .return_type = method_return_type,
+                    .modifiers = packMemberModifiers(ts_mod_flags, is_static, is_async_method, is_generator_method),
+                });
+                const no_body_tag: Node.Tag = if (is_getter)
+                    .getter_def
+                else if (is_setter)
+                    .setter_def
+                else if (is_ctor)
+                    .constructor_def
+                else
+                    .method_def;
                 return self.addNode(.{
-                    .tag = .property_def,
+                    .tag = no_body_tag,
                     .main_token = main_tok,
-                    .data = .{ .lhs = key, .rhs = .none },
+                    .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(no_body_extra) },
                 });
             }
 
@@ -2879,14 +2915,10 @@ pub const Parser = struct {
             });
         }
 
-        // Skip TS type annotation on field: `name: Type` or `name!: Type`
-        if (self.language.isTs()) {
-            _ = self.eat(.bang); // definite assignment assertion
-            if (self.peek() == .colon) {
-                _ = self.advance(); // eat ':'
-                _ = try typescript.parseType(self);
-            }
-        }
+        // TS type annotation on field: `name: Type` or `name!: Type`
+        // Eat definite assignment assertion `!` first (standalone or before `:`).
+        if (self.language.isTs()) _ = self.eat(.bang);
+        const type_ann = try self.parseOptionalTypeAnnotation();
 
         // Property (field definition)
         const value: NodeIndex = if (self.eat(.equal) != null) blk: {
@@ -2902,12 +2934,16 @@ pub const Parser = struct {
             return error.ParseError;
         }
 
+        const prop_extra = try self.addExtra(ast.PropertyData, .{
+            .value = value,
+            .type_annotation = type_ann,
+        });
         return self.addNode(.{
             .tag = .property_def,
             .main_token = main_tok,
             .data = .{
                 .lhs = key,
-                .rhs = value,
+                .rhs = NodeIndex.fromInt(prop_extra),
             },
         });
     }
@@ -3041,8 +3077,12 @@ pub const Parser = struct {
             });
         }
 
-        // Skip TS parameter modifiers: public, private, protected, readonly, override
+        // TS parameter modifiers: public, private, protected, readonly, override
+        // If any access/readonly modifier is present, wrap the param in ts_parameter_property.
+        var param_prop_main_tok: ?TokenIndex = null;
         if (self.language.isTs()) {
+            const saved_tok = self.tok_i;
+            var first_mod_tok: ?TokenIndex = null;
             while (self.peek() == .identifier or self.peek() == .kw_readonly or
                 self.peek() == .kw_override)
             {
@@ -3057,7 +3097,13 @@ pub const Parser = struct {
                 if (next == .colon or next == .comma or next == .r_paren or
                     next == .equal or next == .question)
                     break;
+                if (first_mod_tok == null) first_mod_tok = self.tok_i;
                 _ = self.advance();
+            }
+            // Detect parameter property: modifier consumed AND next token is a binding identifier
+            // (not just a modifier used as a variable name like `readonly name`).
+            if (first_mod_tok != null and self.tok_i > saved_tok) {
+                param_prop_main_tok = first_mod_tok;
             }
         }
 
@@ -3080,21 +3126,25 @@ pub const Parser = struct {
         const main_tok = self.tok_i;
         const binding = try self.parseBindingPattern();
 
-        if (self.language.isTs()) _ = self.eat(.question);
+        const is_optional_ts = if (self.language.isTs()) (self.eat(.question) != null) else false;
         const param_type_annotation = try self.parseOptionalTypeAnnotation();
 
-        // Attach type annotation to identifier binding.
-        if (param_type_annotation != .none) {
-            const binding_tag = self.nodes.items(.tag)[binding.toInt()];
-            if (binding_tag == .identifier) {
+        // Attach type annotation and optional flag to identifier binding.
+        const binding_tag = self.nodes.items(.tag)[binding.toInt()];
+        if (binding_tag == .identifier) {
+            if (param_type_annotation != .none) {
                 self.nodes.items(.data)[binding.toInt()].rhs = param_type_annotation;
+            }
+            // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
+            if (is_optional_ts) {
+                self.nodes.items(.data)[binding.toInt()].lhs = .root;
             }
         }
 
         // Default value: `param = defaultExpr`
-        if (self.eat(.equal) != null) {
+        const inner_param: NodeIndex = if (self.eat(.equal) != null) blk: {
             const default_val = try self.parseAssignmentExpression();
-            return self.addNode(.{
+            break :blk try self.addNode(.{
                 .tag = .assignment_pattern,
                 .main_token = main_tok,
                 .data = .{
@@ -3102,9 +3152,18 @@ pub const Parser = struct {
                     .rhs = default_val,
                 },
             });
+        } else binding;
+
+        // Wrap in TSParameterProperty if access/readonly modifiers were present.
+        if (param_prop_main_tok) |mod_tok| {
+            return self.addNode(.{
+                .tag = .ts_parameter_property,
+                .main_token = mod_tok,
+                .data = .{ .lhs = inner_param, .rhs = .none },
+            });
         }
 
-        return binding;
+        return inner_param;
     }
 
     // ────────────────────────────────────────────────────────────

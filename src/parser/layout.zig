@@ -193,6 +193,9 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
 
         // ── Decorator ─────────────────────────────────────────
         .decorator => "Decorator",
+
+        // ── TypeScript Declare ─────────────────────────────────
+        .ts_declare_function => "TSDeclareFunction",
     };
 }
 

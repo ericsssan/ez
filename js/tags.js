@@ -239,6 +239,8 @@ const T = {
   ts_index_signature: 206,
   // Decorator node tag
   decorator: 207,
+  // TSDeclareFunction (added at end to preserve existing ordinals)
+  ts_declare_function: 208,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.

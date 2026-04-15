@@ -644,6 +644,37 @@ The honest target is **parity with Oxlint** on linting speed, with advantages in
 - **SIMD ergonomics** (stable, portable)
 - **Simpler codebase** (no lifetime annotations, no borrow checker workarounds)
 
+### 10. FAT Buffer: All Nodes in Zig
+
+**Decision**: Every AST node type — including nodes that ESTree requires but that don't map 1:1 to parser productions — must be a first-class node emitted by the Zig parser and stored in the buffer. No node synthesis in the JS adapter.
+
+#### Why FAT
+
+Early in the project, some ESTree-required nodes were synthesized lazily in the JS estree-adapter layer (e.g., `FunctionExpression` as a synthetic wrapper around method data, `ChainExpression` as a wrapper around optional-chain nodes). This was called the "lean buffer" approach: keep the Zig buffer minimal, reconstruct derived nodes in JS on demand.
+
+The lean approach collapses for two reasons:
+
+1. **Native rules need these nodes too.** Native Zig rules (no-unused-vars, no-unreachable-loop, CFG-based rules, etc.) traverse the same node types that ESLint JS rules traverse. If `FunctionExpression` is synthetic JS, native rules can't see it. Every synthetic node is a correctness gap in the native rule tier.
+
+2. **Synthesis in JS breaks the zero-copy contract.** The zero-copy mechanism only works because JS reads directly from the Zig-owned buffer. Synthesizing nodes in JS means allocating GC objects that aren't in the buffer — defeating the performance model for plugins that access those nodes.
+
+#### Node Types Moving to Zig (FAT buffer targets)
+
+| Node type | Current state | Why needed in Zig |
+|---|---|---|
+| `FunctionExpression` | Synthesized in JS from method extra data | Every function-scope rule traverses it; CFG is built on it |
+| `ChainExpression` | Synthesized in JS from optional-chain nodes | `no-unsafe-optional-chaining`, type-aware rules |
+| `TSLiteralType` | Synthesized in JS wrapper | TypeScript literal type rules |
+| Enum body nodes | Synthesized in JS | `@typescript-eslint/enum-*` rules |
+| Decorator nodes | Synthesized in JS | `@typescript-eslint/parameter-properties` and decorator rules |
+| Literal variants (`RegExpLiteral`, `BigIntLiteral`, `NullLiteral`, `BooleanLiteral`) | Synthesized in JS getter | Native rules check literal types directly |
+
+#### Principle
+
+> If a native Zig rule needs to visit a node, that node must be in the buffer. The estree-adapter is a **read-only translation layer** — it maps buffer nodes to ESTree property names. It does no computation, no synthesis, no allocation.
+
+This principle is already enforced: the estree-adapter has no write path and accumulates no state per-parse. The FAT buffer work extends it by eliminating the remaining synthesis gaps.
+
 ## ESLint Rule Compatibility Strategy
 
 Phase 1: Implement the most impactful rules first, matching Oxlint's categories:

@@ -364,7 +364,7 @@ pub const Node = struct {
         // ── Class Members ──────────────────────────────────────
         /// method(params) { body }. lhs = key, rhs = extra index to MethodData
         method_def,
-        /// prop = value. lhs = key, rhs = value (or none)
+        /// prop = value. lhs = key, rhs = extra index to PropertyData
         property_def,
         /// static { ... }. lhs = extra index to SubRange of statements
         static_block,
@@ -376,7 +376,7 @@ pub const Node = struct {
         constructor_def,
         /// [expr]() { body }. lhs = computed key expr, rhs = extra index to MethodData
         computed_method_def,
-        /// [expr] = value. lhs = computed key expr, rhs = value (or none)
+        /// [expr] = value. lhs = computed key expr, rhs = extra index to PropertyData
         computed_property_def,
         /// get [expr]() { body }.
         computed_getter_def,
@@ -510,12 +510,11 @@ pub const Node = struct {
 
         // ── TypeScript interface member kinds ─────────────────────
         // Distinct tags eliminate JS-side type detection via charCode checks.
-        // Data layout: same as ts_type_annotation (lhs = name/param, rhs = return/value type).
-        /// Call signature: (): ReturnType. lhs = .none, rhs = return type (or .none)
+        /// Call signature: (): ReturnType. lhs = extra index to InterfaceSigData (key=.none)
         ts_call_signature,
-        /// Construct signature: new(): ReturnType. lhs = .none, rhs = return type (or .none)
+        /// Construct signature: new(): ReturnType. lhs = extra index to InterfaceSigData (key=.none)
         ts_construct_signature,
-        /// Method signature: name(): ReturnType. lhs = name node, rhs = return type (or .none)
+        /// Method signature: name(): ReturnType. lhs = extra index to InterfaceSigData
         ts_method_signature,
         /// Property signature: name: Type. lhs = name node, rhs = type annotation (or .none)
         ts_property_signature,
@@ -524,6 +523,8 @@ pub const Node = struct {
 
         /// Decorator: @expression. main_token = @ token, lhs = expression node
         decorator,
+        /// declare function / overload signature (no body). lhs = extra index to FnData
+        ts_declare_function,
     };
 };
 
@@ -586,6 +587,8 @@ pub const FnData = struct {
     params_end: ExtraIndex, // SubRange end
     body: NodeIndex,
     return_type: NodeIndex = .none, // .none if no return type annotation
+    type_params: ExtraIndex = 0, // SubRange start into extra_data for type parameters
+    type_params_end: ExtraIndex = 0, // SubRange end (equal means no type params)
 };
 
 /// class name extends super { body }
@@ -595,6 +598,8 @@ pub const ClassData = struct {
     body: NodeIndex, // class_body node (contains members as SubRange lhs..rhs)
     impls_start: ExtraIndex = 0, // SubRange start into extra_data; each entry = TokenIndex (main_token) of ts_type_reference
     impls_end: ExtraIndex = 0,   // SubRange end (impls_start == impls_end means no implements clause)
+    type_params: ExtraIndex = 0, // SubRange start for type parameters
+    type_params_end: ExtraIndex = 0, // SubRange end (equal means no type params)
 };
 
 /// (params) => body
@@ -627,6 +632,18 @@ pub const MethodData = struct {
     modifiers: u32 = 0, // packed ModifierBit flags
 };
 
+/// Interface member signature data: call/construct/method signatures.
+/// ts_call_signature / ts_construct_signature: key = .none.
+/// ts_method_signature: key = name node.
+pub const InterfaceSigData = struct {
+    key: NodeIndex = .none,
+    params_start: ExtraIndex = 0,
+    params_end: ExtraIndex = 0,
+    return_type: NodeIndex = .none,
+    /// 0=method, 1=get, 2=set
+    kind: u32 = 0,
+};
+
 // ── TypeScript ExtraData structs ────────────────────────────
 
 /// interface Name<T> extends A, B { members }
@@ -653,6 +670,13 @@ pub const TypeAliasData = struct {
     type_params: u32, // SubRange start of type params (0 if none)
     type_params_end: u32, // SubRange end
     type_node: NodeIndex, // the aliased type
+};
+
+/// PropertyDefinition (class field). lhs = key, rhs = extra index to PropertyData.
+/// Covers both property_def (computed_property_def uses the same layout).
+pub const PropertyData = struct {
+    value: NodeIndex = .none,          // initializer expression (or .none)
+    type_annotation: NodeIndex = .none, // TSTypeAnnotation node (or .none)
 };
 
 /// <tag attrs>children</tag>

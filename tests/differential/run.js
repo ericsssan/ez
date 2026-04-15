@@ -975,6 +975,7 @@ const baseline = loadBaseline();
 const newBaseline = { files: {}, corpus: {} };
 
 let anyRegression = false;
+const regressedRules = [];
 const _startTime = Date.now();
 
 // ── Source 1: Fixture files — all 3 backends ──────────────────
@@ -1298,7 +1299,13 @@ if (!fixturesOnly && fs.existsSync(ESLINT_ROOT)) {
                        (nativeAvailable && (nativeFn > 0 || nativeFp > 0));
     }
 
-    if (ruleRegression) anyRegression = true;
+    if (ruleRegression) {
+      anyRegression = true;
+      const deltaFn   = baseRunner ? fn   - baseRunner.fn   : fn;
+      const deltaFp   = baseRunner ? fp   - baseRunner.fp   : fp;
+      const deltaCr   = baseRunner ? crash - baseRunner.crash : crash;
+      regressedRules.push({ rule: ruleName, deltaFn, deltaFp, deltaCr });
+    }
 
     const allClean = (fn + fp + crash) === 0 &&
                      (!nativeAvailable || (nativeFn + nativeFp + nativeCrash) === 0);
@@ -1411,7 +1418,15 @@ if (saveBaseline) {
   fs.writeFileSync(BASELINE_FILE, JSON.stringify(newBaseline, null, 2));
   console.log(`Baseline saved → ${path.relative(path.resolve(__dirname, "../.."), BASELINE_FILE)}`);
 } else if (anyRegression) {
-  console.log("Regressions detected. Run with --save-baseline to update baseline after intentional changes.");
+  console.log("Regressions detected:");
+  for (const r of regressedRules) {
+    const parts = [];
+    if (r.deltaFn > 0) parts.push(`+${r.deltaFn} FN`);
+    if (r.deltaFp > 0) parts.push(`+${r.deltaFp} FP`);
+    if (r.deltaCr > 0) parts.push(`+${r.deltaCr} crash`);
+    console.log(`  ${r.rule}: ${parts.join(", ")}`);
+  }
+  console.log("Run with --save-baseline to update baseline after intentional changes.");
   process.exit(1);
 } else {
   console.log("No regressions.");

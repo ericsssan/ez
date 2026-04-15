@@ -51,16 +51,38 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
         }
         // Check for `x is Type` — only if next token after identifier is `is` on same line
         if (p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
+            const param_tok = p.tok_i;
             _ = p.advance(); // eat param name
             _ = p.advance(); // eat 'is'
-            return try parseType(p);
+            const type_node = try parseType(p);
+            const param_name = try p.addNode(.{
+                .tag = .identifier,
+                .main_token = param_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+            return p.addNode(.{
+                .tag = .ts_type_predicate,
+                .main_token = param_tok,
+                .data = .{ .lhs = param_name, .rhs = type_node },
+            });
         }
     }
     // `this is Type` predicate — only on same line
     if (p.peek() == .kw_this and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
+        const param_tok = p.tok_i;
         _ = p.advance(); // eat 'this'
         _ = p.advance(); // eat 'is'
-        return try parseType(p);
+        const type_node = try parseType(p);
+        const param_name = try p.addNode(.{
+            .tag = .this_expr,
+            .main_token = param_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
+        return p.addNode(.{
+            .tag = .ts_type_predicate,
+            .main_token = param_tok,
+            .data = .{ .lhs = param_name, .rhs = type_node },
+        });
     }
 
     var result = try parseNonConditionalType(p);
@@ -393,7 +415,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
             // Parse the type that follows — readonly applies to it
             const inner = try parsePrimaryType(p);
             return p.addNode(.{
-                .tag = .ts_type_reference,
+                .tag = .ts_keyof_type,  // TSTypeOperator(operator='readonly')
                 .main_token = tok,
                 .data = .{ .lhs = inner, .rhs = .none },
             });
@@ -553,6 +575,7 @@ fn parseParenthesizedOrFunctionType(p: *Parser) Error!NodeIndex {
             .params = params_range.start,
             .params_end = params_range.end,
             .body = return_type,
+            // No type params for empty-paren form
         });
         return p.addNode(.{
             .tag = .ts_function_type,
@@ -674,11 +697,17 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
         if (p.peek() == .ellipsis) {
             const rest_tok = p.advance(); // consume `...`
             const param_name = try p.parseIdentifier();
-            // Optional type annotation
+            // Optional type annotation — wrap in ts_type_annotation for consistent parent chain
             var type_ann: NodeIndex = .none;
             if (p.peek() == .colon) {
+                const colon_tok = p.tok_i;
                 _ = p.advance();
-                type_ann = try parseType(p);
+                const inner_type = try parseType(p);
+                type_ann = try p.addNode(.{
+                    .tag = .ts_type_annotation,
+                    .main_token = colon_tok,
+                    .data = .{ .lhs = inner_type, .rhs = .none },
+                });
             }
             const rest_node = try p.addNode(.{
                 .tag = .rest_element,
@@ -727,8 +756,8 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
 fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
     const param_tok = p.tok_i;
 
-    // Rest parameter: `...args: Type`
-    _ = p.eat(.ellipsis);
+    // Rest parameter: `...args: Type` — emit rest_element for correct parent chain
+    const is_rest = p.eat(.ellipsis) != null;
 
     // Skip access modifiers: `public`, `private`, `protected`, `readonly`
     if (p.peek() == .identifier) {
@@ -743,68 +772,111 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
 
     // Destructuring parameter: `[a, b]: Type` or `{p, m}: Type`
     if (p.peek() == .l_bracket or p.peek() == .l_brace) {
-        _ = try p.parseBindingPattern();
+        const binding = try p.parseBindingPattern();
         _ = p.eat(.question);
+        var type_ann: NodeIndex = .none;
         if (p.peek() == .colon) {
+            const colon_tok = p.tok_i;
             _ = p.advance();
             const type_node = try parseType(p);
             if (p.peek() == .equal) {
                 _ = p.advance();
                 _ = try p.parseAssignmentExpression();
             }
-            return p.addNode(.{
+            type_ann = try p.addNode(.{
                 .tag = .ts_type_annotation,
-                .main_token = param_tok,
+                .main_token = colon_tok,
                 .data = .{ .lhs = type_node, .rhs = .none },
             });
         }
-        return p.addNode(.{
+        const inner = try p.addNode(.{
             .tag = .ts_type_annotation,
             .main_token = param_tok,
-            .data = .{ .lhs = .none, .rhs = .none },
+            .data = .{ .lhs = type_ann, .rhs = .none },
         });
+        if (is_rest) {
+            return p.addNode(.{
+                .tag = .rest_element,
+                .main_token = param_tok,
+                .data = .{ .lhs = binding, .rhs = type_ann },
+            });
+        }
+        return inner;
     }
 
     // Consume parameter name (identifier or keyword like `this`)
     if (p.peek() == .identifier or p.peek() == .kw_this or p.peek().isKeyword()) {
+        const name_tok = p.tok_i;
         _ = p.advance();
-    } else {
-        // Could be a bare type — fall back
-        return parseType(p);
-    }
 
-    // Optional marker `?`
-    _ = p.eat(.question);
+        // Optional marker `?`; encode as lhs=root (0) vs lhs=none for adapter.
+        const is_optional = p.eat(.question) != null;
+        const opt_flag: @import("ast.zig").NodeIndex = if (is_optional) .root else .none;
 
-    // Expect `:` for type annotation
-    if (p.peek() == .colon) {
-        _ = p.advance(); // consume `:`
-        const type_node = try parseType(p);
-        // Skip default value: `param: Type = value` (semantic error in TS, but parseable)
+        // Expect `:` for type annotation
+        if (p.peek() == .colon) {
+            const colon_tok = p.tok_i;
+            _ = p.advance(); // consume `:`
+            const type_node = try parseType(p);
+            // Skip default value: `param: Type = value` (semantic error in TS, but parseable)
+            if (p.peek() == .equal) {
+                _ = p.advance();
+                _ = try p.parseAssignmentExpression();
+            }
+            const type_ann = try p.addNode(.{
+                .tag = .ts_type_annotation,
+                .main_token = colon_tok,
+                .data = .{ .lhs = type_node, .rhs = .none },
+            });
+            if (is_rest) {
+                const name_node = try p.addNode(.{
+                    .tag = .identifier,
+                    .main_token = name_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+                return p.addNode(.{
+                    .tag = .rest_element,
+                    .main_token = param_tok,
+                    .data = .{ .lhs = name_node, .rhs = type_ann },
+                });
+            }
+            // Return identifier node; lhs=opt_flag, rhs=type_ann for adapter.
+            return p.addNode(.{
+                .tag = .identifier,
+                .main_token = name_tok,
+                .data = .{ .lhs = opt_flag, .rhs = type_ann },
+            });
+        }
+
+        // Skip default value without type: `param = value` (semantic error in TS, but parseable)
         if (p.peek() == .equal) {
             _ = p.advance();
             _ = try p.parseAssignmentExpression();
         }
+
+        // No colon — bare identifier parameter (possibly rest)
+        if (is_rest) {
+            const name_node = try p.addNode(.{
+                .tag = .identifier,
+                .main_token = name_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+            return p.addNode(.{
+                .tag = .rest_element,
+                .main_token = param_tok,
+                .data = .{ .lhs = name_node, .rhs = .none },
+            });
+        }
+        // Bare identifier param; lhs=opt_flag, rhs=none.
         return p.addNode(.{
-            .tag = .ts_type_annotation,
-            .main_token = param_tok,
-            .data = .{ .lhs = type_node, .rhs = .none },
+            .tag = .identifier,
+            .main_token = name_tok,
+            .data = .{ .lhs = opt_flag, .rhs = .none },
         });
+    } else {
+        // Could be a bare type — fall back (rest doesn't apply here)
+        return parseType(p);
     }
-
-    // Skip default value without type: `param = value` (semantic error in TS, but parseable)
-    if (p.peek() == .equal) {
-        _ = p.advance();
-        _ = try p.parseAssignmentExpression();
-    }
-
-    // No colon — the "parameter" might actually just be a type.
-    // Create a type annotation node referencing the token.
-    return p.addNode(.{
-        .tag = .ts_type_annotation,
-        .main_token = param_tok,
-        .data = .{ .lhs = .none, .rhs = .none },
-    });
 }
 
 // =====================================================================
@@ -1542,6 +1614,21 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
         }
     }
 
+    // ── Getter/setter accessor: `get name(...)` or `set name(...)` ──
+    // `get` and `set` are kw_get/kw_set tokens. Detect them when followed by a member
+    // name token (not `(` `<` `:` `?` `;` `}` — those mean "get"/"set" IS the member name).
+    var method_kind: u32 = 0; // 0=method, 1=get, 2=set
+    if ((p.peek() == .kw_get or p.peek() == .kw_set) and !p.isOnNewLineAt(1)) {
+        const next1 = p.peekAt(1);
+        if (next1 != .l_paren and next1 != .less_than and next1 != .colon and
+            next1 != .question and next1 != .semicolon and next1 != .r_brace and
+            next1 != .comma and next1 != .eof)
+        {
+            method_kind = if (p.peek() == .kw_get) 1 else 2;
+            _ = p.advance(); // consume "get"/"set"
+        }
+    }
+
     // ── Call signature: `(params): ReturnType;` or `<T>(params): ReturnType;`
     if (p.peek() == .l_paren or p.peek() == .less_than) {
         return parseCallOrConstructSignature(p, member_tok, false);
@@ -1634,10 +1721,19 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
 
         consumeMemberSeparator(p);
 
+        const params_slice = p.scratchSlice(scratch_top);
+        const params_range = try p.addSlice(params_slice);
+        const sig_extra = try p.addExtra(ast.InterfaceSigData, .{
+            .key = name_node,
+            .params_start = params_range.start,
+            .params_end = params_range.end,
+            .return_type = return_type,
+            .kind = method_kind,
+        });
         return p.addNode(.{
             .tag = .ts_method_signature,
             .main_token = member_tok,
-            .data = .{ .lhs = name_node, .rhs = return_type },
+            .data = .{ .lhs = ast.NodeIndex.fromInt(sig_extra), .rhs = .none },
         });
     }
 
@@ -1687,11 +1783,19 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex, is_construc
 
     consumeMemberSeparator(p);
 
+    const params_slice = p.scratchSlice(scratch_top);
+    const params_range = try p.addSlice(params_slice);
+    const sig_extra = try p.addExtra(ast.InterfaceSigData, .{
+        .key = .none,
+        .params_start = params_range.start,
+        .params_end = params_range.end,
+        .return_type = return_type,
+    });
     const sig_tag: @import("ast.zig").Node.Tag = if (is_construct) .ts_construct_signature else .ts_call_signature;
     return p.addNode(.{
         .tag = sig_tag,
         .main_token = member_tok,
-        .data = .{ .lhs = .none, .rhs = return_type },
+        .data = .{ .lhs = ast.NodeIndex.fromInt(sig_extra), .rhs = .none },
     });
 }
 

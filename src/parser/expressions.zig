@@ -1020,7 +1020,7 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     defer p.in_async = saved_async;
     defer p.in_generator = saved_gen;
 
-    _ = try p.parseOptionalTypeParameters();
+    const async_fn_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
     const async_fn_expr_return_type = try p.parseOptionalTypeAnnotation();
 
@@ -1044,6 +1044,8 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
         .params_end = params_range.end,
         .body = body,
         .return_type = async_fn_expr_return_type,
+        .type_params = async_fn_type_params.start,
+        .type_params_end = async_fn_type_params.end,
     });
     return p.addNode(.{
         .tag = fn_tag,
@@ -1903,6 +1905,7 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
         .params_start = params_range.start,
         .params_end = params_range.end,
         .body = body,
+        .modifiers = ast.ModifierBit.@"async" | (if (is_generator) ast.ModifierBit.generator else 0),
     });
     return p.addNode(.{
         .tag = if (is_computed) .computed_method_def else .method_def,
@@ -1938,6 +1941,7 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
         .params_start = params_range.start,
         .params_end = params_range.end,
         .body = body,
+        .modifiers = ast.ModifierBit.generator,
     });
     return p.addNode(.{
         .tag = if (is_computed) .computed_method_def else .method_def,
@@ -2007,20 +2011,22 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         _ = p.advance();
         const value = try parseAssignmentExpression(p);
         _ = p.eat(.semicolon);
+        const comp_extra = try p.addExtra(ast.PropertyData, .{ .value = value, .type_annotation = .none });
         return p.addNode(.{
             .tag = .computed_property_def,
             .main_token = open,
-            .data = .{ .lhs = key_expr, .rhs = value },
+            .data = .{ .lhs = key_expr, .rhs = NodeIndex.fromInt(comp_extra) },
         });
     }
 
     // Computed field without initializer (class body)
     if (p.in_class) {
         _ = p.eat(.semicolon);
+        const comp_extra_empty = try p.addExtra(ast.PropertyData, .{});
         return p.addNode(.{
             .tag = .computed_property_def,
             .main_token = open,
-            .data = .{ .lhs = key_expr, .rhs = .none },
+            .data = .{ .lhs = key_expr, .rhs = NodeIndex.fromInt(comp_extra_empty) },
         });
     }
 
@@ -2248,7 +2254,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
 
-    _ = try p.parseOptionalTypeParameters();
+    const fn_expr_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
     const fn_expr_return_type = try p.parseOptionalTypeAnnotation();
 
@@ -2272,6 +2278,8 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
         .params_end = params_range.end,
         .body = body,
         .return_type = fn_expr_return_type,
+        .type_params = fn_expr_type_params.start,
+        .type_params_end = fn_expr_type_params.end,
     });
     return p.addNode(.{
         .tag = fn_tag,
@@ -2301,10 +2309,10 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     } else .none;
 
     // TS type parameters: class<T> or class Foo<T, U>
-    if (p.language.isTs() and p.peek() == .less_than) {
+    const class_expr_type_params: ast.SubRange = if (p.language.isTs() and p.peek() == .less_than) blk: {
         const ts_mod = @import("typescript.zig");
-        _ = try ts_mod.parseTypeParameterList(p);
-    }
+        break :blk try ts_mod.parseTypeParameterList(p);
+    } else .{ .start = 0, .end = 0 };
 
     // Optional extends.
     const super_node: NodeIndex = if (p.eat(.kw_extends)) |_| blk: {
@@ -2397,6 +2405,8 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         .name = name_node,
         .super_class = super_node,
         .body = class_body_node,
+        .type_params = class_expr_type_params.start,
+        .type_params_end = class_expr_type_params.end,
     });
     return p.addNode(.{
         .tag = .class_expr,
@@ -2525,12 +2535,17 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         defer p.in_method = saved_method_m;
         defer p.in_constructor = saved_ctor;
         const params_range = try parseFormalParameters(p);
-        _ = try p.parseOptionalTypeAnnotation(); // TS return type
-        const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
+        const method_return_type = try p.parseOptionalTypeAnnotation(); // TS return type
+        // TS: method overload signature has no body (ends with `;` or newline).
+        const body = if (p.language.isTs() and p.peek() != .l_brace) blk: {
+            _ = p.eat(.semicolon);
+            break :blk ast.NodeIndex.none;
+        } else try parseBlockBodyWithStrictChecks(p, params_range, .none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
             .params_end = params_range.end,
             .body = body,
+            .return_type = method_return_type,
         });
         // Check if constructor
         const node_tag: Node.Tag = if (is_ctor) .constructor_def else .method_def;
@@ -2550,10 +2565,11 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
             try p.emitError("Expected ';' after class field definition");
             return error.ParseError;
         }
+        const prop_extra = try p.addExtra(ast.PropertyData, .{ .value = value, .type_annotation = .none });
         return p.addNode(.{
             .tag = .property_def,
             .main_token = main_tok,
-            .data = .{ .lhs = key, .rhs = value },
+            .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(prop_extra) },
         });
     }
 
@@ -2570,10 +2586,11 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         try p.emitError("Expected ';' after class field definition");
         return error.ParseError;
     }
+    const prop_extra_empty = try p.addExtra(ast.PropertyData, .{});
     return p.addNode(.{
         .tag = .property_def,
         .main_token = main_tok,
-        .data = .{ .lhs = key, .rhs = .none },
+        .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(prop_extra_empty) },
     });
 }
 
@@ -3562,11 +3579,11 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
     if (p.peek() == .ellipsis) {
         const tok = p.advance();
         const arg = try parseBindingPattern(p);
-        _ = try p.parseOptionalTypeAnnotation();
+        const type_ann = try p.parseOptionalTypeAnnotation();
         return p.addNode(.{
             .tag = .rest_element,
             .main_token = tok,
-            .data = .{ .lhs = arg, .rhs = .none },
+            .data = .{ .lhs = arg, .rhs = type_ann },
         });
     }
 
@@ -3591,7 +3608,11 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
     }
 
     // TS parameter modifiers: public, private, protected, readonly, override
+    // If any access/readonly modifier is present, wrap the param in ts_parameter_property.
+    var param_prop_main_tok: ?ast.TokenIndex = null;
     if (p.language.isTs()) {
+        const saved_tok = p.tok_i;
+        var first_mod_tok: ?ast.TokenIndex = null;
         while (p.peek() == .identifier or p.peek() == .kw_readonly or
             p.peek() == .kw_override or p.peek() == .kw_declare)
         {
@@ -3606,7 +3627,11 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
             if (next == .colon or next == .comma or next == .r_paren or
                 next == .equal or next == .question)
                 break;
-            _ = p.advance(); // skip modifier
+            if (first_mod_tok == null) first_mod_tok = p.tok_i;
+            _ = p.advance();
+        }
+        if (first_mod_tok != null and p.tok_i > saved_tok) {
+            param_prop_main_tok = first_mod_tok;
         }
     }
 
@@ -3626,12 +3651,22 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         }
     }
 
+    const binding_main_tok = p.tok_i;
     var node = try parseBindingPattern(p);
 
     // TS optional parameter marker and type annotation
     if (p.language.isTs()) {
         _ = p.eat(.question);
-        _ = try p.parseOptionalTypeAnnotation();
+        const type_ann = try p.parseOptionalTypeAnnotation();
+        // Attach type annotation to identifier binding so typeAnnotation getter works.
+        // Skip if wrapped in TSParameterProperty — jsdocUtils path diverges for that case
+        // and the proto-deletion fix handles it correctly without the attachment.
+        if (type_ann != .none and param_prop_main_tok == null) {
+            const node_tag = p.nodes.items(.tag)[node.toInt()];
+            if (node_tag == .identifier) {
+                p.nodes.items(.data)[node.toInt()].rhs = type_ann;
+            }
+        }
     }
 
     // Default initializer
@@ -3645,6 +3680,17 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         });
     }
 
+    // Wrap in TSParameterProperty if access/readonly modifiers were present.
+    if (param_prop_main_tok) |mod_tok| {
+        _ = binding_main_tok; // suppress unused warning
+        return p.addNode(.{
+            .tag = .ts_parameter_property,
+            .main_token = mod_tok,
+            .data = .{ .lhs = node, .rhs = .none },
+        });
+    }
+
+    _ = binding_main_tok;
     return node;
 }
 

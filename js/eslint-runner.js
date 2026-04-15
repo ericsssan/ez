@@ -5354,6 +5354,29 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const hasFragSynth = jsxOpeningFragH !== null || jsxOpeningFragExH !== null ||
                        jsxClosingFragH !== null || jsxClosingFragExH !== null;
   if (hasFragSynth && T.jsx_fragment < relevantTag.length) relevantTag[T.jsx_fragment] = 1;
+  // TSInterfaceBody synthesis (early setup for relevantTag marking — also used in DFS loop).
+  // TSInterfaceBody is a synthetic wrapper; fire enter/exit around ts_interface_decl traversal.
+  const _tsInterfaceDeclTagNumE = tagNames.indexOf('TSInterfaceDeclaration');
+  const _tsInterfaceBodyEnterHE = visitorMap.get('TSInterfaceBody') || null;
+  const _tsInterfaceBodyExitHE  = visitorMap.get('TSInterfaceBody:exit') || null;
+  const _hasTsInterfaceBodySynthE = _tsInterfaceDeclTagNumE >= 0 && (_tsInterfaceBodyEnterHE || _tsInterfaceBodyExitHE);
+  if (_hasTsInterfaceBodySynthE && _tsInterfaceDeclTagNumE < relevantTag.length) {
+    relevantTag[_tsInterfaceDeclTagNumE] = 1;
+  }
+  // TS keyword type remap: TSTypeReference nodes may dispatch as TSAnyKeyword etc.
+  // Mark TSTypeReference relevant if any keyword or literal type visitor is registered so pruning
+  // doesn't skip the node before _resolveHandlers gets a chance to remap.
+  {
+    const _kwNames = ['TSAnyKeyword','TSBigIntKeyword','TSBooleanKeyword','TSIntrinsicKeyword',
+      'TSNeverKeyword','TSNullKeyword','TSNumberKeyword','TSObjectKeyword',
+      'TSStringKeyword','TSSymbolKeyword','TSThisType','TSUndefinedKeyword',
+      'TSUnknownKeyword','TSVoidKeyword','TSLiteralType'];
+    let _hasKw = false;
+    for (const kw of _kwNames) {
+      if (visitorMap.has(kw) || visitorMap.has(kw + ':exit')) { _hasKw = true; break; }
+    }
+    if (_hasKw && T.ts_type_reference < relevantTag.length) relevantTag[T.ts_type_reference] = 1;
+  }
   const subtreeRelevant = new Uint8Array(ast.nodeCount);
   let _relevantCount = 0;
   for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
@@ -5491,6 +5514,29 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _tsImportEqualsExitH  = _importDeclTagNum >= 0 ? (visitorMap.get('TSImportEqualsDeclaration:exit') || null) : null;
   const _hasTsImportEqualsRemap = _importDeclTagNum >= 0 && (_tsImportEqualsEnterH || _tsImportEqualsExitH);
 
+  // TS keyword type remap: TSTypeReference may resolve to TSAnyKeyword etc. at runtime.
+  // Build maps from keyword type name → handlers so _resolveHandlers can dispatch correctly.
+  const _tsTypeRefTagNum = tagNames.indexOf('TSTypeReference');
+  const _tsKwEnterMap = new Map();
+  const _tsKwExitMap  = new Map();
+  if (_tsTypeRefTagNum >= 0) {
+    const _kwNames = ['TSAnyKeyword','TSBigIntKeyword','TSBooleanKeyword','TSIntrinsicKeyword',
+      'TSNeverKeyword','TSNullKeyword','TSNumberKeyword','TSObjectKeyword',
+      'TSStringKeyword','TSSymbolKeyword','TSThisType','TSUndefinedKeyword',
+      'TSUnknownKeyword','TSVoidKeyword','TSLiteralType'];
+    for (const kw of _kwNames) {
+      const eh = visitorMap.get(kw);       if (eh) _tsKwEnterMap.set(kw, eh);
+      const xh = visitorMap.get(kw + ':exit'); if (xh) _tsKwExitMap.set(kw, xh);
+    }
+  }
+  const _hasTsKwRemap = _tsTypeRefTagNum >= 0 && (_tsKwEnterMap.size > 0 || _tsKwExitMap.size > 0);
+
+  // Aliases for DFS loop (the early-setup vars have "E" suffix; use shorter names here)
+  const _tsInterfaceDeclTagNum = _tsInterfaceDeclTagNumE;
+  const _tsInterfaceBodyEnterH = _tsInterfaceBodyEnterHE;
+  const _tsInterfaceBodyExitH  = _tsInterfaceBodyExitHE;
+  const _hasTsInterfaceBodySynth = _hasTsInterfaceBodySynthE;
+
   /** Resolve actual enter/exit handlers accounting for MethodDef-in-object-literal and
    *  import_decl → TSImportEqualsDeclaration remaps. */
   function _resolveHandlers(handlersArr, tag, idx) {
@@ -5504,6 +5550,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // TSImportEqualsDeclaration: lhs=NONE, rhs!=NONE
       if (ast.nodeLhs(idx) === NONE && ast.nodeRhs(idx) !== NONE) {
         return handlersArr === tagEnterHandlers ? _tsImportEqualsEnterH : _tsImportEqualsExitH;
+      }
+    }
+    if (_hasTsKwRemap && tag === _tsTypeRefTagNum && ast.nodeRhs(idx) === NONE) {
+      const eff = effectiveTypeName(ast, idx, 'TSTypeReference');
+      if (eff !== 'TSTypeReference') {
+        const map = handlersArr === tagEnterHandlers ? _tsKwEnterMap : _tsKwExitMap;
+        return map.get(eff) || null;
       }
     }
     return handlersArr[tag];
@@ -5526,7 +5579,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
   const _needsShorthandSynth = needsLabelSynthOpt; // true when Identifier visitors exist
-  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth) ? new Uint8Array(tagNames.length) : null;
+  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth || _hasTsInterfaceBodySynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
@@ -5547,6 +5600,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // JSXFragment synthesis needs jsx_fragment tag
     if (hasFragSynth && T.jsx_fragment < _synthTagArr.length) {
       _synthTagArr[T.jsx_fragment] = 1;
+    }
+    // TSInterfaceBody synthesis needs ts_interface_decl tag
+    if (_hasTsInterfaceBodySynth && _tsInterfaceDeclTagNum >= 0 && _tsInterfaceDeclTagNum < _synthTagArr.length) {
+      _synthTagArr[_tsInterfaceDeclTagNum] = 1;
     }
   }
 
@@ -5605,6 +5662,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           if (!_openFrag.parent) _openFrag.parent = _fragNode;
           if (jsxOpeningFragH)  _invokeFused(jsxOpeningFragH,  _openFrag, idx, context);
           if (jsxOpeningFragExH) _invokeFused(jsxOpeningFragExH, _openFrag, idx, context);
+        }
+      }
+      // Synthesize TSInterfaceBody enter for TSInterfaceDeclaration nodes.
+      // TSInterfaceBody is a synthetic wrapper not in the DFS buffer; fire its enter handler
+      // immediately after the TSInterfaceDeclaration enter, before any member DFS visits.
+      if (_hasTsInterfaceBodySynth && tag === _tsInterfaceDeclTagNum) {
+        const _ifaceNode = nodeView(ast, idx);
+        const _ifaceBody = _ifaceNode.body;
+        if (_ifaceBody && _tsInterfaceBodyEnterH) {
+          if (!_ifaceBody.parent) _ifaceBody.parent = _ifaceNode;
+          _invokeFused(_tsInterfaceBodyEnterH, _ifaceBody, idx, context);
         }
       }
       // Synthesize Identifier visits for synthetic label children (optimized path).
@@ -5775,6 +5843,15 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           if (!_closeFrag.parent) _closeFrag.parent = _fragNode2;
           if (jsxClosingFragH)  _invokeFused(jsxClosingFragH,  _closeFrag, idx, context);
           if (jsxClosingFragExH) _invokeFused(jsxClosingFragExH, _closeFrag, idx, context);
+        }
+      }
+      // Synthesize TSInterfaceBody exit for TSInterfaceDeclaration nodes.
+      // Fires after all member DFS exits, before TSInterfaceDeclaration exits.
+      if (_hasTsInterfaceBodySynth && tag === _tsInterfaceDeclTagNum) {
+        const _ifaceNode2 = nodeView(ast, idx);
+        const _ifaceBody2 = _ifaceNode2._body; // use cached value to avoid recompute
+        if (_ifaceBody2 && _tsInterfaceBodyExitH) {
+          _invokeFused(_tsInterfaceBodyExitH, _ifaceBody2, idx, context);
         }
       }
       // Synthesize Identifier:exit for synthetic label children.

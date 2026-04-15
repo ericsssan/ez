@@ -32,6 +32,7 @@ const ArrowData = @import("ast.zig").ArrowData;
 const Conditional = @import("ast.zig").Conditional;
 const ImportData = @import("ast.zig").ImportData;
 const MethodData = @import("ast.zig").MethodData;
+const PropertyData = @import("ast.zig").PropertyData;
 const InterfaceData = @import("ast.zig").InterfaceData;
 const EnumData = @import("ast.zig").EnumData;
 const JsxElementData = @import("ast.zig").JsxElementData;
@@ -202,7 +203,8 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             try dumpNode(tree, data.lhs, child_indent, writer);
             try dumpNode(tree, data.rhs, child_indent, writer);
         },
-        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => {
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+        .ts_declare_function => {
             // lhs = extra index to FnData
             const fn_data = tree.extraData(FnData, @intFromEnum(data.lhs));
             try dumpNode(tree, fn_data.name, child_indent, writer);
@@ -529,9 +531,11 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             try dumpNode(tree, method.body, child_indent, writer);
         },
         .property_def, .computed_property_def => {
-            // lhs = key, rhs = value (or none)
+            // lhs = key, rhs = PropertyData extra index
             try dumpNode(tree, data.lhs, child_indent, writer);
-            try dumpNode(tree, data.rhs, child_indent, writer);
+            const prop = tree.extraData(PropertyData, @intFromEnum(data.rhs));
+            try dumpNode(tree, prop.value, child_indent, writer);
+            try dumpNode(tree, prop.type_annotation, child_indent, writer);
         },
         .static_block => {
             // lhs = range.start, rhs = range.end (direct SubRange encoding)
@@ -659,12 +663,18 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
         },
 
         // ── TypeScript interface member kinds ─────────────────
-        .ts_call_signature, .ts_construct_signature => {
-            // lhs = .none, rhs = return type (or .none)
-            try dumpNode(tree, data.rhs, child_indent, writer);
+        .ts_call_signature, .ts_construct_signature, .ts_method_signature => {
+            // lhs = extra index to InterfaceSigData
+            const ISD = @import("ast.zig").InterfaceSigData;
+            const ed = tree.extraData(ISD, @intFromEnum(data.lhs));
+            if (tag == .ts_method_signature) try dumpNode(tree, ed.key, child_indent, writer);
+            for (tree.extra_data[ed.params_start..ed.params_end]) |param_idx| {
+                try dumpNode(tree, @enumFromInt(param_idx), child_indent, writer);
+            }
+            try dumpNode(tree, ed.return_type, child_indent, writer);
         },
-        .ts_method_signature, .ts_property_signature => {
-            // lhs = name node, rhs = return/value type (or .none)
+        .ts_property_signature => {
+            // lhs = name node, rhs = type annotation (or .none)
             try dumpNode(tree, data.lhs, child_indent, writer);
             try dumpNode(tree, data.rhs, child_indent, writer);
         },

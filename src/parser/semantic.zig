@@ -973,25 +973,25 @@ pub const SemanticAnalyzer = struct {
             .constructor_def => try self.visitMethodDef(idx, data),
             .property_def => {
                 // Non-computed property key is a definition, not a reference.
-                // Only visit the initializer (rhs).
+                // Only visit the initializer (value). rhs = PropertyData extra index.
                 // Class field initializers run in a separate execution context —
                 // create an implicit scope so scope-aware rules (e.g. no-use-before-define)
                 // treat references here as crossing a function boundary.
-                // Scope node = rhs (value expression), so scope.block.parent = property_def,
+                // Scope node = value expression, so scope.block.parent = property_def,
                 // which exposes .static — needed by isClassStaticInitializerScope in rules.
-                if (data.rhs != .none) {
+                const prop_data = self.ast.extraData(ast_mod.PropertyData, @intFromEnum(data.rhs));
+                if (prop_data.value != .none) {
                     const prev_scope = self.current_scope;
-                    self.current_scope = try self.scopes.addScope(.class_field_initializer, prev_scope, data.rhs);
+                    self.current_scope = try self.scopes.addScope(.class_field_initializer, prev_scope, prop_data.value);
                     if (self.cpb_initialized) {
-                        const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
                         const saved_alive = self.cfg_alive;
                         self.cfg_alive = true;
-                        try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
-                        try self.visitNode(data.rhs);
-                        try self.cpb.exitCodePath(rhs_idx);
+                        try self.cpb.enterCodePath(prop_data.value, .class_field_initializer, prop_data.value);
+                        try self.visitNode(prop_data.value);
+                        try self.cpb.exitCodePath(prop_data.value);
                         self.cfg_alive = saved_alive;
                     } else {
-                        try self.visitNode(data.rhs);
+                        try self.visitNode(prop_data.value);
                     }
                     self.current_scope = prev_scope;
                 }
@@ -999,20 +999,21 @@ pub const SemanticAnalyzer = struct {
             .computed_property_def => {
                 // Computed key is an expression — visit both key and initializer.
                 // Key is in the containing code path; initializer gets its own scope.
+                // rhs = PropertyData extra index.
                 try self.visitNode(data.lhs);
-                if (data.rhs != .none) {
+                const comp_prop_data = self.ast.extraData(ast_mod.PropertyData, @intFromEnum(data.rhs));
+                if (comp_prop_data.value != .none) {
                     const prev_scope = self.current_scope;
-                    self.current_scope = try self.scopes.addScope(.class_field_initializer, prev_scope, data.rhs);
+                    self.current_scope = try self.scopes.addScope(.class_field_initializer, prev_scope, comp_prop_data.value);
                     if (self.cpb_initialized) {
-                        const rhs_idx: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
                         const saved_alive = self.cfg_alive;
                         self.cfg_alive = true;
-                        try self.cpb.enterCodePath(rhs_idx, .class_field_initializer, rhs_idx);
-                        try self.visitNode(data.rhs);
-                        try self.cpb.exitCodePath(rhs_idx);
+                        try self.cpb.enterCodePath(comp_prop_data.value, .class_field_initializer, comp_prop_data.value);
+                        try self.visitNode(comp_prop_data.value);
+                        try self.cpb.exitCodePath(comp_prop_data.value);
                         self.cfg_alive = saved_alive;
                     } else {
-                        try self.visitNode(data.rhs);
+                        try self.visitNode(comp_prop_data.value);
                     }
                     self.current_scope = prev_scope;
                 }
@@ -1041,6 +1042,14 @@ pub const SemanticAnalyzer = struct {
             },
             .ts_enum_member => try self.visitNode(data.rhs),
             .ts_namespace_decl, .ts_module_decl => try self.visitNode(data.rhs),
+            .ts_declare_function => {
+                // Register name in current scope (hoisted), but do not create a function scope.
+                const fn_data = self.ast.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
+                if (fn_data.name != .none) {
+                    const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+                    _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
+                }
+            },
 
             // ── TypeScript types (skip) ──────────────────────
             .ts_type_annotation, .ts_type_reference, .ts_type_predicate,
@@ -1050,13 +1059,16 @@ pub const SemanticAnalyzer = struct {
             .ts_infer_type, .ts_typeof_type, .ts_keyof_type,
             .ts_indexed_access_type, .ts_template_literal_type,
             .ts_type_query, .ts_parenthesized_type,
-            .ts_parameter_property,
             // TS interface member kinds — treat as type-level, skip
             .ts_call_signature, .ts_construct_signature,
             .ts_method_signature, .ts_property_signature, .ts_index_signature,
             // Decorator — expression; skip (decorators are not visited for scope/ref)
             .decorator,
             => {},
+
+            // TSParameterProperty: binding/default handled by visitParams → extractBindingNames.
+            // visitNode is not normally called on these, but guard against generic traversal.
+            .ts_parameter_property => {},
 
             // ── TypeScript expressions ───────────────────────
             .ts_as_expr, .ts_satisfies_expr => try self.visitNode(data.lhs),
@@ -2127,6 +2139,10 @@ pub const SemanticAnalyzer = struct {
                 try self.visitNode(data.rhs);
             },
             .rest_element => {
+                try self.extractBindingNames(data.lhs, scope, binding_kind);
+            },
+            // TSParameterProperty wraps the inner binding — extract from lhs.
+            .ts_parameter_property => {
                 try self.extractBindingNames(data.lhs, scope, binding_kind);
             },
             else => {

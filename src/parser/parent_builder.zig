@@ -176,11 +176,13 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             // ── Functions ─────────────────────────────────────
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .ts_declare_function,
             => {
                 const ed = tree.extraData(ast_mod.FnData, @intFromEnum(lhs));
                 push(&stack, alloc, ed.body, p) catch return error.OutOfMemory;
                 push(&stack, alloc, ed.return_type, p) catch return error.OutOfMemory;
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.params, .end = ed.params_end }, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.type_params, .end = ed.type_params_end }, p) catch return error.OutOfMemory;
                 push(&stack, alloc, ed.name, p) catch return error.OutOfMemory;
             },
             .arrow_fn, .async_arrow_fn => {
@@ -196,6 +198,7 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 // class_body is visited last (after name and super_class in document order)
                 push(&stack, alloc, ed.body,        p) catch return error.OutOfMemory;
                 push(&stack, alloc, ed.super_class, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.type_params, .end = ed.type_params_end }, p) catch return error.OutOfMemory;
                 push(&stack, alloc, ed.name,        p) catch return error.OutOfMemory;
             },
             .class_body => {
@@ -216,7 +219,9 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .property_def, .computed_property_def => {
-                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                const pd_extra = tree.extraData(ast_mod.PropertyData, @intFromEnum(rhs));
+                push(&stack, alloc, pd_extra.type_annotation, p) catch return error.OutOfMemory;
+                push(&stack, alloc, pd_extra.value, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             .formal_parameters => {
@@ -374,7 +379,10 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.body_start,    .end = ed.body_end    }, p) catch return error.OutOfMemory;
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.extends_start, .end = ed.extends_end }, p) catch return error.OutOfMemory;
             },
-            .ts_type_alias_decl => {},
+            .ts_type_alias_decl => {
+                const ed = tree.extraData(ast_mod.TypeAliasData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.type_node, p) catch return error.OutOfMemory;
+            },
             .ts_enum_decl => {
                 const ed = tree.extraData(ast_mod.EnumData, @intFromEnum(lhs));
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.members_start, .end = ed.members_end }, p) catch return error.OutOfMemory;
@@ -423,11 +431,36 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .regex_literal, .bigint_literal, .template_element,
             .jsx_text_node, .jsx_gap_node, .jsx_empty_expr, .jsx_identifier, .error_node,
             // TS type nodes that are true leaves (no child types to traverse)
-            .ts_type_reference, .ts_infer_type,
-            .ts_function_type, .ts_constructor_type,
-            .ts_type_literal, .ts_mapped_type, .ts_template_literal_type,
-            .ts_type_query, .ts_parameter_property,
+            .ts_infer_type,
+            .ts_type_query,
             => {},
+
+            // ts_parameter_property: lhs = parameter binding, rhs = default value (or .none)
+            .ts_parameter_property => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+
+            // ts_type_literal: lhs/rhs = SubRange start/end of members
+            .ts_type_literal, .ts_mapped_type, .ts_template_literal_type => {
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = @intFromEnum(lhs), .end = @intFromEnum(rhs) }, p) catch return error.OutOfMemory;
+            },
+
+            // ts_function_type, ts_constructor_type: lhs = FnData extra index; body field = return type
+            .ts_function_type, .ts_constructor_type => {
+                const ed = tree.extraData(ast_mod.FnData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.body, p) catch return error.OutOfMemory; // body = return_type for type fns
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.params, .end = ed.params_end }, p) catch return error.OutOfMemory;
+            },
+
+            // ts_type_reference: lhs = name (identifier or qualified name), rhs = SubRange of type arguments
+            .ts_type_reference => {
+                if (rhs != .none) {
+                    const sr = tree.extraData(ast_mod.SubRange, @intFromEnum(rhs));
+                    pushSubRangeRev(&stack, alloc, tree, .{ .start = sr.start, .end = sr.end }, p) catch return error.OutOfMemory;
+                }
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
 
             // identifier: rhs holds type annotation for typed bindings (or .none)
             .identifier => {
@@ -464,12 +497,17 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             },
 
             // ── TypeScript interface member kinds ─────────────────
-            .ts_call_signature, .ts_construct_signature => {
-                // lhs = .none, rhs = return type (or .none)
-                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
+            .ts_call_signature, .ts_construct_signature, .ts_method_signature => {
+                // lhs = extra index to InterfaceSigData
+                const ed = tree.extraData(ast_mod.InterfaceSigData, @intFromEnum(lhs));
+                push(&stack, alloc, ed.return_type, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.params_start, .end = ed.params_end }, p) catch return error.OutOfMemory;
+                if (tag == .ts_method_signature) {
+                    push(&stack, alloc, ed.key, p) catch return error.OutOfMemory;
+                }
             },
-            .ts_method_signature, .ts_property_signature => {
-                // lhs = name node, rhs = return/value type (or .none)
+            .ts_property_signature => {
+                // lhs = name node, rhs = type annotation (or .none)
                 push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
