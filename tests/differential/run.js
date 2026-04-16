@@ -1005,9 +1005,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
   // Phase 2: Per-rule analysis (native runs in-process via NAPI, same loop as runner).
   const runnerT0 = Date.now();
   let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
-  let totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
+  let totalNativeCases = 0, totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
       totalNativeSkip = 0, totalNativeCrash = 0;
-  let totalHybridPass = 0, totalHybridFn = 0, totalHybridFp = 0, totalHybridCrash = 0;
+  let totalHybridCases = 0, totalHybridPass = 0, totalHybridFn = 0, totalHybridFp = 0, totalHybridCrash = 0;
   let runnerOnlyMs = 0, nativeOnlyMs = 0, eslintOnlyMs = 0;
   // TS vs JS breakdown
   let tsCases = 0, tsPass = 0, jsCases = 0, jsPass = 0;
@@ -1037,8 +1037,11 @@ if (fs.existsSync(ESLINT_ROOT)) {
     };
 
     let fn = 0, fp = 0, crash = 0, pass = 0, skipCustomParser = 0, skipEspreeParse = 0;
+    let runnerCases = 0; // case-level count (denominator for pass/total display)
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkipOptions = 0;
+    let nativeCases = 0; // case-level count for native denominator
     let hybridFn = 0, hybridFp = 0, hybridCrash = 0, hybridPass = 0;
+    let hybridCases = 0; // case-level count for hybrid denominator
     let ruleFixable = 0, ruleFixMatch = 0, ruleFixMismatch = 0;
     let _ruleRunnerMs = 0, _ruleNativeMs = 0, _ruleEslintMs = 0;
     const _ruleParseSnap = _runnerParseMs, _rulePluginSnap = _runnerPluginMs;
@@ -1114,6 +1117,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
       const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
 
+      runnerCases++;
       if (caseFn === 0 && caseFp === 0 && runnerCrashes.length === 0) {
         pass++;
         if (verboseAll && _showCases) {
@@ -1171,8 +1175,10 @@ if (fs.existsSync(ESLINT_ROOT)) {
         nativeSkipOptions++;
       } else if (nativeResult === null) {
         nativeCrash++;
+        nativeCases++;
       } else {
         nativeUsable = true;
+        nativeCases++;
         const nativeKeys = new Set(nativeResult.map(r => `${r.rule}:${r.line}`));
         const caseNativeFn = [...espreeKeys].filter(k => !nativeKeys.has(k)).length;
         const caseNativeFp = [...nativeKeys].filter(k => !espreeKeys.has(k)).length;
@@ -1183,6 +1189,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       // Hybrid comparison: prefer native when usable AND rule has native impl, else runner.
       // Mirrors production path in api.js: native rules via Zig, JS-only rules via runner.
       if (nativeAvailable) {
+        hybridCases++;
         const hybridResult = (_ruleHasNativeImpl && nativeUsable) ? nativeResult : runnerNormal;
         const hybridKeys = new Set(hybridResult.map(r => `${r.rule}:${r.line}`));
         const caseHybridFn = [...espreeKeys].filter(k => !hybridKeys.has(k)).length;
@@ -1195,17 +1202,20 @@ if (fs.existsSync(ESLINT_ROOT)) {
     const _caseLoopMs = performance.now() - _caseLoopT0;
 
     const skip = skipCustomParser + skipEspreeParse;
-    const total = pass + fn + fp + crash;
-    const nativeTotal = nativePass + nativeFn + nativeFp + nativeCrash;
+    const total = runnerCases; // case-level denominator
+    const nativeTotal = nativeCases; // case-level denominator
+    const hybridTotal = hybridCases; // case-level denominator
     totalCases       += total;
     totalPass        += pass;
     totalSkip        += skip;
     totalCrash       += crash;
+    totalNativeCases += nativeCases;
     totalNativePass  += nativePass;
     totalNativeFn    += nativeFn;
     totalNativeFp    += nativeFp;
     totalNativeSkip  += nativeSkipOptions;
     totalNativeCrash += nativeCrash;
+    totalHybridCases += hybridCases;
     totalHybridPass  += hybridPass;
     totalHybridFn    += hybridFn;
     totalHybridFp    += hybridFp;
@@ -1304,7 +1314,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
           nativeCrash    > 0 ? `${nativeCrash} crash`       : "",
           nativeSkipOptions > 0 ? `${nativeSkipOptions} skip` : "",
         ].filter(Boolean).join(", ");
-        const hybridTotal = hybridPass + hybridFn + hybridFp + hybridCrash;
+        // hybridTotal is the case-level count already computed above
         const hybridDetail = [
           hybridFn    > 0 ? `${hybridFn} FN`    : "",
           hybridFp    > 0 ? `${hybridFp} FP`    : "",
@@ -1363,8 +1373,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
   const runnerMs = Date.now() - runnerT0;
 
   // Derived totals reused in perf + summary output.
-  const _nativeTotal = totalNativePass + totalNativeFn + totalNativeFp + totalNativeCrash;
-  const _hybridTotal = totalHybridPass + totalHybridFn + totalHybridFp + totalHybridCrash;
+  const _nativeTotal = totalNativeCases;
+  const _hybridTotal = totalHybridCases;
 
   // Store perf data in newBaseline so --save-baseline captures throughput.
   newBaseline.perf = {
