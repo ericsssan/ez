@@ -3,15 +3,15 @@
 const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 
 // ── Symbol BindingKind → ESLint def.type mapping ───────────────
-// Must match BindingKind enum in src/parser/symbol.zig (values 0-8 in enum order).
-// 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl,
-// 5=parameter, 6=catch_param, 7=import_binding, 8=implicit_global
+// Must match BindingKind enum in src/parser/symbol.zig (values in enum order).
 // Indices match BindingKind enum order in symbol.zig:
 // 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl, 5=parameter, 6=catch_param,
-// 7=import_binding, 8=implicit_global, 9=type_decl, 10=interface_decl, 11=enum_decl, 12=namespace_decl
+// 7=import_binding, 8=type_import_binding, 9=implicit_global,
+// 10=type_decl, 11=interface_decl, 12=enum_decl, 13=namespace_decl
+// 14=fn_expr_name (named function-expression binding), 15=class_expr_name (named class-expression binding)
 // TS def type strings match @typescript-eslint/scope-manager DefinitionType values:
 // 'Type' for type aliases/interfaces, 'TSEnumName' for enums, 'TSModuleName' for namespaces
-const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName'];
+const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName'];
 const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer'];
 let _tsServices = null;
 function tsServices() {
@@ -1847,9 +1847,10 @@ class SourceCode {
         const symScopeId = _symScopeIds ? _symScopeIds[refSymId] : NONE32;
         if (symScopeId !== scopeId) {
           through.push(ref);
-        } else if (ast._symKinds && ast._symKinds[refSymId] === 3 && ast._scopeNodeIds) {
-          // FEN (Function Expression Name): name is bound in the function's own scope by Zig,
-          // but eslint-scope puts it in a separate parent FEN scope → treat as through-ref.
+        } else if (ast._symKinds && (ast._symKinds[refSymId] === 3 || ast._symKinds[refSymId] === 13) && ast._scopeNodeIds) {
+          // FEN (Function Expression Name): name is bound in the function's own scope by Zig
+          // (kinds: 3=function_decl legacy, 13=fn_expr_name), but eslint-scope puts it in a
+          // separate parent FEN scope → treat as through-ref.
           // Only applies when the scope was created by a fn_expr node (tags 63-66).
           const scopeNodeTag = ast._nodeTags[ast._scopeNodeIds[scopeId]];
           if (scopeNodeTag >= 63 && scopeNodeTag <= 66) through.push(ref);

@@ -1262,19 +1262,19 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 27,
+        "fp": 34,
         "crash": 0
       },
       "native": {
-        "fn": 8,
-        "fp": 102,
+        "fn": 37,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 8,
-        "fp": 102,
+        "fn": 37,
+        "fp": 0,
         "crash": 0
       }
     },

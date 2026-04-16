@@ -376,19 +376,20 @@ for (const [prefix, pkg] of _pluginPackages) {
 // Run native for a single corpus test case (in-process, no subprocess).
 // ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
 // Returns [{rule,line}] on success, "skip" if case is unsupported, null on crash.
-function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions) {
+function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions, nativeRuleName = null, isTs = false) {
   if (hasCustomParser) return "skip";
+  const _nativeName = nativeRuleName || ruleName;
   try {
     // If the case has options, rebuild config with options embedded in ESLint array format.
     // Config must use {"rules":{...}} format so Zig's configFromJson finds the "rules" key.
     let config = ruleConfig;
     if (hasOptions && ruleOptions && ruleOptions.length > 0) {
-      config = buildNativeConfig({ rules: { [ruleName]: ["warn", ruleOptions[0]] } });
+      config = buildNativeConfig({ rules: { [_nativeName]: ["warn", ruleOptions[0]] } });
     }
-    const diags = ezLint(code, { config });
+    const diags = ezLint(code, { config, lang: isTs ? "ts" : "js" });
     return diags
-      .filter(d => d.ruleName === ruleName)
-      .map(d => ({ rule: d.ruleName, line: offsetToLine(code, d.offset) }));
+      .filter(d => d.ruleName === _nativeName)
+      .map(d => ({ rule: _nativeName, line: offsetToLine(code, d.offset) }));
   } catch { return null; }
 }
 
@@ -793,6 +794,19 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
   _linterSkipCalls = 0;
   global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
   global.__EZ_CAPTURE_RULE__   = captureRule;
+  // For core rule CJS tests (captureRule set), the real RuleTester runs inside the test file.
+  // Bun's build.module() stubs @typescript-eslint/parser with a fake that can't parse TypeScript,
+  // causing fatal errors when the test's second run() uses it.  Override the cache entry with the
+  // real parser so the submodule RuleTester can successfully run TS test cases.
+  const _TS_PARSER_CACHE_KEY = "@typescript-eslint/parser";
+  let _savedTsParserCache;
+  if (_tsParser && captureRule && testFormat === "cjs") {
+    _savedTsParserCache = require.cache[_TS_PARSER_CACHE_KEY];
+    require.cache[_TS_PARSER_CACHE_KEY] = {
+      id: _TS_PARSER_CACHE_KEY, filename: _TS_PARSER_CACHE_KEY,
+      exports: _tsParser, loaded: true,
+    };
+  }
   try {
     // .ts files always use dynamic import (Bun handles TypeScript natively)
     if (testFile.endsWith(".ts")) {
@@ -817,6 +831,12 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
   } finally {
     global.__EZ_CAPTURE_PREFIX__ = null;
     global.__EZ_CAPTURE_RULE__   = null;
+    // Restore @typescript-eslint/parser cache if we overrode it.
+    if (_savedTsParserCache !== undefined) {
+      require.cache[_TS_PARSER_CACHE_KEY] = _savedTsParserCache;
+    } else if (_tsParser && captureRule && testFormat === "cjs") {
+      delete require.cache[_TS_PARSER_CACHE_KEY];
+    }
   }
   return _captured;
 }
@@ -979,8 +999,10 @@ if (fs.existsSync(ESLINT_ROOT)) {
     }
 
     // Normal flat test directory
-    const testFiles = fs.readdirSync(testsDir)
-      .filter(f => (f.endsWith(".js") || f.endsWith(".test.ts")) && f !== "utils.js" && f !== "utils");
+    const _dirEntries = fs.readdirSync(testsDir, { withFileTypes: true });
+    const testFiles = _dirEntries
+      .filter(e => e.isFile() && (e.name.endsWith(".js") || e.name.endsWith(".test.ts")) && e.name !== "utils.js" && e.name !== "utils")
+      .map(e => e.name);
     for (const file of testFiles) {
       const baseName = file.replace(/\.(test\.ts|js)$/, "");
       // Rule names may be kebab-case (react/promise/unicorn) or mapped from camelCase files (jsdoc).
@@ -999,6 +1021,36 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const isTypeScript = defaultParser && _isTsParser(defaultParser);
       const allCases = cases.cases;
       allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType, isTypeScript, allCases });
+    }
+    // Subdirectory-based rules (e.g. no-shadow/, naming-convention/ in @typescript-eslint).
+    // Load all .test.ts files inside the subdirectory and merge their cases.
+    for (const entry of _dirEntries.filter(e => e.isDirectory())) {
+      const dirName = entry.name;
+      const kebabName = camelToKebab(dirName);
+      const fullName = `${prefix}/${dirName}`;
+      const fullNameKebab = `${prefix}/${kebabName}`;
+      const ruleModule = _pluginRuleModules.get(fullName) || _pluginRuleModules.get(fullNameKebab);
+      if (!ruleModule) continue;
+      const canonicalName = _pluginRuleModules.has(fullName) ? fullName : fullNameKebab;
+      if (filterRule && canonicalName !== filterRule) continue;
+      const subDirPath = path.join(testsDir, dirName);
+      const subFiles = fs.readdirSync(subDirPath)
+        .filter(f => f.endsWith(".test.ts") || (f.endsWith(".js") && f !== "utils.js"))
+        .sort();
+      _captured = null;
+      _linterSkipCalls = 0;
+      global.__EZ_CAPTURE_PREFIX__ = prefix;
+      global.__EZ_CAPTURE_RULE__   = null;
+      for (const file of subFiles) {
+        const testFile = path.join(subDirPath, file);
+        try { await import(`${testFile}?_ez=${Date.now()}`); } catch (e) {
+          if (filterRule) process.stderr.write(`warn: failed to load ${file}: ${e.message}\n`);
+        }
+      }
+      global.__EZ_CAPTURE_PREFIX__ = null;
+      global.__EZ_CAPTURE_RULE__   = null;
+      if (!_captured) continue;
+      allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType: "module", isTypeScript: true, allCases: _captured.cases });
     }
   }
 
@@ -1024,9 +1076,17 @@ if (fs.existsSync(ESLINT_ROOT)) {
     if (filterRule && ruleName !== filterRule) continue;
 
     // Pre-build native config for this rule (one per rule, reused across cases).
-    const _ruleHasNativeImpl = _nativeRuleSet.has(ruleName);
+    // @typescript-eslint/foo rules map to the core native 'foo' when available.
+    const _nativeRuleName = (() => {
+      if (ruleName.startsWith("@typescript-eslint/")) {
+        const core = ruleName.slice("@typescript-eslint/".length);
+        if (_nativeRuleSet.has(core)) return core;
+      }
+      return ruleName;
+    })();
+    const _ruleHasNativeImpl = _nativeRuleSet.has(_nativeRuleName);
     const nativeRuleConfig = nativeAvailable
-      ? buildNativeConfig({ rules: { [ruleName]: "warn" } })
+      ? buildNativeConfig({ rules: { [_nativeRuleName]: "warn" } })
       : null;
 
     // Create plugin once per rule so runPlugins can take the fast path on all subsequent cases.
@@ -1166,7 +1226,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
 
       // Native comparison (in-process NAPI call).
       const _nt0 = Date.now();
-      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options);
+      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase);
       const _ntDelta = Date.now() - _nt0;
       nativeOnlyMs += _ntDelta;
       _ruleNativeMs += _ntDelta;

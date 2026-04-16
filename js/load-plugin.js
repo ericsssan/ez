@@ -6,7 +6,7 @@
 const fs = require("fs");
 const path = require("path");
 
-const BUNDLED_RULES_DIR = path.join(__dirname, "rules");
+const BUNDLED_RULES_DIR = path.join(__dirname, "node_modules/eslint/lib/rules");
 
 // ── Core rules ───────────────────────────────────────────────
 
@@ -23,7 +23,7 @@ function loadCoreRules(opts = {}) {
   const { only, includeDeprecated = false } = opts;
   const rulesDir = BUNDLED_RULES_DIR;
   if (!fs.existsSync(rulesDir)) {
-    throw new Error("ez: bundled rules not found at " + rulesDir);
+    throw new Error("ez: eslint rules not found at " + rulesDir + " — run `npm install` in js/");
   }
   const rules = [];
   for (const file of fs.readdirSync(rulesDir)) {

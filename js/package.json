@@ -19,8 +19,7 @@
     "eslint-runner.js",
     "load-plugin.js",
     "lint.js",
-    "lsp-server.js",
-    "rules/"
+    "lsp-server.js"
   ],
   "license": "MIT",
   "devDependencies": {

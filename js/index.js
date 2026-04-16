@@ -280,7 +280,13 @@ function lintSource(source, options = {}) {
   const { buf, sourceStart, sourceLen } = _encodeSource(source);
   _ensureLintOutBuf(sourceLen);
 
-  const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
+  let configBuf;
+  if (options.config instanceof Uint8Array) {
+    configBuf = options.config;
+  } else if (options.rules) {
+    // Build a native config from the rules object so options (hoist, allow, etc.) are honoured.
+    configBuf = buildNativeConfig({ rules: options.rules });
+  }
   const bytesWritten = b.lint(buf, sourceStart, sourceLen, lang, _lintOutBuf, configBuf);
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
   return _parseDiags(bytesWritten, srcBytes);
