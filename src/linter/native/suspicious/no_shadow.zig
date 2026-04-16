@@ -187,6 +187,10 @@ if (!flags.isDeclared() and !s_is_ts_type) continue;
                         const outer_bk = symbols.getBindingKind(outer_id);
                         const outer_is_ts = outer_bk == .type_decl or outer_bk == .interface_decl;
                         if (is_ts_type != outer_is_ts) break;
+                        // If the outer is a type-only import (import type {x} or import {type x})
+                        // and the inner is a value binding, suppress — ESLint treats type-only
+                        // imports as type declarations for shadow purposes.
+                        if (outer_bk == .type_import_binding and !is_ts_type) break;
                     }
                     // TDZ check: if the inner declaration appears before the outer
                     // declaration in source order, ESLint (with hoist != "all") skips

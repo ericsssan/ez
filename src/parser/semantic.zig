@@ -598,7 +598,7 @@ pub const SemanticAnalyzer = struct {
             .const_decl => try self.visitVarDecl(data, .@"const"),
 
             // ── Imports ────────────────────────────────────
-            .import_decl => try self.visitImportDecl(data),
+            .import_decl => try self.visitImportDecl(idx, data),
             .import_specifier => try self.visitImportSpecifier(idx),
             .import_default_specifier => try self.visitImportDefaultSpecifier(idx),
             .import_namespace_specifier => try self.visitImportNamespaceSpecifier(idx),
@@ -1935,14 +1935,22 @@ pub const SemanticAnalyzer = struct {
 
     // ── Imports ────────────────────────────────────────────
 
-    fn visitImportDecl(self: *SemanticAnalyzer, data: Node.Data) !void {
+    fn visitImportDecl(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
         if (data.lhs == .none) return;
         const import_data = self.ast.extraData(ImportData, @intFromEnum(data.lhs));
         const specifiers_range = SubRange{
             .start = import_data.specifiers_start,
             .end = import_data.specifiers_end,
         };
+        // Detect `import type { ... }`: the token right after 'import' is kw_type.
+        const import_tok = self.ast.nodeMainToken(idx);
+        const token_tags = self.ast.tokens.items(.tag);
+        const saved = self.in_type_import;
+        if (import_tok + 1 < token_tags.len and token_tags[import_tok + 1] == .kw_type) {
+            self.in_type_import = true;
+        }
         try self.visitSubRange(specifiers_range);
+        self.in_type_import = saved;
     }
 
     fn visitImportSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
@@ -1950,7 +1958,12 @@ pub const SemanticAnalyzer = struct {
         const data = self.ast.nodeData(idx);
         const local_tok = self.ast.nodeMainToken(data.rhs);
         const name = self.ast.tokenText(local_tok);
-        _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
+        // Detect `import { type foo }`: the token immediately before the imported name is kw_type.
+        const imported_tok = self.ast.nodeMainToken(idx);
+        const token_tags = self.ast.tokens.items(.tag);
+        const is_inline_type = imported_tok > 0 and token_tags[imported_tok - 1] == .kw_type;
+        const bk: BindingKind = if (self.in_type_import or is_inline_type) .type_import_binding else .import_binding;
+        _ = try self.declareBinding(name, idx, bk, self.current_scope);
     }
 
     fn visitImportDefaultSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
