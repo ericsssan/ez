@@ -176,6 +176,16 @@ pub const SemanticAnalyzer = struct {
     /// Track exported names for duplicate detection and undeclared export validation.
     exported_names: std.ArrayList(ExportEntry) = .empty,
 
+    /// Function/class expression nodes exempt from no-shadow because they are the
+    /// direct initializer of an outer variable with the same name.
+    /// e.g., `var f = function f() {}` → the fn_expr node is added here.
+    /// Implements ESLint's `isFunctionNameInitializerException` logic.
+    fn_expr_exceptions: std.AutoHashMapUnmanaged(NodeIndex, void) = .{},
+
+    /// True while visiting specifiers of `import type { ... }`.
+    /// Used by visitImportSpecifier to assign .type_decl binding kind.
+    in_type_import: bool = false,
+
     const ExportEntry = struct {
         exported_name: []const u8, // the exported name (for duplicate detection)
         local_name: []const u8, // the local binding name (for undeclared detection)
@@ -230,9 +240,10 @@ pub const SemanticAnalyzer = struct {
         var self = SemanticAnalyzer.init(allocator, ast, is_module);
         self.implicit_globals = globals;
         errdefer self.deinit();
-        // exported_names and scope_binding_map are temporaries; always free them.
+        // exported_names, scope_binding_map, and fn_expr_exceptions are temporaries; always free them.
         defer self.exported_names.deinit(allocator);
         defer self.scope_binding_map.deinit(allocator);
+        defer self.fn_expr_exceptions.deinit(allocator);
 
         // Pre-size the binding map to avoid growth rehashes for typical files.
         // Heuristic: ~1 symbol per 8 nodes is conservative; avoids most rehashes.
@@ -1080,7 +1091,19 @@ pub const SemanticAnalyzer = struct {
                     const ns_name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
                     _ = try self.declareBinding(ns_name, data.lhs, .namespace_decl, self.current_scope);
                 }
-                try self.visitNode(data.rhs);
+                // Inline visitBlockStmt but mark the body scope as a namespace body so that
+                // no-shadow can suppress shadow reports where the outer symbol is in a
+                // declare global / declare namespace context.
+                if (data.rhs != .none) {
+                    const body_data = self.ast.nodeData(data.rhs);
+                    const body_scope = try self.enterScope(.block, data.rhs);
+                    var body_flags = self.scopes.getFlags(body_scope);
+                    body_flags.is_namespace_body = true;
+                    self.scopes.setFlags(body_scope, body_flags);
+                    const range = SubRange{ .start = @intFromEnum(body_data.lhs), .end = @intFromEnum(body_data.rhs) };
+                    try self.visitSubRange(range);
+                    self.leaveScope();
+                }
             },
             .ts_declare_function => {
                 // Register name in current scope (hoisted), but do not create a function scope.
@@ -1343,7 +1366,21 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitBlockStmt(self: *SemanticAnalyzer, idx: NodeIndex, data: Node.Data) !void {
-        _ = try self.enterScope(.block, idx);
+        const scope = try self.enterScope(.block, idx);
+        // Detect `declare global { ... }`: the parser returns a plain block_stmt for this
+        // construct. Mark the scope as namespace_body so no-shadow can suppress shadows
+        // where the outer symbol is declared inside the declare global block.
+        const l_brace_tok = self.ast.nodeMainToken(idx);
+        const token_tags = self.ast.tokens.items(.tag);
+        if (l_brace_tok >= 2 and
+            token_tags[l_brace_tok - 2] == .kw_declare and
+            token_tags[l_brace_tok - 1] == .identifier and
+            std.mem.eql(u8, self.ast.tokenText(l_brace_tok - 1), "global"))
+        {
+            var scope_flags = self.scopes.getFlags(scope);
+            scope_flags.is_namespace_body = true;
+            self.scopes.setFlags(scope, scope_flags);
+        }
         const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
         try self.visitSubRange(range);
         self.leaveScope();
@@ -1478,12 +1515,23 @@ pub const SemanticAnalyzer = struct {
         }
         const binding_tag = self.ast.nodeTag(fiof_data.binding);
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
+            const before_bind_count = self.symbols.count();
             try self.visitNode(fiof_data.binding);
+            const after_bind_count = self.symbols.count();
+            try self.visitNode(fiof_data.expr);
+            const after_expr_count = self.symbols.count();
+            if (after_expr_count > after_bind_count) {
+                var j: u32 = before_bind_count;
+                while (j < after_bind_count) : (j += 1) {
+                    self.symbols.setInitRange(SymbolId.fromInt(j), after_bind_count, after_expr_count);
+                    self.symbols.setInitNode(SymbolId.fromInt(j), fiof_data.expr);
+                }
+            }
         } else {
             // For-in/of binding without a declaration: the write_expr is the iterable/collection.
             try self.visitLValueExpr(fiof_data.binding, fiof_data.expr);
+            try self.visitNode(fiof_data.expr);
         }
-        try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
         if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
         const had_continue = if (cdepth < self.continue_hit.len) self.continue_hit[cdepth] else false;
@@ -1614,10 +1662,14 @@ pub const SemanticAnalyzer = struct {
         const fn_scope = try self.enterScope(.function, idx);
         self.applyFnFlags(fn_scope, tag);
 
-        // Optionally declare the function name inside its own scope.
+        // Declare the function name inside its own scope.
+        // Use .fn_expr_name (is_expr_name=true) only when this fn_expr is the direct
+        // initializer of a matching outer variable — i.e., `var f = function f() {}`.
+        // Otherwise use .function_decl so no-shadow detects the real shadow.
         if (fn_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
-            _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
+            const kind: BindingKind = if (self.fn_expr_exceptions.contains(idx)) .fn_expr_name else .function_decl;
+            _ = try self.declareBinding(name, fn_data.name, kind, self.current_scope);
         }
 
         try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
@@ -1696,12 +1748,12 @@ pub const SemanticAnalyzer = struct {
         // Enter class scope (always strict).
         _ = try self.enterScope(.class, idx);
 
-        // Optionally declare the class name inside its own scope for self-reference.
-        // Use .class_decl so symbol flags get is_class=true (required for no-shadow's
-        // FunctionName/ClassName exception detection).
+        // Declare the class name inside its own scope for self-reference.
+        // Use .class_expr_name (is_expr_name=true) so no-shadow treats this inner
+        // binding as exempt — it's always the class's own self-reference, never a shadow.
         if (class_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
-            _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
+            _ = try self.declareBinding(name, class_data.name, .class_expr_name, self.current_scope);
         }
 
         // Visit class_body node (contains members as SubRange lhs..rhs)
@@ -1720,12 +1772,14 @@ pub const SemanticAnalyzer = struct {
         // (and declaring the name) before visiting super_class.
         _ = try self.enterScope(.class, idx);
 
-        // Optionally declare the class name inside its own scope.
-        // Use .class_decl so the symbol has is_class=true (required for no-shadow's
-        // exception for `var a = class a {}` patterns).
+        // Declare the class name inside its own scope.
+        // Use .class_expr_name (is_expr_name=true) only when this class_expr is the
+        // direct initializer of a matching outer variable — i.e., `var A = class A {}`.
+        // Otherwise use .class_decl so no-shadow detects the real shadow.
         if (class_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
-            _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
+            const kind: BindingKind = if (self.fn_expr_exceptions.contains(idx)) .class_expr_name else .class_decl;
+            _ = try self.declareBinding(name, class_data.name, kind, self.current_scope);
         }
 
         // Visit superclass (inside the class scope so the name is in scope).
@@ -1784,14 +1838,98 @@ pub const SemanticAnalyzer = struct {
         else
             self.current_scope;
 
+        // For `name = fn_expr` declarators, mark the fn/class expr as a shadow exception.
+        // Implements ESLint's `isFunctionNameInitializerException`: only the direct init
+        // of a matching-name outer variable is exempt (e.g., `var f = function f() {}`).
+        if (data.lhs != .none and data.rhs != .none) {
+            var lhs_node = data.lhs;
+            // Unwrap TS type annotation: `x: Type = ...`
+            if (self.ast.nodeTag(lhs_node) == .ts_type_annotation) {
+                lhs_node = self.ast.nodeData(lhs_node).lhs;
+            }
+            if (lhs_node != .none and self.ast.nodeTag(lhs_node) == .identifier) {
+                const binding_name = self.ast.tokenText(self.ast.nodeMainToken(lhs_node));
+                try self.markFnExprExceptions(binding_name, data.rhs);
+            }
+        }
+
         // lhs = binding pattern or identifier.
+        const before_sym_count = self.symbols.count();
         if (data.lhs != .none) {
             try self.extractBindingNames(data.lhs, target_scope, binding_kind);
         }
+        // Count after all outer bindings (and any defaults visited by extractBindingNames).
+        const after_bind_count = self.symbols.count();
 
         // rhs = initializer — visit for references.
         if (data.rhs != .none) {
             try self.visitNode(data.rhs);
+            const after_rhs_count = self.symbols.count();
+            // Record the init range for all outer symbols declared in this declarator.
+            // `ignoreOnInitialization` uses this to skip shadows inside the outer's init.
+            if (after_rhs_count > after_bind_count) {
+                var j: u32 = before_sym_count;
+                while (j < after_bind_count) : (j += 1) {
+                    self.symbols.setInitRange(SymbolId.fromInt(j), after_bind_count, after_rhs_count);
+                    self.symbols.setInitNode(SymbolId.fromInt(j), data.rhs);
+                }
+            }
+        }
+    }
+
+    /// Scan an initializer expression to find fn/class expressions whose name matches
+    /// `binding_name` and add them to `fn_expr_exceptions`.
+    ///
+    /// Mirrors ESLint's `isFunctionNameInitializerException` bottom-up walk:
+    /// a fn/class expr is an exception if `unwrapExpression(fn_expr) === initializerNode`,
+    /// where `unwrapExpression` walks UP through LogicalExpression and non-test
+    /// ConditionalExpression parents.
+    ///
+    /// Equivalently (top-down): recurse into BOTH sides of logical expressions (||, &&, ??)
+    /// and BOTH branches (consequent + alternate, but NOT test) of conditionals.
+    /// Stop at any other node (call expressions, etc. break the exception path).
+    fn markFnExprExceptions(self: *SemanticAnalyzer, binding_name: []const u8, init_node: NodeIndex) !void {
+        if (init_node == .none or init_node == .root) return;
+        const tag = self.ast.nodeTag(init_node);
+        const data = self.ast.nodeData(init_node);
+        switch (tag) {
+            // Parenthesised expressions are transparent wrappers.
+            .grouping_expr => {
+                try self.markFnExprExceptions(binding_name, data.lhs);
+            },
+            // Recurse into BOTH branches — the fn_expr can be on either side.
+            .logical_or, .logical_and, .nullish_coalesce => {
+                try self.markFnExprExceptions(binding_name, data.lhs);
+                try self.markFnExprExceptions(binding_name, data.rhs);
+            },
+            // Both consequent and alternate (NOT the test/condition).
+            .conditional => {
+                const cond_data = self.ast.extraData(Conditional, @intFromEnum(data.rhs));
+                try self.markFnExprExceptions(binding_name, cond_data.consequent);
+                try self.markFnExprExceptions(binding_name, cond_data.alternate);
+            },
+            // Named function expression → check if name matches.
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
+                const fn_data = self.ast.extraData(FnData, @intFromEnum(data.lhs));
+                if (fn_data.name != .none) {
+                    const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+                    if (std.mem.eql(u8, name, binding_name)) {
+                        try self.fn_expr_exceptions.put(self.allocator, init_node, {});
+                    }
+                }
+            },
+            // Named class expression → check if name matches.
+            .class_expr => {
+                const class_data = self.ast.extraData(ClassData, @intFromEnum(data.lhs));
+                if (class_data.name != .none) {
+                    const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+                    if (std.mem.eql(u8, name, binding_name)) {
+                        try self.fn_expr_exceptions.put(self.allocator, init_node, {});
+                    }
+                }
+            },
+            // Any other node (call_expr, etc.) breaks the exception path — stop.
+            else => {},
         }
     }
 
@@ -2196,8 +2334,35 @@ pub const SemanticAnalyzer = struct {
             },
             .assignment_pattern => {
                 // target = default — declare the target, visit default for references.
+                // Also mark fn/class expr defaults as exceptions for no-shadow when
+                // the target is a simple identifier (e.g., `var { f = function f() {} } = o`).
+                if (data.lhs != .none and data.rhs != .none) {
+                    var lhs_node = data.lhs;
+                    if (self.ast.nodeTag(lhs_node) == .ts_type_annotation) {
+                        lhs_node = self.ast.nodeData(lhs_node).lhs;
+                    }
+                    if (lhs_node != .none and self.ast.nodeTag(lhs_node) == .identifier) {
+                        const asgn_name = self.ast.tokenText(self.ast.nodeMainToken(lhs_node));
+                        try self.markFnExprExceptions(asgn_name, data.rhs);
+                    }
+                }
+                const asgn_before = self.symbols.count();
                 try self.extractBindingNames(data.lhs, scope, binding_kind);
-                try self.visitNode(data.rhs);
+                const asgn_after_bind = self.symbols.count();
+                if (data.rhs != .none) {
+                    try self.visitNode(data.rhs);
+                    const asgn_after_rhs = self.symbols.count();
+                    // Record init range so ignoreOnInitialization can detect symbols
+                    // declared inside the destructuring default (mirrors ESLint's
+                    // AssignmentPattern.right check in isInitPatternNode).
+                    if (asgn_after_rhs > asgn_after_bind) {
+                        var j: u32 = asgn_before;
+                        while (j < asgn_after_bind) : (j += 1) {
+                            self.symbols.setInitRange(SymbolId.fromInt(j), asgn_after_bind, asgn_after_rhs);
+                            self.symbols.setInitNode(SymbolId.fromInt(j), data.rhs);
+                        }
+                    }
+                }
             },
             .rest_element => {
                 try self.extractBindingNames(data.lhs, scope, binding_kind);

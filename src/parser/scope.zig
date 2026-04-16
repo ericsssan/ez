@@ -71,7 +71,11 @@ pub const ScopeFlags = packed struct(u16) {
     is_generator: bool = false,
     has_arguments: bool = false,
     has_this_binding: bool = false,
-    _padding: u9 = 0,
+    /// Body block of a ts_namespace_decl or ts_module_decl.
+    /// Used by no-shadow to suppress reports when the outer symbol is
+    /// declared inside a namespace/module body (declare global / declare namespace).
+    is_namespace_body: bool = false,
+    _padding: u8 = 0,
 };
 
 // ── Scope Tree ─────────────────────────────────────────────
