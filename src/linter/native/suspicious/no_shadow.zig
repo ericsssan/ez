@@ -48,6 +48,17 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         entry.value_ptr.put(name, {}) catch continue;
     }
 
+    // Build the `allow` list from rule options (if present).
+    // allow: ["foo", "bar"] — names that are exempt from shadowing checks.
+    var allow_list: ?[]const std.json.Value = null;
+    if (ctx.rule_options) |opts| {
+        if (opts.* == .object) {
+            if (opts.object.get("allow")) |allow_val| {
+                if (allow_val == .array) allow_list = allow_val.array.items;
+            }
+        }
+    }
+
     // Check each nested-scope symbol against all ancestor scopes — O(n × depth).
     i = 0;
     while (i < total) : (i += 1) {
@@ -60,6 +71,18 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (scopes.depth(scope_id) == 0) continue;
 
         const name = symbols.getName(id);
+
+        // Skip names in the allow list.
+        if (allow_list) |al| {
+            var allowed = false;
+            for (al) |item| {
+                if (item == .string and std.mem.eql(u8, item.string, name)) {
+                    allowed = true;
+                    break;
+                }
+            }
+            if (allowed) continue;
+        }
 
         var ancestor = scopes.parent(scope_id);
         while (ancestor.isValid()) : (ancestor = scopes.parent(ancestor)) {

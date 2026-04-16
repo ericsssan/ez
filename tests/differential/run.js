@@ -379,12 +379,11 @@ for (const [prefix, pkg] of _pluginPackages) {
 function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions) {
   if (hasCustomParser) return "skip";
   try {
-    // If the case has options, build a config with options embedded
+    // If the case has options, rebuild config with options embedded in ESLint array format.
+    // Config must use {"rules":{...}} format so Zig's configFromJson finds the "rules" key.
     let config = ruleConfig;
     if (hasOptions && ruleOptions && ruleOptions.length > 0) {
-      const optionsObj = {};
-      optionsObj[ruleName] = ruleOptions[0]; // first option (usually the options object)
-      config = buildNativeConfig({ [ruleName]: "warn" }, optionsObj);
+      config = buildNativeConfig({ rules: { [ruleName]: ["warn", ruleOptions[0]] } });
     }
     const diags = ezLint(code, { config });
     return diags
@@ -1027,7 +1026,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
     // Pre-build native config for this rule (one per rule, reused across cases).
     const _ruleHasNativeImpl = _nativeRuleSet.has(ruleName);
     const nativeRuleConfig = nativeAvailable
-      ? buildNativeConfig({ [ruleName]: "warn" })
+      ? buildNativeConfig({ rules: { [ruleName]: "warn" } })
       : null;
 
     // Create plugin once per rule so runPlugins can take the fast path on all subsequent cases.
