@@ -2779,6 +2779,8 @@ const NodeProto = {
       if (mt + 1 < ast.tokenCount && ast._tokTags[mt + 1] === TOK_KW_TYPE) return 'type';
       return 'value';
     }
+    // ExportSpecifier: inline `type` modifier — `export { type foo }`
+    if (mt > 0 && ast._tokTags[mt - 1] === TOK_KW_TYPE) return 'type';
     return 'value';
   },
 

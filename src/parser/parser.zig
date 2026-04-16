@@ -3321,6 +3321,18 @@ pub const Parser = struct {
         _ = try self.expect(.l_brace);
 
         while (self.peek() != .r_brace and !self.isAtEnd()) {
+            // TS inline type specifier: `import { type foo }` or `import { type foo as bar }`
+            // `type` is a modifier when followed by an identifier, not `,` or `}` or `as`.
+            // TS inline type specifier: `import { type foo }` or `import { type foo as bar }`
+            // `type` is a modifier when followed by an identifier, not `,` or `}` or `as`.
+            if (self.language.isTs() and self.peek() == .kw_type) {
+                const next = self.peekAt(1);
+                if (next == .identifier or next.isTsContextualKeyword() or
+                    next == .kw_default or next == .string_literal)
+                {
+                    _ = self.advance(); // skip 'type' modifier
+                }
+            }
             const imported_tok = self.tok_i;
             const imported_is_string = self.peek() == .string_literal;
             if (imported_is_string) {
@@ -3705,6 +3717,16 @@ pub const Parser = struct {
         defer local_token_list.deinit(self.gpa);
 
         while (self.peek() != .r_brace and !self.isAtEnd()) {
+            // TS inline type specifier: `export { type foo }` or `export { type foo as bar }`
+            if (self.language.isTs() and self.peek() == .kw_type) {
+                const next = self.peekAt(1);
+                if (next == .identifier or next.isTsContextualKeyword() or
+                    next == .kw_default or next == .string_literal)
+                {
+                    _ = self.advance(); // skip 'type' modifier
+                }
+            }
+
             const local_tok = self.tok_i;
             const local_is_string = self.peek() == .string_literal;
             if (local_is_string) {
