@@ -2189,8 +2189,15 @@ pub const Parser = struct {
                 {
                     _ = try self.parseAssignmentExpression();
                 } else {
-                    // Parse extends as a type (handles generics like A<T>)
+                    // Parse extends as a type to advance token position (handles generics A<T>).
+                    // Drop the TSTypeReference wrapper (last node created by parseType) since it
+                    // would be an orphan (super_class=.none). Keep the inner identifier/member
+                    // nodes so the superClass getter can find the base class via mainToken scan.
+                    const _ext_nodes_before = self.nodes.len;
                     _ = try typescript.parseType(self);
+                    if (self.nodes.len > _ext_nodes_before) {
+                        self.nodes.len = @intCast(self.nodes.len - 1);
+                    }
                 }
                 // Handle mixin call: `extends Constructor<T>()`
                 if (self.peek() == .l_paren) {
@@ -2652,7 +2659,7 @@ pub const Parser = struct {
             _ = try self.expect(.r_bracket);
 
             // TS: optional marker and generic type params on computed members
-            if (self.language.isTs()) _ = self.eat(.question);
+            const computed_is_optional: u32 = if (self.language.isTs() and self.eat(.question) != null) 1 else 0;
             if (self.language.isTs() and self.peek() == .less_than) {
                 _ = try typescript.parseTypeParameterList(self);
             }
@@ -2739,6 +2746,7 @@ pub const Parser = struct {
             const comp_prop_extra = try self.addExtra(ast.PropertyData, .{
                 .value = comp_value,
                 .type_annotation = computed_type_ann,
+                .optional = computed_is_optional,
             });
             return self.addNode(.{
                 .tag = .computed_property_def,
@@ -2755,7 +2763,7 @@ pub const Parser = struct {
         const key = try self.parseClassPropertyKey();
 
         // Skip optional `?` marker (TS optional member)
-        if (self.language.isTs()) _ = self.eat(.question);
+        const member_is_optional: u32 = if (self.language.isTs() and self.eat(.question) != null) 1 else 0;
 
         // TS generic method: skip type parameters before `(`
         if (self.language.isTs() and self.peek() == .less_than) {
@@ -2937,6 +2945,7 @@ pub const Parser = struct {
         const prop_extra = try self.addExtra(ast.PropertyData, .{
             .value = value,
             .type_annotation = type_ann,
+            .optional = member_is_optional,
         });
         return self.addNode(.{
             .tag = .property_def,

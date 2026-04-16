@@ -677,6 +677,7 @@ pub const TypeAliasData = struct {
 pub const PropertyData = struct {
     value: NodeIndex = .none,          // initializer expression (or .none)
     type_annotation: NodeIndex = .none, // TSTypeAnnotation node (or .none)
+    optional: u32 = 0,                 // 1 if TS optional marker `?` present
 };
 
 /// <tag attrs>children</tag>

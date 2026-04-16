@@ -729,10 +729,10 @@ class AstView {
     return { name: e[i], type_params: e[i + 1], type_params_end: e[i + 2], type_node: e[i + 3] };
   }
 
-  /** PropertyData { value, type_annotation } */
+  /** PropertyData { value, type_annotation, optional } */
   extraPropertyData(i) {
     const e = this._extraData;
-    return { value: e[i], type_annotation: e[i + 1] };
+    return { value: e[i], type_annotation: e[i + 1], optional: e[i + 2] };
   }
 
   /** EnumData { name, members_start, members_end } */
@@ -996,6 +996,18 @@ const NodeProto = {
     if (tagName === 'ImportDeclaration' && this._ast.nodeLhs(this._i) === NONE &&
         this._ast.nodeRhs(this._i) !== NONE) {
       result = 'TSImportEqualsDeclaration';
+    }
+    // Remap BlockStatement → TSModuleBlock when it's the body of a TS namespace/module.
+    // ESLint's astUtils.isTopLevelExpressionStatement() checks parent.type === 'TSModuleBlock'
+    // to recognize directive prologues inside namespace/module bodies.
+    if (tagName === 'BlockStatement' && this._ast._parentData) {
+      const parentIdx = this._ast._parentData[this._i];
+      if (parentIdx !== NONE && parentIdx !== 0xFFFFFFFF) {
+        const parentTag = this._ast._nodeTags[parentIdx];
+        if (parentTag === T.ts_namespace_decl || parentTag === T.ts_module_decl) {
+          result = 'TSModuleBlock';
+        }
+      }
     }
     // Remap TSTypeReference to TS*Keyword or TSLiteralType when it's a built-in keyword/literal type
     // (no type arguments, and main token text matches a TS keyword or literal).
@@ -2090,6 +2102,15 @@ const NodeProto = {
     if (t === T.identifier) {
       const lhs = this._ast.nodeLhs(this._i);
       return lhs === 0 ? true : undefined;
+    }
+    // PropertyDefinition with TS optional marker `?` (e.g. `class C { a?: number = 5 }`)
+    if (t === T.property_def || t === T.computed_property_def) {
+      const rhs = this._ast.nodeRhs(this._i);
+      if (rhs !== NONE) {
+        const pd = this._ast.extraPropertyData(rhs);
+        return pd.optional === 1 ? true : false;
+      }
+      return false;
     }
     return t === T.optional_member_expr || t === T.optional_computed_member_expr ||
            t === T.optional_call_expr;
@@ -3232,19 +3253,24 @@ const NodeProto = {
       bodyStart = ast.nodeLhs(parentIdx);
       bodyEnd   = ast.nodeRhs(parentIdx);
     } else if (parentTag === T.block_stmt) {
-      // Block must be the direct body of a function (not if/while/etc.)
+      // Block must be the direct body of a function or TS namespace/module.
       const gpIdx = pd[parentIdx];
       if (gpIdx === NONE || gpIdx === 0xFFFFFFFF) return undefined;
       const gpTag = ast._nodeTags[gpIdx];
-      if (gpTag !== T.fn_decl && gpTag !== T.async_fn_decl &&
+      if (gpTag === T.ts_namespace_decl || gpTag === T.ts_module_decl) {
+        // TS namespace/module body — 'use strict' etc. count as directives
+        bodyStart = ast.nodeLhs(parentIdx);
+        bodyEnd   = ast.nodeRhs(parentIdx);
+      } else if (gpTag !== T.fn_decl && gpTag !== T.async_fn_decl &&
           gpTag !== T.generator_fn_decl && gpTag !== T.async_generator_fn_decl &&
           gpTag !== T.fn_expr && gpTag !== T.async_fn_expr &&
           gpTag !== T.generator_fn_expr && gpTag !== T.async_generator_fn_expr &&
           gpTag !== T.arrow_fn && gpTag !== T.async_arrow_fn) {
         return undefined;
+      } else {
+        bodyStart = ast.nodeLhs(parentIdx);
+        bodyEnd   = ast.nodeRhs(parentIdx);
       }
-      bodyStart = ast.nodeLhs(parentIdx);
-      bodyEnd   = ast.nodeRhs(parentIdx);
     } else {
       return undefined;
     }

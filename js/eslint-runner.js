@@ -2647,6 +2647,19 @@ class SourceCode {
     const start = node.range[0];
     const ast = this._ast;
     const starts = ast._tokStarts;
+    // Special case: when node starts at position 0 (Program or first node in file),
+    // search from 0 to first token start — catches leading comments like /// <reference>.
+    if (start === 0) {
+      const firstTokStart = (starts && ast.tokenCount > 0) ? starts[0] : this.text.length;
+      const nativeComments = ast.commentsInRange(0, firstTokStart);
+      if (this.text.startsWith('#!')) {
+        const allComments = this.getAllComments();
+        if (allComments.length > 0 && allComments[0].type === 'Shebang') {
+          return [allComments[0], ...nativeComments];
+        }
+      }
+      return nativeComments;
+    }
     let lo = 0, hi = ast.tokenCount - 1;
     while (lo < hi) { const m = (lo + hi + 1) >> 1; if (starts[m] < start) lo = m; else hi = m - 1; }
     // When lo=0, must check if token[0] is actually before `start`; otherwise there's no prior token.
@@ -3202,8 +3215,16 @@ function _execReport(descriptor, ruleId, ruleMeta, ctx) {
   if (!resolvedLoc && node) {
     const sc = ctx.sourceCode;
     // node may be a NodeView (.start/.end) or a token object (.range[0]/.range[1]).
-    const startIdx = node.start != null ? node.start : (node.range ? node.range[0] : 0);
-    const endIdx   = node.end   != null ? node.end   : (node.range ? node.range[1] : startIdx);
+    // When rules spread a NodeView ({...node, ...}), prototype getters like .start/.end
+    // are lost. Fall back to _i/_ast (own props copied by spread) to recover position.
+    let startIdx = node.start != null ? node.start : (node.range ? node.range[0] : null);
+    let endIdx   = node.end   != null ? node.end   : (node.range ? node.range[1] : null);
+    if (startIdx == null && node._i != null && node._ast) {
+      startIdx = node._ast._nodeStartPos(node._i);
+      endIdx = node._ast._nodeEndPos(node._i);
+    }
+    startIdx = startIdx ?? 0;
+    endIdx = endIdx ?? startIdx;
     resolvedLoc = {
       start: sc.getLocFromIndex(startIdx),
       end:   sc.getLocFromIndex(endIdx),
