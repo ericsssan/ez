@@ -157,6 +157,13 @@ pub const SemanticAnalyzer = struct {
     breakable_depth: u32 = 0,
     break_hit: [64]bool = [_]bool{false} ** 64,
 
+    /// Continuable loop stack for no-unreachable-loop detection.
+    /// Only incremented for loops (not switch). An unlabeled continue sets
+    /// continue_hit[continuable_depth-1] = true. At loop exit, if
+    /// body_alive is false but continue_hit is true, the loop CAN iterate.
+    continuable_depth: u32 = 0,
+    continue_hit: [64]bool = [_]bool{false} ** 64,
+
     /// Null-separated list of global names to pre-declare in scope 0 before visiting.
     /// Passed from JS via the NAPI globals arg so references to builtins resolve in Zig,
     /// making scope.through exact without JS post-processing.
@@ -691,11 +698,19 @@ pub const SemanticAnalyzer = struct {
                     self.break_hit[depth] = false;
                     self.breakable_depth = depth + 1;
                 }
+                // Track continues targeting this loop.
+                const cdepth = self.continuable_depth;
+                if (cdepth < self.continue_hit.len) {
+                    self.continue_hit[cdepth] = false;
+                    self.continuable_depth = cdepth + 1;
+                }
                 try self.visitNode(data.rhs); // body
                 if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
                 const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
                 if (depth < self.break_hit.len) self.breakable_depth = depth;
-                const body_alive = self.cfg_alive;
+                const had_continue = if (cdepth < self.continue_hit.len) self.continue_hit[cdepth] else false;
+                if (cdepth < self.continue_hit.len) self.continuable_depth = cdepth;
+                const body_alive = self.cfg_alive or had_continue;
                 // Infinite loop: while(true) with no break → code after is dead.
                 const is_infinite = data.lhs != .none and self.isLiteralTrue(data.lhs);
                 if (is_infinite and !had_break) {
@@ -731,13 +746,20 @@ pub const SemanticAnalyzer = struct {
                     self.break_hit[depth] = false;
                     self.breakable_depth = depth + 1;
                 }
+                const cdepth = self.continuable_depth;
+                if (cdepth < self.continue_hit.len) {
+                    self.continue_hit[cdepth] = false;
+                    self.continuable_depth = cdepth + 1;
+                }
                 try self.visitNode(data.lhs); // body (runs at least once)
                 if (self.cpb_initialized) self.cpb.setLoopContinueDest();
                 try self.visitNode(data.rhs); // condition
                 if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
                 const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
                 if (depth < self.break_hit.len) self.breakable_depth = depth;
-                const body_alive = self.cfg_alive;
+                const had_continue = if (cdepth < self.continue_hit.len) self.continue_hit[cdepth] else false;
+                if (cdepth < self.continue_hit.len) self.continuable_depth = cdepth;
+                const body_alive = self.cfg_alive or had_continue;
                 // do {} while(true) with no break → infinite
                 const is_infinite = data.rhs != .none and self.isLiteralTrue(data.rhs);
                 if (is_infinite and !had_break) {
@@ -1140,6 +1162,10 @@ pub const SemanticAnalyzer = struct {
             },
             .continue_stmt => {
                 if (self.cpb_initialized) try self.cpb.makeContinue(null, idx);
+                // Only count reachable continues (cfg_alive=true means we can reach here).
+                if (self.cfg_alive and self.continuable_depth > 0) {
+                    self.continue_hit[self.continuable_depth - 1] = true;
+                }
                 self.cfg_alive = false;
             },
             .continue_label => {
@@ -1148,6 +1174,9 @@ pub const SemanticAnalyzer = struct {
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeContinue(label_text, idx);
                 }
+                // Labeled continue targets a specific outer loop; without label resolution
+                // we cannot know which depth to mark. Leave continue_hit unchanged —
+                // labeled continues are rare and the label resolution cost is not worth it.
                 self.cfg_alive = false;
             },
             .empty_stmt, .debugger_stmt, .this_expr, .super_expr,
@@ -1394,11 +1423,18 @@ pub const SemanticAnalyzer = struct {
             self.break_hit[depth] = false;
             self.breakable_depth = depth + 1;
         }
+        const cdepth = self.continuable_depth;
+        if (cdepth < self.continue_hit.len) {
+            self.continue_hit[cdepth] = false;
+            self.continuable_depth = cdepth + 1;
+        }
         try self.visitNode(data.rhs);
         if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
         if (depth < self.break_hit.len) self.breakable_depth = depth;
-        const body_alive = self.cfg_alive;
+        const had_continue = if (cdepth < self.continue_hit.len) self.continue_hit[cdepth] else false;
+        if (cdepth < self.continue_hit.len) self.continuable_depth = cdepth;
+        const body_alive = self.cfg_alive or had_continue;
         // for(;;) with no break → infinite loop → code after is dead.
         const is_infinite = (for_data.condition == .none);
         if (is_infinite and !had_break) {
@@ -1429,11 +1465,16 @@ pub const SemanticAnalyzer = struct {
             try self.cpb.pushLoopContext(loop_type, null, idx, fiof_data.binding); // target = left
             self.cpb.setLoopContinueDest();
         }
-        // Track break_hit for for-in/of (same as while/for loops)
+        // Track break_hit/continue_hit for for-in/of (same as while/for loops)
         const depth = self.breakable_depth;
         if (depth < self.break_hit.len) {
             self.break_hit[depth] = false;
             self.breakable_depth = depth + 1;
+        }
+        const cdepth = self.continuable_depth;
+        if (cdepth < self.continue_hit.len) {
+            self.continue_hit[cdepth] = false;
+            self.continuable_depth = cdepth + 1;
         }
         const binding_tag = self.ast.nodeTag(fiof_data.binding);
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
@@ -1445,7 +1486,9 @@ pub const SemanticAnalyzer = struct {
         try self.visitNode(fiof_data.expr);
         try self.visitNode(fiof_data.body);
         if (self.cpb_initialized) try self.cpb.makeLoopBackEdge(idx);
-        const body_alive = self.cfg_alive;
+        const had_continue = if (cdepth < self.continue_hit.len) self.continue_hit[cdepth] else false;
+        if (cdepth < self.continue_hit.len) self.continuable_depth = cdepth;
+        const body_alive = self.cfg_alive or had_continue;
         const had_break = if (depth < self.break_hit.len) self.break_hit[depth] else true;
         if (depth < self.break_hit.len) self.breakable_depth = depth;
         _ = had_break;
