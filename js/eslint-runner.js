@@ -3388,8 +3388,15 @@ class RuleContext {
     this.filename = filename;
     this.physicalFilename = filename;
     this._source = sourceText;
+    // _reports must be a fresh array — caller receives it as runPlugins return value;
+    // reusing would mutate previously-returned arrays.
     this._reports = [];
-    this._ruleErrors = Object.create(null);
+    // _ruleErrors is internal — reuse the prior object by clearing keys (saves alloc).
+    if (this._ruleErrors) {
+      for (const k in this._ruleErrors) delete this._ruleErrors[k];
+    } else {
+      this._ruleErrors = Object.create(null);
+    }
     this._errorBudget = options.errorBudget || DEFAULT_ERROR_BUDGET;
     this._skipSet = null;
     this._currentNodeIdx = 0;
@@ -5084,6 +5091,15 @@ function _remapList(ruleIds, key, handlerByKey) {
   return result;
 }
 
+// Module-level reusable buffers for walkNodes — single walk active at a time
+// (no recursion; runPlugins is synchronous). Hoisting saves ~3 alloc/lint.
+const _walkAncestorsBuf = [];
+const _walkSegEventNode = {};
+const _walkMethodDefTagSet = new Set([
+  T.method_def, T.getter_def, T.setter_def, T.constructor_def,
+  T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
+]);
+
 /**
  * Walk all AST nodes in DFS order: enter (pre-order) then exit (post-order).
  * Proper DFS ensures parents are visited before children on enter, and
@@ -5116,14 +5132,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // Reusable ancestors buffer — pre-sized per node, never reallocated.
   // Safe: esquery only reads the array; both _runSelectorList calls per node are synchronous.
-  const _ancestorsBuf = [];
+  const _ancestorsBuf = _walkAncestorsBuf;
+  _ancestorsBuf.length = 0;
 
-  // Pre-compute node depths for O(1) ancestor buffer pre-sizing.
-  // ez AST: children have LOWER indices than parents (root=0 is the unique exception).
-  // Use pre-order (parent-before-child guaranteed) for a single correct O(n) pass:
-  // when processing node preOrder[j], its parent has already been processed.
-  // _parentData is Uint32Array: values are always plain JS numbers, no undefined.
-  // Node depths: use Zig-precomputed array, fallback to JS computation.
   const _nodeDepths = (hasSelectors && pd) ? (ast._nodeDepths || (() => {
     const n = ast.nodeCount;
     const depths = new Uint16Array(n);
@@ -5135,14 +5146,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     return depths;
   })()) : null;
 
-  // Method def tags that synthesize a FunctionExpression child in ESTree.
-  // When building ancestors, insert the synthetic FunctionExpression between
-  // a method def and its non-key children so selectors like
-  // `:function > BlockStatement` work for object/class method shorthands.
-  const _methodDefTagSet = new Set([
-    T.method_def, T.getter_def, T.setter_def, T.constructor_def,
-    T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
-  ]);
+  const _methodDefTagSet = _walkMethodDefTagSet;
 
   function getAncestorsFor(nodeIdx) {
     if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
@@ -5251,7 +5255,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   // Reused second arg for segment events — rules that use onCodePathSegmentStart(seg, node)
   // receive this as `node`; most rules ignore it, but no-unreachable-loop uses isLoopingTarget(node).
-  const _segEventNode = {};
+  const _segEventNode = _walkSegEventNode;
   // Pre-cache segment event handler arrays — eliminates visitorMap.get() on every branch point.
   const _segStartH    = visitorMap.get('onCodePathSegmentStart') || null;
   const _segEndH      = visitorMap.get('onCodePathSegmentEnd') || null;

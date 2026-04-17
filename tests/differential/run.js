@@ -213,7 +213,7 @@ function parseDescription (description) {
     build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]iterateJsdoc\.js$/ }, async (args) => {
       const fs = require("fs");
       const src = fs.readFileSync(args.path, "utf8");
-      const wrapped = src.replace(
+      let wrapped = src.replace(
         `'*:not(Program)' (node) {
           const commentNode = getJSDocComment(
             sourceCode, node, /** @type {Settings} */ (settings),
@@ -224,6 +224,44 @@ function parseDescription (description) {
           const commentNode = _ezGjdcCommon !== undefined ? _ezGjdcCommon : getJSDocComment(
             sourceCode, node, /** @type {Settings} */ (settings),
           );`
+      );
+      // Plug upstream leak: trackedJsdocs is a module-scope Set that grows per-lint
+      // and is never cleared. Clear it on Program:exit so it doesn't accumulate across files.
+      wrapped = wrapped.replace(
+        `        'Program:exit' () {`,
+        `        'Program:exit' () {
+          // EZ patch: clear cross-file accumulation
+          const _ezTracked = trackedJsdocs;`
+      ).replace(
+        `          callIterator(
+            context,
+            null,
+            untrackedJSdoc,
+            /** @type {StateObject} */
+            (state),
+            true,
+          );
+        },
+      };
+    },
+    meta: ruleConfig.meta,
+  };
+};`,
+        `          callIterator(
+            context,
+            null,
+            untrackedJSdoc,
+            /** @type {StateObject} */
+            (state),
+            true,
+          );
+          _ezTracked.clear();
+        },
+      };
+    },
+    meta: ruleConfig.meta,
+  };
+};`
       );
       return { loader: "js", contents: wrapped };
     });
