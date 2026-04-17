@@ -230,12 +230,15 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
 
             // ── Imports ───────────────────────────────────────
             .import_decl => {
-                // lhs is .none for TS import alias (`import X = require(...)`)
+                // lhs == .none → TS import alias (`import X = Bar` or `import X = require(...)`).
+                //   rhs is the module reference (Identifier / qualified name / require call).
                 if (lhs != .none) {
                     const ed = tree.extraData(ast_mod.ImportData, @intFromEnum(lhs));
                     // source is visited last (document order: specifiers, then source)
                     push(&stack, alloc, ed.source, p) catch return error.OutOfMemory;
                     pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.specifiers_start, .end = ed.specifiers_end }, p) catch return error.OutOfMemory;
+                } else if (rhs != .none) {
+                    push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 }
             },
             // Import specifiers: lhs/rhs point to real identifier nodes
@@ -337,9 +340,15 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
             .yield_expr, .yield_delegate,
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
             .spread_element,
-            .grouping_expr,
-            .ts_as_expr, .ts_satisfies_expr, .ts_non_null_expr,
+            .grouping_expr, .ts_non_null_expr,
             => {
+                push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
+            },
+            // ts_as / ts_satisfies: lhs = expr, rhs = type annotation.
+            // Both must be linked so rules walking parent chain from the type node work.
+            .ts_as_expr, .ts_satisfies_expr,
+            => {
+                push(&stack, alloc, rhs, p) catch return error.OutOfMemory;
                 push(&stack, alloc, lhs, p) catch return error.OutOfMemory;
             },
             // import_expr: lhs = source, rhs = options (optional second arg)

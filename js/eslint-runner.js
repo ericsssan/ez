@@ -5191,6 +5191,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   function invokeSelectorHandlers(nodeIdx, isExit) {
     if (!esq || selectorHandlers.length === 0) return;
     const tag = nodeTags[nodeIdx];
+    // Skip the rhs call_expr of `import X = require(...)` — see _resolveHandlers.
+    if (tag === T.call_expr && pd) {
+      const parentIdx = pd[nodeIdx];
+      if (parentIdx !== undefined && parentIdx !== NONE && nodeTags[parentIdx] === _importDeclTagNum &&
+          ast.nodeLhs(parentIdx) === NONE) return;
+    }
     const byTag = isExit ? selectorsByTagExit : selectorsByTagEnter;
     const universal = isExit ? _universalExit : _universalEnter;
     const handlers = byTag ? byTag[tag] : (universal ? null : selectorHandlers);
@@ -5776,6 +5782,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // TSImportEqualsDeclaration: lhs=NONE, rhs!=NONE
       if (ast.nodeLhs(idx) === NONE && ast.nodeRhs(idx) !== NONE) {
         return handlersArr === tagEnterHandlers ? _tsImportEqualsEnterH : _tsImportEqualsExitH;
+      }
+    }
+    // `import X = require(...)` — the call_expr rhs of import_decl(lhs=NONE) is wrapped
+    // by the synthetic TSExternalModuleReference in ESTree; the underlying CallExpression
+    // is not a real visitable node. Suppress its handler dispatch so rules like
+    // @typescript-eslint/no-require-imports don't double-fire on the require() call.
+    if (tag === T.call_expr && pd) {
+      const parentIdx = pd[idx];
+      if (parentIdx !== undefined && parentIdx !== NONE && nodeTags[parentIdx] === _importDeclTagNum &&
+          ast.nodeLhs(parentIdx) === NONE) {
+        return null;
       }
     }
     if (_hasTsKwRemap && tag === _tsTypeRefTagNum && ast.nodeRhs(idx) === NONE) {
