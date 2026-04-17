@@ -4350,7 +4350,14 @@ function _compileSelectorFastMatcher(parsedSelector) {
     }
     // Always include the type check. When used in per-tag dispatch the type is guaranteed,
     // but when used as a branch inside :matches() the universal handler sees all node types.
-    const typeCheck = typeValue ? (n) => n.type === typeValue : null;
+    // JSXOpeningElement: jsx_self_closing nodes (`<Foo/>`) are dispatched to JSXOpeningElement
+    // selectors but report type='JSXElement' — accept either so the typeCheck doesn't filter
+    // out the self-closing variant.
+    const typeCheck = typeValue
+      ? (typeValue === 'JSXOpeningElement'
+          ? (n) => n.type === 'JSXOpeningElement' || n.type === 'JSXElement'
+          : (n) => n.type === typeValue)
+      : null;
     if (attrChecks.length === 0) {
       if (typeCheck) return { fn: (n, _a) => typeCheck(n), complete: true };
       return { fn: (_n, _a) => true, complete: true };
