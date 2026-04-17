@@ -226,7 +226,7 @@ pub const ParallelRunner = struct {
             semantic_mod.SemanticResult.initEmpty(arena);
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.sem_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
-        const raw_diagnostics = linter_mod.lint(arena, &tree, &sem_result, self.config) catch {
+        const raw_diagnostics = linter_mod.lint(arena, &tree, &sem_result, self.config, lang) catch {
             const msg = std.fmt.allocPrint(
                 self.allocator,
                 "{s}: error: linting failed\n",

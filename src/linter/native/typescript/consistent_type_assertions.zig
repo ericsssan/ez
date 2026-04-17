@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .style,
     .default_severity = .warning,
     .description = "Enforce consistent usage of type assertions (prefer `as Type` over `<Type>expr`)",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.ts_type_assertion};

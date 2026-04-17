@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .style,
     .default_severity = .warning,
     .description = "Require using `T[]` instead of `Array<T>`",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.ts_type_reference};

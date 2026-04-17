@@ -113,6 +113,148 @@ export default { RuleTester, Linter: _eslint.Linter, ESLint: _eslint.ESLint, Sou
     // ── Source file stubs (avoid loading real TS rule sources) ─
     build.onLoad({ filter: /eslint-plugin[/\\]src[/\\]rules[/\\].+\.ts$/ }, () => ({ loader: "js", contents: `export default {};` }));
     build.onLoad({ filter: /sonarjs-src[/\\].*[/\\](helpers|files)\.(ts|js)$/ }, () => ({ loader: "js", contents: `export default {}; export const normalizePath = (p) => p;` }));
+
+    // ── jsdoc performance intercepts ─────────────────────────────
+    // Profiling multi-rule lint (20 files × 50 jsdoc rules):
+    //   getJSDocComment: ~355k calls / 245ms (62.7%) without cache
+    //   parseComment:    ~4.5k calls / 28ms (7.2%) with 10x redundancy per comment
+    // Both are deterministic per (sourceCode, node) pair, so stash results on the
+    // Comment/Node object itself via a Symbol. Patching at onLoad avoids editing the
+    // submodule's node_modules (which would be wiped on reinstall).
+    // Additionally: short-circuit iterateJsdoc's *:not(Program) handler for nodes
+    // cached as no-jsdoc, so later rules bail before any work.
+
+    // Memo getDefaultTagStructureForMode by mode (read-only; 4 keys total).
+    // Without memo, native `Map` op was ~4.7% of CPU time from rebuild on every rule call.
+    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]getDefaultTagStructureForMode\.js$/ }, async (args) => {
+      const fs = require("fs");
+      const src = fs.readFileSync(args.path, "utf8");
+      return { loader: "js", contents: src.replace(
+        /export default getDefaultTagStructureForMode;?\s*$/,
+        `const _ez_gdts_cache = new Map();
+const _ez_origGDTS = getDefaultTagStructureForMode;
+const _ez_getDefaultTagStructureForMode = (mode) => { let v = _ez_gdts_cache.get(mode); if (v !== undefined) return v; v = _ez_origGDTS(mode); _ez_gdts_cache.set(mode, v); return v; };
+export default _ez_getDefaultTagStructureForMode;`
+      ) };
+    });
+
+    // parseInlineTags.parseDescription: matchAll reads RegExp.prototype.flags on every call
+    // (Bun accessor overhead was 7.0% self / 676ms). Replace with explicit exec+lastIndex.
+    build.onLoad({ filter: /@es-joy[/\\]jsdoccomment[/\\]src[/\\]parseInlineTags\.js$/ }, async (args) => {
+      const fs = require("fs");
+      const src = fs.readFileSync(args.path, "utf8");
+      return { loader: "js", contents: src.replace(
+        `function parseDescription (description) {
+  /** @type {import('.').InlineTag[]} */
+  const result = [];
+
+  // This could have been expressed in a single pattern,
+  // but having two avoids a potentially exponential time regex.
+
+  const prefixedTextPattern = /(?:\\[(?<text>[^\\]]+)\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\}/gvd;
+  // The pattern used to match for text after tag uses a negative lookbehind
+  // on the ']' char to avoid matching the prefixed case too.
+  const suffixedAfterPattern = /(?<!\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\s*(?<separator>[\\s\\|])?\\s*(?<text>[^\\}]*)\\}/gvd;
+
+  const matches = [
+    ...description.matchAll(prefixedTextPattern),
+    ...description.matchAll(suffixedAfterPattern)
+  ];`,
+        `const _ez_prefixedTextPattern = /(?:\\[(?<text>[^\\]]+)\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\}/gvd;
+const _ez_suffixedAfterPattern = /(?<!\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\s*(?<separator>[\\s\\|])?\\s*(?<text>[^\\}]*)\\}/gvd;
+function _ez_execAll(re, str) { const out = []; re.lastIndex = 0; let m; while ((m = re.exec(str)) !== null) { out.push(m); if (m.index === re.lastIndex) re.lastIndex++; } return out; }
+function parseDescription (description) {
+  const result = [];
+  const matches = [ ..._ez_execAll(_ez_prefixedTextPattern, description), ..._ez_execAll(_ez_suffixedAfterPattern, description) ];`
+      ) };
+    });
+
+    // jsdocUtils.getPreferredTagNameSimple: Object.entries(tagNames).find(...) on every call
+    // (6% of CPU self time: 617ms / 10.25s). Precompute alias→preferred once per tagNames identity.
+    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]jsdocUtils\.js$/ }, async (args) => {
+      const fs = require("fs");
+      const src = fs.readFileSync(args.path, "utf8");
+      return { loader: "js", contents: src.replace(
+        `  const preferredTagName = Object.entries(tagNames).find(([
+    , aliases,
+  ]) => {
+    return aliases.includes(name);
+  })?.[0];`,
+        `  if (!globalThis.__ez_aliasCache) globalThis.__ez_aliasCache = new WeakMap();
+  let _ez_aliasMap = globalThis.__ez_aliasCache.get(tagNames);
+  if (!_ez_aliasMap) {
+    _ez_aliasMap = new Map();
+    for (const [preferred, aliases] of Object.entries(tagNames)) {
+      for (const alias of aliases) _ez_aliasMap.set(alias, preferred);
+    }
+    globalThis.__ez_aliasCache.set(tagNames, _ez_aliasMap);
+  }
+  const preferredTagName = _ez_aliasMap.get(name);`
+      ) };
+    });
+
+    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]iterateJsdoc\.js$/ }, async (args) => {
+      const fs = require("fs");
+      const src = fs.readFileSync(args.path, "utf8");
+      const wrapped = src.replace(
+        `'*:not(Program)' (node) {
+          const commentNode = getJSDocComment(
+            sourceCode, node, /** @type {Settings} */ (settings),
+          );`,
+        `'*:not(Program)' (node) {
+          const _ezGjdcCommon = node && typeof node === 'object' ? node[Symbol.for('ez.gjdc.common')] : undefined;
+          if (_ezGjdcCommon === null && !ruleConfig.nonComment) return;
+          const commentNode = _ezGjdcCommon !== undefined ? _ezGjdcCommon : getJSDocComment(
+            sourceCode, node, /** @type {Settings} */ (settings),
+          );`
+      );
+      return { loader: "js", contents: wrapped };
+    });
+    build.onLoad({ filter: /@es-joy[/\\]jsdoccomment[/\\]src[/\\]jsdoccomment\.js$/ }, async (args) => {
+      const fs = require("fs");
+      const src = fs.readFileSync(args.path, "utf8");
+      const wrapped = src.replace(
+        /\bexport\s*\{([^}]*)\}/,
+        (m, names) => {
+          const list = names.split(',').map(s => s.trim()).filter(Boolean);
+          return `const _EZ_GJDC_COMMON = Symbol.for('ez.gjdc.common');
+const _EZ_GJDC_MAP = Symbol.for('ez.gjdc.map');
+const _EZ_GJDC_FALLBACK = new WeakMap();
+const _ez_origGetJSDocComment = getJSDocComment;
+const _ez_getJSDocComment = function (sourceCode, node, settings, opts) {
+  const o = opts || {};
+  const isDefault = settings && settings.minLines === 0 && settings.maxLines === 1 &&
+    !settings.skipInvokedExpressionsForCommentFinding && !o.checkOverloads && !o.nonJSDoc;
+  if (isDefault && node && typeof node === 'object') {
+    const hit = node[_EZ_GJDC_COMMON];
+    if (hit !== undefined) return hit;
+    const r = _ez_origGetJSDocComment(sourceCode, node, settings, o);
+    try { node[_EZ_GJDC_COMMON] = r === null ? null : r; } catch {}
+    return r;
+  }
+  if (node && typeof node === 'object') {
+    let inner = node[_EZ_GJDC_MAP];
+    if (!inner) { inner = _EZ_GJDC_FALLBACK.get(node); }
+    const key = settings.minLines + '|' + settings.maxLines + '|' +
+      (settings.skipInvokedExpressionsForCommentFinding ? 1 : 0) + '|' +
+      (o.checkOverloads ? 1 : 0) + '|' + (o.nonJSDoc ? 1 : 0);
+    if (inner && inner.has(key)) return inner.get(key);
+    const r = _ez_origGetJSDocComment(sourceCode, node, settings, o);
+    if (!inner) { inner = new Map(); try { node[_EZ_GJDC_MAP] = inner; } catch { _EZ_GJDC_FALLBACK.set(node, inner); } }
+    inner.set(key, r);
+    return r;
+  }
+  return _ez_origGetJSDocComment(sourceCode, node, settings, o);
+};
+export { ${list.map(n => n === 'getJSDocComment' ? '_ez_getJSDocComment as getJSDocComment' : n).join(', ')} }`;
+        }
+      );
+      return { loader: "js", contents: wrapped };
+    });
+
+    // Note: parseComment memoization was attempted but reverted — the returned JSDoc
+    // block is mutable and some callers extend `tags[i].inlineTags` in place, which
+    // breaks cached reuse. getJSDocComment's result (a Comment token) is safely cached.
   },
 });
 
@@ -395,8 +537,6 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
 
 // Per-rule runner call (forwards per-case options, sourceType, JSX mode).
 // rulePlugin: pre-created { meta, create } object shared across all cases of the same rule.
-//   Passing the same object identity across calls triggers the buildVisitorMap fast path,
-//   avoiding a new _cachedVM allocation (and new closure set) per case.
 function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tcLanguageOptions = {}, isTypeScript = false, tcFilename = null, rulePlugin = null) {
   const jsxEnabled = !!(tcLanguageOptions.parserOptions?.ecmaFeatures?.jsx);
   // Use the same filename as the oracle (tc.filename || "test.js") so filename-checking
@@ -915,7 +1055,7 @@ let _topFixable = 0, _topFixMatch = 0, _topFixMismatch = 0;
 
 // Wall-clock timeout: if elapsed > baseline.perf.totalElapsedMs × 1.3, kill the run.
 // Only active when baseline has perf data and we're not saving a new baseline.
-const _timeoutMs = !saveBaseline && baseline?.perf?.totalElapsedMs > 0
+const _timeoutMs = !saveBaseline && !benchEslint && baseline?.perf?.totalElapsedMs > 0
   ? Math.ceil(baseline.perf.totalElapsedMs * 1.3)
   : 0;
 
@@ -1059,18 +1199,21 @@ if (fs.existsSync(ESLINT_ROOT)) {
   let totalCases = 0, totalPass = 0, totalSkip = 0, totalCrash = 0;
   let totalNativeCases = 0, totalNativePass = 0, totalNativeFn = 0, totalNativeFp = 0,
       totalNativeSkip = 0, totalNativeCrash = 0;
+  let totalNativeTsCases = 0, totalNativeTsPass = 0; // TS breakdown for native
   let totalHybridCases = 0, totalHybridPass = 0, totalHybridFn = 0, totalHybridFp = 0, totalHybridCrash = 0;
   let runnerOnlyMs = 0, nativeOnlyMs = 0, eslintOnlyMs = 0;
-  // TS vs JS breakdown
+  // TS vs JS breakdown (runner)
   let tsCases = 0, tsPass = 0, jsCases = 0, jsPass = 0;
-  // Fix verification
+  // Fix verification (runner + native)
   let totalFixable = 0, totalFixMatch = 0, totalFixMismatch = 0;
+  let totalNativeFixable = 0, totalNativeFixMatch = 0, totalNativeFixMismatch = 0;
   // Flaky detection
   const flakyRules = new Map(); // ruleName → count of flaky cases
 
   const _showCases = showFails || verboseAll || filterRule !== null;
   let _processed = 0, _total = allRuleData.reduce((s, r) => s + r.allCases.length, 0);
   const _ruleTimes = []; // { rule, runnerMs, nativeMs, cases }
+  const _caseTimes = benchEslint ? [] : null; // { rule, caseIdx, runnerMs, eslintMs } — populated only when --bench-eslint
 
   for (const { ruleName, ruleModule, defaultSourceType, isTypeScript, allCases } of allRuleData) {
     if (filterRule && ruleName !== filterRule) continue;
@@ -1100,9 +1243,11 @@ if (fs.existsSync(ESLINT_ROOT)) {
     let runnerCases = 0; // case-level count (denominator for pass/total display)
     let nativeFn = 0, nativeFp = 0, nativeCrash = 0, nativePass = 0, nativeSkipOptions = 0;
     let nativeCases = 0; // case-level count for native denominator
+    let nativeTsCases = 0, nativeTsPass = 0; // TS-specific native tracking
     let hybridFn = 0, hybridFp = 0, hybridCrash = 0, hybridPass = 0;
     let hybridCases = 0; // case-level count for hybrid denominator
     let ruleFixable = 0, ruleFixMatch = 0, ruleFixMismatch = 0;
+    let nativeFixMatch = 0, nativeFixMismatch = 0, nativeFixable = 0;
     let _ruleRunnerMs = 0, _ruleNativeMs = 0, _ruleEslintMs = 0;
     const _ruleParseSnap = _runnerParseMs, _rulePluginSnap = _runnerPluginMs;
 
@@ -1144,11 +1289,16 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const langOpts = { ecmaVersion, sourceType };
         if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
         if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
+        // Inject real TS parser for @typescript-eslint rules; flat config's default
+        // files matcher excludes .ts/.tsx, so without this ESLint short-circuits with
+        // "No matching configuration found" and the timing is meaningless.
+        const _isTs = isTypeScript || !!tc.isTypeScript || ruleName.startsWith("@typescript-eslint/");
+        if (_tsParser && _isTs) langOpts.parser = _tsParser;
         const ruleEntry = tc.options.length > 0 ? ["error", ...tc.options] : "error";
-        const oracleExt = (isTypeScript || tc.isTypeScript) ? ".ts" : ".js";
+        const oracleExt = _isTs ? (jsxEnabled ? ".tsx" : ".ts") : (jsxEnabled ? ".jsx" : ".js");
         const oracleFilename = tc.filename || ("test" + oracleExt);
         eslintLinter.verify(tc.code, [{
-          files: ["**/*"],
+          files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
           plugins: _eslintPluginCfg,
           languageOptions: langOpts,
           rules: { [ruleName]: ruleEntry },
@@ -1156,6 +1306,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const _etDelta = performance.now() - _et0;
         eslintOnlyMs += _etDelta;
         _ruleEslintMs += _etDelta;
+        if (_caseTimes !== null) {
+          _caseTimes.push({ rule: ruleName, caseIdx: tcIdx + 1, runnerMs: _rtDelta, eslintMs: _etDelta });
+        }
       }
 
       if (runnerResult === null) { crash++; continue; }
@@ -1236,14 +1389,55 @@ if (fs.existsSync(ESLINT_ROOT)) {
       } else if (nativeResult === null) {
         nativeCrash++;
         nativeCases++;
+        if (_showCases) {
+          failedCases.push({ tcIdx, kind: "native-crash", code: tc.code, options: tc.options, sourceType, filename: tc.filename });
+        }
       } else {
         nativeUsable = true;
         nativeCases++;
-        const nativeKeys = new Set(nativeResult.map(r => `${r.rule}:${r.line}`));
+        // Normalize to ruleName (not _nativeName) so keys match oracle keys.
+        // @typescript-eslint/X maps to core native X, but oracle uses the full @typescript-eslint/X key.
+        const nativeKeys = new Set(nativeResult.map(r => `${ruleName}:${r.line}`));
         const caseNativeFn = [...espreeKeys].filter(k => !nativeKeys.has(k)).length;
         const caseNativeFp = [...nativeKeys].filter(k => !espreeKeys.has(k)).length;
-        if (caseNativeFn === 0 && caseNativeFp === 0) nativePass++;
-        else { nativeFn += caseNativeFn; nativeFp += caseNativeFp; }
+        if (caseNativeFn === 0 && caseNativeFp === 0) {
+          nativePass++;
+          if (_isTsCase) nativeTsPass++;
+          if (verboseAll && _showCases && _ruleHasNativeImpl) {
+            const diags = nativeResult.map(r => r.line);
+            console.log(`    [${tcIdx}] native PASS  diags=${diags.length ? diags.join(",") : "none"}`);
+          }
+        } else {
+          nativeFn += caseNativeFn; nativeFp += caseNativeFp;
+          if (_showCases) {
+            failedCases.push({
+              tcIdx,
+              kind: "native",
+              espreeLines: espreeResult.map(r => r.line),
+              ourLines:    nativeResult.map(r => r.line),
+              code: tc.code,
+              options: tc.options,
+              sourceType,
+              filename: tc.filename,
+            });
+          }
+        }
+        if (_isTsCase) nativeTsCases++;
+
+        // Native fix verification: compare native fix output to ESLint fix output.
+        // Only check cases where diagnostics match so fix comparison is meaningful.
+        if (tc.eslintFixes && caseNativeFn === 0 && caseNativeFp === 0) {
+          nativeFixable++;
+          const eslintFixed = _applyFixes(tc.code, tc.eslintFixes);
+          const nativeFixes = nativeResult.filter(r => r.fix).map(r => r.fix);
+          if (nativeFixes.length > 0) {
+            const nativeFixed = _applyFixes(tc.code, nativeFixes);
+            if (nativeFixed === eslintFixed) nativeFixMatch++;
+            else nativeFixMismatch++;
+          } else {
+            nativeFixMismatch++;
+          }
+        }
       }
 
       // Hybrid comparison: prefer native when usable AND rule has native impl, else runner.
@@ -1251,7 +1445,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
       if (nativeAvailable) {
         hybridCases++;
         const hybridResult = (_ruleHasNativeImpl && nativeUsable) ? nativeResult : runnerNormal;
-        const hybridKeys = new Set(hybridResult.map(r => `${r.rule}:${r.line}`));
+        // Normalize to ruleName (same reason as nativeKeys normalization above).
+        const hybridKeys = new Set(hybridResult.map(r => `${ruleName}:${r.line}`));
         const caseHybridFn = [...espreeKeys].filter(k => !hybridKeys.has(k)).length;
         const caseHybridFp = [...hybridKeys].filter(k => !espreeKeys.has(k)).length;
         if (caseHybridFn === 0 && caseHybridFp === 0) hybridPass++;
@@ -1269,26 +1464,32 @@ if (fs.existsSync(ESLINT_ROOT)) {
     totalPass        += pass;
     totalSkip        += skip;
     totalCrash       += crash;
-    totalNativeCases += nativeCases;
-    totalNativePass  += nativePass;
-    totalNativeFn    += nativeFn;
-    totalNativeFp    += nativeFp;
-    totalNativeSkip  += nativeSkipOptions;
-    totalNativeCrash += nativeCrash;
+    totalNativeCases   += nativeCases;
+    totalNativePass    += nativePass;
+    totalNativeFn      += nativeFn;
+    totalNativeFp      += nativeFp;
+    totalNativeSkip    += nativeSkipOptions;
+    totalNativeCrash   += nativeCrash;
+    totalNativeTsCases += nativeTsCases;
+    totalNativeTsPass  += nativeTsPass;
     totalHybridCases += hybridCases;
     totalHybridPass  += hybridPass;
     totalHybridFn    += hybridFn;
     totalHybridFp    += hybridFp;
     totalHybridCrash += hybridCrash;
-    totalFixable     += ruleFixable;
-    totalFixMatch    += ruleFixMatch;
-    totalFixMismatch += ruleFixMismatch;
+    totalFixable          += ruleFixable;
+    totalFixMatch         += ruleFixMatch;
+    totalFixMismatch      += ruleFixMismatch;
+    totalNativeFixable    += nativeFixable;
+    totalNativeFixMatch   += nativeFixMatch;
+    totalNativeFixMismatch += nativeFixMismatch;
 
-    // Flaky detection: re-run a sample of failed cases to detect non-determinism.
+    // Flaky detection: re-run a sample of runner-failed cases to detect non-determinism.
+    // Native failures are skipped — native is deterministic C code, not JS closures.
     if (failedCases.length > 0 && failedCases.length <= 50) {
       let ruleFlaky = 0;
       for (const fc of failedCases.slice(0, 10)) {
-        if (fc.kind === "crash") continue;
+        if (fc.kind === "crash" || fc.kind === "native" || fc.kind === "native-crash") continue;
         const tcr = allCases[fc.tcIdx];
         if (!tcr) continue;
         const st = tcr.languageOptions?.sourceType || defaultSourceType;
@@ -1389,13 +1590,22 @@ if (fs.existsSync(ESLINT_ROOT)) {
     }
 
     // Print failing cases when --fails / --verbose / --rule
+    // Runner and native failures are printed in separate groups with independent budgets.
     if (failedCases.length > 0 && _showCases) {
-      const maxShow = filterRule ? failedCases.length : 3; // show all for --rule, 3 otherwise
-      for (let i = 0; i < Math.min(failedCases.length, maxShow); i++) {
-        const c = failedCases[i];
+      const maxShow = filterRule ? Infinity : 3; // show all for --rule, 3 per group otherwise
+      const runnerFailed = failedCases.filter(c => c.kind === "runner" || c.kind === "crash");
+      const nativeFailed = failedCases.filter(c => c.kind === "native" || c.kind === "native-crash");
+
+      const printCase = (c) => {
         if (c.kind === "crash") {
           const opts = c.options?.length ? ` options=${JSON.stringify(c.options)}` : "";
           console.log(`    [case ${c.tcIdx}${opts}]  CRASH: ${c.crashMsg}`);
+          printCodeSnippet(c.code, [], "    ");
+        } else if (c.kind === "native-crash") {
+          const opts = c.options?.length ? ` options=${JSON.stringify(c.options)}` : "";
+          const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
+          const fnStr = c.filename ? ` file=${c.filename}` : "";
+          console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}] [native]  CRASH`);
           printCodeSnippet(c.code, [], "    ");
         } else {
           const espreeStr = c.espreeLines.length ? `line(s) ${c.espreeLines.join(",")}` : "nothing";
@@ -1403,13 +1613,19 @@ if (fs.existsSync(ESLINT_ROOT)) {
           const opts = c.options.length ? ` options=${JSON.stringify(c.options)}` : "";
           const st   = c.sourceType !== "script" ? ` sourceType=${c.sourceType}` : "";
           const fnStr = c.filename ? ` file=${c.filename}` : "";
-          console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}]  ESLint: ${espreeStr}  ours: ${oursStr}`);
+          const kindStr = c.kind === "native" ? " [native]" : "";
+          console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}]${kindStr}  ESLint: ${espreeStr}  ours: ${oursStr}`);
           printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
         }
-      }
-      if (failedCases.length > maxShow) {
-        console.log(`    ... and ${failedCases.length - maxShow} more failing cases (use --rule ${ruleName} to see all)`);
-      }
+      };
+
+      for (let i = 0; i < Math.min(runnerFailed.length, maxShow); i++) printCase(runnerFailed[i]);
+      if (runnerFailed.length > maxShow)
+        console.log(`    ... and ${runnerFailed.length - maxShow} more runner failures (use --rule ${ruleName} to see all)`);
+
+      for (let i = 0; i < Math.min(nativeFailed.length, maxShow); i++) printCase(nativeFailed[i]);
+      if (nativeFailed.length > maxShow)
+        console.log(`    ... and ${nativeFailed.length - maxShow} more native failures (use --rule ${ruleName} to see all)`);
     }
 
     _ruleTimes.push({
@@ -1498,13 +1714,14 @@ if (fs.existsSync(ESLINT_ROOT)) {
         const slower = _ruleTimes
           .filter(t => t.eslintMs > 1 && t.runnerMs > t.eslintMs)
           .map(t => ({ ...t, delta: t.runnerMs - t.eslintMs, ratio: t.runnerMs / t.eslintMs }))
-          .sort((a, b) => b.delta - a.delta);
+          .sort((a, b) => b.ratio - a.ratio);
         if (slower.length > 0) {
-          console.log(`\nSlower than ESLint (${slower.length} rules):`);
-          for (const t of slower.slice(0, 20)) {
-            console.log(`  +${String(Math.round(t.delta)).padStart(4)}ms  ${t.rule.padEnd(40)} ez ${Math.round(t.runnerMs)}ms vs eslint ${Math.round(t.eslintMs)}ms  (${t.ratio.toFixed(1)}x)  ${t.cases} cases`);
+          console.log(`\nSlower than ESLint (${slower.length} rules, sorted by ratio):`);
+          for (const t of slower) {
+            const hasNative = _nativeRuleSet.has(t.rule) || _nativeRuleSet.has(t.rule.replace(/^@typescript-eslint\//, ""));
+            const nativeTag = hasNative ? " [native]" : "";
+            console.log(`  +${String(Math.round(t.delta)).padStart(4)}ms  ${t.rule.padEnd(50)} ez ${Math.round(t.runnerMs)}ms vs eslint ${Math.round(t.eslintMs)}ms  (${t.ratio.toFixed(1)}x)  ${t.cases} cases${nativeTag}`);
           }
-          if (slower.length > 20) console.log(`  ... and ${slower.length - 20} more`);
         }
 
         // Rules faster than ESLint.
@@ -1522,12 +1739,26 @@ if (fs.existsSync(ESLINT_ROOT)) {
       }
     }
 
+    // Top 10 slowest individual cases by runner time (--bench-eslint only).
+    if (_caseTimes !== null && _caseTimes.length > 0) {
+      const topCases = [..._caseTimes].sort((a, b) => b.runnerMs - a.runnerMs).slice(0, 10);
+      console.log(`\nTop 10 slowest cases (runner time):`);
+      for (const c of topCases) {
+        const ratio = c.eslintMs > 0 ? ` (${(c.runnerMs / c.eslintMs).toFixed(1)}x eslint)` : "";
+        console.log(`  ${c.runnerMs.toFixed(2).padStart(7)}ms  case ${String(c.caseIdx).padStart(4)}  ${c.rule}${ratio}`);
+      }
+    }
+
     // TS vs JS breakdown
     if (!filterRule && (tsCases + jsCases > 0)) {
       const jsPct = jsCases > 0 ? (jsPass / jsCases * 100).toFixed(1) : "—";
       const tsPct = tsCases > 0 ? (tsPass / tsCases * 100).toFixed(1) : "—";
       console.log(`\nJS cases:  ${jsPass}/${jsCases} pass (${jsPct}%)`);
       console.log(`TS cases:  ${tsPass}/${tsCases} pass (${tsPct}%)`);
+      if (totalNativeTsCases > 0) {
+        const nativeTsPct = (totalNativeTsPass / totalNativeTsCases * 100).toFixed(1);
+        console.log(`Native TS: ${totalNativeTsPass}/${totalNativeTsCases} pass (${nativeTsPct}%)`);
+      }
     }
 
     // Native coverage dashboard
@@ -1544,9 +1775,15 @@ if (fs.existsSync(ESLINT_ROOT)) {
     }
 
     // Fix verification summary
-    if (!filterRule && totalFixable > 0) {
-      const fixPct = (totalFixMatch / totalFixable * 100).toFixed(1);
-      console.log(`\nFix verification: ${totalFixMatch}/${totalFixable} match (${fixPct}%), ${totalFixMismatch} mismatch`);
+    if (!filterRule && (totalFixable > 0 || totalNativeFixable > 0)) {
+      if (totalFixable > 0) {
+        const fixPct = (totalFixMatch / totalFixable * 100).toFixed(1);
+        console.log(`\nFix verification (runner): ${totalFixMatch}/${totalFixable} match (${fixPct}%), ${totalFixMismatch} mismatch`);
+      }
+      if (totalNativeFixable > 0) {
+        const nativeFixPct = (totalNativeFixMatch / totalNativeFixable * 100).toFixed(1);
+        console.log(`Fix verification (native): ${totalNativeFixMatch}/${totalNativeFixable} match (${nativeFixPct}%), ${totalNativeFixMismatch} mismatch`);
+      }
     }
 
     // Flaky rules

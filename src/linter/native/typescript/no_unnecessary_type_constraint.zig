@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow non-null assertions in the left operand of a nullish coalescing operator",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.nullish_coalesce};

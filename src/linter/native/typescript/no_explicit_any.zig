@@ -12,6 +12,7 @@ pub const meta = RuleMeta{
     .category = .correctness,
     .default_severity = .warning,
     .description = "Disallow the `any` type",
+    .lang = .ts_only,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {

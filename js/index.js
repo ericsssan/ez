@@ -144,7 +144,10 @@ function _getNativeRuleNames() {
 }
 
 /**
- * Parse compact binary diagnostics: count(u32) + per-diag(rule_index:u16, offset:u32, severity:u8) = 7 bytes each.
+ * Parse compact binary diagnostics.
+ * Format: count(u32) + per-diag: rule_index(u16) + offset(u32) + flags(u8) = 7 bytes base.
+ * flags bits 0-1 = severity (1=warn, 2=error), bit 2 = has_fix.
+ * If has_fix: fix_start(u32) + fix_end(u32) + fix_text_len(u16) + fix_text(n) follows.
  */
 function _parseDiags(bytesWritten, srcBytes) {
   if (bytesWritten < 4) return [];
@@ -157,12 +160,23 @@ function _parseDiags(bytesWritten, srcBytes) {
     if (pos + 7 > bytesWritten) break;
     const ruleIndex = dv.getUint16(pos, true);    pos += 2;
     const offset    = dv.getUint32(pos, true);    pos += 4;
-    const severity  = dv.getUint8(pos);           pos += 1;
+    const flags     = dv.getUint8(pos);           pos += 1;
+    const severity  = flags & 0x03;
+    const hasFix    = (flags & 0x04) !== 0;
     const ruleName  = ruleNames[ruleIndex] || `native-rule-${ruleIndex}`;
     const diag = { offset, severity, ruleName };
     if (srcBytes) {
       diag.line = _bufOffsetToLine(srcBytes, offset);
       diag.col = _bufOffsetToCol(srcBytes, offset);
+    }
+    if (hasFix) {
+      if (pos + 10 > bytesWritten) break;
+      const fixStart   = dv.getUint32(pos, true);     pos += 4;
+      const fixEnd     = dv.getUint32(pos, true);     pos += 4;
+      const fixTextLen = dv.getUint16(pos, true);     pos += 2;
+      if (pos + fixTextLen > bytesWritten) break;
+      const fixTextBytes = new Uint8Array(_lintOutBuf, pos, fixTextLen); pos += fixTextLen;
+      diag.fix = { range: [fixStart, fixEnd], text: new TextDecoder().decode(fixTextBytes) };
     }
     diags.push(diag);
   }

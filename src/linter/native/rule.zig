@@ -18,6 +18,19 @@ pub const Category = enum {
     }
 };
 
+// ── Rule Language Filter ───────────────────────────────────
+
+/// Which source language a rule applies to.
+/// Defaults to .all — JS-only and TS-only rules set this explicitly.
+pub const Lang = enum {
+    /// Run on all languages (JS, TS, JSX, TSX).
+    all,
+    /// Run only on TypeScript files (ts, tsx).
+    ts_only,
+    /// Run only on JavaScript files (js, jsx).
+    js_only,
+};
+
 // ── Rule Meta ──────────────────────────────────────────────
 
 pub const RuleMeta = struct {
@@ -25,6 +38,10 @@ pub const RuleMeta = struct {
     category: Category,
     default_severity: Severity,
     description: []const u8,
+    /// Language filter — defaults to .all (runs on JS and TS).
+    lang: Lang = .all,
+    /// Whether this rule can emit autofixes.
+    fixable: bool = false,
 };
 
 // ── Comptime Rule Validation ───────────────────────────────

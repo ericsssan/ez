@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .correctness,
     .default_severity = .warning,
     .description = "Disallow using the `delete` operator on array elements",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.delete_expr};

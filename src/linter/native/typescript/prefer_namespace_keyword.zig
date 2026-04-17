@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .style,
     .default_severity = .warning,
     .description = "Require using `namespace` keyword instead of `module` for declaring namespaces",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.ts_module_decl};

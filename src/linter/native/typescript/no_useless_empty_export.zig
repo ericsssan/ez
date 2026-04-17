@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .correctness,
     .default_severity = .warning,
     .description = "Disallow empty exports that don't change anything in a module file",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.export_named};

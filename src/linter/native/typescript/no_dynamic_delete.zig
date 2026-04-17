@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow using the `delete` operator on computed member expressions",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.delete_expr};

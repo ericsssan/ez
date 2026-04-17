@@ -11,6 +11,7 @@ pub const meta = RuleMeta{
     .category = .style,
     .default_severity = .warning,
     .description = "Prefer `interface` over `type` for object type definitions",
+    .lang = .ts_only,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {

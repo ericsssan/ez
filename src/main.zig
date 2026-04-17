@@ -309,7 +309,7 @@ fn lintSingleFile(
     var sem_result = try semantic.SemanticAnalyzer.analyze(allocator, &tree);
     defer sem_result.deinit(allocator);
 
-    const raw_diagnostics = try linter.lint(allocator, &tree, &sem_result, config);
+    const raw_diagnostics = try linter.lint(allocator, &tree, &sem_result, config, lang);
     defer allocator.free(raw_diagnostics);
 
     // Apply inline disable filtering.

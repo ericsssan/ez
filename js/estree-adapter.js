@@ -1840,34 +1840,31 @@ const NodeProto = {
    * CallExpression, NewExpression
    */
   get arguments() {
+    if (this._arguments !== undefined) return this._arguments;
     const t = this._tag;
     const ast = this._ast;
     const rhs = ast.nodeRhs(this._i);
+    let result;
     if (t === T.call_expr || t === T.optional_call_expr) {
       const sub = ast.extraSubRange(rhs);
-      // Use nodeViewChain for arguments that are optional chain nodes,
-      // so ChainExpression wrappers are properly created.
-      const result = [];
+      result = [];
       const e = ast._extraData;
       for (let i = sub.start; i < sub.end; i++) {
         const idx = e[i];
         if (idx !== NONE) result.push(nodeViewChain(ast, idx));
       }
-      return result;
-    }
-    if (t === T.new_expr) {
-      if (rhs === NONE) return [];
+    } else if (t === T.new_expr) {
+      if (rhs === NONE) { this._arguments = []; return []; }
       const sub = ast.extraSubRange(rhs);
-      // Use nodeViewChain for arguments
-      const result = [];
+      result = [];
       const e = ast._extraData;
       for (let i = sub.start; i < sub.end; i++) {
         const idx = e[i];
         if (idx !== NONE) result.push(nodeViewChain(ast, idx));
       }
-      return result;
     }
-    return undefined;
+    this._arguments = result;
+    return result;
   },
 
   /**
@@ -2033,12 +2030,16 @@ const NodeProto = {
    * Detected by scanning backward from the method/property for @ tokens.
    */
   get decorators() {
+    if (this._decorators !== undefined) return this._decorators;
     const t = this._tag;
     // TS param/pattern nodes can have decorators (TSParameterProperty), return [] when none
     if (t !== T.method_def && t !== T.computed_method_def && t !== T.property_def &&
         t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def &&
-        t !== T.class_decl && t !== T.class_expr && t !== T.ts_parameter_property) return [];
+        t !== T.class_decl && t !== T.class_expr && t !== T.ts_parameter_property) {
+      this._decorators = [];
+      return [];
+    }
     const ast = this._ast;
     const mt = this.mainToken;
     // Scan backward for @ tokens
@@ -2090,7 +2091,9 @@ const NodeProto = {
         break; // not a decorator or modifier
       }
     }
-    return decorators.length > 0 ? decorators : [];
+    const result = decorators.length > 0 ? decorators : [];
+    this._decorators = result;
+    return result;
   },
 
   /**
@@ -2352,6 +2355,7 @@ const NodeProto = {
    * Returns null when there are no type parameters.
    */
   get typeParameters() {
+    if (this._typeParameters !== undefined) return this._typeParameters;
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
@@ -2378,7 +2382,7 @@ const NodeProto = {
     } else {
       return null;
     }
-    if (tp_start === undefined || tp_start >= tp_end) return null;
+    if (tp_start === undefined || tp_start >= tp_end) { this._typeParameters = null; return null; }
     const params = [];
     let rangeStart = Infinity, rangeEnd = 0;
     for (let i = tp_start; i < tp_end; i++) {
@@ -2398,10 +2402,12 @@ const NodeProto = {
         default: defaultIdx !== NONE ? nodeView(ast, defaultIdx) : undefined,
       }, ast));
     }
-    return _syntheticNode('TSTypeParameterDeclaration',
+    const result = _syntheticNode('TSTypeParameterDeclaration',
       rangeStart === Infinity ? this.start : rangeStart,
       rangeEnd === 0 ? this.end : rangeEnd,
       { params }, ast);
+    this._typeParameters = result;
+    return result;
   },
 
   /**
@@ -2441,34 +2447,32 @@ const NodeProto = {
    * Returns array of NodeViews.
    */
   get params() {
+    if (this._params !== undefined) return this._params;
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
+    let result;
     if (t === T.fn_decl || t === T.async_fn_decl ||
         t === T.generator_fn_decl || t === T.async_generator_fn_decl ||
         t === T.fn_expr || t === T.async_fn_expr ||
         t === T.generator_fn_expr || t === T.async_generator_fn_expr ||
         t === T.ts_declare_function) {
       const d = ast.extraFnData(lhs);
-      return ast._nodesFromRange(d.params, d.params_end);
-    }
-    if (t === T.arrow_fn || t === T.async_arrow_fn) {
+      result = ast._nodesFromRange(d.params, d.params_end);
+    } else if (t === T.arrow_fn || t === T.async_arrow_fn) {
       const d = ast.extraArrowData(lhs);
-      return ast._nodesFromRange(d.params_start, d.params_end);
-    }
-    if (t === T.ts_function_type || t === T.ts_constructor_type) {
-      if (lhs === NONE) return [];
+      result = ast._nodesFromRange(d.params_start, d.params_end);
+    } else if (t === T.ts_function_type || t === T.ts_constructor_type) {
+      if (lhs === NONE) { this._params = []; return []; }
       const d = ast.extraFnData(lhs);
-      return ast._nodesFromRange(d.params, d.params_end);
+      result = ast._nodesFromRange(d.params, d.params_end);
+    } else if (t === T.ts_call_signature || t === T.ts_construct_signature || t === T.ts_method_signature) {
+      if (lhs === NONE) { this._params = []; return []; }
+      const d = ast.extraInterfaceSigData(lhs);
+      result = ast._nodesFromRange(d.params_start, d.params_end);
     }
-    // Signature nodes: params stored in InterfaceSigData extra data.
-    if (t === T.ts_call_signature || t === T.ts_construct_signature || t === T.ts_method_signature) {
-      const lhs = this._ast.nodeLhs(this._i);
-      if (lhs === NONE) return [];
-      const d = this._ast.extraInterfaceSigData(lhs);
-      return this._ast._nodesFromRange(d.params_start, d.params_end);
-    }
-    return undefined;
+    this._params = result;
+    return result;
   },
 
   /**
@@ -3871,6 +3875,10 @@ function _nodeViewRaw(ast, index) {
     n._range = null;
     n._body = _BODY_UNSET;
     n._value = _VALUE_UNSET;
+    n._params = undefined;
+    n._typeParameters = undefined;
+    n._arguments = undefined;
+    n._decorators = undefined;
     // Make regex/bigint own properties so Object.hasOwn() works (ESLint uses this)
     if (tag === T.regex_literal) {
       const _n = n;

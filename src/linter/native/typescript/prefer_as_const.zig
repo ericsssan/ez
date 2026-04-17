@@ -12,6 +12,7 @@ pub const meta = RuleMeta{
     .category = .style,
     .default_severity = .warning,
     .description = "Prefer `as const` over literal type assertions",
+    .lang = .ts_only,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {

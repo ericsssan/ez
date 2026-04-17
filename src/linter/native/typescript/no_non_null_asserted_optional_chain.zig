@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .correctness,
     .default_severity = .warning,
     .description = "Disallow non-null assertions after an optional chain expression",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.ts_non_null_expr};

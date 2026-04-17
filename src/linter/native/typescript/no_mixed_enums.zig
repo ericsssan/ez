@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow enums that mix string and number members",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.ts_enum_decl};

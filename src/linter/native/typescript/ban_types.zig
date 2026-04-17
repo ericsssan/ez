@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow certain types (Object, String, Number, Boolean, Symbol, Function)",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.ts_type_reference};

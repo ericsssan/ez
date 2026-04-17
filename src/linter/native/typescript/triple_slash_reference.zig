@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow certain triple slash directives in favor of ES6-style import declarations",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.root};

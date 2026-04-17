@@ -383,7 +383,7 @@ fn parseAndLintImpl(
     const sem_ptr: *const semantic_mod.SemanticResult =
         if (sem_result_opt != null) &sem_result_opt.? else &empty_sem;
 
-    const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, config) catch &.{};
+    const diagnostics = linter_mod.lint(lint_arena, &tree, sem_ptr, config, language) catch &.{};
 
     // Serialize diagnostics into out_ptr (same format as ez_lint).
     if (out_len >= 4) {
@@ -394,7 +394,17 @@ fn parseAndLintImpl(
             if (pos + 7 > out_len) break;
             std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
             std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
-            out[pos] = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 }; pos += 1;
+            const sev_val: u8 = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 };
+            const has_fix: u8 = if (diag.fix != null) 0x04 else 0;
+            out[pos] = sev_val | has_fix; pos += 1;
+            if (diag.fix) |fix| {
+                if (pos + 10 + fix.text.len > out_len) break;
+                std.mem.writeInt(u32, out[pos..][0..4], fix.span.start, .little); pos += 4;
+                std.mem.writeInt(u32, out[pos..][0..4], fix.span.end, .little); pos += 4;
+                const tlen: u16 = @intCast(@min(fix.text.len, 0xFFFF));
+                std.mem.writeInt(u16, out[pos..][0..2], tlen, .little); pos += 2;
+                @memcpy(out[pos..][0..tlen], fix.text[0..tlen]); pos += tlen;
+            }
         }
     }
 
@@ -652,13 +662,15 @@ fn lintImpl(
         try semantic_mod.SemanticAnalyzer.analyze(arena, &tree)
     else
         semantic_mod.SemanticResult.initEmpty(arena);
-    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config);
+    const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config, language);
 
     // Serialize diagnostics into the caller's output buffer.
     if (out_len < 4) return 0;
     const out = out_ptr[0..out_len];
 
-    // Compact format: count(u32) + per-diag: rule_index(u16) + offset(u32) + severity(u8) = 7 bytes each
+    // Compact format: count(u32) + per-diag: rule_index(u16) + offset(u32) + flags(u8) = 7 bytes base.
+    // flags: bits 0-1 = severity (1=warn, 2=error), bit 2 = has_fix.
+    // If has_fix: fix_start(u32) + fix_end(u32) + fix_text_len(u16) + fix_text(n) appended.
     std.mem.writeInt(u32, out[0..4], @intCast(diagnostics.len), .little);
     var pos: u32 = 4;
 
@@ -666,7 +678,17 @@ fn lintImpl(
         if (pos + 7 > out_len) break;
         std.mem.writeInt(u16, out[pos..][0..2], diag.rule_index, .little); pos += 2;
         std.mem.writeInt(u32, out[pos..][0..4], diag.span.start, .little); pos += 4;
-        out[pos] = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 }; pos += 1;
+        const sev_val: u8 = switch (diag.severity) { .@"error" => 2, .warning => 1, else => 1 };
+        const has_fix: u8 = if (diag.fix != null) 0x04 else 0;
+        out[pos] = sev_val | has_fix; pos += 1;
+        if (diag.fix) |fix| {
+            if (pos + 10 + fix.text.len > out_len) break;
+            std.mem.writeInt(u32, out[pos..][0..4], fix.span.start, .little); pos += 4;
+            std.mem.writeInt(u32, out[pos..][0..4], fix.span.end, .little); pos += 4;
+            const tlen: u16 = @intCast(@min(fix.text.len, 0xFFFF));
+            std.mem.writeInt(u16, out[pos..][0..2], tlen, .little); pos += 2;
+            @memcpy(out[pos..][0..tlen], fix.text[0..tlen]); pos += tlen;
+        }
     }
 
     return pos;
@@ -1167,7 +1189,7 @@ fn lintBatchWorker(args: *BatchWorkerArgs) void {
         else
             semantic_mod.SemanticResult.initEmpty(bump);
 
-        const diagnostics = linter_mod.lint(bump, &tree, &sem, args.config) catch &.{};
+        const diagnostics = linter_mod.lint(bump, &tree, &sem, args.config, lang) catch &.{};
 
         // Build line index once → O(log n) per diagnostic (vs O(diags × filesize) per-scan).
         const line_idx = if (diagnostics.len > 0) LineIndex.build(source, bump) else LineIndex{ .starts = &.{} };

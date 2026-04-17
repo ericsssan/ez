@@ -11,6 +11,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow `@ts-<directive>` comments that suppress TypeScript compiler errors",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.root};

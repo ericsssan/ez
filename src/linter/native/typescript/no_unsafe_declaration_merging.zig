@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow unsafe declaration merging",
+    .lang = .ts_only,
 };
 
 // Detect: interface Foo {} and class Foo {} in the same scope.

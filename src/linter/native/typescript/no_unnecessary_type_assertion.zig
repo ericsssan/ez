@@ -12,6 +12,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow unnecessary `as any` type assertions",
+    .lang = .ts_only,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {

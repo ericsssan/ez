@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow explicit type declarations that can be easily inferred from the initializer",
+    .lang = .ts_only,
 };
 
 // TODO: Implement when the AST stores type annotations on declarators.

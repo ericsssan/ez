@@ -196,6 +196,7 @@ const new_cap = @import("style/new_cap.zig");
 const max_classes_per_file = @import("style/max_classes_per_file.zig");
 const prefer_while = @import("style/prefer_while.zig");
 const no_useless_switch_case = @import("style/no_useless_switch_case.zig");
+const class_methods_use_this = @import("style/class_methods_use_this.zig");
 
 // ── TypeScript rules (32) ─────────────────────────────────────
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
@@ -233,6 +234,14 @@ const ts_triple_slash_reference = @import("typescript/triple_slash_reference.zig
 const ts_no_unnecessary_boolean_literal_compare = @import("typescript/no_unnecessary_boolean_literal_compare.zig");
 const ts_no_dynamic_delete = @import("typescript/no_dynamic_delete.zig");
 const ts_prefer_ts_expect_error = @import("typescript/prefer_ts_expect_error.zig");
+const ts_no_inferrable_types = @import("typescript/no_inferrable_types.zig");
+const ts_no_unsafe_declaration_merging = @import("typescript/no_unsafe_declaration_merging.zig");
+const ts_explicit_function_return_type = @import("typescript/explicit_function_return_type.zig");
+const ts_explicit_module_boundary_types = @import("typescript/explicit_module_boundary_types.zig");
+
+// ── Unicorn plugin rules ──────────────────────────────────────
+const unicorn_no_array_for_each = @import("unicorn/no_array_for_each.zig");
+const unicorn_no_zero_fractions = @import("unicorn/no_zero_fractions.zig");
 
 /// Tuple of all lint rule module types registered in the linter.
 pub const all_rules = .{
@@ -428,6 +437,7 @@ pub const all_rules = .{
     max_classes_per_file,
     prefer_while,
     no_useless_switch_case,
+    class_methods_use_this,
     // TypeScript (8)
     ts_no_explicit_any,
     ts_no_non_null_assertion,
@@ -464,6 +474,13 @@ pub const all_rules = .{
     ts_no_unnecessary_boolean_literal_compare,
     ts_no_dynamic_delete,
     ts_prefer_ts_expect_error,
+    ts_no_inferrable_types,
+    ts_no_unsafe_declaration_merging,
+    ts_explicit_function_return_type,
+    ts_explicit_module_boundary_types,
+    // Unicorn plugin (2)
+    unicorn_no_array_for_each,
+    unicorn_no_zero_fractions,
 };
 
 /// Total number of registered lint rules.

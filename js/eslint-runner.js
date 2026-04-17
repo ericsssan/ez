@@ -506,6 +506,7 @@ class SourceCode {
     this._linesCache = null;
     this._tokensCache = null;
     this._mergedCache = null;
+    this._tokBeforeIcCache = null;
     this._scopeCache = null;
     this._thinScopeCache = null;
     this._thinVarCache = null;
@@ -937,6 +938,19 @@ class SourceCode {
     if (ic) {
       const nodeStart = node.range ? node.range[0] : (node.mainToken != null ? this._ast._tokStarts[node.mainToken] : null);
       if (nodeStart == null) return null;
+      // Memoize the hot default path (no filter, no skip). Cleared in reset().
+      // lintSource runs many rules on one SourceCode; jsdoc rules hit the same positions.
+      if (!fn && skip === 0) {
+        let cache = this._tokBeforeIcCache;
+        if (!cache) cache = this._tokBeforeIcCache = new Map();
+        if (cache.has(nodeStart)) return cache.get(nodeStart);
+        const merged = this._getTokensAndCommentsMerged();
+        let lo = 0, hi = merged.length - 1, best = -1;
+        while (lo <= hi) { const m = (lo + hi) >> 1; if (merged[m].range[0] < nodeStart) { best = m; lo = m + 1; } else hi = m - 1; }
+        const result = best < 0 ? null : merged[best];
+        cache.set(nodeStart, result);
+        return result;
+      }
       const merged = this._getTokensAndCommentsMerged();
       // Binary search: last item whose range[0] < nodeStart
       let lo = 0, hi = merged.length - 1, best = -1;
@@ -1272,21 +1286,25 @@ class SourceCode {
     // Merge variables from module scope (user decls) and global scope (builtins).
     // Rules like no-global-assign iterate `variables`, while ReferenceTracker uses `set`.
     let _mergedVars;
+    let _setProxy;
     const wrapper = new Proxy(moduleScope, {
       get(target, prop) {
         if (prop === 'set') {
-          // Return a proxy Map that delegates to global scope's set
-          return new Proxy(target.set, {
-            get(setTarget, mapProp) {
-              if (mapProp === 'get') {
-                return (key) => setTarget.get(key) || globalScope.set.get(key);
+          // Cache the set proxy — rules often access scope.set.get/has in tight loops.
+          if (!_setProxy) {
+            _setProxy = new Proxy(target.set, {
+              get(setTarget, mapProp) {
+                if (mapProp === 'get') {
+                  return (key) => setTarget.get(key) || globalScope.set.get(key);
+                }
+                if (mapProp === 'has') {
+                  return (key) => setTarget.has(key) || globalScope.set.has(key);
+                }
+                return Reflect.get(setTarget, mapProp);
               }
-              if (mapProp === 'has') {
-                return (key) => setTarget.has(key) || globalScope.set.has(key);
-              }
-              return Reflect.get(setTarget, mapProp);
-            }
-          });
+            });
+          }
+          return _setProxy;
         }
         if (prop === 'type') return 'global';
         if (prop === 'variables') {
@@ -2750,6 +2768,10 @@ class SourceCode {
   /**
    * getTokensBefore(node, options) — tokens (and optionally comments) before node.range[0].
    * options: { count, includeComments, filter } or just a number for count.
+   *
+   * Binary-search to node.range[0] then walk backward, bounded by count. jsdoc rules
+   * call this in hot loops with count=2 so linear scans over the full token array
+   * show up in CPU profiles (getTokensBefore was ~3.3% self in multi-rule benches).
    */
   getTokensBefore(node, options = {}) {
     const opts = typeof options === 'number' ? { count: options } : (options || {});
@@ -2759,16 +2781,26 @@ class SourceCode {
     const nodeStart = node.range ? node.range[0] : null;
     if (nodeStart === null) return [];
     const all = includeComments ? this._getTokensAndCommentsMerged() : this._getAllTokens();
-    const result = [];
-    for (const tok of all) {
-      if (!tok.range) continue;
-      if (tok.range[1] <= nodeStart) {
-        if (!filter || filter(tok)) result.push(tok);
-      } else if (tok.range[0] >= nodeStart) {
-        break; // past the node start, no more tokens before it
-      }
+    // Binary search for the last index whose range[1] <= nodeStart.
+    // (Equivalent to: last item entirely before the node.)
+    let lo = 0, hi = all.length - 1, lastIdx = -1;
+    while (lo <= hi) {
+      const m = (lo + hi) >> 1;
+      const tok = all[m];
+      if (!tok.range) { hi = m - 1; continue; }
+      if (tok.range[1] <= nodeStart) { lastIdx = m; lo = m + 1; }
+      else hi = m - 1;
     }
-    return count === Infinity ? result : result.slice(-count);
+    if (lastIdx < 0) return [];
+    if (count === Infinity && !filter) return all.slice(0, lastIdx + 1);
+    // Walk backward from lastIdx, collecting up to count filtered tokens, reverse at end.
+    const collected = [];
+    for (let i = lastIdx; i >= 0 && collected.length < count; i--) {
+      const tok = all[i];
+      if (!tok.range) continue;
+      if (!filter || filter(tok)) collected.push(tok);
+    }
+    return collected.reverse();
   }
 
   /**
@@ -2782,13 +2814,21 @@ class SourceCode {
     const nodeEnd = node.range ? node.range[1] : null;
     if (nodeEnd === null) return [];
     const all = includeComments ? this._getTokensAndCommentsMerged() : this._getAllTokens();
+    // Binary search for the first index whose range[0] >= nodeEnd.
+    let lo = 0, hi = all.length - 1, firstIdx = all.length;
+    while (lo <= hi) {
+      const m = (lo + hi) >> 1;
+      const tok = all[m];
+      if (!tok.range) { lo = m + 1; continue; }
+      if (tok.range[0] >= nodeEnd) { firstIdx = m; hi = m - 1; }
+      else lo = m + 1;
+    }
+    if (firstIdx >= all.length) return [];
     const result = [];
-    for (const tok of all) {
+    for (let i = firstIdx; i < all.length && result.length < count; i++) {
+      const tok = all[i];
       if (!tok.range) continue;
-      if (tok.range[0] >= nodeEnd) {
-        if (!filter || filter(tok)) result.push(tok);
-        if (result.length >= count) break;
-      }
+      if (!filter || filter(tok)) result.push(tok);
     }
     return result;
   }
@@ -3481,7 +3521,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     let mismatch = false;
     for (let pi = 0; pi < plugins.length && !mismatch; pi++) {
       const recipe = perPluginRecipe[pi];
-      if (!recipe || recipe.length === 0) continue;
+      if (!recipe) continue;
       // Update per-case options so the rule sees correct configuration on each call.
       // ruleConfig may carry different options per file/case even when the plugin is reused.
       const ruleId = plugins[pi].meta?.name || "unknown";
@@ -3492,7 +3532,19 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       let visitors;
       try { visitors = plugins[pi].create(perRuleCtxs[pi]); }
       catch { mismatch = true; break; }
-      if (!visitors || typeof visitors !== 'object') { mismatch = true; break; }
+      if (!visitors || typeof visitors !== 'object') {
+        // No visitors — matches an empty cached recipe; nothing to wire.
+        if (recipe.length !== 0) { mismatch = true; break; }
+        continue;
+      }
+      // Enforce cached visitor shape. If current create() returns a different number of
+      // function-valued keys than the cached recipe wires up, extras/missing keys would
+      // silently drop — force a cold rebuild. Fires when rule configs change visitor shape
+      // per case (e.g. jsdoc rules with `contexts`, comma-style with `exceptions`).
+      let vkCount = 0;
+      for (const k in visitors) if (typeof visitors[k] === 'function') vkCount++;
+      if (vkCount !== recipe.length) { mismatch = true; break; }
+      if (recipe.length === 0) continue; // empty recipe, empty visitors — nothing to wire
       for (let r = 0; r < recipe.length && !mismatch; r++) {
         const step = recipe[r];
         const handler = visitors[step.visitorKey];
@@ -3579,6 +3631,15 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
 
   _cachedVMPlugins = plugins;
   _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe };
+  // Cold-path rebuild creates fresh safeHandlers with new `_state` objects AND fresh selector
+  // slot objects. All downstream plan caches reference the OLD handler/slot identities —
+  // invalidate them so plans reconstruct against the fresh objects.
+  _cachedLivePlan = null;
+  _cachedLivePlanPlugins = null;
+  _cachedSelectorPlan = null;
+  _cachedSelectorPlanPlugins = null;
+  _cachedPlan = null;
+  _cachedPlanPlugins = null;
   return { map, selectorHandlers };
 }
 
@@ -4230,16 +4291,48 @@ let _cachedPlan = null;
  * - complete=false: fn is a quick pre-filter only (esq.matches still needed to confirm)
  * Returns null if the selector can't be fast-compiled.
  */
+// Extract plain identifier type names from a :not() inner list.
+// Returns array of type names, or null if any entry is non-identifier (bail on complex :not).
+function _collectIdentifierTypes(selectors) {
+  if (!Array.isArray(selectors)) return null;
+  const types = [];
+  for (const s of selectors) {
+    if (s.type !== 'identifier') return null;
+    if (s.value === '*') return null; // :not(*) is pathological; bail
+    types.push(s.value);
+  }
+  return types;
+}
+
 function _compileSelectorFastMatcher(parsedSelector) {
   if (!parsedSelector) return null;
   const t = parsedSelector.type;
 
+  // Top-level wildcard and :not(identifier…) — iterateJsdoc registers `*:not(Program)`,
+  // so every jsdoc rule pays N-nodes × full-esquery-match per file without this.
+  if (t === 'wildcard') return { fn: (_n, _a) => true, complete: true };
+  if (t === 'not') {
+    const negTypes = _collectIdentifierTypes(parsedSelector.selectors);
+    if (!negTypes) return null;
+    if (negTypes.length === 0) return { fn: (_n, _a) => true, complete: true };
+    if (negTypes.length === 1) { const tv = negTypes[0]; return { fn: (n, _a) => n.type !== tv, complete: true }; }
+    const set = new Set(negTypes); return { fn: (n, _a) => !set.has(n.type), complete: true };
+  }
+
   if (t === 'compound') {
-    // compound: identifier + zero or more attribute selectors
+    // compound: identifier/wildcard + zero or more attribute/simple-:not selectors
     let typeValue = null;
     const attrChecks = [];
     for (const s of parsedSelector.selectors) {
       if (s.type === 'identifier') { typeValue = s.value !== '*' ? s.value : null; continue; }
+      if (s.type === 'wildcard') continue;
+      if (s.type === 'not') {
+        const negTypes = _collectIdentifierTypes(s.selectors);
+        if (!negTypes) return null;
+        if (negTypes.length === 1) { const tv = negTypes[0]; attrChecks.push((n) => n.type !== tv); continue; }
+        if (negTypes.length > 1) { const set = new Set(negTypes); attrChecks.push((n) => !set.has(n.type)); continue; }
+        continue; // empty :not() → no-op
+      }
       if (s.type !== 'attribute') return null; // pseudo-class, field, etc. — can't compile
       const check = _compileAttrCheck(s);
       if (!check) return null;
@@ -4323,7 +4416,8 @@ function _compileSelectorFastMatcher(parsedSelector) {
           if (nodeField && par[nodeField] !== n) return false;
           return true;
         },
-        complete
+        complete,
+        needsAncestors: true,
       };
     }
 
@@ -4358,12 +4452,12 @@ function _compileSelectorFastMatcher(parsedSelector) {
 
     // A > B (right identifier)
     if (right.type === 'identifier') {
-      return { fn: (_n, a) => checkParent(a), complete: leftComplete, requiredParentType: leftType };
+      return { fn: (_n, a) => checkParent(a), complete: leftComplete, requiredParentType: leftType, needsAncestors: true };
     }
     // A > .field (right is a field selector)
     if (right.type === 'field') {
       const fieldName = right.name;
-      return { fn: (n, a) => checkParent(a) && a[0][fieldName] === n, complete: leftComplete, requiredParentType: leftType };
+      return { fn: (n, a) => checkParent(a) && a[0][fieldName] === n, complete: leftComplete, requiredParentType: leftType, needsAncestors: true };
     }
     // A > compound (wildcard/identifier + optional field + optional attributes on node)
     if (right.type === 'compound') {
@@ -4388,7 +4482,8 @@ function _compileSelectorFastMatcher(parsedSelector) {
           return true;
         },
         complete: leftComplete, // right checks fully compiled
-        requiredParentType: leftType
+        requiredParentType: leftType,
+        needsAncestors: true,
       };
     }
     return null;
@@ -4399,6 +4494,7 @@ function _compileSelectorFastMatcher(parsedSelector) {
     // complete=true if every branch's fast matcher is complete (no esq.matches needed).
     const checks = [];
     let allComplete = true;
+    let anyNeedsAncestors = false;
     for (const sel of parsedSelector.selectors) {
       if (sel.type === 'identifier') {
         if (sel.value === '*') return { fn: (_n, _a) => true, complete: false }; // wildcard — matches all
@@ -4410,6 +4506,7 @@ function _compileSelectorFastMatcher(parsedSelector) {
         if (branchMatcher) {
           checks.push(branchMatcher.fn);
           if (!branchMatcher.complete) allComplete = false;
+          if (branchMatcher.needsAncestors) anyNeedsAncestors = true;
         } else {
           // Fall back to type-only check (incomplete)
           const ident = sel.selectors.find(s => s.type === 'identifier');
@@ -4424,6 +4521,7 @@ function _compileSelectorFastMatcher(parsedSelector) {
         if (!branchMatcher) return null; // can't filter this branch → can't filter union
         checks.push(branchMatcher.fn);
         if (!branchMatcher.complete) allComplete = false;
+        if (branchMatcher.needsAncestors) anyNeedsAncestors = true;
       } else if (sel.type === 'class') {
         const resolved = _PSEUDO_CLASS_TYPES[sel.name];
         if (!resolved) return null; // unknown pseudo-class
@@ -4437,8 +4535,8 @@ function _compileSelectorFastMatcher(parsedSelector) {
       }
     }
     if (checks.length === 0) return null;
-    if (checks.length === 1) { const c = checks[0]; return { fn: c, complete: allComplete }; }
-    return { fn: (n, a) => { for (const c of checks) if (c(n, a)) return true; return false; }, complete: allComplete };
+    if (checks.length === 1) { const c = checks[0]; return { fn: c, complete: allComplete, needsAncestors: anyNeedsAncestors }; }
+    return { fn: (n, a) => { for (const c of checks) if (c(n, a)) return true; return false; }, complete: allComplete, needsAncestors: anyNeedsAncestors };
   }
 
   if (t === 'identifier') {
@@ -4454,7 +4552,8 @@ function _compileSelectorFastMatcher(parsedSelector) {
     }
     if (name === 'expression') {
       // :expression per esquery: types ending in 'Expression', types ending in 'Literal',
-      // Identifier (if parent is not MetaProperty), MetaProperty
+      // Identifier (if parent is not MetaProperty), MetaProperty.
+      // Reads ancestors to check parent for Identifier case.
       return {
         fn: (n, a) => {
           const tp = n.type;
@@ -4462,7 +4561,8 @@ function _compileSelectorFastMatcher(parsedSelector) {
           if (tp === 'Identifier') return !a || a.length === 0 || a[0].type !== 'MetaProperty';
           return false;
         },
-        complete: true
+        complete: true,
+        needsAncestors: true,
       };
     }
     return null;
@@ -5051,6 +5151,50 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     for (let h = 0; h < handlers.length; h++) handlers[h].handler(node);
   }
 
+  // Shared state so the hoisted _runSelectorList avoids re-allocating a closure
+  // per node. invokeSelectorHandlers sets these at the top of each call.
+  let _shNode = null, _shNodeIdx = 0;
+  let _shAncestors = null;
+
+  function _runSelectorList(list) {
+    for (let h = 0; h < list.length; h++) {
+      const sh = list[h];
+      try {
+        const fm = sh._fastMatcher;
+        if (fm) {
+          if (fm.requiredParentTagIdxs !== undefined && fm.requiredParentTagIdxs.length > 0) {
+            const pIdx = pd ? pd[_shNodeIdx] : NONE;
+            if (pIdx === NONE || pIdx >= nodeTags.length) continue;
+            const pTag = nodeTags[pIdx];
+            const ptIdxs = fm.requiredParentTagIdxs;
+            let parentTagMatched = false;
+            for (let pti = 0; pti < ptIdxs.length; pti++) if (ptIdxs[pti] === pTag) { parentTagMatched = true; break; }
+            if (!parentTagMatched) continue;
+          }
+          let matched;
+          if (!fm.complete || fm.needsAncestors) {
+            if (_shAncestors === null) _shAncestors = getAncestorsFor(_shNodeIdx);
+            matched = fm.fn(_shNode, _shAncestors);
+          } else {
+            matched = fm.fn(_shNode, null);
+          }
+          if (!matched) continue;
+          if (fm.complete) { sh.handler(_shNode); continue; }
+          // complete=false: fast matcher is a pre-filter only, still need esq.matches
+        }
+        if (_shAncestors === null) _shAncestors = getAncestorsFor(_shNodeIdx);
+        if (esq.matches(_shNode, sh.parsedSelector, _shAncestors)) {
+          sh.handler(_shNode);
+        }
+      } catch (err) {
+        context._reports.push({
+          ruleId: sh.ruleId,
+          message: `Plugin error: ${err.message}`,
+        });
+      }
+    }
+  }
+
   function invokeSelectorHandlers(nodeIdx, isExit) {
     if (!esq || selectorHandlers.length === 0) return;
     const tag = nodeTags[nodeIdx];
@@ -5059,53 +5203,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const handlers = byTag ? byTag[tag] : (universal ? null : selectorHandlers);
     const hasHandlers = (handlers && handlers.length > 0) || (universal && universal.length > 0);
     if (!hasHandlers) return;
-    const node = nodeView(ast, nodeIdx);
-    let ancestors = null; // lazy — only compute if a selector needs them
+    _shNode = nodeView(ast, nodeIdx);
+    _shNodeIdx = nodeIdx;
+    _shAncestors = null; // lazy per-node
     context._currentNodeIdx = nodeIdx;
-    function _runSelectorList(list) {
-      for (let h = 0; h < list.length; h++) {
-        const sh = list[h];
-        try {
-          const fm = sh._fastMatcher;
-          if (fm) {
-            // Parent tag pre-check: for child-combinator selectors with a known parent type
-            // (e.g. "ForStatement > .test"), skip getAncestorsFor when parent tag doesn't match.
-            // This avoids O(n) ancestor allocation for the vast majority of nodes.
-            if (fm.requiredParentTagIdxs !== undefined && fm.requiredParentTagIdxs.length > 0) {
-              const pIdx = pd ? pd[nodeIdx] : NONE;
-              if (pIdx === NONE || pIdx >= nodeTags.length) continue;
-              const pTag = nodeTags[pIdx];
-              const ptIdxs = fm.requiredParentTagIdxs;
-              let parentTagMatched = false;
-              for (let pti = 0; pti < ptIdxs.length; pti++) if (ptIdxs[pti] === pTag) { parentTagMatched = true; break; }
-              if (!parentTagMatched) continue;
-            }
-            // Fast path: use pre-compiled matcher
-            let matched;
-            if (!fm.complete || fm.fn.length >= 2) {
-              // Needs ancestors (child combinator)
-              if (ancestors === null) ancestors = getAncestorsFor(nodeIdx);
-              matched = fm.fn(node, ancestors);
-            } else {
-              matched = fm.fn(node, null);
-            }
-            if (!matched) continue;
-            if (fm.complete) { sh.handler(node); continue; }
-            // complete=false: fast matcher is a pre-filter only, still need esq.matches
-          }
-          // Fallback: full esq.matches
-          if (ancestors === null) ancestors = getAncestorsFor(nodeIdx);
-          if (esq.matches(node, sh.parsedSelector, ancestors)) {
-            sh.handler(node);
-          }
-        } catch (err) {
-          context._reports.push({
-            ruleId: sh.ruleId,
-            message: `Plugin error: ${err.message}`,
-          });
-        }
-      }
-    }
     if (handlers && handlers.length > 0) _runSelectorList(handlers);
     if (universal && universal.length > 0) _runSelectorList(universal);
   }
@@ -6180,6 +6281,7 @@ let _cachedContext = null;
 // Item 3: Node cache pool — avoids new Array(nodeCount) per file.
 let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
+let _nodeCachePoolOwner = null;
 
 function runPlugins(ast, plugins, options = {}) {
   const { filename = "<input>", tagNames, ruleConfig = {}, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
@@ -6203,14 +6305,19 @@ function runPlugins(ast, plugins, options = {}) {
   }
 
   // Item 3: Pre-assign node cache pool to avoid new Array(nodeCount) in nodeView().
+  // _nodeCachePoolOwner tracks the AST that populated the pool last; when the same
+  // AST is linted repeatedly (lintSource loops, LSP rechecks), skip the clear and
+  // reuse the populated views. Previously ~28% of CPU on empty-handler runs was
+  // _nodeViewRaw re-materializing ~500 nodes per call.
   const nc = ast.nodeCount;
   if (_nodeCachePool === null || _nodeCachePoolSize < nc) {
     _nodeCachePool = new Array(nc);
     _nodeCachePoolSize = nc;
-  } else {
-    // Clear only the slots this AST will use (rest are never read).
-    _nodeCachePool.fill(undefined, 0, nc);
+    _nodeCachePoolOwner = null;
+  } else if (_nodeCachePoolOwner !== ast) {
+    _nodeCachePool.fill(undefined, 0, _nodeCachePoolSize);
   }
+  _nodeCachePoolOwner = ast;
   ast._nodeCache = _nodeCachePool;
 
   // All pre-computation is now done in Zig buffer (line starts, node positions, maxTok).
@@ -6228,17 +6335,10 @@ function runPlugins(ast, plugins, options = {}) {
 
   const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
 
-  const hasScopeRules = visitorMapResult.map.has('Program:exit');
-  if (ast._scopeKinds && hasScopeRules) {
-    context.sourceCode._precomputeScopes();
-  }
-
   walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);
 
-  // Clear ALL pool slots (not just 0..nc-1) so node views from this AST don't
-  // outlive the call. Without this, large-AST views in slots nc..poolSize-1
-  // retain back-refs to prior ASTs when a smaller AST is processed next.
-  if (_nodeCachePool !== null) _nodeCachePool.fill(undefined, 0, _nodeCachePoolSize);
+  // Retain the pool for this AST; the owner check on the next entry wipes only when a
+  // different AST comes in. Keeps populated views alive for repeated lintSource calls.
 
   return context._reports;
 }

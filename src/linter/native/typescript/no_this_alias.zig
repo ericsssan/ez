@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow aliasing `this`",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.declarator};

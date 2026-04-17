@@ -10,6 +10,7 @@ pub const meta = RuleMeta{
     .category = .suspicious,
     .default_severity = .warning,
     .description = "Disallow duplicate constituents of union or intersection types",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{ .ts_union_type, .ts_intersection_type };

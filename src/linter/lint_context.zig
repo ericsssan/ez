@@ -10,6 +10,7 @@ const SubRange = ast_mod.SubRange;
 const Span = parser.span.Span;
 const Location = parser.span.Location;
 const Severity = parser.diagnostic.Severity;
+const Language = parser.token.Language;
 const semantic_mod = parser.semantic;
 const SemanticResult = semantic_mod.SemanticResult;
 const scope_mod = parser.scope;
@@ -19,12 +20,25 @@ const SymbolTable = symbol_mod.SymbolTable;
 const reference_mod = parser.reference;
 const ReferenceTable = reference_mod.ReferenceTable;
 
+// ── Lint Fix ───────────────────────────────────────────────
+
+/// A text replacement fix emitted alongside a diagnostic.
+/// `span` is the source range to replace; `text` is the replacement.
+/// `text` is allocated in the lint arena and valid until the arena is reset.
+pub const Fix = struct {
+    span: Span,
+    /// Replacement text (empty string = deletion).
+    text: []const u8,
+};
+
 // ── Lint Diagnostic ────────────────────────────────────────
 
 pub const LintDiagnostic = struct {
     rule_index: u16,
     span: Span,
     severity: Severity,
+    /// Optional autofix — null when the rule has no fix for this diagnostic.
+    fix: ?Fix = null,
 
     /// Format as "file:line:col: severity(rule-name)"
     pub fn format(
@@ -54,6 +68,8 @@ pub const LintContext = struct {
     diagnostics: *std.ArrayList(LintDiagnostic),
     allocator: std.mem.Allocator,
     severity_override: ?Severity = null,
+    /// Source language (js/ts/jsx/tsx), set by the linter before running rules.
+    language: Language = .js,
     /// Current rule index, set by the linter before calling run().
     current_rule_index: u16 = 0,
     /// Per-rule JSON options value, set by the linter before calling run().
@@ -204,6 +220,13 @@ pub const LintContext = struct {
         return @intCast(self.ast.nodes.len);
     }
 
+    // ── Language helpers ──────────────────────────────────
+
+    /// Returns true when linting a TypeScript file (ts or tsx).
+    pub fn isTypeScript(self: *const LintContext) bool {
+        return self.language.isTs();
+    }
+
     // ── Reporting ─────────────────────────────────────────
 
     pub fn report(self: *const LintContext, node_idx: NodeIndex) void {
@@ -219,6 +242,36 @@ pub const LintContext = struct {
             .rule_index = self.current_rule_index,
             .span = span,
             .severity = self.severity_override orelse .warning,
+        }) catch {};
+    }
+
+    /// Report a diagnostic with an autofix.
+    /// `fix_span` is the source range to replace; `fix_text` is the replacement string.
+    pub fn reportWithFix(self: *const LintContext, node_idx: NodeIndex, fix_span: Span, fix_text: []const u8) void {
+        const text_copy = self.allocator.dupe(u8, fix_text) catch {
+            // On allocation failure fall back to reporting without a fix.
+            self.report(node_idx);
+            return;
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = self.nodeSpan(node_idx),
+            .severity = self.severity_override orelse .warning,
+            .fix = .{ .span = fix_span, .text = text_copy },
+        }) catch {};
+    }
+
+    /// Report a span-level diagnostic with an autofix.
+    pub fn reportSpanWithFix(self: *const LintContext, diag_span: Span, fix_span: Span, fix_text: []const u8) void {
+        const text_copy = self.allocator.dupe(u8, fix_text) catch {
+            self.reportSpan(diag_span);
+            return;
+        };
+        self.diagnostics.append(self.allocator, .{
+            .rule_index = self.current_rule_index,
+            .span = diag_span,
+            .severity = self.severity_override orelse .warning,
+            .fix = .{ .span = fix_span, .text = text_copy },
         }) catch {};
     }
 };

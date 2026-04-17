@@ -9,6 +9,7 @@ pub const meta = RuleMeta{
     .category = .style,
     .default_severity = .warning,
     .description = "Enforce using concise optional chain expressions instead of chained logical ands",
+    .lang = .ts_only,
 };
 
 pub const relevant_tags = [_]Node.Tag{.logical_and};

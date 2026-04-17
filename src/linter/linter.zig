@@ -13,6 +13,8 @@ const Config = @import("config.zig").Config;
 const RuleSeverity = @import("config.zig").RuleSeverity;
 const InlineDisables = @import("inline_disable.zig").InlineDisables;
 const Location = parser.span.Location;
+const Language = parser.token.Language;
+const RuleLang = @import("native/rule.zig").Lang;
 
 // ── Comptime Dispatch Table ───────────────────────────────────────
 //
@@ -154,6 +156,14 @@ const needs_semantic_flags: [registry.count]bool = blk: {
     break :blk arr;
 };
 
+/// Per-rule language filter — from RuleMeta.lang (defaults to .all).
+const lang_flags: [registry.count]RuleLang = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count]RuleLang = undefined;
+    for (registry.all_rules, 0..) |Rule, i| arr[i] = Rule.meta.lang;
+    break :blk arr;
+};
+
 pub const rule_names: [registry.count][]const u8 = blk: {
     @setEvalBranchQuota(10_000);
     var arr: [registry.count][]const u8 = undefined;
@@ -170,10 +180,20 @@ pub const rule_categories: [registry.count]Category = blk: {
 
 // ── Public API ────────────────────────────────────────────────────
 
+/// Returns true when the rule's language filter matches the given language.
+inline fn langMatches(rule_lang: RuleLang, file_lang: Language) bool {
+    return switch (rule_lang) {
+        .all => true,
+        .ts_only => file_lang.isTs(),
+        .js_only => !file_lang.isTs(),
+    };
+}
+
 /// Run all registered lint rules against the given AST and semantic result.
 ///
 /// When `config` is non-null, rules whose severity is `off` are skipped
 /// and the configured severity overrides the rule's default.
+/// Rules whose `lang` filter does not match `language` are skipped entirely.
 ///
 /// Returns an owned slice of diagnostics. The caller owns the memory.
 pub fn lint(
@@ -181,6 +201,7 @@ pub fn lint(
     tree: *const Ast,
     semantic: *const SemanticResult,
     config: ?*const Config,
+    language: Language,
 ) ![]const LintDiagnostic {
     // Keep safety checks in ReleaseFast — prevents Zig optimizer from generating
     // illegal instructions on edge-case ASTs (e.g. generator+class+yield combos).
@@ -194,6 +215,7 @@ pub fn lint(
         .semantic = semantic,
         .diagnostics = &diagnostics,
         .allocator = allocator,
+        .language = language,
         .settings = if (config) |cfg| cfg.settings else null,
         .language_options = if (config) |cfg| cfg.language_options else null,
     };
@@ -208,6 +230,7 @@ pub fn lint(
         const end = dispatch_table.offsets[tag_int + 1];
 
         for (dispatch_table.data[start..end]) |rule_idx| {
+            if (!langMatches(lang_flags[rule_idx], language)) continue;
             const sev = if (config) |cfg|
                 cfg.rule_severity_table[rule_idx]
             else
@@ -226,6 +249,7 @@ pub fn lint(
 
     // ── Phase 2: Symbol-phase rules ───────────────────────────
     for (0..registry.count) |rule_idx| {
+        if (!langMatches(lang_flags[rule_idx], language)) continue;
         const fn_ptr = symbol_fns[rule_idx] orelse continue;
         const sev = if (config) |cfg|
             cfg.rule_severity_table[rule_idx]
