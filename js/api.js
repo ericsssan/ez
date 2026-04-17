@@ -14,7 +14,7 @@
 const fs   = require("fs");
 const path = require("path");
 const {
-  parseSource, parseAndLint, lintSource: lintSourceNative,
+  parseSource, parseAndLintNative, lintSourceNative,
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
 } = require("./index");
 const { runPlugins } = require("./eslint-runner");
@@ -242,7 +242,7 @@ function _lintOne(filePath, resolved) {
 
   // Parse + native lint in one pass
   const { ast, diags: nativeDiags } = nativeConfig
-    ? parseAndLint(filePath, { config: nativeConfig })
+    ? parseAndLintNative(filePath, { config: nativeConfig })
     : { ast: require("./index").parse(filePath), diags: [] };
 
   // Run JS rules

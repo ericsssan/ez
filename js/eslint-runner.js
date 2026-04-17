@@ -6427,9 +6427,5 @@ module.exports = {
   runPlugins, RuleContext,
   computeGlobals,
   applyDisableDirectives,
-  _estimateHandlerCost, _extractParentGuard, _fuseHandlers,
-  _isTrivialHandler, _isDeadHandler, _classifyRuleAccess,
   DEFAULT_ERROR_BUDGET,
-  _intern, _coalesceByParentGuard, _fingerprintSubtree,
-  RuleSkipSet, _extractFileLevelRules,
 };

@@ -538,7 +538,7 @@ for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
 // ── ESLint + Ez runner setup ────────────────────────────────
 
 const { Linter }                = require(path.join(JS_ROOT, "node_modules/eslint"));
-const { parseSource: parse, getTagNames, lintSource: ezLint, buildNativeConfig, getNativeRules } = require(path.join(JS_ROOT, "index"));
+const { parseSource: parse, getTagNames, lintSourceNative: ezLint, buildNativeConfig, getNativeRules } = require(path.join(JS_ROOT, "index"));
 const { runPlugins, computeGlobals, applyDisableDirectives } = require(path.join(JS_ROOT, "eslint-runner"));
 const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
@@ -1330,14 +1330,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const espreeResult = tc.eslintResult;
       if (!espreeResult) { skipEspreeParse++; continue; }
 
-      if (process.env.EZ_FORCE_GC && typeof Bun !== "undefined" && ruleName === process.env.EZ_FORCE_GC) {
-        Bun.gc(true);
-      }
       const _rt0 = performance.now();
       const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
-      if (process.env.EZ_CASE_TIMING && ruleName === process.env.EZ_CASE_TIMING) {
-        console.error(`[${ruleName}] case ${tcIdx}: ${(performance.now() - _rt0).toFixed(2)} ms`);
-      }
       const _rtDelta = performance.now() - _rt0;
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;

@@ -15,7 +15,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { parseAndLint, parse, discoverFiles, lintPaths, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
+const { parseAndLintNative, parse, discoverFiles, lintPaths, getTagNames, getNativeRules, buildNativeConfig } = require("./index");
 const { runPlugins, applyDisableDirectives } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
 const { loadConfig, normalizeRules, pluginsFromConfig } = require("./config-loader");
@@ -297,7 +297,7 @@ async function main() {
       let nativeViolations = [];
       if (fileNativeConfig) {
         try {
-          const result = parseAndLint(file, { config: fileNativeConfig });
+          const result = parseAndLintNative(file, { config: fileNativeConfig });
           ast = result.ast;
           nativeViolations = result.diags.map(d => ({
             ruleId: d.ruleName, severity: d.severity === 0 ? 2 : 1,

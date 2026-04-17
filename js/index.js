@@ -285,7 +285,7 @@ function resetBuffer() {
   resetView();
 }
 
-function lintSource(source, options = {}) {
+function lintSourceNative(source, options = {}) {
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
@@ -306,7 +306,7 @@ function lintSource(source, options = {}) {
   return _parseDiags(bytesWritten, srcBytes);
 }
 
-function parseAndLint(filePath, options = {}) {
+function parseAndLintNative(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
@@ -322,7 +322,7 @@ function parseAndLint(filePath, options = {}) {
       sharedBuffer = buf;
       bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
     }
-    if (bytesUsed === 0) throw new Error(`ez: parseAndLint failed: ${filePath}`);
+    if (bytesUsed === 0) throw new Error(`ez: parseAndLintNative failed: ${filePath}`);
   }
   sharedBuffer = buf;
   getTagNames();
@@ -435,4 +435,4 @@ function lintPaths(roots, options = {}) {
   return _decodeBatchResults(buf);
 }
 
-module.exports = { parse, parseSource, parseAndLint, lintSource, discoverFiles, lintPaths, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, parseSource, parseAndLintNative, lintSourceNative, discoverFiles, lintPaths, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
