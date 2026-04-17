@@ -1308,6 +1308,11 @@ class SourceCode {
           return _setProxy;
         }
         if (prop === 'type') return 'global';
+        // Wrapper presents itself as global scope — its `through` should be the
+        // truly-unresolved subset (root globalScope.through), not moduleScope.through
+        // which retains refs that the root scope eventually resolved (e.g. /*global*/
+        // declarations live on globalScope.set, not moduleScope.set).
+        if (prop === 'through') return globalScope.through;
         if (prop === 'variables') {
           if (!_mergedVars) {
             // Merge: module scope variables first, then globals not already present
@@ -1878,11 +1883,13 @@ class SourceCode {
     }
 
     // Bubble unresolved refs from children, resolving against this scope's variables.
+    // Mirrors eslint-scope's __delegateToUpperScope: child.through retains EVERY ref
+    // that escaped that child, even when an outer scope eventually resolves them. Only
+    // this scope's own through gets the still-unresolved subset.
     const set = scope.set; // triggers ensureVarsSet lazily
     for (const child of childScopes) {
-      const keep = [];
       for (const ref of child.through) {
-        if (ref.identifier?.type === 'PrivateIdentifier') { keep.push(ref); continue; }
+        if (ref.identifier?.type === 'PrivateIdentifier') { through.push(ref); continue; }
         const name = ref.identifier?.name;
         const variable = name ? set.get(name) : undefined;
         if (variable) {
@@ -1893,13 +1900,7 @@ class SourceCode {
           ref.resolved = variable;
         } else {
           through.push(ref);
-          keep.push(ref);
         }
-      }
-      if (keep.length < child.through.length) {
-        child.through.length = 0;
-        for (let k = 0; k < keep.length; k++) child.through[k] = keep[k];
-        child.through.length = keep.length;
       }
     }
 
