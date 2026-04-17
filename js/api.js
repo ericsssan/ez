@@ -361,6 +361,25 @@ async function fix(targets, config = {}) {
 }
 
 /**
+ * Lint source text and apply fixes. Returns { fixed, remaining } where `fixed`
+ * is the new source string (== input if nothing fixed) and `remaining` is the
+ * diagnostics that had no fix. Symmetric to fix() but operates in memory only.
+ *
+ * @param {string} source - Source code text
+ * @param {object} [config] - Configuration options (must include filename)
+ * @returns {Promise<{fixed: string, remaining: Array}>}
+ */
+async function fixSource(source, config = {}) {
+  const resolved = await _resolveConfig(config);
+  const filename = config.filename || "<input>";
+  const diagnostics = _lintSourceOne(source, filename, resolved);
+  const fixes = diagnostics.filter(d => d.fix).flatMap(d => Array.isArray(d.fix) ? d.fix : [d.fix]);
+  const fixed = fixes.length > 0 ? applyFixes(source, fixes) : source;
+  const remaining = diagnostics.filter(d => !d.fix);
+  return { fixed, remaining };
+}
+
+/**
  * Create a cached linter for LSP/editor use.
  * Resolves config once; returns async lintText(source, filename) → diags[].
  *
@@ -374,4 +393,4 @@ async function createLinter(config = {}) {
   };
 }
 
-module.exports = { lint, lintSource, fix, applyFixes, createLinter };
+module.exports = { lint, lintSource, fix, fixSource, applyFixes, createLinter };
