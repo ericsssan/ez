@@ -202,6 +202,31 @@ function computeGlobals(ecmaVersion, envEnabled) {
 // V8 already interns short strings in most cases, but explicitly caching
 // guarantees it and enables fast Map/Set lookups with interned keys.
 
+// Lazy espree wrapper exposed via context.languageOptions.parser. Some rules
+// (e.g. sonarjs/no-commented-code) call parser.parse() to test whether a
+// comment body is valid JS code. Returning a stub without `parse` would make
+// those rules silently skip — load espree on first use and cache.
+let _cachedEspreeParser = null;
+function _defaultParserStub() {
+  if (_cachedEspreeParser) return _cachedEspreeParser;
+  const stub = {
+    meta: { name: '@typescript-eslint/parser' },
+    parse(code, opts) {
+      try {
+        const espree = require('espree');
+        _cachedEspreeParser.parse = (c, o) => espree.parse(c, {
+          ecmaVersion: 'latest', sourceType: 'module', loc: true, range: true, ...o,
+        });
+        return _cachedEspreeParser.parse(code, opts);
+      } catch (e) {
+        throw e;
+      }
+    },
+  };
+  _cachedEspreeParser = stub;
+  return stub;
+}
+
 const _internedStrings = new Map();
 
 function _intern(str) {
@@ -3366,7 +3391,7 @@ class RuleContext {
       sourceType: 'module',
       parserOptions: { ecmaFeatures: { jsx: true } },
       // Identify as @typescript-eslint/parser so type-aware rules don't throw
-      parser: { meta: { name: '@typescript-eslint/parser' } },
+      parser: _defaultParserStub(),
     };
     this.settings = options.settings || {};
     // Satisfy ESLint v8 parserPath check used by getParserServices
