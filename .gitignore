@@ -22,4 +22,6 @@ isolate-*.log
 
 # Profiling artifacts
 *.cpuprofile
+*.heapprofile
+ez.node
 sanz.node

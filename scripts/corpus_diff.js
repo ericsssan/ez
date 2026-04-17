@@ -8,7 +8,7 @@ const { ESLint } = require("../js/node_modules/eslint");
 const fs = require("fs");
 const path = require("path");
 
-const SANZ = path.resolve(__dirname, "../zig-out/bin/ez");
+const EZ = path.resolve(__dirname, "../zig-out/bin/ez");
 const RULES_DIR = path.resolve(__dirname, "../js/node_modules/eslint/lib/rules");
 const CORPUS = process.argv[2] || path.resolve(__dirname, "../tests/conformance/test262-parser-tests/pass");
 
@@ -17,7 +17,7 @@ async function main() {
   console.error("Running ez...");
   let ezOut = "";
   try {
-    ezOut = execSync(`"${SANZ}" --lint --eslint-rules="${RULES_DIR}" "${CORPUS}"`, {
+    ezOut = execSync(`"${EZ}" --lint --eslint-rules="${RULES_DIR}" "${CORPUS}"`, {
       encoding: "utf-8", maxBuffer: 50 * 1024 * 1024,
     });
   } catch (e) { ezOut = e.stdout || ""; }

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Benchmark: sanz (4 Zig-interpreted rules) vs eslint vs oxlint vs biome
-# Rules: no-debugger, no-with (+ no-continue, no-ternary for sanz/eslint only)
+# Benchmark: ez (4 Zig-interpreted rules) vs eslint vs oxlint vs biome
+# Rules: no-debugger, no-with (+ no-continue, no-ternary for ez/eslint only)
 #
 # Usage: bash bench/bench_4rules.sh [A|B|C|all]
 
@@ -41,8 +41,8 @@ bench_eslint_4() {
   "
 }
 
-# Benchmark sanz with the 4 Zig-interpreted rules
-bench_sanz_4() {
+# Benchmark ez with the 4 Zig-interpreted rules
+bench_ez_4() {
   local corpus="$1"
   node js/lint.js --eslint-plugin eslint \
     --rule no-debugger --rule no-with --rule no-continue --rule no-ternary \
@@ -70,14 +70,14 @@ run() {
   echo ""
 
   echo "  Diagnostics:"
-  echo -n "    sanz (4 rules):   " && bench_sanz_4 "$corpus"
+  echo -n "    ez (4 rules):   " && bench_ez_4 "$corpus"
   echo -n "    eslint (4 rules): " && bench_eslint_4 "$corpus"
   echo -n "    oxlint (2 rules): " && bench_oxlint_2 "$corpus"
   echo -n "    biome (1 rule):   " && bench_biome_1 "$corpus"
   echo ""
 
   hyperfine --warmup 1 --runs "$runs" --ignore-failure \
-    --command-name "sanz 4 rules (Zig interp)"  "node js/lint.js --eslint-plugin eslint --rule no-debugger --rule no-with --rule no-continue --rule no-ternary --threads 1 $corpus" \
+    --command-name "ez 4 rules (Zig interp)"  "node js/lint.js --eslint-plugin eslint --rule no-debugger --rule no-with --rule no-continue --rule no-ternary --threads 1 $corpus" \
     --command-name "eslint 4 rules"              "node bench/bench_eslint_4rules.js $corpus" \
     --command-name "oxlint 2 rules (1t)"         "oxlint --threads 1 --deny no-debugger --deny no-with --no-ignore $corpus" \
     --command-name "biome 1 rule"                "biome lint --only=suspicious/noDebugger --vcs-use-ignore-file=false $corpus"

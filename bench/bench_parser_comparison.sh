@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bench_parser_comparison.sh — ESLint+espree vs ESLint+sanz-parser (4 rules)
+# bench_parser_comparison.sh — ESLint+espree vs ESLint+ez-parser (4 rules)
 #
 # Usage:
 #   ./bench/bench_parser_comparison.sh [corpus-dir] [runs]
@@ -43,7 +43,7 @@ run_bench() {
   echo "$median"
 }
 
-printf "%-24s  %8s  %8s  %s\n" "corpus" "espree" "sanz" "speedup"
+printf "%-24s  %8s  %8s  %s\n" "corpus" "espree" "ez" "speedup"
 printf "%s\n" "$(printf '─%.0s' {1..56})"
 
 for entry in "${CORPORA[@]}"; do
@@ -61,9 +61,9 @@ for entry in "${CORPORA[@]}"; do
   printf "%-24s  " "$label"
 
   espree_median=$(run_bench "espree" "bench/bench_eslint_4rules.js")
-  sanz_median=$(run_bench "sanz"   "bench/bench_sanz_parser_4rules.js")
+  ez_median=$(run_bench "ez"   "bench/bench_ez_parser_4rules.js")
 
-  awk -v label="$label" -v e="$espree_median" -v s="$sanz_median" 'BEGIN {
+  awk -v label="$label" -v e="$espree_median" -v s="$ez_median" 'BEGIN {
     ratio = e / s
     pct = (e - s) / e * 100
     if (ratio >= 1)

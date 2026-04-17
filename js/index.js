@@ -31,7 +31,7 @@ function loadBinding() {
 
 const DEFAULT_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
 const HEADER_SIZE = 136; // 34 fields × 4 bytes
-const MAGIC = 0x5A4E4153; // "SANZ" little-endian
+const MAGIC = 0x5A4E4153; // ASCII "SANZ" little-endian — legacy magic, kept for binary stability
 
 let sharedBuffer = null;
 

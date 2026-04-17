@@ -5,7 +5,7 @@ const code_path_mod = @import("code_path.zig");
 
 // ── Constants ────────────────────────────────────────────────────
 
-/// Magic number: "SANZ" in little-endian.
+/// Magic number: ASCII "SANZ" in little-endian — legacy, kept for binary stability.
 pub const MAGIC: u32 = 0x5A4E_4153;
 pub const VERSION: u32 = 1;
 pub const HEADER_SIZE: u32 = @sizeOf(BufferHeader);

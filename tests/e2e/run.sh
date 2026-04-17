@@ -1,19 +1,19 @@
 #!/bin/bash
 # ── End-to-end CLI tests ──────────────────────────────────────
-# Tests the actual `sanz` binary with real files.
+# Tests the actual `ez` binary with real files.
 # Run: ./tests/e2e/run.sh (after `zig build`)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
-BIN="$PROJECT_DIR/zig-out/bin/sanz"
+BIN="$PROJECT_DIR/zig-out/bin/ez"
 FIXTURES="$SCRIPT_DIR/fixtures"
 PASS=0
 FAIL=0
 
 if [ ! -f "$BIN" ]; then
-  echo "ERROR: sanz binary not found at $BIN"
+  echo "ERROR: ez binary not found at $BIN"
   echo "Run 'zig build' first."
   exit 1
 fi

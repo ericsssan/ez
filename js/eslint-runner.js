@@ -4072,50 +4072,6 @@ function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers
   return batchable;
 }
 
-// ── Rule Query Optimizer: profile-guided replan ─────────────────
-//
-// Measure actual handler execution time on first N nodes, then reorder
-// handlers by real cost for subsequent nodes. Stored globally so it
-// persists across files in the same process (worker).
-
-const _profileData = new Map(); // ruleId → { totalNs: number, calls: number }
-const PROFILE_WARMUP_NODES = 50; // nodes to profile before replanning
-
-/**
- * Record a handler's execution time into the profile data.
- */
-function _profileRecord(ruleId, elapsedNs) {
-  let entry = _profileData.get(ruleId);
-  if (!entry) { entry = { totalNs: 0, calls: 0 }; _profileData.set(ruleId, entry); }
-  entry.totalNs += elapsedNs;
-  entry.calls++;
-}
-
-/**
- * Get the profiled average cost for a rule, or -1 if not enough data.
- */
-function _profiledCost(ruleId) {
-  const entry = _profileData.get(ruleId);
-  if (!entry || entry.calls < 3) return -1;
-  return entry.totalNs / entry.calls;
-}
-
-/**
- * Re-sort fused handler items by actual profiled cost (descending reliability).
- * Called after warmup to reorder based on real measurements.
- */
-function _replanFused(desc) {
-  if (!desc || !desc._fused) return;
-  desc.items.sort((a, b) => {
-    const ca = _profiledCost(a.ruleId);
-    const cb = _profiledCost(b.ruleId);
-    // If both have profile data, sort by actual cost
-    if (ca >= 0 && cb >= 0) return ca - cb;
-    // Otherwise fall back to static estimate
-    return a.cost - b.cost;
-  });
-}
-
 // ── Rule Query Optimizer: rule dependency DAG ───────────────────
 //
 // Model inter-rule data dependencies. Rules that write to shared state
@@ -6473,7 +6429,7 @@ module.exports = {
   applyDisableDirectives,
   _estimateHandlerCost, _extractParentGuard, _fuseHandlers,
   _isTrivialHandler, _isDeadHandler, _classifyRuleAccess,
-  _profileData, DEFAULT_ERROR_BUDGET,
+  DEFAULT_ERROR_BUDGET,
   _intern, _coalesceByParentGuard, _fingerprintSubtree,
   RuleSkipSet, _extractFileLevelRules,
 };

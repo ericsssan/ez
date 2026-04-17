@@ -8,7 +8,7 @@ const { execSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
-const SANZ = path.resolve(__dirname, "../zig-out/bin/ez");
+const EZ = path.resolve(__dirname, "../zig-out/bin/ez");
 const RULES_DIR = path.resolve(__dirname, "../js/node_modules/eslint/lib/rules");
 const FILE = process.argv[2] || path.resolve(__dirname, "../tests/fixtures/expressions.js");
 
@@ -16,7 +16,7 @@ const FILE = process.argv[2] || path.resolve(__dirname, "../tests/fixtures/expre
 let ezOut = "";
 try {
   ezOut = execSync(
-    `"${SANZ}" --lint --eslint-rules="${RULES_DIR}" "${FILE}"`,
+    `"${EZ}" --lint --eslint-rules="${RULES_DIR}" "${FILE}"`,
     { encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }
   );
 } catch (e) {
