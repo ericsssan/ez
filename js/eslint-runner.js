@@ -5326,7 +5326,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   function invokeMethodFnHandlers(methodNodeIdx, isExit) {
     const fnKey = isExit ? 'FunctionExpression:exit' : 'FunctionExpression';
-    if (!visitorMap.has(fnKey)) return;
+    const hasDirectHandler = visitorMap.has(fnKey);
+    // Selector dispatch (e.g. `:function`) also targets the synthetic FunctionExpression.
+    // Skip both paths only when neither direct nor selector handlers care.
+    const hasSelectorInterest = hasSelectors;
+    if (!hasDirectHandler && !hasSelectorInterest) return;
     const methodNode = nodeView(ast, methodNodeIdx);
     const fnExpr = methodNode.value;
     if (!fnExpr || fnExpr.type !== 'FunctionExpression') return;
@@ -5336,15 +5340,42 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     fnExpr.loc = methodNode.loc;
     fnExpr._ast = ast;
     fnExpr._i = methodNodeIdx;
-    invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
+    if (hasDirectHandler) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
+    if (hasSelectorInterest) {
+      // invokeSelectorHandlers expects a node index — borrow methodNodeIdx (the FE wraps it).
+      // _shNode is set to fnExpr below so selector predicates see FunctionExpression.type.
+      const savedShNode = _shNode;
+      const savedShNodeIdx = _shNodeIdx;
+      const savedShAncestors = _shAncestors;
+      _shNode = fnExpr;
+      _shNodeIdx = methodNodeIdx;
+      _shAncestors = null;
+      const tag = nodeTags[methodNodeIdx];
+      const byTag = isExit ? selectorsByTagExit : selectorsByTagEnter;
+      const universal = isExit ? _universalExit : _universalEnter;
+      // Selectors keyed by FunctionExpression — dispatch them; method_def-keyed selectors
+      // already fire from the main DFS event for this same node.
+      const feTag = T.fn_expr;
+      const handlers = (feTag !== undefined && byTag) ? byTag[feTag] : null;
+      if (handlers && handlers.length > 0) _runSelectorList(handlers);
+      if (universal && universal.length > 0) _runSelectorList(universal);
+      _shNode = savedShNode;
+      _shNodeIdx = savedShNodeIdx;
+      _shAncestors = savedShAncestors;
+    }
   }
 
   const hasCodePath  = visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd') ||
     visitorMap.has('onCodePathSegmentStart') || visitorMap.has('onCodePathSegmentEnd') ||
     visitorMap.has('onCodePathSegmentLoop') ||
     visitorMap.has('onUnreachableCodePathSegmentStart') || visitorMap.has('onUnreachableCodePathSegmentEnd');
+  // hasMethodFn governs whether FLAG_METHOD_FN is set on MethodDefinition tags so the
+  // synthesized FunctionExpression handler fires. Selectors (e.g. `:function`) also need
+  // this dispatch since they never match the raw method_def tag — turn it on whenever any
+  // selector exists. Per-method cost is a single visitorMap lookup if no handlers match.
   const hasMethodFn  = visitorMap.has('FunctionExpression') || visitorMap.has('FunctionExpression:exit') ||
-                       visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd');
+                       visitorMap.has('onCodePathStart') || visitorMap.has('onCodePathEnd') ||
+                       hasSelectors;
   // canSkip: true allows the DFS to skip nodes with no handlers or flags.
   // With selector type-filtering (FLAG_SELECTOR in tagFlags), we can skip even with selectors.
   // Set to true always; FLAG_SELECTOR handles selector-relevant tags.
