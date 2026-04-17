@@ -668,9 +668,9 @@
     },
     "no-array-constructor": {
       "runner": {
-        "fn": 7,
+        "fn": 0,
         "fp": 4,
-        "crash": 7
+        "crash": 0
       },
       "native": {
         "fn": 16,
@@ -3674,9 +3674,9 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 7,
+        "fn": 6,
         "fp": 0,
-        "crash": 1
+        "crash": 0
       },
       "native": {
         "fn": 181,
@@ -3685,7 +3685,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 7,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       }
@@ -4179,7 +4179,7 @@
     "prefer-const": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -5533,13 +5533,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 78,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       }
@@ -5731,14 +5731,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 77,
-        "fp": 0,
+        "fn": 21,
+        "fp": 21,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
-        "fp": 3,
+        "fn": 21,
+        "fp": 21,
         "crash": 0
       }
     },
@@ -7905,7 +7905,7 @@
     "unicorn/prefer-string-raw": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -7916,7 +7916,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 3,
+        "fp": 4,
         "crash": 0
       }
     },
@@ -9632,7 +9632,7 @@
     },
     "unicorn/isolated-functions": {
       "runner": {
-        "fn": 13,
+        "fn": 0,
         "fp": 5,
         "crash": 0
       },
@@ -9643,7 +9643,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 13,
+        "fn": 0,
         "fp": 5,
         "crash": 0
       }
@@ -11450,7 +11450,7 @@
     },
     "react/iframe-missing-sandbox": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -11461,7 +11461,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -12764,7 +12764,7 @@
     },
     "sonarjs/generator-without-yield": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12775,7 +12775,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -13070,7 +13070,7 @@
     },
     "sonarjs/assertions-in-tests": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13081,7 +13081,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -13376,7 +13376,7 @@
     },
     "sonarjs/chai-determinate-assertion": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13387,7 +13387,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -14312,8 +14312,8 @@
     },
     "sonarjs/no-commented-code": {
       "runner": {
-        "fn": 11,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -14323,8 +14323,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 11,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -14582,7 +14582,7 @@
     },
     "sonarjs/no-same-argument-assert": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14593,7 +14593,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -15212,7 +15212,7 @@
     },
     "sonarjs/arguments-order": {
       "runner": {
-        "fn": 28,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15223,7 +15223,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 28,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -15248,8 +15248,8 @@
     },
     "sonarjs/cognitive-complexity": {
       "runner": {
-        "fn": 6,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15259,8 +15259,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -15374,7 +15374,7 @@
     },
     "sonarjs/function-name": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15385,7 +15385,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -15680,9 +15680,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 23147,
-    "runnerCasesPerSec": 11745,
-    "nativeCasesPerSec": 106861,
+    "totalElapsedMs": 22616,
+    "runnerCasesPerSec": 13146,
+    "nativeCasesPerSec": 104116,
     "totalCases": 56743
   }
 }
