@@ -528,6 +528,7 @@ class SourceCode {
     this._globalScope = null;
     this._astObj = null;
     this._stubScopeCached = null;
+    this._allScopes = null;     // populated by scopeManager.scopes — must clear per file
   }
 
   /**
@@ -3111,7 +3112,16 @@ class SourceCode {
         if (scope.block._i !== node._i) return null;
         return scope;
       },
-      get scopes() { return []; },
+      get scopes() {
+        if (sc._allScopes) return sc._allScopes;
+        if (!sc._globalScope) sc._precomputeScopes();
+        const ast = sc._ast;
+        const count = ast._semScopeCount || 0;
+        const arr = new Array(count);
+        for (let i = 0; i < count; i++) arr[i] = sc._buildScope(i);
+        sc._allScopes = arr;
+        return arr;
+      },
       get globalScope() {
         if (!sc._scopeCache) sc._precomputeScopes();
         return sc._scopeCache ? sc._scopeCache[0] : null;
