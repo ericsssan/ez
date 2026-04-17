@@ -3511,6 +3511,17 @@ function _expandUnion(key) {
 let _cachedVMPlugins = null;
 let _cachedVM = null; // { map, selectorHandlers, handlerSlots }
 
+// Element-wise plugin-set equality: true when arrays contain the same plugin object
+// references in the same positions. Callers commonly build a fresh `[plugin]` wrapper
+// per call (differential bench, ad-hoc lintSource), so plain array-identity would miss;
+// element-wise is cheap for small N and enables plan reuse across fresh wrappers.
+function _samePluginSet(a, b) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 function buildVisitorMap(plugins, context, ruleConfig = {}) {
   if (_cachedVMPlugins === plugins && _cachedVM) {
     // Fast path: recipe-based update — no Object.entries, no _isSelector, no _expandUnion,
@@ -4619,7 +4630,7 @@ let _cachedSelectorPlan = null;
  * each file (same slot objects reused by buildVisitorMap fast path).
  */
 function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) {
-  if (_cachedSelectorPlanPlugins === plugins && _cachedSelectorPlan !== undefined) {
+  if (_samePluginSet(_cachedSelectorPlanPlugins, plugins) && _cachedSelectorPlan !== undefined) {
     return _cachedSelectorPlan;
   }
   const selectorTagArr = new Uint8Array(tagCount);
@@ -4694,14 +4705,14 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
 }
 
 function _getOrBuildPlan(plugins, visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, canSkip, selectorHandlers) {
-  // Cache keyed on plugins array identity — same array = same rule set.
-  // In lint.js, the same plugins array is reused for every file.
-  if (_cachedLivePlanPlugins === plugins && _cachedLivePlan) {
+  // Cache keyed on plugin-set equality — same plugin objects = same rule set, even if
+  // wrapped in a fresh array. Element-wise identity is cheap for typical N (<50).
+  if (_samePluginSet(_cachedLivePlanPlugins, plugins) && _cachedLivePlan) {
     // Fast path: safeHandlers are stable, _state.inner already updated by buildVisitorMap
     // hot path. No remapping needed — plan is current as-is.
     return _cachedLivePlan;
   }
-  if (_cachedPlanPlugins === plugins && _cachedPlan) {
+  if (_samePluginSet(_cachedPlanPlugins, plugins) && _cachedPlan) {
     const plan = _remapPlan(_cachedPlan, visitorMap, tagNames, tagCount);
     _cachedLivePlan = plan;
     _cachedLivePlanPlugins = plugins;
@@ -4885,20 +4896,42 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
     }
   }
 
-  for (let t = 0; t < tagCount; t++) {
-    const tn = tagNames[t];
-    if (!tn) continue;
-    tagEnterHandlers[t] = visitorMap.get(tn) || null;
-    tagExitHandlers[t]  = visitorMap.get(tn + ':exit') || null;
-    if (hasMethodFn && tn === 'MethodDefinition') tagFlags[t] |= FLAG_METHOD_FN;
-    if (hasCodePath) {
-      if (_BRANCH_STMT_TYPES.has(tn)) tagFlags[t] |= FLAG_BRANCH_ENTER | FLAG_BRANCH_EXIT;
-      if (_CATCH_CASE_TYPES.has(tn))  tagFlags[t] |= FLAG_CATCH_CASE;
-      if (_TERMINATOR_TYPES.has(tn))  tagFlags[t] |= FLAG_TERMINATOR;
+  // Sparse handler fill: iterate visitorMap keys (typically 1-30) instead of ~230 tagCount.
+  // 230x visitorMap.get() with >99% miss rate was the per-case _buildPlan bottleneck.
+  for (const [key, handlers] of visitorMap.entries()) {
+    const isExit = key.endsWith(':exit');
+    const tn = isExit ? key.slice(0, -5) : key;
+    const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(tn) : null;
+    if (allTags) {
+      for (let ki = 0; ki < allTags.length; ki++) {
+        const t = allTags[ki];
+        if (isExit) tagExitHandlers[t] = handlers; else tagEnterHandlers[t] = handlers;
+      }
+    } else {
+      const t = tagNames.indexOf(tn);
+      if (t >= 0) {
+        if (isExit) tagExitHandlers[t] = handlers; else tagEnterHandlers[t] = handlers;
+      }
     }
-    // Universal selectors require invokeSelectorHandlers on every node.
-    if (selectorRelevantTags[t] || hasUniversalSelectors) {
-      tagFlags[t] |= FLAG_SELECTOR;
+  }
+
+  // Flag pass: bit-sets into Uint16Array. Skipped entirely when no flag source applies
+  // (selector-only rules with no universal selector and no codePath/methodFn flags).
+  if (hasCodePath || hasMethodFn || hasUniversalSelectors) {
+    for (let t = 0; t < tagCount; t++) {
+      const tn = tagNames[t];
+      if (!tn) continue;
+      if (hasMethodFn && tn === 'MethodDefinition') tagFlags[t] |= FLAG_METHOD_FN;
+      if (hasCodePath) {
+        if (_BRANCH_STMT_TYPES.has(tn)) tagFlags[t] |= FLAG_BRANCH_ENTER | FLAG_BRANCH_EXIT;
+        if (_CATCH_CASE_TYPES.has(tn))  tagFlags[t] |= FLAG_CATCH_CASE;
+        if (_TERMINATOR_TYPES.has(tn))  tagFlags[t] |= FLAG_TERMINATOR;
+      }
+      if (selectorRelevantTags[t] || hasUniversalSelectors) tagFlags[t] |= FLAG_SELECTOR;
+    }
+  } else if (selectorHandlers && selectorHandlers.length > 0) {
+    for (let t = 0; t < tagCount; t++) {
+      if (selectorRelevantTags[t]) tagFlags[t] |= FLAG_SELECTOR;
     }
   }
 
@@ -6282,6 +6315,10 @@ let _cachedContext = null;
 let _nodeCachePool = null;
 let _nodeCachePoolSize = 0;
 let _nodeCachePoolOwner = null;
+// High-water of actually-populated slots, so per-file clears don't sweep an empty tail
+// grown by an outlier large AST. `fill(undefined, 0, largeSize)` for every tiny file was
+// pure waste — now clear only up to `max(currentNc, prevUsed)`.
+let _nodeCachePoolUsed = 0;
 
 function runPlugins(ast, plugins, options = {}) {
   const { filename = "<input>", tagNames, ruleConfig = {}, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
@@ -6314,10 +6351,15 @@ function runPlugins(ast, plugins, options = {}) {
     _nodeCachePool = new Array(nc);
     _nodeCachePoolSize = nc;
     _nodeCachePoolOwner = null;
+    _nodeCachePoolUsed = 0;
   } else if (_nodeCachePoolOwner !== ast) {
-    _nodeCachePool.fill(undefined, 0, _nodeCachePoolSize);
+    // Clear only the slots that could hold stale entries: max of current-AST need and
+    // the last populated extent. Avoids clearing an empty tail left by a prior outlier.
+    const clearEnd = _nodeCachePoolUsed > nc ? _nodeCachePoolUsed : nc;
+    _nodeCachePool.fill(undefined, 0, clearEnd);
   }
   _nodeCachePoolOwner = ast;
+  _nodeCachePoolUsed = nc;
   ast._nodeCache = _nodeCachePool;
 
   // All pre-computation is now done in Zig buffer (line starts, node positions, maxTok).

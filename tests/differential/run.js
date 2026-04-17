@@ -124,6 +124,23 @@ export default { RuleTester, Linter: _eslint.Linter, ESLint: _eslint.ESLint, Sou
     // Additionally: short-circuit iterateJsdoc's *:not(Program) handler for nodes
     // cached as no-jsdoc, so later rules bail before any work.
 
+    // checkIndentation uses `new RegExp(..., 'gv')` with dynamic excludeTags per call.
+    // Bun/V8's `v` flag (ES2024 unicodeSets) costs ~5 ms to compile on first encounter
+    // with a given pattern. Rule's inputs are ASCII-only JSDoc tag names, and `v`
+    // adds nothing — unicode-property-escapes / set-notation are unused. Strip to `g`.
+    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]rules[/\\]checkIndentation\.js$/ }, async (args) => {
+      const fs = require("fs");
+      const src = fs.readFileSync(args.path, "utf8");
+      // Replace both literal /.../gv and `new RegExp(..., 'gv')` forms.
+      const out = src
+        .replaceAll("/gmv", "/gm")
+        .replaceAll("/gv", "/g")
+        .replaceAll("/v", "/")
+        .replaceAll("'gv'", "'g'")
+        .replaceAll("'gmv'", "'gm'");
+      return { loader: "js", contents: out };
+    });
+
     // Memo getDefaultTagStructureForMode by mode (read-only; 4 keys total).
     // Without memo, native `Map` op was ~4.7% of CPU time from rebuild on every rule call.
     build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]getDefaultTagStructureForMode\.js$/ }, async (args) => {
@@ -1275,8 +1292,14 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const espreeResult = tc.eslintResult;
       if (!espreeResult) { skipEspreeParse++; continue; }
 
+      if (process.env.EZ_FORCE_GC && typeof Bun !== "undefined" && ruleName === process.env.EZ_FORCE_GC) {
+        Bun.gc(true);
+      }
       const _rt0 = performance.now();
       const runnerResult = runRunnerForRule(tc.code, ruleName, ruleModule, tc.options, sourceType, tc.languageOptions, isTypeScript || !!tc.isTypeScript, tc.filename, rulePlugin);
+      if (process.env.EZ_CASE_TIMING && ruleName === process.env.EZ_CASE_TIMING) {
+        console.error(`[${ruleName}] case ${tcIdx}: ${(performance.now() - _rt0).toFixed(2)} ms`);
+      }
       const _rtDelta = performance.now() - _rt0;
       runnerOnlyMs += _rtDelta;
       _ruleRunnerMs += _rtDelta;
