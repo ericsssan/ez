@@ -2049,7 +2049,8 @@ const NodeProto = {
       if (val === '@') {
         // @ followed by decorator name — use end of the expression (next meaningful token)
         const decEnd = (i + 1 < ast.tokenCount) ? ast._tokEnds[i + 1] : ast._tokEnds[i];
-        decorators.push({ type: 'Decorator', start: ast._tokStarts[i], end: decEnd });
+        const decStart = ast._tokStarts[i];
+        decorators.push({ type: 'Decorator', start: decStart, end: decEnd, range: [decStart, decEnd] });
       } else if (val === ')') {
         // Skip decorator arguments: @dec(args) — walk back to matching '('
         let depth = 1;
