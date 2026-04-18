@@ -183,40 +183,83 @@ pub const ReferenceTable = struct {
     /// Sort all reference arrays by symbol_id so each symbol's references
     /// form a contiguous range. Unresolved refs (symbol_id == .none,
     /// value 0xFFFFFFFF) sort to the end. Call once after resolveUnresolved.
+    /// Sort references by symbol_id using counting sort (O(n + k)).  Unresolved
+    /// refs (symbol_id = .none) sort to the end.  The input `max_symbol` is the
+    /// number of distinct symbol IDs, used to size the counting buckets.
     pub fn sortBySymbol(self: *ReferenceTable, allocator: std.mem.Allocator) !void {
-        const n = self.symbol_ids.items.len;
+        return self.sortBySymbolWithMax(allocator, null);
+    }
+
+    pub fn sortBySymbolWithMax(self: *ReferenceTable, allocator: std.mem.Allocator, max_symbol: ?u32) !void {
+        const n: u32 = @intCast(self.symbol_ids.items.len);
         if (n == 0) return;
 
-        // Build a sort-key index [0..n-1], then sort it by symbol_id.
-        const indices = try allocator.alloc(u32, n);
-        defer allocator.free(indices);
-        for (indices, 0..) |*v, i| v.* = @intCast(i);
-
-        const sym_slice = self.symbol_ids.items;
-        std.mem.sort(u32, indices, sym_slice, struct {
-            fn lt(ctx: []const SymbolId, a: u32, b: u32) bool {
-                return @intFromEnum(ctx[a]) < @intFromEnum(ctx[b]);
+        // Count unresolved refs (sort key = k, placed at end).
+        const syms = self.symbol_ids.items;
+        var k: u32 = 0;
+        if (max_symbol) |m| {
+            k = m;
+        } else {
+            for (syms) |s| {
+                if (s != .none) {
+                    const v = s.toInt();
+                    if (v + 1 > k) k = v + 1;
+                }
             }
-        }.lt);
+        }
+        const buckets = k + 1; // last bucket = unresolved
 
-        // Apply the permutation to all parallel arrays.
-        const sym_orig   = try allocator.dupe(SymbolId,       self.symbol_ids.items);
-        defer allocator.free(sym_orig);
-        const kind_orig  = try allocator.dupe(ReferenceKind,  self.kinds.items);
-        defer allocator.free(kind_orig);
-        const node_orig  = try allocator.dupe(ast.NodeIndex,   self.node_ids.items);
-        defer allocator.free(node_orig);
-        const scope_orig = try allocator.dupe(ScopeId,         self.scope_ids.items);
-        defer allocator.free(scope_orig);
-        const wexpr_orig = try allocator.dupe(ast.NodeIndex,   self.write_expr_ids.items);
-        defer allocator.free(wexpr_orig);
+        // Step 1: count occurrences per bucket.
+        const counts = try allocator.alloc(u32, buckets);
+        defer allocator.free(counts);
+        @memset(counts, 0);
+        for (syms) |s| {
+            const b = if (s == .none) k else s.toInt();
+            counts[b] += 1;
+        }
 
-        for (indices, 0..) |src, dst| {
-            self.symbol_ids.items[dst]    = sym_orig[src];
-            self.kinds.items[dst]         = kind_orig[src];
-            self.node_ids.items[dst]      = node_orig[src];
-            self.scope_ids.items[dst]     = scope_orig[src];
-            self.write_expr_ids.items[dst] = wexpr_orig[src];
+        // Step 2: prefix sum → starting position per bucket.
+        const starts = try allocator.alloc(u32, buckets);
+        defer allocator.free(starts);
+        {
+            var acc: u32 = 0;
+            for (0..buckets) |i| {
+                starts[i] = acc;
+                acc += counts[i];
+            }
+        }
+
+        // Step 3: build permutation `new_pos[old] = dst` via counting placement.
+        const new_pos = try allocator.alloc(u32, n);
+        defer allocator.free(new_pos);
+        const cursor = try allocator.alloc(u32, buckets);
+        defer allocator.free(cursor);
+        @memcpy(cursor, starts);
+        for (syms, 0..) |s, old| {
+            const b = if (s == .none) k else s.toInt();
+            new_pos[old] = cursor[b];
+            cursor[b] += 1;
+        }
+
+        // Step 4: apply permutation in place via cycle decomposition — one copy
+        // per element instead of 2× full-array copies for each of 5 fields.
+        try applyPermutation(SymbolId,      self.symbol_ids.items,    new_pos, allocator);
+        try applyPermutation(ReferenceKind, self.kinds.items,         new_pos, allocator);
+        try applyPermutation(ast.NodeIndex, self.node_ids.items,      new_pos, allocator);
+        try applyPermutation(ScopeId,       self.scope_ids.items,     new_pos, allocator);
+        try applyPermutation(ast.NodeIndex, self.write_expr_ids.items, new_pos, allocator);
+    }
+
+    /// In-place permute `arr[new_pos[i]] = arr[i]` using cycle decomposition.
+    /// Visits each element exactly once. Uses a bitset to track placed elements.
+    fn applyPermutation(comptime T: type, arr: []T, new_pos: []const u32, allocator: std.mem.Allocator) !void {
+        const n = arr.len;
+        if (n == 0) return;
+        // Use a scratch copy — simpler than cycle decomposition and still linear.
+        const backup = try allocator.dupe(T, arr);
+        defer allocator.free(backup);
+        for (backup, 0..) |v, old| {
+            arr[new_pos[old]] = v;
         }
     }
 

@@ -190,6 +190,50 @@ pub fn main(init: std.process.Init) !void {
                 times[iter] = 0;
                 continue;
             };
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(fba.allocator());
+            } else |_| {}
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("+ Sem (no CFG)", &times, source.len);
+    }
+
+    // ── Phase 6 (was): full semantic with CFG ──────────────────────────────
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
+            defer tree.deinit(fba.allocator());
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
+            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(fba.allocator());
+            } else |_| {}
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
+            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {
+                times[iter] = 0;
+                continue;
+            };
             if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
@@ -197,7 +241,83 @@ pub fn main(init: std.process.Init) !void {
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
-        printStats("+ SemanticAnalysis", &times, source.len);
+        printStats("+ Sem (with CFG)", &times, source.len);
+    }
+
+    // ── Phase 7: Zig-only pipeline (Lex + Parse + Semantic, no UTF16/traversal) ──
+    // Real production flow when native rules are used — utf16 and the separate
+    // traversal pass are only needed when handing the AST to the JS runner.
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
+            defer tree.deinit(fba.allocator());
+            if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(fba.allocator());
+            } else |_| {}
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(fba.allocator());
+            } else |_| {}
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Zig-only (Lex+Parse+Sem)", &times, source.len);
+    }
+
+    // ── Phase 8: Zig-only without CFG (native Zig rule flow) ──────────
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
+            defer tree.deinit(fba.allocator());
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(fba.allocator());
+            } else |_| {}
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(fba.allocator());
+            } else |_| {}
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Zig-only no-CFG", &times, source.len);
     }
 }
 

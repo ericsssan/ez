@@ -865,6 +865,10 @@ pub fn ptrOffsetPub(base: [*]const u8, ptr: anytype) u32 {
 ///
 /// Returns the total UTF-16 length of the source.
 pub fn convertSpansToUtf16(source: []const u8, tok_starts: []u32) u32 {
+    // All-ASCII fast path: if the source has no high bytes, byte offsets already
+    // equal UTF-16 offsets — no per-token rewrite needed. Single SIMD scan.
+    if (isAllAscii(source)) return @intCast(source.len);
+
     var byte_pos: u32 = 0;
     var utf16_pos: u32 = 0;
     var tok_idx: usize = 0;
@@ -970,6 +974,22 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
 }
 
 /// Advance one UTF-8 codepoint, returning the number of UTF-16 code units.
+/// Fast SIMD scan: true if every byte in `source` is < 0x80.
+/// Used as fast-path gate for UTF-16 conversion (ASCII = byte offsets
+/// already correct; skip entire per-token rewrite pass).
+fn isAllAscii(source: []const u8) bool {
+    var i: usize = 0;
+    const V = @Vector(16, u8);
+    while (i + 16 <= source.len) : (i += 16) {
+        const chunk: V = source[i..][0..16].*;
+        if (!@reduce(.And, chunk < @as(V, @splat(0x80)))) return false;
+    }
+    while (i < source.len) : (i += 1) {
+        if (source[i] >= 0x80) return false;
+    }
+    return true;
+}
+
 inline fn utf16Advance(source: []const u8, byte_pos: *u32) u32 {
     const b = source[byte_pos.*];
     if (b < 0x80) {

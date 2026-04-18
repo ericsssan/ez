@@ -96,6 +96,9 @@ const Language = @import("token.zig").Language;
 pub const Parser = struct {
     source: []const u8,
     tokens: TokenList.Slice,
+    /// Cached pointer to the tag array — avoids MultiArrayList.items(.tag)
+    /// overhead on the hot peek() path.
+    tags_ptr: [*]const TokenTag,
     tok_i: u32,
     nodes: Ast.NodeList,
     extra_data: std.ArrayList(u32),
@@ -140,6 +143,7 @@ pub const Parser = struct {
         var p = Parser{
             .source = source,
             .tokens = tokens,
+            .tags_ptr = tokens.items(.tag).ptr,
             .tok_i = 0,
             .nodes = .empty,
             .extra_data = .empty,
@@ -209,7 +213,7 @@ pub const Parser = struct {
     // ────────────────────────────────────────────────────────────
 
     /// Consume the current token and return its index.
-    pub fn advance(self: *Parser) TokenIndex {
+    pub inline fn advance(self: *Parser) TokenIndex {
         const result = self.tok_i;
         if (self.tok_i < self.tokens.len - 1) {
             self.tok_i += 1;
@@ -231,7 +235,7 @@ pub const Parser = struct {
     }
 
     /// If the current token matches `tag`, consume it and return its index; otherwise null.
-    pub fn eat(self: *Parser, tag: TokenTag) ?TokenIndex {
+    pub inline fn eat(self: *Parser, tag: TokenTag) ?TokenIndex {
         if (self.peek() == tag) {
             return self.advance();
         }
@@ -253,15 +257,15 @@ pub const Parser = struct {
     }
 
     /// Return the tag of the current token.
-    pub fn peek(self: *const Parser) TokenTag {
-        return self.tokens.items(.tag)[self.tok_i];
+    pub inline fn peek(self: *const Parser) TokenTag {
+        return self.tags_ptr[self.tok_i];
     }
 
     /// Look ahead by `offset` tokens from the current position.
-    pub fn peekAt(self: *const Parser, offset: u32) TokenTag {
+    pub inline fn peekAt(self: *const Parser, offset: u32) TokenTag {
         const idx = self.tok_i + offset;
         if (idx >= self.tokens.len) return .eof;
-        return self.tokens.items(.tag)[idx];
+        return self.tags_ptr[idx];
     }
 
     /// Get the source text for the token at `index`.
@@ -306,12 +310,16 @@ pub const Parser = struct {
     // ────────────────────────────────────────────────────────────
 
     /// Append a node to the nodes list and return its index.
-    pub fn addNode(self: *Parser, node: Node) !NodeIndex {
+    pub inline fn addNode(self: *Parser, node: Node) !NodeIndex {
         // Bound error recovery: prevent runaway node creation.
         // Use 16x limit to accommodate TS files with heavy error recovery.
         if (self.nodes.len > self.max_nodes) return error.OutOfMemory;
         const result: u32 = @intCast(self.nodes.len);
-        try self.nodes.append(self.gpa, node);
+        // Fast path: capacity pre-allocated via ensureTotalCapacity in parse().
+        if (self.nodes.len >= self.nodes.capacity) {
+            try self.nodes.ensureTotalCapacity(self.gpa, self.nodes.capacity * 2 + 16);
+        }
+        self.nodes.appendAssumeCapacity(node);
         return NodeIndex.fromInt(result);
     }
 

@@ -236,10 +236,29 @@ pub const SemanticAnalyzer = struct {
     /// `globals` is a null-separated list of global names (e.g. "Math\x00console\x00").
     /// Pre-declaring them causes references to resolve in Zig, making scope.through exact.
     pub fn analyzeWithGlobals(allocator: std.mem.Allocator, ast: *const Ast, globals: []const u8) !SemanticResult {
-        return analyzeModuleWithGlobals(allocator, ast, true, globals);
+        return analyzeModuleWithOptions(allocator, ast, .{ .is_module = true, .globals = globals });
+    }
+
+    pub const Options = struct {
+        is_module: bool = true,
+        globals: []const u8 = &.{},
+        /// Build a full CFG via CodePathBuilder. Needed for control-flow rules
+        /// (no-unreachable, no-useless-return, etc.). Skipping saves ~20% of
+        /// semantic analysis time.
+        build_cfg: bool = true,
+    };
+
+    pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
+        return analyzeModuleWithOptions(allocator, ast, opts);
     }
 
     fn analyzeModuleWithGlobals(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool, globals: []const u8) !SemanticResult {
+        return analyzeModuleWithOptions(allocator, ast, .{ .is_module = is_module, .globals = globals });
+    }
+
+    fn analyzeModuleWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
+        const is_module = opts.is_module;
+        const globals = opts.globals;
         var self = SemanticAnalyzer.init(allocator, ast, is_module);
         self.implicit_globals = globals;
         errdefer self.deinit();
@@ -275,9 +294,11 @@ pub const SemanticAnalyzer = struct {
 
         // Full code path builder — init places cpb at stable address (field of self),
         // then fix up the self-referential arena allocator pointer.
-        self.cpb = CodePathBuilder.init(allocator);
-        self.cpb.allocator = self.cpb.arena.allocator();
-        self.cpb_initialized = true;
+        if (opts.build_cfg) {
+            self.cpb = CodePathBuilder.init(allocator);
+            self.cpb.allocator = self.cpb.arena.allocator();
+            self.cpb_initialized = true;
+        }
 
         const root_data = self.ast.nodeData(.root);
         try self.visitRoot(.root, root_data);
