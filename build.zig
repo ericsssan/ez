@@ -156,4 +156,20 @@ pub fn build(b: *std.Build) void {
     bench_alloc_cmd.step.dependOn(b.getInstallStep());
     const bench_alloc_step = b.step("bench-alloc", "Allocation count bench");
     bench_alloc_step.dependOn(&bench_alloc_cmd.step);
+
+    // ── Lexer bench ──────────────────────────────────────────
+    const bench_lex_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_lexer.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_lex_mod.addImport("ez", test_mod);
+    const bench_lex = b.addExecutable(.{
+        .name = "bench_lexer",
+        .root_module = bench_lex_mod,
+    });
+    const bench_lex_cmd = b.addRunArtifact(bench_lex);
+    bench_lex_cmd.step.dependOn(b.getInstallStep());
+    const bench_lex_step = b.step("bench-lexer", "Lexer throughput bench");
+    bench_lex_step.dependOn(&bench_lex_cmd.step);
 }

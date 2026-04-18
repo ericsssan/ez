@@ -24,12 +24,7 @@ const FirstByte = enum(u8) { op, ident, digit, dot, str, tmpl };
 /// hash probe in `scanIdentifierOrKeyword`.
 const kw_first_char_table: [256]bool = blk: {
     var t: [256]bool = [_]bool{false} ** 256;
-    // JS keyword first chars
-    for ("abcdefgilnorstvwy") |c| t[c] = true;
-    // TS contextual keyword first chars (additional)
-    for ("ikmu") |c| t[c] = true; // interface/is, keyof, module, unique
-    // Some JS keywords also start with 'p' (nothing), 'u' (no — `undefined` isn't a kw), 'k' (no).
-    // Revise: full set of first chars from both maps:
+    // Full set of first chars from both maps:
     //   JS: a(as/async/await) b(break) c(case/catch/class/const/continue) d(debugger/default/delete/do)
     //       e(else/enum/export/extends) f(false/finally/for/from/function) g(get) i(if/import/in/instanceof)
     //       l(let) n(new/null) o(of) r(return) s(set/static/super/switch)
@@ -37,6 +32,23 @@ const kw_first_char_table: [256]bool = blk: {
     //   TS: a(abstract) d(declare) i(implements/infer/interface/is) k(keyof) m(module) n(namespace)
     //       o(override) r(readonly) s(satisfies) t(type) u(unique) m(meta) t(target)
     for ("abcdefgiklmnorstuvwy") |c| t[c] = true;
+    break :blk t;
+};
+
+/// Tighter 2D filter: `kw_lenchar_table[len][byte]` is true only if some
+/// JS or TS keyword exists with that length and first character.  Much
+/// lower false-positive rate than `kw_first_char_table` alone, so fewer
+/// hash probes in the identifier hot path.  Computed from the actual
+/// StaticStringMap keys — no drift with Token.keywords / ts_keywords.
+const kw_lenchar_table: [11][256]bool = blk: {
+    @setEvalBranchQuota(20000);
+    var t: [11][256]bool = [_][256]bool{[_]bool{false} ** 256} ** 11;
+    for (Token.keywords.keys()) |kw| {
+        if (kw.len >= 2 and kw.len <= 10) t[kw.len][kw[0]] = true;
+    }
+    for (Token.ts_keywords.keys()) |kw| {
+        if (kw.len >= 2 and kw.len <= 10) t[kw.len][kw[0]] = true;
+    }
     break :blk t;
 };
 
@@ -770,12 +782,10 @@ pub const Lexer = struct {
             return self.makeIdentToken(start);
         }
 
-        // Length + first-char filter: JS keywords are 2-10 chars long and
-        // start with a subset of ASCII letters.  Most identifiers don't match
-        // both constraints, so gating the StaticStringMap.get probe behind
-        // these two cheap checks saves a hash on ~50% of identifiers in
-        // typical JS.
-        if (text.len >= 2 and text.len <= 10 and kw_first_char_table[text[0]]) {
+        // Two-dim (length, first-byte) keyword filter: only probe the hash
+        // when some keyword exists with that exact (len, first-char) pair.
+        // Cuts hash probes sharply vs the 1-D first-char filter.
+        if (text.len <= 10 and kw_lenchar_table[text.len][text[0]]) {
             if (keywords.get(text)) |kw_tag| {
                 return self.makeToken(kw_tag, start);
             }
