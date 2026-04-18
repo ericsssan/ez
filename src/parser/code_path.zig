@@ -13,7 +13,6 @@
 ///   SwitchContext     — switch/case/default
 ///   TryContext        — try/catch/finally
 ///   LoopContext       — while/do-while/for/for-in/for-of
-///   BreakContext      — break/continue target resolution
 ///   CodePath          — one per function/program (replaces CodePath)
 
 const std = @import("std");
@@ -328,7 +327,6 @@ const LoopContext = struct {
     upper: ?*LoopContext,
     loop_type: LoopType,
     label: ?[]const u8,
-    broken_fork: ForkContext,
     // Loop-type specific data
     test_value: enum { unknown, literal_true, literal_false } = .unknown,
     continue_dest_segments: ?[]SegmentId = null,
@@ -343,13 +341,6 @@ const LoopContext = struct {
     // For for-in/of
     left_segments: ?[]SegmentId = null,
     end_of_left_segments: ?[]SegmentId = null,
-};
-
-const BreakContext = struct {
-    upper: ?*BreakContext,
-    breakable: bool,
-    label: ?[]const u8,
-    broken_fork: ForkContext,
 };
 
 // ── CodePathBuilder ──────────────────────────────────────────────
@@ -393,7 +384,6 @@ pub const CodePathBuilder = struct {
     switch_context: ?*SwitchContext,
     try_context: ?*TryContext,
     loop_context: ?*LoopContext,
-    break_context: ?*BreakContext,
 
     // Segment ID counter
     seg_counter: u32,
@@ -422,7 +412,6 @@ pub const CodePathBuilder = struct {
             .switch_context = null,
             .try_context = null,
             .loop_context = null,
-            .break_context = null,
             .seg_counter = 0,
         };
     }
@@ -965,8 +954,7 @@ pub const CodePathBuilder = struct {
     // ── Switch ───────────────────────────────────────────────
 
     pub fn pushSwitchContext(self: *CodePathBuilder, has_case: bool, label: ?[]const u8) !void {
-        // Push a break context for the switch
-        try self.pushBreakContext(true, label);
+        _ = label;
 
         const ctx = try self.allocator.create(SwitchContext);
         ctx.* = .{
@@ -992,19 +980,9 @@ pub const CodePathBuilder = struct {
         const ctx = self.switch_context orelse return;
         self.switch_context = ctx.upper;
         // Merge switch-break segments into the choice context BEFORE merging.
-        if (self.break_context) |bc| {
-            if (!bc.broken_fork.empty()) {
-                if (self.choice_context) |cc| {
-                    try cc.true_fork.addAll(&bc.broken_fork);
-                }
-            }
-        }
         try self.popChoiceContext(node);
 
         // If the switch has a default case, all branches are covered.
-        // Remove the initial discriminant entry from the fork context so
-        // the merge reflects only case-body exits (not the reachable discriminant).
-        // Without default, the discriminant path flows to after the switch.
         if (ctx.default_segments != null) {
             const fc = self.fork_context;
             if (fc.totalLen() > 1) {
@@ -1015,7 +993,6 @@ pub const CodePathBuilder = struct {
         }
 
         try self.popForkContext(node);
-        _ = self.popBreakContext(node);
     }
 
     pub fn makeSwitchCaseBody(self: *CodePathBuilder, is_default: bool, node: NodeIndex) !void {
@@ -1235,15 +1212,11 @@ pub const CodePathBuilder = struct {
 
     /// `target_node`: the loop's condition/body/update child node for isLoopingTarget matching.
     pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, _: NodeIndex, target_node: NodeIndex) !void {
-        try self.pushBreakContext(true, label);
-        const break_ctx = self.break_context orelse unreachable;
-
         const ctx = try self.allocator.create(LoopContext);
         ctx.* = .{
             .upper = self.loop_context,
             .loop_type = loop_type,
             .label = label,
-            .broken_fork = break_ctx.broken_fork,
             .continue_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
         };
         self.loop_context = ctx;
@@ -1279,38 +1252,7 @@ pub const CodePathBuilder = struct {
                 try cc.true_fork.addAll(&ctx.continue_fork);
             }
         }
-        // Save break context's broken_fork BEFORE popping
-        const break_ctx = self.break_context;
         try self.popChoiceContext(node);
-        _ = self.popBreakContext(node);
-        // After both pops: merge break exits as reachable post-loop paths.
-        // Break exits the loop, so they flow AFTER the loop (not through back-edge).
-        if (break_ctx) |bc| {
-            if (!bc.broken_fork.empty()) {
-                // Create new reachable segments from the saved break segments
-                const broken_segs = try bc.broken_fork.makeNext(0, -1, self);
-                // Replace the current head (which may be unreachable from the merge)
-                // with a merge of current head + break exits
-                const current_head = self.fork_context.head();
-                if (current_head.len > 0) {
-                    // Check if current head is unreachable
-                    var any_reachable = false;
-                    for (current_head) |s| {
-                        if (s != NONE_SEG and (self.seg_reachable.items[s] != 0)) any_reachable = true;
-                    }
-                    if (!any_reachable) {
-                        // End unreachable segments, replace with break exits, emit starts
-                        for (current_head) |s| {
-                            if (s != NONE_SEG) try self.emitSegEnd(s, node, .post);
-                        }
-                        try self.fork_context.replaceHead(broken_segs, self);
-                        for (broken_segs) |s| {
-                            if (s != NONE_SEG) try self.emitSegStart(s, node, .post);
-                        }
-                    }
-                }
-            }
-        }
     }
 
     pub fn makeLoopBackEdge(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -1350,51 +1292,6 @@ pub const CodePathBuilder = struct {
     pub fn setLoopContinueDest(self: *CodePathBuilder) void {
         const ctx = self.loop_context orelse return;
         ctx.continue_dest_segments = self.fork_context.head();
-    }
-
-    // ── Break/Continue ───────────────────────────────────────
-
-    pub fn pushBreakContext(self: *CodePathBuilder, breakable: bool, label: ?[]const u8) !void {
-        const ctx = try self.allocator.create(BreakContext);
-        ctx.* = .{
-            .upper = self.break_context,
-            .breakable = breakable,
-            .label = label,
-            .broken_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
-        };
-        self.break_context = ctx;
-    }
-
-    /// Returns true if any `break` targeted this context.
-    /// `node` is the statement node where the break context ends (for event emission).
-    pub fn popBreakContext(self: *CodePathBuilder, node: NodeIndex) bool {
-        const ctx = self.break_context orelse return false;
-        const had_break = !ctx.broken_fork.empty();
-        self.break_context = ctx.upper;
-        // For non-loop break contexts (labels, switches handled by popSwitchContext),
-        // merge broken segments as reachable continuation after the statement.
-        if (!ctx.breakable and had_break) {
-            const broken_segs = ctx.broken_fork.makeNext(0, -1, self) catch return had_break;
-            // End current (unreachable) segments, then start the new merge segments
-            const head = self.fork_context.head();
-            for (head) |s| {
-                if (s != NONE_SEG) self.emitSegEnd(s, node, .post) catch {};
-            }
-            var any_reachable = false;
-            for (head) |s| {
-                if (s != NONE_SEG and (self.seg_reachable.items[s] != 0)) any_reachable = true;
-            }
-            if (!any_reachable) {
-                self.fork_context.replaceHead(broken_segs, self) catch {};
-            } else {
-                self.fork_context.add(broken_segs, self) catch {};
-            }
-            // Emit SEG_START for the new merge segments
-            for (broken_segs) |s| {
-                if (s != NONE_SEG) self.emitSegStart(s, node, .post) catch {};
-            }
-        }
-        return had_break;
     }
 
     // ── Return/Throw ─────────────────────────────────────────
