@@ -533,7 +533,7 @@ fn writeCfgGraph(
     alloc: std.mem.Allocator,
     cpr: *const code_path_mod.CodePathBuilder.Result,
 ) !u32 {
-    const seg_count: u32 = @intCast(cpr.segments.len);
+    const seg_count: u32 = cpr.seg_count;
     const cp_count: u32 = @intCast(cpr.codepaths.len);
     const ev_count: u32 = @intCast(cpr.events.len);
 
@@ -544,7 +544,7 @@ fn writeCfgGraph(
     const seg_codepath = try alloc.alloc(u32, seg_count);
     for (0..seg_count) |i| {
         seg_reachable[i] = cpr.seg_reachable[i];
-        seg_codepath[i] = cpr.segments[i].codepath;
+        seg_codepath[i] = cpr.seg_codepath[i];
     }
 
     // ── Adjacency lists (CSR format) ────────────────────────
@@ -566,13 +566,12 @@ fn writeCfgGraph(
     var total_all_prev: u32 = 0;
     var total_looped: u32 = 0;
     for (0..seg_count) |i| {
-        const s = cpr.segments[i];
         const n = cpr.seg_next[i];
         if (n.next_end > n.next_start) total_next += n.next_end - n.next_start;
-        if (s.prev_end > s.prev_start) total_prev += s.prev_end - s.prev_start;
+        if (cpr.seg_prev_end[i] > cpr.seg_prev_start[i]) total_prev += cpr.seg_prev_end[i] - cpr.seg_prev_start[i];
         if (n.all_next_end > n.all_next_start) total_all_next += n.all_next_end - n.all_next_start;
-        if (s.all_prev_end > s.all_prev_start) total_all_prev += s.all_prev_end - s.all_prev_start;
-        if (s.looped_prev_end > s.looped_prev_start) total_looped += s.looped_prev_end - s.looped_prev_start;
+        if (cpr.seg_all_prev_end[i] > cpr.seg_all_prev_start[i]) total_all_prev += cpr.seg_all_prev_end[i] - cpr.seg_all_prev_start[i];
+        if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i]) total_looped += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
     }
 
     // Pass 2: copy source pool data to temp buffers (before allocating output)
@@ -588,13 +587,15 @@ fn writeCfgGraph(
         var ap: u32 = 0;
         var lo: u32 = 0;
         for (0..seg_count) |i| {
-            const s = cpr.segments[i];
             const ni = cpr.seg_next[i];
             if (ni.next_end > ni.next_start) { const len = ni.next_end - ni.next_start; @memcpy(tmp_next[n..][0..len], cpr.next_targets[ni.next_start..ni.next_end]); n += len; }
-            if (s.prev_end > s.prev_start) { const len = s.prev_end - s.prev_start; @memcpy(tmp_prev[p..][0..len], cpr.prev_targets[s.prev_start..s.prev_end]); p += len; }
+            const ps = cpr.seg_prev_start[i]; const pe = cpr.seg_prev_end[i];
+            if (pe > ps) { const len = pe - ps; @memcpy(tmp_prev[p..][0..len], cpr.prev_targets[ps..pe]); p += len; }
             if (ni.all_next_end > ni.all_next_start) { const len = ni.all_next_end - ni.all_next_start; @memcpy(tmp_all_next[an..][0..len], cpr.all_next_targets[ni.all_next_start..ni.all_next_end]); an += len; }
-            if (s.all_prev_end > s.all_prev_start) { const len = s.all_prev_end - s.all_prev_start; @memcpy(tmp_all_prev[ap..][0..len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]); ap += len; }
-            if (s.looped_prev_end > s.looped_prev_start) { const len = s.looped_prev_end - s.looped_prev_start; @memcpy(tmp_looped[lo..][0..len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]); lo += len; }
+            const aps = cpr.seg_all_prev_start[i]; const ape = cpr.seg_all_prev_end[i];
+            if (ape > aps) { const len = ape - aps; @memcpy(tmp_all_prev[ap..][0..len], cpr.all_prev_targets[aps..ape]); ap += len; }
+            const lps = cpr.seg_looped_prev_start[i]; const lpe = cpr.seg_looped_prev_end[i];
+            if (lpe > lps) { const len = lpe - lps; @memcpy(tmp_looped[lo..][0..len], cpr.looped_targets[lps..lpe]); lo += len; }
         }
     }
 
@@ -621,18 +622,17 @@ fn writeCfgGraph(
         var ap: u32 = 0;
         var lo: u32 = 0;
         for (0..seg_count) |i| {
-            const s = cpr.segments[i];
             const ni = cpr.seg_next[i];
             seg_next_starts[i] = n;
             if (ni.next_end > ni.next_start) n += ni.next_end - ni.next_start;
             seg_prev_starts[i] = p;
-            if (s.prev_end > s.prev_start) p += s.prev_end - s.prev_start;
+            if (cpr.seg_prev_end[i] > cpr.seg_prev_start[i]) p += cpr.seg_prev_end[i] - cpr.seg_prev_start[i];
             seg_all_next_starts[i] = an;
             if (ni.all_next_end > ni.all_next_start) an += ni.all_next_end - ni.all_next_start;
             seg_all_prev_starts[i] = ap;
-            if (s.all_prev_end > s.all_prev_start) ap += s.all_prev_end - s.all_prev_start;
+            if (cpr.seg_all_prev_end[i] > cpr.seg_all_prev_start[i]) ap += cpr.seg_all_prev_end[i] - cpr.seg_all_prev_start[i];
             seg_looped_starts[i] = lo;
-            if (s.looped_prev_end > s.looped_prev_start) lo += s.looped_prev_end - s.looped_prev_start;
+            if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i]) lo += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
         }
         seg_next_starts[seg_count] = n;
         seg_prev_starts[seg_count] = p;

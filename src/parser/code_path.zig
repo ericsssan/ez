@@ -335,7 +335,7 @@ pub const CodePathBuilder = struct {
     allocator: Allocator,
 
     // Results
-    segments: std.ArrayList(Segment),
+    segments: std.MultiArrayList(Segment),
     /// Hot sidecar of segments.items[i].reachable — 1 byte per segment.
     seg_reachable: std.ArrayList(u8),
     /// Sidecar of used flag — hot in flattenUnused + markUsed early-exit.
@@ -423,7 +423,7 @@ pub const CodePathBuilder = struct {
     // ── Segment creation ─────────────────────────────────────
 
     fn newRootSegment(self: *CodePathBuilder) !SegmentId {
-        const id: SegmentId = @intCast(self.segments.items.len);
+        const id: SegmentId = @intCast(self.segments.len);
         try self.segments.append(self.allocator, .{
             .codepath = self.current_codepath,
             .all_prev_start = 0,
@@ -465,7 +465,7 @@ pub const CodePathBuilder = struct {
     /// Create a disconnected segment (no edge connections, inherits reachability).
 
     fn createSegment(self: *CodePathBuilder, all_prev: []const SegmentId, is_reachable: bool, _: bool) !SegmentId {
-        const id: SegmentId = @intCast(self.segments.items.len);
+        const id: SegmentId = @intCast(self.segments.len);
         const alloc = self.allocator;
 
         // Single fused pass over all_prev — one capacity check per target list,
@@ -504,9 +504,10 @@ pub const CodePathBuilder = struct {
         if (seg_id == NONE_SEG) return;
         if (self.seg_used.items[seg_id] != 0) return;
         self.seg_used.items[seg_id] = 1;
-        const seg = &self.segments.items[seg_id];
+        const aps = self.segments.items(.all_prev_start)[seg_id];
+        const ape = self.segments.items(.all_prev_end)[seg_id];
 
-        const all_prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+        const all_prev = self.all_prev_targets.items[aps..ape];
         const alloc = self.allocator;
         const is_reachable = self.seg_reachable.items[seg_id] != 0;
         const next_info = self.seg_next.items;
@@ -536,14 +537,15 @@ pub const CodePathBuilder = struct {
     /// Mark a prev segment as looped (back-edge from loop end to loop head).
     pub fn markLooped(self: *CodePathBuilder, seg_id: SegmentId, prev_seg_id: SegmentId) !void {
         if (seg_id == NONE_SEG or prev_seg_id == NONE_SEG) return;
-        var seg = &self.segments.items[seg_id];
+        const lp_start = &self.segments.items(.looped_prev_start)[seg_id];
+        const lp_end = &self.segments.items(.looped_prev_end)[seg_id];
         const ni_prev = &self.seg_next.items[prev_seg_id];
 
-        if (seg.looped_prev_end == 0) {
-            seg.looped_prev_start = @intCast(self.looped_targets.items.len);
+        if (lp_end.* == 0) {
+            lp_start.* = @intCast(self.looped_targets.items.len);
         }
         try self.looped_targets.append(self.allocator, prev_seg_id);
-        seg.looped_prev_end = @intCast(self.looped_targets.items.len);
+        lp_end.* = @intCast(self.looped_targets.items.len);
 
         if (ni_prev.all_next_end == 0) {
             ni_prev.all_next_start = @intCast(self.all_next_targets.items.len);
@@ -574,8 +576,9 @@ pub const CodePathBuilder = struct {
             if (self.seg_used.items[s] != 0) {
                 return @constCast(segments);
             }
-            const seg = self.segments.items[s];
-            return self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+            const aps = self.segments.items(.all_prev_start)[s];
+            const ape = self.segments.items(.all_prev_end)[s];
+            return self.all_prev_targets.items[aps..ape];
         }
 
         // Small linear-scan dedup on a stack buffer.  32 covers all real cases;
@@ -603,6 +606,8 @@ pub const CodePathBuilder = struct {
     inline fn flattenSmall(self: *CodePathBuilder, segments: []const SegmentId, buf: *[32]SegmentId) ?usize {
         var n: usize = 0;
         const used_s = self.seg_used.items;
+        const aps_arr = self.segments.items(.all_prev_start);
+        const ape_arr = self.segments.items(.all_prev_end);
         outer: for (segments) |seg_id| {
             if (seg_id == NONE_SEG) continue;
             if (used_s[seg_id] != 0) {
@@ -611,8 +616,7 @@ pub const CodePathBuilder = struct {
                 buf[n] = seg_id;
                 n += 1;
             } else {
-                const seg = self.segments.items[seg_id];
-                const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+                const prev = self.all_prev_targets.items[aps_arr[seg_id]..ape_arr[seg_id]];
                 prev_loop: for (prev) |p| {
                     if (p == NONE_SEG) continue;
                     for (buf[0..n]) |e| if (e == p) continue :prev_loop;
@@ -631,13 +635,14 @@ pub const CodePathBuilder = struct {
         var seen = std.AutoHashMap(SegmentId, void).init(self.allocator);
         defer seen.deinit();
 
+        const aps_arr = self.segments.items(.all_prev_start);
+        const ape_arr = self.segments.items(.all_prev_end);
         for (segments) |seg_id| {
             if (seg_id == NONE_SEG) continue;
             if (seen.contains(seg_id)) continue;
 
             if (self.seg_used.items[seg_id] == 0) {
-                const seg = self.segments.items[seg_id];
-                const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+                const prev = self.all_prev_targets.items[aps_arr[seg_id]..ape_arr[seg_id]];
                 for (prev) |p| {
                     if (p != NONE_SEG and !seen.contains(p)) {
                         try seen.put(p, {});
@@ -1380,10 +1385,19 @@ pub const CodePathBuilder = struct {
     // ── Result extraction ────────────────────────────────────
 
     pub const Result = struct {
-        segments: []const Segment,
-        /// Parallel to segments — 1 = reachable, 0 = unreachable.
+        seg_count: u32,
+        /// Segment fields as parallel slices (SoA).  Hot reads of individual
+        /// fields avoid a 28-byte struct load.
+        seg_codepath: []const CodePathId,
+        seg_all_prev_start: []const u32,
+        seg_all_prev_end: []const u32,
+        seg_prev_start: []const u32,
+        seg_prev_end: []const u32,
+        seg_looped_prev_start: []const u32,
+        seg_looped_prev_end: []const u32,
+        /// Per-segment flags.
         seg_reachable: []const u8,
-        /// Parallel to segments — adjacency (all_next_*/next_*) ranges.
+        /// Per-segment adjacency (all_next_*/next_*) ranges.
         seg_next: []const SegNextInfo,
         codepaths: []const CodePath,
         events: []const Event,
@@ -1412,7 +1426,14 @@ pub const CodePathBuilder = struct {
     /// `Result.deinit()` frees the arena.
     pub fn finish(self: *CodePathBuilder) Result {
         const result: Result = .{
-            .segments = self.segments.items,
+            .seg_count = @intCast(self.segments.len),
+            .seg_codepath = self.segments.items(.codepath),
+            .seg_all_prev_start = self.segments.items(.all_prev_start),
+            .seg_all_prev_end = self.segments.items(.all_prev_end),
+            .seg_prev_start = self.segments.items(.prev_start),
+            .seg_prev_end = self.segments.items(.prev_end),
+            .seg_looped_prev_start = self.segments.items(.looped_prev_start),
+            .seg_looped_prev_end = self.segments.items(.looped_prev_end),
             .seg_reachable = self.seg_reachable.items,
             .seg_next = self.seg_next.items,
             .codepaths = self.codepaths.items,
