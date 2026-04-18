@@ -461,22 +461,25 @@ pub const CodePathBuilder = struct {
 
     fn createSegment(self: *CodePathBuilder, all_prev: []const SegmentId, is_reachable: bool, _: bool) !SegmentId {
         const id: SegmentId = @intCast(self.segments.items.len);
+        const alloc = self.allocator;
 
-        // Record allPrevSegments
+        // Batch-append all_prev entries: one capacity check instead of per-element.
         const ap_start: u32 = @intCast(self.all_prev_targets.items.len);
-        for (all_prev) |p| try self.all_prev_targets.append(self.allocator, p);
+        try self.all_prev_targets.appendSlice(alloc, all_prev);
         const ap_end: u32 = @intCast(self.all_prev_targets.items.len);
 
-        // Record prevSegments (reachable only)
+        // Reachable-only filtered pass — pre-size to at-most all_prev.len.
         const p_start: u32 = @intCast(self.prev_targets.items.len);
+        try self.prev_targets.ensureUnusedCapacity(alloc, all_prev.len);
+        const segs = self.segments.items;
         for (all_prev) |p| {
-            if (p != NONE_SEG and self.segments.items[p].reachable) {
-                try self.prev_targets.append(self.allocator, p);
+            if (p != NONE_SEG and segs[p].reachable) {
+                self.prev_targets.appendAssumeCapacity(p);
             }
         }
         const p_end: u32 = @intCast(self.prev_targets.items.len);
 
-        try self.segments.append(self.allocator, .{
+        try self.segments.append(alloc, .{
             .reachable = is_reachable,
             .used = false,
             .codepath = self.current_codepath,
@@ -554,7 +557,55 @@ pub const CodePathBuilder = struct {
     }
 
     /// Flatten unused segments: replace unused segments with their prev segments.
+    /// Fast paths: (1) empty input, (2) single used segment — no dedup needed.
+    /// Linear-scan dedup for small inputs avoids HashMap allocation.
     fn flattenUnused(self: *CodePathBuilder, segments: []const SegmentId) ![]SegmentId {
+        // Fast path: empty.
+        if (segments.len == 0) return &.{};
+
+        // Fast path: single segment — already unique, no flatten if used.
+        if (segments.len == 1) {
+            const s = segments[0];
+            if (s == NONE_SEG) return &.{};
+            const segs = self.segments.items;
+            if (segs[s].used) {
+                const out = try self.allocator.alloc(SegmentId, 1);
+                out[0] = s;
+                return out;
+            }
+            // Unused — expand to prev (shared case, still small).
+            const seg = segs[s];
+            return self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+        }
+
+        // General path: small linear-scan dedup (up to 16 entries on stack).
+        // Falls back to HashMap for pathological large inputs (>16 distinct segs).
+        if (segments.len <= 16) {
+            var buf: [32]SegmentId = undefined;
+            var n: usize = 0;
+            const segs = self.segments.items;
+            outer: for (segments) |seg_id| {
+                if (seg_id == NONE_SEG) continue;
+                const seg = segs[seg_id];
+                if (seg.used) {
+                    // Check dedup
+                    for (buf[0..n]) |e| if (e == seg_id) continue :outer;
+                    if (n < buf.len) { buf[n] = seg_id; n += 1; }
+                } else {
+                    const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+                    prev_loop: for (prev) |p| {
+                        if (p == NONE_SEG) continue;
+                        for (buf[0..n]) |e| if (e == p) continue :prev_loop;
+                        if (n < buf.len) { buf[n] = p; n += 1; }
+                    }
+                }
+            }
+            const out = try self.allocator.alloc(SegmentId, n);
+            @memcpy(out, buf[0..n]);
+            return out;
+        }
+
+        // Pathological: HashMap dedup.
         var result: std.ArrayListUnmanaged(SegmentId) = .empty;
         var seen = std.AutoHashMap(SegmentId, void).init(self.allocator);
         defer seen.deinit();
@@ -564,7 +615,6 @@ pub const CodePathBuilder = struct {
             if (seen.contains(seg_id)) continue;
 
             if (!self.segments.items[seg_id].used) {
-                // Replace with its allPrevSegments
                 const seg = self.segments.items[seg_id];
                 const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
                 for (prev) |p| {
@@ -792,8 +842,9 @@ pub const CodePathBuilder = struct {
         const ctx = self.choice_context orelse return;
         self.choice_context = ctx.upper;
 
-        // Save the current (last branch ending) segments
-        const last_branch_end = try self.allocator.dupe(SegmentId, self.fork_context.head());
+        // Current (last branch ending) segments — arena-backed, no mutation until
+        // after we've copied out the ref below.  No dupe needed.
+        const last_branch_end = self.fork_context.head();
 
         // End current segments
         try self.leaveFromCurrentSegment(node, .exit);
@@ -803,9 +854,8 @@ pub const CodePathBuilder = struct {
         // last_branch_end = else-alternate ending (or last case in switch)
         var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
         if (!ctx.true_fork.empty()) {
-            const true_end = ctx.true_fork.head();
-            const true_copy = try self.allocator.dupe(SegmentId, true_end);
-            try combined.add(true_copy, self);
+            // ctx is being discarded; its arena-backed slice stays valid.  No dupe needed.
+            try combined.add(ctx.true_fork.head(), self);
         }
         try combined.add(last_branch_end, self);
 
@@ -822,12 +872,10 @@ pub const CodePathBuilder = struct {
         const ctx = self.choice_context orelse return;
         if (!ctx.processed) {
             ctx.processed = true;
-            // Fork current head to both true and false paths
+            // Fork current head into both forks — arena-backed slice stays valid.
             const head = self.fork_context.head();
-            const head_copy = try self.allocator.dupe(SegmentId, head);
-            try ctx.true_fork.add(head_copy, self);
-            const head_copy2 = try self.allocator.dupe(SegmentId, head);
-            try ctx.false_fork.add(head_copy2, self);
+            try ctx.true_fork.add(head, self);
+            try ctx.false_fork.add(head, self);
         }
         // End current segments BEFORE switching to the true fork path
         try self.leaveFromCurrentSegment(node, .enter);
@@ -843,10 +891,9 @@ pub const CodePathBuilder = struct {
     pub fn makeLogicalRight(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.choice_context orelse return;
         // Save LHS ending to the short-circuit branch (true_fork).
-        // popChoiceContext merges true_fork + last_branch_end (RHS ending).
-        // For all logical operators, the short-circuit path is merged at the end.
-        const head = try self.allocator.dupe(SegmentId, self.fork_context.head());
-        try ctx.true_fork.add(head, self);
+        // leaveFromCurrentSegment replaces fork_context.head but leaves the old
+        // arena-backed slice alive — true_fork keeps a valid reference.
+        try ctx.true_fork.add(self.fork_context.head(), self);
         // End LHS segment, create new segment for RHS
         try self.leaveFromCurrentSegment(node, .enter);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
@@ -856,9 +903,8 @@ pub const CodePathBuilder = struct {
 
     pub fn makeIfAlternate(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.choice_context orelse return;
-        // Save end of true branch
-        const true_end = try self.allocator.dupe(SegmentId, self.fork_context.head());
-        try ctx.true_fork.add(true_end, self);
+        // Save end of true branch (arena-backed slice stays valid after replaceHead).
+        try ctx.true_fork.add(self.fork_context.head(), self);
         // End current (true branch ending) BEFORE switching to false path
         try self.leaveFromCurrentSegment(node, .enter);
         // Switch to false fork path
@@ -883,7 +929,9 @@ pub const CodePathBuilder = struct {
             .found_empty_default = false,
             .last_is_default = false,
             .fork_count = 0,
-            .entry_segments = try self.allocator.dupe(SegmentId, self.fork_context.head()),
+            // No dupe: pushForkContext below stacks a new fork_context, so the
+            // outer fork's segments_list[last] stays arena-stable for us.
+            .entry_segments = self.fork_context.head(),
         };
         self.switch_context = ctx;
 
@@ -926,7 +974,8 @@ pub const CodePathBuilder = struct {
         const ctx = self.switch_context orelse return;
         if (is_default) {
             ctx.last_is_default = true;
-            ctx.default_segments = try self.allocator.dupe(SegmentId, self.fork_context.head());
+            // Arena slice stays valid; no dupe.
+            ctx.default_segments = self.fork_context.head();
         } else {
             ctx.last_is_default = false;
         }
@@ -963,8 +1012,9 @@ pub const CodePathBuilder = struct {
     // ── Try/catch/finally ────────────────────────────────────
 
     pub fn pushTryContext(self: *CodePathBuilder, has_finalizer: bool, try_body_node: NodeIndex) !void {
-        // Save pre-try head BEFORE creating try-body segment.
-        const pre_try = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null;
+        // Save pre-try head BEFORE creating try-body segment.  The arena-backed
+        // slice stays valid even after replaceHead (only overwrites the list entry).
+        const pre_try = self.fork_context.head();
 
         // Create a new segment for the try body so it's separate from pre-try.
         // Catch predecessor must be pre-try (before any try-body code ran).
@@ -1025,9 +1075,8 @@ pub const CodePathBuilder = struct {
             try self.leaveFromCurrentSegment(node, .exit);
             var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
             try combined.addAll(&ctx.try_end_fork);
-            // Current head has catch-end segments
-            const catch_end = try self.allocator.dupe(SegmentId, self.fork_context.head());
-            try combined.add(catch_end, self);
+            // Current head has catch-end segments.  combined is transient; no dupe needed.
+            try combined.add(self.fork_context.head(), self);
             if (!combined.empty()) {
                 const merged = try combined.makeNext(0, -1, self);
                 try self.fork_context.replaceHead(merged, self);
@@ -1054,9 +1103,9 @@ pub const CodePathBuilder = struct {
     pub fn makeCatchBlock(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.try_context orelse return;
         ctx.last_of_try_reachable = self.fork_context.reachable(self);
-        // Save try-body exit segments for merging in popTryContext
-        const try_end_head = try self.allocator.dupe(SegmentId, self.fork_context.head());
-        try ctx.try_end_fork.add(try_end_head, self);
+        // Save try-body exit segments for merging in popTryContext.
+        // Arena backing stays valid after subsequent replaceHead.
+        try ctx.try_end_fork.add(self.fork_context.head(), self);
         ctx.position = .catch_body;
 
         // End try body segments, start catch segments.
@@ -1071,10 +1120,10 @@ pub const CodePathBuilder = struct {
             try self.fork_context.replaceHead(unreachable_segs, self);
             try self.forwardCurrentToHead(node, .enter);
         } else {
-            // Catch is reachable from pre-try
+            // Catch is reachable from pre-try.  pre_try's arena data is immortal;
+            // replaceHead just overwrites the list entry pointer.
             if (ctx.pre_try_segments) |pre_try| {
-                const pre_copy = try self.allocator.dupe(SegmentId, pre_try);
-                try self.fork_context.replaceHead(pre_copy, self);
+                try self.fork_context.replaceHead(pre_try, self);
             }
             const catch_segs = try self.fork_context.makeNext(-1, -1, self);
             try self.fork_context.replaceHead(catch_segs, self);
@@ -1094,8 +1143,7 @@ pub const CodePathBuilder = struct {
         // Save PRE-TRY segments to thrownForkContext — this represents the
         // exception path where code throws before any try-body code completed.
         if (ctx.pre_try_segments) |pre_try| {
-            const pre_copy = try self.allocator.dupe(SegmentId, pre_try);
-            try ctx.thrown_fork.add(pre_copy, self);
+            try ctx.thrown_fork.add(pre_try, self);
         }
     }
 
@@ -1113,11 +1161,11 @@ pub const CodePathBuilder = struct {
             // Merge normal path + returned paths for the finally entry.
             // Finally is always reachable because at least one path leads to it.
             var fc_for_normal = newEmptyForkContext(self.allocator, self.fork_context, false);
-            // Add current head (may be unreachable after return)
+            // Add current head (may be unreachable after return).  fc_for_normal
+            // is transient; shared ref into fork_context.segments_list is safe.
             const cur_head = self.fork_context.head();
             if (cur_head.len > 0) {
-                const copy = try self.allocator.dupe(SegmentId, cur_head);
-                try fc_for_normal.add(copy, self);
+                try fc_for_normal.add(cur_head, self);
             }
             // Add returned paths (these are reachable — they existed before return made code dead)
             if (!ctx.returned_fork.empty()) {
@@ -1174,9 +1222,8 @@ pub const CodePathBuilder = struct {
         // If the condition is false initially, control skips the body entirely.
         // do-while always executes the body at least once, so no skip path.
         if (loop_type != .do_while_stmt) {
-            const skip_path = try self.allocator.dupe(SegmentId, self.fork_context.head());
             if (self.choice_context) |cc| {
-                try cc.true_fork.add(skip_path, self);
+                try cc.true_fork.add(self.fork_context.head(), self);
             }
         }
 
@@ -1186,8 +1233,8 @@ pub const CodePathBuilder = struct {
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
         try self.forwardCurrentToHead(target_node, .enter);
-        // Always save entry segments for LOOP event (used as toSegment)
-        ctx.entry_segments = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null;
+        // Always save entry segments for LOOP event (used as toSegment).
+        ctx.entry_segments = self.fork_context.head();
     }
 
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -1270,12 +1317,12 @@ pub const CodePathBuilder = struct {
 
     pub fn setLoopContinueDest(self: *CodePathBuilder) void {
         const ctx = self.loop_context orelse return;
-        ctx.continue_dest_segments = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null;
+        ctx.continue_dest_segments = self.fork_context.head();
     }
 
     pub fn setLoopEntrySegments(self: *CodePathBuilder) void {
         const ctx = self.loop_context orelse return;
-        ctx.entry_segments = self.allocator.dupe(SegmentId, self.fork_context.head()) catch null;
+        ctx.entry_segments = self.fork_context.head();
     }
 
     // ── Break/Continue ───────────────────────────────────────
@@ -1341,8 +1388,7 @@ pub const CodePathBuilder = struct {
         }
 
         if (target) |ctx| {
-            const head = try self.allocator.dupe(SegmentId, self.fork_context.head());
-            try ctx.broken_fork.add(head, self);
+            try ctx.broken_fork.add(self.fork_context.head(), self);
         }
 
         // Make subsequent code unreachable (post phase so exit handlers see current segment)
@@ -1366,8 +1412,7 @@ pub const CodePathBuilder = struct {
 
         if (target_loop) |ctx| {
             const head = self.fork_context.head();
-            const head_copy = try self.allocator.dupe(SegmentId, head);
-            try ctx.continue_fork.add(head_copy, self);
+            try ctx.continue_fork.add(head, self);
 
             // Create graph back-edges and emit LOOP events for the continue.
             // Graph edge targets the continue destination (test/update).
@@ -1427,8 +1472,7 @@ pub const CodePathBuilder = struct {
         // so finally knows about the return path.
         if (self.try_context) |tc| {
             if (tc.has_finalizer and tc.position != .finally_body) {
-                const head_copy = try self.allocator.dupe(SegmentId, head);
-                try tc.returned_fork.add(head_copy, self);
+                try tc.returned_fork.add(head, self);
             }
         }
 
@@ -1469,8 +1513,7 @@ pub const CodePathBuilder = struct {
         if (self.try_context) |ctx| {
             if (ctx.position == .try_body) {
                 ctx.first_throwable_called = true;
-                const head_copy = try self.allocator.dupe(SegmentId, head);
-                try ctx.thrown_fork.add(head_copy, self);
+                try ctx.thrown_fork.add(head, self);
             }
         }
 
@@ -1498,19 +1541,18 @@ pub const CodePathBuilder = struct {
         const parent = self.fork_context.upper orelse return;
         const h = parent.head();
         if (h.len > 0) {
-            const copy = try self.allocator.dupe(SegmentId, h);
-            try self.fork_context.add(copy, self);
+            try self.fork_context.add(h, self);
         }
     }
 
     pub fn pushForkContext(self: *CodePathBuilder) !void {
         const new_fc = try self.allocator.create(ForkContext);
         new_fc.* = ForkContext.init(self.allocator, self.fork_context, self.fork_context.count);
-        // Carry over parent's current head so child operations can reference them as prev
+        // Carry over parent's current head so child operations can reference them as prev.
+        // Parent stays alive as new_fc.upper — no dupe needed.
         const parent_head = self.fork_context.head();
         if (parent_head.len > 0) {
-            const head_copy = try self.allocator.dupe(SegmentId, parent_head);
-            try new_fc.add(head_copy, self);
+            try new_fc.add(parent_head, self);
         }
         self.fork_context = new_fc;
     }
