@@ -566,54 +566,72 @@ pub const CodePathBuilder = struct {
     }
 
     /// Flatten unused segments: replace unused segments with their prev segments.
-    /// Fast paths: (1) empty input, (2) single used segment — no dedup needed.
-    /// Linear-scan dedup for small inputs avoids HashMap allocation.
+    /// Returns the INPUT slice unchanged when no dedup/expand was needed —
+    /// callers treat the returned slice as read-only.
     fn flattenUnused(self: *CodePathBuilder, segments: []const SegmentId) ![]SegmentId {
-        // Fast path: empty.
         if (segments.len == 0) return &.{};
 
-        // Fast path: single segment — already unique, no flatten if used.
+        // Single-segment fast path — 60%+ of calls.  Used: pass through the
+        // caller's slice (no alloc).  Unused: return the prev range directly.
         if (segments.len == 1) {
             const s = segments[0];
             if (s == NONE_SEG) return &.{};
             if (self.seg_used.items[s] != 0) {
-                const out = try self.allocator.alloc(SegmentId, 1);
-                out[0] = s;
-                return out;
+                return @constCast(segments);
             }
-            // Unused — expand to prev (shared case, still small).
             const seg = self.segments.items[s];
             return self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
         }
 
-        // General path: small linear-scan dedup (up to 16 entries on stack).
-        // Falls back to HashMap for pathological large inputs (>16 distinct segs).
-        if (segments.len <= 16) {
-            var buf: [32]SegmentId = undefined;
-            var n: usize = 0;
-            const used_s = self.seg_used.items;
-            outer: for (segments) |seg_id| {
-                if (seg_id == NONE_SEG) continue;
-                if (used_s[seg_id] != 0) {
-                    // Check dedup
-                    for (buf[0..n]) |e| if (e == seg_id) continue :outer;
-                    if (n < buf.len) { buf[n] = seg_id; n += 1; }
-                } else {
-                    const seg = self.segments.items[seg_id];
-                    const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
-                    prev_loop: for (prev) |p| {
-                        if (p == NONE_SEG) continue;
-                        for (buf[0..n]) |e| if (e == p) continue :prev_loop;
-                        if (n < buf.len) { buf[n] = p; n += 1; }
-                    }
-                }
-            }
-            const out = try self.allocator.alloc(SegmentId, n);
-            @memcpy(out, buf[0..n]);
-            return out;
+        // Small linear-scan dedup on a stack buffer.  32 covers all real cases;
+        // HashMap fallback only when pathological deduplication hits.
+        var buf: [32]SegmentId = undefined;
+        const n_first = self.flattenSmall(segments, &buf) orelse {
+            // Input exceeded buffer — must use HashMap.
+            return self.flattenLarge(segments);
+        };
+
+        // If output == input verbatim, return the input slice (no alloc).
+        if (n_first == segments.len) {
+            var i: usize = 0;
+            while (i < n_first) : (i += 1) if (buf[i] != segments[i]) break;
+            if (i == n_first) return @constCast(segments);
         }
 
-        // Pathological: HashMap dedup.
+        const out = try self.allocator.alloc(SegmentId, n_first);
+        @memcpy(out, buf[0..n_first]);
+        return out;
+    }
+
+    /// Linear-scan flatten into a caller-provided stack buffer.
+    /// Returns `null` if more than buf.len distinct segments would be produced.
+    inline fn flattenSmall(self: *CodePathBuilder, segments: []const SegmentId, buf: *[32]SegmentId) ?usize {
+        var n: usize = 0;
+        const used_s = self.seg_used.items;
+        outer: for (segments) |seg_id| {
+            if (seg_id == NONE_SEG) continue;
+            if (used_s[seg_id] != 0) {
+                for (buf[0..n]) |e| if (e == seg_id) continue :outer;
+                if (n >= buf.len) return null;
+                buf[n] = seg_id;
+                n += 1;
+            } else {
+                const seg = self.segments.items[seg_id];
+                const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+                prev_loop: for (prev) |p| {
+                    if (p == NONE_SEG) continue;
+                    for (buf[0..n]) |e| if (e == p) continue :prev_loop;
+                    if (n >= buf.len) return null;
+                    buf[n] = p;
+                    n += 1;
+                }
+            }
+        }
+        return n;
+    }
+
+    /// Pathological path — input produces >32 distinct segments.  Uses HashMap.
+    fn flattenLarge(self: *CodePathBuilder, segments: []const SegmentId) ![]SegmentId {
         var result: std.ArrayListUnmanaged(SegmentId) = .empty;
         var seen = std.AutoHashMap(SegmentId, void).init(self.allocator);
         defer seen.deinit();
