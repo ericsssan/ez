@@ -28,7 +28,6 @@ pub const NONE_SEG: SegmentId = std.math.maxInt(SegmentId);
 
 pub const Segment = struct {
     reachable: bool,
-    used: bool,
     codepath: CodePathId,
 
     // Adjacency — stored as ranges into flat target arrays in CodePathBuilder.
@@ -209,11 +208,7 @@ const ForkContext = struct {
         return self.createSegments(start_idx, end_idx, builder, .unreachable_seg);
     }
 
-    fn makeDisconnected(self: *ForkContext, start_idx: i32, end_idx: i32, builder: *CodePathBuilder) ![]SegmentId {
-        return self.createSegments(start_idx, end_idx, builder, .disconnected);
-    }
-
-    const CreateMode = enum { next, unreachable_seg, disconnected };
+    const CreateMode = enum { next, unreachable_seg };
 
     fn createSegments(self: *ForkContext, start_idx: i32, end_idx: i32, builder: *CodePathBuilder, mode: CreateMode) ![]SegmentId {
         const total: i32 = @intCast(self.totalLen());
@@ -225,7 +220,6 @@ const ForkContext = struct {
                 result[i] = switch (mode) {
                     .next => try builder.newNextSegment(&.{}),
                     .unreachable_seg => try builder.newUnreachableSegment(&.{}),
-                    .disconnected => try builder.newDisconnectedSegment(&.{}),
                 };
             }
             return result;
@@ -256,7 +250,6 @@ const ForkContext = struct {
             result[i] = switch (mode) {
                 .next => try builder.newNextSegment(prev_slice),
                 .unreachable_seg => try builder.newUnreachableSegment(prev_slice),
-                .disconnected => try builder.newDisconnectedSegment(prev_slice),
             };
         }
         return result;
@@ -467,7 +460,6 @@ pub const CodePathBuilder = struct {
         const id: SegmentId = @intCast(self.segments.items.len);
         try self.segments.append(self.allocator, .{
             .reachable = true,
-            .used = false,
             .codepath = self.current_codepath,
             .all_prev_start = 0,
             .all_prev_end = 0,
@@ -509,17 +501,6 @@ pub const CodePathBuilder = struct {
     }
 
     /// Create a disconnected segment (no edge connections, inherits reachability).
-    pub fn newDisconnectedSegment(self: *CodePathBuilder, all_prev: []const SegmentId) !SegmentId {
-        var any_reachable = false;
-        for (all_prev) |p| {
-            if (p != NONE_SEG and (self.seg_reachable.items[p] != 0)) {
-                any_reachable = true;
-                break;
-            }
-        }
-        // Disconnected: no allPrevSegments stored (empty array)
-        return self.createSegment(&.{}, any_reachable, false);
-    }
 
     fn createSegment(self: *CodePathBuilder, all_prev: []const SegmentId, is_reachable: bool, _: bool) !SegmentId {
         const id: SegmentId = @intCast(self.segments.items.len);
@@ -543,7 +524,6 @@ pub const CodePathBuilder = struct {
 
         try self.segments.append(alloc, .{
             .reachable = is_reachable,
-            .used = false,
             .codepath = self.current_codepath,
             .all_prev_start = ap_start,
             .all_prev_end = ap_end,
@@ -566,8 +546,7 @@ pub const CodePathBuilder = struct {
         if (seg_id == NONE_SEG) return;
         if (self.seg_used.items[seg_id] != 0) return;
         self.seg_used.items[seg_id] = 1;
-        var seg = &self.segments.items[seg_id];
-        seg.used = true;
+        const seg = &self.segments.items[seg_id];
 
         // Hoist hot values out of the loop.
         const all_prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
@@ -1200,22 +1179,6 @@ pub const CodePathBuilder = struct {
         }
     }
 
-    /// Called for the first potentially-throwing node inside a try body
-    /// (call expressions, member expressions, identifiers, etc.).
-    /// Saves the current head to thrownForkContext so that finally can see
-    /// the exception path (state before any try-body code completed).
-    pub fn makeFirstThrowablePathInTryBlock(self: *CodePathBuilder) !void {
-        if (!self.fork_context.reachable(self)) return;
-        const ctx = self.try_context orelse return;
-        if (ctx.position != .try_body or ctx.first_throwable_called) return;
-        ctx.first_throwable_called = true;
-        // Save PRE-TRY segments to thrownForkContext — this represents the
-        // exception path where code throws before any try-body code completed.
-        if (ctx.pre_try_segments) |pre_try| {
-            try ctx.thrown_fork.add(pre_try, self);
-        }
-    }
-
     pub fn makeFinallyBlock(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.try_context orelse return;
         ctx.last_of_catch_reachable = self.fork_context.reachable(self);
@@ -1389,11 +1352,6 @@ pub const CodePathBuilder = struct {
         ctx.continue_dest_segments = self.fork_context.head();
     }
 
-    pub fn setLoopEntrySegments(self: *CodePathBuilder) void {
-        const ctx = self.loop_context orelse return;
-        ctx.entry_segments = self.fork_context.head();
-    }
-
     // ── Break/Continue ───────────────────────────────────────
 
     pub fn pushBreakContext(self: *CodePathBuilder, breakable: bool, label: ?[]const u8) !void {
@@ -1437,86 +1395,6 @@ pub const CodePathBuilder = struct {
             }
         }
         return had_break;
-    }
-
-    pub fn makeBreak(self: *CodePathBuilder, label: ?[]const u8, node: NodeIndex) !void {
-        // Find the target break context
-        var target: ?*BreakContext = self.break_context;
-        if (label) |lbl| {
-            while (target) |ctx| {
-                if (ctx.label) |ctx_lbl| {
-                    if (std.mem.eql(u8, ctx_lbl, lbl)) break;
-                }
-                target = ctx.upper;
-            }
-        } else {
-            while (target) |ctx| {
-                if (ctx.breakable) break;
-                target = ctx.upper;
-            }
-        }
-
-        if (target) |ctx| {
-            try ctx.broken_fork.add(self.fork_context.head(), self);
-        }
-
-        // Make subsequent code unreachable (post phase so exit handlers see current segment)
-        try self.leaveFromCurrentSegment(node, .post);
-        const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
-        try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, .post);
-    }
-
-    pub fn makeContinue(self: *CodePathBuilder, label: ?[]const u8, node: NodeIndex) !void {
-        // Find the target loop context for continue
-        var target_loop: ?*LoopContext = self.loop_context;
-        if (label) |lbl| {
-            while (target_loop) |ctx| {
-                if (ctx.label) |ctx_lbl| {
-                    if (std.mem.eql(u8, ctx_lbl, lbl)) break;
-                }
-                target_loop = ctx.upper;
-            }
-        }
-
-        if (target_loop) |ctx| {
-            const head = self.fork_context.head();
-            try ctx.continue_fork.add(head, self);
-
-            // Create graph back-edges and emit LOOP events for the continue.
-            // Graph edge targets the continue destination (test/update).
-            const dest = ctx.continue_dest_segments orelse ctx.entry_segments;
-            if (dest) |d| {
-                for (head) |from_seg| {
-                    if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
-                        for (d) |to_seg| {
-                            if (to_seg != NONE_SEG) {
-                                try self.markLooped(to_seg, from_seg);
-                            }
-                        }
-                    }
-                }
-            }
-            // LOOP event uses entry_segments (isLoopingTarget mapping).
-            const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
-            if (entry) |e| {
-                for (head) |from_seg| {
-                    if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
-                        for (e) |to_seg| {
-                            if (to_seg != NONE_SEG) {
-                                try self.emitSegLoop(from_seg, to_seg, node);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Make subsequent code unreachable (post phase so exit handlers see current segment)
-        try self.leaveFromCurrentSegment(node, .post);
-        const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
-        try self.fork_context.replaceHead(unreachable_segs, self);
-        try self.forwardCurrentToHead(node, .post);
     }
 
     // ── Return/Throw ─────────────────────────────────────────
@@ -1594,25 +1472,6 @@ pub const CodePathBuilder = struct {
     }
 
     // ── Fork context management ──────────────────────────────
-
-    /// ESLint's forkPath: create new segments from parent FC's last entry,
-    /// add them to current FC. Used at each switch case (after the first)
-    /// to create a "test this case" path from the discriminant.
-    pub fn forkPath(self: *CodePathBuilder) !void {
-        const parent = self.fork_context.upper orelse return;
-        const new_segs = try parent.makeNext(-1, -1, self);
-        try self.fork_context.add(new_segs, self);
-    }
-
-    /// ESLint's forkBypassPath: add parent's head directly to current FC.
-    /// Represents "skip this block entirely" (e.g., no-match in switch).
-    pub fn forkBypassPath(self: *CodePathBuilder) !void {
-        const parent = self.fork_context.upper orelse return;
-        const h = parent.head();
-        if (h.len > 0) {
-            try self.fork_context.add(h, self);
-        }
-    }
 
     pub fn pushForkContext(self: *CodePathBuilder) !void {
         const new_fc = try self.allocator.create(ForkContext);
