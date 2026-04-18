@@ -470,20 +470,20 @@ pub const CodePathBuilder = struct {
         const id: SegmentId = @intCast(self.segments.items.len);
         const alloc = self.allocator;
 
-        // Batch-append all_prev entries: one capacity check instead of per-element.
-        const ap_start: u32 = @intCast(self.all_prev_targets.items.len);
-        try self.all_prev_targets.appendSlice(alloc, all_prev);
-        const ap_end: u32 = @intCast(self.all_prev_targets.items.len);
-
-        // Reachable-only filtered pass — pre-size to at-most all_prev.len.
-        const p_start: u32 = @intCast(self.prev_targets.items.len);
+        // Single fused pass over all_prev — one capacity check per target list,
+        // no re-read of the input slice.
+        try self.all_prev_targets.ensureUnusedCapacity(alloc, all_prev.len);
         try self.prev_targets.ensureUnusedCapacity(alloc, all_prev.len);
+        const ap_start: u32 = @intCast(self.all_prev_targets.items.len);
+        const p_start: u32 = @intCast(self.prev_targets.items.len);
         const segs = self.segments.items;
         for (all_prev) |p| {
+            self.all_prev_targets.appendAssumeCapacity(p);
             if (p != NONE_SEG and segs[p].reachable) {
                 self.prev_targets.appendAssumeCapacity(p);
             }
         }
+        const ap_end: u32 = @intCast(self.all_prev_targets.items.len);
         const p_end: u32 = @intCast(self.prev_targets.items.len);
 
         try self.segments.append(alloc, .{
