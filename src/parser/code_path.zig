@@ -472,10 +472,10 @@ pub const CodePathBuilder = struct {
         try self.prev_targets.ensureUnusedCapacity(alloc, all_prev.len);
         const ap_start: u32 = @intCast(self.all_prev_targets.items.len);
         const p_start: u32 = @intCast(self.prev_targets.items.len);
-        const segs = self.segments.items;
+        const reach_s = self.seg_reachable.items;
         for (all_prev) |p| {
             self.all_prev_targets.appendAssumeCapacity(p);
-            if (p != NONE_SEG and segs[p].reachable) {
+            if (p != NONE_SEG and reach_s[p] != 0) {
                 self.prev_targets.appendAssumeCapacity(p);
             }
         }
@@ -520,14 +520,16 @@ pub const CodePathBuilder = struct {
         for (all_prev) |prev_id| {
             if (prev_id == NONE_SEG) continue;
             var prev = &self.segments.items[prev_id];
-            if (prev.all_next_end == 0 and prev.all_next_start == 0) {
+            // `start` is only ever non-zero when `end` is non-zero — the `end == 0`
+            // check alone is sufficient to detect "first next for this prev".
+            if (prev.all_next_end == 0) {
                 prev.all_next_start = @intCast(self.all_next_targets.items.len);
             }
             self.all_next_targets.appendAssumeCapacity(seg_id);
             prev.all_next_end = @intCast(self.all_next_targets.items.len);
 
             if (is_reachable) {
-                if (prev.next_end == 0 and prev.next_start == 0) {
+                if (prev.next_end == 0) {
                     prev.next_start = @intCast(self.next_targets.items.len);
                 }
                 self.next_targets.appendAssumeCapacity(seg_id);
