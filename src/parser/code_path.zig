@@ -524,24 +524,29 @@ pub const CodePathBuilder = struct {
         if (seg.used) return;
         seg.used = true;
 
-        // Update next/allNext of all prev segments
+        // Hoist hot values out of the loop.
         const all_prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
+        const alloc = self.allocator;
+        const is_reachable = self.seg_reachable.items[seg_id] != 0;
+
+        // Preflight capacity — at most all_prev.len appends per list.
+        try self.all_next_targets.ensureUnusedCapacity(alloc, all_prev.len);
+        if (is_reachable) try self.next_targets.ensureUnusedCapacity(alloc, all_prev.len);
+
         for (all_prev) |prev_id| {
             if (prev_id == NONE_SEG) continue;
             var prev = &self.segments.items[prev_id];
-            // allNextSegments: always add
             if (prev.all_next_end == 0 and prev.all_next_start == 0) {
                 prev.all_next_start = @intCast(self.all_next_targets.items.len);
             }
-            try self.all_next_targets.append(self.allocator, seg_id);
+            self.all_next_targets.appendAssumeCapacity(seg_id);
             prev.all_next_end = @intCast(self.all_next_targets.items.len);
 
-            // nextSegments: only if this segment is reachable
-            if (seg.reachable) {
+            if (is_reachable) {
                 if (prev.next_end == 0 and prev.next_start == 0) {
                     prev.next_start = @intCast(self.next_targets.items.len);
                 }
-                try self.next_targets.append(self.allocator, seg_id);
+                self.next_targets.appendAssumeCapacity(seg_id);
                 prev.next_end = @intCast(self.next_targets.items.len);
             }
         }
