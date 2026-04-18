@@ -329,6 +329,9 @@ const _ruleIdx     = args.indexOf("--rule");
 const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
 const _diffIdx     = args.indexOf("--diff");
 const diffFile     = _diffIdx >= 0 ? args[_diffIdx + 1] : null;
+const _extractIdx  = args.indexOf("--extract-fixtures");
+// Resolve against initial cwd now — sonarjs tests chdir() during phase 1 loading.
+const extractDir   = _extractIdx >= 0 ? path.resolve(process.cwd(), args[_extractIdx + 1]) : null;
 
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -1248,6 +1251,77 @@ if (fs.existsSync(ESLINT_ROOT)) {
       if (!_captured) continue;
       allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType: "module", isTypeScript: true, allCases: _captured.cases });
     }
+  }
+
+  // ── Fixture extraction (--extract-fixtures <dir>) ────────────
+  // Writes every case (valid + invalid) as a standalone file under
+  //   <dir>/corpus/<prefix>/<rule>/{valid,invalid}/N.{js,ts,jsx,tsx}
+  // plus concatenated {valid,invalid,all}-{js,ts}.{js,ts} for single-file benches.
+  if (extractDir) {
+    const outRoot = extractDir; // already absolute
+    fs.mkdirSync(outRoot, { recursive: true });
+    const corpusRoot = path.join(outRoot, "corpus");
+    fs.mkdirSync(corpusRoot, { recursive: true });
+
+    const concat = {
+      valid:   { js: "", ts: "" },
+      invalid: { js: "", ts: "" },
+    };
+    const tally = {
+      valid:   { js: 0, ts: 0, jsx: 0, tsx: 0 },
+      invalid: { js: 0, ts: 0, jsx: 0, tsx: 0 },
+    };
+    let nRules = 0;
+
+    for (const { ruleName, allCases } of allRuleData) {
+      const buckets = { valid: [], invalid: [] };
+      for (const c of allCases) {
+        const k = c.eslintResult && c.eslintResult.length > 0 ? "invalid" : "valid";
+        buckets[k].push(c);
+      }
+      if (buckets.valid.length + buckets.invalid.length === 0) continue;
+      nRules++;
+
+      const [prefix, bareRule] = ruleName.includes("/") ? ruleName.split("/", 2) : ["eslint", ruleName];
+      const safePrefix = prefix.replace(/[@\/]/g, "_");
+      const safeRule = bareRule.replace(/[\/]/g, "_");
+
+      for (const kind of ["valid", "invalid"]) {
+        if (buckets[kind].length === 0) continue;
+        const dir = path.join(corpusRoot, safePrefix, safeRule, kind);
+        fs.mkdirSync(dir, { recursive: true });
+        for (let i = 0; i < buckets[kind].length; i++) {
+          const tc = buckets[kind][i];
+          if (typeof tc.code !== "string" || tc.code.length === 0) continue;
+          const jsx = !!(tc.languageOptions?.parserOptions?.ecmaFeatures?.jsx);
+          const ext = tc.isTypeScript ? (jsx ? ".tsx" : ".ts") : (jsx ? ".jsx" : ".js");
+          fs.writeFileSync(path.join(dir, `${i}${ext}`), tc.code);
+          const lang = (ext === ".ts" || ext === ".tsx") ? "ts" : "js";
+          concat[kind][lang] += `// === ${ruleName} #${i} (${kind}) ===\n${tc.code}\n;\n`;
+          tally[kind][ext.slice(1)]++;
+        }
+      }
+    }
+
+    const all_js = concat.valid.js + concat.invalid.js;
+    const all_ts = concat.valid.ts + concat.invalid.ts;
+    fs.writeFileSync(path.join(outRoot, "valid-all.js"),   concat.valid.js);
+    fs.writeFileSync(path.join(outRoot, "valid-all.ts"),   concat.valid.ts);
+    fs.writeFileSync(path.join(outRoot, "invalid-all.js"), concat.invalid.js);
+    fs.writeFileSync(path.join(outRoot, "invalid-all.ts"), concat.invalid.ts);
+    fs.writeFileSync(path.join(outRoot, "all.js"),         all_js);
+    fs.writeFileSync(path.join(outRoot, "all.ts"),         all_ts);
+
+    const sum = t => t.js + t.ts + t.jsx + t.tsx;
+    console.log(`\nExtracted from ${nRules} rules → ${outRoot}`);
+    console.log(`  valid:   ${sum(tally.valid)}   (js=${tally.valid.js} ts=${tally.valid.ts} jsx=${tally.valid.jsx} tsx=${tally.valid.tsx})`);
+    console.log(`  invalid: ${sum(tally.invalid)} (js=${tally.invalid.js} ts=${tally.invalid.ts} jsx=${tally.invalid.jsx} tsx=${tally.invalid.tsx})`);
+    console.log(`  per-file: corpus/<prefix>/<rule>/{valid,invalid}/N.{js,ts,jsx,tsx}`);
+    console.log(`  concat:   valid-all.{js,ts}  invalid-all.{js,ts}  all.{js,ts}`);
+    console.log(`  sizes:    valid.js=${concat.valid.js.length} valid.ts=${concat.valid.ts.length}`);
+    console.log(`            invalid.js=${concat.invalid.js.length} invalid.ts=${concat.invalid.ts.length}`);
+    console.log(`            all.js=${all_js.length} all.ts=${all_ts.length}`);
+    process.exit(0);
   }
 
   // Phase 2: Per-rule analysis (native runs in-process via NAPI, same loop as runner).
