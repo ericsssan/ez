@@ -602,6 +602,32 @@ pub fn main(init: std.process.Init) !void {
             @as(i64, @intCast(resolved_ev)) - @as(i64, @intCast(resolved_tree)),
             100.0 * @as(f64, @floatFromInt(resolved_ev)) / @as(f64, @floatFromInt(resolved_tree)),
         });
+
+        // Symbol diff — which (kind) are we missing?  Bucket by binding_kind.
+        var tree_by_kind: [17]u32 = .{0} ** 17;
+        var ev_by_kind: [17]u32 = .{0} ** 17;
+        for (sem_tree.symbols.binding_kinds.items) |bk| {
+            const k: u8 = @intFromEnum(bk);
+            if (k < tree_by_kind.len) tree_by_kind[k] += 1;
+        }
+        for (sem_ev.symbols.binding_kinds.items) |bk| {
+            const k: u8 = @intFromEnum(bk);
+            if (k < ev_by_kind.len) ev_by_kind[k] += 1;
+        }
+        std.debug.print("\n  binding-kind breakdown:\n", .{});
+        const kind_names = [_][]const u8{
+            "var        ", "let        ", "const      ", "function_decl", "class_decl ",
+            "parameter  ", "catch_param", "import     ", "type_import", "implicit   ",
+            "type_decl  ", "interface  ", "enum_decl  ", "namespace  ",
+            "fn_expr_name", "class_expr_name", "type_param ",
+        };
+        for (kind_names, 0..) |kname, i| {
+            if (tree_by_kind[i] == 0 and ev_by_kind[i] == 0) continue;
+            std.debug.print("    {s:<16}  tree={d:>5}  events={d:>5}  delta={d:>6}\n", .{
+                kname, tree_by_kind[i], ev_by_kind[i],
+                @as(i64, @intCast(ev_by_kind[i])) - @as(i64, @intCast(tree_by_kind[i])),
+            });
+        }
     }
 
     // ── Phase 9: Semantic sub-phase timings ──────────────────────────
