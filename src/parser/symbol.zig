@@ -324,17 +324,17 @@ pub const SymbolTable = struct {
     // ── Mutation helpers ───────────────────────────────────
 
     /// Mark a symbol as read/referenced.
-    pub fn markRead(self: *SymbolTable, id: SymbolId) void {
+    pub inline fn markRead(self: *SymbolTable, id: SymbolId) void {
         self.flags.items[id.toInt()].is_read = true;
     }
 
     /// Mark a symbol as written/assigned after declaration.
-    pub fn markWritten(self: *SymbolTable, id: SymbolId) void {
+    pub inline fn markWritten(self: *SymbolTable, id: SymbolId) void {
         self.flags.items[id.toInt()].is_written = true;
     }
 
     /// Mark a symbol as used in a typeof expression.
-    pub fn markTypeOf(self: *SymbolTable, id: SymbolId) void {
+    pub inline fn markTypeOf(self: *SymbolTable, id: SymbolId) void {
         self.flags.items[id.toInt()].is_type_of = true;
     }
 

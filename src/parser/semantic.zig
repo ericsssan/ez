@@ -8,6 +8,7 @@ const NodeIndex = ast_mod.NodeIndex;
 const SubRange = ast_mod.SubRange;
 const ExtraIndex = ast_mod.ExtraIndex;
 const TokenIndex = ast_mod.TokenIndex;
+const TokenTag = @import("token.zig").Tag;
 const FnData = ast_mod.FnData;
 const ClassData = ast_mod.ClassData;
 const ArrowData = ast_mod.ArrowData;
@@ -25,6 +26,14 @@ const ScopeKind = scope_mod.ScopeKind;
 const ScopeFlags = scope_mod.ScopeFlags;
 const symbol_mod = @import("symbol.zig");
 const SymbolTable = symbol_mod.SymbolTable;
+
+/// Bench-only instrumentation for scope resolution.  Compile-time flag keeps
+/// the increments out of the hot path in release builds.
+pub const DEBUG_RESOLVE_STATS: bool = false;
+pub var debug_resolve_lookups: u64 = 0;
+pub var debug_resolve_calls: u64 = 0;
+pub var debug_resolve_hits: u64 = 0;
+pub var debug_resolve_depth_sum: u64 = 0;
 const SymbolId = symbol_mod.SymbolId;
 const SymbolFlags = symbol_mod.SymbolFlags;
 const BindingKind = symbol_mod.BindingKind;
@@ -125,6 +134,15 @@ pub const SemanticResult = struct {
 /// `SemanticResult` containing the fully populated tables.
 pub const SemanticAnalyzer = struct {
     ast: *const Ast,
+    /// Cached SoA field pointers from ast.nodes / ast.tokens — avoids repeated
+    /// MultiArrayList.items() calls (each reconstructs the slice).  The AST is
+    /// immutable during semantic analysis, so these are safe for the full run.
+    node_tags: [*]const Node.Tag,
+    node_main_tokens: [*]const TokenIndex,
+    node_data: [*]const Node.Data,
+    tok_tags: [*]const TokenTag,
+    tok_starts: [*]const u32,
+    tok_lens: [*]const u32,
     scopes: ScopeTree,
     symbols: SymbolTable,
     references: ReferenceTable,
@@ -201,6 +219,12 @@ pub const SemanticAnalyzer = struct {
     pub fn init(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool) SemanticAnalyzer {
         return .{
             .ast = ast,
+            .node_tags = ast.nodes.items(.tag).ptr,
+            .node_main_tokens = ast.nodes.items(.main_token).ptr,
+            .node_data = ast.nodes.items(.data).ptr,
+            .tok_tags = ast.tokens.items(.tag).ptr,
+            .tok_starts = ast.tokens.items(.start).ptr,
+            .tok_lens = ast.tokens.items(.len).ptr,
             .scopes = ScopeTree.init(allocator),
             .symbols = SymbolTable.init(allocator),
             .references = ReferenceTable.init(allocator),
@@ -219,6 +243,25 @@ pub const SemanticAnalyzer = struct {
         self.diagnostics.deinit(self.allocator);
         self.exported_names.deinit(self.allocator);
         // scope_bindings is freed explicitly in analyze() via defer; skip here to avoid double-free.
+    }
+
+    // Inline AST accessors using cached SoA pointers — called thousands of
+    // times during the main visit walk.
+    inline fn nTag(self: *const SemanticAnalyzer, idx: NodeIndex) Node.Tag {
+        return self.node_tags[@intFromEnum(idx)];
+    }
+    inline fn nMainToken(self: *const SemanticAnalyzer, idx: NodeIndex) TokenIndex {
+        return self.node_main_tokens[@intFromEnum(idx)];
+    }
+    inline fn nData(self: *const SemanticAnalyzer, idx: NodeIndex) Node.Data {
+        return self.node_data[@intFromEnum(idx)];
+    }
+    inline fn tokText(self: *const SemanticAnalyzer, index: TokenIndex) []const u8 {
+        const start = self.tok_starts[index];
+        const len = self.tok_lens[index];
+        if (len > 0) return self.ast.source[start .. start + len];
+        // Zero-len fallback: fall back to the generic path (edge cases only).
+        return self.ast.tokenText(index);
     }
 
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
@@ -250,6 +293,113 @@ pub const SemanticAnalyzer = struct {
 
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
         return analyzeModuleWithOptions(allocator, ast, opts);
+    }
+
+    /// Per-sub-phase timings for `analyze`, populated only when the bench asks.
+    /// Fields are nanoseconds. Access via `analyzeWithTimings` (test-only entry).
+    pub const Timings = struct {
+        presize_ns: u64 = 0,
+        visit_ns: u64 = 0,
+        resolve_unresolved_ns: u64 = 0,
+        build_ref_ranges_ns: u64 = 0,
+        build_scope_bindings_ns: u64 = 0,
+        validate_exports_ns: u64 = 0,
+        cfg_finish_ns: u64 = 0,
+        total_ns: u64 = 0,
+    };
+
+    /// Instrumented variant: returns sub-phase timings alongside the result.
+    pub fn analyzeWithTimings(
+        allocator: std.mem.Allocator,
+        ast: *const Ast,
+        opts: Options,
+        io: std.Io,
+        out_t: *Timings,
+    ) !SemanticResult {
+        var self = SemanticAnalyzer.init(allocator, ast, opts.is_module);
+        self.implicit_globals = opts.globals;
+        errdefer self.deinit();
+        defer self.exported_names.deinit(allocator);
+        defer self.scope_binding_map.deinit(allocator);
+        defer allocator.free(self.fn_expr_exceptions);
+
+        const t_total0 = std.Io.Timestamp.now(io, .boot);
+
+        // ─── Pre-size ────────────────────────────────────────────
+        const t0 = std.Io.Timestamp.now(io, .boot);
+        const node_n = @as(u32, @intCast(@min(ast.nodes.len, std.math.maxInt(u32))));
+        const est_scopes = @max(16, node_n / 20);
+        const est_syms   = @max(64, node_n / 6);
+        try self.scopes.ensureCapacity(est_scopes);
+        try self.symbols.ensureCapacity(est_syms);
+        try self.references.ensureCapacity(est_syms * 2);
+        try self.scope_binding_map.ensureTotalCapacity(allocator, est_syms);
+        self.fn_expr_exceptions = try allocator.alloc(u8, ast.nodes.len);
+        @memset(self.fn_expr_exceptions, 0);
+        const node_count = ast.nodes.len;
+        const node_reachable = try allocator.alloc(u8, node_count);
+        @memset(node_reachable, 1);
+        self.node_reachable = node_reachable;
+        const loop_exit_reachable = try allocator.alloc(u8, node_count);
+        @memset(loop_exit_reachable, 1);
+        self.loop_exit_reachable = loop_exit_reachable;
+        if (opts.build_cfg) {
+            self.cpb = CodePathBuilder.init(allocator);
+            self.cpb.allocator = self.cpb.arena.allocator();
+            self.cpb_initialized = true;
+        }
+        const t1 = std.Io.Timestamp.now(io, .boot);
+        out_t.presize_ns = @intCast(t0.durationTo(t1).nanoseconds);
+
+        // ─── Main visit pass ─────────────────────────────────────
+        const t2 = std.Io.Timestamp.now(io, .boot);
+        const root_data = self.nData(.root);
+        try self.visitRoot(.root, root_data);
+        const t3 = std.Io.Timestamp.now(io, .boot);
+        out_t.visit_ns = @intCast(t2.durationTo(t3).nanoseconds);
+
+        // ─── Post-passes ─────────────────────────────────────────
+        const t4 = std.Io.Timestamp.now(io, .boot);
+        self.resolveUnresolved();
+        const t5 = std.Io.Timestamp.now(io, .boot);
+        out_t.resolve_unresolved_ns = @intCast(t4.durationTo(t5).nanoseconds);
+
+        const t6 = std.Io.Timestamp.now(io, .boot);
+        try self.buildRefRanges();
+        const t7 = std.Io.Timestamp.now(io, .boot);
+        out_t.build_ref_ranges_ns = @intCast(t6.durationTo(t7).nanoseconds);
+
+        const t8 = std.Io.Timestamp.now(io, .boot);
+        try self.buildScopeBindings();
+        const t9 = std.Io.Timestamp.now(io, .boot);
+        out_t.build_scope_bindings_ns = @intCast(t8.durationTo(t9).nanoseconds);
+
+        const t10 = std.Io.Timestamp.now(io, .boot);
+        try self.validateExports();
+        const t11 = std.Io.Timestamp.now(io, .boot);
+        out_t.validate_exports_ns = @intCast(t10.durationTo(t11).nanoseconds);
+
+        const t12 = std.Io.Timestamp.now(io, .boot);
+        const cpb_result = if (self.cpb_initialized) blk: {
+            const r = try self.cpb.finish();
+            self.cpb.deinit();
+            break :blk r;
+        } else null;
+        const t13 = std.Io.Timestamp.now(io, .boot);
+        out_t.cfg_finish_ns = @intCast(t12.durationTo(t13).nanoseconds);
+
+        const t_total1 = std.Io.Timestamp.now(io, .boot);
+        out_t.total_ns = @intCast(t_total0.durationTo(t_total1).nanoseconds);
+
+        return .{
+            .scopes = self.scopes,
+            .symbols = self.symbols,
+            .references = self.references,
+            .diagnostics = try self.diagnostics.toOwnedSlice(allocator),
+            .code_path_result = cpb_result,
+            .node_reachable = node_reachable,
+            .loop_exit_reachable = loop_exit_reachable,
+        };
     }
 
     fn analyzeModuleWithGlobals(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool, globals: []const u8) !SemanticResult {
@@ -300,7 +450,7 @@ pub const SemanticAnalyzer = struct {
             self.cpb_initialized = true;
         }
 
-        const root_data = self.ast.nodeData(.root);
+        const root_data = self.nData(.root);
         try self.visitRoot(.root, root_data);
         self.resolveUnresolved();
         try self.buildRefRanges();
@@ -364,6 +514,10 @@ pub const SemanticAnalyzer = struct {
         const sym_id = try self.symbols.addSymbol(name, symbol_flags, binding_kind, scope, node);
         try self.scope_binding_map.ensureUnusedCapacity(self.allocator, 1);
         self.scope_binding_map.putAssumeCapacity(.{ .scope_id = scope.toInt(), .name = name }, sym_id);
+        // Maintain a live running count per scope so resolveReference can skip
+        // scopes with no bindings without touching the hash map.  The count is
+        // overwritten by buildScopeBindings at the end of analysis.
+        self.scopes.bindings_count.items[scope.toInt()] += 1;
         return sym_id;
     }
 
@@ -390,20 +544,37 @@ pub const SemanticAnalyzer = struct {
     /// Walk up the scope chain looking for a symbol with the given name.
     /// Pre-hashes the name once and reuses the hash at each scope level.
     fn resolveReference(self: *SemanticAnalyzer, name: []const u8, ref_id: ReferenceId) void {
-        const name_hash = std.hash.Wyhash.hash(0, name);
+        if (DEBUG_RESOLVE_STATS) debug_resolve_calls += 1;
+        const counts = self.scopes.bindings_count.items;
         var scope = self.current_scope;
+        // Quick-skip pass: advance past scopes with zero bindings without
+        // hashing. Typical JS has many empty block scopes (if/while/for
+        // bodies with only statements).
+        while (scope.isValid() and counts[scope.toInt()] == 0) {
+            scope = self.scopes.parent(scope);
+        }
+        if (!scope.isValid()) return; // no binding anywhere in chain → implicit global
+        const name_hash = std.hash.Wyhash.hash(0, name);
+        var depth: u64 = 0;
         while (scope.isValid()) {
-            const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
-            if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
-                self.references.resolve(ref_id, sym_id);
-                // Update symbol usage flags based on reference kind.
-                const kind = self.references.getKind(ref_id);
-                if (kind.isRead()) self.symbols.markRead(sym_id);
-                if (kind.isWrite()) self.symbols.markWritten(sym_id);
-                if (kind == .type_of) self.symbols.markTypeOf(sym_id);
-                return;
+            if (counts[scope.toInt()] != 0) {
+                if (DEBUG_RESOLVE_STATS) debug_resolve_lookups += 1;
+                const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
+                if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
+                    if (DEBUG_RESOLVE_STATS) {
+                        debug_resolve_hits += 1;
+                        debug_resolve_depth_sum += depth;
+                    }
+                    self.references.resolve(ref_id, sym_id);
+                    const kind = self.references.getKind(ref_id);
+                    if (kind.isRead()) self.symbols.markRead(sym_id);
+                    if (kind.isWrite()) self.symbols.markWritten(sym_id);
+                    if (kind == .type_of) self.symbols.markTypeOf(sym_id);
+                    return;
+                }
             }
             scope = self.scopes.parent(scope);
+            depth += 1;
         }
         // Unresolved — leave ref as .none (implicit global).
     }
@@ -432,7 +603,7 @@ pub const SemanticAnalyzer = struct {
             const ref_id: ReferenceId = @enumFromInt(i);
             const node_idx = self.references.getNode(ref_id);
             if (node_idx == .none) continue;
-            const name = self.ast.tokenText(self.ast.nodeMainToken(node_idx));
+            const name = self.ast.tokenText(self.nMainToken(node_idx));
             // Walk up from the reference's original scope.
             const ref_scope = self.references.getScope(ref_id);
             const name_hash = std.hash.Wyhash.hash(0, name);
@@ -577,8 +748,8 @@ pub const SemanticAnalyzer = struct {
             self.node_reachable[node_int] = if (self.cfg_alive) 1 else 0;
         }
 
-        const tag = self.ast.nodeTag(idx);
-        const data = self.ast.nodeData(idx);
+        const tag = self.nTag(idx);
+        const data = self.nData(idx);
 
         switch (tag) {
             // ── Program (only entered from analyze(), never recursively) ──
@@ -828,7 +999,7 @@ pub const SemanticAnalyzer = struct {
                 // Push a non-breakable break context with the label name
                 // so `break label` finds this context, not the enclosing loop/switch
                 if (self.cpb_initialized) {
-                    const label_tok = self.ast.nodeMainToken(idx);
+                    const label_tok = self.nMainToken(idx);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.pushBreakContext(false, label_text);
                 }
@@ -968,7 +1139,7 @@ pub const SemanticAnalyzer = struct {
             // delete marks a member write on the base symbol (e.g. `delete ns.prop`).
             .delete_expr => {
                 if (data.lhs != .none) {
-                    const operand_tag = self.ast.nodeTag(data.lhs);
+                    const operand_tag = self.nTag(data.lhs);
                     if (operand_tag == .member_expr or operand_tag == .optional_member_expr or
                         operand_tag == .computed_member_expr or operand_tag == .optional_computed_member_expr)
                     {
@@ -1132,15 +1303,15 @@ pub const SemanticAnalyzer = struct {
             .ts_enum_member => try self.visitNode(data.rhs),
             .ts_namespace_decl, .ts_module_decl => {
                 // Register namespace/module name in scope if the id is an identifier node
-                if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
-                    const ns_name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+                if (data.lhs != .none and self.nTag(data.lhs) == .identifier) {
+                    const ns_name = self.ast.tokenText(self.nMainToken(data.lhs));
                     _ = try self.declareBinding(ns_name, data.lhs, .namespace_decl, self.current_scope);
                 }
                 // Inline visitBlockStmt but mark the body scope as a namespace body so that
                 // no-shadow can suppress shadow reports where the outer symbol is in a
                 // declare global / declare namespace context.
                 if (data.rhs != .none) {
-                    const body_data = self.ast.nodeData(data.rhs);
+                    const body_data = self.nData(data.rhs);
                     const body_scope = try self.enterScope(.block, data.rhs);
                     var body_flags = self.scopes.getFlags(body_scope);
                     body_flags.is_namespace_body = true;
@@ -1154,7 +1325,7 @@ pub const SemanticAnalyzer = struct {
                 // Register name in current scope (hoisted), but do not create a function scope.
                 const fn_data = self.ast.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
                 if (fn_data.name != .none) {
-                    const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+                    const name = self.ast.tokenText(self.nMainToken(fn_data.name));
                     _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
                 }
             },
@@ -1218,7 +1389,7 @@ pub const SemanticAnalyzer = struct {
             .break_label => {
                 // Labeled break — label is a real identifier node in lhs.
                 if (self.cpb_initialized) {
-                    const label_tok = self.ast.nodeMainToken(data.lhs);
+                    const label_tok = self.nMainToken(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeBreak(label_text, idx);
                 }
@@ -1238,7 +1409,7 @@ pub const SemanticAnalyzer = struct {
             },
             .continue_label => {
                 if (self.cpb_initialized) {
-                    const label_tok = self.ast.nodeMainToken(data.lhs);
+                    const label_tok = self.nMainToken(data.lhs);
                     const label_text = self.ast.tokenText(label_tok);
                     try self.cpb.makeContinue(label_text, idx);
                 }
@@ -1258,8 +1429,8 @@ pub const SemanticAnalyzer = struct {
                 // lhs = local node (property_ident or property_literal)
                 // Create a read reference for identifier locals so rules like
                 // no-use-before-define can detect uses of variables in export lists.
-                if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .property_ident) {
-                    const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+                if (data.lhs != .none and self.nTag(data.lhs) == .property_ident) {
+                    const name = self.ast.tokenText(self.nMainToken(data.lhs));
                     const ref_id = try self.references.addReference(.read, data.lhs, self.current_scope, .none);
                     self.resolveReference(name, ref_id);
                 }
@@ -1316,8 +1487,8 @@ pub const SemanticAnalyzer = struct {
             const spec_data = self.ast.nodes.items(.data)[spec_idx.toInt()];
             // Specifiers now store real identifier/literal nodes in lhs/rhs.
             // Read the name via the node's main_token.
-            const local_tok = self.ast.nodeMainToken(spec_data.lhs);
-            const exported_tok = self.ast.nodeMainToken(spec_data.rhs);
+            const local_tok = self.nMainToken(spec_data.lhs);
+            const exported_tok = self.nMainToken(spec_data.rhs);
 
             const exported_name = self.ast.tokenText(exported_tok);
             const local_name = self.ast.tokenText(local_tok);
@@ -1415,7 +1586,7 @@ pub const SemanticAnalyzer = struct {
         // Detect `declare global { ... }`: the parser returns a plain block_stmt for this
         // construct. Mark the scope as namespace_body so no-shadow can suppress shadows
         // where the outer symbol is declared inside the declare global block.
-        const l_brace_tok = self.ast.nodeMainToken(idx);
+        const l_brace_tok = self.nMainToken(idx);
         const token_tags = self.ast.tokens.items(.tag);
         if (l_brace_tok >= 2 and
             token_tags[l_brace_tok - 2] == .kw_declare and
@@ -1437,11 +1608,11 @@ pub const SemanticAnalyzer = struct {
         if (range.start >= range.end) return false;
         const first: NodeIndex = @enumFromInt(self.ast.extra_data[range.start]);
         if (first == .none) return false;
-        if (self.ast.nodeTag(first) != .expression_stmt) return false;
-        const expr: NodeIndex = self.ast.nodeData(first).lhs;
+        if (self.nTag(first) != .expression_stmt) return false;
+        const expr: NodeIndex = self.nData(first).lhs;
         if (expr == .none) return false;
-        if (self.ast.nodeTag(expr) != .string_literal) return false;
-        const tok = self.ast.nodeMainToken(expr);
+        if (self.nTag(expr) != .string_literal) return false;
+        const tok = self.nMainToken(expr);
         const start = self.ast.tokenStart(tok);
         const src = self.ast.source;
         // Must start with ' or " (parenthesized directives like ('use strict') are not directives).
@@ -1460,8 +1631,8 @@ pub const SemanticAnalyzer = struct {
     /// block-scoped declarations go directly into the function scope. See referencer.js:277.
     fn visitFnBody(self: *SemanticAnalyzer, body: NodeIndex) !void {
         if (body == .none) return;
-        if (self.ast.nodeTag(body) == .block_stmt) {
-            const data = self.ast.nodeData(body);
+        if (self.nTag(body) == .block_stmt) {
+            const data = self.nData(body);
             const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
             // Propagate "use strict" directive into the current function scope's flags.
             if (self.detectUseStrict(range)) {
@@ -1478,8 +1649,8 @@ pub const SemanticAnalyzer = struct {
     /// Check if a node is the literal `true` (boolean_literal with text "true").
     fn isLiteralTrue(self: *const SemanticAnalyzer, idx: NodeIndex) bool {
         if (idx == .none) return false;
-        if (self.ast.nodeTag(idx) != .boolean_literal) return false;
-        const tok = self.ast.nodeMainToken(idx);
+        if (self.nTag(idx) != .boolean_literal) return false;
+        const tok = self.nMainToken(idx);
         const start = self.ast.tokenStart(tok);
         return start + 4 <= self.ast.source.len and
             std.mem.eql(u8, self.ast.source[start..start + 4], "true");
@@ -1558,7 +1729,7 @@ pub const SemanticAnalyzer = struct {
             self.continue_hit[cdepth] = false;
             self.continuable_depth = cdepth + 1;
         }
-        const binding_tag = self.ast.nodeTag(fiof_data.binding);
+        const binding_tag = self.nTag(fiof_data.binding);
         if (binding_tag == .var_decl or binding_tag == .let_decl or binding_tag == .const_decl) {
             const before_bind_count = self.symbols.count();
             try self.visitNode(fiof_data.binding);
@@ -1609,7 +1780,7 @@ pub const SemanticAnalyzer = struct {
         const items = self.ast.extraSlice(cases_range);
         for (items) |raw| {
             const case_idx: NodeIndex = @enumFromInt(raw);
-            const case_tag = self.ast.nodeTag(case_idx);
+            const case_tag = self.nTag(case_idx);
             const is_default = case_tag == .switch_default;
             if (is_default) has_default = true;
             if (self.cpb_initialized) try self.cpb.makeSwitchCaseBody(is_default, case_idx);
@@ -1673,7 +1844,7 @@ pub const SemanticAnalyzer = struct {
 
         // Declare the function name in the current (outer) scope — hoisted.
         if (fn_data.name != .none) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+            const name = self.ast.tokenText(self.nMainToken(fn_data.name));
             _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
         }
 
@@ -1718,7 +1889,7 @@ pub const SemanticAnalyzer = struct {
         // initializer of a matching outer variable — i.e., `var f = function f() {}`.
         // Otherwise use .function_decl so no-shadow detects the real shadow.
         if (fn_data.name != .none) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+            const name = self.ast.tokenText(self.nMainToken(fn_data.name));
             const kind: BindingKind = if (self.fn_expr_exceptions[@intFromEnum(idx)] != 0) .fn_expr_name else .function_decl;
             _ = try self.declareBinding(name, fn_data.name, kind, self.current_scope);
         }
@@ -1790,7 +1961,7 @@ pub const SemanticAnalyzer = struct {
         for (items) |raw| {
             const tp_idx: NodeIndex = @enumFromInt(raw);
             if (tp_idx == .none) continue;
-            const tp_name = self.ast.tokenText(self.ast.nodeMainToken(tp_idx));
+            const tp_name = self.ast.tokenText(self.nMainToken(tp_idx));
             _ = try self.declareBinding(tp_name, tp_idx, .type_param, self.current_scope);
         }
     }
@@ -1802,7 +1973,7 @@ pub const SemanticAnalyzer = struct {
 
         // Declare the class name in the outer scope (TDZ).
         if (class_data.name != .none) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+            const name = self.ast.tokenText(self.nMainToken(class_data.name));
             _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
 
@@ -1816,7 +1987,7 @@ pub const SemanticAnalyzer = struct {
         // Use .class_expr_name (is_expr_name=true) so no-shadow treats this inner
         // binding as exempt — it's always the class's own self-reference, never a shadow.
         if (class_data.name != .none) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+            const name = self.ast.tokenText(self.nMainToken(class_data.name));
             _ = try self.declareBinding(name, class_data.name, .class_expr_name, self.current_scope);
         }
 
@@ -1841,7 +2012,7 @@ pub const SemanticAnalyzer = struct {
         // direct initializer of a matching outer variable — i.e., `var A = class A {}`.
         // Otherwise use .class_decl so no-shadow detects the real shadow.
         if (class_data.name != .none) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+            const name = self.ast.tokenText(self.nMainToken(class_data.name));
             const kind: BindingKind = if (self.fn_expr_exceptions[@intFromEnum(idx)] != 0) .class_expr_name else .class_decl;
             _ = try self.declareBinding(name, class_data.name, kind, self.current_scope);
         }
@@ -1859,7 +2030,7 @@ pub const SemanticAnalyzer = struct {
         // Visit the key expression ONLY for computed members (e.g., [expr](){}).
         // Non-computed method names are definitions, not references — visiting
         // them would create false "undefined" references for method names.
-        const tag = self.ast.nodeTag(idx);
+        const tag = self.nTag(idx);
         const is_computed = (tag == .computed_method_def or tag == .computed_getter_def or
             tag == .computed_setter_def or tag == .computed_property_def);
         if (is_computed) {
@@ -1894,7 +2065,7 @@ pub const SemanticAnalyzer = struct {
     }
 
     fn visitDeclarator(self: *SemanticAnalyzer, idx: NodeIndex, binding_kind: BindingKind) !void {
-        const data = self.ast.nodeData(idx);
+        const data = self.nData(idx);
 
         // Determine the scope where this binding should be declared.
         const target_scope = if (binding_kind == .@"var")
@@ -1908,11 +2079,11 @@ pub const SemanticAnalyzer = struct {
         if (data.lhs != .none and data.rhs != .none) {
             var lhs_node = data.lhs;
             // Unwrap TS type annotation: `x: Type = ...`
-            if (self.ast.nodeTag(lhs_node) == .ts_type_annotation) {
-                lhs_node = self.ast.nodeData(lhs_node).lhs;
+            if (self.nTag(lhs_node) == .ts_type_annotation) {
+                lhs_node = self.nData(lhs_node).lhs;
             }
-            if (lhs_node != .none and self.ast.nodeTag(lhs_node) == .identifier) {
-                const binding_name = self.ast.tokenText(self.ast.nodeMainToken(lhs_node));
+            if (lhs_node != .none and self.nTag(lhs_node) == .identifier) {
+                const binding_name = self.ast.tokenText(self.nMainToken(lhs_node));
                 try self.markFnExprExceptions(binding_name, data.rhs);
             }
         }
@@ -1954,8 +2125,8 @@ pub const SemanticAnalyzer = struct {
     /// Stop at any other node (call expressions, etc. break the exception path).
     fn markFnExprExceptions(self: *SemanticAnalyzer, binding_name: []const u8, init_node: NodeIndex) !void {
         if (init_node == .none or init_node == .root) return;
-        const tag = self.ast.nodeTag(init_node);
-        const data = self.ast.nodeData(init_node);
+        const tag = self.nTag(init_node);
+        const data = self.nData(init_node);
         switch (tag) {
             // Parenthesised expressions are transparent wrappers.
             .grouping_expr => {
@@ -1976,7 +2147,7 @@ pub const SemanticAnalyzer = struct {
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
                 const fn_data = self.ast.extraData(FnData, @intFromEnum(data.lhs));
                 if (fn_data.name != .none) {
-                    const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
+                    const name = self.ast.tokenText(self.nMainToken(fn_data.name));
                     if (std.mem.eql(u8, name, binding_name)) {
                         self.fn_expr_exceptions[@intFromEnum(init_node)] = 1;
                     }
@@ -1986,7 +2157,7 @@ pub const SemanticAnalyzer = struct {
             .class_expr => {
                 const class_data = self.ast.extraData(ClassData, @intFromEnum(data.lhs));
                 if (class_data.name != .none) {
-                    const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
+                    const name = self.ast.tokenText(self.nMainToken(class_data.name));
                     if (std.mem.eql(u8, name, binding_name)) {
                         self.fn_expr_exceptions[@intFromEnum(init_node)] = 1;
                     }
@@ -2007,7 +2178,7 @@ pub const SemanticAnalyzer = struct {
             .end = import_data.specifiers_end,
         };
         // Detect `import type { ... }`: the token right after 'import' is kw_type.
-        const import_tok = self.ast.nodeMainToken(idx);
+        const import_tok = self.nMainToken(idx);
         const token_tags = self.ast.tokens.items(.tag);
         const saved = self.in_type_import;
         if (import_tok + 1 < token_tags.len and token_tags[import_tok + 1] == .kw_type) {
@@ -2019,11 +2190,11 @@ pub const SemanticAnalyzer = struct {
 
     fn visitImportSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
         // import { x as y } — rhs = local identifier node (real node).
-        const data = self.ast.nodeData(idx);
-        const local_tok = self.ast.nodeMainToken(data.rhs);
+        const data = self.nData(idx);
+        const local_tok = self.nMainToken(data.rhs);
         const name = self.ast.tokenText(local_tok);
         // Detect `import { type foo }`: the token immediately before the imported name is kw_type.
-        const imported_tok = self.ast.nodeMainToken(idx);
+        const imported_tok = self.nMainToken(idx);
         const token_tags = self.ast.tokens.items(.tag);
         const is_inline_type = imported_tok > 0 and token_tags[imported_tok - 1] == .kw_type;
         const bk: BindingKind = if (self.in_type_import or is_inline_type) .type_import_binding else .import_binding;
@@ -2032,16 +2203,16 @@ pub const SemanticAnalyzer = struct {
 
     fn visitImportDefaultSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
         // import x — lhs = local identifier node.
-        const data = self.ast.nodeData(idx);
-        const local_tok = self.ast.nodeMainToken(data.lhs);
+        const data = self.nData(idx);
+        const local_tok = self.nMainToken(data.lhs);
         const name = self.ast.tokenText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
 
     fn visitImportNamespaceSpecifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
         // import * as x — lhs = local identifier node.
-        const data = self.ast.nodeData(idx);
-        const local_tok = self.ast.nodeMainToken(data.lhs);
+        const data = self.nData(idx);
+        const local_tok = self.nMainToken(data.lhs);
         const name = self.ast.tokenText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
@@ -2049,7 +2220,7 @@ pub const SemanticAnalyzer = struct {
     // ── Identifier references ──────────────────────────────
 
     fn visitIdentifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
-        const name = self.ast.tokenText(self.ast.nodeMainToken(idx));
+        const name = self.ast.tokenText(self.nMainToken(idx));
         const ref_id = try self.references.addReference(.read, idx, self.current_scope, .none);
         self.resolveReference(name, ref_id);
     }
@@ -2063,17 +2234,17 @@ pub const SemanticAnalyzer = struct {
     ///     (e.g. `<components.Button />` → `components` is used).
     ///   - `jsx_namespaced_name` (`foo:bar`): no variable references.
     fn visitJsxElementName(self: *SemanticAnalyzer, name_idx: NodeIndex) !void {
-        const tag = self.ast.nodeTag(name_idx);
+        const tag = self.nTag(name_idx);
         switch (tag) {
             .jsx_identifier => {
-                const name = self.ast.tokenText(self.ast.nodeMainToken(name_idx));
+                const name = self.ast.tokenText(self.nMainToken(name_idx));
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
                     const ref_id = try self.references.addReference(.read, name_idx, self.current_scope, .none);
                     self.resolveReference(name, ref_id);
                 }
             },
             .jsx_member_expr => {
-                const d = self.ast.nodeData(name_idx);
+                const d = self.nData(name_idx);
                 try self.visitJsxMemberObject(d.lhs);
             },
             .jsx_namespaced_name => {}, // XML namespaces — no variable references
@@ -2085,16 +2256,16 @@ pub const SemanticAnalyzer = struct {
     /// Unlike `visitJsxElementName`, this always creates a reference regardless of case,
     /// because `components.Button` means `components` IS a variable being accessed.
     fn visitJsxMemberObject(self: *SemanticAnalyzer, name_idx: NodeIndex) !void {
-        const tag = self.ast.nodeTag(name_idx);
+        const tag = self.nTag(name_idx);
         switch (tag) {
             .jsx_identifier => {
-                const name = self.ast.tokenText(self.ast.nodeMainToken(name_idx));
+                const name = self.ast.tokenText(self.nMainToken(name_idx));
                 const ref_id = try self.references.addReference(.read, name_idx, self.current_scope, .none);
                 self.resolveReference(name, ref_id);
             },
             .jsx_member_expr => {
                 // Nested: A.B.C → visit lhs (A.B) as member object → eventually visits A
-                const d = self.ast.nodeData(name_idx);
+                const d = self.nData(name_idx);
                 try self.visitJsxMemberObject(d.lhs);
             },
             else => {},
@@ -2107,8 +2278,8 @@ pub const SemanticAnalyzer = struct {
         // LHS is an assignment target — identifiers and destructuring patterns
         // should produce write (or read_write) references, not read references.
         if (data.lhs != .none) {
-            if (self.ast.nodeTag(data.lhs) == .identifier) {
-                const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+            if (self.nTag(data.lhs) == .identifier) {
+                const name = self.ast.tokenText(self.nMainToken(data.lhs));
                 const ref_id = try self.references.addReference(kind, data.lhs, self.current_scope, data.rhs);
                 self.resolveReference(name, ref_id);
             } else {
@@ -2124,8 +2295,8 @@ pub const SemanticAnalyzer = struct {
     /// for logical assignment operators (&&=, ||=, ??=).
     fn visitLogicalAssignment(self: *SemanticAnalyzer, data: Node.Data, kind: ReferenceKind) !void {
         if (data.lhs != .none) {
-            if (self.ast.nodeTag(data.lhs) == .identifier) {
-                const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+            if (self.nTag(data.lhs) == .identifier) {
+                const name = self.ast.tokenText(self.nMainToken(data.lhs));
                 const ref_id = try self.references.addReference(kind, data.lhs, self.current_scope, data.rhs);
                 self.resolveReference(name, ref_id);
             } else {
@@ -2143,8 +2314,8 @@ pub const SemanticAnalyzer = struct {
     // ── Update expressions (++, --) ────────────────────────
 
     fn visitUpdateExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
-        if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+        if (data.lhs != .none and self.nTag(data.lhs) == .identifier) {
+            const name = self.ast.tokenText(self.nMainToken(data.lhs));
             // Update expressions (x++, x--) have no explicit write expression.
             const ref_id = try self.references.addReference(.read_write, data.lhs, self.current_scope, .none);
             self.resolveReference(name, ref_id);
@@ -2164,11 +2335,11 @@ pub const SemanticAnalyzer = struct {
     /// is no explicit write expression (e.g. member-expression targets in delete).
     fn visitLValueExpr(self: *SemanticAnalyzer, node: NodeIndex, write_expr: NodeIndex) !void {
         if (node == .none) return;
-        const tag = self.ast.nodeTag(node);
-        const data = self.ast.nodeData(node);
+        const tag = self.nTag(node);
+        const data = self.nData(node);
         switch (tag) {
             .identifier => {
-                const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+                const name = self.ast.tokenText(self.nMainToken(node));
                 const ref_id = try self.references.addReference(.write, node, self.current_scope, write_expr);
                 self.resolveReference(name, ref_id);
             },
@@ -2185,8 +2356,8 @@ pub const SemanticAnalyzer = struct {
                 const items = self.ast.extraSlice(range);
                 for (items) |raw| {
                     const prop: NodeIndex = @enumFromInt(raw);
-                    const prop_tag = self.ast.nodeTag(prop);
-                    const prop_data = self.ast.nodeData(prop);
+                    const prop_tag = self.nTag(prop);
+                    const prop_data = self.nData(prop);
                     switch (prop_tag) {
                         .property => try self.visitLValueExpr(prop_data.rhs, write_expr),
                         .shorthand_property => try self.visitLValueExpr(prop_data.lhs, write_expr),
@@ -2216,8 +2387,8 @@ pub const SemanticAnalyzer = struct {
                 const items = self.ast.extraSlice(range);
                 for (items) |raw| {
                     const prop: NodeIndex = @enumFromInt(raw);
-                    const prop_tag = self.ast.nodeTag(prop);
-                    const prop_data = self.ast.nodeData(prop);
+                    const prop_tag = self.nTag(prop);
+                    const prop_data = self.nData(prop);
                     switch (prop_tag) {
                         .property => try self.visitLValueExpr(prop_data.rhs, write_expr),
                         .shorthand_property => try self.visitLValueExpr(prop_data.lhs, write_expr),
@@ -2261,15 +2432,15 @@ pub const SemanticAnalyzer = struct {
     fn calleeBaseIsLocallyShadowed(self: *const SemanticAnalyzer, callee: NodeIndex) bool {
         if (callee == .none) return false;
         var node = callee;
-        while (self.ast.nodeTag(node) == .grouping_expr) {
-            node = self.ast.nodeData(node).lhs;
+        while (self.nTag(node) == .grouping_expr) {
+            node = self.nData(node).lhs;
             if (node == .none) return false;
         }
-        const tag = self.ast.nodeTag(node);
+        const tag = self.nTag(node);
         if (tag != .member_expr and tag != .optional_member_expr) return false;
-        const base = self.ast.nodeData(node).lhs;
-        if (base == .none or self.ast.nodeTag(base) != .identifier) return false;
-        const name = self.ast.tokenText(self.ast.nodeMainToken(base));
+        const base = self.nData(node).lhs;
+        if (base == .none or self.nTag(base) != .identifier) return false;
+        const name = self.ast.tokenText(self.nMainToken(base));
         const name_hash = std.hash.Wyhash.hash(0, name);
         var scope = self.current_scope;
         while (scope.isValid()) {
@@ -2285,8 +2456,8 @@ pub const SemanticAnalyzer = struct {
     /// rules like no-import-assign can detect `ns.prop = 0` for namespace imports.
     fn visitLValueBase(self: *SemanticAnalyzer, node: NodeIndex) !void {
         if (node == .none) return;
-        if (self.ast.nodeTag(node) == .identifier) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+        if (self.nTag(node) == .identifier) {
+            const name = self.ast.tokenText(self.nMainToken(node));
             const ref_id = try self.references.addReference(.read, node, self.current_scope, .none);
             self.resolveReference(name, ref_id);
             // Mark the resolved symbol as having a member written.
@@ -2300,8 +2471,8 @@ pub const SemanticAnalyzer = struct {
     // ── typeof ─────────────────────────────────────────────
 
     fn visitTypeofExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
-        if (data.lhs != .none and self.ast.nodeTag(data.lhs) == .identifier) {
-            const name = self.ast.tokenText(self.ast.nodeMainToken(data.lhs));
+        if (data.lhs != .none and self.nTag(data.lhs) == .identifier) {
+            const name = self.ast.tokenText(self.nMainToken(data.lhs));
             const ref_id = try self.references.addReference(.type_of, data.lhs, self.current_scope, .none);
             self.resolveReference(name, ref_id);
         } else {
@@ -2356,12 +2527,12 @@ pub const SemanticAnalyzer = struct {
     ) !void {
         if (node == .none or node == .root) return;
 
-        const tag = self.ast.nodeTag(node);
-        const data = self.ast.nodeData(node);
+        const tag = self.nTag(node);
+        const data = self.nData(node);
 
         switch (tag) {
             .identifier => {
-                const name = self.ast.tokenText(self.ast.nodeMainToken(node));
+                const name = self.ast.tokenText(self.nMainToken(node));
                 _ = try self.declareBinding(name, node, binding_kind, scope);
             },
             // TS type annotation wraps a binding: `x: Type` — extract from lhs
@@ -2382,8 +2553,8 @@ pub const SemanticAnalyzer = struct {
                 for (items) |raw| {
                     const prop: NodeIndex = @enumFromInt(raw);
                     if (prop == .none) continue;
-                    const prop_tag = self.ast.nodeTag(prop);
-                    const prop_data = self.ast.nodeData(prop);
+                    const prop_tag = self.nTag(prop);
+                    const prop_data = self.nData(prop);
                     switch (prop_tag) {
                         // { key: value } — value is the binding.
                         .property => {
@@ -2415,11 +2586,11 @@ pub const SemanticAnalyzer = struct {
                 // the target is a simple identifier (e.g., `var { f = function f() {} } = o`).
                 if (data.lhs != .none and data.rhs != .none) {
                     var lhs_node = data.lhs;
-                    if (self.ast.nodeTag(lhs_node) == .ts_type_annotation) {
-                        lhs_node = self.ast.nodeData(lhs_node).lhs;
+                    if (self.nTag(lhs_node) == .ts_type_annotation) {
+                        lhs_node = self.nData(lhs_node).lhs;
                     }
-                    if (lhs_node != .none and self.ast.nodeTag(lhs_node) == .identifier) {
-                        const asgn_name = self.ast.tokenText(self.ast.nodeMainToken(lhs_node));
+                    if (lhs_node != .none and self.nTag(lhs_node) == .identifier) {
+                        const asgn_name = self.ast.tokenText(self.nMainToken(lhs_node));
                         try self.markFnExprExceptions(asgn_name, data.rhs);
                     }
                 }

@@ -728,28 +728,28 @@ pub const Ast = struct {
 
     // ── Accessors ──────────────────────────────────────────
 
-    pub fn nodeTag(self: *const Ast, index: NodeIndex) Node.Tag {
+    pub inline fn nodeTag(self: *const Ast, index: NodeIndex) Node.Tag {
         return self.nodes.items(.tag)[index.toInt()];
     }
 
-    pub fn nodeMainToken(self: *const Ast, index: NodeIndex) TokenIndex {
+    pub inline fn nodeMainToken(self: *const Ast, index: NodeIndex) TokenIndex {
         return self.nodes.items(.main_token)[index.toInt()];
     }
 
-    pub fn nodeData(self: *const Ast, index: NodeIndex) Node.Data {
+    pub inline fn nodeData(self: *const Ast, index: NodeIndex) Node.Data {
         return self.nodes.items(.data)[index.toInt()];
     }
 
-    pub fn tokenTag(self: *const Ast, index: TokenIndex) TokenTag {
+    pub inline fn tokenTag(self: *const Ast, index: TokenIndex) TokenTag {
         return self.tokens.items(.tag)[index];
     }
 
-    pub fn tokenStart(self: *const Ast, index: TokenIndex) ByteOffset {
+    pub inline fn tokenStart(self: *const Ast, index: TokenIndex) ByteOffset {
         return self.tokens.items(.start)[index];
     }
 
     /// Get the source text of a token. O(1) using stored token length.
-    pub fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
+    pub inline fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
         const start = self.tokenStart(index);
         const len = self.tokens.items(.len)[index];
         if (len > 0) return self.source[start..start + len];

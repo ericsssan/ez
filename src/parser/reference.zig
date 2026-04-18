@@ -118,7 +118,7 @@ pub const ReferenceTable = struct {
     /// `write_expr` is the expression being written (for write/read_write refs),
     /// or `.none` for read-only and update-expression refs.
     /// Returns the new reference's id.
-    pub fn addReference(
+    pub inline fn addReference(
         self: *ReferenceTable,
         kind: ReferenceKind,
         node_id: ast.NodeIndex,
