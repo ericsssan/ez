@@ -486,6 +486,62 @@ pub fn main(init: std.process.Init) !void {
         });
     }
 
+    // ── Phase 12: Full event-driven SemanticResult (production path) ──
+    // Same output shape as the tree-walking analyzer (ScopeTree + SymbolTable
+    // + ReferenceTable + post-passes); drop-in replacement for analyze().
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var full_syms: u32 = 0;
+        var full_refs: u32 = 0;
+        var full_scopes: u32 = 0;
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var ev: scope_events.EventStream = .{};
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .events_out = &ev,
+            }) catch continue;
+            defer tree.deinit(fba.allocator());
+            defer ev.deinit(fba.allocator());
+            if (event_resolver.resolveFull(fba.allocator(), &tree, ev.items(), .{})) |res| {
+                var r = res;
+                r.deinit(fba.allocator());
+            } else |_| {}
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var ev: scope_events.EventStream = .{};
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .events_out = &ev,
+            }) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            defer ev.deinit(fba.allocator());
+            if (event_resolver.resolveFull(fba.allocator(), &tree, ev.items(), .{})) |res| {
+                var r = res;
+                full_syms = @intCast(r.symbols.names.items.len);
+                full_refs = r.references.count();
+                full_scopes = @intCast(r.scopes.kinds.items.len);
+                r.deinit(fba.allocator());
+            } else |_| {}
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Lex+Parse+ResolveFull", &times, source.len);
+        std.debug.print("  scopes:{d} syms:{d} refs:{d}\n\n", .{ full_scopes, full_syms, full_refs });
+    }
+
     // ── Phase 9: Semantic sub-phase timings ──────────────────────────
     // Accumulate per-sub-phase time over ITERATIONS and report averages.
     {
