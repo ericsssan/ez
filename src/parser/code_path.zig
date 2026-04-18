@@ -283,23 +283,14 @@ pub const ChoiceKind = enum { test_kind, logical_and, logical_or, nullish, loop 
 const ChoiceContext = struct {
     upper: ?*ChoiceContext,
     kind: ChoiceKind,
-    is_forking_as_result: bool,
     true_fork: ForkContext,
     false_fork: ForkContext,
-    nullish_fork: ForkContext,
     processed: bool,
 };
 
 const SwitchContext = struct {
     upper: ?*SwitchContext,
-    has_case: bool,
     default_segments: ?[]SegmentId,
-    default_body_segments: ?[]SegmentId,
-    found_empty_default: bool,
-    last_is_default: bool,
-    fork_count: u32,
-    /// Discriminant entry segments — each case forks from here.
-    entry_segments: ?[]SegmentId,
 };
 
 const TryContext = struct {
@@ -325,22 +316,9 @@ pub const LoopType = enum {
 
 const LoopContext = struct {
     upper: ?*LoopContext,
-    loop_type: LoopType,
-    label: ?[]const u8,
-    // Loop-type specific data
-    test_value: enum { unknown, literal_true, literal_false } = .unknown,
     continue_dest_segments: ?[]SegmentId = null,
-    entry_segments: ?[]SegmentId = null, // for do-while
+    entry_segments: ?[]SegmentId = null,
     continue_fork: ForkContext,
-    // For for-loops
-    test_segments: ?[]SegmentId = null,
-    update_segments: ?[]SegmentId = null,
-    end_of_init_segments: ?[]SegmentId = null,
-    end_of_test_segments: ?[]SegmentId = null,
-    end_of_update_segments: ?[]SegmentId = null,
-    // For for-in/of
-    left_segments: ?[]SegmentId = null,
-    end_of_left_segments: ?[]SegmentId = null,
 };
 
 // ── CodePathBuilder ──────────────────────────────────────────────
@@ -862,14 +840,13 @@ pub const CodePathBuilder = struct {
     // ── Choice (if/else, logical, conditional) ───────────────
 
     pub fn pushChoiceContext(self: *CodePathBuilder, kind: ChoiceKind, is_forking: bool) !void {
+        _ = is_forking;
         const ctx = try self.allocator.create(ChoiceContext);
         ctx.* = .{
             .upper = self.choice_context,
             .kind = kind,
-            .is_forking_as_result = is_forking,
             .true_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .false_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
-            .nullish_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
             .processed = false,
         };
         self.choice_context = ctx;
@@ -954,20 +931,13 @@ pub const CodePathBuilder = struct {
     // ── Switch ───────────────────────────────────────────────
 
     pub fn pushSwitchContext(self: *CodePathBuilder, has_case: bool, label: ?[]const u8) !void {
+        _ = has_case;
         _ = label;
 
         const ctx = try self.allocator.create(SwitchContext);
         ctx.* = .{
             .upper = self.switch_context,
-            .has_case = has_case,
             .default_segments = null,
-            .default_body_segments = null,
-            .found_empty_default = false,
-            .last_is_default = false,
-            .fork_count = 0,
-            // No dupe: pushForkContext below stacks a new fork_context, so the
-            // outer fork's segments_list[last] stays arena-stable for us.
-            .entry_segments = self.fork_context.head(),
         };
         self.switch_context = ctx;
 
@@ -998,25 +968,12 @@ pub const CodePathBuilder = struct {
     pub fn makeSwitchCaseBody(self: *CodePathBuilder, is_default: bool, node: NodeIndex) !void {
         const ctx = self.switch_context orelse return;
         if (is_default) {
-            ctx.last_is_default = true;
             // Arena slice stays valid; no dupe.
             ctx.default_segments = self.fork_context.head();
-        } else {
-            ctx.last_is_default = false;
         }
-        ctx.fork_count += 1;
 
         // End current segments (fires before SwitchCase handler)
         try self.leaveFromCurrentSegment(node, .enter);
-
-        // Each case body forks from the discriminant entry (head of the outer
-        // fork context), NOT from the previous case's exit. This ensures cases
-        // after break/return start reachable.
-        const current_head = self.fork_context.head();
-        var has_reachable_prev = false;
-        for (current_head) |s| {
-            if (s != NONE_SEG and (self.seg_reachable.items[s] != 0)) has_reachable_prev = true;
-        }
 
         // Merge ALL entries in the fork context (0 to -1), not just the last.
         // This combines fallthrough from previous case + discriminant fork path.
@@ -1212,11 +1169,10 @@ pub const CodePathBuilder = struct {
 
     /// `target_node`: the loop's condition/body/update child node for isLoopingTarget matching.
     pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, _: NodeIndex, target_node: NodeIndex) !void {
+        _ = label;
         const ctx = try self.allocator.create(LoopContext);
         ctx.* = .{
             .upper = self.loop_context,
-            .loop_type = loop_type,
-            .label = label,
             .continue_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
         };
         self.loop_context = ctx;
