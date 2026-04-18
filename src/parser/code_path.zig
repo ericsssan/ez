@@ -28,18 +28,24 @@ pub const NONE_SEG: SegmentId = std.math.maxInt(SegmentId);
 pub const Segment = struct {
     codepath: CodePathId,
 
-    // Adjacency — stored as ranges into flat target arrays in CodePathBuilder.
-    // Populated during markUsed() and loop back-edge creation.
+    // Prev adjacency — set at segment creation, then immutable.
     all_prev_start: u32,
     all_prev_end: u32,
-    prev_start: u32, // reachable-only prev
+    prev_start: u32,
     prev_end: u32,
-    all_next_start: u32,
-    all_next_end: u32,
-    next_start: u32, // reachable-only next
-    next_end: u32,
+    // Looped prev — set rarely via markLooped.
     looped_prev_start: u32,
     looped_prev_end: u32,
+};
+
+/// Hot adjacency sidecar — written on every markUsed/markLooped call.
+/// Split out from Segment so markUsed touches 16 bytes (one cache line holds 4)
+/// instead of a 48-byte struct.
+pub const SegNextInfo = struct {
+    all_next_start: u32 = 0,
+    all_next_end: u32 = 0,
+    next_start: u32 = 0,
+    next_end: u32 = 0,
 };
 
 // ── CodePath ─────────────────────────────────────────────────────
@@ -331,11 +337,11 @@ pub const CodePathBuilder = struct {
     // Results
     segments: std.ArrayList(Segment),
     /// Hot sidecar of segments.items[i].reachable — 1 byte per segment.
-    /// Segment struct is 48 bytes; isolating this flag cuts reachability
-    /// checks from 1 struct-load (random 48-byte access) to 1 byte-load.
     seg_reachable: std.ArrayList(u8),
-    /// Sidecar of used flag — same motivation, also hot in flattenUnused.
+    /// Sidecar of used flag — hot in flattenUnused + markUsed early-exit.
     seg_used: std.ArrayList(u8),
+    /// Hot adjacency sidecar (all_next_*, next_* pairs). 16 bytes per segment.
+    seg_next: std.ArrayList(SegNextInfo),
     codepaths: std.ArrayList(CodePath),
     events: std.ArrayList(Event),
 
@@ -366,6 +372,7 @@ pub const CodePathBuilder = struct {
             .segments = .empty,
             .seg_reachable = .empty,
             .seg_used = .empty,
+            .seg_next = .empty,
             .codepaths = .empty,
             .events = .empty,
             .all_prev_targets = .empty,
@@ -393,6 +400,7 @@ pub const CodePathBuilder = struct {
         try self.segments.ensureTotalCapacity(self.allocator, est_segments);
         try self.seg_reachable.ensureTotalCapacity(self.allocator, est_segments);
         try self.seg_used.ensureTotalCapacity(self.allocator, est_segments);
+        try self.seg_next.ensureTotalCapacity(self.allocator, est_segments);
         try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.events.ensureTotalCapacity(self.allocator, est_segments * 2);
         try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments);
@@ -422,15 +430,12 @@ pub const CodePathBuilder = struct {
             .all_prev_end = 0,
             .prev_start = 0,
             .prev_end = 0,
-            .all_next_start = 0,
-            .all_next_end = 0,
-            .next_start = 0,
-            .next_end = 0,
             .looped_prev_start = 0,
             .looped_prev_end = 0,
         });
         try self.seg_reachable.append(self.allocator, 1);
         try self.seg_used.append(self.allocator, 0);
+        try self.seg_next.append(self.allocator, .{});
         return id;
     }
 
@@ -485,15 +490,12 @@ pub const CodePathBuilder = struct {
             .all_prev_end = ap_end,
             .prev_start = p_start,
             .prev_end = p_end,
-            .all_next_start = 0,
-            .all_next_end = 0,
-            .next_start = 0,
-            .next_end = 0,
             .looped_prev_start = 0,
             .looped_prev_end = 0,
         });
         try self.seg_reachable.append(alloc, if (is_reachable) 1 else 0);
         try self.seg_used.append(alloc, 0);
+        try self.seg_next.append(alloc, .{});
         return id;
     }
 
@@ -504,32 +506,29 @@ pub const CodePathBuilder = struct {
         self.seg_used.items[seg_id] = 1;
         const seg = &self.segments.items[seg_id];
 
-        // Hoist hot values out of the loop.
         const all_prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
         const alloc = self.allocator;
         const is_reachable = self.seg_reachable.items[seg_id] != 0;
+        const next_info = self.seg_next.items;
 
-        // Preflight capacity — at most all_prev.len appends per list.
         try self.all_next_targets.ensureUnusedCapacity(alloc, all_prev.len);
         if (is_reachable) try self.next_targets.ensureUnusedCapacity(alloc, all_prev.len);
 
         for (all_prev) |prev_id| {
             if (prev_id == NONE_SEG) continue;
-            var prev = &self.segments.items[prev_id];
-            // `start` is only ever non-zero when `end` is non-zero — the `end == 0`
-            // check alone is sufficient to detect "first next for this prev".
-            if (prev.all_next_end == 0) {
-                prev.all_next_start = @intCast(self.all_next_targets.items.len);
+            const ni = &next_info[prev_id];
+            if (ni.all_next_end == 0) {
+                ni.all_next_start = @intCast(self.all_next_targets.items.len);
             }
             self.all_next_targets.appendAssumeCapacity(seg_id);
-            prev.all_next_end = @intCast(self.all_next_targets.items.len);
+            ni.all_next_end = @intCast(self.all_next_targets.items.len);
 
             if (is_reachable) {
-                if (prev.next_end == 0) {
-                    prev.next_start = @intCast(self.next_targets.items.len);
+                if (ni.next_end == 0) {
+                    ni.next_start = @intCast(self.next_targets.items.len);
                 }
                 self.next_targets.appendAssumeCapacity(seg_id);
-                prev.next_end = @intCast(self.next_targets.items.len);
+                ni.next_end = @intCast(self.next_targets.items.len);
             }
         }
     }
@@ -538,28 +537,26 @@ pub const CodePathBuilder = struct {
     pub fn markLooped(self: *CodePathBuilder, seg_id: SegmentId, prev_seg_id: SegmentId) !void {
         if (seg_id == NONE_SEG or prev_seg_id == NONE_SEG) return;
         var seg = &self.segments.items[seg_id];
-        const prev = &self.segments.items[prev_seg_id];
+        const ni_prev = &self.seg_next.items[prev_seg_id];
 
-        // loopedPrevSegments
-        if (seg.looped_prev_end == 0 and seg.looped_prev_start == 0) {
+        if (seg.looped_prev_end == 0) {
             seg.looped_prev_start = @intCast(self.looped_targets.items.len);
         }
         try self.looped_targets.append(self.allocator, prev_seg_id);
         seg.looped_prev_end = @intCast(self.looped_targets.items.len);
 
-        // Also add to forward edges: prev→seg allNextSegments
-        if (prev.all_next_end == 0 and prev.all_next_start == 0) {
-            prev.all_next_start = @intCast(self.all_next_targets.items.len);
+        if (ni_prev.all_next_end == 0) {
+            ni_prev.all_next_start = @intCast(self.all_next_targets.items.len);
         }
         try self.all_next_targets.append(self.allocator, seg_id);
-        prev.all_next_end = @intCast(self.all_next_targets.items.len);
+        ni_prev.all_next_end = @intCast(self.all_next_targets.items.len);
 
-        if ((self.seg_reachable.items[prev_seg_id] != 0)) {
-            if (prev.next_end == 0 and prev.next_start == 0) {
-                prev.next_start = @intCast(self.next_targets.items.len);
+        if (self.seg_reachable.items[prev_seg_id] != 0) {
+            if (ni_prev.next_end == 0) {
+                ni_prev.next_start = @intCast(self.next_targets.items.len);
             }
             try self.next_targets.append(self.allocator, seg_id);
-            prev.next_end = @intCast(self.next_targets.items.len);
+            ni_prev.next_end = @intCast(self.next_targets.items.len);
         }
     }
 
@@ -1368,9 +1365,10 @@ pub const CodePathBuilder = struct {
 
     pub const Result = struct {
         segments: []const Segment,
-        /// Parallel to segments — 1 = reachable, 0 = unreachable.  Extracted
-        /// so reachability checks are 1-byte loads, not 40-byte struct loads.
+        /// Parallel to segments — 1 = reachable, 0 = unreachable.
         seg_reachable: []const u8,
+        /// Parallel to segments — adjacency (all_next_*/next_*) ranges.
+        seg_next: []const SegNextInfo,
         codepaths: []const CodePath,
         events: []const Event,
         // Adjacency target pools
@@ -1400,6 +1398,7 @@ pub const CodePathBuilder = struct {
         const result: Result = .{
             .segments = self.segments.items,
             .seg_reachable = self.seg_reachable.items,
+            .seg_next = self.seg_next.items,
             .codepaths = self.codepaths.items,
             .events = self.events.items,
             .all_prev_targets = self.all_prev_targets.items,

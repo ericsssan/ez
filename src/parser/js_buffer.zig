@@ -567,9 +567,10 @@ fn writeCfgGraph(
     var total_looped: u32 = 0;
     for (0..seg_count) |i| {
         const s = cpr.segments[i];
-        if (s.next_end > s.next_start) total_next += s.next_end - s.next_start;
+        const n = cpr.seg_next[i];
+        if (n.next_end > n.next_start) total_next += n.next_end - n.next_start;
         if (s.prev_end > s.prev_start) total_prev += s.prev_end - s.prev_start;
-        if (s.all_next_end > s.all_next_start) total_all_next += s.all_next_end - s.all_next_start;
+        if (n.all_next_end > n.all_next_start) total_all_next += n.all_next_end - n.all_next_start;
         if (s.all_prev_end > s.all_prev_start) total_all_prev += s.all_prev_end - s.all_prev_start;
         if (s.looped_prev_end > s.looped_prev_start) total_looped += s.looped_prev_end - s.looped_prev_start;
     }
@@ -588,9 +589,10 @@ fn writeCfgGraph(
         var lo: u32 = 0;
         for (0..seg_count) |i| {
             const s = cpr.segments[i];
-            if (s.next_end > s.next_start) { const len = s.next_end - s.next_start; @memcpy(tmp_next[n..][0..len], cpr.next_targets[s.next_start..s.next_end]); n += len; }
+            const ni = cpr.seg_next[i];
+            if (ni.next_end > ni.next_start) { const len = ni.next_end - ni.next_start; @memcpy(tmp_next[n..][0..len], cpr.next_targets[ni.next_start..ni.next_end]); n += len; }
             if (s.prev_end > s.prev_start) { const len = s.prev_end - s.prev_start; @memcpy(tmp_prev[p..][0..len], cpr.prev_targets[s.prev_start..s.prev_end]); p += len; }
-            if (s.all_next_end > s.all_next_start) { const len = s.all_next_end - s.all_next_start; @memcpy(tmp_all_next[an..][0..len], cpr.all_next_targets[s.all_next_start..s.all_next_end]); an += len; }
+            if (ni.all_next_end > ni.all_next_start) { const len = ni.all_next_end - ni.all_next_start; @memcpy(tmp_all_next[an..][0..len], cpr.all_next_targets[ni.all_next_start..ni.all_next_end]); an += len; }
             if (s.all_prev_end > s.all_prev_start) { const len = s.all_prev_end - s.all_prev_start; @memcpy(tmp_all_prev[ap..][0..len], cpr.all_prev_targets[s.all_prev_start..s.all_prev_end]); ap += len; }
             if (s.looped_prev_end > s.looped_prev_start) { const len = s.looped_prev_end - s.looped_prev_start; @memcpy(tmp_looped[lo..][0..len], cpr.looped_targets[s.looped_prev_start..s.looped_prev_end]); lo += len; }
         }
@@ -620,12 +622,13 @@ fn writeCfgGraph(
         var lo: u32 = 0;
         for (0..seg_count) |i| {
             const s = cpr.segments[i];
+            const ni = cpr.seg_next[i];
             seg_next_starts[i] = n;
-            if (s.next_end > s.next_start) n += s.next_end - s.next_start;
+            if (ni.next_end > ni.next_start) n += ni.next_end - ni.next_start;
             seg_prev_starts[i] = p;
             if (s.prev_end > s.prev_start) p += s.prev_end - s.prev_start;
             seg_all_next_starts[i] = an;
-            if (s.all_next_end > s.all_next_start) an += s.all_next_end - s.all_next_start;
+            if (ni.all_next_end > ni.all_next_start) an += ni.all_next_end - ni.all_next_start;
             seg_all_prev_starts[i] = ap;
             if (s.all_prev_end > s.all_prev_start) ap += s.all_prev_end - s.all_prev_start;
             seg_looped_starts[i] = lo;
