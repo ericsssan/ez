@@ -172,4 +172,20 @@ pub fn build(b: *std.Build) void {
     bench_lex_cmd.step.dependOn(b.getInstallStep());
     const bench_lex_step = b.step("bench-lexer", "Lexer throughput bench");
     bench_lex_step.dependOn(&bench_lex_cmd.step);
+
+    // ── Profile bench ────────────────────────────────────────
+    const bench_prof_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_profile.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_prof_mod.addImport("ez", test_mod);
+    const bench_prof = b.addExecutable(.{
+        .name = "bench_profile",
+        .root_module = bench_prof_mod,
+    });
+    const bench_prof_cmd = b.addRunArtifact(bench_prof);
+    bench_prof_cmd.step.dependOn(b.getInstallStep());
+    const bench_prof_step = b.step("bench-profile", "resolveFull per-phase profile");
+    bench_prof_step.dependOn(&bench_prof_cmd.step);
 }
