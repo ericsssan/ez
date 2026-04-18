@@ -217,13 +217,17 @@ pub fn resolveFull(
     errdefer allocator.free(loop_exit_reachable);
     @memset(loop_exit_reachable, 1);
 
-    // Minimal CodePathBuilder — enter/exit per function/module/static-block/
-    // class-field-initializer scope.  Terminators forward the current segment
-    // to unreachable.  Does NOT yet handle switch/loop/try/logical branching
-    // (those still need dedicated CFG events — see project_event_cfg_events).
     var cpb = CodePathBuilder.init(allocator);
     cpb.allocator = cpb.arena.allocator();
     errdefer cpb.deinit();
+
+    // Pre-size cpb ArrayLists from event volume.  Segments scale roughly with
+    // (if + loop + switch + logical + cond) events; over-estimation is harmless
+    // since the arena is freed wholesale.
+    if (!skip_cfg) {
+        const ev_len: u32 = @intCast(events.len);
+        try cpb.ensureCapacity(ev_len / 4, ev_len / 40);
+    }
 
     // Scope stack — holds ScopeIds as we enter/leave scopes during the event
     // pass.  Depth ≤ 256 is plenty for realistic source (acorn.js peaks ~8).

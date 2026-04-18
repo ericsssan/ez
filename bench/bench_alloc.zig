@@ -129,10 +129,10 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    std.debug.print("{s: <12}  {s: >10}  {s: >10}  {s: >8}  {s: >8}  {s: >8}\n", .{
-        "fixture", "peak_cfg_KB", "peak_no_KB", "delta_KB", "rsz_cfg", "rsz_no",
+    std.debug.print("{s: <12}  {s: >7}  {s: >6}  {s: >6}  {s: >5}  {s: >5}\n", .{
+        "fixture", "evt", "pk_cfg", "pk_no", "rsz_c", "rsz_n",
     });
-    std.debug.print("{s:-<12}  {s:->10}  {s:->10}  {s:->8}  {s:->8}  {s:->8}\n", .{
+    std.debug.print("{s:-<12}  {s:->7}  {s:->6}  {s:->6}  {s:->5}  {s:->5}\n", .{
         "", "", "", "", "", "",
     });
 
@@ -142,9 +142,6 @@ pub fn main(init: std.process.Init) !void {
             continue;
         };
         defer gpa.free(source);
-
-        var counter = Counting{ .child = gpa };
-        const alloc = counter.allocator();
 
         // Setup: lex + parse (use GPA directly, not counted)
         var tok = try Lexer.tokenize(gpa, source);
@@ -157,31 +154,23 @@ pub fn main(init: std.process.Init) !void {
         });
         defer tree.deinit(gpa);
 
-        // Reset counter, run resolveFull twice: with and without CFG.
+        var counter = Counting{ .child = gpa };
+        const alloc = counter.allocator();
+
         counter.reset();
         var res1 = try event_resolver.resolveFull(alloc, &tree, ev.items(), .{});
-        const peak_with = counter.live_peak;
-        const resizes_with = counter.resizes;
+        const peak_cfg = counter.live_peak;
+        const rsz_cfg = counter.resizes;
         res1.deinit(alloc);
 
         counter.reset();
         var res2 = try event_resolver.resolveFull(alloc, &tree, ev.items(), .{ .skip_cfg = true });
         const peak_no = counter.live_peak;
-        const resizes_no = counter.resizes;
-        const scopes = res2.scopes.kinds.items.len;
-        const syms = res2.symbols.names.items.len;
-        const refs = res2.references.count();
+        const rsz_no = counter.resizes;
         res2.deinit(alloc);
-        _ = scopes; _ = syms; _ = refs;
 
-        const delta = if (peak_with > peak_no) peak_with - peak_no else 0;
-        std.debug.print("{s: <12}  {d: >10}  {d: >10}  {d: >8}  {d: >8}  {d: >8}\n", .{
-            fx.name,
-            peak_with / 1024,
-            peak_no / 1024,
-            delta / 1024,
-            resizes_with,
-            resizes_no,
+        std.debug.print("{s: <12}  {d: >7}  {d: >6}  {d: >6}  {d: >5}  {d: >5}\n", .{
+            fx.name, ev.len(), peak_cfg / 1024, peak_no / 1024, rsz_cfg, rsz_no,
         });
     }
 }

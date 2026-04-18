@@ -381,6 +381,20 @@ pub const CodePathBuilder = struct {
         };
     }
 
+    /// Pre-size internal ArrayLists to avoid growth reallocs during event
+    /// processing.  Hints come from the event stream (scope/declare/reference
+    /// counts).  Over-estimation is fine — arena-backed, so unused capacity
+    /// lives in the final arena reset.
+    pub fn ensureCapacity(self: *CodePathBuilder, est_segments: u32, est_codepaths: u32) !void {
+        try self.segments.ensureTotalCapacity(self.allocator, est_segments);
+        try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
+        try self.events.ensureTotalCapacity(self.allocator, est_segments * 2);
+        try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments);
+        try self.prev_targets.ensureTotalCapacity(self.allocator, est_segments);
+        try self.all_next_targets.ensureTotalCapacity(self.allocator, est_segments);
+        try self.next_targets.ensureTotalCapacity(self.allocator, est_segments);
+    }
+
     /// Free all internal allocations. Call after finish() returns the Result.
     pub fn deinit(self: *CodePathBuilder) void {
         self.arena.deinit();
