@@ -138,6 +138,12 @@ pub const Parser = struct {
     /// declares into the fresh arrow scope.  When not, no declares are
     /// emitted for the expression form.
     suppress_param_declares: bool = false,
+    /// Current declarator's binding name — set by parseDeclaratorConst
+    /// around its init expression parse.  Used by parseFunctionExpression
+    /// (and parseClassExpression) to emit `.fn_expr_name` instead of
+    /// `.function_decl` when the NFE name matches the outer var name —
+    /// matches ESLint's fn_expr_exceptions rule (affects no-shadow).
+    decl_name_text: []const u8 = &.{},
     gpa: std.mem.Allocator,
     max_nodes: usize,
 
@@ -2400,7 +2406,17 @@ pub const Parser = struct {
             }
         }
 
-        // Optional initializer
+        // Optional initializer.  If the binding is a simple identifier, snapshot
+        // its name so named fn/class expressions inside the init can detect the
+        // matching-name case (ESLint's fn_expr_exceptions rule).
+        const saved_decl_name = self.decl_name_text;
+        if (self.emit_scope_events and binding != .none) {
+            if (self.node_tags_ptr[binding.toInt()] == .identifier) {
+                self.decl_name_text = self.tokenText(self.node_main_token_ptr[binding.toInt()]);
+            }
+        }
+        defer self.decl_name_text = saved_decl_name;
+
         const init: NodeIndex = if (self.eat(.equal) != null)
             try self.parseAssignmentExpression()
         else
