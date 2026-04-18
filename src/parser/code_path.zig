@@ -1261,11 +1261,14 @@ pub const CodePathBuilder = struct {
     pub fn makeReturn(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
 
-        // Record reachable segments in returned pool (unreachable returns are dead code)
+        // Record reachable segments in returned pool (unreachable returns are dead code).
         const head = self.fork_context.head();
+        var any_reachable = false;
+        const reach_s = self.seg_reachable.items;
         var cp = &self.codepaths.items[cp_id];
         for (head) |seg_id| {
-            if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
+            if (seg_id != NONE_SEG and reach_s[seg_id] != 0) {
+                any_reachable = true;
                 if (cp.returned_end == 0 and cp.returned_start == 0) {
                     cp.returned_start = @intCast(self.cp_returned_pool.items.len);
                 }
@@ -1274,17 +1277,16 @@ pub const CodePathBuilder = struct {
             }
         }
 
-        // If inside a try-with-finally, add head to the try's returned_fork
-        // so finally knows about the return path.
+        // If inside a try-with-finally, add head to the try's returned_fork.
         if (self.try_context) |tc| {
             if (tc.has_finalizer and tc.position != .finally_body) {
                 try tc.returned_fork.add(head, self);
             }
         }
 
-        // Make subsequent code unreachable.
-        // Use post phase so SEG_END fires AFTER exit handlers — rules like
-        // no-useless-return check currentSegments in ReturnStatement:exit.
+        // Already-dead head: no new unreachable segment needed.
+        if (!any_reachable) return;
+
         try self.leaveFromCurrentSegment(node, .post);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
@@ -1293,6 +1295,18 @@ pub const CodePathBuilder = struct {
 
     /// Mark current head as unreachable (e.g., after infinite loop with no break).
     pub fn makeUnreachable(self: *CodePathBuilder, node: NodeIndex) !void {
+        // If the current head is already all-unreachable, skip creating
+        // another unreachable segment — the existing one is semantically
+        // equivalent as a successor target.  Terminator-after-terminator
+        // (break then return, etc.) hits this path.
+        const head = self.fork_context.head();
+        var any_reachable = false;
+        const reach_s = self.seg_reachable.items;
+        for (head) |s| {
+            if (s != NONE_SEG and reach_s[s] != 0) { any_reachable = true; break; }
+        }
+        if (!any_reachable) return;
+
         try self.leaveFromCurrentSegment(node, .exit);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
@@ -1302,11 +1316,13 @@ pub const CodePathBuilder = struct {
     pub fn makeThrow(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
 
-        // Record reachable segments in thrown pool
         const head = self.fork_context.head();
+        var any_reachable = false;
+        const reach_s = self.seg_reachable.items;
         var cp = &self.codepaths.items[cp_id];
         for (head) |seg_id| {
-            if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
+            if (seg_id != NONE_SEG and reach_s[seg_id] != 0) {
+                any_reachable = true;
                 if (cp.thrown_end == 0 and cp.thrown_start == 0) {
                     cp.thrown_start = @intCast(self.cp_thrown_pool.items.len);
                 }
@@ -1315,7 +1331,6 @@ pub const CodePathBuilder = struct {
             }
         }
 
-        // If inside a try block, also add to try context's thrown fork
         if (self.try_context) |ctx| {
             if (ctx.position == .try_body) {
                 ctx.first_throwable_called = true;
@@ -1323,7 +1338,8 @@ pub const CodePathBuilder = struct {
             }
         }
 
-        // Make subsequent code unreachable (post phase so exit handlers see current segment)
+        if (!any_reachable) return;
+
         try self.leaveFromCurrentSegment(node, .post);
         const unreachable_segs = try self.fork_context.makeUnreachable(-1, -1, self);
         try self.fork_context.replaceHead(unreachable_segs, self);
