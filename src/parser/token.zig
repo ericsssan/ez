@@ -520,12 +520,12 @@ pub const Language = enum {
     tsx,
 
     /// Returns true for TypeScript languages (ts, tsx).
-    pub fn isTs(self: Language) bool {
+    pub inline fn isTs(self: Language) bool {
         return self == .ts or self == .tsx;
     }
 
     /// Returns true for JSX languages (jsx, tsx).
-    pub fn isJsx(self: Language) bool {
+    pub inline fn isJsx(self: Language) bool {
         return self == .jsx or self == .tsx;
     }
 

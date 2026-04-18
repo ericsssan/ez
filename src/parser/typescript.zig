@@ -1850,29 +1850,29 @@ pub fn expectClosingAngleBracket(p: *Parser) Error!void {
         .greater_than => _ = p.advance(),
         .greater_greater => {
             // `>>` → consume first `>`, leave second as `>`
-            p.tokens.items(.tag)[p.tok_i] = .greater_than;
+            p.tags_ptr[p.tok_i] = .greater_than;
             // Advance the start position by 1 byte so the remaining `>` is correct
-            p.tokens.items(.start)[p.tok_i] += 1;
+            p.tok_starts_ptr[p.tok_i] += 1;
         },
         .greater_greater_greater => {
             // `>>>` → consume first `>`, leave `>>`
-            p.tokens.items(.tag)[p.tok_i] = .greater_greater;
-            p.tokens.items(.start)[p.tok_i] += 1;
+            p.tags_ptr[p.tok_i] = .greater_greater;
+            p.tok_starts_ptr[p.tok_i] += 1;
         },
         .greater_equal => {
             // `>=` → consume first `>`, leave `=`
-            p.tokens.items(.tag)[p.tok_i] = .equal;
-            p.tokens.items(.start)[p.tok_i] += 1;
+            p.tags_ptr[p.tok_i] = .equal;
+            p.tok_starts_ptr[p.tok_i] += 1;
         },
         .greater_greater_equal => {
             // `>>=` → consume first `>`, leave `>=`
-            p.tokens.items(.tag)[p.tok_i] = .greater_equal;
-            p.tokens.items(.start)[p.tok_i] += 1;
+            p.tags_ptr[p.tok_i] = .greater_equal;
+            p.tok_starts_ptr[p.tok_i] += 1;
         },
         .greater_greater_greater_equal => {
             // `>>>=` → consume first `>`, leave `>>=`
-            p.tokens.items(.tag)[p.tok_i] = .greater_greater_equal;
-            p.tokens.items(.start)[p.tok_i] += 1;
+            p.tags_ptr[p.tok_i] = .greater_greater_equal;
+            p.tok_starts_ptr[p.tok_i] += 1;
         },
         else => {
             _ = try p.expect(.greater_than);

@@ -97,10 +97,25 @@ pub const Parser = struct {
     source: []const u8,
     tokens: TokenList.Slice,
     /// Cached pointer to the tag array — avoids MultiArrayList.items(.tag)
-    /// overhead on the hot peek() path.
-    tags_ptr: [*]const TokenTag,
+    /// overhead on the hot peek() path.  Mutable: TS parser rewrites `>>`
+    /// into `>` when closing generic type arguments.
+    tags_ptr: [*]TokenTag,
+    /// Cached pointer to has_newline_before — used by isOnNewLine (called once
+    /// per parseExpressionPrec iteration).
+    newlines_ptr: [*]const bool,
+    /// Cached pointer to token byte starts (mutable for TS `>>` splitting).
+    tok_starts_ptr: [*]u32,
+    /// Cached pointer to token byte lengths.
+    tok_lens_ptr: [*]const u32,
     tok_i: u32,
     nodes: Ast.NodeList,
+    /// Cached pointers into the nodes SoA — refreshed whenever nodes grows.
+    /// `MultiArrayList.items(.tag)` reconstructs the slice (loops over field
+    /// sizes + pointer arithmetic) on every call; caching saves that work on
+    /// every nodeTag/nodeData read.
+    node_tags_ptr: [*]Node.Tag,
+    node_data_ptr: [*]Node.Data,
+    node_main_token_ptr: [*]TokenIndex,
     extra_data: std.ArrayList(u32),
     scratch: std.ArrayList(u32),
     diagnostics: std.ArrayList(Diagnostic),
@@ -144,8 +159,14 @@ pub const Parser = struct {
             .source = source,
             .tokens = tokens,
             .tags_ptr = tokens.items(.tag).ptr,
+            .newlines_ptr = tokens.items(.has_newline_before).ptr,
+            .tok_starts_ptr = tokens.items(.start).ptr,
+            .tok_lens_ptr = tokens.items(.len).ptr,
             .tok_i = 0,
             .nodes = .empty,
+            .node_tags_ptr = undefined,
+            .node_data_ptr = undefined,
+            .node_main_token_ptr = undefined,
             .extra_data = .empty,
             .scratch = .empty,
             .diagnostics = .empty,
@@ -183,13 +204,19 @@ pub const Parser = struct {
             p.diagnostics.deinit(allocator);
         };
 
-        // Empirically ~0.75 AST nodes per token; extra_data ~0.35; scratch for
-        // largest single statement arg/element list (256 covers the vast majority).
+        // Empirically ~0.75 AST nodes per token; extra_data grows larger than
+        // the 3/8 estimate for typical JS — use 3/4 to avoid regrowths during
+        // long statement / arg lists (each grow is an allocator round-trip
+        // plus memcpy).
         const estimated_node_count: usize = @max(tokens.len * 3 / 4, 1);
-        const estimated_extra_count: usize = @max(tokens.len * 3 / 8, 1);
+        const estimated_extra_count: usize = @max(tokens.len * 3 / 4, 1);
         try p.nodes.ensureTotalCapacity(allocator, estimated_node_count);
+        p.refreshNodePtrs();
         try p.extra_data.ensureTotalCapacity(allocator, estimated_extra_count);
-        try p.scratch.ensureTotalCapacity(allocator, 256);
+        // Scratch is a stack used by statement-list / arg-list parsers. Peak
+        // depth depends on the largest block in the file (could be thousands
+        // of top-level statements). Pre-size generously to avoid growth.
+        try p.scratch.ensureTotalCapacity(allocator, @max(1024, tokens.len / 16));
 
         try p.parseProgram();
 
@@ -270,12 +297,12 @@ pub const Parser = struct {
 
     /// Get the source text for the token at `index`.
     pub fn tokenText(self: *const Parser, index: TokenIndex) []const u8 {
-        const tag = self.tokens.items(.tag)[index];
+        const tag = self.tags_ptr[index];
         // Fixed-lexeme tokens (punctuation, keywords) return the canonical string.
         if (tag.lexeme()) |lex| return lex;
         // Variable-length tokens: use the pre-computed len stored at lex time (O(1)).
-        const start = self.tokens.items(.start)[index];
-        const len = self.tokens.items(.len)[index];
+        const start = self.tok_starts_ptr[index];
+        const len = self.tok_lens_ptr[index];
         return self.source[start .. start + len];
     }
 
@@ -286,7 +313,7 @@ pub const Parser = struct {
 
     /// Return the byte position of the current token.
     pub fn currentStart(self: *const Parser) u32 {
-        return self.tokens.items(.start)[self.tok_i];
+        return self.tok_starts_ptr[self.tok_i];
     }
 
     /// Return a Span covering the current token's start position.
@@ -297,12 +324,12 @@ pub const Parser = struct {
 
     /// Return the byte start position for a given token index.
     pub fn tokenStart(self: *const Parser, index: TokenIndex) u32 {
-        return self.tokens.items(.start)[index];
+        return self.tok_starts_ptr[index];
     }
 
     /// Return the tag for a given token index.
     pub fn tokenTagAt(self: *const Parser, index: TokenIndex) TokenTag {
-        return self.tokens.items(.tag)[index];
+        return self.tags_ptr[index];
     }
 
     // ────────────────────────────────────────────────────────────
@@ -318,13 +345,23 @@ pub const Parser = struct {
         // Fast path: capacity pre-allocated via ensureTotalCapacity in parse().
         if (self.nodes.len >= self.nodes.capacity) {
             try self.nodes.ensureTotalCapacity(self.gpa, self.nodes.capacity * 2 + 16);
+            self.refreshNodePtrs();
         }
         self.nodes.appendAssumeCapacity(node);
         return NodeIndex.fromInt(result);
     }
 
+    /// Refresh cached node SoA field pointers after nodes grows.  Must be
+    /// called after any `ensureTotalCapacity` that may have reallocated.
+    pub fn refreshNodePtrs(self: *Parser) void {
+        const s = self.nodes.slice();
+        self.node_tags_ptr = s.items(.tag).ptr;
+        self.node_data_ptr = s.items(.data).ptr;
+        self.node_main_token_ptr = s.items(.main_token).ptr;
+    }
+
     /// Serialize a struct to extra_data as sequential u32 fields, return the start index.
-    pub fn addExtra(self: *Parser, comptime T: type, data: T) !ExtraIndex {
+    pub inline fn addExtra(self: *Parser, comptime T: type, data: T) !ExtraIndex {
         const fields = std.meta.fields(T);
         try self.extra_data.ensureUnusedCapacity(self.gpa, fields.len);
         const result: ExtraIndex = @intCast(self.extra_data.items.len);
@@ -358,7 +395,7 @@ pub const Parser = struct {
     /// (a) current token is on a new line vs. previous token,
     /// (b) current is `}`, (c) current is `eof`.
     /// If ASI doesn't apply, emit a diagnostic.
-    pub fn expectSemicolon(self: *Parser) !void {
+    pub inline fn expectSemicolon(self: *Parser) !void {
         if (self.eat(.semicolon)) |_| return;
 
         // ASI: automatic semicolon insertion
@@ -374,9 +411,9 @@ pub const Parser = struct {
 
     /// Check if there is a newline between the previous token's end and the
     /// current token's start in the source text.
-    pub fn isOnNewLine(self: *const Parser) bool {
+    pub inline fn isOnNewLine(self: *const Parser) bool {
         if (self.tok_i == 0) return false;
-        return self.hasNewLineBetween(self.tok_i - 1, self.tok_i);
+        return self.newlines_ptr[self.tok_i];
     }
 
     // ────────────────────────────────────────────────────────────
@@ -513,7 +550,7 @@ pub const Parser = struct {
         const range = try self.listToSubRange(stmts);
 
         // Fill in root node data: lhs/rhs encode SubRange start/end.
-        self.nodes.items(.data)[0] = .{
+        self.node_data_ptr[0] = .{
             .lhs = NodeIndex.fromInt(range.start),
             .rhs = NodeIndex.fromInt(range.end),
         };
@@ -799,10 +836,10 @@ pub const Parser = struct {
         // Check for CoverInitializedName ({a = 0}) in expression context.
         // Valid only as destructuring target (LHS of =), not as expression.
         if (expr != .none) {
-            const expr_tag = self.nodes.items(.tag)[expr.toInt()];
+            const expr_tag = self.node_tags_ptr[expr.toInt()];
             if (expr_tag == .assign) {
                 // LHS is destructuring target (valid), check only RHS
-                const data = self.nodes.items(.data)[expr.toInt()];
+                const data = self.node_data_ptr[expr.toInt()];
                 self.checkCoverInitializedName(data.rhs);
             } else {
                 self.checkCoverInitializedName(expr);
@@ -1151,7 +1188,7 @@ pub const Parser = struct {
         // Standard for loop: for (init; cond; update) body
         // Check CoverInitializedName in init (not destructured)
         if (init != .none) {
-            const init_tag = self.nodes.items(.tag)[init.toInt()];
+            const init_tag = self.node_tags_ptr[init.toInt()];
             if (init_tag != .assign) self.checkCoverInitializedName(init);
         }
         _ = try self.expect(.semicolon);
@@ -1167,20 +1204,20 @@ pub const Parser = struct {
     fn checkDirectivePrologueAt(self: *Parser, start_pos: u32) void {
         var pos = start_pos;
         while (pos < self.tokens.len) {
-            const tag = self.tokens.items(.tag)[pos];
+            const tag = self.tags_ptr[pos];
             if (tag != .string_literal) break;
 
             // A string literal is only a directive if it's a complete expression statement.
             // `"use strict".foo`, `"use strict"[x]`, `"use strict"(x)`, `"use strict"`tpl``
             // are NOT directives — they're member/call/tagged-template expressions.
             if (pos + 1 < self.tokens.len) {
-                const next_tag = self.tokens.items(.tag)[pos + 1];
+                const next_tag = self.tags_ptr[pos + 1];
                 if (next_tag == .dot or next_tag == .l_bracket or next_tag == .l_paren or
                     next_tag == .template_head or next_tag == .template_no_sub)
                     break; // expression continuation → not a directive prologue
             }
 
-            const start = self.tokens.items(.start)[pos];
+            const start = self.tok_starts_ptr[pos];
             const text = self.getStringContent(start);
             if (std.mem.eql(u8, text, "use strict")) {
                 self.in_strict = true;
@@ -1188,7 +1225,7 @@ pub const Parser = struct {
             }
 
             pos += 1;
-            if (pos < self.tokens.len and self.tokens.items(.tag)[pos] == .semicolon) {
+            if (pos < self.tokens.len and self.tags_ptr[pos] == .semicolon) {
                 pos += 1;
             }
         }
@@ -1211,8 +1248,8 @@ pub const Parser = struct {
     /// Recursively checks array/object literals for assignment_pattern children.
     pub fn checkCoverInitializedName(self: *Parser, node: NodeIndex) void {
         if (node == .none) return;
-        const tag = self.nodes.items(.tag)[node.toInt()];
-        const data = self.nodes.items(.data)[node.toInt()];
+        const tag = self.node_tags_ptr[node.toInt()];
+        const data = self.node_data_ptr[node.toInt()];
         switch (tag) {
             .object_literal => {
                 const s = @intFromEnum(data.lhs);
@@ -1221,7 +1258,7 @@ pub const Parser = struct {
                 while (i < e) : (i += 1) {
                     const prop = NodeIndex.fromInt(self.extra_data.items[i]);
                     if (prop != .none) {
-                        const pt = self.nodes.items(.tag)[prop.toInt()];
+                        const pt = self.node_tags_ptr[prop.toInt()];
                         if (pt == .assignment_pattern) {
                             self.emitDiagnostic(self.nodeSpan(prop), "Invalid shorthand property initializer", .{}) catch {};
                         }
@@ -1264,14 +1301,14 @@ pub const Parser = struct {
     }
 
     fn nodeSpan(self: *const Parser, node: NodeIndex) @import("span.zig").Span {
-        const start = self.tokens.items(.start)[self.nodes.items(.main_token)[node.toInt()]];
+        const start = self.tok_starts_ptr[self.node_main_token_ptr[node.toInt()]];
         return .{ .start = start, .end = start };
     }
 
     /// Validate for-in/of binding: must be assignable (not this, literals, binary exprs).
     fn validateForInOfBinding(self: *Parser, init: NodeIndex, is_for_of: bool) Error!void {
         if (init == .none) return;
-        const init_tag = self.nodes.items(.tag)[init.toInt()];
+        const init_tag = self.node_tags_ptr[init.toInt()];
         // Parenthesized destructuring patterns are invalid in for-in/of:
         // `for(([a]) of x)` and `for(({a}) of x)` are syntax errors.
         if (init_tag == .grouping_expr) {
@@ -1294,12 +1331,12 @@ pub const Parser = struct {
                     var check_node = unwrapped.node;
                     var check_tag = unwrapped.tag;
                     while (check_tag == .member_expr or check_tag == .computed_member_expr) {
-                        check_node = self.nodes.items(.data)[check_node.toInt()].lhs;
+                        check_node = self.node_data_ptr[check_node.toInt()].lhs;
                         if (check_node == .none) break;
-                        check_tag = self.nodes.items(.tag)[check_node.toInt()];
+                        check_tag = self.node_tags_ptr[check_node.toInt()];
                     }
                     if (check_tag == .identifier) {
-                        const tok = self.nodes.items(.main_token)[check_node.toInt()];
+                        const tok = self.node_main_token_ptr[check_node.toInt()];
                         if (self.tokenTagAt(tok) == .kw_let) {
                             try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a for-of binding identifier", .{});
                             return error.ParseError;
@@ -1317,7 +1354,7 @@ pub const Parser = struct {
             },
             .var_decl, .let_decl, .const_decl => {
                 // Must have exactly one declarator
-                const d = self.nodes.items(.data)[init.toInt()];
+                const d = self.node_data_ptr[init.toInt()];
                 const count = @intFromEnum(d.rhs) - @intFromEnum(d.lhs);
                 if (count != 1) {
                     try self.emitDiagnostic(self.currentSpan(), "for-in/of must have a single binding", .{});
@@ -1346,7 +1383,7 @@ pub const Parser = struct {
 
     /// Validate that an array literal is a valid assignment target (destructuring assignment).
     fn validateAssignmentTargetArray(self: *Parser, node: NodeIndex) Error!void {
-        const data = self.nodes.items(.data)[node.toInt()];
+        const data = self.node_data_ptr[node.toInt()];
         const start_idx = @intFromEnum(data.lhs);
         const end_idx = @intFromEnum(data.rhs);
         var i = start_idx;
@@ -1359,14 +1396,14 @@ pub const Parser = struct {
 
     /// Validate that an object literal is a valid assignment target (destructuring assignment).
     fn validateAssignmentTargetObject(self: *Parser, node: NodeIndex) Error!void {
-        const data = self.nodes.items(.data)[node.toInt()];
+        const data = self.node_data_ptr[node.toInt()];
         const start_idx = @intFromEnum(data.lhs);
         const end_idx = @intFromEnum(data.rhs);
         var i = start_idx;
         while (i < end_idx) : (i += 1) {
             const prop = NodeIndex.fromInt(self.extra_data.items[i]);
             if (prop == .none) continue;
-            const prop_tag = self.nodes.items(.tag)[prop.toInt()];
+            const prop_tag = self.node_tags_ptr[prop.toInt()];
             // Getter/setter/method definitions are not valid destructuring targets
             if (prop_tag == .getter_def or prop_tag == .setter_def or prop_tag == .method_def or
                 prop_tag == .computed_method_def or prop_tag == .computed_getter_def or
@@ -1376,7 +1413,7 @@ pub const Parser = struct {
                 return error.ParseError;
             }
             if (prop_tag == .property) {
-                const prop_data = self.nodes.items(.data)[prop.toInt()];
+                const prop_data = self.node_data_ptr[prop.toInt()];
                 if (prop_data.rhs != .none) {
                     try self.validateAssignmentTarget(prop_data.rhs);
                 }
@@ -1387,7 +1424,7 @@ pub const Parser = struct {
     /// Validate that a node is a valid simple assignment target.
     fn validateAssignmentTarget(self: *Parser, node: NodeIndex) Error!void {
         if (node == .none) return;
-        const tag = self.nodes.items(.tag)[node.toInt()];
+        const tag = self.node_tags_ptr[node.toInt()];
         switch (tag) {
             .identifier, .member_expr, .computed_member_expr,
             .array_pattern, .object_pattern, .assignment_pattern,
@@ -1397,7 +1434,7 @@ pub const Parser = struct {
             .object_literal => try self.validateAssignmentTargetObject(node),
             .assign => {
                 // `a = default` in destructuring is valid
-                const data = self.nodes.items(.data)[node.toInt()];
+                const data = self.node_data_ptr[node.toInt()];
                 try self.validateAssignmentTarget(data.lhs);
             },
             else => {
@@ -1413,19 +1450,19 @@ pub const Parser = struct {
     /// Exception (Annex B): `for (var x = expr in y)` is allowed in non-strict mode.
     fn rejectForInOfInitializer(self: *Parser, init: NodeIndex, is_for_in: bool) Error!void {
         if (init == .none) return;
-        const init_tag = self.nodes.items(.tag)[init.toInt()];
+        const init_tag = self.node_tags_ptr[init.toInt()];
         // Variable declarations with initializers
         if (init_tag == .var_decl or init_tag == .let_decl or init_tag == .const_decl) {
             // Annex B: `for (var x = expr in y)` is allowed in non-strict for-in (not for-of)
             if (is_for_in and init_tag == .var_decl and !self.in_strict) return;
-            const init_data = self.nodes.items(.data)[init.toInt()];
+            const init_data = self.node_data_ptr[init.toInt()];
             const range = ast.SubRange{
                 .start = @intFromEnum(init_data.lhs),
                 .end = @intFromEnum(init_data.rhs),
             };
             const decl_indices = self.extra_data.items[range.start..range.end];
             for (decl_indices) |decl_idx| {
-                const decl_data = self.nodes.items(.data)[@intCast(decl_idx)];
+                const decl_data = self.node_data_ptr[@intCast(decl_idx)];
                 if (decl_data.rhs != .none) {
                     try self.emitDiagnostic(self.currentSpan(), "for-in/of loop variable cannot have an initializer", .{});
                     return;
@@ -1984,9 +2021,9 @@ pub const Parser = struct {
 
         // Attach type annotation to identifier binding (so parent_builder can reach it).
         if (type_annotation != .none) {
-            const binding_tag = self.nodes.items(.tag)[binding.toInt()];
+            const binding_tag = self.node_tags_ptr[binding.toInt()];
             if (binding_tag == .identifier) {
-                self.nodes.items(.data)[binding.toInt()].rhs = type_annotation;
+                self.node_data_ptr[binding.toInt()].rhs = type_annotation;
             }
         }
 
@@ -1999,7 +2036,7 @@ pub const Parser = struct {
         // Destructuring patterns require an initializer — UNLESS in for-in/of context
         // where the value comes from the iterable (e.g., `for (const [a, b] of iter)`)
         if (init == .none and self.peek() != .kw_in and self.peek() != .kw_of) {
-            const binding_tag = self.nodes.items(.tag)[binding.toInt()];
+            const binding_tag = self.node_tags_ptr[binding.toInt()];
             if (!self.language.isTs() and (binding_tag == .array_pattern or binding_tag == .object_pattern)) {
                 try self.emitDiagnostic(self.currentSpan(), "Missing initializer in destructuring declaration", .{});
             }
@@ -2093,7 +2130,7 @@ pub const Parser = struct {
         if (self.in_strict and !prev_strict) {
             // Function name must not be eval/arguments in strict mode
             if (name != .none) {
-                const fn_name_tok = self.nodes.items(.main_token)[name.toInt()];
+                const fn_name_tok = self.node_main_token_ptr[name.toInt()];
                 const fn_name_text = self.tokenText(fn_name_tok);
                 if (std.mem.eql(u8, fn_name_text, "eval") or std.mem.eql(u8, fn_name_text, "arguments")) {
                     try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a function name in strict mode", .{fn_name_text});
@@ -2258,7 +2295,7 @@ pub const Parser = struct {
             }
             const expr = try self.parseAssignmentExpression();
             // Reject binary/unary expressions — extends only allows LHS expressions
-            const expr_tag = self.nodes.items(.tag)[expr.toInt()];
+            const expr_tag = self.node_tags_ptr[expr.toInt()];
             switch (expr_tag) {
                 .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
                 .equal, .not_equal, .strict_equal, .strict_not_equal,
@@ -2282,11 +2319,11 @@ pub const Parser = struct {
             _ = self.advance(); // eat 'implements'
             const scratch_top = self.scratch.items.len;
             const first_impl = try typescript.parseType(self);
-            try self.scratch.append(self.gpa, self.nodes.items(.main_token)[@intFromEnum(first_impl)]);
+            try self.scratch.append(self.gpa, self.node_main_token_ptr[@intFromEnum(first_impl)]);
             while (self.peek() == .comma) {
                 _ = self.advance();
                 const impl = try typescript.parseType(self);
-                try self.scratch.append(self.gpa, self.nodes.items(.main_token)[@intFromEnum(impl)]);
+                try self.scratch.append(self.gpa, self.node_main_token_ptr[@intFromEnum(impl)]);
             }
             impls_range = try self.listToSubRange(self.scratch.items[scratch_top..]);
             self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -2783,8 +2820,8 @@ pub const Parser = struct {
             // Early constructor detection so super() is valid in default params
             const early_is_ctor = blk: {
                 if (is_static or is_getter or is_setter) break :blk false;
-                const key_tag_e = self.nodes.items(.tag)[key.toInt()];
-                const key_tok_e = self.nodes.items(.main_token)[key.toInt()];
+                const key_tag_e = self.node_tags_ptr[key.toInt()];
+                const key_tok_e = self.node_main_token_ptr[key.toInt()];
                 if (key_tag_e == .identifier) break :blk std.mem.eql(u8, self.tokenText(key_tok_e), "constructor");
                 if (key_tag_e == .string_literal) break :blk std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok_e)), "constructor");
                 break :blk false;
@@ -2808,7 +2845,7 @@ pub const Parser = struct {
             }
             // Setter param must not be a rest parameter
             if (is_setter and param_count == 1) {
-                const param_tag = self.nodes.items(.tag)[@intCast(self.extra_data.items[params.start])];
+                const param_tag = self.node_tags_ptr[@intCast(self.extra_data.items[params.start])];
                 if (param_tag == .rest_element) {
                     try self.emitDiagnostic(self.currentSpan(), "Setter parameter must not be a rest parameter", .{});
                     return error.ParseError;
@@ -2817,8 +2854,8 @@ pub const Parser = struct {
 
             // Check for static constructor (invalid in TypeScript only)
             if (self.language.isTs() and is_static and !is_getter and !is_setter) {
-                const key_tag = self.nodes.items(.tag)[key.toInt()];
-                const key_tok = self.nodes.items(.main_token)[key.toInt()];
+                const key_tag = self.node_tags_ptr[key.toInt()];
+                const key_tok = self.node_main_token_ptr[key.toInt()];
                 const is_ctor_name = if (key_tag == .identifier)
                     std.mem.eql(u8, self.tokenText(key_tok), "constructor")
                 else if (key_tag == .string_literal)
@@ -2833,8 +2870,8 @@ pub const Parser = struct {
             // Detect constructor: non-static method named "constructor" or "constructor"
             const is_ctor = blk: {
                 if (is_static or is_getter or is_setter) break :blk false;
-                const key_tag = self.nodes.items(.tag)[key.toInt()];
-                const key_tok = self.nodes.items(.main_token)[key.toInt()];
+                const key_tag = self.node_tags_ptr[key.toInt()];
+                const key_tok = self.node_main_token_ptr[key.toInt()];
                 if (key_tag == .identifier) {
                     break :blk std.mem.eql(u8, self.tokenText(key_tok), "constructor");
                 }
@@ -3023,7 +3060,7 @@ pub const Parser = struct {
             try self.scratch.append(self.gpa, @intFromEnum(first));
 
             // Check: rest parameter cannot have trailing comma
-            const first_tag = self.nodes.items(.tag)[@intFromEnum(first)];
+            const first_tag = self.node_tags_ptr[@intFromEnum(first)];
             if (first_tag == .rest_element and self.peek() == .comma) {
                 try self.emitDiagnostic(self.currentSpan(), "Rest parameter must not have a trailing comma", .{});
                 return error.ParseError;
@@ -3035,7 +3072,7 @@ pub const Parser = struct {
                 try self.scratch.append(self.gpa, @intFromEnum(param));
 
                 // Check: rest parameter cannot have trailing comma
-                const ptag = self.nodes.items(.tag)[@intFromEnum(param)];
+                const ptag = self.node_tags_ptr[@intFromEnum(param)];
                 if (ptag == .rest_element and self.peek() == .comma) {
                     try self.emitDiagnostic(self.currentSpan(), "Rest parameter must not have a trailing comma", .{});
                     return error.ParseError;
@@ -3050,7 +3087,7 @@ pub const Parser = struct {
         // Rest parameter must be last (skip in TS — semantic error)
         if (!self.language.isTs() and params.len > 1) {
             for (params[0 .. params.len - 1]) |param_raw| {
-                const ptag = self.nodes.items(.tag)[@intCast(param_raw)];
+                const ptag = self.node_tags_ptr[@intCast(param_raw)];
                 if (ptag == .rest_element) {
                     try self.emitDiagnostic(self.currentSpan(), "Rest parameter must be last formal parameter", .{});
                     return error.ParseError;
@@ -3145,14 +3182,14 @@ pub const Parser = struct {
         const param_type_annotation = try self.parseOptionalTypeAnnotation();
 
         // Attach type annotation and optional flag to identifier binding.
-        const binding_tag = self.nodes.items(.tag)[binding.toInt()];
+        const binding_tag = self.node_tags_ptr[binding.toInt()];
         if (binding_tag == .identifier) {
             if (param_type_annotation != .none) {
-                self.nodes.items(.data)[binding.toInt()].rhs = param_type_annotation;
+                self.node_data_ptr[binding.toInt()].rhs = param_type_annotation;
             }
             // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
             if (is_optional_ts) {
-                self.nodes.items(.data)[binding.toInt()].lhs = .root;
+                self.node_data_ptr[binding.toInt()].lhs = .root;
             }
         }
 
@@ -3826,7 +3863,7 @@ pub const Parser = struct {
                     tag != .kw_from and tag != .kw_of and tag != .kw_let and tag != .kw_async and
                     tag != .kw_get and tag != .kw_set and tag != .kw_static and tag != .kw_default)
                 {
-                    const span = @import("span.zig").Span{ .start = self.tokens.items(.start)[local_token], .end = self.tokens.items(.start)[local_token] };
+                    const span = @import("span.zig").Span{ .start = self.tok_starts_ptr[local_token], .end = self.tok_starts_ptr[local_token] };
                     try self.emitDiagnostic(span, "reserved word cannot be used as local name in export", .{});
                     return error.ParseError;
                 }
@@ -3926,8 +3963,8 @@ pub const Parser = struct {
             const binding = try self.parseBindingPattern();
             const using_type_annotation = try self.parseOptionalTypeAnnotation();
             if (using_type_annotation != .none) {
-                if (self.nodes.items(.tag)[binding.toInt()] == .identifier) {
-                    self.nodes.items(.data)[binding.toInt()].rhs = using_type_annotation;
+                if (self.node_tags_ptr[binding.toInt()] == .identifier) {
+                    self.node_data_ptr[binding.toInt()].rhs = using_type_annotation;
                 }
             }
 
@@ -3965,8 +4002,8 @@ pub const Parser = struct {
             const binding = try self.parseBindingPattern();
             const using_list_type_annotation = try self.parseOptionalTypeAnnotation();
             if (using_list_type_annotation != .none) {
-                if (self.nodes.items(.tag)[binding.toInt()] == .identifier) {
-                    self.nodes.items(.data)[binding.toInt()].rhs = using_list_type_annotation;
+                if (self.node_tags_ptr[binding.toInt()] == .identifier) {
+                    self.node_data_ptr[binding.toInt()].rhs = using_list_type_annotation;
                 }
             }
             const init: NodeIndex = if (self.eat(.equal) != null) try self.parseAssignmentExpression() else .none;
@@ -4374,7 +4411,7 @@ pub const Parser = struct {
 
     /// Check strict-mode binding restrictions: no eval/arguments as binding names,
     /// and no future reserved words as binding names.
-    pub fn checkStrictBinding(self: *Parser, tok: TokenIndex) !void {
+    pub inline fn checkStrictBinding(self: *Parser, tok: TokenIndex) !void {
         if (!self.in_strict) return;
         // Future reserved words (skip in TS — public/private/protected are valid identifiers)
         if (!self.language.isTs() and self.isStrictReservedWord(tok)) {
@@ -4420,7 +4457,7 @@ pub const Parser = struct {
     /// adjacent tokens, O(k) for non-adjacent (k = tokens between a and b).
     pub fn hasNewLineBetween(self: *const Parser, tok_a: u32, tok_b: u32) bool {
         if (tok_a >= self.tokens.len or tok_b >= self.tokens.len) return false;
-        const nl = self.tokens.items(.has_newline_before);
+        const nl = self.newlines_ptr;
         // Common case: adjacent tokens — single array read.
         if (tok_b == tok_a + 1) return nl[tok_b];
         // General case: any token in (tok_a, tok_b] has a preceding newline.
@@ -4457,7 +4494,7 @@ pub const Parser = struct {
         while (i < params.end) : (i += 1) {
             const param = NodeIndex.fromInt(self.extra_data.items[i]);
             if (param == .none) continue;
-            const param_tag = self.nodes.items(.tag)[param.toInt()];
+            const param_tag = self.node_tags_ptr[param.toInt()];
             switch (param_tag) {
                 .identifier => {},
                 else => return true, // destructuring, default, rest, etc.
@@ -4472,9 +4509,9 @@ pub const Parser = struct {
         if (self.peek() == .l_brace) {
             var pos = self.tok_i + 1;
             while (pos < self.tokens.len) {
-                const tag = self.tokens.items(.tag)[pos];
+                const tag = self.tags_ptr[pos];
                 if (tag != .string_literal) break;
-                const start = self.tokens.items(.start)[pos];
+                const start = self.tok_starts_ptr[pos];
                 // Check if it's "use strict"
                 if (start + 12 <= self.source.len and
                     self.source[start] == '"' and
@@ -4498,7 +4535,7 @@ pub const Parser = struct {
                     break;
                 }
                 pos += 1;
-                if (pos < self.tokens.len and self.tokens.items(.tag)[pos] == .semicolon) pos += 1;
+                if (pos < self.tokens.len and self.tags_ptr[pos] == .semicolon) pos += 1;
             }
         }
     }
@@ -4509,9 +4546,9 @@ pub const Parser = struct {
         while (i < params.end) : (i += 1) {
             const param = NodeIndex.fromInt(self.extra_data.items[i]);
             if (param == .none) continue;
-            const param_tag = self.nodes.items(.tag)[param.toInt()];
+            const param_tag = self.node_tags_ptr[param.toInt()];
             if (param_tag == .identifier) {
-                const ptok = self.nodes.items(.main_token)[param.toInt()];
+                const ptok = self.node_main_token_ptr[param.toInt()];
                 const ptext = self.tokenText(ptok);
                 if (std.mem.eql(u8, ptext, "eval") or std.mem.eql(u8, ptext, "arguments")) {
                     try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a parameter name in strict mode", .{ptext});
@@ -4551,13 +4588,16 @@ pub const Parser = struct {
     }
 
     /// Push a node index into the scratch buffer.
-    pub fn scratchPush(self: *Parser, node: anytype) !void {
+    pub inline fn scratchPush(self: *Parser, node: anytype) !void {
         const val: u32 = switch (@TypeOf(node)) {
             NodeIndex => @intFromEnum(node),
             u32 => node,
             else => @compileError("scratchPush: expected NodeIndex or u32"),
         };
-        try self.scratch.append(self.gpa, val);
+        if (self.scratch.items.len >= self.scratch.capacity) {
+            try self.scratch.ensureTotalCapacity(self.gpa, self.scratch.capacity * 2 + 16);
+        }
+        self.scratch.appendAssumeCapacity(val);
     }
 
     /// Return a slice of the scratch buffer from `top` to the current end.
@@ -4576,18 +4616,18 @@ pub const Parser = struct {
     }
 
     /// Get the AST node tag at a given raw u32 index.
-    pub fn nodeTag(self: *const Parser, idx: u32) Node.Tag {
-        return self.nodes.items(.tag)[idx];
+    pub inline fn nodeTag(self: *const Parser, idx: u32) Node.Tag {
+        return self.node_tags_ptr[idx];
     }
 
     /// Set the AST node tag at a given raw u32 index.
-    pub fn setNodeTag(self: *Parser, idx: u32, tag: Node.Tag) void {
-        self.nodes.items(.tag)[idx] = tag;
+    pub inline fn setNodeTag(self: *Parser, idx: u32, tag: Node.Tag) void {
+        self.node_tags_ptr[idx] = tag;
     }
 
     /// Get the AST node data at a given raw u32 index.
-    pub fn nodeData(self: *const Parser, idx: u32) Node.Data {
-        return self.nodes.items(.data)[idx];
+    pub inline fn nodeData(self: *const Parser, idx: u32) Node.Data {
+        return self.node_data_ptr[idx];
     }
 
     /// Get a single u32 from extra_data at the given index.

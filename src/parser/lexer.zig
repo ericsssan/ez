@@ -180,6 +180,12 @@ pub const Lexer = struct {
         // Over-estimating slightly avoids reallocation without wasting much memory.
         const estimate = @max(source.len / 5, 64);
         try self.tokens.ensureTotalCapacity(allocator, @intCast(estimate));
+        // Comments: pre-size to ~1 comment per 200 bytes (typical code has
+        // moderate JSDoc density).  Avoids 4-5 grows on typical files.
+        const comment_estimate: u32 = @intCast(@max(source.len / 200, 16));
+        try self.comment_starts.ensureTotalCapacity(allocator, comment_estimate);
+        try self.comment_ends.ensureTotalCapacity(allocator, comment_estimate);
+        try self.comment_kinds.ensureTotalCapacity(allocator, comment_estimate);
 
         while (true) {
             const tok = self.next();

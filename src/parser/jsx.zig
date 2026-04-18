@@ -57,7 +57,7 @@ pub fn parseJsxElement(p: *Parser) Error!NodeIndex {
     });
     return p.addNode(.{
         .tag = .jsx_element,
-        .main_token = p.nodes.items(.main_token)[opening_idx],
+        .main_token = p.node_main_token_ptr[opening_idx],
         .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
     });
 }
@@ -200,8 +200,8 @@ fn parseJsxHyphenatedIdent(p: *Parser) Error!NodeIndex {
 
     // Check for hyphen continuation: `-` followed immediately by an identifier.
     // Use token start positions to detect adjacent tokens (no whitespace gap).
-    const starts = p.tokens.items(.start);
-    const lens = p.tokens.items(.len);
+    const starts = p.tok_starts_ptr;
+    const lens = p.tok_lens_ptr;
     var last_tok: u32 = first_tok;
 
     while (p.peek() == .minus) {
@@ -211,7 +211,7 @@ fn parseJsxHyphenatedIdent(p: *Parser) Error!NodeIndex {
         // The next token after `-` must be an identifier immediately adjacent.
         const next_tok_idx = minus_tok + 1;
         if (next_tok_idx >= p.tokens.len) break;
-        const next_tag = p.tokens.items(.tag)[next_tok_idx];
+        const next_tag = p.tags_ptr[next_tok_idx];
         if ((next_tag != .identifier and !next_tag.isKeyword()) or
             starts[next_tok_idx] != starts[minus_tok] + lens[minus_tok]) break;
         // Consume `-` and the following identifier.
@@ -277,8 +277,8 @@ fn parseJsxAttributeName(p: *Parser) Error!NodeIndex {
 /// Returns a SubRange of child node indices.
 fn parseJsxChildren(p: *Parser) Error!SubRange {
     const scratch_top = p.scratchLen();
-    const starts = p.tokens.items(.start);
-    const lens = p.tokens.items(.len);
+    const starts = p.tok_starts_ptr;
+    const lens = p.tok_lens_ptr;
     var last_child_was_text = false;
 
     while (!p.isAtEnd()) {

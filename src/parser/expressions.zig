@@ -37,12 +37,12 @@ pub const UnwrapResult = struct { node: NodeIndex, tag: Node.Tag };
 
 pub fn unwrapGrouping(p: *const Parser, node: NodeIndex) UnwrapResult {
     var current = node;
-    var tag = p.nodes.items(.tag)[current.toInt()];
+    var tag = p.node_tags_ptr[current.toInt()];
     while (tag == .grouping_expr) {
-        const inner = p.nodes.items(.data)[current.toInt()].lhs;
+        const inner = p.node_data_ptr[current.toInt()].lhs;
         if (inner == .none) break;
         current = inner;
-        tag = p.nodes.items(.tag)[current.toInt()];
+        tag = p.node_tags_ptr[current.toInt()];
     }
     return .{ .node = current, .tag = tag };
 }
@@ -158,7 +158,7 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             // Arrow functions are not valid call/member targets without parens
             // In TS mode, skip this check (TypeScript handles it at type-check level)
             if (!p.language.isTs() and tag == .l_paren and left != .none) {
-                const left_tag = p.nodes.items(.tag)[left.toInt()];
+                const left_tag = p.node_tags_ptr[left.toInt()];
                 if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
                     try p.emitError("Arrow function is not directly callable (wrap in parens)");
                     break;
@@ -184,9 +184,9 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         // yield [no LineTerminator here] — if yield returned with no operand
         // and next operator is on a new line, don't consume it
         if (left != .none and p.isOnNewLine()) {
-            const left_tag = p.nodes.items(.tag)[left.toInt()];
+            const left_tag = p.node_tags_ptr[left.toInt()];
             if (left_tag == .yield_expr) {
-                const d = p.nodes.items(.data)[left.toInt()];
+                const d = p.node_data_ptr[left.toInt()];
                 if (d.lhs == .none) break; // yield with no operand — ASI boundary
             }
         }
@@ -221,9 +221,9 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
             const del_node = try parseUnaryOp(p, .delete_expr);
             // In strict mode, `delete identifier` is a syntax error
             if (p.in_strict and del_node != .none) {
-                const del_data = p.nodes.items(.data)[del_node.toInt()];
+                const del_data = p.node_data_ptr[del_node.toInt()];
                 if (del_data.lhs != .none) {
-                    const operand_tag = p.nodes.items(.tag)[del_data.lhs.toInt()];
+                    const operand_tag = p.node_tags_ptr[del_data.lhs.toInt()];
                     if (operand_tag == .identifier) {
                         try p.emitError("'delete' of unqualified identifier in strict mode");
                     }
@@ -275,14 +275,14 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
         }
         // Strict mode: cannot update eval/arguments
         if (op_tag == .identifier and p.in_strict) {
-            const op_tok = p.nodes.items(.main_token)[operand.toInt()];
+            const op_tok = p.node_main_token_ptr[operand.toInt()];
             try p.checkStrictAssignTarget(op_tok);
         }
     }
 
     // Arrow functions are AssignmentExpressions, not valid as unary operands
     if (operand != .none) {
-        const op_tag = p.nodes.items(.tag)[operand.toInt()];
+        const op_tag = p.node_tags_ptr[operand.toInt()];
         if (op_tag == .arrow_fn or op_tag == .async_arrow_fn) {
             try p.emitError("Arrow function is not allowed as operand of unary expression");
         }
@@ -313,7 +313,7 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
     }
     // Strict mode: cannot update eval/arguments
     if (op_tag == .identifier and p.in_strict) {
-        const op_tok = p.nodes.items(.main_token)[operand.toInt()];
+        const op_tok = p.node_main_token_ptr[operand.toInt()];
         try p.checkStrictAssignTarget(op_tok);
     }
     const tag = p.peek();
@@ -400,21 +400,21 @@ fn isYieldTerminator(tag: TokenTag) bool {
 
 /// Check if a token index appears as an identifier param earlier in the list.
 fn hasDuplicateParam(p: *Parser, params: []const u32, current_idx: usize, tok: TokenIndex) bool {
-    const name = p.source[p.tokens.items(.start)[tok]..];
+    const name = p.source[p.tok_starts_ptr[tok]..];
     for (params[0..current_idx]) |other_raw| {
         const other = NodeIndex.fromInt(other_raw);
         var other_tok: ?TokenIndex = null;
-        const other_tag = p.nodes.items(.tag)[other.toInt()];
+        const other_tag = p.node_tags_ptr[other.toInt()];
         if (other_tag == .identifier) {
-            other_tok = p.nodes.items(.main_token)[other.toInt()];
+            other_tok = p.node_main_token_ptr[other.toInt()];
         } else if (other_tag == .rest_element or other_tag == .spread_element) {
-            const d = p.nodes.items(.data)[other.toInt()];
-            if (d.lhs != .none and p.nodes.items(.tag)[d.lhs.toInt()] == .identifier) {
-                other_tok = p.nodes.items(.main_token)[d.lhs.toInt()];
+            const d = p.node_data_ptr[other.toInt()];
+            if (d.lhs != .none and p.node_tags_ptr[d.lhs.toInt()] == .identifier) {
+                other_tok = p.node_main_token_ptr[d.lhs.toInt()];
             }
         }
         if (other_tok) |ot| {
-            const other_name = p.source[p.tokens.items(.start)[ot]..];
+            const other_name = p.source[p.tok_starts_ptr[ot]..];
             // Compare identifier text (up to non-ident char)
             var len: usize = 0;
             while (len < name.len and len < other_name.len and isIdentChar(name[len]) and isIdentChar(other_name[len])) : (len += 1) {}
@@ -445,7 +445,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
     const effective_node = unwrapped.node;
 
     if (tag == .array_pattern) {
-        const data = p.nodes.items(.data)[effective_node.toInt()];
+        const data = p.node_data_ptr[effective_node.toInt()];
         const start = data.lhs.toInt();
         const end = data.rhs.toInt();
         if (end > start) {
@@ -453,7 +453,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
             while (i < end) : (i += 1) {
                 const child = NodeIndex.fromInt(p.extra_data.items[i]);
                 if (child == .none) continue;
-                const child_tag = p.nodes.items(.tag)[child.toInt()];
+                const child_tag = p.node_tags_ptr[child.toInt()];
                 // Rest must be last (also reject trailing comma after rest = elision)
                 if (child_tag == .rest_element) {
                     // Check: any non-none elements after this?
@@ -469,9 +469,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         return error.ParseError;
                     }
                     // Rest target cannot have a default value or be a literal
-                    const rest_data = p.nodes.items(.data)[child.toInt()];
+                    const rest_data = p.node_data_ptr[child.toInt()];
                     if (rest_data.lhs != .none) {
-                        const rest_target_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
+                        const rest_target_tag = p.node_tags_ptr[rest_data.lhs.toInt()];
                         if (rest_target_tag == .assign or rest_target_tag == .assignment_pattern) {
                             try p.emitError("Invalid rest element target in destructuring");
                             return error.ParseError;
@@ -522,14 +522,14 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
     }
 
     if (tag == .object_pattern) {
-        const data = p.nodes.items(.data)[effective_node.toInt()];
+        const data = p.node_data_ptr[effective_node.toInt()];
         const start = data.lhs.toInt();
         const end = data.rhs.toInt();
         var i = start;
         while (i < end) : (i += 1) {
             const prop = NodeIndex.fromInt(p.extra_data.items[i]);
             if (prop == .none) continue;
-            const prop_tag = p.nodes.items(.tag)[prop.toInt()];
+            const prop_tag = p.node_tags_ptr[prop.toInt()];
             // Getter/setter/method definitions are not valid in destructuring patterns
             if (prop_tag == .getter_def or prop_tag == .setter_def or prop_tag == .method_def or
                 prop_tag == .computed_method_def or prop_tag == .computed_getter_def or
@@ -547,9 +547,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
             }
             // Check property values for invalid targets
             if (prop_tag == .property) {
-                const prop_data = p.nodes.items(.data)[prop.toInt()];
+                const prop_data = p.node_data_ptr[prop.toInt()];
                 if (prop_data.rhs != .none) {
-                    const val_tag = p.nodes.items(.tag)[prop_data.rhs.toInt()];
+                    const val_tag = p.node_tags_ptr[prop_data.rhs.toInt()];
                     // Parenthesized simple targets valid: ({a:(b)} = 1)
                     if (val_tag == .grouping_expr) {
                         const inner_val_tag = unwrapGroupingTag(p, prop_data.rhs);
@@ -578,7 +578,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     }
                     // Strict mode: eval/arguments cannot be destructuring targets
                     if (val_tag == .identifier and p.in_strict) {
-                        const val_tok = p.nodes.items(.main_token)[prop_data.rhs.toInt()];
+                        const val_tok = p.node_main_token_ptr[prop_data.rhs.toInt()];
                         try p.checkStrictAssignTarget(val_tok);
                     }
                     // Recursively validate nested patterns
@@ -592,9 +592,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
             }
             // Shorthand property with non-identifier key (e.g. {0}, {'a'})
             if (prop_tag == .shorthand_property) {
-                const sp_data = p.nodes.items(.data)[prop.toInt()];
+                const sp_data = p.node_data_ptr[prop.toInt()];
                 if (sp_data.lhs != .none) {
-                    const sp_key_tag = p.nodes.items(.tag)[sp_data.lhs.toInt()];
+                    const sp_key_tag = p.node_tags_ptr[sp_data.lhs.toInt()];
                     if (sp_key_tag == .number_literal or sp_key_tag == .string_literal) {
                         try p.emitError("Invalid shorthand property in destructuring");
                         return error.ParseError;
@@ -610,16 +610,16 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
 /// Recursively validate arrow parameter — reject member expressions, literals, etc. deep in patterns.
 fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
     if (node == .none) return;
-    const tag = p.nodes.items(.tag)[node.toInt()];
+    const tag = p.node_tags_ptr[node.toInt()];
     switch (tag) {
         .identifier, .assignment_pattern, .assign => {},
         .rest_element, .spread_element => {
             // Validate rest target recursively
-            const d = p.nodes.items(.data)[node.toInt()];
+            const d = p.node_data_ptr[node.toInt()];
             if (d.lhs != .none) try validateArrowParam(p, d.lhs);
         },
         .array_literal, .array_pattern => {
-            const d = p.nodes.items(.data)[node.toInt()];
+            const d = p.node_data_ptr[node.toInt()];
             const s = d.lhs.toInt();
             const e = d.rhs.toInt();
             var i = s;
@@ -628,22 +628,22 @@ fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
             }
         },
         .object_literal, .object_pattern => {
-            const d = p.nodes.items(.data)[node.toInt()];
+            const d = p.node_data_ptr[node.toInt()];
             const s = d.lhs.toInt();
             const e = d.rhs.toInt();
             var i = s;
             while (i < e) : (i += 1) {
                 const prop = NodeIndex.fromInt(p.extra_data.items[i]);
-                const prop_tag = p.nodes.items(.tag)[prop.toInt()];
+                const prop_tag = p.node_tags_ptr[prop.toInt()];
                 if (prop_tag == .property or prop_tag == .computed_property) {
                     // Validate the value (rhs) of the property
-                    const prop_data = p.nodes.items(.data)[prop.toInt()];
+                    const prop_data = p.node_data_ptr[prop.toInt()];
                     try validateArrowParam(p, prop_data.rhs);
                 } else if (prop_tag == .shorthand_property) {
                     // Shorthand property key must be an identifier, not a literal
-                    const prop_data = p.nodes.items(.data)[prop.toInt()];
+                    const prop_data = p.node_data_ptr[prop.toInt()];
                     if (prop_data.lhs != .none) {
-                        const key_tag = p.nodes.items(.tag)[prop_data.lhs.toInt()];
+                        const key_tag = p.node_tags_ptr[prop_data.lhs.toInt()];
                         if (key_tag == .number_literal or key_tag == .string_literal or
                             key_tag == .boolean_literal)
                         {
@@ -665,7 +665,7 @@ fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
 
 /// Emit diagnostic for octal number in strict mode (non-fatal — parsing continues).
 fn checkStrictOctalNumber(p: *Parser) !void {
-    const start = p.tokens.items(.start)[p.tok_i];
+    const start = p.tok_starts_ptr[p.tok_i];
     if (start >= p.source.len) return;
     if (p.source[start] == '0' and start + 1 < p.source.len) {
         const next = p.source[start + 1];
@@ -679,7 +679,7 @@ fn checkStrictOctalNumber(p: *Parser) !void {
 
 /// Emit diagnostic for octal escape in string in strict mode (non-fatal).
 fn checkStrictOctalString(p: *Parser) !void {
-    const start = p.tokens.items(.start)[p.tok_i];
+    const start = p.tok_starts_ptr[p.tok_i];
     if (start >= p.source.len) return;
     const quote = p.source[start];
     var i = start + 1;
@@ -1127,9 +1127,9 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         for (params) |node_raw| {
             const param_node = NodeIndex.fromInt(node_raw);
             if (param_node == .none) continue;
-            const pt = p.nodes.items(.tag)[param_node.toInt()];
+            const pt = p.node_tags_ptr[param_node.toInt()];
             if (pt == .identifier) {
-                const ptok = p.nodes.items(.main_token)[param_node.toInt()];
+                const ptok = p.node_main_token_ptr[param_node.toInt()];
                 // In async arrows, `await` cannot be a parameter name
                 const ptext = p.tokenText(ptok);
                 if (std.mem.eql(u8, ptext, "await")) {
@@ -1346,11 +1346,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         // Validate arrow parameters
         for (params, 0..) |node_raw, idx| {
             const param_node = NodeIndex.fromInt(node_raw);
-            const param_tag = p.nodes.items(.tag)[param_node.toInt()];
+            const param_tag = p.node_tags_ptr[param_node.toInt()];
             switch (param_tag) {
                 .identifier => {
                     if (!p.language.isTs()) {
-                        const tok = p.nodes.items(.main_token)[param_node.toInt()];
+                        const tok = p.node_main_token_ptr[param_node.toInt()];
                         if (hasDuplicateParam(p, params, idx, tok)) {
                             try p.emitError("Duplicate parameter name in arrow function");
                             return p.makeErrorNode();
@@ -1379,11 +1379,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                     }
                     // Validate rest target contents (reject literals in patterns)
                     if (!p.language.isTs()) {
-                        const rest_data = p.nodes.items(.data)[param_node.toInt()];
+                        const rest_data = p.node_data_ptr[param_node.toInt()];
                         if (rest_data.lhs != .none) {
-                            const rest_tag = p.nodes.items(.tag)[rest_data.lhs.toInt()];
+                            const rest_tag = p.node_tags_ptr[rest_data.lhs.toInt()];
                             if (rest_tag == .identifier) {
-                                const rest_tok = p.nodes.items(.main_token)[rest_data.lhs.toInt()];
+                                const rest_tok = p.node_main_token_ptr[rest_data.lhs.toInt()];
                                 if (hasDuplicateParam(p, params, idx, rest_tok)) {
                                     try p.emitError("Duplicate parameter name in arrow function");
                                     return p.makeErrorNode();
@@ -1399,7 +1399,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                 .yield_expr => {
                     // Bare `yield` (no operand) can be a parameter name in sloppy mode:
                     // arrows are never generators, so `yield` is an identifier inside them.
-                    const d = p.nodes.items(.data)[param_node.toInt()];
+                    const d = p.node_data_ptr[param_node.toInt()];
                     if (!p.in_strict and d.lhs == .none) {
                         p.setNodeTag(param_node.toInt(), .identifier);
                     } else {
@@ -1427,9 +1427,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             for (params) |node_raw| {
                 const param_node = NodeIndex.fromInt(node_raw);
                 if (param_node == .none) continue;
-                const pt = p.nodes.items(.tag)[param_node.toInt()];
+                const pt = p.node_tags_ptr[param_node.toInt()];
                 if (pt == .identifier) {
-                    const ptok = p.nodes.items(.main_token)[param_node.toInt()];
+                    const ptok = p.node_main_token_ptr[param_node.toInt()];
                     try p.checkStrictBinding(ptok);
                 }
             }
@@ -1477,13 +1477,13 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     const elems = p.scratchSlice(scratch_top);
     for (elems) |elem_raw| {
         const elem_node = NodeIndex.fromInt(elem_raw);
-        if (elem_node != .none and p.nodes.items(.tag)[elem_node.toInt()] == .spread_element) {
+        if (elem_node != .none and p.node_tags_ptr[elem_node.toInt()] == .spread_element) {
             try p.emitError("Unexpected spread in parenthesized expression (not an arrow function)");
         }
     }
 
     if (elems.len == 1) {
-        const first_tag = p.nodes.items(.tag)[first.toInt()];
+        const first_tag = p.node_tags_ptr[first.toInt()];
 
         // Parenthesized super is invalid — super must be followed directly by `.`, `[`, or `(`
         if (first_tag == .super_expr) {
@@ -1492,14 +1492,14 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
 
         // Check for CoverInitializedName: ({a = 0}) without => is invalid
         if (first_tag == .object_literal) {
-            const d = p.nodes.items(.data)[first.toInt()];
+            const d = p.node_data_ptr[first.toInt()];
             const s = d.lhs.toInt();
             const e = d.rhs.toInt();
             var i = s;
             while (i < e) : (i += 1) {
                 const prop = NodeIndex.fromInt(p.extra_data.items[i]);
                 if (prop != .none) {
-                    const pt = p.nodes.items(.tag)[prop.toInt()];
+                    const pt = p.node_tags_ptr[prop.toInt()];
                     if (pt == .assignment_pattern) {
                         try p.emitError("Invalid shorthand property initializer (not a destructuring pattern)");
                     }
@@ -1639,7 +1639,7 @@ fn parseArrayLiteral(p: *Parser) Error!NodeIndex {
     // by pushing a .none sentinel after the spread, so validatePattern can detect it.
     if (elements.len > 0) {
         const last_elem = NodeIndex.fromInt(elements[elements.len - 1]);
-        if (last_elem != .none and p.nodes.items(.tag)[last_elem.toInt()] == .spread_element) {
+        if (last_elem != .none and p.node_tags_ptr[last_elem.toInt()] == .spread_element) {
             // Check if there was a trailing comma (consumed at line above)
             if (p.tok_i > 0 and p.tokenTagAt(p.tok_i - 1) == .r_bracket and
                 p.tok_i > 1 and p.tokenTagAt(p.tok_i - 2) == .comma)
@@ -1795,7 +1795,7 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
         }
 
         const param = try parseBindingElement(p);
-        const param_tag = p.nodes.items(.tag)[param.toInt()];
+        const param_tag = p.node_tags_ptr[param.toInt()];
         // Setter param must not be rest
         if (param_tag == .rest_element) {
             try p.emitError("Setter parameter must not be a rest parameter");
@@ -1803,7 +1803,7 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
         }
         // In strict mode, eval/arguments cannot be setter param names
         if (p.in_strict and param_tag == .identifier) {
-            const param_name = p.tokenText(p.nodes.items(.main_token)[param.toInt()]);
+            const param_name = p.tokenText(p.node_main_token_ptr[param.toInt()]);
             if (std.mem.eql(u8, param_name, "eval") or std.mem.eql(u8, param_name, "arguments")) {
                 try p.emitError("'eval' or 'arguments' can't be used as parameter name in strict mode");
                 return error.ParseError;
@@ -2364,7 +2364,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
             break :blk .none;
         }
         const expr = try parseExpressionPrec(p, .call);
-        const et = p.nodes.items(.tag)[expr.toInt()];
+        const et = p.node_tags_ptr[expr.toInt()];
         switch (et) {
             .logical_not, .bitwise_not, .unary_plus, .unary_minus,
             .typeof_expr, .void_expr, .delete_expr,
@@ -2697,12 +2697,12 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
 
     // `new import(...)` is invalid — import() is a CallExpression, not a valid new target
     if (callee != .none) {
-        const callee_tag = p.nodes.items(.tag)[callee.toInt()];
+        const callee_tag = p.node_tags_ptr[callee.toInt()];
         if (callee_tag == .import_expr) {
             try p.emitError("Cannot use 'new' with 'import()'");
         }
     }
-    const is_bare_super = callee != .none and p.nodes.items(.tag)[callee.toInt()] == .super_expr;
+    const is_bare_super = callee != .none and p.node_tags_ptr[callee.toInt()] == .super_expr;
 
     // Consume member accesses that bind tighter than new (`.prop`, `[expr]`).
     while (true) {
@@ -2760,7 +2760,7 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
     }
 
     // `new super()` is invalid but `new super.prop()` is valid
-    if (is_bare_super and p.nodes.items(.tag)[callee.toInt()] == .super_expr) {
+    if (is_bare_super and p.node_tags_ptr[callee.toInt()] == .super_expr) {
         try p.emitError("'super' is not valid as a new expression target");
     }
 
@@ -3157,14 +3157,14 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
     // In TS mode, this is a type error, not syntax error
     if (!p.language.isTs()) {
         if (op_tag == .question_question and left != .none) {
-            const left_tag = p.nodes.items(.tag)[left.toInt()];
+            const left_tag = p.node_tags_ptr[left.toInt()];
             if (left_tag == .logical_or or left_tag == .logical_and) {
                 try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
                 return error.ParseError;
             }
         }
         if ((op_tag == .pipe_pipe or op_tag == .ampersand_ampersand) and left != .none) {
-            const left_tag = p.nodes.items(.tag)[left.toInt()];
+            const left_tag = p.node_tags_ptr[left.toInt()];
             if (left_tag == .nullish_coalesce) {
                 try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
                 return error.ParseError;
@@ -3175,7 +3175,7 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
     // Exponentiation: unary operators cannot be the base of **
     // (e.g., `delete x ** 2` is invalid — must use `(delete x) ** 2`)
     if (op_tag == .asterisk_asterisk and left != .none) {
-        const left_tag = p.nodes.items(.tag)[left.toInt()];
+        const left_tag = p.node_tags_ptr[left.toInt()];
         switch (left_tag) {
             .delete_expr, .typeof_expr, .void_expr,
             .logical_not, .bitwise_not, .unary_plus, .unary_minus,
@@ -3236,7 +3236,7 @@ fn tokenToBinaryTag(tag: TokenTag) Node.Tag {
 // ── Assignment expression ────────────────────────────────────────
 
 fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
-    const left_tag = p.nodes.items(.tag)[left.toInt()];
+    const left_tag = p.node_tags_ptr[left.toInt()];
     const op_tag = p.tokenTag(p.tok_i);
 
     // Array/object destructuring only valid with plain `=`
@@ -3284,7 +3284,7 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
 
     // Strict mode: cannot assign to eval or arguments
     if (left_tag == .identifier and p.in_strict) {
-        const left_tok = p.nodes.items(.main_token)[left.toInt()];
+        const left_tok = p.node_main_token_ptr[left.toInt()];
         try p.checkStrictAssignTarget(left_tok);
     }
 
@@ -3385,7 +3385,7 @@ fn parseSequenceExpression(p: *Parser, first: NodeIndex) Error!NodeIndex {
 fn parseCallExpression(p: *Parser, callee: NodeIndex) Error!NodeIndex {
     // super() is only valid in class constructors (skip check in TS mode — type error not syntax error)
     if (callee != .none and !p.language.isTs()) {
-        const callee_tag = p.nodes.items(.tag)[callee.toInt()];
+        const callee_tag = p.node_tags_ptr[callee.toInt()];
         if (callee_tag == .super_expr) {
             if (p.in_class_field) {
                 try p.emitError("'super()' is not allowed in class field initializers");
@@ -3561,7 +3561,7 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
 fn parseTaggedTemplate(p: *Parser, tag_expr: NodeIndex) Error!NodeIndex {
     // Tagged templates require MemberExpression or CallExpression
     if (tag_expr != .none) {
-        const te = p.nodes.items(.tag)[tag_expr.toInt()];
+        const te = p.node_tags_ptr[tag_expr.toInt()];
         if (te == .postfix_inc or te == .postfix_dec or te == .prefix_inc or te == .prefix_dec) {
             try p.emitError("Tagged template cannot follow an update expression");
         }
@@ -3595,7 +3595,7 @@ fn parseFormalParameters(p: *Parser) Error!SubRange {
         try p.scratchPush(param);
 
         // Check: rest parameter cannot have trailing comma
-        const ptag = p.nodes.items(.tag)[param.toInt()];
+        const ptag = p.node_tags_ptr[param.toInt()];
         if (ptag == .rest_element and p.peek() == .comma) {
             try p.emitError("Rest parameter must not have a trailing comma");
             return error.ParseError;
@@ -3615,7 +3615,7 @@ fn parseFormalParameters(p: *Parser) Error!SubRange {
     // Rest parameter must be last (skip in TS — semantic error)
     if (!p.language.isTs() and params.len > 1) {
         for (params[0 .. params.len - 1]) |param_raw| {
-            const ptag = p.nodes.items(.tag)[@intCast(param_raw)];
+            const ptag = p.node_tags_ptr[@intCast(param_raw)];
             if (ptag == .rest_element) {
                 try p.emitError("Rest parameter must be last formal parameter");
                 return error.ParseError;
@@ -3718,16 +3718,16 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         // Skip if wrapped in TSParameterProperty — jsdocUtils path diverges for that case
         // and the proto-deletion fix handles it correctly without the attachment.
         if (type_ann != .none and param_prop_main_tok == null) {
-            const node_tag = p.nodes.items(.tag)[node.toInt()];
+            const node_tag = p.node_tags_ptr[node.toInt()];
             if (node_tag == .identifier) {
-                p.nodes.items(.data)[node.toInt()].rhs = type_ann;
+                p.node_data_ptr[node.toInt()].rhs = type_ann;
             }
         }
         // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
         if (is_optional_ts) {
-            const node_tag = p.nodes.items(.tag)[node.toInt()];
+            const node_tag = p.node_tags_ptr[node.toInt()];
             if (node_tag == .identifier) {
-                p.nodes.items(.data)[node.toInt()].lhs = .root;
+                p.node_data_ptr[node.toInt()].lhs = .root;
             }
         }
     }
@@ -3998,9 +3998,9 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
         _ = p.tok_i; // don't advance, just peek ahead
         var pos = saved + 1; // skip {
         while (pos < p.tokens.len) {
-            const tag = p.tokens.items(.tag)[pos];
+            const tag = p.tags_ptr[pos];
             if (tag != .string_literal) break;
-            const start = p.tokens.items(.start)[pos];
+            const start = p.tok_starts_ptr[pos];
             const text = p.getStringContent(start);
             if (std.mem.eql(u8, text, "use strict")) {
                 has_use_strict = true;
@@ -4011,7 +4011,7 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
                 break;
             }
             pos += 1;
-            if (pos < p.tokens.len and p.tokens.items(.tag)[pos] == .semicolon) pos += 1;
+            if (pos < p.tokens.len and p.tags_ptr[pos] == .semicolon) pos += 1;
         }
     }
     defer p.in_strict = prev_strict;
@@ -4042,7 +4042,7 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
         }
         // Function name must not be eval/arguments in strict mode
         if (name != .none) {
-            const fn_name_tok = p.nodes.items(.main_token)[name.toInt()];
+            const fn_name_tok = p.node_main_token_ptr[name.toInt()];
             const fn_name_text = p.tokenText(fn_name_tok);
             if (std.mem.eql(u8, fn_name_text, "eval") or std.mem.eql(u8, fn_name_text, "arguments")) {
                 try p.emitError("Unexpected eval or arguments in strict mode");
