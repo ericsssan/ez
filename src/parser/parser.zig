@@ -2245,6 +2245,12 @@ pub const Parser = struct {
             .kw_const => .const_decl,
             else => unreachable,
         };
+        const binding_kind: BindingKindU8 = switch (decl_tag) {
+            .kw_var => .@"var",
+            .kw_let => .let,
+            .kw_const => .@"const",
+            else => unreachable,
+        };
 
         // "let" as a binding name in let/const declaration is always invalid
         if ((decl_tag == .kw_let or decl_tag == .kw_const) and self.peek() == .kw_let) {
@@ -2258,11 +2264,13 @@ pub const Parser = struct {
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
         try self.scratch.append(self.gpa, @intFromEnum(first));
+        try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
             const decl = try self.parseDeclaratorConst(is_const);
             try self.scratch.append(self.gpa, @intFromEnum(decl));
+            try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
 
         const decls = self.scratch.items[scratch_top..];

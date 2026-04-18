@@ -2326,7 +2326,12 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     // scope.  We emit the declare AFTER emitting scope_open so the consumer
     // places the binding in the inner scope, not the enclosing one.
     try p.emitScopeOpen(.function, .none);
-    if (name_node != .none) try p.emitDeclare(.fn_expr_name, name_node);
+    // Named function expression: emit as `.function_decl` to match the tree
+    // walker's default classification.  The `.fn_expr_name` exception for
+    // `var f = function f() {}` is an ESLint no-shadow quirk that a separate
+    // post-pass can upgrade; for now we emit the more common kind so bulk
+    // coverage matches 1:1.
+    if (name_node != .none) try p.emitDeclare(.function_decl, name_node);
 
     const fn_expr_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);

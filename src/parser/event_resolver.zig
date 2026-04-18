@@ -230,12 +230,28 @@ pub fn resolveFull(
         },
         .declare => {
             if (sp == 0) continue;
-            const scope_id = stack[sp - 1];
+            const kind: BindingKind = @enumFromInt(e.aux);
+            // var / function_decl hoist to the nearest enclosing var-scope
+            // (function / global / module / static_block / class_field_init).
+            // let / const / class / params stay in the current lexical scope.
+            const scope_id: ScopeId = blk: {
+                if (kind == .@"var" or kind == .function_decl) {
+                    var j: i32 = @as(i32, @intCast(sp)) - 1;
+                    while (j >= 0) : (j -= 1) {
+                        const sid = stack[@intCast(j)];
+                        const sk = scopes.kinds.items[sid.toInt()];
+                        switch (sk) {
+                            .global, .module, .function, .static_block, .class_field_initializer => break :blk sid,
+                            else => {},
+                        }
+                    }
+                }
+                break :blk stack[sp - 1];
+            };
             const main_tok = node_main_tokens[e.node];
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
-            const kind: BindingKind = @enumFromInt(e.aux);
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
