@@ -228,23 +228,22 @@ const ForkContext = struct {
         const norm_end: usize = @intCast(if (end_idx >= 0) end_idx else total + end_idx);
 
         const result = try self.allocator.alloc(SegmentId, self.count);
+        // Stack buffer avoids the per-lane arena alloc for prev_slice.
+        // newNextSegment/newUnreachableSegment copy the data via flattenUnused +
+        // createSegment's appendSlice — the slice is transient.
+        var prev_buf: [16]SegmentId = undefined;
+
         for (0..self.count) |i| {
-            // Two-pass count+fill via getEntry (bridges inline + heap storage).
             var n_prev: usize = 0;
             var j = norm_start;
             while (j <= norm_end) : (j += 1) {
-                if (i < self.getEntry(j).len) n_prev += 1;
-            }
-            const prev_slice = try self.allocator.alloc(SegmentId, n_prev);
-            var idx: usize = 0;
-            j = norm_start;
-            while (j <= norm_end) : (j += 1) {
                 const entry = self.getEntry(j);
-                if (i < entry.len) {
-                    prev_slice[idx] = entry[i];
-                    idx += 1;
+                if (i < entry.len and n_prev < prev_buf.len) {
+                    prev_buf[n_prev] = entry[i];
+                    n_prev += 1;
                 }
             }
+            const prev_slice = prev_buf[0..n_prev];
 
             result[i] = switch (mode) {
                 .next => try builder.newNextSegment(prev_slice),
