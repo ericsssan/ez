@@ -67,7 +67,7 @@ pub fn main(init: std.process.Init) !void {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch continue;
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             tree.deinit(fba.allocator());
         }
         for (0..ITERATIONS) |iter| {
@@ -78,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch {
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
                 times[iter] = 0;
                 continue;
             };
@@ -96,9 +96,9 @@ pub fn main(init: std.process.Init) !void {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch continue;
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
-            _ = js_buffer.convertSpansToUtf16(source, tok.slice().items(.start));
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
         }
         for (0..ITERATIONS) |iter| {
             fba.reset();
@@ -108,12 +108,12 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch {
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
                 times[iter] = 0;
                 continue;
             };
             defer tree.deinit(fba.allocator());
-            _ = js_buffer.convertSpansToUtf16(source, tok.slice().items(.start));
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
@@ -127,9 +127,9 @@ pub fn main(init: std.process.Init) !void {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch continue;
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
-            _ = js_buffer.convertSpansToUtf16(source, tok.slice().items(.start));
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
         }
         for (0..ITERATIONS) |iter| {
@@ -140,12 +140,12 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch {
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
                 times[iter] = 0;
                 continue;
             };
             defer tree.deinit(fba.allocator());
-            _ = js_buffer.convertSpansToUtf16(source, tok.slice().items(.start));
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {
                 times[iter] = 0;
                 continue;
@@ -163,9 +163,9 @@ pub fn main(init: std.process.Init) !void {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch continue;
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
-            _ = js_buffer.convertSpansToUtf16(source, tok.slice().items(.start));
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
             if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
                 var sem = sem_result;
@@ -180,12 +180,12 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.slice()) catch {
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch {
                 times[iter] = 0;
                 continue;
             };
             defer tree.deinit(fba.allocator());
-            _ = js_buffer.convertSpansToUtf16(source, tok.slice().items(.start));
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {
                 times[iter] = 0;
                 continue;

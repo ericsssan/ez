@@ -97,6 +97,14 @@ pub const ReferenceTable = struct {
         };
     }
 
+    pub fn ensureCapacity(self: *ReferenceTable, n: u32) !void {
+        try self.symbol_ids.ensureTotalCapacity(self.gpa, n);
+        try self.kinds.ensureTotalCapacity(self.gpa, n);
+        try self.node_ids.ensureTotalCapacity(self.gpa, n);
+        try self.scope_ids.ensureTotalCapacity(self.gpa, n);
+        try self.write_expr_ids.ensureTotalCapacity(self.gpa, n);
+    }
+
     pub fn deinit(self: *ReferenceTable) void {
         self.symbol_ids.deinit(self.gpa);
         self.kinds.deinit(self.gpa);
@@ -119,15 +127,10 @@ pub const ReferenceTable = struct {
     ) !ReferenceId {
         const index: u32 = @intCast(self.symbol_ids.items.len);
 
-        // Pre-allocate all parallel arrays together so that if any
-        // allocation fails we haven't partially grown the SoA.
-        try self.symbol_ids.ensureUnusedCapacity(self.gpa, 1);
-        try self.kinds.ensureUnusedCapacity(self.gpa, 1);
-        try self.node_ids.ensureUnusedCapacity(self.gpa, 1);
-        try self.scope_ids.ensureUnusedCapacity(self.gpa, 1);
-        try self.write_expr_ids.ensureUnusedCapacity(self.gpa, 1);
+        // Capacity pre-allocated via ensureCapacity(); grow only when exhausted.
+        if (self.symbol_ids.items.len >= self.symbol_ids.capacity)
+            try self.ensureCapacity(@intCast(self.symbol_ids.capacity * 2 + 16));
 
-        // Append without capacity checks — all arrays were pre-allocated above.
         self.symbol_ids.appendAssumeCapacity(.none);
         self.kinds.appendAssumeCapacity(kind);
         self.node_ids.appendAssumeCapacity(node_id);

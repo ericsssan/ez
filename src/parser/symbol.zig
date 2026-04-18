@@ -211,6 +211,18 @@ pub const SymbolTable = struct {
         return .{ .gpa = gpa };
     }
 
+    pub fn ensureCapacity(self: *SymbolTable, n: u32) !void {
+        try self.names.ensureTotalCapacity(self.gpa, n);
+        try self.flags.ensureTotalCapacity(self.gpa, n);
+        try self.binding_kinds.ensureTotalCapacity(self.gpa, n);
+        try self.scope_ids.ensureTotalCapacity(self.gpa, n);
+        try self.decl_nodes.ensureTotalCapacity(self.gpa, n);
+        try self.references.ensureTotalCapacity(self.gpa, n);
+        try self.init_sym_starts.ensureTotalCapacity(self.gpa, n);
+        try self.init_sym_ends.ensureTotalCapacity(self.gpa, n);
+        try self.init_nodes.ensureTotalCapacity(self.gpa, n);
+    }
+
     pub fn deinit(self: *SymbolTable) void {
         self.names.deinit(self.gpa);
         self.flags.deinit(self.gpa);
@@ -235,19 +247,10 @@ pub const SymbolTable = struct {
     ) !SymbolId {
         const id: u32 = @intCast(self.names.items.len);
 
-        // Pre-allocate all parallel arrays together so that if any
-        // allocation fails we haven't partially grown the SoA.
-        try self.names.ensureUnusedCapacity(self.gpa, 1);
-        try self.flags.ensureUnusedCapacity(self.gpa, 1);
-        try self.binding_kinds.ensureUnusedCapacity(self.gpa, 1);
-        try self.scope_ids.ensureUnusedCapacity(self.gpa, 1);
-        try self.decl_nodes.ensureUnusedCapacity(self.gpa, 1);
-        try self.references.ensureUnusedCapacity(self.gpa, 1);
-        try self.init_sym_starts.ensureUnusedCapacity(self.gpa, 1);
-        try self.init_sym_ends.ensureUnusedCapacity(self.gpa, 1);
-        try self.init_nodes.ensureUnusedCapacity(self.gpa, 1);
+        // Capacity pre-allocated via ensureCapacity(); grow only when exhausted.
+        if (self.names.items.len >= self.names.capacity)
+            try self.ensureCapacity(@intCast(self.names.capacity * 2 + 16));
 
-        // Append without capacity checks — all arrays were pre-allocated above.
         self.names.appendAssumeCapacity(name);
         self.flags.appendAssumeCapacity(symbol_flags);
         self.binding_kinds.appendAssumeCapacity(binding_kind);

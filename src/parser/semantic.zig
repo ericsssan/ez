@@ -180,7 +180,10 @@ pub const SemanticAnalyzer = struct {
     /// direct initializer of an outer variable with the same name.
     /// e.g., `var f = function f() {}` → the fn_expr node is added here.
     /// Implements ESLint's `isFunctionNameInitializerException` logic.
-    fn_expr_exceptions: std.AutoHashMapUnmanaged(NodeIndex, void) = .{},
+    /// Bitset over node count: bit N set iff node N is a fn/class expression
+    /// directly initialising an outer variable of the same name (ESLint's
+    /// `isFunctionNameInitializerException`).
+    fn_expr_exceptions: []u8 = &.{},
 
     /// True while visiting specifiers of `import type { ... }`.
     /// Used by visitImportSpecifier to assign .type_decl binding kind.
@@ -243,11 +246,20 @@ pub const SemanticAnalyzer = struct {
         // exported_names, scope_binding_map, and fn_expr_exceptions are temporaries; always free them.
         defer self.exported_names.deinit(allocator);
         defer self.scope_binding_map.deinit(allocator);
-        defer self.fn_expr_exceptions.deinit(allocator);
+        defer allocator.free(self.fn_expr_exceptions);
 
-        // Pre-size the binding map to avoid growth rehashes for typical files.
-        // Heuristic: ~1 symbol per 8 nodes is conservative; avoids most rehashes.
-        try self.scope_binding_map.ensureTotalCapacity(allocator, @max(64, @as(u32, @intCast(@min(ast.nodes.len / 8, std.math.maxInt(u32))))));
+        // Pre-size all scope/symbol structures to avoid per-element allocations in hot paths.
+        // Heuristics: ~1 scope per 20 nodes, ~1 symbol per 6 nodes.
+        const node_n = @as(u32, @intCast(@min(ast.nodes.len, std.math.maxInt(u32))));
+        const est_scopes = @max(16, node_n / 20);
+        const est_syms   = @max(64, node_n / 6);
+        try self.scopes.ensureCapacity(est_scopes);
+        try self.symbols.ensureCapacity(est_syms);
+        try self.references.ensureCapacity(est_syms * 2);
+        try self.scope_binding_map.ensureTotalCapacity(allocator, est_syms);
+        // fn_expr_exceptions bitset: 1 byte per node
+        self.fn_expr_exceptions = try allocator.alloc(u8, ast.nodes.len);
+        @memset(self.fn_expr_exceptions, 0);
 
         // Allocate per-node reachability array (1 byte per node; written during walk).
         const node_count = ast.nodes.len;
@@ -329,7 +341,8 @@ pub const SemanticAnalyzer = struct {
 
         const symbol_flags = symbol_mod.flagsFromBindingKind(binding_kind);
         const sym_id = try self.symbols.addSymbol(name, symbol_flags, binding_kind, scope, node);
-        try self.scope_binding_map.put(self.allocator, .{ .scope_id = scope.toInt(), .name = name }, sym_id);
+        try self.scope_binding_map.ensureUnusedCapacity(self.allocator, 1);
+        self.scope_binding_map.putAssumeCapacity(.{ .scope_id = scope.toInt(), .name = name }, sym_id);
         return sym_id;
     }
 
@@ -1685,7 +1698,7 @@ pub const SemanticAnalyzer = struct {
         // Otherwise use .function_decl so no-shadow detects the real shadow.
         if (fn_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
-            const kind: BindingKind = if (self.fn_expr_exceptions.contains(idx)) .fn_expr_name else .function_decl;
+            const kind: BindingKind = if (self.fn_expr_exceptions[@intFromEnum(idx)] != 0) .fn_expr_name else .function_decl;
             _ = try self.declareBinding(name, fn_data.name, kind, self.current_scope);
         }
 
@@ -1808,7 +1821,7 @@ pub const SemanticAnalyzer = struct {
         // Otherwise use .class_decl so no-shadow detects the real shadow.
         if (class_data.name != .none) {
             const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
-            const kind: BindingKind = if (self.fn_expr_exceptions.contains(idx)) .class_expr_name else .class_decl;
+            const kind: BindingKind = if (self.fn_expr_exceptions[@intFromEnum(idx)] != 0) .class_expr_name else .class_decl;
             _ = try self.declareBinding(name, class_data.name, kind, self.current_scope);
         }
 
@@ -1944,7 +1957,7 @@ pub const SemanticAnalyzer = struct {
                 if (fn_data.name != .none) {
                     const name = self.ast.tokenText(self.ast.nodeMainToken(fn_data.name));
                     if (std.mem.eql(u8, name, binding_name)) {
-                        try self.fn_expr_exceptions.put(self.allocator, init_node, {});
+                        self.fn_expr_exceptions[@intFromEnum(init_node)] = 1;
                     }
                 }
             },
@@ -1954,7 +1967,7 @@ pub const SemanticAnalyzer = struct {
                 if (class_data.name != .none) {
                     const name = self.ast.tokenText(self.ast.nodeMainToken(class_data.name));
                     if (std.mem.eql(u8, name, binding_name)) {
-                        try self.fn_expr_exceptions.put(self.allocator, init_node, {});
+                        self.fn_expr_exceptions[@intFromEnum(init_node)] = 1;
                     }
                 }
             },

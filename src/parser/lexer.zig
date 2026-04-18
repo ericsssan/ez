@@ -14,6 +14,32 @@ pub const TokenList = Ast.Ast.TokenList;
 /// BigInt, and hashbang lines.
 const Language = Token.Language;
 
+/// Action for dispatching from the first byte of a token.  Used by `next()` to
+/// avoid an if-chain on the first character.  Values 0..6 correspond to the
+/// table entries built below.
+const FirstByte = enum(u8) { op, ident, digit, dot, str, tmpl };
+
+const first_byte_table: [256]FirstByte = blk: {
+    @setEvalBranchQuota(2000);
+    var t: [256]FirstByte = [_]FirstByte{.op} ** 256;
+    var c: u8 = 'a';
+    while (c <= 'z') : (c += 1) t[c] = .ident;
+    c = 'A';
+    while (c <= 'Z') : (c += 1) t[c] = .ident;
+    t['_'] = .ident;
+    t['$'] = .ident;
+    t['\\'] = .ident;
+    var hi: usize = 0x80;
+    while (hi < 256) : (hi += 1) t[hi] = .ident;
+    c = '0';
+    while (c <= '9') : (c += 1) t[c] = .digit;
+    t['.'] = .dot;
+    t['\''] = .str;
+    t['"'] = .str;
+    t['`'] = .tmpl;
+    break :blk t;
+};
+
 pub const Lexer = struct {
     source: []const u8,
     index: u32,
@@ -157,7 +183,12 @@ pub const Lexer = struct {
 
         while (true) {
             const tok = self.next();
-            try self.tokens.append(allocator, .{
+            // Fast path: capacity pre-allocated to source.len / 5. Grow only on
+            // rare overshoot (files with tokens smaller than expected).
+            if (self.tokens.len >= self.tokens.capacity) {
+                try self.tokens.ensureTotalCapacity(allocator, self.tokens.capacity * 2 + 16);
+            }
+            self.tokens.appendAssumeCapacity(.{
                 .tag = tok.tag,
                 .start = tok.start,
                 .len = tok.len,
@@ -193,8 +224,11 @@ pub const Lexer = struct {
                 return self.makeToken(.eof, self.index);
             }
 
+            // Load first byte once; reuse for comment/HTML-comment checks.
+            const b0 = self.source[self.index];
+
             // Check for comments: // and /* ... */
-            if (self.peek(0) == '/') {
+            if (b0 == '/') {
                 if (self.peek(1) == '/') {
                     const cstart = self.index;
                     self.skipLineComment();
@@ -217,7 +251,7 @@ pub const Lexer = struct {
 
             // HTML open comment: <!-- (Annex B, B.1.3)
             // Only valid in script mode (not module).
-            if (!self.is_module and self.annex_b and self.peek(0) == '<' and self.peek(1) == '!' and
+            if (b0 == '<' and !self.is_module and self.annex_b and self.peek(1) == '!' and
                 self.peek(2) == '-' and self.peek(3) == '-')
             {
                 self.index += 4;
@@ -227,7 +261,7 @@ pub const Lexer = struct {
 
             // HTML close comment: --> at start of line (Annex B, B.1.3)
             // Only valid in script mode after a line terminator.
-            if (!self.is_module and self.annex_b and self.peek(0) == '-' and self.peek(1) == '-' and self.peek(2) == '>') {
+            if (b0 == '-' and !self.is_module and self.annex_b and self.peek(1) == '-' and self.peek(2) == '>') {
                 if (self.isAtLineStart()) {
                     self.index += 3;
                     self.skipToEndOfLine();
@@ -235,55 +269,33 @@ pub const Lexer = struct {
                 }
             }
 
-            break;
-        }
-
-        // Hashbang: #! at very start of file (before any tokens)
-        if (self.index == 0 and self.prev_token_tag == .eof) {
-            if (self.peek(0) == '#' and self.peek(1) == '!') {
+            // Hashbang: #! at very start of file (before any tokens)
+            if (b0 == '#' and self.index == 0 and self.prev_token_tag == .eof and
+                self.peek(1) == '!')
+            {
                 return self.scanHashbang();
             }
-        }
 
-        const start = self.index;
-        const c = self.source[self.index];
-
-        // ── Identifiers and keywords ──────────────────────────
-        if (isIdentStart(c)) {
-            return self.scanIdentifierOrKeyword();
-        }
-
-        // ── Number literals ───────────────────────────────────
-        if (isDigit(c)) {
-            return self.scanNumber();
-        }
-
-        // ── Dot: could be `.`, `...`, or `.123` (number starting with dot)
-        if (c == '.') {
-            if (self.peek(1) == '.' and self.peek(2) == '.') {
-                self.index += 3;
-                return self.makeToken(.ellipsis, start);
+            const start = self.index;
+            // Dispatch on first-byte table — one table lookup + switch, replaces
+            // the 5-branch if-chain for the common identifier/number/operator cases.
+            switch (first_byte_table[b0]) {
+                .ident => return self.scanIdentifierOrKeyword(),
+                .digit => return self.scanNumber(),
+                .dot => {
+                    if (self.peek(1) == '.' and self.peek(2) == '.') {
+                        self.index += 3;
+                        return self.makeToken(.ellipsis, start);
+                    }
+                    if (isDigit(self.peek(1))) return self.scanNumber();
+                    self.index += 1;
+                    return self.makeToken(.dot, start);
+                },
+                .str => return self.scanString(),
+                .tmpl => return self.scanTemplateLiteral(),
+                .op => return self.scanOperatorOrPunct(),
             }
-            // .123 is a valid decimal literal
-            if (isDigit(self.peek(1))) {
-                return self.scanNumber();
-            }
-            self.index += 1;
-            return self.makeToken(.dot, start);
         }
-
-        // ── String literals ───────────────────────────────────
-        if (c == '\'' or c == '"') {
-            return self.scanString();
-        }
-
-        // ── Template literals ─────────────────────────────────
-        if (c == '`') {
-            return self.scanTemplateLiteral();
-        }
-
-        // ── Operators and punctuation ─────────────────────────
-        return self.scanOperatorOrPunct();
     }
 
     // ══════════════════════════════════════════════════════════
@@ -294,6 +306,31 @@ pub const Lexer = struct {
         const src = self.source;
         var i: u32 = self.index;
         const len: u32 = @intCast(src.len);
+
+        // Fast scalar fast-path: most inter-token gaps are 0-2 bytes. Skip the
+        // SIMD setup entirely when we can handle it inline.
+        // ASCII non-whitespace → return immediately.
+        // ASCII whitespace → tight scalar loop (handles the common indentation case).
+        while (i < len) {
+            const c = src[i];
+            switch (c) {
+                ' ', '\t' => i += 1,
+                '\n', '\r' => {
+                    self.saw_newline = true;
+                    i += 1;
+                },
+                0x0B, 0x0C => i += 1,
+                else => {
+                    // Either non-whitespace ASCII, or possible Unicode whitespace (>= 0x80).
+                    if (c < 0x80) {
+                        self.index = i;
+                        return;
+                    }
+                    break; // fall through to SIMD + Unicode scalar handling
+                },
+            }
+        }
+        self.index = i;
 
         // SIMD: process 16 bytes at a time
         while (i + 16 <= len) {
@@ -664,7 +701,7 @@ pub const Lexer = struct {
             var resolved_buf: [256]u8 = undefined;
             const resolved = resolveUnicodeEscapes(text, &resolved_buf) orelse {
                 // Buffer overflow = identifier too long to be a keyword. Accept as identifier.
-                return self.makeToken(.identifier, start);
+                return self.makeIdentToken(start);
             };
             if (keywords.get(resolved) != null) {
                 return self.makeToken(.escaped_keyword, start);
@@ -674,7 +711,7 @@ pub const Lexer = struct {
                     return self.makeToken(.escaped_keyword, start);
                 }
             }
-            return self.makeToken(.identifier, start);
+            return self.makeIdentToken(start);
         }
 
         // Keyword lookup (no escapes, exact match)
@@ -689,11 +726,12 @@ pub const Lexer = struct {
             }
         }
 
-        return self.makeToken(.identifier, start);
+        // Fast path for plain identifiers — skips all keyword-specific state tracking.
+        return self.makeIdentToken(start);
     }
 
     /// Use SIMD to scan 16-byte chunks of ASCII identifier characters.
-    fn scanIdentChunksSIMD(self: *Lexer) void {
+    inline fn scanIdentChunksSIMD(self: *Lexer) void {
         const src = self.source;
         const len: u32 = @intCast(src.len);
         const V = @Vector(16, u8);
@@ -2907,9 +2945,11 @@ pub const Lexer = struct {
     /// Create a token and update prev_token_tag for regex disambiguation.
     /// Advance utf16_pos from utf16_sync to target byte position.
     /// Counts UTF-16 code units: ASCII = 1, 2-byte = 1, 3-byte = 1, 4-byte = 2.
-    fn makeToken(self: *Lexer, tag: TokenTag, start: u32) Token.Token {
-        // Clear control_paren_closed when any token is emitted
-        if (tag != .r_paren) self.control_paren_closed = false;
+    inline fn makeToken(self: *Lexer, tag: TokenTag, start: u32) Token.Token {
+        // Note: control_paren_closed is not cleared here. isRegexContext()
+        // gates its use on `prev_token_tag == .r_paren`, so once we emit any
+        // non-r_paren token, prev_token_tag changes and the flag becomes
+        // inactive automatically. Saves a store on every token emission.
         // Track case/default colon: `case X:` or `default:` → next `{` is block
         // State machine: 0 → kw_case/kw_default → 1 → (any tokens) → colon → 2 → (consume) → 0
         if (tag == .kw_case or tag == .kw_default) {
@@ -2970,6 +3010,16 @@ pub const Lexer = struct {
         self.prev_after_dot = (self.prev_token_tag == .dot);
         self.prev_token_tag = tag;
         return .{ .tag = tag, .start = start, .len = self.index - start };
+    }
+
+    /// Fast path for plain `.identifier` tokens. Skips all keyword/paren state
+    /// tracking that `makeToken` does, because identifiers never trigger any of
+    /// those state transitions (not r_paren, not kw_function, not kw_class, etc).
+    inline fn makeIdentToken(self: *Lexer, start: u32) Token.Token {
+        // control_paren_closed deliberately not cleared — see makeToken.
+        self.prev_after_dot = (self.prev_token_tag == .dot);
+        self.prev_token_tag = .identifier;
+        return .{ .tag = .identifier, .start = start, .len = self.index - start };
     }
 
     /// Peek at the byte at `self.index + offset`, returning 0 if out of bounds.

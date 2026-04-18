@@ -104,6 +104,20 @@ pub const ScopeTree = struct {
 
     // ── Lifecycle ──────────────────────────────────────────
 
+    /// Pre-allocate capacity for `n` scopes across all 9 parallel arrays in one call.
+    /// Eliminates per-scope ensureUnusedCapacity overhead in the hot addScope path.
+    pub fn ensureCapacity(self: *ScopeTree, n: u32) !void {
+        try self.kinds.ensureTotalCapacity(self.gpa, n);
+        try self.flags.ensureTotalCapacity(self.gpa, n);
+        try self.parents.ensureTotalCapacity(self.gpa, n);
+        try self.first_child.ensureTotalCapacity(self.gpa, n);
+        try self.last_child.ensureTotalCapacity(self.gpa, n);
+        try self.next_sibling.ensureTotalCapacity(self.gpa, n);
+        try self.node_ids.ensureTotalCapacity(self.gpa, n);
+        try self.bindings_start.ensureTotalCapacity(self.gpa, n);
+        try self.bindings_count.ensureTotalCapacity(self.gpa, n);
+    }
+
     pub fn init(allocator: std.mem.Allocator) ScopeTree {
         return .{
             .kinds = .empty,
@@ -192,19 +206,12 @@ pub const ScopeTree = struct {
             }
         }
 
-        // Pre-allocate all parallel arrays together so that if any
-        // allocation fails we haven't partially grown the SoA.
-        try self.kinds.ensureUnusedCapacity(self.gpa, 1);
-        try self.flags.ensureUnusedCapacity(self.gpa, 1);
-        try self.parents.ensureUnusedCapacity(self.gpa, 1);
-        try self.first_child.ensureUnusedCapacity(self.gpa, 1);
-        try self.last_child.ensureUnusedCapacity(self.gpa, 1);
-        try self.next_sibling.ensureUnusedCapacity(self.gpa, 1);
-        try self.node_ids.ensureUnusedCapacity(self.gpa, 1);
-        try self.bindings_start.ensureUnusedCapacity(self.gpa, 1);
-        try self.bindings_count.ensureUnusedCapacity(self.gpa, 1);
+        // Capacity is pre-allocated via ensureCapacity() before traversal.
+        // Fall back to growable append only if pre-sizing was skipped.
+        if (self.kinds.items.len >= self.kinds.capacity) {
+            try self.ensureCapacity(@intCast(self.kinds.capacity * 2 + 16));
+        }
 
-        // Append without capacity checks — all arrays were pre-allocated above.
         self.kinds.appendAssumeCapacity(scope_kind);
         self.flags.appendAssumeCapacity(scope_flags);
         self.parents.appendAssumeCapacity(parent_id);
