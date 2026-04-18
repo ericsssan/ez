@@ -306,6 +306,26 @@ pub const SemanticAnalyzer = struct {
         return analyzeModuleWithOptions(allocator, ast, opts);
     }
 
+    /// Event-driven analysis.  Accepts a pre-built event stream (produced by
+    /// `Parser.parseWithOptions(.{ .events_out = &stream })`) and produces the
+    /// same `SemanticResult` shape as `analyze`, but ~2.5x faster on the main
+    /// visit work because it iterates events instead of walking every AST node.
+    ///
+    /// Current limitations (as of this commit — safe fallback is `analyze`):
+    ///   - No CFG (ignore `opts.build_cfg`)
+    ///   - No TS-specific declarations (interface, type alias, namespace)
+    ///   - No redeclaration diagnostics
+    pub fn analyzeFromEvents(
+        allocator: std.mem.Allocator,
+        ast: *const Ast,
+        events: []const @import("scope_events.zig").Event,
+        opts: Options,
+    ) !SemanticResult {
+        _ = opts; // build_cfg/globals/is_module not yet honored
+        const er = @import("event_resolver.zig");
+        return er.resolveFull(allocator, ast, events, .{});
+    }
+
     /// Per-sub-phase timings for `analyze`, populated only when the bench asks.
     /// Fields are nanoseconds. Access via `analyzeWithTimings` (test-only entry).
     pub const Timings = struct {

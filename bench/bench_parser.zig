@@ -542,6 +542,68 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("  scopes:{d} syms:{d} refs:{d}\n\n", .{ full_scopes, full_syms, full_refs });
     }
 
+    // ── Phase 13: Equivalence check (event-driven vs tree walker) ──────
+    // Runs both paths on the same input and reports count divergence.
+    // Useful during migration to track coverage gaps in the event stream.
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        fba.reset();
+        var tok_eq = Lexer.tokenize(fba.allocator(), source) catch return;
+        defer tok_eq.deinit(fba.allocator());
+
+        // Path 1: tree walker
+        var tree_a = Parser.parse(fba.allocator(), source, tok_eq.tokens.slice()) catch return;
+        defer tree_a.deinit(fba.allocator());
+        var sem_tree = semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree_a, .{ .build_cfg = false }) catch return;
+        defer sem_tree.deinit(fba.allocator());
+
+        // Path 2: event resolver
+        var events: scope_events.EventStream = .{};
+        defer events.deinit(fba.allocator());
+        var tree_b = Parser.parseWithOptions(fba.allocator(), source, tok_eq.tokens.slice(), .{
+            .is_module = true,
+            .events_out = &events,
+        }) catch return;
+        defer tree_b.deinit(fba.allocator());
+        var sem_ev = semantic_mod.SemanticAnalyzer.analyzeFromEvents(fba.allocator(), &tree_b, events.items(), .{}) catch return;
+        defer sem_ev.deinit(fba.allocator());
+
+        const scopes_tree = sem_tree.scopes.kinds.items.len;
+        const scopes_ev   = sem_ev.scopes.kinds.items.len;
+        const syms_tree   = sem_tree.symbols.names.items.len;
+        const syms_ev     = sem_ev.symbols.names.items.len;
+        const refs_tree   = sem_tree.references.count();
+        const refs_ev     = sem_ev.references.count();
+
+        var resolved_tree: u32 = 0;
+        for (sem_tree.references.symbol_ids.items) |s| if (s != .none) { resolved_tree += 1; };
+        var resolved_ev: u32 = 0;
+        for (sem_ev.references.symbol_ids.items) |s| if (s != .none) { resolved_ev += 1; };
+
+        std.debug.print("\n=== Equivalence check: tree walker vs event resolver ===\n", .{});
+        std.debug.print("             tree        events       delta   coverage\n", .{});
+        std.debug.print("  scopes:   {d:>6}      {d:>6}     {d:>6}    {d:>4.0}%\n", .{
+            scopes_tree, scopes_ev,
+            @as(i64, @intCast(scopes_ev)) - @as(i64, @intCast(scopes_tree)),
+            100.0 * @as(f64, @floatFromInt(scopes_ev)) / @as(f64, @floatFromInt(scopes_tree)),
+        });
+        std.debug.print("  symbols:  {d:>6}      {d:>6}     {d:>6}    {d:>4.0}%\n", .{
+            syms_tree, syms_ev,
+            @as(i64, @intCast(syms_ev)) - @as(i64, @intCast(syms_tree)),
+            100.0 * @as(f64, @floatFromInt(syms_ev)) / @as(f64, @floatFromInt(syms_tree)),
+        });
+        std.debug.print("  refs:     {d:>6}      {d:>6}     {d:>6}    {d:>4.0}%\n", .{
+            refs_tree, refs_ev,
+            @as(i64, @intCast(refs_ev)) - @as(i64, @intCast(refs_tree)),
+            100.0 * @as(f64, @floatFromInt(refs_ev)) / @as(f64, @floatFromInt(refs_tree)),
+        });
+        std.debug.print("  resolved: {d:>6}      {d:>6}     {d:>6}    {d:>4.0}%\n", .{
+            resolved_tree, resolved_ev,
+            @as(i64, @intCast(resolved_ev)) - @as(i64, @intCast(resolved_tree)),
+            100.0 * @as(f64, @floatFromInt(resolved_ev)) / @as(f64, @floatFromInt(resolved_tree)),
+        });
+    }
+
     // ── Phase 9: Semantic sub-phase timings ──────────────────────────
     // Accumulate per-sub-phase time over ITERATIONS and report averages.
     {
