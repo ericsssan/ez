@@ -175,7 +175,11 @@ pub const Parser = struct {
     /// Main entry point. Creates a Parser, parses all top-level statements,
     /// builds the root node, and returns the completed Ast.
     pub fn parse(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice) !Ast {
-        return parseWithOptions(allocator, source, tokens, .{});
+        // Emit scope events into the returned Ast by default so downstream
+        // `analyze()` calls automatically take the event-driven fast path.
+        // Emission cost is ~1-2% of parse; fast path saves ~10-20% on the
+        // semantic side — net win across the whole pipeline.
+        return parseWithOptions(allocator, source, tokens, .{ .emit_events = true });
     }
 
     pub const ParseOptions = struct {

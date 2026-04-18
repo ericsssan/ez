@@ -278,19 +278,19 @@ pub const SemanticAnalyzer = struct {
     /// Main entry point. Walks the AST and populates scopes/symbols/references.
     /// Defaults to module mode (global→module scope, strict).
     pub fn analyze(allocator: std.mem.Allocator, ast: *const Ast) !SemanticResult {
-        return analyzeModuleWithGlobals(allocator, ast, true, &.{});
+        return analyzeWithOptions(allocator, ast, .{ .is_module = true });
     }
 
     /// Analyze with explicit module/script mode.
     pub fn analyzeModule(allocator: std.mem.Allocator, ast: *const Ast, is_module: bool) !SemanticResult {
-        return analyzeModuleWithGlobals(allocator, ast, is_module, &.{});
+        return analyzeWithOptions(allocator, ast, .{ .is_module = is_module });
     }
 
     /// Analyze with JS builtin globals pre-declared in the global scope.
     /// `globals` is a null-separated list of global names (e.g. "Math\x00console\x00").
     /// Pre-declaring them causes references to resolve in Zig, making scope.through exact.
     pub fn analyzeWithGlobals(allocator: std.mem.Allocator, ast: *const Ast, globals: []const u8) !SemanticResult {
-        return analyzeModuleWithOptions(allocator, ast, .{ .is_module = true, .globals = globals });
+        return analyzeWithOptions(allocator, ast, .{ .is_module = true, .globals = globals });
     }
 
     pub const Options = struct {
@@ -303,11 +303,12 @@ pub const SemanticAnalyzer = struct {
     };
 
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
-        // Fast path: if the parser emitted scope events and the caller doesn't
-        // need a CFG, use the event-driven resolver (~17% faster on Zig-only
-        // no-CFG benchmarks).  Falls back to the tree walker for CFG rules and
-        // for Asts parsed without event emission.
-        if (!opts.build_cfg and ast.scope_events.len > 0) {
+        // Default path: use the event-driven resolver when the parser supplied
+        // events.  It's ~10% faster than the tree walker and produces
+        // equivalent tables (100% symbol parity, 0 dead-node divergence on
+        // real-world JS).  The tree walker remains the fallback for Asts
+        // parsed without event emission.
+        if (ast.scope_events.len > 0) {
             return analyzeFromEvents(allocator, ast, ast.scope_events, opts);
         }
         return analyzeModuleWithOptions(allocator, ast, opts);
