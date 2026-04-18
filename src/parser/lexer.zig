@@ -256,7 +256,7 @@ pub const Lexer = struct {
     }
 
     /// Return the next token and advance the lexer position.
-    pub fn next(self: *Lexer) Token.Token {
+    pub inline fn next(self: *Lexer) Token.Token {
         // Skip whitespace and comments in a loop (comments may be followed by
         // more whitespace or more comments).
         self.saw_newline = false;
