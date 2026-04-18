@@ -698,7 +698,7 @@ pub const Lexer = struct {
     //  Identifiers and Keywords (SIMD-accelerated)
     // ══════════════════════════════════════════════════════════
 
-    fn scanIdentifierOrKeyword(self: *Lexer) Token.Token {
+    inline fn scanIdentifierOrKeyword(self: *Lexer) Token.Token {
         const start = self.index;
         var has_unicode_escape = false;
 
@@ -1048,7 +1048,7 @@ pub const Lexer = struct {
     //  Number Literals
     // ══════════════════════════════════════════════════════════
 
-    fn scanNumber(self: *Lexer) Token.Token {
+    inline fn scanNumber(self: *Lexer) Token.Token {
         const start = self.index;
         var is_bigint = false;
 
@@ -1347,7 +1347,7 @@ pub const Lexer = struct {
     //  String Literals
     // ══════════════════════════════════════════════════════════
 
-    fn scanString(self: *Lexer) Token.Token {
+    inline fn scanString(self: *Lexer) Token.Token {
         const start = self.index;
         const quote = self.source[self.index];
         self.index += 1; // skip opening quote
@@ -2597,7 +2597,7 @@ pub const Lexer = struct {
     //  Operators and Punctuation
     // ══════════════════════════════════════════════════════════
 
-    fn scanOperatorOrPunct(self: *Lexer) Token.Token {
+    inline fn scanOperatorOrPunct(self: *Lexer) Token.Token {
         const start = self.index;
         const c = self.source[self.index];
 
