@@ -335,8 +335,8 @@ fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
             try p.emitError("'await' is not allowed as an identifier in module mode");
             return error.ParseError;
         }
-        // `await` used outside async context — treat as identifier.
-        return parseIdentifier(p);
+        // `await` used outside async context — treat as identifier reference.
+        return parseIdentifierRef(p);
     }
     const tok = p.advance(); // consume `await`
     const operand = try parseExpressionPrec(p, .unary);
@@ -794,7 +794,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
         .slash, .slash_equal => return try rescanSlashAsRegex(p),
         else => {
             if (tag.isTsContextualKeyword()) {
-                return try parseIdentifier(p);
+                return try parseIdentifierRef(p);
             }
             try p.emitError("Expected expression");
             _ = p.advance(); // skip unexpected token to guarantee forward progress
@@ -881,7 +881,21 @@ fn parseLiteral(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 
 // ── Identifier (with possible single-param arrow) ────────────────
 
+/// Create an `.identifier` AST node WITHOUT emitting a semantic event.
+/// Used when the identifier is a declaration name (function name, class name,
+/// binding pattern), or otherwise decided by the caller.
 fn parseIdentifier(p: *Parser) Error!NodeIndex {
+    const tok = p.advance();
+    return p.addNode(.{
+        .tag = .identifier,
+        .main_token = tok,
+        .data = .{ .lhs = .none, .rhs = .none },
+    });
+}
+
+/// Expression-position identifier: produces a `.identifier` node AND emits a
+/// `reference(.read)` semantic event.  Used from parsePrimaryExpression.
+fn parseIdentifierRef(p: *Parser) Error!NodeIndex {
     const tok = p.advance();
     const node = try p.addNode(.{
         .tag = .identifier,
@@ -1567,6 +1581,10 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
 
     const params = try p.addSlice(&[_]u32{param_node.toInt()});
 
+    // Arrow function scope: the parameter binds inside it.
+    try p.emitScopeOpen(.function, .none);
+    try p.emitDeclare(.parameter, param_node);
+
     const saved_fn = p.in_function;
     const saved_async = p.in_async;
     p.in_function = true;
@@ -1574,6 +1592,7 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
     const body = try parseArrowBody(p);
+    try p.emitScopeClose(.none);
 
     const extra = try p.addExtra(ast.ArrowData, .{
         .params_start = params.start,
@@ -2258,6 +2277,12 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
 
+    // Named function expression: name binds only inside the function's own
+    // scope.  We emit the declare AFTER emitting scope_open so the consumer
+    // places the binding in the inner scope, not the enclosing one.
+    try p.emitScopeOpen(.function, .none);
+    if (name_node != .none) try p.emitDeclare(.fn_expr_name, name_node);
+
     const fn_expr_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
     const fn_expr_return_type = try p.parseOptionalTypeAnnotation();
@@ -2265,6 +2290,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     // TS ambient function expressions can be bodyless in certain contexts
     if (p.language.isTs() and p.peek() != .l_brace) {
         _ = p.eat(.semicolon);
+        try p.emitScopeClose(.none);
         return p.addNode(.{
             .tag = .ts_type_annotation,
             .main_token = fn_tok,
@@ -2273,6 +2299,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     }
 
     const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
+    try p.emitScopeClose(.none);
 
     const fn_tag: Node.Tag = if (is_generator) .generator_fn_expr else .fn_expr;
 

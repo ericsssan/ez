@@ -6,6 +6,7 @@ const js_buffer = ez.js_buffer;
 const semantic_mod = ez.semantic;
 const parent_builder = ez.parent_builder;
 const scope_events = ez.scope_events;
+const event_resolver = ez.event_resolver;
 
 // Pre-allocated working buffer replaces per-iteration GPA allocations.
 // Reset between iterations is a single pointer store — no syscalls, no page faults.
@@ -419,6 +420,57 @@ pub fn main(init: std.process.Init) !void {
         }
         printStats("Event-stream scan only", &times, source.len);
         std.debug.print("  events: {d} ({d} bytes)\n\n", .{ all_events.len, all_events.len * @sizeOf(scope_events.Event) });
+    }
+
+    // ── Phase 11: Event-driven scope resolver (real work) ──────────────
+    // Measures: Lex + Parse (events on) + event_resolver.resolve.  This is
+    // the direct apples-to-apples comparison for semantic's main visit walk,
+    // which costs ~200 µs on acorn.js.
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var last_res: event_resolver.Result = undefined;
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var ev: scope_events.EventStream = .{};
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .events_out = &ev,
+            }) catch continue;
+            defer tree.deinit(fba.allocator());
+            defer ev.deinit(fba.allocator());
+            last_res = event_resolver.resolve(fba.allocator(), &tree, ev.items()) catch continue;
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var ev: scope_events.EventStream = .{};
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .events_out = &ev,
+            }) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            defer ev.deinit(fba.allocator());
+            last_res = event_resolver.resolve(fba.allocator(), &tree, ev.items()) catch {
+                times[iter] = 0;
+                continue;
+            };
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Lex+Parse+EventResolve", &times, source.len);
+        std.debug.print("  scopes:{d} decls:{d} resolved:{d} unresolved:{d}\n\n", .{
+            last_res.scope_count, last_res.binding_count, last_res.resolved, last_res.unresolved,
+        });
     }
 
     // ── Phase 9: Semantic sub-phase timings ──────────────────────────

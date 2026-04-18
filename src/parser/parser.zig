@@ -421,6 +421,19 @@ pub const Parser = struct {
         });
     }
 
+    /// Given a `.declarator` node, emit a declare event for its binding if it
+    /// is a simple identifier (not a destructuring pattern).  Destructuring
+    /// patterns would require walking the pattern — left to a follow-up.
+    fn emitDeclareFromDeclarator(self: *Parser, decl_node: NodeIndex, kind: BindingKindU8) !void {
+        if (!self.emit_scope_events) return;
+        if (decl_node == .none) return;
+        const d = self.node_data_ptr[decl_node.toInt()];
+        const binding = d.lhs;
+        if (binding == .none) return;
+        const btag = self.node_tags_ptr[binding.toInt()];
+        if (btag == .identifier) try self.emitDeclare(kind, binding);
+    }
+
     pub inline fn emitReference(self: *Parser, kind: ReferenceKindU8, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
         try self.scope_events.push(self.gpa, .{
@@ -2013,6 +2026,12 @@ pub const Parser = struct {
             .kw_const => .const_decl,
             else => unreachable,
         };
+        const binding_kind: BindingKindU8 = switch (decl_tag) {
+            .kw_var => .@"var",
+            .kw_let => .let,
+            .kw_const => .@"const",
+            else => unreachable,
+        };
 
         // "let" as a binding name in let/const declaration is always invalid
         if ((decl_tag == .kw_let or decl_tag == .kw_const) and self.peek() == .kw_let) {
@@ -2026,11 +2045,13 @@ pub const Parser = struct {
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
         try self.scratch.append(self.gpa, @intFromEnum(first));
+        try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
             const decl = try self.parseDeclaratorConst(is_const);
             try self.scratch.append(self.gpa, @intFromEnum(decl));
+            try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
 
         // Consume semicolon BEFORE creating the node so the range includes it
@@ -2191,6 +2212,11 @@ pub const Parser = struct {
             try self.emitDiagnostic(self.currentSpan(), "function declaration requires a name", .{});
         }
 
+        // Function declaration binds its name in the enclosing scope, then
+        // opens a function scope for params + body.
+        if (name != .none) try self.emitDeclare(.function_decl, name);
+        try self.emitScopeOpen(.function, .none);
+
         // Set generator/async flags BEFORE parsing params — yield/await are
         // reserved in the parameter list of generator/async functions.
         const prev_in_function = self.in_function;
@@ -2234,6 +2260,7 @@ pub const Parser = struct {
         // TS ambient/declare functions and overload signatures have no body.
         if (self.language.isTs() and self.peek() != .l_brace) {
             _ = self.eat(.semicolon);
+            try self.emitScopeClose(.none); // close function scope (no body)
             const decl_extra = try self.addExtra(ast.FnData, .{
                 .name = name,
                 .params = params.start,
@@ -2258,6 +2285,7 @@ pub const Parser = struct {
         }
 
         const body = try self.parseBlockStatement();
+        try self.emitScopeClose(.none); // close function scope
 
         const tag: Node.Tag = if (is_async and is_generator)
             .async_generator_fn_decl
@@ -2309,6 +2337,12 @@ pub const Parser = struct {
             try self.emitDiagnostic(self.currentSpan(), "class declaration requires a name", .{});
             return error.ParseError;
         }
+
+        // Class declaration binds its name in the enclosing scope, then opens
+        // a class scope for members (plus an inner body scope, but ESLint's
+        // model uses just one class scope for declarations).
+        if (name != .none) try self.emitDeclare(.class_decl, name);
+        try self.emitScopeOpen(.class, .none);
 
         // TS type parameters: class Foo<T, U>
         const class_type_params = if (self.language.isTs() and self.peek() == .less_than) blk: {
@@ -2422,6 +2456,7 @@ pub const Parser = struct {
         const l_brace_tok = try self.expect(.l_brace);
         const body_range = try self.parseClassBody();
         _ = try self.expect(.r_brace);
+        try self.emitScopeClose(.none); // close class scope
 
         const class_body_node = try self.addNode(.{
             .tag = .class_body,
@@ -4443,6 +4478,9 @@ pub const Parser = struct {
 
     /// Parse an identifier token (or keyword usable as identifier) into an
     /// identifier node.
+    /// Create an `.identifier` AST node WITHOUT emitting a semantic event.
+    /// Used when the caller knows the identifier is a declaration name or
+    /// will emit the event itself.
     pub fn parseIdentifier(self: *Parser) !NodeIndex {
         const tok = self.advance();
         return self.addNode(.{
@@ -4450,6 +4488,19 @@ pub const Parser = struct {
             .main_token = tok,
             .data = .{ .lhs = .none, .rhs = .none },
         });
+    }
+
+    /// Expression-position identifier: produces the AST node AND emits a
+    /// `reference(.read)` semantic event.
+    pub fn parseIdentifierRef(self: *Parser) !NodeIndex {
+        const tok = self.advance();
+        const node = try self.addNode(.{
+            .tag = .identifier,
+            .main_token = tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
+        try self.emitReference(.read, node);
+        return node;
     }
 
     /// Check if the identifier at `tok` is a strict-mode future reserved word.
