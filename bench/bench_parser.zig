@@ -560,6 +560,51 @@ pub fn main(init: std.process.Init) !void {
         std.debug.print("  scopes:{d} syms:{d} refs:{d}\n\n", .{ full_scopes, full_syms, full_refs });
     }
 
+    // ── Phase 12b: Default-wired event path (parser emits events + analyzeWithOptions auto-dispatch) ──
+    // This is what downstream callers see after the "pivot": they just call
+    // parse with emit_events=true and analyze with build_cfg=false.
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .emit_events = true,
+            }) catch continue;
+            defer tree.deinit(fba.allocator());
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |res| {
+                var r = res;
+                r.deinit(fba.allocator());
+            } else |_| {}
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .emit_events = true,
+            }) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |res| {
+                var r = res;
+                r.deinit(fba.allocator());
+            } else |_| {}
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Zig-only no-CFG (auto-dispatch)", &times, source.len);
+    }
+
     // ── Phase 13: Equivalence check (event-driven vs tree walker) ──────
     // Runs both paths on the same input and reports count divergence.
     // Useful during migration to track coverage gaps in the event stream.

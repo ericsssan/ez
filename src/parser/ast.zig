@@ -2,6 +2,7 @@ const std = @import("std");
 const TokenTag = @import("token.zig").Tag;
 const Span = @import("span.zig").Span;
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
+const ScopeEvent = @import("scope_events.zig").Event;
 
 pub const ByteOffset = @import("span.zig").ByteOffset;
 
@@ -704,6 +705,10 @@ pub const Ast = struct {
     tokens: TokenList.Slice,
     extra_data: []const u32,
     errors: []const Diagnostic,
+    /// Scope/declare/reference events emitted during parsing.  Empty when the
+    /// parser was invoked without event emission enabled.  When present, the
+    /// event-driven semantic analyzer consumes this instead of walking the tree.
+    scope_events: []const ScopeEvent = &.{},
 
     pub const NodeList = std.MultiArrayList(Node);
     pub const TokenList = std.MultiArrayList(struct {
@@ -723,6 +728,7 @@ pub const Ast = struct {
             allocator.free(err.message);
         }
         allocator.free(self.errors);
+        if (self.scope_events.len > 0) allocator.free(self.scope_events);
         self.* = undefined;
     }
 

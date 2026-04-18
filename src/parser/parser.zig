@@ -178,18 +178,22 @@ pub const Parser = struct {
         /// If non-null, parser emits a linear stream of scope/declare/reference
         /// events into this buffer.  Used by the event-driven semantic analyzer.
         events_out: ?*ScopeEventStream = null,
+        /// Emit scope/declare/reference events into the returned Ast's
+        /// `scope_events` field.  Enables the fast-path semantic analyzer
+        /// automatically when the caller passes the Ast to analyze().
+        emit_events: bool = false,
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
-        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out);
+        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out, opts.emit_events);
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, null);
+        return parseInternal(allocator, source, tokens, language, is_module_file, null, false);
     }
 
-    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream) !Ast {
+    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool) !Ast {
         var p = Parser{
             .source = source,
             .tokens = tokens,
@@ -225,7 +229,7 @@ pub const Parser = struct {
             .in_conditional_extends = false,
             .language = language,
         };
-        p.emit_scope_events = events_out != null;
+        p.emit_scope_events = events_out != null or emit_events;
         defer p.nodes.deinit(allocator);
         defer p.extra_data.deinit(allocator);
         defer p.scratch.deinit(allocator);
@@ -267,8 +271,23 @@ pub const Parser = struct {
         errdefer allocator.free(errors);
         diag_transferred = true;
 
-        // Hand the event stream back to the caller.
-        if (events_out) |out| out.* = p.scope_events;
+        // Hand the event stream back to the caller.  If `events_out` is given,
+        // we transfer ownership there; otherwise if emission was on we also
+        // copy the events into the Ast so downstream callers can find them.
+        const ast_events: []const scope_events_mod.Event = blk: {
+            if (events_out) |out| {
+                out.* = p.scope_events;
+                p.scope_events = .{};
+                break :blk &.{};
+            }
+            if (p.emit_scope_events) {
+                // Transfer into the Ast's owned slice.
+                const s = try p.scope_events.events.toOwnedSlice(allocator);
+                p.scope_events = .{};
+                break :blk s;
+            }
+            break :blk &.{};
+        };
 
         return Ast{
             .source = source,
@@ -276,6 +295,7 @@ pub const Parser = struct {
             .tokens = tokens,
             .extra_data = extra_data,
             .errors = errors,
+            .scope_events = ast_events,
         };
     }
 
@@ -540,6 +560,30 @@ pub const Parser = struct {
             const e = events[i];
             if (e.kind == .reference and e.node == node_u32) {
                 self.scope_events.events.items[i].aux = @intFromEnum(new_kind);
+                return;
+            }
+        }
+    }
+
+    /// Walk back through ALL emitted events (unbounded) to find a reference
+    /// event for `node` and convert it into a declare event with the given
+    /// binding kind.  Used for arrow parameters where the param identifier
+    /// was speculatively parsed as an expression (emitting reference) before
+    /// being reinterpreted as a binding.
+    pub fn convertRefToDeclare(self: *Parser, node: NodeIndex, kind: BindingKindU8) void {
+        if (!self.emit_scope_events) return;
+        const node_u32 = @intFromEnum(node);
+        const events = self.scope_events.events.items;
+        var i: usize = events.len;
+        while (i > 0) {
+            i -= 1;
+            const e = events[i];
+            if (e.kind == .reference and e.node == node_u32) {
+                self.scope_events.events.items[i] = .{
+                    .kind = .declare,
+                    .aux = @intFromEnum(kind),
+                    .node = node_u32,
+                };
                 return;
             }
         }
