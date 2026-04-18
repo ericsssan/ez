@@ -34,6 +34,17 @@ pub var debug_resolve_lookups: u64 = 0;
 pub var debug_resolve_calls: u64 = 0;
 pub var debug_resolve_hits: u64 = 0;
 pub var debug_resolve_depth_sum: u64 = 0;
+
+/// Bench-only: tag frequency for visitNode — helps identify which arms of the
+/// switch dominate.  Compile-time flag keeps this zero-cost when off.
+pub const DEBUG_VISIT_STATS: bool = true;
+pub var debug_visit_nodes: u64 = 0;
+pub var debug_visit_tag_counts: [256]u64 = [_]u64{0} ** 256;
+pub var debug_enter_scope: u64 = 0;
+pub var debug_declare_binding: u64 = 0;
+pub var debug_add_reference: u64 = 0;
+pub var debug_visit_sub_range_calls: u64 = 0;
+pub var debug_visit_sub_range_items: u64 = 0;
 const SymbolId = symbol_mod.SymbolId;
 const SymbolFlags = symbol_mod.SymbolFlags;
 const BindingKind = symbol_mod.BindingKind;
@@ -260,7 +271,7 @@ pub const SemanticAnalyzer = struct {
         const start = self.tok_starts[index];
         const len = self.tok_lens[index];
         if (len > 0) return self.ast.source[start .. start + len];
-        // Zero-len fallback: fall back to the generic path (edge cases only).
+        // Zero-len fallback: fall back to the generic AST path (edge cases only).
         return self.ast.tokenText(index);
     }
 
@@ -477,6 +488,7 @@ pub const SemanticAnalyzer = struct {
     // ── Scope helpers ──────────────────────────────────────
 
     fn enterScope(self: *SemanticAnalyzer, scope_kind: ScopeKind, node: NodeIndex) !ScopeId {
+        if (DEBUG_VISIT_STATS) debug_enter_scope += 1;
         const id = try self.scopes.addScope(scope_kind, self.current_scope, node);
         self.current_scope = id;
         return id;
@@ -497,6 +509,7 @@ pub const SemanticAnalyzer = struct {
         binding_kind: BindingKind,
         scope: ScopeId,
     ) !SymbolId {
+        if (DEBUG_VISIT_STATS) debug_declare_binding += 1;
         // Check for redeclaration in the target scope.
         if (self.findSymbolInScope(name, scope)) |existing_id| {
             const existing_kind = self.symbols.getBindingKind(existing_id);
@@ -545,19 +558,12 @@ pub const SemanticAnalyzer = struct {
     /// Pre-hashes the name once and reuses the hash at each scope level.
     fn resolveReference(self: *SemanticAnalyzer, name: []const u8, ref_id: ReferenceId) void {
         if (DEBUG_RESOLVE_STATS) debug_resolve_calls += 1;
-        const counts = self.scopes.bindings_count.items;
         var scope = self.current_scope;
-        // Quick-skip pass: advance past scopes with zero bindings without
-        // hashing. Typical JS has many empty block scopes (if/while/for
-        // bodies with only statements).
-        while (scope.isValid() and counts[scope.toInt()] == 0) {
-            scope = self.scopes.parent(scope);
-        }
-        if (!scope.isValid()) return; // no binding anywhere in chain → implicit global
+        if (!scope.isValid()) return;
         const name_hash = std.hash.Wyhash.hash(0, name);
         var depth: u64 = 0;
         while (scope.isValid()) {
-            if (counts[scope.toInt()] != 0) {
+            if (true) {
                 if (DEBUG_RESOLVE_STATS) debug_resolve_lookups += 1;
                 const pkey = PrehashedKey{ .scope_id = scope.toInt(), .name = name, .name_hash = name_hash };
                 if (self.scope_binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
@@ -603,7 +609,7 @@ pub const SemanticAnalyzer = struct {
             const ref_id: ReferenceId = @enumFromInt(i);
             const node_idx = self.references.getNode(ref_id);
             if (node_idx == .none) continue;
-            const name = self.ast.tokenText(self.nMainToken(node_idx));
+            const name = self.tokText(self.nMainToken(node_idx));
             // Walk up from the reference's original scope.
             const ref_scope = self.references.getScope(ref_id);
             const name_hash = std.hash.Wyhash.hash(0, name);
@@ -747,8 +753,20 @@ pub const SemanticAnalyzer = struct {
         if (node_int < self.node_reachable.len) {
             self.node_reachable[node_int] = if (self.cfg_alive) 1 else 0;
         }
+        if (DEBUG_VISIT_STATS) {
+            debug_visit_nodes += 1;
+            const t = @intFromEnum(self.nTag(idx));
+            debug_visit_tag_counts[t] += 1;
+        }
 
         const tag = self.nTag(idx);
+        // Early-exit for pure-data leaf nodes (no scope, no bindings, no refs,
+        // no CFG effect).  ~9500 nodes / 36k visits on acorn.js.
+        switch (tag) {
+            .number_literal, .string_literal, .boolean_literal, .null_literal,
+            .bigint_literal, .regex_literal, .template_element => return,
+            else => {},
+        }
         const data = self.nData(idx);
 
         switch (tag) {
@@ -1000,7 +1018,7 @@ pub const SemanticAnalyzer = struct {
                 // so `break label` finds this context, not the enclosing loop/switch
                 if (self.cpb_initialized) {
                     const label_tok = self.nMainToken(idx);
-                    const label_text = self.ast.tokenText(label_tok);
+                    const label_text = self.tokText(label_tok);
                     try self.cpb.pushBreakContext(false, label_text);
                 }
                 const alive_before_label = self.cfg_alive;
@@ -1267,7 +1285,7 @@ pub const SemanticAnalyzer = struct {
             .ts_interface_decl => {
                 // Register interface name in scope (for ESLint no-redeclare etc.)
                 const iface_data = self.ast.extraData(ast_mod.InterfaceData, @intFromEnum(data.lhs));
-                const iface_name = self.ast.tokenText(iface_data.name);
+                const iface_name = self.tokText(iface_data.name);
                 _ = try self.declareBinding(iface_name, idx, .interface_decl, self.current_scope);
                 const iface_has_type_params = iface_data.type_params != iface_data.type_params_end;
                 if (iface_has_type_params) {
@@ -1285,7 +1303,7 @@ pub const SemanticAnalyzer = struct {
             .ts_type_alias_decl => {
                 // Register type alias name in scope (for ESLint no-redeclare etc.)
                 const alias_data = self.ast.extraData(ast_mod.TypeAliasData, @intFromEnum(data.lhs));
-                const alias_name = self.ast.tokenText(alias_data.name);
+                const alias_name = self.tokText(alias_data.name);
                 _ = try self.declareBinding(alias_name, idx, .type_decl, self.current_scope);
                 if (alias_data.type_params != alias_data.type_params_end) {
                     _ = try self.enterScope(.block, idx);
@@ -1296,7 +1314,7 @@ pub const SemanticAnalyzer = struct {
             .ts_enum_decl => {
                 // Register enum name in scope
                 const enum_data = self.ast.extraData(ast_mod.EnumData, @intFromEnum(data.lhs));
-                const enum_name = self.ast.tokenText(enum_data.name);
+                const enum_name = self.tokText(enum_data.name);
                 _ = try self.declareBinding(enum_name, idx, .enum_decl, self.current_scope);
                 try self.visitSubRange(.{ .start = enum_data.members_start, .end = enum_data.members_end });
             },
@@ -1304,7 +1322,7 @@ pub const SemanticAnalyzer = struct {
             .ts_namespace_decl, .ts_module_decl => {
                 // Register namespace/module name in scope if the id is an identifier node
                 if (data.lhs != .none and self.nTag(data.lhs) == .identifier) {
-                    const ns_name = self.ast.tokenText(self.nMainToken(data.lhs));
+                    const ns_name = self.tokText(self.nMainToken(data.lhs));
                     _ = try self.declareBinding(ns_name, data.lhs, .namespace_decl, self.current_scope);
                 }
                 // Inline visitBlockStmt but mark the body scope as a namespace body so that
@@ -1325,7 +1343,7 @@ pub const SemanticAnalyzer = struct {
                 // Register name in current scope (hoisted), but do not create a function scope.
                 const fn_data = self.ast.extraData(ast_mod.FnData, @intFromEnum(data.lhs));
                 if (fn_data.name != .none) {
-                    const name = self.ast.tokenText(self.nMainToken(fn_data.name));
+                    const name = self.tokText(self.nMainToken(fn_data.name));
                     _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
                 }
             },
@@ -1390,7 +1408,7 @@ pub const SemanticAnalyzer = struct {
                 // Labeled break — label is a real identifier node in lhs.
                 if (self.cpb_initialized) {
                     const label_tok = self.nMainToken(data.lhs);
-                    const label_text = self.ast.tokenText(label_tok);
+                    const label_text = self.tokText(label_tok);
                     try self.cpb.makeBreak(label_text, idx);
                 }
                 // Labeled break still exits a breakable context.
@@ -1410,7 +1428,7 @@ pub const SemanticAnalyzer = struct {
             .continue_label => {
                 if (self.cpb_initialized) {
                     const label_tok = self.nMainToken(data.lhs);
-                    const label_text = self.ast.tokenText(label_tok);
+                    const label_text = self.tokText(label_tok);
                     try self.cpb.makeContinue(label_text, idx);
                 }
                 // Labeled continue targets a specific outer loop; without label resolution
@@ -1430,7 +1448,7 @@ pub const SemanticAnalyzer = struct {
                 // Create a read reference for identifier locals so rules like
                 // no-use-before-define can detect uses of variables in export lists.
                 if (data.lhs != .none and self.nTag(data.lhs) == .property_ident) {
-                    const name = self.ast.tokenText(self.nMainToken(data.lhs));
+                    const name = self.tokText(self.nMainToken(data.lhs));
                     const ref_id = try self.references.addReference(.read, data.lhs, self.current_scope, .none);
                     self.resolveReference(name, ref_id);
                 }
@@ -1490,8 +1508,8 @@ pub const SemanticAnalyzer = struct {
             const local_tok = self.nMainToken(spec_data.lhs);
             const exported_tok = self.nMainToken(spec_data.rhs);
 
-            const exported_name = self.ast.tokenText(exported_tok);
-            const local_name = self.ast.tokenText(local_tok);
+            const exported_name = self.tokText(exported_tok);
+            const local_name = self.tokText(local_tok);
 
             try self.exported_names.append(self.allocator, .{
                 .exported_name = exported_name,
@@ -1578,6 +1596,8 @@ pub const SemanticAnalyzer = struct {
             if (name.len == 0) continue;
             const sym_id = try self.symbols.addSymbol(name, flags, .implicit_global, self.current_scope, .none);
             try self.scope_binding_map.put(self.allocator, .{ .scope_id = self.current_scope.toInt(), .name = name }, sym_id);
+            // Track binding count so resolveReference won't skip this scope.
+            self.scopes.bindings_count.items[self.current_scope.toInt()] += 1;
         }
     }
 
@@ -1591,7 +1611,7 @@ pub const SemanticAnalyzer = struct {
         if (l_brace_tok >= 2 and
             token_tags[l_brace_tok - 2] == .kw_declare and
             token_tags[l_brace_tok - 1] == .identifier and
-            std.mem.eql(u8, self.ast.tokenText(l_brace_tok - 1), "global"))
+            std.mem.eql(u8, self.tokText(l_brace_tok - 1), "global"))
         {
             var scope_flags = self.scopes.getFlags(scope);
             scope_flags.is_namespace_body = true;
@@ -1844,7 +1864,7 @@ pub const SemanticAnalyzer = struct {
 
         // Declare the function name in the current (outer) scope — hoisted.
         if (fn_data.name != .none) {
-            const name = self.ast.tokenText(self.nMainToken(fn_data.name));
+            const name = self.tokText(self.nMainToken(fn_data.name));
             _ = try self.declareBinding(name, fn_data.name, .function_decl, self.current_scope);
         }
 
@@ -1889,7 +1909,7 @@ pub const SemanticAnalyzer = struct {
         // initializer of a matching outer variable — i.e., `var f = function f() {}`.
         // Otherwise use .function_decl so no-shadow detects the real shadow.
         if (fn_data.name != .none) {
-            const name = self.ast.tokenText(self.nMainToken(fn_data.name));
+            const name = self.tokText(self.nMainToken(fn_data.name));
             const kind: BindingKind = if (self.fn_expr_exceptions[@intFromEnum(idx)] != 0) .fn_expr_name else .function_decl;
             _ = try self.declareBinding(name, fn_data.name, kind, self.current_scope);
         }
@@ -1961,7 +1981,7 @@ pub const SemanticAnalyzer = struct {
         for (items) |raw| {
             const tp_idx: NodeIndex = @enumFromInt(raw);
             if (tp_idx == .none) continue;
-            const tp_name = self.ast.tokenText(self.nMainToken(tp_idx));
+            const tp_name = self.tokText(self.nMainToken(tp_idx));
             _ = try self.declareBinding(tp_name, tp_idx, .type_param, self.current_scope);
         }
     }
@@ -1973,7 +1993,7 @@ pub const SemanticAnalyzer = struct {
 
         // Declare the class name in the outer scope (TDZ).
         if (class_data.name != .none) {
-            const name = self.ast.tokenText(self.nMainToken(class_data.name));
+            const name = self.tokText(self.nMainToken(class_data.name));
             _ = try self.declareBinding(name, class_data.name, .class_decl, self.current_scope);
         }
 
@@ -1987,7 +2007,7 @@ pub const SemanticAnalyzer = struct {
         // Use .class_expr_name (is_expr_name=true) so no-shadow treats this inner
         // binding as exempt — it's always the class's own self-reference, never a shadow.
         if (class_data.name != .none) {
-            const name = self.ast.tokenText(self.nMainToken(class_data.name));
+            const name = self.tokText(self.nMainToken(class_data.name));
             _ = try self.declareBinding(name, class_data.name, .class_expr_name, self.current_scope);
         }
 
@@ -2012,7 +2032,7 @@ pub const SemanticAnalyzer = struct {
         // direct initializer of a matching outer variable — i.e., `var A = class A {}`.
         // Otherwise use .class_decl so no-shadow detects the real shadow.
         if (class_data.name != .none) {
-            const name = self.ast.tokenText(self.nMainToken(class_data.name));
+            const name = self.tokText(self.nMainToken(class_data.name));
             const kind: BindingKind = if (self.fn_expr_exceptions[@intFromEnum(idx)] != 0) .class_expr_name else .class_decl;
             _ = try self.declareBinding(name, class_data.name, kind, self.current_scope);
         }
@@ -2083,7 +2103,7 @@ pub const SemanticAnalyzer = struct {
                 lhs_node = self.nData(lhs_node).lhs;
             }
             if (lhs_node != .none and self.nTag(lhs_node) == .identifier) {
-                const binding_name = self.ast.tokenText(self.nMainToken(lhs_node));
+                const binding_name = self.tokText(self.nMainToken(lhs_node));
                 try self.markFnExprExceptions(binding_name, data.rhs);
             }
         }
@@ -2147,7 +2167,7 @@ pub const SemanticAnalyzer = struct {
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr => {
                 const fn_data = self.ast.extraData(FnData, @intFromEnum(data.lhs));
                 if (fn_data.name != .none) {
-                    const name = self.ast.tokenText(self.nMainToken(fn_data.name));
+                    const name = self.tokText(self.nMainToken(fn_data.name));
                     if (std.mem.eql(u8, name, binding_name)) {
                         self.fn_expr_exceptions[@intFromEnum(init_node)] = 1;
                     }
@@ -2157,7 +2177,7 @@ pub const SemanticAnalyzer = struct {
             .class_expr => {
                 const class_data = self.ast.extraData(ClassData, @intFromEnum(data.lhs));
                 if (class_data.name != .none) {
-                    const name = self.ast.tokenText(self.nMainToken(class_data.name));
+                    const name = self.tokText(self.nMainToken(class_data.name));
                     if (std.mem.eql(u8, name, binding_name)) {
                         self.fn_expr_exceptions[@intFromEnum(init_node)] = 1;
                     }
@@ -2192,7 +2212,7 @@ pub const SemanticAnalyzer = struct {
         // import { x as y } — rhs = local identifier node (real node).
         const data = self.nData(idx);
         const local_tok = self.nMainToken(data.rhs);
-        const name = self.ast.tokenText(local_tok);
+        const name = self.tokText(local_tok);
         // Detect `import { type foo }`: the token immediately before the imported name is kw_type.
         const imported_tok = self.nMainToken(idx);
         const token_tags = self.ast.tokens.items(.tag);
@@ -2205,7 +2225,7 @@ pub const SemanticAnalyzer = struct {
         // import x — lhs = local identifier node.
         const data = self.nData(idx);
         const local_tok = self.nMainToken(data.lhs);
-        const name = self.ast.tokenText(local_tok);
+        const name = self.tokText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
 
@@ -2213,14 +2233,15 @@ pub const SemanticAnalyzer = struct {
         // import * as x — lhs = local identifier node.
         const data = self.nData(idx);
         const local_tok = self.nMainToken(data.lhs);
-        const name = self.ast.tokenText(local_tok);
+        const name = self.tokText(local_tok);
         _ = try self.declareBinding(name, idx, .import_binding, self.current_scope);
     }
 
     // ── Identifier references ──────────────────────────────
 
     fn visitIdentifier(self: *SemanticAnalyzer, idx: NodeIndex) !void {
-        const name = self.ast.tokenText(self.nMainToken(idx));
+        if (DEBUG_VISIT_STATS) debug_add_reference += 1;
+        const name = self.tokText(self.nMainToken(idx));
         const ref_id = try self.references.addReference(.read, idx, self.current_scope, .none);
         self.resolveReference(name, ref_id);
     }
@@ -2237,7 +2258,7 @@ pub const SemanticAnalyzer = struct {
         const tag = self.nTag(name_idx);
         switch (tag) {
             .jsx_identifier => {
-                const name = self.ast.tokenText(self.nMainToken(name_idx));
+                const name = self.tokText(self.nMainToken(name_idx));
                 if (name.len > 0 and std.ascii.isUpper(name[0])) {
                     const ref_id = try self.references.addReference(.read, name_idx, self.current_scope, .none);
                     self.resolveReference(name, ref_id);
@@ -2259,7 +2280,7 @@ pub const SemanticAnalyzer = struct {
         const tag = self.nTag(name_idx);
         switch (tag) {
             .jsx_identifier => {
-                const name = self.ast.tokenText(self.nMainToken(name_idx));
+                const name = self.tokText(self.nMainToken(name_idx));
                 const ref_id = try self.references.addReference(.read, name_idx, self.current_scope, .none);
                 self.resolveReference(name, ref_id);
             },
@@ -2279,7 +2300,7 @@ pub const SemanticAnalyzer = struct {
         // should produce write (or read_write) references, not read references.
         if (data.lhs != .none) {
             if (self.nTag(data.lhs) == .identifier) {
-                const name = self.ast.tokenText(self.nMainToken(data.lhs));
+                const name = self.tokText(self.nMainToken(data.lhs));
                 const ref_id = try self.references.addReference(kind, data.lhs, self.current_scope, data.rhs);
                 self.resolveReference(name, ref_id);
             } else {
@@ -2296,7 +2317,7 @@ pub const SemanticAnalyzer = struct {
     fn visitLogicalAssignment(self: *SemanticAnalyzer, data: Node.Data, kind: ReferenceKind) !void {
         if (data.lhs != .none) {
             if (self.nTag(data.lhs) == .identifier) {
-                const name = self.ast.tokenText(self.nMainToken(data.lhs));
+                const name = self.tokText(self.nMainToken(data.lhs));
                 const ref_id = try self.references.addReference(kind, data.lhs, self.current_scope, data.rhs);
                 self.resolveReference(name, ref_id);
             } else {
@@ -2315,7 +2336,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitUpdateExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
         if (data.lhs != .none and self.nTag(data.lhs) == .identifier) {
-            const name = self.ast.tokenText(self.nMainToken(data.lhs));
+            const name = self.tokText(self.nMainToken(data.lhs));
             // Update expressions (x++, x--) have no explicit write expression.
             const ref_id = try self.references.addReference(.read_write, data.lhs, self.current_scope, .none);
             self.resolveReference(name, ref_id);
@@ -2339,7 +2360,7 @@ pub const SemanticAnalyzer = struct {
         const data = self.nData(node);
         switch (tag) {
             .identifier => {
-                const name = self.ast.tokenText(self.nMainToken(node));
+                const name = self.tokText(self.nMainToken(node));
                 const ref_id = try self.references.addReference(.write, node, self.current_scope, write_expr);
                 self.resolveReference(name, ref_id);
             },
@@ -2440,7 +2461,7 @@ pub const SemanticAnalyzer = struct {
         if (tag != .member_expr and tag != .optional_member_expr) return false;
         const base = self.nData(node).lhs;
         if (base == .none or self.nTag(base) != .identifier) return false;
-        const name = self.ast.tokenText(self.nMainToken(base));
+        const name = self.tokText(self.nMainToken(base));
         const name_hash = std.hash.Wyhash.hash(0, name);
         var scope = self.current_scope;
         while (scope.isValid()) {
@@ -2457,7 +2478,7 @@ pub const SemanticAnalyzer = struct {
     fn visitLValueBase(self: *SemanticAnalyzer, node: NodeIndex) !void {
         if (node == .none) return;
         if (self.nTag(node) == .identifier) {
-            const name = self.ast.tokenText(self.nMainToken(node));
+            const name = self.tokText(self.nMainToken(node));
             const ref_id = try self.references.addReference(.read, node, self.current_scope, .none);
             self.resolveReference(name, ref_id);
             // Mark the resolved symbol as having a member written.
@@ -2472,7 +2493,7 @@ pub const SemanticAnalyzer = struct {
 
     fn visitTypeofExpr(self: *SemanticAnalyzer, data: Node.Data) !void {
         if (data.lhs != .none and self.nTag(data.lhs) == .identifier) {
-            const name = self.ast.tokenText(self.nMainToken(data.lhs));
+            const name = self.tokText(self.nMainToken(data.lhs));
             const ref_id = try self.references.addReference(.type_of, data.lhs, self.current_scope, .none);
             self.resolveReference(name, ref_id);
         } else {
@@ -2532,7 +2553,7 @@ pub const SemanticAnalyzer = struct {
 
         switch (tag) {
             .identifier => {
-                const name = self.ast.tokenText(self.nMainToken(node));
+                const name = self.tokText(self.nMainToken(node));
                 _ = try self.declareBinding(name, node, binding_kind, scope);
             },
             // TS type annotation wraps a binding: `x: Type` — extract from lhs
@@ -2590,7 +2611,7 @@ pub const SemanticAnalyzer = struct {
                         lhs_node = self.nData(lhs_node).lhs;
                     }
                     if (lhs_node != .none and self.nTag(lhs_node) == .identifier) {
-                        const asgn_name = self.ast.tokenText(self.nMainToken(lhs_node));
+                        const asgn_name = self.tokText(self.nMainToken(lhs_node));
                         try self.markFnExprExceptions(asgn_name, data.rhs);
                     }
                 }
@@ -2630,6 +2651,10 @@ pub const SemanticAnalyzer = struct {
 
     fn visitSubRange(self: *SemanticAnalyzer, range: SubRange) !void {
         const items = self.ast.extraSlice(range);
+        if (DEBUG_VISIT_STATS) {
+            debug_visit_sub_range_calls += 1;
+            debug_visit_sub_range_items += items.len;
+        }
         for (items) |raw| {
             const child: NodeIndex = @enumFromInt(raw);
             try self.visitNode(child);

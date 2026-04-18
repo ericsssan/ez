@@ -13,6 +13,14 @@ const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const Severity = @import("diagnostic.zig").Severity;
 
 const TokenList = Ast.TokenList;
+const scope_events_mod = @import("scope_events.zig");
+const ScopeEventStream = scope_events_mod.EventStream;
+const ScopeEvent = scope_events_mod.Event;
+const ScopeEventKind = scope_events_mod.EventKind;
+// Scope/binding kinds used for the event stream — mirror the semantic tables.
+const ScopeKindU8 = @import("scope.zig").ScopeKind;
+const BindingKindU8 = @import("symbol.zig").BindingKind;
+const ReferenceKindU8 = @import("reference.zig").ReferenceKind;
 
 /// Resolve \uXXXX and \u{XXXX} escapes in identifier text.
 /// Returns the resolved string as a slice of `buf`, or null if invalid.
@@ -119,6 +127,11 @@ pub const Parser = struct {
     extra_data: std.ArrayList(u32),
     scratch: std.ArrayList(u32),
     diagnostics: std.ArrayList(Diagnostic),
+    /// Semantic events emitted during parse.  Enabled when `emit_scope_events`
+    /// is true — zero-cost otherwise (all `emitScope*` helpers become dead code
+    /// that LLVM eliminates).
+    scope_events: ScopeEventStream = .{},
+    emit_scope_events: bool = false,
     gpa: std.mem.Allocator,
     max_nodes: usize,
 
@@ -150,11 +163,27 @@ pub const Parser = struct {
     /// Main entry point. Creates a Parser, parses all top-level statements,
     /// builds the root node, and returns the completed Ast.
     pub fn parse(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice) !Ast {
-        return parseWithLanguage(allocator, source, tokens, .js, false);
+        return parseWithOptions(allocator, source, tokens, .{});
+    }
+
+    pub const ParseOptions = struct {
+        language: Language = .js,
+        is_module: bool = false,
+        /// If non-null, parser emits a linear stream of scope/declare/reference
+        /// events into this buffer.  Used by the event-driven semantic analyzer.
+        events_out: ?*ScopeEventStream = null,
+    };
+
+    pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
+        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out);
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
+        return parseInternal(allocator, source, tokens, language, is_module_file, null);
+    }
+
+    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream) !Ast {
         var p = Parser{
             .source = source,
             .tokens = tokens,
@@ -190,9 +219,12 @@ pub const Parser = struct {
             .in_conditional_extends = false,
             .language = language,
         };
+        p.emit_scope_events = events_out != null;
         defer p.nodes.deinit(allocator);
         defer p.extra_data.deinit(allocator);
         defer p.scratch.deinit(allocator);
+        // If events were requested, hand the stream back; otherwise free it.
+        defer if (events_out == null) p.scope_events.deinit(allocator);
         // Note: diagnostics ownership transfers to the returned Ast,
         // but we need a defer in case of early error.
         var diag_transferred = false;
@@ -218,6 +250,9 @@ pub const Parser = struct {
         // of top-level statements). Pre-size generously to avoid growth.
         try p.scratch.ensureTotalCapacity(allocator, @max(1024, tokens.len / 16));
 
+        // Pre-size the event buffer if emission is on (≈ tokens.len / 3 events on typical JS).
+        if (p.emit_scope_events) try p.scope_events.ensureCapacity(allocator, tokens.len / 3);
+
         try p.parseProgram();
 
         const extra_data = try p.extra_data.toOwnedSlice(allocator);
@@ -225,6 +260,9 @@ pub const Parser = struct {
         const errors = try p.diagnostics.toOwnedSlice(allocator);
         errdefer allocator.free(errors);
         diag_transferred = true;
+
+        // Hand the event stream back to the caller.
+        if (events_out) |out| out.* = p.scope_events;
 
         return Ast{
             .source = source,
@@ -349,6 +387,47 @@ pub const Parser = struct {
         }
         self.nodes.appendAssumeCapacity(node);
         return NodeIndex.fromInt(result);
+    }
+
+    // ── Semantic event emission (opt-in) ───────────────────────────
+    // These helpers push a scope event onto the stream when emission is on.
+    // When off, LLVM sees `emit_scope_events == false` at the call site and
+    // the body is eliminated — zero cost for the default parse path.
+
+    pub inline fn emitScopeOpen(self: *Parser, kind: ScopeKindU8, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .scope_open,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitScopeClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .scope_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitDeclare(self: *Parser, kind: BindingKindU8, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .declare,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitReference(self: *Parser, kind: ReferenceKindU8, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .reference,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
     }
 
     /// Refresh cached node SoA field pointers after nodes grows.  Must be
@@ -518,6 +597,9 @@ pub const Parser = struct {
         // Detect "use strict" directive prologue
         self.checkDirectivePrologue();
 
+        // Open module/global scope for event stream.
+        try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
+
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -554,6 +636,9 @@ pub const Parser = struct {
             .lhs = NodeIndex.fromInt(range.start),
             .rhs = NodeIndex.fromInt(range.end),
         };
+
+        // Close module/global scope for event stream.
+        try self.emitScopeClose(.root);
     }
 
     // ────────────────────────────────────────────────────────────
@@ -805,8 +890,13 @@ pub const Parser = struct {
         const prev_in_block = self.in_block;
         self.in_block = true;
         defer self.in_block = prev_in_block;
+        // Emit block scope open; corresponding close is emitted below.  We use
+        // `.none` as the node index because the block_stmt node isn't created
+        // until after the body is parsed — the consumer only needs kind + order.
+        try self.emitScopeOpen(.block, .none);
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
+        try self.emitScopeClose(.none);
 
         return self.addNode(.{
             .tag = .block_stmt,

@@ -857,7 +857,7 @@ pub const Ast = struct {
     }
 
     /// Get a slice of node indices from extra_data.
-    pub fn extraSlice(self: *const Ast, range: SubRange) []const u32 {
+    pub inline fn extraSlice(self: *const Ast, range: SubRange) []const u32 {
         return self.extra_data[range.start..range.end];
     }
 

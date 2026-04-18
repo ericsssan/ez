@@ -5,6 +5,7 @@ const Parser = ez.Parser;
 const js_buffer = ez.js_buffer;
 const semantic_mod = ez.semantic;
 const parent_builder = ez.parent_builder;
+const scope_events = ez.scope_events;
 
 // Pre-allocated working buffer replaces per-iteration GPA allocations.
 // Reset between iterations is a single pointer store — no syscalls, no page faults.
@@ -320,6 +321,106 @@ pub fn main(init: std.process.Init) !void {
         printStats("Zig-only no-CFG", &times, source.len);
     }
 
+    // ── Phase 9: Lex + Parse WITH event emission ──────────────────────
+    // Measures the overhead of parser-side scope/reference event emission.
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var events_total: u64 = 0;
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
+            defer tok.deinit(fba.allocator());
+            var ev: scope_events.EventStream = .{};
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .events_out = &ev,
+            }) catch continue;
+            tree.deinit(fba.allocator());
+            ev.deinit(fba.allocator());
+        }
+        for (0..ITERATIONS) |iter| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var tok = Lexer.tokenize(fba.allocator(), source) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tok.deinit(fba.allocator());
+            var ev: scope_events.EventStream = .{};
+            var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+                .is_module = true,
+                .events_out = &ev,
+            }) catch {
+                times[iter] = 0;
+                continue;
+            };
+            defer tree.deinit(fba.allocator());
+            defer ev.deinit(fba.allocator());
+            events_total = ev.len();
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Lex + Parse (events on)", &times, source.len);
+        std.debug.print("  events per iter: {d}\n\n", .{events_total});
+    }
+
+    // ── Phase 10: Event-consumer sanity (iterate the stream in a tight loop) ──
+    // Measures the raw cost of consuming N events — the upper-bound speed of
+    // an event-driven semantic analyzer before adding any real work.
+    {
+        var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        // Build the event stream once outside the timed loop.
+        var tok = Lexer.tokenize(fba.allocator(), source) catch return;
+        defer tok.deinit(fba.allocator());
+        var ev: scope_events.EventStream = .{};
+        defer ev.deinit(fba.allocator());
+        var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
+            .is_module = true,
+            .events_out = &ev,
+        }) catch return;
+        defer tree.deinit(fba.allocator());
+        const all_events = ev.items();
+
+        // Warmup + timed loop.
+        for (0..WARMUP) |_| {
+            var depth: u32 = 0;
+            var decls: u32 = 0;
+            var refs: u32 = 0;
+            for (all_events) |e| {
+                switch (e.kind) {
+                    .scope_open => depth += 1,
+                    .scope_close => depth -|= 1,
+                    .declare => decls += 1,
+                    .reference => refs += 1,
+                }
+            }
+            std.mem.doNotOptimizeAway(depth);
+            std.mem.doNotOptimizeAway(decls);
+            std.mem.doNotOptimizeAway(refs);
+        }
+        for (0..ITERATIONS) |iter| {
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var depth: u32 = 0;
+            var decls: u32 = 0;
+            var refs: u32 = 0;
+            for (all_events) |e| {
+                switch (e.kind) {
+                    .scope_open => depth += 1,
+                    .scope_close => depth -|= 1,
+                    .declare => decls += 1,
+                    .reference => refs += 1,
+                }
+            }
+            std.mem.doNotOptimizeAway(depth);
+            std.mem.doNotOptimizeAway(decls);
+            std.mem.doNotOptimizeAway(refs);
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        printStats("Event-stream scan only", &times, source.len);
+        std.debug.print("  events: {d} ({d} bytes)\n\n", .{ all_events.len, all_events.len * @sizeOf(scope_events.Event) });
+    }
+
     // ── Phase 9: Semantic sub-phase timings ──────────────────────────
     // Accumulate per-sub-phase time over ITERATIONS and report averages.
     {
@@ -340,11 +441,18 @@ pub fn main(init: std.process.Init) !void {
         }
         var ran: u64 = 0;
         var ran_cfg: u64 = 0;
-        // Reset lookup counter before the pass.
+        // Reset counters before the pass.
         semantic_mod.debug_resolve_lookups = 0;
         semantic_mod.debug_resolve_calls = 0;
         semantic_mod.debug_resolve_hits = 0;
         semantic_mod.debug_resolve_depth_sum = 0;
+        semantic_mod.debug_visit_nodes = 0;
+        semantic_mod.debug_enter_scope = 0;
+        semantic_mod.debug_declare_binding = 0;
+        semantic_mod.debug_add_reference = 0;
+        semantic_mod.debug_visit_sub_range_calls = 0;
+        semantic_mod.debug_visit_sub_range_items = 0;
+        for (&semantic_mod.debug_visit_tag_counts) |*c| c.* = 0;
 
         // No-CFG pass
         for (0..ITERATIONS) |_| {
@@ -415,6 +523,38 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("  validateExports:    {d:.2}\n", .{@as(f64, @floatFromInt(acc.validate_exports_ns / ran)) / 1000.0});
             std.debug.print("  cfg_finish:         {d:.2}\n", .{@as(f64, @floatFromInt(acc.cfg_finish_ns / ran)) / 1000.0});
             std.debug.print("  total:              {d:.2}\n", .{@as(f64, @floatFromInt(acc.total_ns / ran)) / 1000.0});
+
+            // Visit breakdown by operation
+            std.debug.print("\n=== Visit-pass operation counts (per iter) ===\n", .{});
+            std.debug.print("  nodes visited:          {d}\n", .{ semantic_mod.debug_visit_nodes / ran });
+            std.debug.print("  enterScope calls:       {d}\n", .{ semantic_mod.debug_enter_scope / ran });
+            std.debug.print("  declareBinding calls:   {d}\n", .{ semantic_mod.debug_declare_binding / ran });
+            std.debug.print("  addReference calls:     {d}\n", .{ semantic_mod.debug_add_reference / ran });
+            std.debug.print("  visitSubRange calls:    {d}\n", .{ semantic_mod.debug_visit_sub_range_calls / ran });
+            std.debug.print("  visitSubRange items:    {d}\n", .{ semantic_mod.debug_visit_sub_range_items / ran });
+
+            // Top tags by visit count
+            std.debug.print("\n=== Top 15 node tags visited (per iter) ===\n", .{});
+            var top_tags: [16]struct { tag: usize, count: u64 } = undefined;
+            for (&top_tags) |*t| t.* = .{ .tag = 0, .count = 0 };
+            for (semantic_mod.debug_visit_tag_counts[0..], 0..) |cnt, i| {
+                const per_iter = cnt / ran;
+                if (per_iter == 0) continue;
+                // Insert in sorted order, drop smallest.
+                var ins_idx: usize = 15;
+                while (ins_idx > 0 and top_tags[ins_idx - 1].count < per_iter) : (ins_idx -= 1) {}
+                if (ins_idx < 15) {
+                    var k: usize = 14;
+                    while (k > ins_idx) : (k -= 1) top_tags[k] = top_tags[k - 1];
+                    top_tags[ins_idx] = .{ .tag = i, .count = per_iter };
+                }
+            }
+            for (top_tags[0..15]) |t| {
+                if (t.count == 0) break;
+                // Look up tag name via @tagName on the enum.
+                const tag_enum: @import("ez").ast.Node.Tag = @enumFromInt(t.tag);
+                std.debug.print("  {d:>5}   {s}\n", .{ t.count, @tagName(tag_enum) });
+            }
         }
         if (ran_cfg > 0) {
             std.debug.print("\n=== Semantic sub-phases (WITH CFG, avg of {d} iters, µs) ===\n", .{ran_cfg});

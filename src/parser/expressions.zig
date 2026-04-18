@@ -883,11 +883,13 @@ fn parseLiteral(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 
 fn parseIdentifier(p: *Parser) Error!NodeIndex {
     const tok = p.advance();
-    return p.addNode(.{
+    const node = try p.addNode(.{
         .tag = .identifier,
         .main_token = tok,
         .data = .{ .lhs = .none, .rhs = .none },
     });
+    try p.emitReference(.read, node);
+    return node;
 }
 
 fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
@@ -896,11 +898,13 @@ fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
     if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
         return parseArrowFunctionBody(p, tok, false);
     }
-    return p.addNode(.{
+    const node = try p.addNode(.{
         .tag = .identifier,
         .main_token = tok,
         .data = .{ .lhs = .none, .rhs = .none },
     });
+    try p.emitReference(.read, node);
+    return node;
 }
 
 // ── async expression or identifier ───────────────────────────────
