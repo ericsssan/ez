@@ -105,30 +105,48 @@ pub const Event = struct {
 // Manages parallel segment arrays. Each element in segments_list is
 // a slice of `count` segments representing one step in each fork.
 
+const FC_INLINE_CAP: u32 = 2;
+
 const ForkContext = struct {
     count: u32,
     upper: ?*ForkContext,
-    // segments_list: ArrayList of segment-ID slices (each slice has `count` elements)
-    // We flatten this as: segments_list stores indices into a flat pool.
-    segments_list: std.ArrayListUnmanaged([]SegmentId),
+    // Inline storage for the first FC_INLINE_CAP entries — most ForkContexts
+    // hold ≤2 segment-ID slices before being discarded.  Avoids the default
+    // ArrayList 0→8 grow allocation per init.
+    sl_inline: [FC_INLINE_CAP][]SegmentId,
+    sl_count: u32,
+    // Heap spill for entries beyond the inline buffer.
+    sl_heap: std.ArrayListUnmanaged([]SegmentId),
     allocator: Allocator,
 
     fn init(alloc: Allocator, upper: ?*ForkContext, count: u32) ForkContext {
         return .{
             .count = count,
             .upper = upper,
-            .segments_list = .empty,
+            .sl_inline = undefined,
+            .sl_count = 0,
+            .sl_heap = .empty,
             .allocator = alloc,
         };
     }
 
+    inline fn totalLen(self: *const ForkContext) usize {
+        return @as(usize, self.sl_count) + self.sl_heap.items.len;
+    }
+
+    inline fn getEntry(self: *const ForkContext, idx: usize) []SegmentId {
+        if (idx < self.sl_count) return self.sl_inline[idx];
+        return self.sl_heap.items[idx - self.sl_count];
+    }
+
     fn head(self: *const ForkContext) []SegmentId {
-        if (self.segments_list.items.len == 0) return &.{};
-        return self.segments_list.items[self.segments_list.items.len - 1];
+        const n = self.totalLen();
+        if (n == 0) return &.{};
+        return self.getEntry(n - 1);
     }
 
     fn empty(self: *const ForkContext) bool {
-        return self.segments_list.items.len == 0;
+        return self.sl_count == 0 and self.sl_heap.items.len == 0;
     }
 
     fn reachable(self: *const ForkContext, builder: *const CodePathBuilder) bool {
@@ -139,26 +157,47 @@ const ForkContext = struct {
         return false;
     }
 
+    fn pushEntry(self: *ForkContext, entry: []SegmentId) !void {
+        if (self.sl_count < FC_INLINE_CAP) {
+            self.sl_inline[self.sl_count] = entry;
+            self.sl_count += 1;
+            return;
+        }
+        try self.sl_heap.append(self.allocator, entry);
+    }
+
+    fn setLastEntry(self: *ForkContext, entry: []SegmentId) void {
+        if (self.sl_heap.items.len > 0) {
+            self.sl_heap.items[self.sl_heap.items.len - 1] = entry;
+            return;
+        }
+        // Must be in inline buffer (sl_count > 0 guaranteed by caller).
+        self.sl_inline[self.sl_count - 1] = entry;
+    }
+
     fn add(self: *ForkContext, segments: []SegmentId, builder: *CodePathBuilder) !void {
         const merged = try mergeExtraSegments(self, segments, builder);
-        try self.segments_list.append(self.allocator, merged);
+        try self.pushEntry(merged);
     }
 
     fn replaceHead(self: *ForkContext, segments: []SegmentId, builder: *CodePathBuilder) !void {
         const merged = try mergeExtraSegments(self, segments, builder);
-        if (self.segments_list.items.len > 0) {
-            self.segments_list.items[self.segments_list.items.len - 1] = merged;
+        if (self.totalLen() > 0) {
+            self.setLastEntry(merged);
         } else {
-            try self.segments_list.append(self.allocator, merged);
+            try self.pushEntry(merged);
         }
     }
 
     fn addAll(self: *ForkContext, other: *const ForkContext) !void {
-        try self.segments_list.appendSlice(self.allocator, other.segments_list.items);
+        const other_inline_n = other.sl_count;
+        for (0..other_inline_n) |i| try self.pushEntry(other.sl_inline[i]);
+        for (other.sl_heap.items) |entry| try self.pushEntry(entry);
     }
 
     fn clear(self: *ForkContext) void {
-        self.segments_list.clearRetainingCapacity();
+        self.sl_count = 0;
+        self.sl_heap.clearRetainingCapacity();
     }
 
     /// Create new segments from a range of the segments_list.
@@ -177,11 +216,10 @@ const ForkContext = struct {
     const CreateMode = enum { next, unreachable_seg, disconnected };
 
     fn createSegments(self: *ForkContext, start_idx: i32, end_idx: i32, builder: *CodePathBuilder, mode: CreateMode) ![]SegmentId {
-        const list = self.segments_list.items;
-        const len: i32 = @intCast(list.len);
+        const total: i32 = @intCast(self.totalLen());
 
         // Guard: if the list is empty, create segments with no prev
-        if (len == 0) {
+        if (total == 0) {
             const result = try self.allocator.alloc(SegmentId, self.count);
             for (0..self.count) |i| {
                 result[i] = switch (mode) {
@@ -193,24 +231,24 @@ const ForkContext = struct {
             return result;
         }
 
-        const norm_start: usize = @intCast(if (start_idx >= 0) start_idx else len + start_idx);
-        const norm_end: usize = @intCast(if (end_idx >= 0) end_idx else len + end_idx);
+        const norm_start: usize = @intCast(if (start_idx >= 0) start_idx else total + start_idx);
+        const norm_end: usize = @intCast(if (end_idx >= 0) end_idx else total + end_idx);
 
         const result = try self.allocator.alloc(SegmentId, self.count);
         for (0..self.count) |i| {
-            // Collect allPrevSegments for this fork lane.  Two-pass: count then fill.
-            // Avoids ArrayList grow allocations for tiny slices (common: 1-2 entries).
+            // Two-pass count+fill via getEntry (bridges inline + heap storage).
             var n_prev: usize = 0;
             var j = norm_start;
             while (j <= norm_end) : (j += 1) {
-                if (i < list[j].len) n_prev += 1;
+                if (i < self.getEntry(j).len) n_prev += 1;
             }
             const prev_slice = try self.allocator.alloc(SegmentId, n_prev);
             var idx: usize = 0;
             j = norm_start;
             while (j <= norm_end) : (j += 1) {
-                if (i < list[j].len) {
-                    prev_slice[idx] = list[j][i];
+                const entry = self.getEntry(j);
+                if (i < entry.len) {
+                    prev_slice[idx] = entry[i];
                     idx += 1;
                 }
             }
@@ -990,10 +1028,10 @@ pub const CodePathBuilder = struct {
         // Without default, the discriminant path flows to after the switch.
         if (ctx.default_segments != null) {
             const fc = self.fork_context;
-            if (fc.segments_list.items.len > 1) {
-                const last = fc.segments_list.items[fc.segments_list.items.len - 1];
-                fc.segments_list.clearRetainingCapacity();
-                try fc.segments_list.append(fc.allocator, last);
+            if (fc.totalLen() > 1) {
+                const last = fc.head();
+                fc.clear();
+                try fc.pushEntry(last);
             }
         }
 
@@ -1026,7 +1064,7 @@ pub const CodePathBuilder = struct {
 
         // Merge ALL entries in the fork context (0 to -1), not just the last.
         // This combines fallthrough from previous case + discriminant fork path.
-        const list_len = self.fork_context.segments_list.items.len;
+        const list_len = self.fork_context.totalLen();
         if (list_len > 1) {
             // Multiple entries exist (fallthrough + fork): merge all
             const new_segs = try self.fork_context.makeNext(0, -1, self);
@@ -1218,7 +1256,7 @@ pub const CodePathBuilder = struct {
                 doubled[i] = if (i < normal_segs.len) normal_segs[i] else NONE_SEG;
                 doubled[i + parent_count] = if (i < thrown_segs.len) thrown_segs[i] else NONE_SEG;
             }
-            try new_fc.segments_list.append(self.allocator, doubled);
+            try new_fc.pushEntry(doubled);
             self.fork_context = new_fc;
             // Start both lanes
             try self.forwardCurrentToHead(node, .enter);
