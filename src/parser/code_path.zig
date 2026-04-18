@@ -794,9 +794,9 @@ pub const CodePathBuilder = struct {
 
     fn emitSegStart(self: *CodePathBuilder, seg_id: SegmentId, node: NodeIndex, phase: EventPhase) !void {
         if (seg_id == NONE_SEG) return;
-        const seg = self.segments.items[seg_id];
+        const is_reachable = self.seg_reachable.items[seg_id] != 0;
         try self.events.append(self.allocator, .{
-            .type = if (seg.reachable) .seg_start else .unreachable_seg_start,
+            .type = if (is_reachable) .seg_start else .unreachable_seg_start,
             .node = node,
             .data1 = seg_id,
             .data2 = 0,
@@ -806,9 +806,9 @@ pub const CodePathBuilder = struct {
 
     fn emitSegEnd(self: *CodePathBuilder, seg_id: SegmentId, node: NodeIndex, phase: EventPhase) !void {
         if (seg_id == NONE_SEG) return;
-        const seg = self.segments.items[seg_id];
+        const is_reachable = self.seg_reachable.items[seg_id] != 0;
         try self.events.append(self.allocator, .{
-            .type = if (seg.reachable) .seg_end else .unreachable_seg_end,
+            .type = if (is_reachable) .seg_end else .unreachable_seg_end,
             .node = node,
             .data1 = seg_id,
             .data2 = 0,
