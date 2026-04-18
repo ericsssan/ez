@@ -420,6 +420,19 @@ pub fn main(init: std.process.Init) !void {
         }
         printStats("Event-stream scan only", &times, source.len);
         std.debug.print("  events: {d} ({d} bytes)\n\n", .{ all_events.len, all_events.len * @sizeOf(scope_events.Event) });
+
+        // Event distribution
+        var opens: u32 = 0;
+        var closes: u32 = 0;
+        var decls: u32 = 0;
+        var refs: u32 = 0;
+        for (all_events) |e| switch (e.kind) {
+            .scope_open => opens += 1,
+            .scope_close => closes += 1,
+            .declare => decls += 1,
+            .reference => refs += 1,
+        };
+        std.debug.print("  distribution: {d} opens, {d} closes, {d} decls, {d} refs\n\n", .{ opens, closes, decls, refs });
     }
 
     // ── Phase 11: Event-driven scope resolver (real work) ──────────────

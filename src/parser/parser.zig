@@ -132,6 +132,12 @@ pub const Parser = struct {
     /// that LLVM eliminates).
     scope_events: ScopeEventStream = .{},
     emit_scope_events: bool = false,
+    /// Suppression flag for param-declare emission while we're speculatively
+    /// parsing parenthesized content that MIGHT be an arrow's parameter list.
+    /// When the arrow is confirmed we walk the params SubRange and emit
+    /// declares into the fresh arrow scope.  When not, no declares are
+    /// emitted for the expression form.
+    suppress_param_declares: bool = false,
     gpa: std.mem.Allocator,
     max_nodes: usize,
 
@@ -421,17 +427,90 @@ pub const Parser = struct {
         });
     }
 
-    /// Given a `.declarator` node, emit a declare event for its binding if it
-    /// is a simple identifier (not a destructuring pattern).  Destructuring
-    /// patterns would require walking the pattern — left to a follow-up.
+    /// Given a `.declarator` node, emit a declare event for its binding.
+    /// Handles both simple identifier bindings and destructuring patterns.
     fn emitDeclareFromDeclarator(self: *Parser, decl_node: NodeIndex, kind: BindingKindU8) !void {
         if (!self.emit_scope_events) return;
         if (decl_node == .none) return;
         const d = self.node_data_ptr[decl_node.toInt()];
-        const binding = d.lhs;
-        if (binding == .none) return;
-        const btag = self.node_tags_ptr[binding.toInt()];
-        if (btag == .identifier) try self.emitDeclare(kind, binding);
+        try self.emitDeclaresFromPattern(d.lhs, kind);
+    }
+
+    /// Walk a binding pattern (identifier / array_pattern / object_pattern /
+    /// assignment_pattern / rest_element) and emit declare events for every
+    /// leaf identifier binding.  Called from declarators, parameters, catch.
+    pub fn emitDeclaresFromPattern(self: *Parser, node: NodeIndex, kind: BindingKindU8) std.mem.Allocator.Error!void {
+        if (!self.emit_scope_events) return;
+        try emitDeclaresFromPatternImpl(self, node, kind);
+    }
+
+    /// Emit declare events for every binding in a parameter SubRange.
+    /// Used when params were already parsed into a SubRange (e.g. method
+    /// bodies, arrow functions) and we now open their scope retroactively.
+    pub fn emitParamDeclaresFromRange(self: *Parser, range: SubRange) std.mem.Allocator.Error!void {
+        if (!self.emit_scope_events) return;
+        if (range.end <= range.start) return;
+        const end = range.end;
+        var i: u32 = range.start;
+        while (i < end) : (i += 1) {
+            const raw = self.extra_data.items[i];
+            const param: NodeIndex = @enumFromInt(raw);
+            try emitDeclaresFromPatternImpl(self, param, .parameter);
+        }
+    }
+
+    fn emitDeclaresFromPatternImpl(self: *Parser, node: NodeIndex, kind: BindingKindU8) std.mem.Allocator.Error!void {
+        if (node == .none) return;
+        const idx = @intFromEnum(node);
+        if (idx >= self.nodes.len) return;
+        const tag = self.node_tags_ptr[idx];
+        const data = self.node_data_ptr[idx];
+        switch (tag) {
+            .identifier => try self.emitDeclare(kind, node),
+            // Default value: `x = 1` — lhs is the inner pattern, rhs is default expression.
+            .assignment_pattern => try emitDeclaresFromPatternImpl(self, data.lhs, kind),
+            // Rest: `...x` — lhs is the inner pattern.
+            .rest_element => try emitDeclaresFromPatternImpl(self, data.lhs, kind),
+            // TS-type-annotated binding: lhs = identifier, rhs = type annotation.
+            // We don't care about the annotation, just recurse into lhs.
+            // TS parameter property wraps a real param — recurse.
+            .ts_parameter_property => try emitDeclaresFromPatternImpl(self, data.lhs, kind),
+            // Array pattern: elements are stored in extra_data[lhs..rhs].
+            .array_pattern => {
+                const start = @intFromEnum(data.lhs);
+                const end = @intFromEnum(data.rhs);
+                if (start <= end and end <= self.extra_data.items.len) {
+                    for (self.extra_data.items[start..end]) |raw| {
+                        const child: NodeIndex = @enumFromInt(raw);
+                        try emitDeclaresFromPatternImpl(self, child, kind);
+                    }
+                }
+            },
+            // Object pattern: properties in extra_data[lhs..rhs].  Each is a
+            // `property` (or `shorthand_property` / `computed_property`) whose
+            // VALUE is the binding target.
+            .object_pattern => {
+                const start = @intFromEnum(data.lhs);
+                const end = @intFromEnum(data.rhs);
+                if (start <= end and end <= self.extra_data.items.len) {
+                    for (self.extra_data.items[start..end]) |raw| {
+                        const prop_node: NodeIndex = @enumFromInt(raw);
+                        if (prop_node == .none) continue;
+                        const pidx = @intFromEnum(prop_node);
+                        if (pidx >= self.nodes.len) continue;
+                        const ptag = self.node_tags_ptr[pidx];
+                        const pdata = self.node_data_ptr[pidx];
+                        switch (ptag) {
+                            .property, .computed_property => try emitDeclaresFromPatternImpl(self, pdata.rhs, kind),
+                            .shorthand_property => try emitDeclaresFromPatternImpl(self, pdata.lhs, kind),
+                            .rest_element => try emitDeclaresFromPatternImpl(self, pdata.lhs, kind),
+                            else => {},
+                        }
+                    }
+                }
+            },
+            else => {}, // unknown — skip
+        }
     }
 
     pub inline fn emitReference(self: *Parser, kind: ReferenceKindU8, node: NodeIndex) !void {
@@ -1180,6 +1259,12 @@ pub const Parser = struct {
 
         _ = try self.expect(.l_paren);
 
+        // For-let/const creates a new block scope containing the init binding
+        // and the body.  For-var does not, but emitting an empty scope is
+        // harmless — keeps the parser simple and events well-nested.
+        try self.emitScopeOpen(.block, .none);
+        errdefer self.emitScopeClose(.none) catch {};
+
         const prev_in_loop = self.in_loop;
         self.in_loop = true;
         defer self.in_loop = prev_in_loop;
@@ -1239,7 +1324,9 @@ pub const Parser = struct {
 
         // Handle empty init (semicolon already consumed above).
         if (init == .none) {
-            return self.parseForRest(for_tok, .none);
+            const result = try self.parseForRest(for_tok, .none);
+            try self.emitScopeClose(.none);
+            return result;
         }
 
         // Check for `in` or `of`
@@ -1249,6 +1336,7 @@ pub const Parser = struct {
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
             const body = try self.parseNonDeclStatement();
+            try self.emitScopeClose(.none);
 
             const extra = try self.addExtra(ast.ForInOfData, .{
                 .binding = init,
@@ -1271,6 +1359,7 @@ pub const Parser = struct {
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
             const body = try self.parseNonDeclStatement();
+            try self.emitScopeClose(.none);
 
             const extra = try self.addExtra(ast.ForInOfData, .{
                 .binding = init,
@@ -1295,7 +1384,9 @@ pub const Parser = struct {
             if (init_tag != .assign) self.checkCoverInitializedName(init);
         }
         _ = try self.expect(.semicolon);
-        return self.parseForRest(for_tok, init);
+        const result = try self.parseForRest(for_tok, init);
+        try self.emitScopeClose(.none);
+        return result;
     }
 
     /// Check for "use strict" directive at current position (without consuming tokens).
@@ -1938,13 +2029,17 @@ pub const Parser = struct {
         // Parse catch clause — emit it as a real catch_clause node so JS code
         // gets a stable NodeView (required for ESLint identity checks).
         if (self.eat(.kw_catch)) |catch_tok| {
+            // Catch opens its own scope; the param binds inside it.
+            try self.emitScopeOpen(.catch_clause, .none);
             var catch_param: NodeIndex = .none;
             // Optional catch binding: `catch (e)` or `catch {`
             if (self.eat(.l_paren)) |_| {
                 catch_param = try self.parseBindingPattern();
+                try self.emitDeclaresFromPattern(catch_param, .catch_param);
                 _ = try self.expect(.r_paren);
             }
             const catch_body = try self.parseBlockStatement();
+            try self.emitScopeClose(.none);
             catch_node = try self.addNode(.{
                 .tag = .catch_clause,
                 .main_token = catch_tok,
@@ -2953,6 +3048,8 @@ pub const Parser = struct {
             };
             const prev_in_constructor_early = self.in_constructor;
             if (early_is_ctor) self.in_constructor = true;
+            // Open method's function scope before params so declares land in it.
+            try self.emitScopeOpen(.function, .none);
             const params = try self.parseFormalParameters();
             self.in_constructor = prev_in_constructor_early;
 
@@ -3059,6 +3156,7 @@ pub const Parser = struct {
                     .constructor_def
                 else
                     .method_def;
+                try self.emitScopeClose(.none); // close method scope (no body)
                 return self.addNode(.{
                     .tag = no_body_tag,
                     .main_token = main_tok,
@@ -3067,6 +3165,7 @@ pub const Parser = struct {
             }
 
             const body = try self.parseBlockStatement();
+            try self.emitScopeClose(.none); // close method scope
 
             const method_extra = try self.addExtra(ast.MethodData, .{
                 .params_start = params.start,
@@ -3245,6 +3344,7 @@ pub const Parser = struct {
         // Rest parameter: `...binding`
         if (self.eat(.ellipsis)) |ellipsis_tok| {
             const binding = try self.parseBindingPattern();
+            if (!self.suppress_param_declares) try self.emitDeclaresFromPattern(binding, .parameter);
             const rest_type_annotation = try self.parseOptionalTypeAnnotation();
             return self.addNode(.{
                 .tag = .rest_element,
@@ -3302,6 +3402,7 @@ pub const Parser = struct {
 
         const main_tok = self.tok_i;
         const binding = try self.parseBindingPattern();
+        if (!self.suppress_param_declares) try self.emitDeclaresFromPattern(binding, .parameter);
 
         const is_optional_ts = if (self.language.isTs()) (self.eat(.question) != null) else false;
         const param_type_annotation = try self.parseOptionalTypeAnnotation();
@@ -3444,6 +3545,7 @@ pub const Parser = struct {
                 },
             });
             try self.scratch.append(self.gpa, @intFromEnum(spec));
+            try self.emitDeclare(.import_binding, local_node);
 
             // May be followed by `, { ... }` or `, * as ns`
             if (self.eat(.comma) != null) {
@@ -3589,6 +3691,7 @@ pub const Parser = struct {
                 },
             });
             try self.scratch.append(self.gpa, @intFromEnum(spec));
+            try self.emitDeclare(.import_binding, local_node);
 
             if (self.eat(.comma) == null) break;
         }
@@ -3608,6 +3711,7 @@ pub const Parser = struct {
             .data = .{ .lhs = .none, .rhs = .none },
         });
 
+        try self.emitDeclare(.import_binding, local_node);
         return self.addNode(.{
             .tag = .import_namespace_specifier,
             .main_token = star_tok,

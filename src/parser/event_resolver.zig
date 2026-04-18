@@ -50,6 +50,17 @@ const ScopedContext = struct {
 };
 const ScopeBindingMap = std.HashMapUnmanaged(ScopedKey, SymbolId, ScopedContext, 80);
 
+/// Prehashed key — name hash computed once, scope_id mixed in per lookup.
+const PrehashedKey = struct { scope_id: u32, name: []const u8, name_hash: u64 };
+const PrehashedCtx = struct {
+    pub fn hash(_: @This(), k: PrehashedKey) u64 {
+        return k.name_hash ^ (@as(u64, k.scope_id) *% 0x9e3779b97f4a7c15);
+    }
+    pub fn eql(_: @This(), a: PrehashedKey, b: ScopedKey) bool {
+        return a.scope_id == b.scope_id and std.mem.eql(u8, a.name, b.name);
+    }
+};
+
 /// Run the full event-stream resolver on `events` using `ast` for name lookup.
 /// Returns summary counts.  The scope stack is a small fixed-size array — we
 /// don't expect JS source to exceed 256 scope levels of nesting.
@@ -122,12 +133,14 @@ pub fn resolve(
                 const start = tok_starts[main_tok];
                 const len = tok_lens[main_tok];
                 const name = source[start .. start + len];
-                // Walk up the scope chain (via `parents` array).
+                // Hash once, reuse at each scope level.
+                const name_hash = std.hash.Wyhash.hash(0, name);
                 var i: i32 = @as(i32, @intCast(sp)) - 1;
                 var found = false;
                 while (i >= 0) : (i -= 1) {
                     const sid = stack[@intCast(i)];
-                    if (bindings.get(.{ .scope_id = sid, .name = name }) != null) {
+                    const pkey = PrehashedKey{ .scope_id = sid, .name = name, .name_hash = name_hash };
+                    if (bindings.getAdapted(pkey, PrehashedCtx{}) != null) {
                         resolved += 1;
                         found = true;
                         break;

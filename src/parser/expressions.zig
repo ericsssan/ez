@@ -1091,7 +1091,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
             p.in_async = true;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async;
-            const body = try parseArrowBody(p);
+            try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
                 .params_end = params_range.end,
@@ -1235,7 +1235,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn2;
             defer p.in_async = saved_async2;
-            const body = try parseArrowBody(p);
+            try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
             const params_range = try p.addSlice(&[_]u32{});
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
@@ -1267,7 +1267,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async_ts;
-            const body = try parseArrowBody(p);
+            try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
                 .params_end = params_range.end,
@@ -4244,7 +4244,7 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                 p.in_async = false;
                 defer p.in_function = saved_fn;
                 defer p.in_async = saved_async_ts2;
-                const body = try parseArrowBody(p);
+                try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
                 const extra = try p.addExtra(ast.ArrowData, .{
                     .params_start = 0,
                     .params_end = 0,
