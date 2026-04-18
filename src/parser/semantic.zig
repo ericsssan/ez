@@ -72,8 +72,8 @@ pub const SemanticAnalyzer = struct {
     pub const Options = struct {
         is_module: bool = true,
         globals: []const u8 = &.{},
-        /// Accepted for API compatibility with the previous tree walker.
-        /// The event-driven path always builds CFG from events.
+        /// Build full CFG (CodePathBuilder segments/paths).  Skip when no
+        /// CFG-dependent rule is active (no-unreachable, no-useless-return).
         build_cfg: bool = true,
     };
 
@@ -95,8 +95,9 @@ pub const SemanticAnalyzer = struct {
     }
 
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
-        _ = opts; // is_module / globals / build_cfg not yet plumbed through event path
-        return event_resolver.resolveFull(allocator, ast, ast.scope_events, .{});
+        return event_resolver.resolveFull(allocator, ast, ast.scope_events, .{
+            .skip_cfg = !opts.build_cfg,
+        });
     }
 };
 

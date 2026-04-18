@@ -71,6 +71,12 @@ pub const Options = struct {
     /// Emit redeclaration diagnostics (same-scope duplicate detection).
     /// Off by default in the PoC — enable when replacing semantic.zig.
     diagnose_redeclare: bool = false,
+    /// Skip reference resolution inner scope-chain walk.  Bench-only.
+    skip_resolve: bool = false,
+    /// Skip full CodePathBuilder construction.  Enable when no CFG-dependent
+    /// rule is active.  The coarse `node_reachable` approximation (via
+    /// terminator/branch events) is still populated.
+    skip_cfg: bool = false,
 };
 
 /// Lightweight stats used by the bench.  The full `SemanticResult` is the
@@ -179,7 +185,8 @@ pub fn resolveFull(
     events: []const Event,
     opts: Options,
 ) !semantic_mod.SemanticResult {
-    _ = opts;
+    const skip_resolve = opts.skip_resolve;
+    const skip_cfg = opts.skip_cfg;
 
     // Pre-sized tables (same heuristics as semantic.zig).
     const node_n: u32 = @intCast(ast.nodes.len);
@@ -279,7 +286,7 @@ pub fn resolveFull(
                     .class_field_initializer => .class_field_initializer,
                     else => unreachable,
                 };
-                try cpb.enterCodePath(node, origin, node);
+                if (!skip_cfg) try cpb.enterCodePath(node, origin, node);
             }
         },
         .scope_close => {
@@ -298,7 +305,7 @@ pub fn resolveFull(
                         cfg_alive = true;
                     }
                     const closed_node = scopes.node_ids.items[closed_sid.toInt()];
-                    try cpb.exitCodePath(closed_node);
+                    if (!skip_cfg) try cpb.exitCodePath(closed_node);
                 }
             }
         },
@@ -312,13 +319,13 @@ pub fn resolveFull(
 
             // Drive CodePathBuilder state.  aux: 0=return, 1=throw, 2=break, 3=continue.
             const term_node: NodeIndex = @enumFromInt(e.node);
-            switch (e.aux) {
+            if (!skip_cfg) switch (e.aux) {
                 0 => try cpb.makeReturn(term_node),
                 1 => try cpb.makeThrow(term_node),
                 // break/continue: without loop/switch context events, we can
                 // only approximate by marking the current segment unreachable.
                 else => try cpb.makeUnreachable(term_node),
-            }
+            };
         },
         .branch_open => {
             // Save the pre-branch alive state.
@@ -403,6 +410,7 @@ pub fn resolveFull(
 
             // Resolve via scope-chain walk with prehashed name.
             if (sp == 0) continue;
+            if (skip_resolve) continue;
             const main_tok = node_main_tokens[e.node];
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
@@ -425,25 +433,22 @@ pub fn resolveFull(
         },
 
         // ── If statement CodePath events ─────────────────────────
-        .if_open => {
+        .if_open => if (!skip_cfg) {
             try cpb.pushChoiceContext(.test_kind, false);
-            // makeIfConsequent needs the consequent node; we don't have it
-            // yet at parse time, so pass the if node itself — CodePath uses
-            // it mainly to tag the event.
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeIfConsequent(n);
         },
-        .if_alt => {
+        .if_alt => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeIfAlternate(n);
         },
-        .if_close => {
+        .if_close => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popChoiceContext(n);
         },
 
         // ── Loop CodePath events ─────────────────────────────────
-        .loop_open => {
+        .loop_open => if (!skip_cfg) {
             const loop_type: code_path_mod.LoopType = switch (e.aux) {
                 0 => .while_stmt,
                 1 => .do_while_stmt,
@@ -454,55 +459,55 @@ pub fn resolveFull(
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.pushLoopContext(loop_type, null, n, n);
         },
-        .loop_test_end => {
+        .loop_test_end => if (!skip_cfg) {
             cpb.setLoopContinueDest();
         },
-        .loop_body_end => {
+        .loop_body_end => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeLoopBackEdge(n);
         },
-        .loop_close => {
+        .loop_close => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popLoopContext(n);
         },
 
         // ── Try/catch/finally CodePath events ────────────────────
-        .try_open => {
+        .try_open => if (!skip_cfg) {
             const has_finalizer = e.aux == 1;
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.pushTryContext(has_finalizer, n);
         },
         .try_body_end => {},
-        .try_catch_start => {
+        .try_catch_start => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeCatchBlock(n);
         },
         .try_catch_end => {},
-        .try_finally_start => {
+        .try_finally_start => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeFinallyBlock(n);
         },
-        .try_close => {
+        .try_close => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popTryContext(n);
         },
 
         // ── Switch CodePath events ───────────────────────────────
-        .switch_open => {
+        .switch_open => if (!skip_cfg) {
             try cpb.pushSwitchContext(e.aux == 1, null);
         },
-        .switch_case_start => {
+        .switch_case_start => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeSwitchCaseBody(e.aux == 1, n);
         },
         .switch_case_end => {},
-        .switch_close => {
+        .switch_close => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popSwitchContext(n);
         },
 
         // ── Logical/conditional short-circuit CodePath events ────
-        .logical_open => {
+        .logical_open => if (!skip_cfg) {
             const ck: code_path_mod.ChoiceKind = switch (e.aux) {
                 0 => .logical_and,
                 1 => .logical_or,
@@ -510,24 +515,24 @@ pub fn resolveFull(
             };
             try cpb.pushChoiceContext(ck, true);
         },
-        .logical_right => {
+        .logical_right => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeLogicalRight(n);
         },
-        .logical_close => {
+        .logical_close => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popChoiceContext(n);
         },
-        .cond_open => {
+        .cond_open => if (!skip_cfg) {
             try cpb.pushChoiceContext(.test_kind, true);
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeIfConsequent(n);
         },
-        .cond_alt => {
+        .cond_alt => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeIfAlternate(n);
         },
-        .cond_close => {
+        .cond_close => if (!skip_cfg) {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popChoiceContext(n);
         },
@@ -544,8 +549,14 @@ pub fn resolveFull(
     try buildRefRanges(&symbols, &references, allocator);
     try buildScopeBindings(&scopes, &symbols, allocator);
 
-    const cpb_result = try cpb.finish();
-    cpb.deinit();
+    const cpb_result = if (skip_cfg) blk: {
+        cpb.deinit();
+        break :blk @as(?CodePathBuilder.Result, null);
+    } else blk: {
+        const r = try cpb.finish();
+        cpb.deinit();
+        break :blk r;
+    };
 
     return .{
         .scopes = scopes,
