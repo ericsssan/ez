@@ -224,19 +224,32 @@ pub const Lexer = struct {
         try self.comment_ends.ensureTotalCapacity(allocator, comment_estimate);
         try self.comment_kinds.ensureTotalCapacity(allocator, comment_estimate);
 
+        // Cache the MultiArrayList field pointers — slice() re-walks per-field
+        // offsets on every call.  Refresh after any grow (rare).
+        var ts = self.tokens.slice();
+        var tag_ptr = ts.items(.tag).ptr;
+        var start_ptr = ts.items(.start).ptr;
+        var len_ptr = ts.items(.len).ptr;
+        var nl_ptr = ts.items(.has_newline_before).ptr;
+
         while (true) {
             const tok = self.next();
-            // Fast path: capacity pre-allocated to source.len / 5. Grow only on
-            // rare overshoot (files with tokens smaller than expected).
+            // Fast path: capacity pre-allocated to source.len / 5.  On rare
+            // grow, refresh the cached pointers.
             if (self.tokens.len >= self.tokens.capacity) {
                 try self.tokens.ensureTotalCapacity(allocator, self.tokens.capacity * 2 + 16);
+                ts = self.tokens.slice();
+                tag_ptr = ts.items(.tag).ptr;
+                start_ptr = ts.items(.start).ptr;
+                len_ptr = ts.items(.len).ptr;
+                nl_ptr = ts.items(.has_newline_before).ptr;
             }
-            self.tokens.appendAssumeCapacity(.{
-                .tag = tok.tag,
-                .start = tok.start,
-                .len = tok.len,
-                .has_newline_before = self.saw_newline,
-            });
+            const i = self.tokens.len;
+            tag_ptr[i] = tok.tag;
+            start_ptr[i] = tok.start;
+            len_ptr[i] = tok.len;
+            nl_ptr[i] = self.saw_newline;
+            self.tokens.len = i + 1;
             if (tok.tag == .eof) break;
         }
 
