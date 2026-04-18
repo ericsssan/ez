@@ -2730,6 +2730,7 @@ const NodeProto = {
     const t = this._tag;
     if (t !== T.var_decl && t !== T.let_decl && t !== T.const_decl &&
         t !== T.fn_decl && t !== T.async_fn_decl && t !== T.class_decl &&
+        t !== T.ts_enum_decl &&
         t !== T.property_def && t !== T.computed_property_def &&
         t !== T.ts_namespace_decl && t !== T.ts_module_decl) return undefined;
     const mt = this.mainToken;

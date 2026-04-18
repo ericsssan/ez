@@ -909,6 +909,7 @@ function installCorpusIntercept() {
         code: typeof code === "string" ? code : "",
         options: ruleOptions,
         languageOptions: langOpts,
+        filename: _normalizeFilenameExt(filename),
         hasCustomParser: false,
         isTypeScript: _isTsCase,
         eslintResult,

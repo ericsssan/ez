@@ -1064,18 +1064,29 @@ pub const SemanticAnalyzer = struct {
                 const iface_data = self.ast.extraData(ast_mod.InterfaceData, @intFromEnum(data.lhs));
                 const iface_name = self.ast.tokenText(iface_data.name);
                 _ = try self.declareBinding(iface_name, idx, .interface_decl, self.current_scope);
+                const iface_has_type_params = iface_data.type_params != iface_data.type_params_end;
+                if (iface_has_type_params) {
+                    _ = try self.enterScope(.block, idx);
+                    try self.visitTypeParams(iface_data.type_params, iface_data.type_params_end);
+                }
                 if (iface_data.extends_start != iface_data.extends_end) {
                     try self.visitSubRange(.{ .start = iface_data.extends_start, .end = iface_data.extends_end });
                 }
                 if (iface_data.body_start != iface_data.body_end) {
                     try self.visitSubRange(.{ .start = iface_data.body_start, .end = iface_data.body_end });
                 }
+                if (iface_has_type_params) self.leaveScope();
             },
             .ts_type_alias_decl => {
                 // Register type alias name in scope (for ESLint no-redeclare etc.)
                 const alias_data = self.ast.extraData(ast_mod.TypeAliasData, @intFromEnum(data.lhs));
                 const alias_name = self.ast.tokenText(alias_data.name);
                 _ = try self.declareBinding(alias_name, idx, .type_decl, self.current_scope);
+                if (alias_data.type_params != alias_data.type_params_end) {
+                    _ = try self.enterScope(.block, idx);
+                    try self.visitTypeParams(alias_data.type_params, alias_data.type_params_end);
+                    self.leaveScope();
+                }
             },
             .ts_enum_decl => {
                 // Register enum name in scope
@@ -1636,6 +1647,9 @@ pub const SemanticAnalyzer = struct {
         const fn_scope = try self.enterScope(.function, idx);
         self.applyFnFlags(fn_scope, tag);
 
+        // Declare type parameters before value params (type params are in the function scope).
+        try self.visitTypeParams(fn_data.type_params, fn_data.type_params_end);
+
         // Declare params.
         try self.visitParams(SubRange{ .start = fn_data.params, .end = fn_data.params_end });
 
@@ -1661,6 +1675,9 @@ pub const SemanticAnalyzer = struct {
         // Enter function scope.
         const fn_scope = try self.enterScope(.function, idx);
         self.applyFnFlags(fn_scope, tag);
+
+        // Declare type parameters in the function scope before value params.
+        try self.visitTypeParams(fn_data.type_params, fn_data.type_params_end);
 
         // Declare the function name inside its own scope.
         // Use .fn_expr_name (is_expr_name=true) only when this fn_expr is the direct
@@ -1728,6 +1745,19 @@ pub const SemanticAnalyzer = struct {
             const param_idx: NodeIndex = @enumFromInt(raw);
             if (param_idx == .none) continue;
             try self.extractBindingNames(param_idx, self.current_scope, .parameter);
+        }
+    }
+
+    /// Declare TypeScript type parameters (e.g., <T, U extends V>) in the current scope.
+    /// Each type parameter is a ts_type_annotation node; main_token is the name identifier.
+    fn visitTypeParams(self: *SemanticAnalyzer, type_params: u32, type_params_end: u32) !void {
+        if (type_params == type_params_end) return;
+        const items = self.ast.extra_data[type_params..type_params_end];
+        for (items) |raw| {
+            const tp_idx: NodeIndex = @enumFromInt(raw);
+            if (tp_idx == .none) continue;
+            const tp_name = self.ast.tokenText(self.ast.nodeMainToken(tp_idx));
+            _ = try self.declareBinding(tp_name, tp_idx, .type_param, self.current_scope);
         }
     }
 

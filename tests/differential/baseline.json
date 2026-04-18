@@ -1262,8 +1262,8 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 27,
-        "fp": 34,
+        "fn": 10,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -3206,19 +3206,19 @@
     },
     "no-empty-function": {
       "runner": {
-        "fn": 28,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 1472,
-        "fp": 60,
+        "fn": 1755,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1472,
-        "fp": 60,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -5335,13 +5335,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
+        "fn": 7,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -5870,8 +5870,8 @@
     },
     "@typescript-eslint/member-ordering": {
       "runner": {
-        "fn": 45,
-        "fp": 13,
+        "fn": 20,
+        "fp": 25,
         "crash": 0
       },
       "native": {
@@ -5881,8 +5881,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 45,
-        "fp": 13,
+        "fn": 20,
+        "fp": 25,
         "crash": 0
       }
     },
@@ -15680,9 +15680,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 22616,
-    "runnerCasesPerSec": 13146,
-    "nativeCasesPerSec": 104116,
+    "totalElapsedMs": 23004,
+    "runnerCasesPerSec": 12985,
+    "nativeCasesPerSec": 100076,
     "totalCases": 56743
   }
 }

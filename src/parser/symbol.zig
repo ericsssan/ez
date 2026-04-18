@@ -109,6 +109,8 @@ pub const BindingKind = enum {
     fn_expr_name,
     /// Named class-expression name binding (class's own scope, self-reference).
     class_expr_name,
+    /// TypeScript type parameter (<T, U> in generic function/type/interface declarations).
+    type_param,
 
     /// Returns true if the binding introduces a TDZ (temporal dead zone).
     pub fn hasTDZ(self: BindingKind) bool {
@@ -134,7 +136,7 @@ pub const BindingKind = enum {
     pub fn canRedeclare(self: BindingKind) bool {
         return switch (self) {
             .@"var", .function_decl, .parameter => true,
-            .type_decl, .interface_decl, .enum_decl, .namespace_decl => true,
+            .type_decl, .interface_decl, .enum_decl, .namespace_decl, .type_param => true,
             else => false,
         };
     }
@@ -432,7 +434,7 @@ pub fn flagsFromBindingKind(kind: BindingKind) SymbolFlags {
             f.is_implicit_global = true;
         },
         // TS type declarations: no JS-visible flags (tracked for ESLint scope only)
-        .type_decl, .interface_decl, .enum_decl, .namespace_decl => {},
+        .type_decl, .interface_decl, .enum_decl, .namespace_decl, .type_param => {},
         // Named function/class expression name bindings — declared as function/class
         // inside the expression's own scope, but marked is_expr_name to suppress
         // no-shadow false positives (they're self-referential, not real shadows).

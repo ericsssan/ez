@@ -2296,9 +2296,25 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     const class_tok = p.advance(); // consume `class`
 
     // Optional name (contextual keywords allowed when not reserved).
-    const can_name = p.peek() == .identifier or p.peek() == .escaped_keyword or
+    // In TypeScript, access-modifier keywords (private/protected/public/etc.) that are
+    // lexed as identifiers must NOT be consumed as the class name when they are followed
+    // by something other than `{`, `<`, `extends`, or `implements` — in that case they
+    // are class-member modifiers, not the name.
+    const peek_is_ts_modifier = p.language.isTs() and blk: {
+        const txt = p.tokenText(p.tok_i);
+        break :blk std.mem.eql(u8, txt, "private") or std.mem.eql(u8, txt, "protected") or
+            std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "abstract") or
+            std.mem.eql(u8, txt, "readonly") or std.mem.eql(u8, txt, "override") or
+            std.mem.eql(u8, txt, "declare");
+    };
+    const next_is_class_continuation = blk: {
+        const nx = p.peekAt(1);
+        break :blk nx == .l_brace or nx == .less_than or nx == .kw_extends or nx == .kw_implements;
+    };
+    const can_name = (p.peek() == .identifier or p.peek() == .escaped_keyword or
         (p.peek() == .kw_await and !p.in_async and !p.is_module) or
-        (p.peek() == .kw_yield and !p.in_generator and !p.in_strict);
+        (p.peek() == .kw_yield and !p.in_generator and !p.in_strict)) and
+        (!peek_is_ts_modifier or next_is_class_continuation);
     const name_node: NodeIndex = if (can_name) blk: {
         const name_tok = p.advance();
         break :blk try p.addNode(.{
@@ -2451,6 +2467,8 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     }
 
     // TS modifiers: private, protected, public, abstract, readonly, override, declare
+    // These can precede `static` (e.g. `private static foo() {}`), so after consuming
+    // them we re-check for `static`.
     if (p.language.isTs()) {
         while (p.peek() == .identifier or p.peek() == .kw_abstract or
             p.peek() == .kw_readonly or p.peek() == .kw_override or
@@ -2465,6 +2483,44 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
                 std.mem.eql(u8, text, "readonly") or
                 std.mem.eql(u8, text, "declare") or
                 std.mem.eql(u8, text, "export");
+            if (!is_mod) break;
+            const next = p.peekAt(1);
+            if (next == .l_paren or next == .equal or next == .semicolon or
+                next == .r_brace or next == .colon)
+                break;
+            _ = p.advance();
+        }
+        // After access modifiers, `static` can follow (e.g. `private static foo() {}`).
+        if (!is_static and p.peek() == .kw_static) {
+            const next = p.peekAt(1);
+            if (next != .l_paren and next != .equal and next != .semicolon and
+                next != .colon and next != .r_brace)
+            {
+                is_static = true;
+                _ = p.advance();
+            }
+            if (is_static and p.peek() == .l_brace) {
+                _ = try p.expect(.l_brace);
+                const range = try p.parseStatementList(.r_brace);
+                _ = try p.expect(.r_brace);
+                return p.addNode(.{
+                    .tag = .static_block,
+                    .main_token = main_tok,
+                    .data = .{
+                        .lhs = NodeIndex.fromInt(range.start),
+                        .rhs = NodeIndex.fromInt(range.end),
+                    },
+                });
+            }
+        }
+        // Post-static TS modifiers (e.g. `static readonly`, `static abstract`)
+        while (p.peek() == .identifier or p.peek() == .kw_abstract or
+            p.peek() == .kw_readonly or p.peek() == .kw_override)
+        {
+            const text = p.tokenText(p.tok_i);
+            const is_mod = std.mem.eql(u8, text, "abstract") or
+                std.mem.eql(u8, text, "override") or
+                std.mem.eql(u8, text, "readonly");
             if (!is_mod) break;
             const next = p.peekAt(1);
             if (next == .l_paren or next == .equal or next == .semicolon or

@@ -153,7 +153,6 @@ const no_useless_rename = @import("style/no_useless_rename.zig");
 const prefer_rest_params = @import("style/prefer_rest_params.zig");
 const prefer_spread = @import("style/prefer_spread.zig");
 const no_useless_call = @import("style/no_useless_call.zig");
-const no_empty_function = @import("style/no_empty_function.zig");
 const max_params = @import("style/max_params.zig");
 const prefer_arrow_callback = @import("style/prefer_arrow_callback.zig");
 const no_implicit_coercion = @import("style/no_implicit_coercion.zig");
@@ -394,7 +393,6 @@ pub const all_rules = .{
     prefer_rest_params,
     prefer_spread,
     no_useless_call,
-    no_empty_function,
     max_params,
     prefer_arrow_callback,
     no_implicit_coercion,

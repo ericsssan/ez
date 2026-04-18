@@ -11,7 +11,7 @@ const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = requir
 // 14=fn_expr_name (named function-expression binding), 15=class_expr_name (named class-expression binding)
 // TS def type strings match @typescript-eslint/scope-manager DefinitionType values:
 // 'Type' for type aliases/interfaces, 'TSEnumName' for enums, 'TSModuleName' for namespaces
-const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName'];
+const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName','TypeParameter'];
 const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer'];
 let _tsServices = null;
 function tsServices() {
@@ -278,6 +278,7 @@ const _FN_TAGS = new Set([
   T.arrow_fn, T.async_arrow_fn,
   T.method_def, T.getter_def, T.setter_def, T.constructor_def,
   T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
+  T.ts_declare_function,
 ]);
 const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
 
@@ -287,7 +288,15 @@ const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
 function _findDefNode(declNode, defType) {
   if (!declNode) return null;
   // For TypeDefinition (TS type alias/interface/enum), the declaration IS the def node.
-  if (defType === 'Type' || defType === 'TSEnumName' || defType === 'TSModuleName') return declNode;
+  if (defType === 'Type' || defType === 'TSEnumName' || defType === 'TypeParameter') return declNode;
+  if (defType === 'TSModuleName') {
+    let c = declNode.parent;
+    while (c) {
+      if (c._tag === T.ts_namespace_decl || c._tag === T.ts_module_decl) return c;
+      c = c.parent;
+    }
+    return declNode;
+  }
   let cur = declNode.parent;
   switch (defType) {
     case 'Variable':
@@ -1536,6 +1545,8 @@ class SourceCode {
               eslintUsed: false,
               isRead: _FALSE,
               isWritten: _FALSE,
+              isValueVariable: true,
+              isTypeVariable: false,
             };
             _fenVars = [fenVar];
             _fenSet = new Map([[fenName, fenVar]]);
@@ -2371,6 +2382,11 @@ class SourceCode {
     }
 
     const is_implicit_global = (flags16 & 0x2000) !== 0;
+    // @typescript-eslint/scope-manager compat: isValueVariable / isTypeVariable.
+    // Type-only declarations (type aliases, interfaces) are NOT value variables.
+    // Enums and namespaces ARE value variables (they compile to runtime objects).
+    // Rules like no-shadow use these to implement ignoreTypeValueShadow logic.
+    const isTypeOnlyDecl = defType === 'Type' || defType === 'TypeParameter';
     const v = {
       name,
       defs,
@@ -2383,6 +2399,8 @@ class SourceCode {
       // (writable global), writeable===undefined (user-declared variable).
       isRead: () => is_read,
       isWritten: () => is_written || is_let, // let vars are potentially writable
+      isValueVariable: !isTypeOnlyDecl,
+      isTypeVariable: isTypeOnlyDecl,
     };
     if (is_implicit_global) {
       // Match the shape of JS-created builtin globals: writeable=false, eslintImplicitGlobalSetting='writable'.

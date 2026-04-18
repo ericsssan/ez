@@ -387,10 +387,12 @@ pub fn computeTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalRe
                 const ed = tree.extraData(ast_mod.InterfaceData, @intFromEnum(lhs));
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.body_start,    .end = ed.body_end    }, p) catch return error.OutOfMemory;
                 pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.extends_start, .end = ed.extends_end }, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.type_params,   .end = ed.type_params_end }, p) catch return error.OutOfMemory;
             },
             .ts_type_alias_decl => {
                 const ed = tree.extraData(ast_mod.TypeAliasData, @intFromEnum(lhs));
                 push(&stack, alloc, ed.type_node, p) catch return error.OutOfMemory;
+                pushSubRangeRev(&stack, alloc, tree, .{ .start = ed.type_params,   .end = ed.type_params_end }, p) catch return error.OutOfMemory;
             },
             .ts_enum_decl => {
                 const ed = tree.extraData(ast_mod.EnumData, @intFromEnum(lhs));
