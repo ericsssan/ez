@@ -63,7 +63,7 @@ const PrehashedCtx = struct {
         return a.scope_id == b.scope_id and std.mem.eql(u8, a.name, b.name);
     }
 };
-const ScopeBindingMap = std.HashMapUnmanaged(ScopedKey, SymbolId, ScopedContext, 80);
+const ScopeBindingMap = std.HashMapUnmanaged(ScopedKey, SymbolId, ScopedContext, 60);
 
 // ── Options / minimal summary ───────────────────────────────────────
 
