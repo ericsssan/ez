@@ -557,9 +557,8 @@ pub fn resolveFull(
         cpb.deinit();
         break :blk @as(?CodePathBuilder.Result, null);
     } else blk: {
-        const r = try cpb.finish();
-        cpb.deinit();
-        break :blk r;
+        // finish() transfers the arena into the Result; do NOT call cpb.deinit() after.
+        break :blk cpb.finish();
     };
 
     return .{
