@@ -6,16 +6,18 @@
 // Corpus layout (produced by `bun tests/differential/run.js --extract-fixtures <dir>`):
 //   <dir>/corpus/<safePrefix>/<safeRule>/{valid,invalid}/N.{js,ts,jsx,tsx}
 //
-//   safePrefix maps back to a plugin prefix:
-//     "eslint"              -> (core, no prefix)
-//     "_typescript-eslint"  -> "@typescript-eslint"
-//     everything else       -> itself
+// IMPORTANT — by default this bench runs only the `eslint` core prefix.
+// Plugin rules (unicorn/*, @typescript-eslint/*, sonarjs/*, react/*, jsdoc/*,
+// promise/*) require a {prefix, plugin} config that createLinter's inline API
+// does not accept, so they silently no-op — which makes plugin-prefix runs
+// measure parse-only speed, not lint speed. Use --all-prefixes to include
+// them (but understand the numbers are parse-dominated for those prefixes).
 //
 // Usage:
-//   bun bench/bench_corpus.js [dir]  (default: bench/fixtures/extracted)
-//   bun bench/bench_corpus.js bench/fixtures/extracted --limit 2000
-//   bun bench/bench_corpus.js bench/fixtures/extracted --kind invalid
-//   bun bench/bench_corpus.js bench/fixtures/extracted --prefix sonarjs
+//   bun bench/bench_corpus.js                              # core only (default)
+//   bun bench/bench_corpus.js --all-prefixes               # include plugin prefixes (no rule fire)
+//   bun bench/bench_corpus.js --prefix eslint --kind invalid
+//   bun bench/bench_corpus.js --limit 2000
 
 const fs   = require("fs");
 const path = require("path");
@@ -23,6 +25,7 @@ const { createLinter } = require("../js/api.js");
 
 const args = process.argv.slice(2);
 const FLAGS = new Set(["--kind", "--prefix", "--limit", "--warmup"]);
+const allPrefixes = args.includes("--all-prefixes");
 function flag(name, def = null) {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : def;
@@ -51,10 +54,17 @@ function unmapPrefix(safePrefix) {
   return safePrefix;
 }
 
+// Default to eslint-core only. --all-prefixes opts in. --prefix <x> overrides both.
+const pluginPrefixes = ["_typescript-eslint", "unicorn", "react", "jsdoc", "promise", "sonarjs"];
+
 // Walk corpus → tasks[]: { file, bytes, code, ruleId, ext }
 const tasks = [];
 for (const safePrefix of fs.readdirSync(corpusRoot).sort()) {
-  if (prefArg && safePrefix !== prefArg) continue;
+  if (prefArg) {
+    if (safePrefix !== prefArg) continue;
+  } else if (!allPrefixes && pluginPrefixes.includes(safePrefix)) {
+    continue; // core-only default
+  }
   const prefixDir = path.join(corpusRoot, safePrefix);
   if (!fs.statSync(prefixDir).isDirectory()) continue;
   const pluginPrefix = unmapPrefix(safePrefix);
@@ -112,21 +122,26 @@ async function linterFor(ruleId) {
 async function run(tasks) {
   const times = new Float64Array(tasks.length);
   let diagTotal = 0, errorCount = 0;
+  let invalidFired = 0, invalidCount = 0, validSilent = 0, validCount = 0;
   const t0 = performance.now();
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
     const L = await linterFor(t.ruleId);
     const s = performance.now();
+    let nDiags = 0;
     try {
       const diags = await L(t.code, t.file);
-      diagTotal += diags.length;
+      nDiags = diags.length;
+      diagTotal += nDiags;
     } catch (e) {
       errorCount++;
     }
     times[i] = performance.now() - s;
+    if (t.kind === "invalid") { invalidCount++; if (nDiags > 0) invalidFired++; }
+    else { validCount++; if (nDiags === 0) validSilent++; }
   }
   const wall = performance.now() - t0;
-  return { times, diagTotal, errorCount, wall };
+  return { times, diagTotal, errorCount, wall, invalidFired, invalidCount, validSilent, validCount };
 }
 
 function percentile(sorted, p) {
@@ -148,7 +163,7 @@ function percentile(sorted, p) {
   await run(tasks.slice(0, warmN));
 
   console.log(`Bench...`);
-  const { times, diagTotal, errorCount, wall } = await run(tasks);
+  const { times, diagTotal, errorCount, wall, invalidFired, invalidCount, validSilent, validCount } = await run(tasks);
 
   const sorted = Float64Array.from(times).sort();
   const sum = times.reduce((a, b) => a + b, 0);
@@ -160,6 +175,14 @@ function percentile(sorted, p) {
   console.log(`  files:         ${tasks.length}`);
   console.log(`  errors:        ${errorCount}`);
   console.log(`  diags total:   ${diagTotal}`);
+  if (invalidCount > 0) {
+    const pct = (100 * invalidFired / invalidCount).toFixed(1);
+    console.log(`  invalid fire:  ${invalidFired} / ${invalidCount} (${pct}%) — rule actually detected`);
+  }
+  if (validCount > 0) {
+    const pct = (100 * validSilent / validCount).toFixed(1);
+    console.log(`  valid silent:  ${validSilent} / ${validCount} (${pct}%) — rule correctly did not fire`);
+  }
   console.log(`  files/s:       ${(tasks.length / (wall / 1000)).toFixed(1)}`);
   console.log(`  MB/s:          ${(totalBytes / 1024 / 1024 / (wall / 1000)).toFixed(2)}`);
   console.log(`  mean/file:     ${mean.toFixed(3)} ms`);
