@@ -757,13 +757,12 @@ pub const Lexer = struct {
             return self.makeIdentToken(start);
         }
 
-        // First-char filter: only a subset of ASCII letters can start a JS
-        // or TS keyword.  For identifiers that start with something else
-        // (h j k m p q u x z _ $ 0-9 …) skip the hash lookup entirely.
-        // Derived from the union of `keywords` and `ts_keywords` first chars.
-        // Saves a StaticStringMap.get call on ~30-40% of identifiers in
-        // typical JS (user names like `_x`, `$foo`, `h`, etc.).
-        if (kw_first_char_table[text[0]]) {
+        // Length + first-char filter: JS keywords are 2-10 chars long and
+        // start with a subset of ASCII letters.  Most identifiers don't match
+        // both constraints, so gating the StaticStringMap.get probe behind
+        // these two cheap checks saves a hash on ~50% of identifiers in
+        // typical JS.
+        if (text.len >= 2 and text.len <= 10 and kw_first_char_table[text[0]]) {
             if (keywords.get(text)) |kw_tag| {
                 return self.makeToken(kw_tag, start);
             }
