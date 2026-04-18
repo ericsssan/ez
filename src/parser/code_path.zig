@@ -198,15 +198,22 @@ const ForkContext = struct {
 
         const result = try self.allocator.alloc(SegmentId, self.count);
         for (0..self.count) |i| {
-            // Collect allPrevSegments for this fork lane
-            var all_prev: std.ArrayListUnmanaged(SegmentId) = .empty;
+            // Collect allPrevSegments for this fork lane.  Two-pass: count then fill.
+            // Avoids ArrayList grow allocations for tiny slices (common: 1-2 entries).
+            var n_prev: usize = 0;
             var j = norm_start;
             while (j <= norm_end) : (j += 1) {
+                if (i < list[j].len) n_prev += 1;
+            }
+            const prev_slice = try self.allocator.alloc(SegmentId, n_prev);
+            var idx: usize = 0;
+            j = norm_start;
+            while (j <= norm_end) : (j += 1) {
                 if (i < list[j].len) {
-                    try all_prev.append(self.allocator, list[j][i]);
+                    prev_slice[idx] = list[j][i];
+                    idx += 1;
                 }
             }
-            const prev_slice = try all_prev.toOwnedSlice(self.allocator);
 
             result[i] = switch (mode) {
                 .next => try builder.newNextSegment(prev_slice),
