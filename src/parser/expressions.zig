@@ -1505,11 +1505,19 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         defer p.in_generator = saved_gen3;
         defer p.in_async = saved_async3;
 
+        // Arrow scope — params were parsed as expression identifiers and
+        // emitted reference events into the enclosing scope; those become
+        // orphan refs, but the arrow body's own refs resolve correctly here.
+        try p.emitScopeOpen(.function, .none);
+        try p.emitParamDeclaresFromRange(params_range);
+
         // Arrow body: block { } with strict checks, or concise expression
         const body = if (p.peek() == .l_brace)
             try parseBlockBodyWithStrictChecks(p, params_range, .none)
         else
             try parseAssignmentExpression(p);
+
+        try p.emitScopeClose(.none);
 
         const extra = try p.addExtra(ast.ArrowData, .{
             .params_start = params_range.start,
