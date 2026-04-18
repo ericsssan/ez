@@ -288,6 +288,21 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
         }
     }
 
+    // Upgrade prefix ++/-- operand reference to .read_write (it's a read+write).
+    // Delete/typeof/void are read-only — leave the reference as `.read`, but
+    // typeof gets marked separately by event consumer via kind.
+    if (node_tag == .prefix_inc or node_tag == .prefix_dec) {
+        if (operand != .none and p.node_tags_ptr[operand.toInt()] == .identifier) {
+            const RK = @import("reference.zig").ReferenceKind;
+            p.upgradeReferenceKind(operand, RK.read_write);
+        }
+    } else if (node_tag == .typeof_expr) {
+        if (operand != .none and p.node_tags_ptr[operand.toInt()] == .identifier) {
+            const RK = @import("reference.zig").ReferenceKind;
+            p.upgradeReferenceKind(operand, RK.type_of);
+        }
+    }
+
     return p.addNode(.{
         .tag = node_tag,
         .main_token = tok,
@@ -319,6 +334,13 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
     const tag = p.peek();
     const node_tag: Node.Tag = if (tag == .plus_plus) .postfix_inc else .postfix_dec;
     const tok = p.advance();
+
+    // Postfix `x++` / `x--` reads and writes `x`.
+    if (op_tag == .identifier) {
+        const RK = @import("reference.zig").ReferenceKind;
+        p.upgradeReferenceKind(operand, RK.read_write);
+    }
+
     return p.addNode(.{
         .tag = node_tag,
         .main_token = tok,
@@ -1080,7 +1102,13 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
 
     // TS: if params look typed, parse as formal parameters directly
     if (p.language.isTs() and (p.peek() == .r_paren or looksLikeTsArrowParams(p))) {
+        // Params may go into the outer or the arrow's scope depending on `=>`.
+        // Suppress declare emission during parse; we'll replay declares into
+        // the arrow's scope once confirmed.
+        const saved_suppress = p.suppress_param_declares;
+        p.suppress_param_declares = true;
         const params_range = try parseFormalParameters_inner(p, open_paren);
+        p.suppress_param_declares = saved_suppress;
         const async_typed_arrow_return_type = try p.parseOptionalTypeAnnotation();
 
         if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
@@ -1091,7 +1119,10 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
             p.in_async = true;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async;
-            try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
+            try p.emitScopeOpen(.function, .none);
+            try p.emitParamDeclaresFromRange(params_range);
+            const body = try parseArrowBody(p);
+            try p.emitScopeClose(.none);
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
                 .params_end = params_range.end,
@@ -1257,7 +1288,10 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     // TS arrow function fast path: if `(identifier :` or `(this :` or `(...` or `({` or `([`
     // followed by `:`, parse as typed arrow parameters.
     if (p.language.isTs() and looksLikeTsArrowParams(p)) {
+        const saved_suppress2 = p.suppress_param_declares;
+        p.suppress_param_declares = true;
         const params_range = try parseFormalParameters_inner(p, open_paren);
+        p.suppress_param_declares = saved_suppress2;
         const typed_arrow_return_type = try p.parseOptionalTypeAnnotation(); // return type
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
@@ -1267,7 +1301,10 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async_ts;
-            try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
+            try p.emitScopeOpen(.function, .none);
+            try p.emitParamDeclaresFromRange(params_range);
+            const body = try parseArrowBody(p);
+            try p.emitScopeClose(.none);
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
                 .params_end = params_range.end,
@@ -3320,6 +3357,16 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
     }
 
     const op_tok = p.advance();
+
+    // Upgrade the LHS reference event kind from the speculative `.read` that
+    // parseIdentifierRef emitted to the actual write kind. Plain `=` → .write;
+    // compound ops (`+=`, `*=`, etc.) → .read_write.
+    // `(x) = 1` wraps the identifier in a grouping — walk back further.
+    if (effective_left_tag == .identifier) {
+        const RK = @import("reference.zig").ReferenceKind;
+        const ref_kind: RK = if (op_tag == .equal) .write else .read_write;
+        p.upgradeReferenceKind(left, ref_kind);
+    }
 
     // Plain `=` may need the LHS converted to a pattern.
     if (op_tag == .equal) {

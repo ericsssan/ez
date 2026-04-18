@@ -522,6 +522,29 @@ pub const Parser = struct {
         });
     }
 
+    /// Walk back through recently-emitted events to find the reference event
+    /// for `node` and upgrade its kind — used by the assignment parser to turn
+    /// a speculative `.read` into `.write` / `.read_write` once we see `=` / `+=`.
+    ///
+    /// Searches up to `max_back` events to handle compound expressions where
+    /// the target identifier may be wrapped (e.g. `(x) = 1`).
+    pub fn upgradeReferenceKind(self: *Parser, node: NodeIndex, new_kind: ReferenceKindU8) void {
+        if (!self.emit_scope_events) return;
+        const node_u32 = @intFromEnum(node);
+        const events = self.scope_events.events.items;
+        const max_back: usize = 8;
+        const start: usize = if (events.len > max_back) events.len - max_back else 0;
+        var i: usize = events.len;
+        while (i > start) {
+            i -= 1;
+            const e = events[i];
+            if (e.kind == .reference and e.node == node_u32) {
+                self.scope_events.events.items[i].aux = @intFromEnum(new_kind);
+                return;
+            }
+        }
+    }
+
     /// Refresh cached node SoA field pointers after nodes grows.  Must be
     /// called after any `ensureTotalCapacity` that may have reallocated.
     pub fn refreshNodePtrs(self: *Parser) void {
