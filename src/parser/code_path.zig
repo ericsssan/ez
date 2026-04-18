@@ -324,8 +324,6 @@ const LoopContext = struct {
 // ── CodePathBuilder ──────────────────────────────────────────────
 
 pub const CodePathBuilder = struct {
-    /// Parent allocator — used only for copying result slices out in finish().
-    parent_allocator: Allocator,
     /// Arena owns all internal allocations (ArrayLists backing, ForkContexts, etc.).
     /// Freed as a unit in deinit().
     arena: std.heap.ArenaAllocator,
@@ -363,12 +361,8 @@ pub const CodePathBuilder = struct {
     try_context: ?*TryContext,
     loop_context: ?*LoopContext,
 
-    // Segment ID counter
-    seg_counter: u32,
-
     pub fn init(alloc: Allocator) CodePathBuilder {
         return .{
-            .parent_allocator = alloc,
             .arena = std.heap.ArenaAllocator.init(alloc),
             .allocator = undefined, // fixed up by caller: self.cpb.allocator = self.cpb.arena.allocator()
             .segments = .empty,
@@ -390,7 +384,6 @@ pub const CodePathBuilder = struct {
             .switch_context = null,
             .try_context = null,
             .loop_context = null,
-            .seg_counter = 0,
         };
     }
 
