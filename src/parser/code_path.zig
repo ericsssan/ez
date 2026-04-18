@@ -338,6 +338,8 @@ pub const CodePathBuilder = struct {
     /// Segment struct is 48 bytes; isolating this flag cuts reachability
     /// checks from 1 struct-load (random 48-byte access) to 1 byte-load.
     seg_reachable: std.ArrayList(u8),
+    /// Sidecar of used flag — same motivation, also hot in flattenUnused.
+    seg_used: std.ArrayList(u8),
     codepaths: std.ArrayList(CodePath),
     events: std.ArrayList(Event),
 
@@ -372,6 +374,7 @@ pub const CodePathBuilder = struct {
             .allocator = undefined, // fixed up by caller: self.cpb.allocator = self.cpb.arena.allocator()
             .segments = .empty,
             .seg_reachable = .empty,
+            .seg_used = .empty,
             .codepaths = .empty,
             .events = .empty,
             .all_prev_targets = .empty,
@@ -400,6 +403,7 @@ pub const CodePathBuilder = struct {
     pub fn ensureCapacity(self: *CodePathBuilder, est_segments: u32, est_codepaths: u32) !void {
         try self.segments.ensureTotalCapacity(self.allocator, est_segments);
         try self.seg_reachable.ensureTotalCapacity(self.allocator, est_segments);
+        try self.seg_used.ensureTotalCapacity(self.allocator, est_segments);
         try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.events.ensureTotalCapacity(self.allocator, est_segments * 2);
         try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments);
@@ -439,6 +443,7 @@ pub const CodePathBuilder = struct {
             .looped_prev_end = 0,
         });
         try self.seg_reachable.append(self.allocator, 1);
+        try self.seg_used.append(self.allocator, 0);
         return id;
     }
 
@@ -514,14 +519,16 @@ pub const CodePathBuilder = struct {
             .looped_prev_end = 0,
         });
         try self.seg_reachable.append(alloc, if (is_reachable) 1 else 0);
+        try self.seg_used.append(alloc, 0);
         return id;
     }
 
     /// Mark a segment as used — registers it in prev segments' next lists.
     pub fn markUsed(self: *CodePathBuilder, seg_id: SegmentId) !void {
         if (seg_id == NONE_SEG) return;
+        if (self.seg_used.items[seg_id] != 0) return;
+        self.seg_used.items[seg_id] = 1;
         var seg = &self.segments.items[seg_id];
-        if (seg.used) return;
         seg.used = true;
 
         // Hoist hot values out of the loop.
@@ -592,14 +599,13 @@ pub const CodePathBuilder = struct {
         if (segments.len == 1) {
             const s = segments[0];
             if (s == NONE_SEG) return &.{};
-            const segs = self.segments.items;
-            if (segs[s].used) {
+            if (self.seg_used.items[s] != 0) {
                 const out = try self.allocator.alloc(SegmentId, 1);
                 out[0] = s;
                 return out;
             }
             // Unused — expand to prev (shared case, still small).
-            const seg = segs[s];
+            const seg = self.segments.items[s];
             return self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
         }
 
@@ -608,15 +614,15 @@ pub const CodePathBuilder = struct {
         if (segments.len <= 16) {
             var buf: [32]SegmentId = undefined;
             var n: usize = 0;
-            const segs = self.segments.items;
+            const used_s = self.seg_used.items;
             outer: for (segments) |seg_id| {
                 if (seg_id == NONE_SEG) continue;
-                const seg = segs[seg_id];
-                if (seg.used) {
+                if (used_s[seg_id] != 0) {
                     // Check dedup
                     for (buf[0..n]) |e| if (e == seg_id) continue :outer;
                     if (n < buf.len) { buf[n] = seg_id; n += 1; }
                 } else {
+                    const seg = self.segments.items[seg_id];
                     const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
                     prev_loop: for (prev) |p| {
                         if (p == NONE_SEG) continue;
@@ -639,7 +645,7 @@ pub const CodePathBuilder = struct {
             if (seg_id == NONE_SEG) continue;
             if (seen.contains(seg_id)) continue;
 
-            if (!self.segments.items[seg_id].used) {
+            if (self.seg_used.items[seg_id] == 0) {
                 const seg = self.segments.items[seg_id];
                 const prev = self.all_prev_targets.items[seg.all_prev_start..seg.all_prev_end];
                 for (prev) |p| {
