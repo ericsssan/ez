@@ -75,7 +75,7 @@ pub const CodePath = struct {
 
 // ── Event ────────────────────────────────────────────────────────
 
-pub const EventType = enum(u32) {
+pub const EventType = enum(u8) {
     codepath_start = 0,
     codepath_end = 1,
     seg_start = 2,
