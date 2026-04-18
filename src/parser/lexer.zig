@@ -370,7 +370,7 @@ pub const Lexer = struct {
     //  SIMD Whitespace Skipping
     // ══════════════════════════════════════════════════════════
 
-    fn skipWhitespace(self: *Lexer) void {
+    inline fn skipWhitespace(self: *Lexer) void {
         const src = self.source;
         var i: u32 = self.index;
         const len: u32 = @intCast(src.len);
@@ -433,7 +433,7 @@ pub const Lexer = struct {
         self.skipScalarWhitespace();
     }
 
-    fn skipScalarWhitespace(self: *Lexer) void {
+    inline fn skipScalarWhitespace(self: *Lexer) void {
         while (self.index < self.source.len) {
             const c = self.source[self.index];
             switch (c) {
@@ -1226,7 +1226,7 @@ pub const Lexer = struct {
 
     /// Scan decimal digits with numeric separator validation.
     /// Returns false if a separator error was found (leading _, trailing _, double __).
-    fn scanDecimalDigits(self: *Lexer) bool {
+    inline fn scanDecimalDigits(self: *Lexer) bool {
         var prev_underscore = false;
         var has_sep_error = false;
         // Leading underscore check: if first char is _, that's invalid
