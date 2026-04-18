@@ -543,7 +543,7 @@ fn writeCfgGraph(
     const seg_reachable = try alloc.alloc(u8, seg_count);
     const seg_codepath = try alloc.alloc(u32, seg_count);
     for (0..seg_count) |i| {
-        seg_reachable[i] = if (cpr.segments[i].reachable) 1 else 0;
+        seg_reachable[i] = cpr.seg_reachable[i];
         seg_codepath[i] = cpr.segments[i].codepath;
     }
 

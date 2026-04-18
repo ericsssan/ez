@@ -26,7 +26,6 @@ pub const SegmentId = u32;
 pub const NONE_SEG: SegmentId = std.math.maxInt(SegmentId);
 
 pub const Segment = struct {
-    reachable: bool,
     codepath: CodePathId,
 
     // Adjacency — stored as ranges into flat target arrays in CodePathBuilder.
@@ -418,7 +417,6 @@ pub const CodePathBuilder = struct {
     fn newRootSegment(self: *CodePathBuilder) !SegmentId {
         const id: SegmentId = @intCast(self.segments.items.len);
         try self.segments.append(self.allocator, .{
-            .reachable = true,
             .codepath = self.current_codepath,
             .all_prev_start = 0,
             .all_prev_end = 0,
@@ -482,7 +480,6 @@ pub const CodePathBuilder = struct {
         const p_end: u32 = @intCast(self.prev_targets.items.len);
 
         try self.segments.append(alloc, .{
-            .reachable = is_reachable,
             .codepath = self.current_codepath,
             .all_prev_start = ap_start,
             .all_prev_end = ap_end,
@@ -1371,6 +1368,9 @@ pub const CodePathBuilder = struct {
 
     pub const Result = struct {
         segments: []const Segment,
+        /// Parallel to segments — 1 = reachable, 0 = unreachable.  Extracted
+        /// so reachability checks are 1-byte loads, not 40-byte struct loads.
+        seg_reachable: []const u8,
         codepaths: []const CodePath,
         events: []const Event,
         // Adjacency target pools
@@ -1399,6 +1399,7 @@ pub const CodePathBuilder = struct {
     pub fn finish(self: *CodePathBuilder) Result {
         const result: Result = .{
             .segments = self.segments.items,
+            .seg_reachable = self.seg_reachable.items,
             .codepaths = self.codepaths.items,
             .events = self.events.items,
             .all_prev_targets = self.all_prev_targets.items,
