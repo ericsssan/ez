@@ -134,7 +134,7 @@ const ForkContext = struct {
     fn reachable(self: *const ForkContext, builder: *const CodePathBuilder) bool {
         const h = self.head();
         for (h) |seg_id| {
-            if (seg_id != NONE_SEG and builder.segments.items[seg_id].reachable) return true;
+            if (seg_id != NONE_SEG and (builder.seg_reachable.items[seg_id] != 0)) return true;
         }
         return false;
     }
@@ -334,6 +334,10 @@ pub const CodePathBuilder = struct {
 
     // Results
     segments: std.ArrayList(Segment),
+    /// Hot sidecar of segments.items[i].reachable — 1 byte per segment.
+    /// Segment struct is 48 bytes; isolating this flag cuts reachability
+    /// checks from 1 struct-load (random 48-byte access) to 1 byte-load.
+    seg_reachable: std.ArrayList(u8),
     codepaths: std.ArrayList(CodePath),
     events: std.ArrayList(Event),
 
@@ -367,6 +371,7 @@ pub const CodePathBuilder = struct {
             .arena = std.heap.ArenaAllocator.init(alloc),
             .allocator = undefined, // fixed up by caller: self.cpb.allocator = self.cpb.arena.allocator()
             .segments = .empty,
+            .seg_reachable = .empty,
             .codepaths = .empty,
             .events = .empty,
             .all_prev_targets = .empty,
@@ -394,12 +399,18 @@ pub const CodePathBuilder = struct {
     /// lives in the final arena reset.
     pub fn ensureCapacity(self: *CodePathBuilder, est_segments: u32, est_codepaths: u32) !void {
         try self.segments.ensureTotalCapacity(self.allocator, est_segments);
+        try self.seg_reachable.ensureTotalCapacity(self.allocator, est_segments);
         try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.events.ensureTotalCapacity(self.allocator, est_segments * 2);
         try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments);
         try self.prev_targets.ensureTotalCapacity(self.allocator, est_segments);
         try self.all_next_targets.ensureTotalCapacity(self.allocator, est_segments);
         try self.next_targets.ensureTotalCapacity(self.allocator, est_segments);
+        // Loop back-edges and cp pools scale with loop/function counts — smaller.
+        try self.looped_targets.ensureTotalCapacity(self.allocator, est_codepaths * 8);
+        try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
+        try self.cp_returned_pool.ensureTotalCapacity(self.allocator, est_codepaths);
+        try self.cp_thrown_pool.ensureTotalCapacity(self.allocator, est_codepaths / 4);
     }
 
     /// Free all internal allocations. Call after finish() returns the Result.
@@ -427,6 +438,7 @@ pub const CodePathBuilder = struct {
             .looped_prev_start = 0,
             .looped_prev_end = 0,
         });
+        try self.seg_reachable.append(self.allocator, 1);
         return id;
     }
 
@@ -436,7 +448,7 @@ pub const CodePathBuilder = struct {
         const flattened = try self.flattenUnused(all_prev);
         var any_reachable = false;
         for (flattened) |p| {
-            if (p != NONE_SEG and self.segments.items[p].reachable) {
+            if (p != NONE_SEG and (self.seg_reachable.items[p] != 0)) {
                 any_reachable = true;
                 break;
             }
@@ -457,7 +469,7 @@ pub const CodePathBuilder = struct {
     pub fn newDisconnectedSegment(self: *CodePathBuilder, all_prev: []const SegmentId) !SegmentId {
         var any_reachable = false;
         for (all_prev) |p| {
-            if (p != NONE_SEG and self.segments.items[p].reachable) {
+            if (p != NONE_SEG and (self.seg_reachable.items[p] != 0)) {
                 any_reachable = true;
                 break;
             }
@@ -501,6 +513,7 @@ pub const CodePathBuilder = struct {
             .looped_prev_start = 0,
             .looped_prev_end = 0,
         });
+        try self.seg_reachable.append(alloc, if (is_reachable) 1 else 0);
         return id;
     }
 
@@ -554,7 +567,7 @@ pub const CodePathBuilder = struct {
         try self.all_next_targets.append(self.allocator, seg_id);
         prev.all_next_end = @intCast(self.all_next_targets.items.len);
 
-        if (self.segments.items[prev_seg_id].reachable) {
+        if ((self.seg_reachable.items[prev_seg_id] != 0)) {
             if (prev.next_end == 0 and prev.next_start == 0) {
                 prev.next_start = @intCast(self.next_targets.items.len);
             }
@@ -725,7 +738,7 @@ pub const CodePathBuilder = struct {
         }
         // Add reachable head segments (for paths that reach the end without return/throw)
         for (head) |seg_id| {
-            if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+            if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
                 var dup = false;
                 for (self.cp_final_pool.items[cp.final_start..]) |existing| {
                     if (existing == seg_id) { dup = true; break; }
@@ -746,7 +759,7 @@ pub const CodePathBuilder = struct {
         // return/throw, so they shouldn't appear in returnedSegments.
         if (cp.origin != .program) {
             for (head) |seg_id| {
-                if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+                if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
                     if (cp.returned_end == 0 and cp.returned_start == 0) {
                         cp.returned_start = @intCast(self.cp_returned_pool.items.len);
                     }
@@ -997,7 +1010,7 @@ pub const CodePathBuilder = struct {
         const current_head = self.fork_context.head();
         var has_reachable_prev = false;
         for (current_head) |s| {
-            if (s != NONE_SEG and self.segments.items[s].reachable) has_reachable_prev = true;
+            if (s != NONE_SEG and (self.seg_reachable.items[s] != 0)) has_reachable_prev = true;
         }
 
         // Merge ALL entries in the fork context (0 to -1), not just the last.
@@ -1271,7 +1284,7 @@ pub const CodePathBuilder = struct {
                     // Check if current head is unreachable
                     var any_reachable = false;
                     for (current_head) |s| {
-                        if (s != NONE_SEG and self.segments.items[s].reachable) any_reachable = true;
+                        if (s != NONE_SEG and (self.seg_reachable.items[s] != 0)) any_reachable = true;
                     }
                     if (!any_reachable) {
                         // End unreachable segments, replace with break exits, emit starts
@@ -1296,7 +1309,7 @@ pub const CodePathBuilder = struct {
             for (head) |from_seg| {
                 // Only create back-edges from reachable segments.
                 // If the loop body always exits (return/throw/break), no back-edge.
-                if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
                     for (d) |to_seg| {
                         if (to_seg != NONE_SEG) {
                             try self.markLooped(to_seg, from_seg);
@@ -1311,7 +1324,7 @@ pub const CodePathBuilder = struct {
         const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
         if (entry) |e| {
             for (head) |from_seg| {
-                if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
                     for (e) |to_seg| {
                         if (to_seg != NONE_SEG) {
                             try self.emitSegLoop(from_seg, to_seg, node);
@@ -1362,7 +1375,7 @@ pub const CodePathBuilder = struct {
             }
             var any_reachable = false;
             for (head) |s| {
-                if (s != NONE_SEG and self.segments.items[s].reachable) any_reachable = true;
+                if (s != NONE_SEG and (self.seg_reachable.items[s] != 0)) any_reachable = true;
             }
             if (!any_reachable) {
                 self.fork_context.replaceHead(broken_segs, self) catch {};
@@ -1426,7 +1439,7 @@ pub const CodePathBuilder = struct {
             const dest = ctx.continue_dest_segments orelse ctx.entry_segments;
             if (dest) |d| {
                 for (head) |from_seg| {
-                    if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                    if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
                         for (d) |to_seg| {
                             if (to_seg != NONE_SEG) {
                                 try self.markLooped(to_seg, from_seg);
@@ -1439,7 +1452,7 @@ pub const CodePathBuilder = struct {
             const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
             if (entry) |e| {
                 for (head) |from_seg| {
-                    if (from_seg != NONE_SEG and self.segments.items[from_seg].reachable) {
+                    if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
                         for (e) |to_seg| {
                             if (to_seg != NONE_SEG) {
                                 try self.emitSegLoop(from_seg, to_seg, node);
@@ -1466,7 +1479,7 @@ pub const CodePathBuilder = struct {
         const head = self.fork_context.head();
         var cp = &self.codepaths.items[cp_id];
         for (head) |seg_id| {
-            if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+            if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
                 if (cp.returned_end == 0 and cp.returned_start == 0) {
                     cp.returned_start = @intCast(self.cp_returned_pool.items.len);
                 }
@@ -1507,7 +1520,7 @@ pub const CodePathBuilder = struct {
         const head = self.fork_context.head();
         var cp = &self.codepaths.items[cp_id];
         for (head) |seg_id| {
-            if (seg_id != NONE_SEG and self.segments.items[seg_id].reachable) {
+            if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
                 if (cp.thrown_end == 0 and cp.thrown_start == 0) {
                     cp.thrown_start = @intCast(self.cp_thrown_pool.items.len);
                 }
