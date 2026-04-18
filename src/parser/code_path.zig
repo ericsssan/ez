@@ -241,7 +241,7 @@ fn newEmptyForkContext(alloc: Allocator, parent: *ForkContext, should_fork_leavi
 
 // ── Context Types ────────────────────────────────────────────────
 
-const ChoiceKind = enum { test_kind, logical_and, logical_or, nullish, loop };
+pub const ChoiceKind = enum { test_kind, logical_and, logical_or, nullish, loop };
 
 const ChoiceContext = struct {
     upper: ?*ChoiceContext,

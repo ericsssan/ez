@@ -411,7 +411,7 @@ pub fn main(init: std.process.Init) !void {
                     .scope_close => depth -|= 1,
                     .declare => decls += 1,
                     .reference => refs += 1,
-                    .terminator, .branch_open, .branch_else, .branch_close => {},
+                    else => {},
                 }
             }
             std.mem.doNotOptimizeAway(depth);
@@ -429,7 +429,7 @@ pub fn main(init: std.process.Init) !void {
                     .scope_close => depth -|= 1,
                     .declare => decls += 1,
                     .reference => refs += 1,
-                    .terminator, .branch_open, .branch_else, .branch_close => {},
+                    else => {},
                 }
             }
             std.mem.doNotOptimizeAway(depth);
@@ -455,6 +455,7 @@ pub fn main(init: std.process.Init) !void {
             .reference => refs += 1,
             .terminator => terms += 1,
             .branch_open, .branch_else, .branch_close => branches += 1,
+            else => {},
         };
         std.debug.print("  distribution: {d} opens, {d} closes, {d} decls, {d} refs, {d} terms, {d} branches\n\n", .{ opens, closes, decls, refs, terms, branches });
     }

@@ -39,6 +39,53 @@ pub const EventKind = enum(u8) {
     /// End of a branch_open (closes the if entirely).  The alive state
     /// after this event is the OR of the two branches' alive states.
     branch_close,
+    /// Loop boundary events.  aux byte: 0=while, 1=do_while, 2=for,
+    /// 3=for_in, 4=for_of.  node: the loop statement node.
+    loop_open,
+    /// End of loop test expression (before body).  For for-stmt this fires
+    /// after the test expression; for do-while it fires before the test.
+    /// aux/node: same as the paired loop_open.
+    loop_test_end,
+    /// End of loop body (before back-edge).  aux/node: same as loop_open.
+    loop_body_end,
+    loop_close,
+    /// Try statement events.  aux: 0=no-finalizer, 1=has-finalizer.  node: try_stmt.
+    try_open,
+    /// End of try body (entering catch, or finally if no catch).
+    try_body_end,
+    /// Start of catch block.  node: catch_clause.
+    try_catch_start,
+    /// End of catch block.  node: catch_clause.
+    try_catch_end,
+    /// Start of finally block.  node: try_stmt (finalizer block).
+    try_finally_start,
+    try_close,
+    /// Switch statement events.  node: switch_stmt.  aux: 0=no-default, 1=has-default.
+    switch_open,
+    /// Start of a case (or default).  aux: 0=case, 1=default.  node: switch_case.
+    switch_case_start,
+    /// End of a case body.  node: switch_case.
+    switch_case_end,
+    switch_close,
+    /// Logical expression events (short-circuiting: &&, ||, ??).
+    /// aux: 0=logical_and, 1=logical_or, 2=nullish_coalesce.  node: logical expr.
+    logical_open,
+    /// Boundary between left and right operand of a logical expression.
+    logical_right,
+    logical_close,
+    /// Conditional (ternary ?:) expression events.  node: conditional_expr.
+    cond_open,
+    /// End of consequent, start of alternate.
+    cond_alt,
+    cond_close,
+    /// A labeled statement begins.  node: labeled_stmt.  aux: 0=non-loop, 1=loop.
+    label_open,
+    label_close,
+    /// `if (cond) consequent [else alternate]` — CodePath-specific events.
+    /// node: if_stmt or if_else_stmt.  aux: 0=no-alternate, 1=has-alternate.
+    if_open,
+    if_alt,
+    if_close,
 };
 
 pub const Event = packed struct(u64) {

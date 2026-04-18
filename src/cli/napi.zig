@@ -70,7 +70,11 @@ fn parseImpl(
     var tokens = lex_result.tokens;
 
     // Parse — node/extra_data arrays land in the bump region.
-    var tree = parser_mod.Parser.parseWithLanguage(alloc, source, tokens.slice(), language, false) catch |e| return e;
+    var tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
+        .language = language,
+        .is_module = false,
+        .emit_events = true,
+    }) catch |e| return e;
 
     // Compute parent indices and DFS traversal orders in a single pass.
     // All three arrays are allocated into the bump region.
@@ -351,7 +355,11 @@ fn parseAndLintImpl(
 
     const lex_result = Lexer.tokenizeWithLanguage(alloc, source, language) catch |e| return e;
     var tokens = lex_result.tokens;
-    var tree = parser_mod.Parser.parseWithLanguage(alloc, source, tokens.slice(), language, false) catch |e| return e;
+    var tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
+        .language = language,
+        .is_module = false,
+        .emit_events = true,
+    }) catch |e| return e;
 
     const traversal = parent_builder.computeTraversal(&tree, alloc) catch |e| return e;
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
@@ -651,7 +659,11 @@ fn lintImpl(
 
     const lex_result = try Lexer.tokenizeWithLanguage(bump, source, language);
     var tokens = lex_result.tokens;
-    var tree = try parser_mod.Parser.parseWithLanguage(bump, source, tokens.slice(), language, false);
+    var tree = try parser_mod.Parser.parseWithOptions(bump, source, tokens.slice(), .{
+        .language = language,
+        .is_module = false,
+        .emit_events = true,
+    });
 
     // Pooled thread-local arena — reset after use, never freed between calls.
     const arena_impl = getLintArena();

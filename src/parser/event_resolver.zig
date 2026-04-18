@@ -38,6 +38,10 @@ const scope_events = @import("scope_events.zig");
 const Event = scope_events.Event;
 const EventKind = scope_events.EventKind;
 
+const code_path_mod = @import("code_path.zig");
+const CodePathBuilder = code_path_mod.CodePathBuilder;
+const Origin = code_path_mod.Origin;
+
 // ── Scoped binding map (same shape as semantic.zig) ─────────────────
 
 const ScopedKey = struct { scope_id: u32, name: []const u8 };
@@ -114,7 +118,15 @@ pub fn resolve(
         },
         .scope_close => if (sp > 0) { sp -= 1; },
         // CFG events ignored by the stats-only resolver — resolveFull handles them.
-        .terminator, .branch_open, .branch_else, .branch_close => {},
+        .terminator, .branch_open, .branch_else, .branch_close,
+        .loop_open, .loop_test_end, .loop_body_end, .loop_close,
+        .try_open, .try_body_end, .try_catch_start, .try_catch_end, .try_finally_start, .try_close,
+        .switch_open, .switch_case_start, .switch_case_end, .switch_close,
+        .logical_open, .logical_right, .logical_close,
+        .cond_open, .cond_alt, .cond_close,
+        .label_open, .label_close,
+        .if_open, .if_alt, .if_close,
+        => {},
         .declare => {
             if (sp == 0) continue;
             const scope_id = stack[sp - 1];
@@ -198,6 +210,14 @@ pub fn resolveFull(
     errdefer allocator.free(loop_exit_reachable);
     @memset(loop_exit_reachable, 1);
 
+    // Minimal CodePathBuilder — enter/exit per function/module/static-block/
+    // class-field-initializer scope.  Terminators forward the current segment
+    // to unreachable.  Does NOT yet handle switch/loop/try/logical branching
+    // (those still need dedicated CFG events — see project_event_cfg_events).
+    var cpb = CodePathBuilder.init(allocator);
+    cpb.allocator = cpb.arena.allocator();
+    errdefer cpb.deinit();
+
     // Scope stack — holds ScopeIds as we enter/leave scopes during the event
     // pass.  Depth ≤ 256 is plenty for realistic source (acorn.js peaks ~8).
     var stack: [256]ScopeId = undefined;
@@ -248,6 +268,18 @@ pub fn resolveFull(
                     fsp += 1;
                 }
                 cfg_alive = true;
+
+                // CodePath entry.  For module/global the owner node is root(0);
+                // for functions/static-blocks/class-field-inits it's the owning
+                // construct (fn_decl, fn_expr, static_block_def, property, …).
+                const origin: Origin = switch (kind) {
+                    .global, .module => .program,
+                    .function => .function,
+                    .static_block => .class_static_block,
+                    .class_field_initializer => .class_field_initializer,
+                    else => unreachable,
+                };
+                try cpb.enterCodePath(node, origin, node);
             }
         },
         .scope_close => {
@@ -265,6 +297,8 @@ pub fn resolveFull(
                     } else {
                         cfg_alive = true;
                     }
+                    const closed_node = scopes.node_ids.items[closed_sid.toInt()];
+                    try cpb.exitCodePath(closed_node);
                 }
             }
         },
@@ -275,6 +309,16 @@ pub fn resolveFull(
             const ni = e.node;
             if (ni < node_reachable.len and !cfg_alive) node_reachable[ni] = 0;
             cfg_alive = false;
+
+            // Drive CodePathBuilder state.  aux: 0=return, 1=throw, 2=break, 3=continue.
+            const term_node: NodeIndex = @enumFromInt(e.node);
+            switch (e.aux) {
+                0 => try cpb.makeReturn(term_node),
+                1 => try cpb.makeThrow(term_node),
+                // break/continue: without loop/switch context events, we can
+                // only approximate by marking the current segment unreachable.
+                else => try cpb.makeUnreachable(term_node),
+            }
         },
         .branch_open => {
             // Save the pre-branch alive state.
@@ -379,12 +423,129 @@ pub fn resolveFull(
             // Unresolved → leave symbol_id = .none; a post-pass could retry
             // for forward references (hoisted fn/var declared later).
         },
+
+        // ── If statement CodePath events ─────────────────────────
+        .if_open => {
+            try cpb.pushChoiceContext(.test_kind, false);
+            // makeIfConsequent needs the consequent node; we don't have it
+            // yet at parse time, so pass the if node itself — CodePath uses
+            // it mainly to tag the event.
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeIfConsequent(n);
+        },
+        .if_alt => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeIfAlternate(n);
+        },
+        .if_close => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popChoiceContext(n);
+        },
+
+        // ── Loop CodePath events ─────────────────────────────────
+        .loop_open => {
+            const loop_type: code_path_mod.LoopType = switch (e.aux) {
+                0 => .while_stmt,
+                1 => .do_while_stmt,
+                2 => .for_stmt,
+                3 => .for_in_stmt,
+                else => .for_of_stmt,
+            };
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.pushLoopContext(loop_type, null, n, n);
+        },
+        .loop_test_end => {
+            cpb.setLoopContinueDest();
+        },
+        .loop_body_end => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeLoopBackEdge(n);
+        },
+        .loop_close => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popLoopContext(n);
+        },
+
+        // ── Try/catch/finally CodePath events ────────────────────
+        .try_open => {
+            const has_finalizer = e.aux == 1;
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.pushTryContext(has_finalizer, n);
+        },
+        .try_body_end => {},
+        .try_catch_start => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeCatchBlock(n);
+        },
+        .try_catch_end => {},
+        .try_finally_start => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeFinallyBlock(n);
+        },
+        .try_close => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popTryContext(n);
+        },
+
+        // ── Switch CodePath events ───────────────────────────────
+        .switch_open => {
+            try cpb.pushSwitchContext(e.aux == 1, null);
+        },
+        .switch_case_start => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeSwitchCaseBody(e.aux == 1, n);
+        },
+        .switch_case_end => {},
+        .switch_close => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popSwitchContext(n);
+        },
+
+        // ── Logical/conditional short-circuit CodePath events ────
+        .logical_open => {
+            const ck: code_path_mod.ChoiceKind = switch (e.aux) {
+                0 => .logical_and,
+                1 => .logical_or,
+                else => .nullish,
+            };
+            try cpb.pushChoiceContext(ck, true);
+        },
+        .logical_right => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeLogicalRight(n);
+        },
+        .logical_close => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popChoiceContext(n);
+        },
+        .cond_open => {
+            try cpb.pushChoiceContext(.test_kind, true);
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeIfConsequent(n);
+        },
+        .cond_alt => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeIfAlternate(n);
+        },
+        .cond_close => {
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popChoiceContext(n);
+        },
+
+        // ── Labeled statements (break/continue targets) ─────────
+        .label_open, .label_close => {
+            // TODO: push/pop break context.  Without it, labeled break/continue
+            // falls back to makeUnreachable (rough but non-crashing).
+        },
     };
 
     // Post-passes: sort by symbol / scope for downstream lookups, matching
     // `semantic.zig`'s `buildRefRanges` and `buildScopeBindings`.
     try buildRefRanges(&symbols, &references, allocator);
     try buildScopeBindings(&scopes, &symbols, allocator);
+
+    const cpb_result = try cpb.finish();
+    cpb.deinit();
 
     return .{
         .scopes = scopes,
@@ -393,7 +554,7 @@ pub fn resolveFull(
         .diagnostics = &.{},
         .node_reachable = node_reachable,
         .loop_exit_reachable = loop_exit_reachable,
-        .code_path_result = null,
+        .code_path_result = cpb_result,
     };
 }
 

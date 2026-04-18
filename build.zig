@@ -124,4 +124,20 @@ pub fn build(b: *std.Build) void {
     }
     const bench_step = b.step("bench", "Run parser benchmarks");
     bench_step.dependOn(&bench_cmd.step);
+
+    // ── Events bench ─────────────────────────────────────────
+    const bench_evt_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_events.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_evt_mod.addImport("ez", test_mod);
+    const bench_evt = b.addExecutable(.{
+        .name = "bench_events",
+        .root_module = bench_evt_mod,
+    });
+    const bench_evt_cmd = b.addRunArtifact(bench_evt);
+    bench_evt_cmd.step.dependOn(b.getInstallStep());
+    const bench_evt_step = b.step("bench-events", "Event stream throughput bench");
+    bench_evt_step.dependOn(&bench_evt_cmd.step);
 }

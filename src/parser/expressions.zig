@@ -1119,7 +1119,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
             p.in_async = true;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async;
-            try p.emitScopeOpen(.function, .none);
+            const arrow_scope_ev = try p.emitScopeOpen(.function, .none);
             try p.emitParamDeclaresFromRange(params_range);
             const body = try parseArrowBody(p);
             try p.emitScopeClose(.none);
@@ -1129,11 +1129,13 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
                 .body = body,
                 .return_type = async_typed_arrow_return_type,
             });
-            return p.addNode(.{
+            const arrow_node = try p.addNode(.{
                 .tag = .async_arrow_fn,
                 .main_token = async_tok,
                 .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
             });
+            p.patchScopeOpenNode(arrow_scope_ev, arrow_node);
+            return arrow_node;
         }
         // Not an arrow — fallback to call
         if (params_range.end > params_range.start) {
@@ -1266,7 +1268,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn2;
             defer p.in_async = saved_async2;
-            try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
+            const empty_arrow_ev = try p.emitScopeOpen(.function, .none);
+            const body = try parseArrowBody(p);
+            try p.emitScopeClose(.none);
             const params_range = try p.addSlice(&[_]u32{});
             const extra = try p.addExtra(ast.ArrowData, .{
                 .params_start = params_range.start,
@@ -1274,11 +1278,13 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                 .body = body,
                 .return_type = empty_arrow_return_type,
             });
-            return p.addNode(.{
+            const empty_arrow_node = try p.addNode(.{
                 .tag = .arrow_fn,
                 .main_token = open_paren,
                 .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
             });
+            p.patchScopeOpenNode(empty_arrow_ev, empty_arrow_node);
+            return empty_arrow_node;
         }
         // Empty parens not followed by `=>` — error.
         try p.emitError("Unexpected token ')'");
@@ -1301,7 +1307,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.in_async = false;
             defer p.in_function = saved_fn;
             defer p.in_async = saved_async_ts;
-            try p.emitScopeOpen(.function, .none);
+            const typed_arrow_ev = try p.emitScopeOpen(.function, .none);
             try p.emitParamDeclaresFromRange(params_range);
             const body = try parseArrowBody(p);
             try p.emitScopeClose(.none);
@@ -1311,11 +1317,13 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                 .body = body,
                 .return_type = typed_arrow_return_type,
             });
-            return p.addNode(.{
+            const typed_arrow_node = try p.addNode(.{
                 .tag = .arrow_fn,
                 .main_token = open_paren,
                 .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
             });
+            p.patchScopeOpenNode(typed_arrow_ev, typed_arrow_node);
+            return typed_arrow_node;
         }
         // Not an arrow — parsed params but no `=>`.  This is an error or a parenthesized expr.
         // Fall through to error or return first param as expression.
@@ -1508,7 +1516,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         // Arrow scope — params were parsed as expression identifiers and
         // emitted reference events into the enclosing scope; those become
         // orphan refs, but the arrow body's own refs resolve correctly here.
-        try p.emitScopeOpen(.function, .none);
+        const paren_arrow_ev = try p.emitScopeOpen(.function, .none);
         try p.emitParamDeclaresFromRange(params_range);
 
         // Arrow body: block { } with strict checks, or concise expression
@@ -1524,11 +1532,13 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             .params_end = params_range.end,
             .body = body,
         });
-        return p.addNode(.{
+        const paren_arrow_node = try p.addNode(.{
             .tag = .arrow_fn,
             .main_token = open_paren,
             .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
         });
+        p.patchScopeOpenNode(paren_arrow_ev, paren_arrow_node);
+        return paren_arrow_node;
     }
 
     // Not an arrow — validate no spread elements (spread is only valid in arrows, arrays, calls)
@@ -1627,7 +1637,7 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     const params = try p.addSlice(&[_]u32{param_node.toInt()});
 
     // Arrow function scope: the parameter binds inside it.
-    try p.emitScopeOpen(.function, .none);
+    const single_arrow_ev = try p.emitScopeOpen(.function, .none);
     try p.emitDeclare(.parameter, param_node);
 
     const saved_fn = p.in_function;
@@ -1645,11 +1655,13 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
         .body = body,
     });
     const fn_tag: Node.Tag = if (is_async) .async_arrow_fn else .arrow_fn;
-    return p.addNode(.{
+    const arrow_node = try p.addNode(.{
         .tag = fn_tag,
         .main_token = param_tok,
         .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
     });
+    p.patchScopeOpenNode(single_arrow_ev, arrow_node);
+    return arrow_node;
 }
 
 // ── Parse assignment-level expression or spread ──────────────────
@@ -2325,7 +2337,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     // Named function expression: name binds only inside the function's own
     // scope.  We emit the declare AFTER emitting scope_open so the consumer
     // places the binding in the inner scope, not the enclosing one.
-    try p.emitScopeOpen(.function, .none);
+    const fn_expr_ev = try p.emitScopeOpen(.function, .none);
     // Named function expression: emit as `.fn_expr_name` when the name
     // matches the enclosing `var`/`let`/`const` binding name (ESLint's
     // fn_expr_exceptions rule — affects no-shadow).  Otherwise `.function_decl`.
@@ -2345,11 +2357,13 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     if (p.language.isTs() and p.peek() != .l_brace) {
         _ = p.eat(.semicolon);
         try p.emitScopeClose(.none);
-        return p.addNode(.{
+        const ts_node = try p.addNode(.{
             .tag = .ts_type_annotation,
             .main_token = fn_tok,
             .data = .{ .lhs = name_node, .rhs = .none },
         });
+        p.patchScopeOpenNode(fn_expr_ev, ts_node);
+        return ts_node;
     }
 
     const body = try parseBlockBodyWithStrictChecks(p, params_range, name_node);
@@ -2366,11 +2380,13 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
         .type_params = fn_expr_type_params.start,
         .type_params_end = fn_expr_type_params.end,
     });
-    return p.addNode(.{
+    const fn_expr_node = try p.addNode(.{
         .tag = fn_tag,
         .main_token = fn_tok,
         .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
     });
+    p.patchScopeOpenNode(fn_expr_ev, fn_expr_node);
+    return fn_expr_node;
 }
 
 // =====================================================================
@@ -3277,14 +3293,34 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
     const saved_arrow = p.allow_arrow;
     p.allow_arrow = false;
     defer p.allow_arrow = saved_arrow;
+
+    // Short-circuiting operators need CFG events so CodePathBuilder can model
+    // the left/right execution as a choice context.
+    const logical_kind: ?Parser.LogicalKind = switch (op_tag) {
+        .ampersand_ampersand => .logical_and,
+        .pipe_pipe => .logical_or,
+        .question_question => .nullish_coalesce,
+        else => null,
+    };
+    var logical_ev: u32 = 0;
+    if (logical_kind) |lk| {
+        logical_ev = try p.emitLogicalOpen(lk, .none);
+        try p.emitLogicalRight(lk, .none);
+    }
+
     const rhs = try parseExpressionPrec(p, prec.next());
 
     const node_tag: Node.Tag = tokenToBinaryTag(op_tag);
-    return p.addNode(.{
+    const node = try p.addNode(.{
         .tag = node_tag,
         .main_token = op_tok,
         .data = .{ .lhs = left, .rhs = rhs },
     });
+    if (logical_kind) |lk| {
+        try p.emitLogicalClose(lk, node);
+        p.patchEventNode(logical_ev, node);
+    }
+    return node;
 }
 
 fn tokenToBinaryTag(tag: TokenTag) Node.Tag {
@@ -3429,11 +3465,13 @@ fn assignTokenToTag(tag: TokenTag) Node.Tag {
 fn parseConditionalTail(p: *Parser, condition: NodeIndex) Error!NodeIndex {
     const q_tok = p.advance(); // consume `?`
 
+    const cond_ev = try p.emitCondOpen(.none);
     // Parse consequent at assignment level (commas are part of ternary, not grouping).
     const saved_in = p.allow_in;
     p.allow_in = true;
     const consequent = try parseAssignmentExpression(p);
     p.allow_in = saved_in;
+    try p.emitCondAlt(.none);
 
     _ = try p.expect(.colon);
     const alternate = try parseAssignmentExpression(p);
@@ -3442,11 +3480,14 @@ fn parseConditionalTail(p: *Parser, condition: NodeIndex) Error!NodeIndex {
         .consequent = consequent,
         .alternate = alternate,
     });
-    return p.addNode(.{
+    const cond_node = try p.addNode(.{
         .tag = .conditional,
         .main_token = q_tok,
         .data = .{ .lhs = condition, .rhs = NodeIndex.fromInt(extra) },
     });
+    try p.emitCondClose(cond_node);
+    p.patchEventNode(cond_ev, cond_node);
+    return cond_node;
 }
 
 // ── Sequence expression (comma) ──────────────────────────────────
@@ -4310,17 +4351,21 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                 p.in_async = false;
                 defer p.in_function = saved_fn;
                 defer p.in_async = saved_async_ts2;
-                try p.emitScopeOpen(.function, .none); const body = try parseArrowBody(p); try p.emitScopeClose(.none);
+                const generic_arrow_ev = try p.emitScopeOpen(.function, .none);
+                const body = try parseArrowBody(p);
+                try p.emitScopeClose(.none);
                 const extra = try p.addExtra(ast.ArrowData, .{
                     .params_start = 0,
                     .params_end = 0,
                     .body = body,
                 });
-                return p.addNode(.{
+                const generic_arrow_node = try p.addNode(.{
                     .tag = .arrow_fn,
                     .main_token = saved_tok,
                     .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
                 });
+                p.patchScopeOpenNode(generic_arrow_ev, generic_arrow_node);
+                return generic_arrow_node;
             }
             // Not a generic arrow — backtrack
         }

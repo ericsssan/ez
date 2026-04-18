@@ -199,8 +199,10 @@ pub const Parser = struct {
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
+    /// Always emits scope events — the event-driven semantic analyzer is the
+    /// sole path (tree walker was removed).
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, null, false);
+        return parseInternal(allocator, source, tokens, language, is_module_file, null, true);
     }
 
     fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool) !Ast {
@@ -430,13 +432,24 @@ pub const Parser = struct {
     // When off, LLVM sees `emit_scope_events == false` at the call site and
     // the body is eliminated — zero cost for the default parse path.
 
-    pub inline fn emitScopeOpen(self: *Parser, kind: ScopeKindU8, node: NodeIndex) !void {
-        if (!self.emit_scope_events) return;
+    pub inline fn emitScopeOpen(self: *Parser, kind: ScopeKindU8, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
         try self.scope_events.push(self.gpa, .{
             .kind = .scope_open,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
         });
+        return idx;
+    }
+
+    /// Overwrite the `node` field of a previously-emitted scope_open event.
+    /// Used when the owning AST node (block_stmt, for_stmt, function, class, …)
+    /// is created AFTER the scope is opened, so the event initially carried
+    /// `.none` and needs back-patching once the node index is known.
+    pub inline fn patchScopeOpenNode(self: *Parser, event_idx: u32, node: NodeIndex) void {
+        if (!self.emit_scope_events) return;
+        self.scope_events.events.items[event_idx].node = @intFromEnum(node);
     }
 
     pub inline fn emitScopeClose(self: *Parser, node: NodeIndex) !void {
@@ -588,6 +601,254 @@ pub const Parser = struct {
             .aux = 0,
             .node = @intFromEnum(node),
         });
+    }
+
+    pub const LoopKind = enum(u8) { @"while", do_while, @"for", for_in, for_of };
+
+    pub inline fn emitLoopOpen(self: *Parser, kind: LoopKind, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .loop_open,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitLoopTestEnd(self: *Parser, kind: LoopKind, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .loop_test_end,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitLoopBodyEnd(self: *Parser, kind: LoopKind, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .loop_body_end,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitLoopClose(self: *Parser, kind: LoopKind, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .loop_close,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitTryOpen(self: *Parser, has_finalizer: bool, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .try_open,
+            .aux = if (has_finalizer) 1 else 0,
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitTryBodyEnd(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .try_body_end,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitTryCatchStart(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .try_catch_start,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitTryCatchEnd(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .try_catch_end,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitTryFinallyStart(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .try_finally_start,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitTryClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .try_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitSwitchOpen(self: *Parser, has_default: bool, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .switch_open,
+            .aux = if (has_default) 1 else 0,
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitSwitchCaseStart(self: *Parser, is_default: bool, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .switch_case_start,
+            .aux = if (is_default) 1 else 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitSwitchCaseEnd(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .switch_case_end,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitSwitchClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .switch_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub const LogicalKind = enum(u8) { logical_and, logical_or, nullish_coalesce };
+
+    pub inline fn emitLogicalOpen(self: *Parser, kind: LogicalKind, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .logical_open,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitLogicalRight(self: *Parser, kind: LogicalKind, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .logical_right,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitLogicalClose(self: *Parser, kind: LogicalKind, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .logical_close,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitCondOpen(self: *Parser, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .cond_open,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitCondAlt(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .cond_alt,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitCondClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .cond_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitIfOpen(self: *Parser, has_else: bool, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .if_open,
+            .aux = if (has_else) 1 else 0,
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitIfAlt(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .if_alt,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitIfClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .if_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitLabelOpen(self: *Parser, is_loop: bool, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
+        try self.scope_events.push(self.gpa, .{
+            .kind = .label_open,
+            .aux = if (is_loop) 1 else 0,
+            .node = @intFromEnum(node),
+        });
+        return idx;
+    }
+
+    pub inline fn emitLabelClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .label_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn patchEventNode(self: *Parser, event_idx: u32, node: NodeIndex) void {
+        if (!self.emit_scope_events) return;
+        self.scope_events.events.items[event_idx].node = @intFromEnum(node);
     }
 
     /// Walk back through recently-emitted events to find the reference event
@@ -805,7 +1066,7 @@ pub const Parser = struct {
         self.checkDirectivePrologue();
 
         // Open module/global scope for event stream.
-        try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
+        _ = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1100,12 +1361,12 @@ pub const Parser = struct {
         // Emit block scope open; corresponding close is emitted below.  We use
         // `.none` as the node index because the block_stmt node isn't created
         // until after the body is parsed — the consumer only needs kind + order.
-        try self.emitScopeOpen(.block, .none);
+        const scope_ev = try self.emitScopeOpen(.block, .none);
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
         try self.emitScopeClose(.none);
 
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = .block_stmt,
             .main_token = lbrace,
             .data = .{
@@ -1113,6 +1374,8 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(range.end),
             },
         });
+        self.patchScopeOpenNode(scope_ev, node);
+        return node;
     }
 
     /// Parse `;`.
@@ -1288,17 +1551,20 @@ pub const Parser = struct {
         // Branch events wrap the consequent/alternate so the event resolver
         // can compute per-node reachability for rules like no-unreachable.
         try self.emitBranchOpen(.none);
+        const if_ev = try self.emitIfOpen(false, .none);
         const consequent = try self.parseIfBody();
 
         if (self.eat(.kw_else)) |_| {
             try self.emitBranchElse(.none);
+            if (self.emit_scope_events) self.scope_events.events.items[if_ev].aux = 1;
+            try self.emitIfAlt(.none);
             const alternate = try self.parseIfBody();
             try self.emitBranchClose(.none);
             const extra = try self.addExtra(ast.IfData, .{
                 .consequent = consequent,
                 .alternate = alternate,
             });
-            return self.addNode(.{
+            const if_else_node = try self.addNode(.{
                 .tag = .if_else_stmt,
                 .main_token = if_tok,
                 .data = .{
@@ -1306,10 +1572,13 @@ pub const Parser = struct {
                     .rhs = NodeIndex.fromInt(extra),
                 },
             });
+            try self.emitIfClose(if_else_node);
+            self.patchEventNode(if_ev, if_else_node);
+            return if_else_node;
         }
 
         try self.emitBranchClose(.none);
-        return self.addNode(.{
+        const if_node = try self.addNode(.{
             .tag = .if_stmt,
             .main_token = if_tok,
             .data = .{
@@ -1317,6 +1586,9 @@ pub const Parser = struct {
                 .rhs = consequent,
             },
         });
+        try self.emitIfClose(if_node);
+        self.patchEventNode(if_ev, if_node);
+        return if_node;
     }
 
     /// Parse `while (cond) body`.
@@ -1330,14 +1602,18 @@ pub const Parser = struct {
         self.in_loop = true;
         defer self.in_loop = prev_in_loop;
 
+        const loop_ev = try self.emitLoopOpen(.@"while", .none);
+        try self.emitLoopTestEnd(.@"while", .none);
         // Wrap loop body in branch_open/close so that terminators inside the
         // body (return, throw, break) don't poison the post-loop alive state:
         // the loop may not execute at all, so post-loop alive == pre-loop alive.
         try self.emitBranchOpen(.none);
         const body = try self.parseNonDeclStatement();
         try self.emitBranchClose(.none);
+        try self.emitLoopBodyEnd(.@"while", .none);
+        try self.emitLoopClose(.@"while", .none);
 
-        return self.addNode(.{
+        const while_node = try self.addNode(.{
             .tag = .while_stmt,
             .main_token = while_tok,
             .data = .{
@@ -1345,6 +1621,8 @@ pub const Parser = struct {
                 .rhs = body,
             },
         });
+        self.patchEventNode(loop_ev, while_node);
+        return while_node;
     }
 
     /// Parse `do body while (cond);`.
@@ -1355,19 +1633,21 @@ pub const Parser = struct {
         self.in_loop = true;
         defer self.in_loop = prev_in_loop;
 
+        const loop_ev = try self.emitLoopOpen(.do_while, .none);
         try self.emitBranchOpen(.none);
         const body = try self.parseNonDeclStatement();
         try self.emitBranchClose(.none);
+        try self.emitLoopBodyEnd(.do_while, .none);
         _ = try self.expect(.kw_while);
         _ = try self.expect(.l_paren);
         const condition = try self.parseExpression();
         _ = try self.expect(.r_paren);
+        try self.emitLoopTestEnd(.do_while, .none);
+        try self.emitLoopClose(.do_while, .none);
         // Do-while has special ASI: semicolon is always auto-inserted after `)`.
-        // Per spec rule: "the previous token is ) and the inserted semicolon would
-        // then be parsed as the terminating semicolon of a do-while statement"
         _ = self.eat(.semicolon);
 
-        return self.addNode(.{
+        const do_node = try self.addNode(.{
             .tag = .do_while_stmt,
             .main_token = do_tok,
             .data = .{
@@ -1375,6 +1655,8 @@ pub const Parser = struct {
                 .rhs = condition,
             },
         });
+        self.patchEventNode(loop_ev, do_node);
+        return do_node;
     }
 
     /// Parse `for (...)` — disambiguate for/for-in/for-of.
@@ -1390,7 +1672,7 @@ pub const Parser = struct {
         // For-let/const creates a new block scope containing the init binding
         // and the body.  For-var does not, but emitting an empty scope is
         // harmless — keeps the parser simple and events well-nested.
-        try self.emitScopeOpen(.block, .none);
+        const for_scope_ev = try self.emitScopeOpen(.block, .none);
         errdefer self.emitScopeClose(.none) catch {};
 
         const prev_in_loop = self.in_loop;
@@ -1454,6 +1736,7 @@ pub const Parser = struct {
         if (init == .none) {
             const result = try self.parseForRest(for_tok, .none);
             try self.emitScopeClose(.none);
+            self.patchScopeOpenNode(for_scope_ev, result);
             return result;
         }
 
@@ -1463,9 +1746,13 @@ pub const Parser = struct {
             try self.validateForInOfBinding(init, false);
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
+            const loop_ev = try self.emitLoopOpen(.for_in, .none);
+            try self.emitLoopTestEnd(.for_in, .none);
             try self.emitBranchOpen(.none);
             const body = try self.parseNonDeclStatement();
             try self.emitBranchClose(.none);
+            try self.emitLoopBodyEnd(.for_in, .none);
+            try self.emitLoopClose(.for_in, .none);
             try self.emitScopeClose(.none);
 
             const extra = try self.addExtra(ast.ForInOfData, .{
@@ -1473,7 +1760,7 @@ pub const Parser = struct {
                 .expr = right,
                 .body = body,
             });
-            return self.addNode(.{
+            const node = try self.addNode(.{
                 .tag = .for_in_stmt,
                 .main_token = for_tok,
                 .data = .{
@@ -1481,6 +1768,9 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
+            self.patchScopeOpenNode(for_scope_ev, node);
+            self.patchEventNode(loop_ev, node);
+            return node;
         }
 
         if (self.eat(.kw_of)) |_| {
@@ -1488,9 +1778,13 @@ pub const Parser = struct {
             try self.validateForInOfBinding(init, true);
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
+            const loop_ev = try self.emitLoopOpen(.for_of, .none);
+            try self.emitLoopTestEnd(.for_of, .none);
             try self.emitBranchOpen(.none);
             const body = try self.parseNonDeclStatement();
             try self.emitBranchClose(.none);
+            try self.emitLoopBodyEnd(.for_of, .none);
+            try self.emitLoopClose(.for_of, .none);
             try self.emitScopeClose(.none);
 
             const extra = try self.addExtra(ast.ForInOfData, .{
@@ -1499,7 +1793,7 @@ pub const Parser = struct {
                 .body = body,
             });
             const tag: Node.Tag = if (is_await) .for_await_of_stmt else .for_of_stmt;
-            return self.addNode(.{
+            const node = try self.addNode(.{
                 .tag = tag,
                 .main_token = for_tok,
                 .data = .{
@@ -1507,6 +1801,9 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
+            self.patchScopeOpenNode(for_scope_ev, node);
+            self.patchEventNode(loop_ev, node);
+            return node;
         }
 
         // Standard for loop: for (init; cond; update) body
@@ -1518,6 +1815,7 @@ pub const Parser = struct {
         _ = try self.expect(.semicolon);
         const result = try self.parseForRest(for_tok, init);
         try self.emitScopeClose(.none);
+        self.patchScopeOpenNode(for_scope_ev, result);
         return result;
     }
 
@@ -1800,12 +2098,14 @@ pub const Parser = struct {
     /// Parse the condition, update, and body parts of a standard `for` loop.
     /// `init` is .none if there was no initializer.
     pub fn parseForRest(self: *Parser, for_tok: TokenIndex, init: NodeIndex) Error!NodeIndex {
+        const loop_ev = try self.emitLoopOpen(.@"for", .none);
         // condition (optional)
         const condition: NodeIndex = if (self.peek() != .semicolon)
             try self.parseExpression()
         else
             .none;
         _ = try self.expect(.semicolon);
+        try self.emitLoopTestEnd(.@"for", .none);
 
         // update (optional)
         const update: NodeIndex = if (self.peek() != .r_paren)
@@ -1817,13 +2117,15 @@ pub const Parser = struct {
         try self.emitBranchOpen(.none);
         const body = try self.parseNonDeclStatement();
         try self.emitBranchClose(.none);
+        try self.emitLoopBodyEnd(.@"for", .none);
+        try self.emitLoopClose(.@"for", .none);
 
         const extra = try self.addExtra(ast.ForData, .{
             .init = init,
             .condition = condition,
             .update = update,
         });
-        return self.addNode(.{
+        const for_node = try self.addNode(.{
             .tag = .for_stmt,
             .main_token = for_tok,
             .data = .{
@@ -1831,6 +2133,8 @@ pub const Parser = struct {
                 .rhs = body,
             },
         });
+        self.patchEventNode(loop_ev, for_node);
+        return for_node;
     }
 
     /// Parse `switch (expr) { case/default }`.
@@ -1848,15 +2152,12 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        // Switch is like a chain of branches: each case may terminate, but
-        // after the switch we merge all case tails.  We approximate with a
-        // single branch_open/close pair around the whole switch — terminators
-        // inside any case poison the switch-internal alive state but
-        // branch_close restores to pre-switch alive.
-        try self.emitBranchOpen(.none);
+        // Switch opens a lexical scope — let/const declared inside any case
+        // is visible across all cases (matches ESLint scope model).
+        const switch_scope_ev = try self.emitScopeOpen(.switch_stmt, .none);
+        const switch_ev = try self.emitSwitchOpen(false, .none);
         var has_default = false;
         while (self.peek() != .r_brace and !self.isAtEnd()) {
-            // Check for duplicate default
             if (self.peek() == .kw_default) {
                 if (has_default) {
                     try self.emitDiagnostic(self.currentSpan(), "Duplicate default clause in switch", .{});
@@ -1866,7 +2167,10 @@ pub const Parser = struct {
             const case_node = try self.parseSwitchCase();
             try self.scratch.append(self.gpa, @intFromEnum(case_node));
         }
-        try self.emitBranchClose(.none);
+        if (self.emit_scope_events and has_default)
+            self.scope_events.events.items[switch_ev].aux = 1;
+        try self.emitSwitchClose(.none);
+        try self.emitScopeClose(.none);
 
         _ = try self.expect(.r_brace);
 
@@ -1877,7 +2181,7 @@ pub const Parser = struct {
             .start = range.start,
             .end = range.end,
         });
-        return self.addNode(.{
+        const switch_node = try self.addNode(.{
             .tag = .switch_stmt,
             .main_token = switch_tok,
             .data = .{
@@ -1885,15 +2189,16 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(range_extra),
             },
         });
+        self.patchScopeOpenNode(switch_scope_ev, switch_node);
+        self.patchEventNode(switch_ev, switch_node);
+        return switch_node;
     }
 
     /// Parse a single `case expr:` or `default:` clause with its consequent statements.
     pub fn parseSwitchCase(self: *Parser) Error!NodeIndex {
         if (self.eat(.kw_default)) |default_tok| {
             _ = try self.expect(.colon);
-            // Each case is a potential branch target; wrap its body in a
-            // branch so any internal terminator doesn't poison sibling cases.
-            try self.emitBranchOpen(.none);
+            try self.emitSwitchCaseStart(true, .none);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1912,7 +2217,6 @@ pub const Parser = struct {
                 };
                 try self.scratch.append(self.gpa, @intFromEnum(stmt));
             }
-            try self.emitBranchClose(.none);
 
             const stmts = self.scratch.items[scratch_top..];
             const range = try self.listToSubRange(stmts);
@@ -1921,7 +2225,7 @@ pub const Parser = struct {
                 .start = range.start,
                 .end = range.end,
             });
-            return self.addNode(.{
+            const default_node = try self.addNode(.{
                 .tag = .switch_default,
                 .main_token = default_tok,
                 .data = .{
@@ -1929,12 +2233,14 @@ pub const Parser = struct {
                     .rhs = NodeIndex.fromInt(range_extra),
                 },
             });
+            try self.emitSwitchCaseEnd(default_node);
+            return default_node;
         }
 
         const case_tok = try self.expect(.kw_case);
         const test_expr = try self.parseExpression();
         _ = try self.expect(.colon);
-        try self.emitBranchOpen(.none);
+        try self.emitSwitchCaseStart(false, .none);
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1953,7 +2259,6 @@ pub const Parser = struct {
             };
             try self.scratch.append(self.gpa, @intFromEnum(stmt));
         }
-        try self.emitBranchClose(.none);
 
         const stmts = self.scratch.items[scratch_top..];
         const range = try self.listToSubRange(stmts);
@@ -1962,7 +2267,7 @@ pub const Parser = struct {
             .start = range.start,
             .end = range.end,
         });
-        return self.addNode(.{
+        const case_node = try self.addNode(.{
             .tag = .switch_case,
             .main_token = case_tok,
             .data = .{
@@ -1970,6 +2275,8 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(range_extra),
             },
         });
+        try self.emitSwitchCaseEnd(case_node);
+        return case_node;
     }
 
     /// Parse `return [expr];` (expr optional if semicolon/newline/}/eof follows).
@@ -2182,12 +2489,13 @@ pub const Parser = struct {
     /// Parse `try { } [catch (e) { }] [finally { }]`.
     pub fn parseTryStatement(self: *Parser) Error!NodeIndex {
         const try_tok = self.advance(); // eat 'try'
-        // Treat try+catch like an if+else for CFG purposes: the try body
-        // (consequent) may terminate via throw, at which point we fall into
-        // the catch body (alternate).  After the whole try/catch, alive =
-        // merge of both branches.
-        try self.emitBranchOpen(.none);
+        // Look ahead for finalizer (determines has_finalizer for try_open event).
+        // We don't have a single-token lookahead that can see past `catch { ... }`,
+        // so we pre-count: a finalizer flag patched in after parsing.
+        const try_ev = try self.emitTryOpen(false, .none);
+        try self.emitBranchOpen(.none); // keep branch compatibility for node_reachable
         const block = try self.parseBlockStatement();
+        try self.emitTryBodyEnd(.none);
 
         var catch_node: NodeIndex = .none;
         var finally_body: NodeIndex = .none;
@@ -2195,12 +2503,10 @@ pub const Parser = struct {
         // Parse catch clause — emit it as a real catch_clause node so JS code
         // gets a stable NodeView (required for ESLint identity checks).
         if (self.eat(.kw_catch)) |catch_tok| {
-            // End of try block → enter catch (branch_else marks the split).
             try self.emitBranchElse(.none);
-            // Catch opens its own scope; the param binds inside it.
-            try self.emitScopeOpen(.catch_clause, .none);
+            try self.emitTryCatchStart(.none);
+            const catch_scope_ev = try self.emitScopeOpen(.catch_clause, .none);
             var catch_param: NodeIndex = .none;
-            // Optional catch binding: `catch (e)` or `catch {`
             if (self.eat(.l_paren)) |_| {
                 catch_param = try self.parseBindingPattern();
                 try self.emitDeclaresFromPattern(catch_param, .catch_param);
@@ -2213,11 +2519,17 @@ pub const Parser = struct {
                 .main_token = catch_tok,
                 .data = .{ .lhs = catch_param, .rhs = catch_body },
             });
+            self.patchScopeOpenNode(catch_scope_ev, catch_node);
+            try self.emitTryCatchEnd(catch_node);
         }
         try self.emitBranchClose(.none);
 
         // Parse finally clause
         if (self.eat(.kw_finally)) |_| {
+            try self.emitTryFinallyStart(.none);
+            // Mark has_finalizer retroactively on the try_open event.
+            if (self.emit_scope_events)
+                self.scope_events.events.items[try_ev].aux = 1;
             finally_body = try self.parseBlockStatement();
         }
 
@@ -2231,7 +2543,7 @@ pub const Parser = struct {
             .finally_body = finally_body,
         });
 
-        return self.addNode(.{
+        const try_node = try self.addNode(.{
             .tag = .try_stmt,
             .main_token = try_tok,
             .data = .{
@@ -2239,6 +2551,9 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(extra),
             },
         });
+        self.patchEventNode(try_ev, try_node);
+        try self.emitTryClose(try_node);
+        return try_node;
     }
 
     /// Parse `debugger;`.
@@ -2262,9 +2577,11 @@ pub const Parser = struct {
         _ = try self.expect(.l_paren);
         const object = try self.parseExpression();
         _ = try self.expect(.r_paren);
+        const with_scope_ev = try self.emitScopeOpen(.with_stmt, .none);
         const body = try self.parseNonDeclStatement();
+        try self.emitScopeClose(.none);
 
-        return self.addNode(.{
+        const with_node = try self.addNode(.{
             .tag = .with_stmt,
             .main_token = with_tok,
             .data = .{
@@ -2272,6 +2589,8 @@ pub const Parser = struct {
                 .rhs = body,
             },
         });
+        self.patchScopeOpenNode(with_scope_ev, with_node);
+        return with_node;
     }
 
     // ────────────────────────────────────────────────────────────
@@ -2497,7 +2816,7 @@ pub const Parser = struct {
         // Function declaration binds its name in the enclosing scope, then
         // opens a function scope for params + body.
         if (name != .none) try self.emitDeclare(.function_decl, name);
-        try self.emitScopeOpen(.function, .none);
+        const fn_scope_ev = try self.emitScopeOpen(.function, .none);
 
         // Set generator/async flags BEFORE parsing params — yield/await are
         // reserved in the parameter list of generator/async functions.
@@ -2559,11 +2878,13 @@ pub const Parser = struct {
                 main_tok - 1
             else
                 main_tok;
-            return self.addNode(.{
+            const decl_node = try self.addNode(.{
                 .tag = .ts_declare_function,
                 .main_token = decl_main_tok,
                 .data = .{ .lhs = NodeIndex.fromInt(decl_extra), .rhs = .none },
             });
+            self.patchScopeOpenNode(fn_scope_ev, decl_node);
+            return decl_node;
         }
 
         const body = try self.parseBlockStatement();
@@ -2588,7 +2909,7 @@ pub const Parser = struct {
             .type_params_end = fn_type_params.end,
         });
 
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = tag,
             .main_token = main_tok,
             .data = .{
@@ -2596,6 +2917,8 @@ pub const Parser = struct {
                 .rhs = .none,
             },
         });
+        self.patchScopeOpenNode(fn_scope_ev, node);
+        return node;
     }
 
     /// Parse `class name [extends expr] { body }`.
@@ -2624,7 +2947,7 @@ pub const Parser = struct {
         // a class scope for members (plus an inner body scope, but ESLint's
         // model uses just one class scope for declarations).
         if (name != .none) try self.emitDeclare(.class_decl, name);
-        try self.emitScopeOpen(.class, .none);
+        const class_scope_ev = try self.emitScopeOpen(.class, .none);
 
         // TS type parameters: class Foo<T, U>
         const class_type_params = if (self.language.isTs() and self.peek() == .less_than) blk: {
@@ -2758,7 +3081,7 @@ pub const Parser = struct {
             .type_params_end = class_type_params.end,
         });
 
-        return self.addNode(.{
+        const class_node = try self.addNode(.{
             .tag = .class_decl,
             .main_token = class_tok,
             .data = .{
@@ -2766,6 +3089,8 @@ pub const Parser = struct {
                 .rhs = .none,
             },
         });
+        self.patchScopeOpenNode(class_scope_ev, class_node);
+        return class_node;
     }
 
     /// Parse class members: methods, properties, static blocks, getters/setters,
@@ -2986,12 +3311,14 @@ pub const Parser = struct {
             self.in_loop = false;
             self.in_switch = false;
             self.in_function = false;
+            const static_scope_ev = try self.emitScopeOpen(.static_block, .none);
             const range = try self.parseStatementList(.r_brace);
+            try self.emitScopeClose(.none);
             self.in_loop = prev_in_loop;
             self.in_switch = prev_in_switch;
             self.in_function = prev_in_function;
             _ = try self.expect(.r_brace);
-            return self.addNode(.{
+            const static_node = try self.addNode(.{
                 .tag = .static_block,
                 .main_token = static_tok,
                 .data = .{
@@ -2999,6 +3326,8 @@ pub const Parser = struct {
                     .rhs = NodeIndex.fromInt(range.end),
                 },
             });
+            self.patchScopeOpenNode(static_scope_ev, static_node);
+            return static_node;
         }
 
         // Parse and validate TypeScript access modifiers: private, protected, public,
@@ -3236,7 +3565,7 @@ pub const Parser = struct {
             const prev_in_constructor_early = self.in_constructor;
             if (early_is_ctor) self.in_constructor = true;
             // Open method's function scope before params so declares land in it.
-            try self.emitScopeOpen(.function, .none);
+            const method_scope_ev = try self.emitScopeOpen(.function, .none);
             const params = try self.parseFormalParameters();
             self.in_constructor = prev_in_constructor_early;
 
@@ -3344,11 +3673,13 @@ pub const Parser = struct {
                 else
                     .method_def;
                 try self.emitScopeClose(.none); // close method scope (no body)
-                return self.addNode(.{
+                const no_body_node = try self.addNode(.{
                     .tag = no_body_tag,
                     .main_token = main_tok,
                     .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(no_body_extra) },
                 });
+                self.patchScopeOpenNode(method_scope_ev, no_body_node);
+                return no_body_node;
             }
 
             const body = try self.parseBlockStatement();
@@ -3369,7 +3700,7 @@ pub const Parser = struct {
             else
                 .method_def;
 
-            return self.addNode(.{
+            const method_node = try self.addNode(.{
                 .tag = node_tag,
                 .main_token = main_tok,
                 .data = .{
@@ -3377,6 +3708,8 @@ pub const Parser = struct {
                     .rhs = NodeIndex.fromInt(method_extra),
                 },
             });
+            self.patchScopeOpenNode(method_scope_ev, method_node);
+            return method_node;
         }
 
         // TS type annotation on field: `name: Type` or `name!: Type`
@@ -3384,13 +3717,20 @@ pub const Parser = struct {
         if (self.language.isTs()) _ = self.eat(.bang);
         const type_ann = try self.parseOptionalTypeAnnotation();
 
-        // Property (field definition)
+        // Property (field definition).  If there's an initializer, it runs in
+        // its own class_field_initializer scope (ESLint model: `this`/closure).
+        const field_scope_ev: u32 = if (self.peek() == .equal and self.emit_scope_events)
+            try self.emitScopeOpen(.class_field_initializer, .none)
+        else
+            0;
+        const field_has_init = self.peek() == .equal;
         const value: NodeIndex = if (self.eat(.equal) != null) blk: {
             const prev_in_class_field = self.in_class_field;
             self.in_class_field = true;
             defer self.in_class_field = prev_in_class_field;
             break :blk try self.parseAssignmentExpression();
         } else .none;
+        if (field_has_init) try self.emitScopeClose(.none);
 
         // Require ; or ASI after field definition
         if (self.eat(.semicolon) == null and self.peek() != .r_brace and !self.isOnNewLine()) {
@@ -3403,7 +3743,7 @@ pub const Parser = struct {
             .type_annotation = type_ann,
             .optional = member_is_optional,
         });
-        return self.addNode(.{
+        const prop_node = try self.addNode(.{
             .tag = .property_def,
             .main_token = main_tok,
             .data = .{
@@ -3411,6 +3751,10 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(prop_extra),
             },
         });
+        // Scope.block for a class_field_initializer scope points at the VALUE
+        // expression (matches tree walker: `scope_node = prop_data.value`).
+        if (field_has_init and value != .none) self.patchScopeOpenNode(field_scope_ev, value);
+        return prop_node;
     }
 
     /// Parse a class property key (identifier, string, number, keyword used as name).
