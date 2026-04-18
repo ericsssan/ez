@@ -12,7 +12,7 @@ const event_resolver = ez.event_resolver;
 
 const WARMUP: u32 = 30;
 const ITERATIONS: u32 = 300;
-const WORKING_BUF_BYTES: usize = 32 * 1024 * 1024;
+const WORKING_BUF_BYTES: usize = 512 * 1024 * 1024;
 
 const Fixture = struct {
     name: []const u8,
@@ -46,8 +46,8 @@ pub fn main(init: std.process.Init) !void {
     const working_buf = try gpa.alloc(u8, WORKING_BUF_BYTES);
     defer gpa.free(working_buf);
 
-    std.debug.print("fixture               bytes  toks     evt  evt/tok  parse_us  parseNoEvt  evt_cost%  resolve_us  scan_us  total_us  MB/s\n", .{});
-    std.debug.print("-------------------- ------ ----- ------- -------- --------- ----------- ---------- ---------- -------- -------- -----\n", .{});
+    std.debug.print("fixture             evt   parse_us  res_full  res_noR   res_noC  res_noRC  resolve%  scan_us\n", .{});
+    std.debug.print("------------------  ------- --------  --------  -------  --------  --------  -------  -------\n", .{});
 
     for (FIXTURES) |fx| {
         const source = std.Io.Dir.cwd().readFileAlloc(io, fx.path, gpa, .unlimited) catch |e| {
@@ -57,12 +57,12 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(source);
 
         var parse_times: [ITERATIONS]u64 = undefined;
-        var parse_noevt_times: [ITERATIONS]u64 = undefined;
         var resolve_times: [ITERATIONS]u64 = undefined;
+        var resolve_nores_times: [ITERATIONS]u64 = undefined;
+        var resolve_nocfg_times: [ITERATIONS]u64 = undefined;
+        var resolve_norcfg_times: [ITERATIONS]u64 = undefined;
         var scan_times: [ITERATIONS]u64 = undefined;
-        var total_times: [ITERATIONS]u64 = undefined;
 
-        var tok_count: u32 = 0;
         var evt_count: u32 = 0;
 
         // Warmup
@@ -92,7 +92,6 @@ pub fn main(init: std.process.Init) !void {
             for (0..ITERATIONS) |iter| {
                 fba.reset();
                 var tok = Lexer.tokenize(fba.allocator(), source) catch { parse_times[iter] = 0; continue; };
-                tok_count = @intCast(tok.tokens.len);
                 const t0 = std.Io.Timestamp.now(io, .boot);
                 var ev: scope_events.EventStream = .{};
                 var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
@@ -108,39 +107,30 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Parse without events
-        {
+        const Mode = struct { opts: event_resolver.Options, out: *[ITERATIONS]u64 };
+        const modes = [_]Mode{
+            .{ .opts = .{}, .out = &resolve_times },
+            .{ .opts = .{ .skip_resolve = true }, .out = &resolve_nores_times },
+            .{ .opts = .{ .skip_cfg = true }, .out = &resolve_nocfg_times },
+            .{ .opts = .{ .skip_resolve = true, .skip_cfg = true }, .out = &resolve_norcfg_times },
+        };
+        for (modes) |m| {
             var fba = std.heap.FixedBufferAllocator.init(working_buf);
             for (0..ITERATIONS) |iter| {
                 fba.reset();
-                var tok = Lexer.tokenize(fba.allocator(), source) catch { parse_noevt_times[iter] = 0; continue; };
-                const t0 = std.Io.Timestamp.now(io, .boot);
-                var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch { parse_noevt_times[iter] = 0; continue; };
-                const t1 = std.Io.Timestamp.now(io, .boot);
-                parse_noevt_times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
-                tree.deinit(fba.allocator());
-                tok.deinit(fba.allocator());
-            }
-        }
-
-        // resolveFull only (time just the resolve step)
-        {
-            var fba = std.heap.FixedBufferAllocator.init(working_buf);
-            for (0..ITERATIONS) |iter| {
-                fba.reset();
-                var tok = Lexer.tokenize(fba.allocator(), source) catch { resolve_times[iter] = 0; continue; };
+                var tok = Lexer.tokenize(fba.allocator(), source) catch { m.out[iter] = 0; continue; };
                 var ev: scope_events.EventStream = .{};
                 var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
                     .is_module = true,
                     .events_out = &ev,
-                }) catch { resolve_times[iter] = 0; continue; };
+                }) catch { m.out[iter] = 0; continue; };
                 const t0 = std.Io.Timestamp.now(io, .boot);
-                if (event_resolver.resolveFull(fba.allocator(), &tree, ev.items(), .{})) |res| {
+                if (event_resolver.resolveFull(fba.allocator(), &tree, ev.items(), m.opts)) |res| {
                     const t1 = std.Io.Timestamp.now(io, .boot);
-                    resolve_times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
+                    m.out[iter] = @intCast(t0.durationTo(t1).nanoseconds);
                     var r = res;
                     r.deinit(fba.allocator());
-                } else |_| { resolve_times[iter] = 0; }
+                } else |_| { m.out[iter] = 0; }
                 tree.deinit(fba.allocator());
                 ev.deinit(fba.allocator());
                 tok.deinit(fba.allocator());
@@ -176,50 +166,27 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Full pipeline: lex+parse+resolveFull
-        {
-            var fba = std.heap.FixedBufferAllocator.init(working_buf);
-            for (0..ITERATIONS) |iter| {
-                fba.reset();
-                const t0 = std.Io.Timestamp.now(io, .boot);
-                var tok = Lexer.tokenize(fba.allocator(), source) catch { total_times[iter] = 0; continue; };
-                var ev: scope_events.EventStream = .{};
-                var tree = Parser.parseWithOptions(fba.allocator(), source, tok.tokens.slice(), .{
-                    .is_module = true,
-                    .events_out = &ev,
-                }) catch { total_times[iter] = 0; continue; };
-                if (event_resolver.resolveFull(fba.allocator(), &tree, ev.items(), .{})) |res| {
-                    var r = res;
-                    r.deinit(fba.allocator());
-                } else |_| {}
-                const t1 = std.Io.Timestamp.now(io, .boot);
-                total_times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
-                tree.deinit(fba.allocator());
-                ev.deinit(fba.allocator());
-                tok.deinit(fba.allocator());
-            }
-        }
-
         const parse_med = minimum(&parse_times);
-        const parse_noevt_med = minimum(&parse_noevt_times);
         const resolve_med = minimum(&resolve_times);
+        const nores_med = minimum(&resolve_nores_times);
+        const nocfg_med = minimum(&resolve_nocfg_times);
+        const norcfg_med = minimum(&resolve_norcfg_times);
         const scan_med = minimum(&scan_times);
-        const total_med = minimum(&total_times);
 
-        const evt_per_tok_x100: u32 = if (tok_count > 0) (evt_count * 100) / tok_count else 0;
-        const evt_cost_pct: i32 = if (parse_noevt_med > 0)
-            @intCast(@divTrunc((@as(i64, @intCast(parse_med)) - @as(i64, @intCast(parse_noevt_med))) * 100, @as(i64, @intCast(parse_noevt_med))))
+        // % saved by skipping resolve
+        const resolve_pct: i64 = if (resolve_med > 0)
+            @intCast(@divTrunc((@as(i64, @intCast(resolve_med)) - @as(i64, @intCast(nores_med))) * 100, @as(i64, @intCast(resolve_med))))
         else 0;
 
-        const mb_per_s: u64 = if (total_med > 0) (source.len * 1000) / total_med else 0;
-
-        std.debug.print("{s: <20} {d:>6} {d:>5} {d:>7}  {d: >3}.{d:0>2}   {d:>7}  {d:>10}  {d:>9}%  {d:>9}  {d:>7}  {d:>7}   {d:>3}\n", .{
-            fx.name, source.len, tok_count, evt_count,
-            evt_per_tok_x100 / 100, evt_per_tok_x100 % 100,
-            parse_med / 1000, parse_noevt_med / 1000,
-            evt_cost_pct,
-            resolve_med / 1000, scan_med / 1000, total_med / 1000,
-            mb_per_s,
+        std.debug.print("{s: <18} {d: >7}  {d: >8}  {d: >8}  {d: >7}  {d: >8}  {d: >8}  {d: >6}%  {d: >7}\n", .{
+            fx.name, evt_count,
+            parse_med / 1000,
+            resolve_med / 1000,
+            nores_med / 1000,
+            nocfg_med / 1000,
+            norcfg_med / 1000,
+            resolve_pct,
+            scan_med / 1000,
         });
     }
 }

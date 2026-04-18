@@ -140,4 +140,20 @@ pub fn build(b: *std.Build) void {
     bench_evt_cmd.step.dependOn(b.getInstallStep());
     const bench_evt_step = b.step("bench-events", "Event stream throughput bench");
     bench_evt_step.dependOn(&bench_evt_cmd.step);
+
+    // ── Alloc bench ──────────────────────────────────────────
+    const bench_alloc_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_alloc.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_alloc_mod.addImport("ez", test_mod);
+    const bench_alloc = b.addExecutable(.{
+        .name = "bench_alloc",
+        .root_module = bench_alloc_mod,
+    });
+    const bench_alloc_cmd = b.addRunArtifact(bench_alloc);
+    bench_alloc_cmd.step.dependOn(b.getInstallStep());
+    const bench_alloc_step = b.step("bench-alloc", "Allocation count bench");
+    bench_alloc_step.dependOn(&bench_alloc_cmd.step);
 }
