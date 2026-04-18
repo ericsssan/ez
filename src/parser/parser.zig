@@ -542,6 +542,44 @@ pub const Parser = struct {
         });
     }
 
+    pub const TerminatorKind = enum(u8) { @"return", @"throw", @"break", @"continue" };
+
+    pub inline fn emitTerminator(self: *Parser, kind: TerminatorKind, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .terminator,
+            .aux = @intFromEnum(kind),
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitBranchOpen(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .branch_open,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitBranchElse(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .branch_else,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
+    pub inline fn emitBranchClose(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.scope_events.push(self.gpa, .{
+            .kind = .branch_close,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
+    }
+
     /// Walk back through recently-emitted events to find the reference event
     /// for `node` and upgrade its kind — used by the assignment parser to turn
     /// a speculative `.read` into `.write` / `.read_write` once we see `=` / `+=`.
@@ -1237,10 +1275,15 @@ pub const Parser = struct {
         _ = try self.expect(.l_paren);
         const condition = try self.parseExpression();
         _ = try self.expect(.r_paren);
+        // Branch events wrap the consequent/alternate so the event resolver
+        // can compute per-node reachability for rules like no-unreachable.
+        try self.emitBranchOpen(.none);
         const consequent = try self.parseIfBody();
 
         if (self.eat(.kw_else)) |_| {
+            try self.emitBranchElse(.none);
             const alternate = try self.parseIfBody();
+            try self.emitBranchClose(.none);
             const extra = try self.addExtra(ast.IfData, .{
                 .consequent = consequent,
                 .alternate = alternate,
@@ -1255,6 +1298,7 @@ pub const Parser = struct {
             });
         }
 
+        try self.emitBranchClose(.none);
         return self.addNode(.{
             .tag = .if_stmt,
             .main_token = if_tok,
@@ -1276,7 +1320,12 @@ pub const Parser = struct {
         self.in_loop = true;
         defer self.in_loop = prev_in_loop;
 
+        // Wrap loop body in branch_open/close so that terminators inside the
+        // body (return, throw, break) don't poison the post-loop alive state:
+        // the loop may not execute at all, so post-loop alive == pre-loop alive.
+        try self.emitBranchOpen(.none);
         const body = try self.parseNonDeclStatement();
+        try self.emitBranchClose(.none);
 
         return self.addNode(.{
             .tag = .while_stmt,
@@ -1296,7 +1345,9 @@ pub const Parser = struct {
         self.in_loop = true;
         defer self.in_loop = prev_in_loop;
 
+        try self.emitBranchOpen(.none);
         const body = try self.parseNonDeclStatement();
+        try self.emitBranchClose(.none);
         _ = try self.expect(.kw_while);
         _ = try self.expect(.l_paren);
         const condition = try self.parseExpression();
@@ -1402,7 +1453,9 @@ pub const Parser = struct {
             try self.validateForInOfBinding(init, false);
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
+            try self.emitBranchOpen(.none);
             const body = try self.parseNonDeclStatement();
+            try self.emitBranchClose(.none);
             try self.emitScopeClose(.none);
 
             const extra = try self.addExtra(ast.ForInOfData, .{
@@ -1425,7 +1478,9 @@ pub const Parser = struct {
             try self.validateForInOfBinding(init, true);
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
+            try self.emitBranchOpen(.none);
             const body = try self.parseNonDeclStatement();
+            try self.emitBranchClose(.none);
             try self.emitScopeClose(.none);
 
             const extra = try self.addExtra(ast.ForInOfData, .{
@@ -1749,7 +1804,9 @@ pub const Parser = struct {
             .none;
         _ = try self.expect(.r_paren);
 
+        try self.emitBranchOpen(.none);
         const body = try self.parseNonDeclStatement();
+        try self.emitBranchClose(.none);
 
         const extra = try self.addExtra(ast.ForData, .{
             .init = init,
@@ -1781,6 +1838,12 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+        // Switch is like a chain of branches: each case may terminate, but
+        // after the switch we merge all case tails.  We approximate with a
+        // single branch_open/close pair around the whole switch — terminators
+        // inside any case poison the switch-internal alive state but
+        // branch_close restores to pre-switch alive.
+        try self.emitBranchOpen(.none);
         var has_default = false;
         while (self.peek() != .r_brace and !self.isAtEnd()) {
             // Check for duplicate default
@@ -1793,6 +1856,7 @@ pub const Parser = struct {
             const case_node = try self.parseSwitchCase();
             try self.scratch.append(self.gpa, @intFromEnum(case_node));
         }
+        try self.emitBranchClose(.none);
 
         _ = try self.expect(.r_brace);
 
@@ -1817,6 +1881,9 @@ pub const Parser = struct {
     pub fn parseSwitchCase(self: *Parser) Error!NodeIndex {
         if (self.eat(.kw_default)) |default_tok| {
             _ = try self.expect(.colon);
+            // Each case is a potential branch target; wrap its body in a
+            // branch so any internal terminator doesn't poison sibling cases.
+            try self.emitBranchOpen(.none);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1835,6 +1902,7 @@ pub const Parser = struct {
                 };
                 try self.scratch.append(self.gpa, @intFromEnum(stmt));
             }
+            try self.emitBranchClose(.none);
 
             const stmts = self.scratch.items[scratch_top..];
             const range = try self.listToSubRange(stmts);
@@ -1856,6 +1924,7 @@ pub const Parser = struct {
         const case_tok = try self.expect(.kw_case);
         const test_expr = try self.parseExpression();
         _ = try self.expect(.colon);
+        try self.emitBranchOpen(.none);
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1874,6 +1943,7 @@ pub const Parser = struct {
             };
             try self.scratch.append(self.gpa, @intFromEnum(stmt));
         }
+        try self.emitBranchClose(.none);
 
         const stmts = self.scratch.items[scratch_top..];
         const range = try self.listToSubRange(stmts);
@@ -1910,11 +1980,13 @@ pub const Parser = struct {
             try self.parseExpression();
 
         try self.expectSemicolon();
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = .return_stmt,
             .main_token = ret_tok,
             .data = .{ .lhs = expr, .rhs = .none },
         });
+        try self.emitTerminator(.@"return", node);
+        return node;
     }
 
     /// Parse `throw expr;` (NO ASI between throw and expr).
@@ -1929,21 +2001,25 @@ pub const Parser = struct {
         if (self.peek() == .semicolon or self.peek() == .r_brace or self.peek() == .eof) {
             try self.emitDiagnosticAtToken(throw_tok, "'throw' must be followed by an expression", .{});
             try self.expectSemicolon();
-            return self.addNode(.{
+            const node = try self.addNode(.{
                 .tag = .throw_stmt,
                 .main_token = throw_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
+            try self.emitTerminator(.@"throw", node);
+            return node;
         }
 
         const expr = try self.parseExpression();
         try self.expectSemicolon();
 
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = .throw_stmt,
             .main_token = throw_tok,
             .data = .{ .lhs = expr, .rhs = .none },
         });
+        try self.emitTerminator(.@"throw", node);
+        return node;
     }
 
     /// Parse `break [label];`.
@@ -1968,7 +2044,7 @@ pub const Parser = struct {
                 .data = .{ .lhs = .none, .rhs = .none },
             });
             try self.expectSemicolon();
-            return self.addNode(.{
+            const node = try self.addNode(.{
                 .tag = .break_label,
                 .main_token = break_tok,
                 .data = .{
@@ -1976,14 +2052,18 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
+            try self.emitTerminator(.@"break", node);
+            return node;
         }
 
         try self.expectSemicolon();
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = .break_stmt,
             .main_token = break_tok,
             .data = .{ .lhs = .none, .rhs = .none },
         });
+        try self.emitTerminator(.@"break", node);
+        return node;
     }
 
     /// Parse `continue [label];`.
@@ -2003,7 +2083,7 @@ pub const Parser = struct {
                 .data = .{ .lhs = .none, .rhs = .none },
             });
             try self.expectSemicolon();
-            return self.addNode(.{
+            const node = try self.addNode(.{
                 .tag = .continue_label,
                 .main_token = cont_tok,
                 .data = .{
@@ -2011,14 +2091,18 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
+            try self.emitTerminator(.@"continue", node);
+            return node;
         }
 
         try self.expectSemicolon();
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = .continue_stmt,
             .main_token = cont_tok,
             .data = .{ .lhs = .none, .rhs = .none },
         });
+        try self.emitTerminator(.@"continue", node);
+        return node;
     }
 
     /// Parse `label: statement`.
@@ -2088,6 +2172,11 @@ pub const Parser = struct {
     /// Parse `try { } [catch (e) { }] [finally { }]`.
     pub fn parseTryStatement(self: *Parser) Error!NodeIndex {
         const try_tok = self.advance(); // eat 'try'
+        // Treat try+catch like an if+else for CFG purposes: the try body
+        // (consequent) may terminate via throw, at which point we fall into
+        // the catch body (alternate).  After the whole try/catch, alive =
+        // merge of both branches.
+        try self.emitBranchOpen(.none);
         const block = try self.parseBlockStatement();
 
         var catch_node: NodeIndex = .none;
@@ -2096,6 +2185,8 @@ pub const Parser = struct {
         // Parse catch clause — emit it as a real catch_clause node so JS code
         // gets a stable NodeView (required for ESLint identity checks).
         if (self.eat(.kw_catch)) |catch_tok| {
+            // End of try block → enter catch (branch_else marks the split).
+            try self.emitBranchElse(.none);
             // Catch opens its own scope; the param binds inside it.
             try self.emitScopeOpen(.catch_clause, .none);
             var catch_param: NodeIndex = .none;
@@ -2113,6 +2204,7 @@ pub const Parser = struct {
                 .data = .{ .lhs = catch_param, .rhs = catch_body },
             });
         }
+        try self.emitBranchClose(.none);
 
         // Parse finally clause
         if (self.eat(.kw_finally)) |_| {

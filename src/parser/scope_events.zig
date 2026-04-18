@@ -23,6 +23,22 @@ pub const EventKind = enum(u8) {
     scope_close,  // aux unused
     declare,      // aux = BindingKind
     reference,    // aux = ReferenceKind
+    /// A statement that terminates the current control-flow path:
+    /// return, throw, break, continue.  Used by the event-driven CFG
+    /// approximation to compute `node_reachable` for rules like
+    /// `no-unreachable`.  aux byte: 0=return, 1=throw, 2=break, 3=continue.
+    terminator,
+    /// `if` statement entry — the next two `branch_close` events belong
+    /// to this if.  aux: 0 = has-alternate, 1 = no-alternate.
+    /// node: the if_stmt node.
+    branch_open,
+    /// End of the consequent branch of a `branch_open`.  After this event
+    /// the resolver reverts to the pre-branch alive state to process the
+    /// alternate branch (if any).
+    branch_else,
+    /// End of a branch_open (closes the if entirely).  The alive state
+    /// after this event is the OR of the two branches' alive states.
+    branch_close,
 };
 
 pub const Event = packed struct(u64) {

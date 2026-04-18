@@ -113,6 +113,8 @@ pub fn resolve(
             scope_count += 1;
         },
         .scope_close => if (sp > 0) { sp -= 1; },
+        // CFG events ignored by the stats-only resolver — resolveFull handles them.
+        .terminator, .branch_open, .branch_else, .branch_close => {},
         .declare => {
             if (sp == 0) continue;
             const scope_id = stack[sp - 1];
@@ -206,6 +208,18 @@ pub fn resolveFull(
     const node_main_tokens = ast.nodes.items(.main_token);
     const source = ast.source;
 
+    // Control-flow state — cfg_alive tracks whether the current path is live.
+    // Terminators set it to false; branch_open/else/close save/restore/merge
+    // the state.  `branch_stack` holds {save, consequent_alive} per nesting.
+    var cfg_alive: bool = true;
+    var branch_save: [64]bool = undefined; // alive state at branch_open
+    var branch_cons: [64]bool = undefined; // alive state at branch_else
+    var bsp: u32 = 0;
+    // A function boundary resets cfg_alive since the body starts with a
+    // fresh path.  Track this via scope_open(.function) events.
+    var fn_alive_stack: [64]bool = undefined;
+    var fsp: u32 = 0;
+
     // Module/global root scope — always the first scope.  We don't see a
     // scope_open event for it (parser could emit one, but we create it here
     // to stay consistent with the tree-walking analyzer that creates the
@@ -224,9 +238,78 @@ pub fn resolveFull(
                 stack[sp] = sid;
                 sp += 1;
             }
+            // A function body starts with a live control-flow path; save the
+            // outer alive state so exit from the function restores it.
+            if (kind == .function or kind == .global or kind == .module or
+                kind == .static_block or kind == .class_field_initializer)
+            {
+                if (fsp < fn_alive_stack.len) {
+                    fn_alive_stack[fsp] = cfg_alive;
+                    fsp += 1;
+                }
+                cfg_alive = true;
+            }
         },
         .scope_close => {
-            if (sp > 0) sp -= 1;
+            if (sp > 0) {
+                const closed_sid = stack[sp - 1];
+                sp -= 1;
+                const closed_kind = scopes.kinds.items[closed_sid.toInt()];
+                if (closed_kind == .function or closed_kind == .global or
+                    closed_kind == .module or closed_kind == .static_block or
+                    closed_kind == .class_field_initializer)
+                {
+                    if (fsp > 0) {
+                        fsp -= 1;
+                        cfg_alive = fn_alive_stack[fsp];
+                    } else {
+                        cfg_alive = true;
+                    }
+                }
+            }
+        },
+        .terminator => {
+            // Mark this node as alive (the return/throw itself is reachable
+            // if cfg_alive was true coming in), then set cfg_alive = false
+            // for everything that follows in this basic block.
+            const ni = e.node;
+            if (ni < node_reachable.len and !cfg_alive) node_reachable[ni] = 0;
+            cfg_alive = false;
+        },
+        .branch_open => {
+            // Save the pre-branch alive state.
+            if (bsp < branch_save.len) {
+                branch_save[bsp] = cfg_alive;
+                branch_cons[bsp] = cfg_alive; // placeholder; updated on branch_else/close
+                bsp += 1;
+            }
+            // Entering the consequent: alive state carries in.
+        },
+        .branch_else => {
+            // End of consequent: snapshot its alive state, reset to pre-branch
+            // alive to process the alternate.
+            if (bsp > 0) {
+                branch_cons[bsp - 1] = cfg_alive;
+                cfg_alive = branch_save[bsp - 1];
+            }
+        },
+        .branch_close => {
+            // Merge: alive = consequent_alive OR alternate_alive.  If there
+            // was no branch_else (no alternate), the outer path is still
+            // alive because the branch might not have been taken.
+            if (bsp > 0) {
+                bsp -= 1;
+                const save = branch_save[bsp];
+                const cons = branch_cons[bsp];
+                const alt = cfg_alive;
+                // If cons was never updated (no branch_else seen), cons == save.
+                // In that case the "no alternate" path means alive = save.
+                if (cons == save and alt == save) {
+                    cfg_alive = save;
+                } else {
+                    cfg_alive = cons or alt;
+                }
+            }
         },
         .declare => {
             if (sp == 0) continue;
@@ -260,6 +343,9 @@ pub fn resolveFull(
             // Track running per-scope count — used by downstream code that
             // expects `bindings_count` to be populated (see semantic.zig).
             scopes.bindings_count.items[scope_id.toInt()] += 1;
+            // Reachability: if the current CF path is dead, this declare
+            // represents unreachable code.
+            if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
         },
         .reference => {
             const scope_id: ScopeId = if (sp == 0)
@@ -269,6 +355,7 @@ pub fn resolveFull(
             const ref_kind: ReferenceKind = @enumFromInt(e.aux);
             const ref_node: NodeIndex = @enumFromInt(e.node);
             const ref_id = try references.addReference(ref_kind, ref_node, scope_id, .none);
+            if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
 
             // Resolve via scope-chain walk with prehashed name.
             if (sp == 0) continue;

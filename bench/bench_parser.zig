@@ -411,6 +411,7 @@ pub fn main(init: std.process.Init) !void {
                     .scope_close => depth -|= 1,
                     .declare => decls += 1,
                     .reference => refs += 1,
+                    .terminator, .branch_open, .branch_else, .branch_close => {},
                 }
             }
             std.mem.doNotOptimizeAway(depth);
@@ -428,6 +429,7 @@ pub fn main(init: std.process.Init) !void {
                     .scope_close => depth -|= 1,
                     .declare => decls += 1,
                     .reference => refs += 1,
+                    .terminator, .branch_open, .branch_else, .branch_close => {},
                 }
             }
             std.mem.doNotOptimizeAway(depth);
@@ -444,13 +446,17 @@ pub fn main(init: std.process.Init) !void {
         var closes: u32 = 0;
         var decls: u32 = 0;
         var refs: u32 = 0;
+        var terms: u32 = 0;
+        var branches: u32 = 0;
         for (all_events) |e| switch (e.kind) {
             .scope_open => opens += 1,
             .scope_close => closes += 1,
             .declare => decls += 1,
             .reference => refs += 1,
+            .terminator => terms += 1,
+            .branch_open, .branch_else, .branch_close => branches += 1,
         };
-        std.debug.print("  distribution: {d} opens, {d} closes, {d} decls, {d} refs\n\n", .{ opens, closes, decls, refs });
+        std.debug.print("  distribution: {d} opens, {d} closes, {d} decls, {d} refs, {d} terms, {d} branches\n\n", .{ opens, closes, decls, refs, terms, branches });
     }
 
     // ── Phase 11: Event-driven scope resolver (real work) ──────────────
@@ -643,6 +649,12 @@ pub fn main(init: std.process.Init) !void {
         var resolved_ev: u32 = 0;
         for (sem_ev.references.symbol_ids.items) |s| if (s != .none) { resolved_ev += 1; };
 
+        // node_reachable comparison — counts dead-code markers (0 entries).
+        var dead_tree: u32 = 0;
+        for (sem_tree.node_reachable) |b| if (b == 0) { dead_tree += 1; };
+        var dead_ev: u32 = 0;
+        for (sem_ev.node_reachable) |b| if (b == 0) { dead_ev += 1; };
+
         std.debug.print("\n=== Equivalence check: tree walker vs event resolver ===\n", .{});
         std.debug.print("             tree        events       delta   coverage\n", .{});
         std.debug.print("  scopes:   {d:>6}      {d:>6}     {d:>6}    {d:>4.0}%\n", .{
@@ -664,6 +676,10 @@ pub fn main(init: std.process.Init) !void {
             resolved_tree, resolved_ev,
             @as(i64, @intCast(resolved_ev)) - @as(i64, @intCast(resolved_tree)),
             100.0 * @as(f64, @floatFromInt(resolved_ev)) / @as(f64, @floatFromInt(resolved_tree)),
+        });
+        std.debug.print("  dead:     {d:>6}      {d:>6}     {d:>6}\n", .{
+            dead_tree, dead_ev,
+            @as(i64, @intCast(dead_ev)) - @as(i64, @intCast(dead_tree)),
         });
 
         // Symbol diff — which (kind) are we missing?  Bucket by binding_kind.
