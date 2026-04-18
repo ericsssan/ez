@@ -935,6 +935,7 @@ fn napiParseAndLintFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value 
     const out_ptr: [*]u8 = @ptrCast(out_data orelse return returnU32(env, 0));
 
     var config_val: ?linter_root.config.Config = null;
+    defer if (config_val) |*c| c.deinit();
     if (argc >= 5) {
         if (getOptionalConfigBytes(env, argv[4])) |bytes| {
             config_val = configFromJson(bytes);
@@ -998,6 +999,7 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
     // Optional config Uint8Array (arg 6)
     var config_val: ?linter_root.config.Config = null;
+    defer if (config_val) |*c| c.deinit();
     if (argc >= 6) {
         if (getOptionalConfigBytes(env, argv[5])) |bytes| {
             config_val = configFromJson(bytes);

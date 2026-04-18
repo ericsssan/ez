@@ -65,6 +65,10 @@ function unmapPrefix(safePrefix) {
 }
 
 // Walk corpus → tasks[]: { file, ext, ruleId, kind }
+// Sort at EVERY level. Unsorted filesystem order within a kind/ directory
+// triggers a Bun/JSC pathology on the full corpus (some adversarial sequence
+// of rule/code pairs makes RSS jump from ~400 MB to 48 GB in one step and
+// crashes with Bus error). Alphabetical order avoids it.
 const tasks = [];
 for (const safePrefix of fs.readdirSync(corpusRoot).sort()) {
   if (prefArg && safePrefix !== prefArg) continue;
@@ -77,12 +81,12 @@ for (const safePrefix of fs.readdirSync(corpusRoot).sort()) {
     if (!fs.statSync(ruleDir).isDirectory()) continue;
     const ruleId = pluginPrefix ? `${pluginPrefix}/${safeRule}` : safeRule;
 
-    for (const kind of ["valid", "invalid"]) {
+    for (const kind of ["invalid", "valid"]) {
       if (kindArg && kind !== kindArg) continue;
       const kindDir = path.join(ruleDir, kind);
       if (!fs.existsSync(kindDir)) continue;
 
-      for (const entry of fs.readdirSync(kindDir)) {
+      for (const entry of fs.readdirSync(kindDir).sort()) {
         const full = path.join(kindDir, entry);
         if (!fs.statSync(full).isFile()) continue;
         tasks.push({ file: full, ext: path.extname(entry), ruleId, kind });
@@ -97,11 +101,12 @@ if (tasks.length === 0) {
   process.exit(1);
 }
 
-// Preload file contents once (don't time fs).
+// Read file contents lazily during bench; preloading 56K strings + their
+// NAPI-side parsed AST mirrors caused OOM on full corpus runs.
+// Stat the files once to compute a total-bytes headline, then re-read per call.
 let totalBytes = 0;
 for (const t of tasks) {
-  t.code = fs.readFileSync(t.file, "utf8");
-  t.bytes = Buffer.byteLength(t.code);
+  t.bytes = fs.statSync(t.file).size;
   totalBytes += t.bytes;
 }
 
@@ -134,18 +139,25 @@ async function linterFor(ruleId) {
 async function run(tasks) {
   const times = new Float64Array(tasks.length);
   let diagTotal = 0, errorCount = 0;
+  // Periodic GC nudges JSC so heap peak stays bounded when short-lived
+  // objects (parsed ASTs, diagnostic arrays) are created in a tight loop.
+  const gcFn = typeof Bun !== "undefined" && typeof Bun.gc === "function"
+    ? () => Bun.gc(true)
+    : (typeof global.gc === "function" ? global.gc : null);
   const t0 = performance.now();
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
     const L = await linterFor(t.ruleId);
+    const code = fs.readFileSync(t.file, "utf8");
     const s = performance.now();
     try {
-      const diags = await L(t.code, t.file);
+      const diags = await L(code, t.file);
       diagTotal += diags.length;
     } catch (e) {
       errorCount++;
     }
     times[i] = performance.now() - s;
+    if (gcFn && (i & 4095) === 4095) gcFn();
   }
   const wall = performance.now() - t0;
   return { times, diagTotal, errorCount, wall };
