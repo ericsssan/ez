@@ -210,6 +210,9 @@ const SH = {
   TAG_COUNT: 144,          // u32 — number of tag slots
   NODE_DEPTHS: 148,        // u32[node_count] — pre-computed node depths
   SYMBOL_KINDS: 152,       // u8[symbol_count] — BindingKind per symbol
+  SCOPE_THROUGH_REF_STARTS: 156, // u32[scope_count]
+  SCOPE_THROUGH_REF_COUNTS: 160, // u32[scope_count]
+  SCOPE_THROUGH_REF_IDS: 164,    // u32[total_through_refs]
 };
 
 const FLAG_HAS_BOM = 1;
@@ -475,6 +478,20 @@ class AstView {
         this._scopeRefCounts = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_REF_COUNTS, true), this._semScopeCount);
         const sriOff = dv.getUint32(semOff + SH.SCOPE_REF_IDS, true);
         this._scopeRefIds = sriOff > 0 ? new Uint32Array(buffer, sriOff, this._semRefCount) : null;
+      }
+
+      // Scope → through-refs CSR (precomputed in Zig — refs passing through scope
+      // without resolving locally; target is a strict ancestor or ref is unresolved).
+      const stOff = dv.getUint32(semOff + SH.SCOPE_THROUGH_REF_STARTS, true);
+      if (stOff > 0) {
+        this._scopeThroughRefStarts = new Uint32Array(buffer, stOff, this._semScopeCount);
+        this._scopeThroughRefCounts = new Uint32Array(buffer, dv.getUint32(semOff + SH.SCOPE_THROUGH_REF_COUNTS, true), this._semScopeCount);
+        const stiOff = dv.getUint32(semOff + SH.SCOPE_THROUGH_REF_IDS, true);
+        if (stiOff > 0 && this._semScopeCount > 0) {
+          const lastScope = this._semScopeCount - 1;
+          const totalThrough = this._scopeThroughRefStarts[lastScope] + this._scopeThroughRefCounts[lastScope];
+          this._scopeThroughRefIds = totalThrough > 0 ? new Uint32Array(buffer, stiOff, totalThrough) : null;
+        }
       }
 
       // Scope → children CSR (precomputed in Zig)

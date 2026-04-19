@@ -156,13 +156,25 @@ pub const SemanticHeader = extern struct {
 
     // Symbol binding kind (one byte per symbol — BindingKind enum value)
     symbol_kinds_offset: u32 = 0,       // u8[symbol_count] — BindingKind
+
+    // Scope → through-refs CSR — precomputed per-scope list of refs that pass
+    // THROUGH this scope without resolving (target scope is a strict ancestor,
+    // or ref is unresolved).  Walking from ref.scope up to sym.scope, each
+    // intermediate scope accumulates the ref in its through list.  Lets the JS
+    // side avoid O(scopes × children-through) bubble-up per file.
+    scope_through_ref_starts_offset: u32 = 0,  // u32[scope_count]
+    scope_through_ref_counts_offset: u32 = 0,  // u32[scope_count]
+    scope_through_ref_ids_offset: u32 = 0,     // u32[total_through]
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 156);
+    std.debug.assert(@sizeOf(SemanticHeader) == 168);
     std.debug.assert(@offsetOf(SemanticHeader, "ref_write_expr_ids_offset") == 84);
     std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 148);
     std.debug.assert(@offsetOf(SemanticHeader, "symbol_kinds_offset") == 152);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_through_ref_starts_offset") == 156);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_through_ref_counts_offset") == 160);
+    std.debug.assert(@offsetOf(SemanticHeader, "scope_through_ref_ids_offset") == 164);
     std.debug.assert(@offsetOf(SemanticHeader, "cfg_graph_offset") == 108);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_starts_offset") == 112);
     std.debug.assert(@offsetOf(SemanticHeader, "scope_ref_counts_offset") == 116);
@@ -365,6 +377,77 @@ pub fn writeSemanticData(
         @memset(scope_ref_counts, 0);
     }
 
+    // ── Scope → through-refs CSR ───────────────────────────────────
+    // For each ref, walk from ref.scope up to target (sym.scope, or root if
+    // unresolved). Every scope on the path BEFORE target counts the ref as
+    // "through". Lets the JS side skip the O(scopes × children-through)
+    // bubble-up loop that otherwise dominates scope-heavy files.
+    const scope_through_ref_starts = try alloc.alloc(u32, scope_count);
+    const scope_through_ref_counts = try alloc.alloc(u32, scope_count);
+    var total_through: u32 = 0;
+    if (scope_count > 0 and ref_count > 0) {
+        @memset(scope_through_ref_counts, 0);
+        // Count pass
+        for (0..ref_count) |i| {
+            const rsc = sem.references.scope_ids.items[i];
+            if (rsc == .none) continue;
+            const sym_id = sem.references.symbol_ids.items[i];
+            // Only precompute through for RESOLVED refs (sym_id != .none).
+            // Unresolved refs (sym_id == .none) may be resolved later by JS via
+            // scope.set injection (e.g. static-block var hoisting, injected globals).
+            // If we included them here, Zig would put them in every ancestor's through
+            // and JS couldn't remove them after resolving lower down.
+            if (sym_id == .none) continue;
+            const sid: u32 = @intFromEnum(sym_id);
+            if (sid >= symbol_count) continue;
+            const tsc = sem.symbols.scope_ids.items[sid];
+            const target_scope: u32 = if (tsc == .none) none32 else @intFromEnum(tsc);
+            var x: u32 = @intFromEnum(rsc);
+            while (x != none32 and x != target_scope) {
+                if (x < scope_count) {
+                    scope_through_ref_counts[x] += 1;
+                    total_through += 1;
+                }
+                const p = sem.scopes.parents.items[x];
+                x = if (p == .none) none32 else @intFromEnum(p);
+            }
+        }
+        // Prefix sum
+        var tr: u32 = 0;
+        for (0..scope_count) |i| {
+            scope_through_ref_starts[i] = tr;
+            tr += scope_through_ref_counts[i];
+        }
+    } else {
+        @memset(scope_through_ref_starts, 0);
+        @memset(scope_through_ref_counts, 0);
+    }
+    const scope_through_ref_ids = try alloc.alloc(u32, total_through);
+    if (total_through > 0) {
+        // Place pass
+        const tcursor = try alloc.alloc(u32, scope_count);
+        @memcpy(tcursor, scope_through_ref_starts);
+        for (0..ref_count) |i| {
+            const rsc = sem.references.scope_ids.items[i];
+            if (rsc == .none) continue;
+            const sym_id = sem.references.symbol_ids.items[i];
+            if (sym_id == .none) continue; // unresolved refs handled by JS
+            const sid: u32 = @intFromEnum(sym_id);
+            if (sid >= symbol_count) continue;
+            const tsc = sem.symbols.scope_ids.items[sid];
+            const target_scope: u32 = if (tsc == .none) none32 else @intFromEnum(tsc);
+            var x: u32 = @intFromEnum(rsc);
+            while (x != none32 and x != target_scope) {
+                if (x < scope_count) {
+                    scope_through_ref_ids[tcursor[x]] = @intCast(i);
+                    tcursor[x] += 1;
+                }
+                const p = sem.scopes.parents.items[x];
+                x = if (p == .none) none32 else @intFromEnum(p);
+            }
+        }
+    }
+
     // ── Scope → children CSR (counting sort of scopes by parent) ──
     // Count children per scope
     var total_children: u32 = 0;
@@ -520,6 +603,9 @@ pub fn writeSemanticData(
     sem_header.tag_node_ids_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_ids.ptr) else 0;
     sem_header.tag_count = tag_slots;
     sem_header.node_depths_offset = if (node_count > 0) ptrOffsetPub(buf, node_depths.ptr) else 0;
+    sem_header.scope_through_ref_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_starts.ptr) else 0;
+    sem_header.scope_through_ref_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_counts.ptr) else 0;
+    sem_header.scope_through_ref_ids_offset = if (total_through > 0) ptrOffsetPub(buf, scope_through_ref_ids.ptr) else 0;
 
     return ptrOffsetPub(buf, header_mem.ptr);
 }
