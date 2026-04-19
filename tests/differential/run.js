@@ -332,6 +332,13 @@ const diffFile     = _diffIdx >= 0 ? args[_diffIdx + 1] : null;
 const _extractIdx  = args.indexOf("--extract-fixtures");
 // Resolve against initial cwd now — sonarjs tests chdir() during phase 1 loading.
 const extractDir   = _extractIdx >= 0 ? path.resolve(process.cwd(), args[_extractIdx + 1]) : null;
+// Default fixture dir — used for fast path (skip intercept, read pre-extracted JSON).
+const _fixturesDefault = path.resolve(__dirname, "../fixtures/extracted");
+const _fromFixturesIdx = args.indexOf("--from-fixtures");
+const noFixtures   = args.includes("--no-fixtures");
+const fromFixturesDir = _fromFixturesIdx >= 0
+  ? path.resolve(process.cwd(), args[_fromFixturesIdx + 1])
+  : (!noFixtures && !extractDir && fs.existsSync(_fixturesDefault) ? _fixturesDefault : null);
 
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -739,6 +746,9 @@ function normalizeCase(c, defaultConfig = {}) {
     options:         c.options || [],
     languageOptions: mergedLO,
     filename:        c.filename ? _normalizeFilenameExt(c.filename) : null,
+    name:            c.name || null,            // RuleTester allows test descriptions
+    only:            !!c.only,                   // focus flag from ruletester
+    output:          c.output !== undefined ? c.output : null, // autofix expected output
     hasCustomParser,
     isTypeScript,
     eslintResult: null,  // filled during capture by running real ESLint
@@ -794,6 +804,11 @@ function installCorpusIntercept() {
       isTypeScript: _isTsCase,
       eslintResult,
       eslintFixes: eslintFixes.length > 0 ? eslintFixes : null,
+      // Declared intent from __EZ_SILENT_RUN__ (null for core ESLint path).
+      declaredKind:   global.__EZ_DECLARED_KIND__   || null,
+      declaredErrors: global.__EZ_DECLARED_ERRORS__ || null,
+      name:           global.__EZ_CASE_NAME__       || null,
+      output:         global.__EZ_CASE_OUTPUT__ !== undefined ? global.__EZ_CASE_OUTPUT__ : null,
     };
     if (!_captured) _captured = { name: fullName, defaultConfig: {}, cases: [] };
     _captured.cases.push(tc);
@@ -807,10 +822,18 @@ function installCorpusIntercept() {
     const prefix = global.__EZ_CAPTURE_PREFIX__ || null;
     const fullName = prefix ? `${prefix}/${name}` : name;
 
-    const allInputCases = [...(cases.valid || []), ...(cases.invalid || [])];
+    // Tag each case with declared kind + declared errors before merging.
+    // Preserves the test-author's intent (valid/invalid) separately from
+    // oracle output so extraction can store both.
+    const taggedValid   = (cases.valid   || []).map(c => ({ _declaredKind: "valid",   _declaredErrors: [],                              ...( typeof c === "string" ? { code: c } : c ) }));
+    const taggedInvalid = (cases.invalid || []).map(c => ({ _declaredKind: "invalid", _declaredErrors: (typeof c === "object" && c.errors) ? c.errors : [], ...( typeof c === "string" ? { code: c } : c ) }));
+    const allInputCases = [...taggedValid, ...taggedInvalid];
     for (let _cIdx = 0; _cIdx < allInputCases.length; _cIdx++) {
       const c = allInputCases[_cIdx];
       const tc = normalizeCase(c, defaultConfig);
+      // Carry declared metadata through so the verify intercept and extraction see it.
+      tc._declaredKind   = c._declaredKind;
+      tc._declaredErrors = c._declaredErrors;
       // @typescript-eslint rules: stub parser lacks parseForESLint so normalizeCase
       // can't detect TS mode. Override based on prefix.
       if (!tc.isTypeScript && _tsParser && prefix && prefix.startsWith("@typescript-eslint")) {
@@ -840,6 +863,11 @@ function installCorpusIntercept() {
           rules: { [fullName]: ruleEntry },
         }];
 
+        // Pass declared metadata to the verify intercept via globals (verify is sync).
+        global.__EZ_DECLARED_KIND__   = tc._declaredKind   || null;
+        global.__EZ_DECLARED_ERRORS__ = tc._declaredErrors || null;
+        global.__EZ_CASE_NAME__       = tc.name             || null;
+        global.__EZ_CASE_OUTPUT__     = tc.output !== undefined ? tc.output : null;
         // Primary call — intercept fires and captures inline
         const messages = linterInst.verify(tc.code, flatCfg, { filename: oracleFilename });
         // Retry with relative filename if "No matching configuration found"
@@ -848,7 +876,17 @@ function installCorpusIntercept() {
           const ext = path.extname(oracleFilename) || ".js";
           linterInst.verify(tc.code, flatCfg, { filename: "test" + ext });
         }
-      } catch { continue; }
+        global.__EZ_DECLARED_KIND__ = null;
+        global.__EZ_DECLARED_ERRORS__ = null;
+        global.__EZ_CASE_NAME__ = null;
+        global.__EZ_CASE_OUTPUT__ = null;
+      } catch {
+        global.__EZ_DECLARED_KIND__ = null;
+        global.__EZ_DECLARED_ERRORS__ = null;
+        global.__EZ_CASE_NAME__ = null;
+        global.__EZ_CASE_OUTPUT__ = null;
+        continue;
+      }
     }
   };
 
@@ -1135,6 +1173,108 @@ if (fs.existsSync(ESLINT_ROOT)) {
   // Phase 1: Load all rule cases upfront.
   const allRuleData = [];
 
+  // Fast path: read pre-extracted fixtures instead of loading full ESLint + plugin
+  // test suites.  Skips hundreds of ms of plugin loading + full intercept run.
+  // Triggered when tests/fixtures/extracted/ exists (unless --no-fixtures).
+  if (fromFixturesDir) {
+    const corpusRoot = path.join(fromFixturesDir, "corpus");
+    if (fs.existsSync(corpusRoot)) {
+      console.log(`Loading fixtures from ${fromFixturesDir}`);
+      const t0 = Date.now();
+      const prefixDirs = fs.readdirSync(corpusRoot).filter(n => !n.startsWith("."));
+      for (const prefixSafe of prefixDirs) {
+        const prefixDir = path.join(corpusRoot, prefixSafe);
+        const ruleDirs = fs.readdirSync(prefixDir).filter(n => !n.startsWith("."));
+        // Map safe prefix back to actual prefix (e.g. "_typescript-eslint" → "@typescript-eslint")
+        const prefix = prefixSafe === "eslint" ? null :
+                       prefixSafe.startsWith("_") ? "@" + prefixSafe.slice(1) : prefixSafe;
+        for (const ruleSafe of ruleDirs) {
+          const ruleDir = path.join(prefixDir, ruleSafe);
+          const fullName = prefix ? `${prefix}/${ruleSafe}` : ruleSafe;
+          if (filterRule && fullName !== filterRule) continue;
+          const ruleModule = prefix
+            ? _pluginRuleModules.get(fullName)
+            : (() => { try { return require(path.join(ESLINT_ROOT, "lib/rules", `${ruleSafe}.js`)); } catch { return null; } })();
+          if (!ruleModule) continue;
+          // Prefer the bundled _cases.json (single read per rule, O(rule_count) I/O).
+          // Falls back to per-case .js/.json files if bundle missing.
+          const bundlePath = path.join(ruleDir, "_cases.json");
+          let bundleCases = null;
+          if (fs.existsSync(bundlePath)) {
+            try { bundleCases = JSON.parse(fs.readFileSync(bundlePath, "utf8")).cases; } catch { /* fall through */ }
+          }
+          const allCases = [];
+          let defaultSourceType = "script";
+          let isTypeScript = false;
+          if (bundleCases) {
+            for (const meta of bundleCases) {
+              if (meta.isTypeScript) isTypeScript = true;
+              if (meta.sourceType === "module") defaultSourceType = "module";
+              // Only set fields that were present at extraction — null means "use default".
+              const langOpts = {};
+              if (meta.sourceType)    langOpts.sourceType    = meta.sourceType;
+              if (meta.ecmaVersion != null) langOpts.ecmaVersion = meta.ecmaVersion;
+              if (meta.globals)       langOpts.globals       = meta.globals;
+              if (meta.parserOptions) langOpts.parserOptions = meta.parserOptions;
+              if (_tsParser && (meta.isTypeScript || (prefix && prefix.startsWith("@typescript-eslint")))) {
+                langOpts.parser = _tsParser;
+              }
+              allCases.push({
+                code: meta.code,
+                options: meta.options || [],
+                languageOptions: langOpts,
+                filename: meta.filename,
+                hasCustomParser: false,
+                isTypeScript: !!meta.isTypeScript,
+                eslintResult: (meta.oracleLines || []).map(line => ({ rule: fullName, line })),
+                eslintFixes: meta.oracleFixes || null,
+                declaredKind: meta.kind,
+                declaredErrors: meta.declaredErrors,
+                name: meta.name,
+                output: meta.output,
+              });
+            }
+          } else {
+            // Legacy fallback: per-case file reads (slow; pre-bundle format).
+            for (const kind of ["valid", "invalid"]) {
+              const bucketDir = path.join(ruleDir, kind);
+              if (!fs.existsSync(bucketDir)) continue;
+              const files = fs.readdirSync(bucketDir).filter(f => f.endsWith(".json"));
+              for (const f of files) {
+                let meta;
+                try { meta = JSON.parse(fs.readFileSync(path.join(bucketDir, f), "utf8")); } catch { continue; }
+                const codeFile = path.join(bucketDir, f.replace(/\.json$/, meta.jsx ? (meta.isTypeScript ? ".tsx" : ".jsx") : (meta.isTypeScript ? ".ts" : ".js")));
+                let code;
+                try { code = fs.readFileSync(codeFile, "utf8"); } catch { continue; }
+                if (meta.isTypeScript) isTypeScript = true;
+                if (meta.sourceType === "module") defaultSourceType = "module";
+                const langOpts = { sourceType: meta.sourceType || "module", ecmaVersion: meta.ecmaVersion ?? 2022 };
+                if (meta.globals) langOpts.globals = meta.globals;
+                if (meta.parserOptions) langOpts.parserOptions = meta.parserOptions;
+                if (_tsParser && (meta.isTypeScript || (prefix && prefix.startsWith("@typescript-eslint")))) {
+                  langOpts.parser = _tsParser;
+                }
+                allCases.push({
+                  code, options: meta.options || [], languageOptions: langOpts,
+                  filename: meta.filename, hasCustomParser: false, isTypeScript: !!meta.isTypeScript,
+                  eslintResult: (meta.oracleLines || []).map(line => ({ rule: fullName, line })),
+                  eslintFixes: meta.oracleFixes || null, declaredKind: meta.kind,
+                  declaredErrors: meta.declaredErrors, name: meta.name, output: meta.output,
+                });
+              }
+            }
+          }
+          if (allCases.length === 0) continue;
+          allRuleData.push({ ruleName: fullName, ruleModule, defaultSourceType, isTypeScript, allCases });
+        }
+      }
+      console.log(`  loaded ${allRuleData.length} rules, ${allRuleData.reduce((s, r) => s + r.allCases.length, 0)} cases in ${Date.now() - t0}ms`);
+    }
+  }
+
+  // Slow path (full intercept) — skipped entirely when fast path loaded anything.
+  if (allRuleData.length === 0) {
+
   // 1a: ESLint core rules — real RuleTester runs; Linter.prototype.verify intercept captures cases
   for (const ruleName of COMPARABLE_RULES) {
     if (ruleName.includes("/")) continue; // skip plugin rules here
@@ -1252,6 +1392,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
       allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType: "module", isTypeScript: true, allCases: _captured.cases });
     }
   }
+  } // end of: if (allRuleData.length === 0) — slow path
 
   // ── Fixture extraction (--extract-fixtures <dir>) ────────────
   // Writes every case (valid + invalid) as a standalone file under
@@ -1276,7 +1417,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
     for (const { ruleName, allCases } of allRuleData) {
       const buckets = { valid: [], invalid: [] };
       for (const c of allCases) {
-        const k = c.eslintResult && c.eslintResult.length > 0 ? "invalid" : "valid";
+        // Prefer declared kind (set by __EZ_SILENT_RUN__); fall back to oracle-inferred.
+        const k = c.declaredKind || (c.eslintResult && c.eslintResult.length > 0 ? "invalid" : "valid");
         buckets[k].push(c);
       }
       if (buckets.valid.length + buckets.invalid.length === 0) continue;
@@ -1286,6 +1428,9 @@ if (fs.existsSync(ESLINT_ROOT)) {
       const safePrefix = prefix.replace(/[@\/]/g, "_");
       const safeRule = bareRule.replace(/[\/]/g, "_");
 
+      // Also build a per-rule bundle that the fast runner reads in ONE file
+      // instead of 100+ per-case reads. Massive speedup on corpus load.
+      const ruleBundle = { rule: ruleName, cases: [] };
       for (const kind of ["valid", "invalid"]) {
         if (buckets[kind].length === 0) continue;
         const dir = path.join(corpusRoot, safePrefix, safeRule, kind);
@@ -1295,12 +1440,41 @@ if (fs.existsSync(ESLINT_ROOT)) {
           if (typeof tc.code !== "string" || tc.code.length === 0) continue;
           const jsx = !!(tc.languageOptions?.parserOptions?.ecmaFeatures?.jsx);
           const ext = tc.isTypeScript ? (jsx ? ".tsx" : ".ts") : (jsx ? ".jsx" : ".js");
-          fs.writeFileSync(path.join(dir, `${i}${ext}`), tc.code);
+          const base = path.join(dir, `${i}`);
+          fs.writeFileSync(`${base}${ext}`, tc.code);
+          // Sidecar metadata: options, sourceType, languageOptions, filename,
+          // and expected ESLint result lines — everything the fast test runner
+          // needs to reproduce the exact run without the oracle.
+          const meta = {
+            rule: ruleName,
+            kind,                                              // declared or oracle-inferred
+            index: i,                                          // position within bucket
+            name: tc.name || null,                             // test description if declared
+            options: tc.options || [],
+            // Preserve exact state — don't inject defaults here. Fast-path reader
+            // falls back to the rule's defaultSourceType when these are null.
+            sourceType: tc.languageOptions?.sourceType || null,
+            ecmaVersion: tc.languageOptions?.ecmaVersion ?? null,
+            isTypeScript: !!tc.isTypeScript,
+            jsx,
+            filename: tc.filename || null,                     // preserved for filename-dependent rules
+            globals: tc.languageOptions?.globals || null,
+            parserOptions: tc.languageOptions?.parserOptions || null,
+            output: tc.output !== undefined ? tc.output : null, // expected autofix output
+            declaredErrors: tc.declaredErrors || [],           // test-author's expected errors
+            oracleLines: (tc.eslintResult || []).map(r => r.line), // what ESLint actually reported
+            oracleFixes: tc.eslintFixes || null,               // autofix output from ESLint
+          };
+          fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2));
+          // Add to the per-rule bundle (code embedded for runner fast-load)
+          ruleBundle.cases.push({ ...meta, code: tc.code, ext });
           const lang = (ext === ".ts" || ext === ".tsx") ? "ts" : "js";
           concat[kind][lang] += `// === ${ruleName} #${i} (${kind}) ===\n${tc.code}\n;\n`;
           tally[kind][ext.slice(1)]++;
         }
       }
+      // Write the per-rule bundle alongside the per-case files.
+      fs.writeFileSync(path.join(corpusRoot, safePrefix, safeRule, "_cases.json"), JSON.stringify(ruleBundle));
     }
 
     const all_js = concat.valid.js + concat.invalid.js;
