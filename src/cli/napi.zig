@@ -23,6 +23,26 @@ fn getLintArena() *std.heap.ArenaAllocator {
     return &tl_lint_arena;
 }
 
+// ── Debug memory probe — exported to JS for per-call Zig accounting ──
+//
+// Reports the total bytes currently held in Zig-side long-lived arenas
+// (just tl_lint_arena for now — sem_arena is per-call with deinit so it
+// returns its memory when the function stack unwinds).  JS callers can
+// compare before/after to see whether ez.node itself is accumulating.
+pub export fn ez_zig_memory_used() u64 {
+    if (!tl_lint_arena_ready) return 0;
+    return @intCast(tl_lint_arena.queryCapacity());
+}
+
+fn napiZigMemoryUsed(env: n.Env, _: n.CallbackInfo) callconv(.c) ?n.Value {
+    const bytes = ez_zig_memory_used();
+    var result: n.Value = undefined;
+    // napi_create_double handles the full 53-bit safe-integer range, enough
+    // to report multi-GB retained sizes without needing BigInt plumbing.
+    if (n.napi_create_double(env, @floatFromInt(bytes), &result) != n.OK) return null;
+    return result;
+}
+
 // ── Layer 1: Core C ABI ──────────────────────────────────────────
 // Called directly by Bun FFI and indirectly via NAPI wrappers.
 
@@ -725,6 +745,7 @@ const n = struct {
     extern fn napi_get_arraybuffer_info(env: Env, value: Value, data: *?*anyopaque, length: *usize) Status;
     extern fn napi_get_value_uint32(env: Env, value: Value, result: *u32) Status;
     extern fn napi_create_uint32(env: Env, value: u32, result: *Value) Status;
+    extern fn napi_create_double(env: Env, value: f64, result: *Value) Status;
     extern fn napi_create_string_utf8(env: Env, str: [*]const u8, length: usize, result: *Value) Status;
     extern fn napi_create_function(env: Env, name: ?[*:0]const u8, length: usize, cb: Callback, data: ?*anyopaque, result: *Value) Status;
     extern fn napi_set_named_property(env: Env, object: Value, name: [*:0]const u8, value: Value) Status;
@@ -780,6 +801,7 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
     registerFn(env, exports, "tagCount", napiTagCount);
     registerFn(env, exports, "tagName", napiTagName);
+    registerFn(env, exports, "zigMemoryUsed", napiZigMemoryUsed);
     return exports;
 }
 
