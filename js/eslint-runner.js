@@ -3428,6 +3428,7 @@ class RuleContext {
     sc._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
     this.sourceCode = sc;
     if (options.parserServices) sc.parserServices = options.parserServices;
+    sc._hasLiveParserServices = !!options.parserServices;
     this._ruleErrors = Object.create(null);
     this._errorBudget = options.errorBudget || DEFAULT_ERROR_BUDGET;
   }
@@ -3468,6 +3469,10 @@ class RuleContext {
     this.sourceCode._globalReturn = !!(lo?.parserOptions?.ecmaFeatures?.globalReturn);
     this.sourceCode._impliedStrict = !!(lo?.parserOptions?.ecmaFeatures?.impliedStrict);
     if (options.parserServices) this.sourceCode.parserServices = options.parserServices;
+    // Mirror of `parserServices != null` that the Proxy-wrapped value trips when
+    // read via prop access. Lets buildVisitorMap skip empty-recipe rules on JS
+    // files without eagerly booting ts-services for every TS file.
+    this.sourceCode._hasLiveParserServices = !!options.parserServices;
     // Reset parserOptions to baseline before applying case-specific options to prevent
     // leakage (e.g. ecmaFeatures.impliedStrict from one case bleeding into the next).
     this.languageOptions.parserOptions = { ecmaFeatures: { jsx: true } };
@@ -3596,9 +3601,12 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     const sameConfig = _cachedVM.lastRuleConfig === ruleConfig;
     // Rules with empty recipes (create() threw or returned nothing previously) are
     // typically type-aware @typescript-eslint rules needing parserServices.program.
-    // If current file has no program, their create() will throw again — skip to
-    // avoid the try/catch per rule per file.  If file HAS program, must re-run.
-    const canSkipEmptyRecipes = sameConfig && !context.sourceCode.parserServices?.program;
+    // Skip empty-recipe rules only when parserServices is absent (JS files, no TS
+    // support). Never read `.program` — that trips the lazy Proxy's get trap and
+    // eagerly boots the full TypeScript LanguageService per file, which turned a
+    // 100ms JS-scope workload into 10s+ on .ts corpus files.
+    const hasParserServices = context.sourceCode.parserServices && context.sourceCode._hasLiveParserServices;
+    const canSkipEmptyRecipes = sameConfig && !hasParserServices;
 
     // No short-circuit on stable ruleConfig: rule.create() captures
     // context.sourceCode (and sometimes sourceCode.ast directly) in
@@ -3635,7 +3643,8 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       // Enforce cached visitor shape. If current create() returns a different number of
       // function-valued keys than the cached recipe wires up, extras/missing keys would
       // silently drop — force a cold rebuild. Fires when rule configs change visitor shape
-      // per case (e.g. jsdoc rules with `contexts`, comma-style with `exceptions`).
+      // per case (e.g. jsdoc rules with `contexts`, comma-style with `exceptions`) or
+      // when rules gate visitors on filename (.ts vs .js) rather than options.
       let vkCount = 0;
       for (const k in visitors) if (typeof visitors[k] === 'function') vkCount++;
       if (vkCount !== recipe.length) { mismatch = true; break; }
