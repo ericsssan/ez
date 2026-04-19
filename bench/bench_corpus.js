@@ -18,8 +18,8 @@
 //   --per-rule     one-rule-per-file (synthetic — for A/B rule-impl timing)
 //
 // Filters:
-//   --kind {valid|invalid}   (only honoured in per-rule mode)
-//   --prefix <safePrefix>    (only honoured in per-rule mode)
+//   --kind {valid|invalid}
+//   --prefix <safePrefix>
 //   --limit N                truncate task list
 //   --warmup N               (default 50)
 //
@@ -32,7 +32,7 @@
 const path = require("path");
 const { createFileLinter, createLinter } = require("../js/api.js");
 const { loadCoreRules } = require("../js/load-plugin.js");
-const ezIndex = require("../js/index.js");
+const { discoverFiles } = require("../js/index.js");
 
 const args = process.argv.slice(2);
 const FLAGS = new Set(["--kind", "--prefix", "--limit", "--warmup"]);
@@ -60,7 +60,7 @@ const corpusRoot = path.join(root, "corpus");
 // We sort the paths deterministically here — unsorted `readdir` order on the
 // full 56k corpus triggers a Bun/JSC heap pathology that balloons RSS past
 // 48 GB. Sorting sidesteps it.
-const discovered = ezIndex.discoverFiles(corpusRoot);
+const discovered = discoverFiles(corpusRoot);
 const sortedIdx = Array.from(discovered.paths.keys()).sort(
   (a, b) => discovered.paths[a].localeCompare(discovered.paths[b]),
 );
@@ -179,9 +179,6 @@ async function linterFor(ruleId) {
 async function run(tasks) {
   const times = new Float64Array(tasks.length);
   let diagTotal = 0, errorCount = 0;
-  const gcFn = typeof Bun !== "undefined" && typeof Bun.gc === "function"
-    ? () => Bun.gc(true)
-    : (typeof global.gc === "function" ? global.gc : null);
   const t0 = performance.now();
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
@@ -196,11 +193,10 @@ async function run(tasks) {
         const diags = L(t.file);
         diagTotal += diags.length;
       }
-    } catch (e) {
+    } catch {
       errorCount++;
     }
     times[i] = performance.now() - s;
-    if (gcFn && (i & 4095) === 4095) gcFn();
   }
   const wall = performance.now() - t0;
   return { times, diagTotal, errorCount, wall };

@@ -3601,20 +3601,14 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
       const merged = _mergeRuleOptions(plugins[pi].meta?.defaultOptions, configured);
       perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
-      let visitors;
-      let createThrew = false;
-      try { visitors = plugins[pi].create(perRuleCtxs[pi]); }
-      catch { createThrew = true; }
-      if (createThrew) {
-        // Cold path pushes an empty recipe on create() throw (e.g. typescript-eslint
-        // type-aware rules without parserServices). A thrown rule that matches an
-        // empty cached recipe should keep using the cache, not trigger a full VM
-        // rebuild of every other plugin.
-        if (recipe.length !== 0) { mismatch = true; break; }
-        continue;
-      }
+      // Cold path pushes an empty recipe when create() throws or returns
+      // nothing (typescript-eslint type-aware rules without parserServices
+      // throw on every call).  Treat both the same here: if the cached
+      // recipe is empty, keep using the cache.  Only rebuild when a rule
+      // that previously wired visitors now has none (a real shape change).
+      let visitors = null;
+      try { visitors = plugins[pi].create(perRuleCtxs[pi]); } catch { /* empty-recipe match */ }
       if (!visitors || typeof visitors !== 'object') {
-        // No visitors — matches an empty cached recipe; nothing to wire.
         if (recipe.length !== 0) { mismatch = true; break; }
         continue;
       }
