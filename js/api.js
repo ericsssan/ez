@@ -28,7 +28,6 @@ if (_tsServices) _tsServices.init();
 
 // ── Constants ───────────────────────────────────────────────────
 
-const JS_EXTS = new Set([".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"]);
 const SKIP_PLUGINS = new Set([]);
 
 // ── Config resolution ───────────────────────────────────────────
@@ -202,35 +201,11 @@ function _fromNativeDiag(d) {
 }
 
 // ── File discovery ──────────────────────────────────────────────
-
-// Zig walks the tree via one NAPI call (opendir/readdir in POSIX, d_type
-// fast-path, skips node_modules and dotfiles, filters by JS extension,
-// ignores .d.ts).  Matches the behaviour of the JS fallback below.
-//
-// The JS fallback only runs when the caller passes a custom `extensions`
-// set — the native walker's allow-list is fixed.
-function _discoverFiles(targets, extensions) {
+// One NAPI call walks the tree in Zig: opendir/readdir, d_type fast path,
+// skips node_modules and dotfiles, filters JS extensions, ignores .d.ts.
+function _discoverFiles(targets) {
   const roots = Array.isArray(targets) ? targets : [targets];
-  if (!extensions) return nativeDiscoverFiles(roots.map(p => path.resolve(p))).paths;
-
-  const exts = new Set(extensions);
-  const results = [];
-  function walk(p) {
-    const abs = path.resolve(p);
-    const stat = fs.statSync(abs, { throwIfNoEntry: false });
-    if (!stat) return;
-    if (stat.isDirectory()) {
-      for (const entry of fs.readdirSync(abs)) {
-        if (entry.startsWith(".") || entry === "node_modules") continue;
-        walk(path.join(abs, entry));
-      }
-    } else if (stat.isFile() && exts.has(path.extname(abs)) &&
-               !abs.endsWith(".d.ts") && !abs.endsWith(".d.mts") && !abs.endsWith(".d.cts")) {
-      results.push(abs);
-    }
-  }
-  for (const t of roots) walk(t);
-  return results;
+  return nativeDiscoverFiles(roots.map(p => path.resolve(p))).paths;
 }
 
 // ── Fix application ─────────────────────────────────────────────
@@ -312,7 +287,7 @@ function _lintSourceOne(source, filename, resolved) {
  */
 async function lint(targets, config = {}) {
   const resolved = await _resolveConfig(config);
-  const files = _discoverFiles(targets, config.extensions);
+  const files = _discoverFiles(targets);
   const results = [];
   for (const file of files) {
     try {
@@ -349,7 +324,7 @@ async function lintSource(source, config = {}) {
  */
 async function fix(targets, config = {}) {
   const resolved = await _resolveConfig(config);
-  const files = _discoverFiles(targets, config.extensions);
+  const files = _discoverFiles(targets);
   const results = [];
   const fixedFiles = [];
 
