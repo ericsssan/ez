@@ -398,4 +398,21 @@ async function createLinter(config = {}) {
   };
 }
 
-module.exports = { lint, lintSource, fix, fixSource, applyFixes, createLinter };
+/**
+ * Create a cached file linter for CI / batch runs.
+ * Resolves config once; returns lintFile(path) → diags[] using the fused
+ * parseAndLintNative NAPI path (one Zig trip = read + parse + native lint),
+ * then the shared JS plugin runner. No JS-side string copy of the source.
+ *
+ * @param {object} [config] - Configuration options (cwd, configFile, rules, plugins)
+ * @returns {Promise<function(filePath: string): Array>}
+ */
+async function createFileLinter(config = {}) {
+  const resolved = await _resolveConfig(config);
+  return function lintFile(filePath) {
+    const { diagnostics } = _lintOne(filePath, resolved);
+    return diagnostics;
+  };
+}
+
+module.exports = { lint, lintSource, fix, fixSource, applyFixes, createLinter, createFileLinter };

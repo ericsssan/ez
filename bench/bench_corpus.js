@@ -1,38 +1,38 @@
 // bench/bench_corpus.js
 //
-// Walk extracted fixture corpus, lint every file with ALL core rules enabled —
+// Walk extracted fixture corpus, lint every file with ALL rules enabled —
 // the same shape as a real editor save or CI lint pass. One linter instance,
-// 199 bundled rules, re-used across every file.
+// all bundled core + installed plugin rules, re-used across every file.
 //
 // Corpus layout (produced by `bun tests/differential/run.js --extract-fixtures <dir>`):
 //   <dir>/corpus/<safePrefix>/<safeRule>/{valid,invalid}/N.{js,ts,jsx,tsx}
 //
-// Plugin-prefix fixtures (unicorn/*, @typescript-eslint/*, sonarjs/*, react/*,
-// jsdoc/*, promise/*) are still used as input source text — the core rules
-// just run over whatever bytes are there. That's closer to real usage too,
-// since those test files contain idiomatic JS/TS that any real project
-// contains.
+// All file I/O — directory walking and per-file read — happens in Zig.
+// JS never calls fs.readFile/readdir for the corpus; the bench hands the
+// corpus root path to ez.discoverFiles() and paths to createFileLinter,
+// which uses the fused parseAndLintFile NAPI call (open + read + parse +
+// native lint in one Zig trip).
 //
 // Modes:
-//   (default)      all core rules on every file (production shape)
+//   (default)      all rules on every file (production shape)
 //   --per-rule     one-rule-per-file (synthetic — for A/B rule-impl timing)
 //
 // Filters:
-//   --kind {valid|invalid}
-//   --prefix <safePrefix>
-//   --limit N       truncate task list
-//   --warmup N      (default 50)
+//   --kind {valid|invalid}   (only honoured in per-rule mode)
+//   --prefix <safePrefix>    (only honoured in per-rule mode)
+//   --limit N                truncate task list
+//   --warmup N               (default 50)
 //
 // Usage:
 //   bun bench/bench_corpus.js                                  # all-rules default
-//   bun bench/bench_corpus.js --per-rule                       # old per-rule mode
-//   bun bench/bench_corpus.js --prefix eslint --kind invalid
+//   bun bench/bench_corpus.js --per-rule                       # synthetic per-rule mode
+//   bun bench/bench_corpus.js --per-rule --prefix eslint --kind invalid
 //   bun bench/bench_corpus.js --limit 5000
 
-const fs   = require("fs");
 const path = require("path");
-const { createLinter } = require("../js/api.js");
+const { createFileLinter, createLinter } = require("../js/api.js");
 const { loadCoreRules } = require("../js/load-plugin.js");
+const ezIndex = require("../js/index.js");
 
 const args = process.argv.slice(2);
 const FLAGS = new Set(["--kind", "--prefix", "--limit", "--warmup"]);
@@ -52,73 +52,61 @@ const limit   = parseInt(flag("--limit", "0"), 10) || 0;
 const warmup  = parseInt(flag("--warmup", "50"), 10);
 
 const corpusRoot = path.join(root, "corpus");
-if (!fs.existsSync(corpusRoot)) {
-  console.error(`corpus not found: ${corpusRoot}`);
-  console.error(`generate with: bun tests/differential/run.js --extract-fixtures ${root}`);
-  process.exit(1);
-}
 
+// ── Corpus discovery (Zig-side) ─────────────────────────────
+// ez.discoverFiles returns { paths, sizes } walked recursively from the root.
+// No JS file I/O. Paths come in whatever order the native walker emits.
+//
+// We sort the paths deterministically here — unsorted `readdir` order on the
+// full 56k corpus triggers a Bun/JSC heap pathology that balloons RSS past
+// 48 GB. Sorting sidesteps it.
+const discovered = ezIndex.discoverFiles(corpusRoot);
+const sortedIdx = Array.from(discovered.paths.keys()).sort(
+  (a, b) => discovered.paths[a].localeCompare(discovered.paths[b]),
+);
+
+// Parse rule/kind metadata out of the path so per-rule mode can route
+// and optional filters can apply. In all-rules mode metadata is unused.
 function unmapPrefix(safePrefix) {
   if (safePrefix === "eslint") return null;
   if (safePrefix === "_typescript-eslint") return "@typescript-eslint";
   return safePrefix;
 }
-
-// Walk corpus → tasks[]: { file, ext, ruleId, kind }
-// Sort at EVERY level. Unsorted filesystem order within a kind/ directory
-// triggers a Bun/JSC pathology on the full corpus (some adversarial sequence
-// of rule/code pairs makes RSS jump from ~400 MB to 48 GB in one step and
-// crashes with Bus error). Alphabetical order avoids it.
-const tasks = [];
-for (const safePrefix of fs.readdirSync(corpusRoot).sort()) {
-  if (prefArg && safePrefix !== prefArg) continue;
-  const prefixDir = path.join(corpusRoot, safePrefix);
-  if (!fs.statSync(prefixDir).isDirectory()) continue;
+function taskFromPath(full) {
+  // <corpusRoot>/<safePrefix>/<safeRule>/<kind>/<N.ext>
+  const rel = full.startsWith(corpusRoot + path.sep) ? full.slice(corpusRoot.length + 1) : full;
+  const segs = rel.split(path.sep);
+  const [safePrefix, safeRule, kind] = segs;
   const pluginPrefix = unmapPrefix(safePrefix);
-
-  for (const safeRule of fs.readdirSync(prefixDir).sort()) {
-    const ruleDir = path.join(prefixDir, safeRule);
-    if (!fs.statSync(ruleDir).isDirectory()) continue;
-    const ruleId = pluginPrefix ? `${pluginPrefix}/${safeRule}` : safeRule;
-
-    for (const kind of ["invalid", "valid"]) {
-      if (kindArg && kind !== kindArg) continue;
-      const kindDir = path.join(ruleDir, kind);
-      if (!fs.existsSync(kindDir)) continue;
-
-      for (const entry of fs.readdirSync(kindDir).sort()) {
-        const full = path.join(kindDir, entry);
-        if (!fs.statSync(full).isFile()) continue;
-        tasks.push({ file: full, ext: path.extname(entry), ruleId, kind });
-      }
-    }
-  }
+  const ruleId = pluginPrefix ? `${pluginPrefix}/${safeRule}` : safeRule;
+  return { file: full, ruleId, kind, safePrefix };
 }
 
-if (limit > 0 && tasks.length > limit) tasks.length = limit;
+let tasks = [];
+let totalBytes = 0;
+for (const i of sortedIdx) {
+  const full = discovered.paths[i];
+  const size = discovered.sizes[i];
+  const meta = taskFromPath(full);
+  if (prefArg && meta.safePrefix !== prefArg) continue;
+  if (kindArg && meta.kind !== kindArg) continue;
+  meta.bytes = size;
+  totalBytes += size;
+  tasks.push(meta);
+}
+if (limit > 0 && tasks.length > limit) { tasks.length = limit; totalBytes = tasks.reduce((s, t) => s + t.bytes, 0); }
 if (tasks.length === 0) {
-  console.error("no fixtures matched");
+  console.error(`no fixtures matched under ${corpusRoot}`);
+  console.error(`generate with: bun tests/differential/run.js --extract-fixtures ${root}`);
   process.exit(1);
 }
 
-// Read file contents lazily during bench; preloading 56K strings + their
-// NAPI-side parsed AST mirrors caused OOM on full corpus runs.
-// Stat the files once to compute a total-bytes headline, then re-read per call.
-let totalBytes = 0;
-for (const t of tasks) {
-  t.bytes = fs.statSync(t.file).size;
-  totalBytes += t.bytes;
-}
-
-// Build all-rules config (production shape): every bundled core rule +
-// every installed plugin rule, all at "error". Mirrors a maxed-out editor
-// or CI config.
-//
-// Plugins are resolved from js/node_modules. Each entry's `prefix` is the
-// ESLint short name (drop `eslint-plugin-` or custom like `@typescript-eslint`);
-// the `plugin` is the required package module. createLinter accepts both
-// name strings AND {prefix, plugin} objects; we use the latter to get the
-// short `unicorn/foo` style rule IDs instead of `eslint-plugin-unicorn/foo`.
+// ── Plugin descriptors ──────────────────────────────────────
+// Load every installed plugin package from js/node_modules. `prefix` is the
+// short ESLint name the fixtures reference (unicorn, @typescript-eslint, …);
+// the plugin module is required live so we can pass {prefix, plugin} through
+// createFileLinter/createLinter instead of a package-name string. That keeps
+// rule IDs short (`unicorn/foo`, not `eslint-plugin-unicorn/foo`).
 function loadPluginDescriptors() {
   const entries = [
     { prefix: "@typescript-eslint", pkg: "@typescript-eslint/eslint-plugin" },
@@ -155,7 +143,6 @@ for (const { prefix, plugin } of pluginDescs) {
     const rule = plugin.rules[ruleName];
     const create = rule?.create || rule;
     if (typeof create !== "function") continue;
-    // Skip deprecated rules — mirrors loadCoreRules behavior.
     if (rule?.meta?.deprecated) continue;
     allRulesConfig[`${prefix}/${ruleName}`] = "error";
     pluginRuleCount++;
@@ -163,14 +150,20 @@ for (const { prefix, plugin } of pluginDescs) {
 }
 
 // Linter selection:
-//  - all-rules mode: one linter with every core rule enabled, shared across files
-//  - per-rule mode:  one linter per unique ruleId, with only that rule enabled
+//  - all-rules mode: createFileLinter → lintFile(path) → fused parseAndLintFile
+//    NAPI call (open + read + parse + native lint in Zig). No JS fs.
+//  - per-rule mode:  createLinter → lintText(source, filename). Per-rule mode
+//    exists for A/B timing of individual rule implementations, and the current
+//    multi-rule NAPI config serialisation does not yet support single-rule
+//    slicing efficiently; paying the JS readFile cost here is acceptable since
+//    the mode is diagnostic.
+const fsForPerRule = perRule ? require("fs") : null;
 const linterCache = new Map();
 async function linterFor(ruleId) {
   if (!perRule) {
     let L = linterCache.get("__all__");
     if (!L) {
-      L = await createLinter({ rules: allRulesConfig, plugins: pluginDescs });
+      L = await createFileLinter({ rules: allRulesConfig, plugins: pluginDescs });
       linterCache.set("__all__", L);
     }
     return L;
@@ -186,8 +179,6 @@ async function linterFor(ruleId) {
 async function run(tasks) {
   const times = new Float64Array(tasks.length);
   let diagTotal = 0, errorCount = 0;
-  // Periodic GC nudges JSC so heap peak stays bounded when short-lived
-  // objects (parsed ASTs, diagnostic arrays) are created in a tight loop.
   const gcFn = typeof Bun !== "undefined" && typeof Bun.gc === "function"
     ? () => Bun.gc(true)
     : (typeof global.gc === "function" ? global.gc : null);
@@ -195,11 +186,16 @@ async function run(tasks) {
   for (let i = 0; i < tasks.length; i++) {
     const t = tasks[i];
     const L = await linterFor(t.ruleId);
-    const code = fs.readFileSync(t.file, "utf8");
     const s = performance.now();
     try {
-      const diags = await L(code, t.file);
-      diagTotal += diags.length;
+      if (perRule) {
+        const code = fsForPerRule.readFileSync(t.file, "utf8");
+        const diags = await L(code, t.file);
+        diagTotal += diags.length;
+      } else {
+        const diags = L(t.file);
+        diagTotal += diags.length;
+      }
     } catch (e) {
       errorCount++;
     }
