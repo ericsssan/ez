@@ -3717,10 +3717,26 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     // Map arrays and selectorHandlers are stable (same slot objects); only _state.inner changes.
     let slotIdx = 0, selIdx = 0;
     let mismatch = false;
+    const tierADisabled = process.env.EZ_DISABLE_TIER_A === "1";
     for (let pi = 0; pi < plugins.length && !mismatch; pi++) {
       const recipe = perPluginRecipe[pi];
       if (!recipe) continue;
       if (recipe.length === 0 && canSkipEmptyRecipes) continue;
+
+      // Tier A short-circuit: rules classified "shared-handlers" don't cache file-state
+      // at create() time (validated via static analysis — tools/rule-analyzer.js). Their
+      // cold-path visitors stay valid as long as options haven't changed (sameConfig).
+      // Skip both create() and the slot-rewire loop; advance indices past this rule.
+      const strategy = perRuleCtxs[pi]._instantiationStrategy;
+      if (!tierADisabled && sameConfig && strategy === "shared-handlers") {
+        for (let r = 0; r < recipe.length; r++) {
+          const step = recipe[r];
+          if (step.sel) selIdx++;
+          else slotIdx += step.numSlots;
+        }
+        continue;
+      }
+
       if (!sameConfig) {
         // Update per-case options so the rule sees correct configuration on each call.
         // ruleConfig may carry different options per file/case even when the plugin is reused.
