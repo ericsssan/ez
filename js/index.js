@@ -35,10 +35,22 @@ const MAGIC = 0x5A4E4153; // ASCII "SANZ" little-endian — legacy magic, kept f
 
 let sharedBuffer = null;
 
+// Ensure sharedBuffer can hold a source of `sourceLen` bytes after parse
+// (headers + node/token/extra arrays).  The 30x multiplier is a heuristic
+// worst-case inflation factor for AST output relative to source bytes.
 function ensureBuffer(sourceLen) {
-  const needed = HEADER_SIZE + sourceLen * 30;
-  const minSize = Math.max(needed, DEFAULT_BUFFER_SIZE);
+  return ensureBufferBytes(HEADER_SIZE + sourceLen * 30);
+}
 
+// Ensure sharedBuffer has at least `totalBytes` capacity.  Used when the
+// Zig side reports an exact needed size and we don't want to re-apply the
+// 30x heuristic on top of an already-exact number.  Previously both retry
+// paths (parseFile, parseAndLintFile) passed a raw byte count to
+// ensureBuffer(sourceLen), which tripled the allocation to ~30x the
+// reported need — a 4 MB need ballooned sharedBuffer to 120 MB and
+// that ArrayBuffer stuck around for the whole process.
+function ensureBufferBytes(totalBytes) {
+  const minSize = Math.max(totalBytes, DEFAULT_BUFFER_SIZE);
   // Grow-only: never shrink. Shrinking would orphan the old buffer, and any
   // AstView with noPrivateCopy wrapping it would hold an unreachable reference.
   // Staying at the high-water mark costs at most one large allocation; resize
@@ -259,12 +271,12 @@ function parse(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
 
-  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
+  let buf = sharedBuffer || ensureBufferBytes(DEFAULT_BUFFER_SIZE);
   let bytesUsed = b.parseFile(buf, filePath, lang);
   if (bytesUsed === 0) {
     const needed = new DataView(buf).getUint32(0, true);
     if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
-      buf = ensureBuffer(needed);
+      buf = ensureBufferBytes(needed + HEADER_SIZE);
       sharedBuffer = buf;
       bytesUsed = b.parseFile(buf, filePath, lang);
     }
@@ -313,12 +325,12 @@ function parseAndLintNative(filePath, options = {}) {
   if (_lintOutBuf.byteLength < 64 * 1024) _lintOutBuf = new ArrayBuffer(128 * 1024);
 
   const configBuf = options.config instanceof Uint8Array ? options.config : undefined;
-  let buf = sharedBuffer || ensureBuffer(DEFAULT_BUFFER_SIZE);
+  let buf = sharedBuffer || ensureBufferBytes(DEFAULT_BUFFER_SIZE);
   let bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
   if (bytesUsed === 0) {
     const needed = new DataView(buf).getUint32(0, true);
     if (needed > 0 && needed + HEADER_SIZE > buf.byteLength) {
-      buf = ensureBuffer(needed);
+      buf = ensureBufferBytes(needed + HEADER_SIZE);
       sharedBuffer = buf;
       bytesUsed = b.parseAndLintFile(buf, filePath, lang, _lintOutBuf, configBuf);
     }
