@@ -16,6 +16,7 @@ const path = require("path");
 const {
   parseSource, parseAndLintNative, lintSourceNative,
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
+  discoverFiles: nativeDiscoverFiles,
 } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
@@ -202,8 +203,17 @@ function _fromNativeDiag(d) {
 
 // ── File discovery ──────────────────────────────────────────────
 
+// Zig walks the tree via one NAPI call (opendir/readdir in POSIX, d_type
+// fast-path, skips node_modules and dotfiles, filters by JS extension,
+// ignores .d.ts).  Matches the behaviour of the JS fallback below.
+//
+// The JS fallback only runs when the caller passes a custom `extensions`
+// set — the native walker's allow-list is fixed.
 function _discoverFiles(targets, extensions) {
-  const exts = extensions ? new Set(extensions) : JS_EXTS;
+  const roots = Array.isArray(targets) ? targets : [targets];
+  if (!extensions) return nativeDiscoverFiles(roots.map(p => path.resolve(p))).paths;
+
+  const exts = new Set(extensions);
   const results = [];
   function walk(p) {
     const abs = path.resolve(p);
@@ -219,7 +229,7 @@ function _discoverFiles(targets, extensions) {
       results.push(abs);
     }
   }
-  for (const t of (Array.isArray(targets) ? targets : [targets])) walk(t);
+  for (const t of roots) walk(t);
   return results;
 }
 
