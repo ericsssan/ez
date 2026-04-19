@@ -23,6 +23,8 @@
 
 const fs   = require("fs");
 const path = require("path");
+const _t = { start: performance.now() };
+const _stamp = (k) => { _t[k] = performance.now(); };
 
 // ── ts-services: init against the fixture root before api.js ──
 // api.js's module-level init() uses process.cwd(), which has no tsconfig.
@@ -51,12 +53,16 @@ const path = require("path");
       files: [],
     }, null, 2));
   }
+  _stamp("tsBefore");
   try { require("../js/ts-services").init(tsInitRoot); } catch { /* typescript optional */ }
+  _stamp("tsAfter");
 })();
 
+_stamp("apiBefore");
 const { lint } = require("../js/api.js");
 const { loadCoreRules } = require("../js/load-plugin.js");
 const { discoverFiles } = require("../js/index.js");
+_stamp("apiAfter");
 
 const corpusRoot = path.resolve(process.argv[2] || "bench/fixtures/extracted/corpus");
 const loopForever = process.env.EZ_PROFILE_LOOP === "1";
@@ -74,8 +80,17 @@ function loadPlugins() {
     { prefix: "n",                  pkg: "eslint-plugin-n"                  },
     { prefix: "es-x",               pkg: "eslint-plugin-es-x"               },
   ];
+  // EZ_PROFILE_PLUGINS="unicorn"  → load just unicorn
+  // EZ_PROFILE_PLUGINS=""         → core-only baseline
+  // unset                         → load all (default)
+  const filter = process.env.EZ_PROFILE_PLUGINS;
+  const allow = filter === undefined ? null
+              : filter === ""        ? new Set()
+              :                        new Set(filter.split(","));
   const out = [];
   for (const { prefix, pkg } of entries) {
+    if (allow && !allow.has(prefix)) continue;
+    const t0 = performance.now();
     try {
       const mod = require(require.resolve(pkg, {
         paths: [path.resolve(__dirname, "../js"), process.cwd()],
@@ -83,12 +98,16 @@ function loadPlugins() {
       const plugin = mod?.default || mod;
       if (plugin && plugin.rules) out.push({ prefix, plugin });
     } catch { /* skip missing */ }
+    const dt = performance.now() - t0;
+    if (process.env.EZ_DEBUG_PLUGIN_LOAD) console.log(`  ${prefix.padEnd(20)} ${dt.toFixed(1).padStart(7)}ms`);
   }
   return out;
 }
 
 (async () => {
+  _stamp("pluginsBefore");
   const pluginDescs = loadPlugins();
+  _stamp("pluginsAfter");
   const rules = {};
   for (const d of loadCoreRules({})) if (d.meta?.name) rules[d.meta.name] = "error";
   for (const { prefix, plugin } of pluginDescs) {
@@ -110,21 +129,42 @@ function loadPlugins() {
   const CHUNK = 500;
   console.log(`PID ${process.pid}  rules ${Object.keys(rules).length}  files ${allFiles.length}  chunk ${CHUNK}${loopForever ? "  loop=forever" : ""}`);
 
-  // Time-based stop so the process exits cleanly and Bun --cpu-prof flushes
-  // the profile file. SIGINT is racy with async lint() awaits; a timer is
-  // deterministic. Override with EZ_PROFILE_SECONDS.
   const durationMs = parseInt(process.env.EZ_PROFILE_SECONDS || "30", 10) * 1000;
   const startedAt = Date.now();
   let stop = false;
   process.on("SIGINT",  () => { stop = true; });
   process.on("SIGTERM", () => { stop = true; });
 
+  // Separate startup warmup (first lint() resolves config, builds VM cold)
+  // from steady-state linting so per-file numbers are meaningful.
+  let totalDiags = 0;
+  const t0 = performance.now();
+  const wr = await lint(allFiles.slice(0, 1), { rules, plugins: pluginDescs });
+  for (const f of wr) totalDiags += f.diagnostics.length;
+  const tWarm = performance.now();
+
   do {
     for (let i = 0; i < allFiles.length && !stop; i += CHUNK) {
-      await lint(allFiles.slice(i, i + CHUNK), { rules, plugins: pluginDescs });
+      const r = await lint(allFiles.slice(i, i + CHUNK), { rules, plugins: pluginDescs });
+      for (const f of r) totalDiags += f.diagnostics.length;
       if (loopForever && Date.now() - startedAt > durationMs) stop = true;
     }
   } while (loopForever && !stop);
+  const tEnd = performance.now();
+
+  const warmupMs = tWarm - t0;
+  const lintMs = tEnd - tWarm;
+  const totalFiles = allFiles.length;
+  console.log();
+  console.log(`=== startup (one-time) ===`);
+  console.log(`  ts-services.init:   ${(_t.tsAfter - _t.tsBefore).toFixed(1)}ms`);
+  console.log(`  require api.js:     ${(_t.apiAfter - _t.apiBefore).toFixed(1)}ms`);
+  console.log(`  loadPlugins:        ${(_t.pluginsAfter - _t.pluginsBefore).toFixed(1)}ms`);
+  console.log(`  total to first lint ${(_t.tsBefore - _t.start + (_t.tsAfter - _t.tsBefore) + (_t.apiAfter - _t.apiBefore) + (_t.pluginsAfter - _t.pluginsBefore)).toFixed(1)}ms+`);
+  console.log(`=== lint ===`);
+  console.log(`  warmup (1 file):    ${warmupMs.toFixed(1)}ms`);
+  console.log(`  steady (${totalFiles} files):   ${lintMs.toFixed(1)}ms = ${(lintMs / totalFiles).toFixed(2)}ms/file`);
+  console.log(`  total diags:        ${totalDiags}`);
 
   console.log("done");
 })().catch((e) => { console.error(e); process.exit(1); });

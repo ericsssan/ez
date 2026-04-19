@@ -6417,11 +6417,33 @@ function runPlugins(ast, plugins, options = {}) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
   }
 
+  // Lazily build parserServices on first rule access. ts-services'
+  // buildParserServices runs a full type-check prewarm per file, which
+  // dominates cost when it runs regardless of whether any type-aware rule
+  // is enabled — core-only linting paid ~5 ms/file in TS LanguageService
+  // work even though no rule touched parserServices. Deferring means files
+  // linted only with non-type-aware rules skip TS work entirely.
   let parserServices = null;
   if (filename !== "<input>" && /\.[mc]?tsx?$/.test(filename)) {
     const svc = tsServices();
     if (svc) {
-      try { parserServices = svc.buildParserServices(filename); } catch {}
+      let _psCached = undefined; // undefined = not yet built, null = build failed
+      parserServices = new Proxy({}, {
+        get(_target, prop) {
+          if (_psCached === undefined) {
+            try { _psCached = svc.buildParserServices(filename); }
+            catch { _psCached = null; }
+          }
+          return _psCached == null ? undefined : _psCached[prop];
+        },
+        has(_target, prop) {
+          if (_psCached === undefined) {
+            try { _psCached = svc.buildParserServices(filename); }
+            catch { _psCached = null; }
+          }
+          return _psCached != null && prop in _psCached;
+        },
+      });
     }
   }
 
