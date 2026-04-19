@@ -17,6 +17,9 @@ bench/baseline.json
 # Extracted fixture corpus (regenerable via `bun tests/differential/run.js --extract-fixtures tests/fixtures/extracted`)
 tests/fixtures/extracted/
 
+# Per-plugin rule metadata cache (regenerable via `bun tools/rule-analyzer.js --out .ez/rules --plugin <id> <rule-dir>`)
+.ez/
+
 # Node
 node_modules/
 

@@ -1,6 +1,33 @@
 "use strict";
 
 const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
+const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
+
+// Singleton — lazy-built on first rule registration. Reads per-plugin metadata files
+// produced by tools/rule-analyzer.js (`.ez/rules/<plugin>.json`) to learn how each rule's
+// create() should be instantiated. Dispatcher stamps the strategy onto each rule's
+// per-rule context so later Tier A/B impls can consume it.
+let _ruleMetadataIndex = null;
+function ruleMetadataIndex() {
+  if (!_ruleMetadataIndex) _ruleMetadataIndex = new RuleMetadataIndex();
+  return _ruleMetadataIndex;
+}
+
+// Derive a plugin key from a rule id. "@typescript-eslint/no-floating-promises"
+// → "@typescript-eslint". "unicorn/prefer-includes" → "unicorn". "no-console" → "eslint".
+function pluginKeyFromRuleId(ruleId) {
+  if (!ruleId || typeof ruleId !== "string") return "eslint";
+  const idx = ruleId.lastIndexOf("/");
+  if (idx < 0) return "eslint";
+  return ruleId.slice(0, idx);
+}
+
+// Short rule name (post-slash segment) for metadata lookup.
+function ruleNameFromRuleId(ruleId) {
+  if (!ruleId || typeof ruleId !== "string") return ruleId;
+  const idx = ruleId.lastIndexOf("/");
+  return idx < 0 ? ruleId : ruleId.slice(idx + 1);
+}
 
 // ── Symbol BindingKind → ESLint def.type mapping ───────────────
 // Must match BindingKind enum in src/parser/symbol.zig (values in enum order).
@@ -3752,6 +3779,12 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const pluginRuleIds = []; // cached rule ids (avoids meta?.name? lookup in hot path)
   const pluginShortNames = []; // cached short names (avoids split('/') in hot path)
 
+  // Accumulate instantiation-strategy distribution for this config — surfaced
+  // via EZ_DEBUG_STRATEGY=1 to validate the metadata pipeline before the Tier A/B
+  // dispatcher consumes it. Behavior unchanged otherwise.
+  const strategyHistogram = Object.create(null);
+  const metaIndex = ruleMetadataIndex();
+
   for (const plugin of plugins) {
     const ruleId = plugin.meta?.name || "unknown";
     const ruleMeta = plugin.meta || null;
@@ -3769,6 +3802,17 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     perRuleCtx.options = ruleOptions;
     perRuleCtx.id = ruleId;
     perRuleCtx.report = _makeBoundReport(ruleId, ruleMeta, context);
+
+    // Stamp the rule's instantiation strategy onto its context. Consumed by the
+    // Tier A/B dispatcher once it lands. Today's runtime ignores it.
+    const pluginKey = pluginKeyFromRuleId(ruleId);
+    const ruleName = ruleNameFromRuleId(ruleId);
+    const instantiationRecord = metaIndex.describeRule(pluginKey, ruleName);
+    perRuleCtx._instantiationStrategy = instantiationRecord.strategy || DEFAULT_STRATEGY;
+    perRuleCtx._instantiationRecord = instantiationRecord;
+    strategyHistogram[perRuleCtx._instantiationStrategy] =
+      (strategyHistogram[perRuleCtx._instantiationStrategy] || 0) + 1;
+
     perRuleCtxs.push(perRuleCtx);
     const recipe = [];
     let visitors;
@@ -3818,6 +3862,18 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   _cachedSelectorPlanPlugins = null;
   _cachedPlan = null;
   _cachedPlanPlugins = null;
+
+  // Surface the instantiation-strategy distribution for this config (opt-in).
+  // Validates the rule-metadata pipeline before Tier A/B dispatcher consumes it.
+  if (process.env.EZ_DEBUG_STRATEGY === "1") {
+    const total = plugins.length;
+    const parts = Object.entries(strategyHistogram)
+      .sort((a, b) => b[1] - a[1])
+      .map(([k, n]) => `${k}=${n}(${Math.round((n / total) * 100)}%)`)
+      .join(" ");
+    process.stderr.write(`[ez:strategy] ${total} rules — ${parts}\n`);
+  }
+
   return { map, selectorHandlers };
 }
 
