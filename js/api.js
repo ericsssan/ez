@@ -14,9 +14,8 @@
 const fs   = require("fs");
 const path = require("path");
 const {
-  parseSource, parseAndLintNative, lintSourceNative,
+  parseSource, parseAndLintNative, lintSourceNative, discoverFiles,
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
-  discoverFiles: nativeDiscoverFiles,
 } = require("./index");
 const { runPlugins } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
@@ -200,14 +199,6 @@ function _fromNativeDiag(d) {
   };
 }
 
-// ── File discovery ──────────────────────────────────────────────
-// One NAPI call walks the tree in Zig: opendir/readdir, d_type fast path,
-// skips node_modules and dotfiles, filters JS extensions, ignores .d.ts.
-function _discoverFiles(targets) {
-  const roots = Array.isArray(targets) ? targets : [targets];
-  return nativeDiscoverFiles(roots.map(p => path.resolve(p))).paths;
-}
-
 // ── Fix application ─────────────────────────────────────────────
 
 function applyFixes(source, fixes) {
@@ -287,7 +278,7 @@ function _lintSourceOne(source, filename, resolved) {
  */
 async function lint(targets, config = {}) {
   const resolved = await _resolveConfig(config);
-  const files = _discoverFiles(targets);
+  const files = discoverFiles(Array.isArray(targets) ? targets : [targets]).paths;
   const results = [];
   for (const file of files) {
     try {
@@ -324,7 +315,7 @@ async function lintSource(source, config = {}) {
  */
 async function fix(targets, config = {}) {
   const resolved = await _resolveConfig(config);
-  const files = _discoverFiles(targets);
+  const files = discoverFiles(Array.isArray(targets) ? targets : [targets]).paths;
   const results = [];
   const fixedFiles = [];
 
