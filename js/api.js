@@ -57,7 +57,22 @@ async function _loadFlatConfig(configFile, cwd) {
  * Resolve config into { rules, pluginDescriptors, nativeConfig }.
  * Accepts user config options or loads from eslint.config.js.
  */
+// Memoize resolved config by config-object identity.  Without it, every
+// lint() call rebuilds jsPlugins into a fresh Array and the runner's
+// buildVisitorMap cache (_cachedVMPlugins === plugins) misses every call,
+// forcing a full cold rebuild of every rule's visitors on every file.
+// WeakMap so one-shot callers don't keep resolved state alive.
+const _resolvedCache = new WeakMap();
+
 async function _resolveConfig(config = {}) {
+  const cached = _resolvedCache.get(config);
+  if (cached) return cached;
+  const resolved = await _resolveConfigImpl(config);
+  _resolvedCache.set(config, resolved);
+  return resolved;
+}
+
+async function _resolveConfigImpl(config = {}) {
   const cwd = config.cwd || process.cwd();
   let rules = {};       // ruleId → severity or [severity, ...options]
   let pluginPkgs = [];  // plugin package names to load

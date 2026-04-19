@@ -3571,7 +3571,6 @@ function _expandUnion(key) {
 // The Map keys, ruleIds, ruleMeta, and ruleOptions are stable for the same plugins.
 let _cachedVMPlugins = null;
 let _cachedVM = null; // { map, selectorHandlers, handlerSlots }
-let _cachedVMRuleConfig = null; // ruleConfig reference from last build (for fast stable-config short-circuit)
 
 // Element-wise plugin-set equality: true when arrays contain the same plugin object
 // references in the same positions. Callers commonly build a fresh `[plugin]` wrapper
@@ -3588,18 +3587,13 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   if (_cachedVMPlugins === plugins && _cachedVM) {
     const { map, selectorHandlers, handlerSlots, selectorSlots, perRuleCtxs, perPluginRecipe } = _cachedVM;
 
-    // Stable-config short-circuit: when the caller reuses the same ruleConfig
-    // object across files (the common case for a long-lived linter), every
-    // rule's options are unchanged.  Skip the per-rule plugin.create() loop
-    // entirely — the cached handler wiring still points at the right visitors.
-    //
-    // Before this short-circuit the hot path re-ran plugin.create() for every
-    // rule on every file (buildVisitorMap showed 37% of total time in the
-    // full-plugins profile); jsdoc rebuilt its tag-structure Sets/Maps, the
-    // TS scope-manager reinitialised, and every try/catch wrapper fired.
-    if (_cachedVMRuleConfig === ruleConfig) {
-      return { map, selectorHandlers };
-    }
+    // No short-circuit on stable ruleConfig: rule.create() captures
+    // context.sourceCode (and sometimes sourceCode.ast directly) in
+    // closures at creation time, so skipping the per-file re-run gives
+    // rules stale state across files and can induce infinite-loop
+    // traversals on certain plugin rules.  The hot path below re-runs
+    // create() per file but reuses the slot objects, so we still avoid
+    // the full cold rebuild (new perRuleCtxs, new handler allocations).
 
     // Fast path: recipe-based update — no Object.entries, no _isSelector, no _expandUnion,
     // no map-array clear/refill. Direct property access by pre-computed visitorKey.
@@ -3652,10 +3646,8 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     if (mismatch) {
       _cachedVMPlugins = null;
       _cachedVM = null;
-      _cachedVMRuleConfig = null;
       return buildVisitorMap(plugins, context, ruleConfig);
     }
-    _cachedVMRuleConfig = ruleConfig;
     return { map, selectorHandlers };
   }
 
@@ -3722,7 +3714,6 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   }
 
   _cachedVMPlugins = plugins;
-  _cachedVMRuleConfig = ruleConfig;
   _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe };
   // Cold-path rebuild creates fresh safeHandlers with new `_state` objects AND fresh selector
   // slot objects. All downstream plan caches reference the OLD handler/slot identities —
