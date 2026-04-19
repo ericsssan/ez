@@ -134,7 +134,7 @@ function loadPlugins() {
   const allFiles = limit > 0 ? discovered.slice(0, limit) : discovered;
   const CHUNK = 500;
 
-  // Pre-register all TS files with ts-services so the LanguageService
+  // Batch-register all TS files with ts-services so the LanguageService
   // rebinds the program once on first type query rather than per-file.
   try {
     const tsFiles = allFiles.filter(p => /\.[mc]?tsx?$/.test(p));
@@ -160,10 +160,20 @@ function loadPlugins() {
   for (const f of wr) totalDiags += f.diagnostics.length;
   const tWarm = performance.now();
 
+  const mbFmt = (n) => (n / 1024 / 1024).toFixed(0);
+  const mem = process.env.EZ_PROFILE_MEM === "1";
+  const forceGc = process.env.EZ_PROFILE_GC === "1";
+  let chunksSinceMem = 0;
   do {
     for (let i = 0; i < allFiles.length && !stop; i += CHUNK) {
       const r = await lint(allFiles.slice(i, i + CHUNK), { rules, plugins: pluginDescs });
       for (const f of r) totalDiags += f.diagnostics.length;
+      if (forceGc && typeof Bun !== "undefined" && typeof Bun.gc === "function") Bun.gc(true);
+      if (mem && ++chunksSinceMem >= 4) {
+        chunksSinceMem = 0;
+        const m = process.memoryUsage();
+        console.log(`  i=${i + CHUNK}  rss=${mbFmt(m.rss)}M  heap=${mbFmt(m.heapUsed)}/${mbFmt(m.heapTotal)}M  ext=${mbFmt(m.external || 0)}M`);
+      }
       if (loopForever && Date.now() - startedAt > durationMs) stop = true;
     }
   } while (loopForever && !stop);
