@@ -49,6 +49,12 @@ const _stamp = (k) => { _t[k] = performance.now(); };
         esModuleInterop: true, allowSyntheticDefaultImports: true,
         resolveJsonModule: true, experimentalDecorators: true,
         emitDecoratorMetadata: true,
+        // Skip module resolution — corpus fixtures contain `import`
+        // statements that TS would recursively pull into the program,
+        // inflating getOrCreateSourceFile / readFileSync by 15%+.  Type
+        // queries inside a single fixture still work; only cross-file
+        // imports are stubbed.
+        noResolve: true,
       },
       files: [],
     }, null, 2));
@@ -127,6 +133,17 @@ function loadPlugins() {
   const limit = parseInt(process.env.EZ_PROFILE_LIMIT || "0", 10) || 0;
   const allFiles = limit > 0 ? discovered.slice(0, limit) : discovered;
   const CHUNK = 500;
+
+  // Pre-register all TS files with ts-services so the LanguageService
+  // rebinds the program once on first type query rather than per-file.
+  try {
+    const tsFiles = allFiles.filter(p => /\.[mc]?tsx?$/.test(p));
+    if (tsFiles.length > 0) {
+      const svc = require("../js/ts-services");
+      svc.init(path.resolve(corpusRoot, ".."));
+      svc.registerFiles(tsFiles);
+    }
+  } catch { /* ts optional */ }
   console.log(`PID ${process.pid}  rules ${Object.keys(rules).length}  files ${allFiles.length}  chunk ${CHUNK}${loopForever ? "  loop=forever" : ""}`);
 
   const durationMs = parseInt(process.env.EZ_PROFILE_SECONDS || "30", 10) * 1000;
