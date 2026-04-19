@@ -58,6 +58,15 @@ function _mergeRuleOptions(defaultOptions, configured) {
   return _deepMergeArrays(defaultOptions ?? [], configured);
 }
 
+// Node types that introduce a new lexical scope. Used by scopeManager.acquire()
+// to return null for non-scope-creating nodes (must match eslint-scope semantics).
+const _SCOPE_CREATING_TYPES = new Set([
+  'Program', 'FunctionDeclaration', 'FunctionExpression',
+  'ArrowFunctionExpression', 'ClassDeclaration', 'ClassExpression',
+  'BlockStatement', 'SwitchStatement',
+  'ForStatement', 'ForInStatement', 'ForOfStatement',
+]);
+
 // Apply JSON schema `default` values to rule options.
 // ESLint v8 applies schema defaults before passing options to rules.
 // When a user passes an empty object `{}` for an options slot that has an
@@ -3142,13 +3151,7 @@ class SourceCode {
         // Rules like consistent-function-scoping rely on this to return null for
         // function body blocks (causing the rule to skip those cases).
         if (!node) return null;
-        const scopeCreatingTypes = new Set([
-          'Program', 'FunctionDeclaration', 'FunctionExpression',
-          'ArrowFunctionExpression', 'ClassDeclaration', 'ClassExpression',
-          'BlockStatement', 'SwitchStatement',
-          'ForStatement', 'ForInStatement', 'ForOfStatement',
-        ]);
-        if (!scopeCreatingTypes.has(node.type)) return null;
+        if (!_SCOPE_CREATING_TYPES.has(node.type)) return null;
         const scope = sc.getScope(node);
         if (!scope || !scope.block) return null;
         // Verify this scope was directly created by this node (scope.block === node).
@@ -3585,7 +3588,17 @@ function _samePluginSet(a, b) {
 
 function buildVisitorMap(plugins, context, ruleConfig = {}) {
   if (_cachedVMPlugins === plugins && _cachedVM) {
-    const { map, selectorHandlers, handlerSlots, selectorSlots, perRuleCtxs, perPluginRecipe } = _cachedVM;
+    const { map, selectorHandlers, handlerSlots, selectorSlots, perRuleCtxs, perPluginRecipe, pluginRuleIds, pluginShortNames } = _cachedVM;
+    // Skip all option-recompute work when ruleConfig reference is stable.
+    // WeakMap cache in api.js makes _resolvedConfig stable across lint() calls
+    // with the same config literal, so this skips 1240+ split/lookup/merge
+    // calls per file — ~200ms/1000 files on core+plugins.
+    const sameConfig = _cachedVM.lastRuleConfig === ruleConfig;
+    // Rules with empty recipes (create() threw or returned nothing previously) are
+    // typically type-aware @typescript-eslint rules needing parserServices.program.
+    // If current file has no program, their create() will throw again — skip to
+    // avoid the try/catch per rule per file.  If file HAS program, must re-run.
+    const canSkipEmptyRecipes = sameConfig && !context.sourceCode.parserServices?.program;
 
     // No short-circuit on stable ruleConfig: rule.create() captures
     // context.sourceCode (and sometimes sourceCode.ast directly) in
@@ -3603,18 +3616,16 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     for (let pi = 0; pi < plugins.length && !mismatch; pi++) {
       const recipe = perPluginRecipe[pi];
       if (!recipe) continue;
-      // Update per-case options so the rule sees correct configuration on each call.
-      // ruleConfig may carry different options per file/case even when the plugin is reused.
-      const ruleId = plugins[pi].meta?.name || "unknown";
-      const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
-      const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
-      const merged = _mergeRuleOptions(plugins[pi].meta?.defaultOptions, configured);
-      perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
-      // Cold path pushes an empty recipe when create() throws or returns
-      // nothing (typescript-eslint type-aware rules without parserServices
-      // throw on every call).  Treat both the same here: if the cached
-      // recipe is empty, keep using the cache.  Only rebuild when a rule
-      // that previously wired visitors now has none (a real shape change).
+      if (recipe.length === 0 && canSkipEmptyRecipes) continue;
+      if (!sameConfig) {
+        // Update per-case options so the rule sees correct configuration on each call.
+        // ruleConfig may carry different options per file/case even when the plugin is reused.
+        const ruleId = pluginRuleIds[pi];
+        const shortName = pluginShortNames[pi];
+        const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
+        const merged = _mergeRuleOptions(plugins[pi].meta?.defaultOptions, configured);
+        perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
+      }
       let visitors = null;
       try { visitors = plugins[pi].create(perRuleCtxs[pi]); } catch { /* empty-recipe match */ }
       if (!visitors || typeof visitors !== 'object') {
@@ -3648,6 +3659,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       _cachedVM = null;
       return buildVisitorMap(plugins, context, ruleConfig);
     }
+    _cachedVM.lastRuleConfig = ruleConfig;
     return { map, selectorHandlers };
   }
 
@@ -3659,11 +3671,15 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const pluginOptions = [];
   const perRuleCtxs = []; // cached per-rule contexts (item 4)
   const perPluginRecipe = []; // fast-path recipe: per-plugin ordered list of {visitorKey, sel, numSlots}
+  const pluginRuleIds = []; // cached rule ids (avoids meta?.name? lookup in hot path)
+  const pluginShortNames = []; // cached short names (avoids split('/') in hot path)
 
   for (const plugin of plugins) {
     const ruleId = plugin.meta?.name || "unknown";
     const ruleMeta = plugin.meta || null;
     const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
+    pluginRuleIds.push(ruleId);
+    pluginShortNames.push(shortName);
     const configured = ruleConfig[ruleId] ?? ruleConfig[shortName];
     const merged = _mergeRuleOptions(plugin.meta?.defaultOptions, configured);
     const ruleOptions = _applySchemaDefaults(plugin.meta?.schema, merged);
@@ -3714,7 +3730,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   }
 
   _cachedVMPlugins = plugins;
-  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe };
+  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe, pluginRuleIds, pluginShortNames, lastRuleConfig: ruleConfig };
   // Cold-path rebuild creates fresh safeHandlers with new `_state` objects AND fresh selector
   // slot objects. All downstream plan caches reference the OLD handler/slot identities —
   // invalidate them so plans reconstruct against the fresh objects.
