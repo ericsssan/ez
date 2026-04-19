@@ -605,15 +605,72 @@ function analyzeRuleFile(file) {
   return { file, ...result };
 }
 
-function main(argv) {
+// Map internal tier code to a runtime instantiation strategy name.
+// The runtime dispatcher branches on this to decide how to call plugin.create().
+function tierToInstantiationStrategy(tier) {
+  switch (tier) {
+    case "A": return "shared-handlers";          // create() once at startup, handlers reusable directly
+    case "B": return "shared-handlers-proxied";  // create() once, wrap file-state in redirecting Proxy
+    case "C": return "shared-handlers-proxied";  // primitive caching, same treatment as B
+    case "D": return "fresh-per-file";           // per-file create() (today's path)
+    default:  return "fresh-per-file";           // conservative fallback for U / errors
+  }
+}
+
+// Build a runtime-consumption record: the shape the metadata loader exposes.
+function toRuntimeRecord(analyzed) {
+  if (analyzed.error) {
+    return {
+      strategy: "fresh-per-file",
+      reason: analyzed.error,
+      detail: analyzed.detail,
+    };
+  }
+  return {
+    strategy: tierToInstantiationStrategy(analyzed.tier),
+    tier: analyzed.tier,
+    stateful: analyzed.stateful,
+    statefulCtors: analyzed.statefulCtors,
+    selectors: analyzed.selectors,
+    createReads: analyzed.createReads,
+    handlerReads: analyzed.handlerReads,
+    captures: analyzed.captures,
+  };
+}
+
+function parseArgs(argv) {
   const args = argv.slice(2);
-  if (args.length === 0) {
-    console.error("usage: rule-analyzer.js <file-or-dir> [more ...]");
-    process.exit(2);
+  const opts = { out: null, plugin: null, inputs: [] };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--out") opts.out = args[++i];
+    else if (a === "--plugin") opts.plugin = args[++i];
+    else if (a === "--help" || a === "-h") opts.help = true;
+    else opts.inputs.push(a);
+  }
+  return opts;
+}
+
+function printUsage() {
+  process.stderr.write(
+    "usage:\n" +
+    "  rule-analyzer.js <file-or-dir> [more ...]\n" +
+    "    Print classification summary + per-rule results to stdout.\n" +
+    "  rule-analyzer.js --out <dir> --plugin <id> <rule-dir>\n" +
+    "    Write per-plugin metadata to <dir>/<id>.json for runtime consumption.\n"
+  );
+}
+
+function main(argv) {
+  const opts = parseArgs(argv);
+  if (opts.help || opts.inputs.length === 0) {
+    printUsage();
+    process.exit(opts.help ? 0 : 2);
   }
 
+  // Resolve files from inputs (files or directories).
   const files = [];
-  for (const arg of args) {
+  for (const arg of opts.inputs) {
     const st = fs.statSync(arg);
     if (st.isDirectory()) {
       for (const name of fs.readdirSync(arg)) {
@@ -632,6 +689,26 @@ function main(argv) {
     results.push(r);
   }
 
+  // Persistence mode: write per-plugin JSON for the metadata loader.
+  if (opts.out && opts.plugin) {
+    fs.mkdirSync(opts.out, { recursive: true });
+    const rules = {};
+    for (const r of results) {
+      const ruleName = path.basename(r.file).replace(/\.(cjs|mjs|js)$/, "");
+      rules[ruleName] = toRuntimeRecord(r);
+    }
+    const outPath = path.join(opts.out, opts.plugin + ".json");
+    fs.writeFileSync(outPath, JSON.stringify({
+      plugin: opts.plugin,
+      analyzerVersion: 1,
+      generatedAt: new Date().toISOString(),
+      rules,
+    }, null, 2) + "\n");
+    process.stderr.write(`wrote ${outPath} (${Object.keys(rules).length} rules)\n`);
+    return;
+  }
+
+  // Diagnostic mode: print summary + raw results to stdout.
   const tierCount = { A: 0, B: 0, C: 0, D: 0, U: 0, err: 0 };
   for (const r of results) {
     if (r.error) tierCount.err++;
