@@ -61,7 +61,7 @@ function loadPlugins() {
     }
   }
 
-  const corpusRoot = path.resolve("bench/fixtures/extracted/corpus");
+  const corpusRoot = path.resolve("tests/fixtures/extracted/corpus");
   const files = discoverFiles([corpusRoot]).paths.slice(0, 10000);
   snapVmmap("rules_loaded");
 

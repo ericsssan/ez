@@ -10,7 +10,7 @@ for (const d of loadCoreRules({})) if (d.meta?.name) rules[d.meta.name] = "error
 
 const START = parseInt(process.env.EZ_START || "37500", 10);
 const END = parseInt(process.env.EZ_END || "38000", 10);
-const files = discoverFiles([ROOT + "/bench/fixtures/extracted/corpus"]).paths;
+const files = discoverFiles([ROOT + "/tests/fixtures/extracted/corpus"]).paths;
 
 console.log(`PID ${process.pid}  range [${START},${END})  total ${files.length}`);
 

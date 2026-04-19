@@ -4,7 +4,7 @@
 const fs   = require("fs");
 const path = require("path");
 
-const tsInitRoot = path.resolve("bench/fixtures/extracted");
+const tsInitRoot = path.resolve("tests/fixtures/extracted");
 try { require("../js/ts-services").init(tsInitRoot); } catch {}
 
 require("../js/api.js");

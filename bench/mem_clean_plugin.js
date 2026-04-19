@@ -18,7 +18,7 @@ for (const r of Object.keys(uPlugin.rules)) {
 }
 
 const N = parseInt(process.env.EZ_N || "10000", 10);
-const files = discoverFiles([ROOT + "/bench/fixtures/extracted/corpus"]).paths
+const files = discoverFiles([ROOT + "/tests/fixtures/extracted/corpus"]).paths
   .slice()
   .sort()
   .slice(0, N);

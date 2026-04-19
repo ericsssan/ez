@@ -27,7 +27,7 @@ for (const r of Object.keys(uPlugin.rules)) {
   rules[`unicorn/${r}`] = "error";
 }
 
-const files = discoverFiles([ROOT + "/bench/fixtures/extracted/corpus"]).paths.slice(0, 4000);
+const files = discoverFiles([ROOT + "/tests/fixtures/extracted/corpus"]).paths.slice(0, 4000);
 const N = 2000;
 const mb = n => (n/1024/1024).toFixed(0);
 

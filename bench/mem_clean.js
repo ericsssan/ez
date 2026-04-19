@@ -11,7 +11,7 @@ const { discoverFiles } = require(ROOT + "/js/index.js");
 const rules = {};
 for (const d of loadCoreRules({})) if (d.meta?.name) rules[d.meta.name] = "error";
 const N = parseInt(process.env.EZ_N || "20000", 10);
-const files = discoverFiles([ROOT + "/bench/fixtures/extracted/corpus"]).paths
+const files = discoverFiles([ROOT + "/tests/fixtures/extracted/corpus"]).paths
   .slice()
   .sort()
   .slice(0, N);

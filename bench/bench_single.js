@@ -35,7 +35,7 @@ const warmup  = parseInt(flag("--warmup", "3"), 10);
 const filePath = path.resolve(fileArg);
 if (!fs.existsSync(filePath)) {
   console.error(`fixture not found: ${filePath}`);
-  console.error(`generate with: bun tests/differential/run.js --extract-fixtures bench/fixtures/extracted`);
+  console.error(`generate with: bun tests/differential/run.js --extract-fixtures tests/fixtures/extracted`);
   process.exit(1);
 }
 

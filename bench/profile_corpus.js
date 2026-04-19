@@ -33,7 +33,7 @@ const _stamp = (k) => { _t[k] = performance.now(); };
 // of throwing on every call. The extracted/ directory is gitignored,
 // so the file lives alongside the regenerable fixtures.
 (() => {
-  const tsInitRoot = path.resolve(process.argv[2] || "bench/fixtures/extracted");
+  const tsInitRoot = path.resolve(process.argv[2] || "tests/fixtures/extracted");
   const tsConfigPath = path.join(tsInitRoot, "tsconfig.json");
   if (!fs.existsSync(tsConfigPath) && fs.existsSync(tsInitRoot)) {
     // `files: []` + no `include` keeps TS from compiling glob patterns into
@@ -70,7 +70,7 @@ const { loadCoreRules } = require("../js/load-plugin.js");
 const { discoverFiles } = require("../js/index.js");
 _stamp("apiAfter");
 
-const corpusRoot = path.resolve(process.argv[2] || "bench/fixtures/extracted/corpus");
+const corpusRoot = path.resolve(process.argv[2] || "tests/fixtures/extracted/corpus");
 const loopForever = process.env.EZ_PROFILE_LOOP === "1";
 
 function loadPlugins() {

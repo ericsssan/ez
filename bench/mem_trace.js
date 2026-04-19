@@ -21,7 +21,7 @@ const every  = parseInt(flag("--every", "500"), 10);
 const snapAt = flag("--snap-at", "500,15000").split(",").map(n => parseInt(n, 10));
 const forceGc = args.includes("--gc");
 
-const root = path.resolve("bench/fixtures/extracted");
+const root = path.resolve("tests/fixtures/extracted");
 const corpusRoot = path.join(root, "corpus");
 
 function unmapPrefix(s) { return s === "eslint" ? null : s === "_typescript-eslint" ? "@typescript-eslint" : s; }
