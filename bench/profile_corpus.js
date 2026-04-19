@@ -152,11 +152,18 @@ function loadPlugins() {
   process.on("SIGINT",  () => { stop = true; });
   process.on("SIGTERM", () => { stop = true; });
 
+  // Reuse one config object across every lint call so api.js's resolved-
+  // config cache hits and the runner's visitor cache stays stable.  A
+  // fresh `{ rules, plugins }` literal per call would make lint() rebuild
+  // every rule's visitors from scratch on each file — a per-file leak that
+  // balloons RSS past 10 GB on corpora of a few thousand files.
+  const lintConfig = { rules, plugins: pluginDescs };
+
   // Separate startup warmup (first lint() resolves config, builds VM cold)
   // from steady-state linting so per-file numbers are meaningful.
   let totalDiags = 0;
   const t0 = performance.now();
-  const wr = await lint(allFiles.slice(0, 1), { rules, plugins: pluginDescs });
+  const wr = await lint(allFiles.slice(0, 1), lintConfig);
   for (const f of wr) totalDiags += f.diagnostics.length;
   const tWarm = performance.now();
 
@@ -166,7 +173,7 @@ function loadPlugins() {
   let chunksSinceMem = 0;
   do {
     for (let i = 0; i < allFiles.length && !stop; i += CHUNK) {
-      const r = await lint(allFiles.slice(i, i + CHUNK), { rules, plugins: pluginDescs });
+      const r = await lint(allFiles.slice(i, i + CHUNK), lintConfig);
       for (const f of r) totalDiags += f.diagnostics.length;
       if (forceGc && typeof Bun !== "undefined" && typeof Bun.gc === "function") Bun.gc(true);
       if (mem && ++chunksSinceMem >= 4) {
