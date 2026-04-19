@@ -3747,7 +3747,10 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
       }
       let visitors = null;
-      try { visitors = plugins[pi].create(perRuleCtxs[pi]); } catch { /* empty-recipe match */ }
+      try {
+        if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(pluginRuleIds[pi]);
+        visitors = plugins[pi].create(perRuleCtxs[pi]);
+      } catch { /* empty-recipe match */ }
       if (!visitors || typeof visitors !== 'object') {
         if (recipe.length !== 0) { mismatch = true; break; }
         continue;
@@ -3832,7 +3835,10 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     perRuleCtxs.push(perRuleCtx);
     const recipe = [];
     let visitors;
-    try { visitors = plugin.create(perRuleCtx); } catch { perPluginRecipe.push(recipe); continue; }
+    try {
+      if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(ruleId);
+      visitors = plugin.create(perRuleCtx);
+    } catch { perPluginRecipe.push(recipe); continue; }
     if (!visitors || typeof visitors !== 'object') { perPluginRecipe.push(recipe); continue; }
     for (const [visitorKey, handler] of Object.entries(visitors)) {
       if (typeof handler !== 'function') continue;
