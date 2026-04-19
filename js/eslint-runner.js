@@ -6417,32 +6417,29 @@ function runPlugins(ast, plugins, options = {}) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
   }
 
-  // Lazily build parserServices on first rule access. ts-services'
-  // buildParserServices runs a full type-check prewarm per file, which
-  // dominates cost when it runs regardless of whether any type-aware rule
-  // is enabled — core-only linting paid ~5 ms/file in TS LanguageService
-  // work even though no rule touched parserServices. Deferring means files
-  // linted only with non-type-aware rules skip TS work entirely.
+  // Lazily trigger ts-services init + build parserServices on first rule
+  // access. Two layers of laziness:
+  //   1. svc.init() — eagerly-called at module load used to add ~77 ms to
+  //      startup for every run, including JS-only workloads that never
+  //      touched types. Now triggered on the first TS file's first rule
+  //      access, with the file's dirname as the tsconfig search root.
+  //   2. buildParserServices() — runs a full type-check prewarm per file.
+  //      Only fires when a rule actually reads a parserServices field.
   let parserServices = null;
   if (filename !== "<input>" && /\.[mc]?tsx?$/.test(filename)) {
     const svc = tsServices();
     if (svc) {
       let _psCached = undefined; // undefined = not yet built, null = build failed
+      const buildOnce = () => {
+        if (_psCached !== undefined) return;
+        try {
+          svc.init(filename.slice(0, filename.lastIndexOf("/")));
+          _psCached = svc.buildParserServices(filename);
+        } catch { _psCached = null; }
+      };
       parserServices = new Proxy({}, {
-        get(_target, prop) {
-          if (_psCached === undefined) {
-            try { _psCached = svc.buildParserServices(filename); }
-            catch { _psCached = null; }
-          }
-          return _psCached == null ? undefined : _psCached[prop];
-        },
-        has(_target, prop) {
-          if (_psCached === undefined) {
-            try { _psCached = svc.buildParserServices(filename); }
-            catch { _psCached = null; }
-          }
-          return _psCached != null && prop in _psCached;
-        },
+        get(_target, prop) { buildOnce(); return _psCached == null ? undefined : _psCached[prop]; },
+        has(_target, prop) { buildOnce(); return _psCached != null && prop in _psCached; },
       });
     }
   }

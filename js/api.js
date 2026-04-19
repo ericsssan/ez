@@ -20,10 +20,9 @@ const {
 const { runPlugins } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
-// Eager-init type-aware services when tsconfig.json exists
-let _tsServices = null;
-try { _tsServices = require("./ts-services"); } catch { _tsServices = null; }
-if (_tsServices) _tsServices.init();
+// Type-aware services init is deferred — eslint-runner calls ts-services
+// lazily on the first file that needs parserServices.  Keeps JS-only
+// workloads from paying the 70+ ms typescript + LanguageService init.
 
 // ── Constants ───────────────────────────────────────────────────
 
