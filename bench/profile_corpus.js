@@ -34,6 +34,11 @@ const path = require("path");
   const tsInitRoot = path.resolve(process.argv[2] || "bench/fixtures/extracted");
   const tsConfigPath = path.join(tsInitRoot, "tsconfig.json");
   if (!fs.existsSync(tsConfigPath) && fs.existsSync(tsInitRoot)) {
+    // `files: []` + no `include` keeps TS from compiling glob patterns into
+    // filename regexes and matching every file against them.  ts-services'
+    // LanguageService host adds files on demand via getScriptFileNames, so
+    // we don't need include globs at all.  With globs present, the regex
+    // match dominates the profile (80%+) on corpus-size file sets.
     fs.writeFileSync(tsConfigPath, JSON.stringify({
       compilerOptions: {
         target: "esnext", module: "esnext", moduleResolution: "bundler",
@@ -43,7 +48,7 @@ const path = require("path");
         resolveJsonModule: true, experimentalDecorators: true,
         emitDecoratorMetadata: true,
       },
-      include: ["corpus/**/*.ts", "corpus/**/*.tsx", "corpus/**/*.js", "corpus/**/*.jsx"],
+      files: [],
     }, null, 2));
   }
   try { require("../js/ts-services").init(tsInitRoot); } catch { /* typescript optional */ }
@@ -51,6 +56,7 @@ const path = require("path");
 
 const { lint } = require("../js/api.js");
 const { loadCoreRules } = require("../js/load-plugin.js");
+const { discoverFiles } = require("../js/index.js");
 
 const corpusRoot = path.resolve(process.argv[2] || "bench/fixtures/extracted/corpus");
 const loopForever = process.env.EZ_PROFILE_LOOP === "1";
@@ -95,11 +101,30 @@ function loadPlugins() {
     }
   }
 
-  console.log(`PID ${process.pid}  rules ${Object.keys(rules).length}  corpus ${corpusRoot}${loopForever ? "  loop=forever" : ""}`);
+  // Pre-discover so each lint() call is bounded. Signals are checked between
+  // chunks; one chunk takes ~1-2s, so SIGINT/SIGTERM propagate quickly enough
+  // for bun --cpu-prof to flush the profile on exit.
+  const discovered = discoverFiles([corpusRoot]).paths;
+  const limit = parseInt(process.env.EZ_PROFILE_LIMIT || "0", 10) || 0;
+  const allFiles = limit > 0 ? discovered.slice(0, limit) : discovered;
+  const CHUNK = 500;
+  console.log(`PID ${process.pid}  rules ${Object.keys(rules).length}  files ${allFiles.length}  chunk ${CHUNK}${loopForever ? "  loop=forever" : ""}`);
+
+  // Time-based stop so the process exits cleanly and Bun --cpu-prof flushes
+  // the profile file. SIGINT is racy with async lint() awaits; a timer is
+  // deterministic. Override with EZ_PROFILE_SECONDS.
+  const durationMs = parseInt(process.env.EZ_PROFILE_SECONDS || "30", 10) * 1000;
+  const startedAt = Date.now();
+  let stop = false;
+  process.on("SIGINT",  () => { stop = true; });
+  process.on("SIGTERM", () => { stop = true; });
 
   do {
-    await lint(corpusRoot, { rules, plugins: pluginDescs });
-  } while (loopForever);
+    for (let i = 0; i < allFiles.length && !stop; i += CHUNK) {
+      await lint(allFiles.slice(i, i + CHUNK), { rules, plugins: pluginDescs });
+      if (loopForever && Date.now() - startedAt > durationMs) stop = true;
+    }
+  } while (loopForever && !stop);
 
   console.log("done");
 })().catch((e) => { console.error(e); process.exit(1); });

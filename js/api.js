@@ -161,7 +161,17 @@ async function _resolveConfig(config = {}) {
     : null;
   const jsPlugins = allPluginDescs.filter(p => !nativeRules.has(p.meta?.name));
 
-  return { jsPlugins, nativeConfig, ruleSeverities, ruleOptions, cwd };
+  // Pre-compute the per-plugin ruleConfig lookup table used by runPlugins.
+  // It's derived entirely from stable resolved config, so compute once here
+  // and reuse across every lint() call — the reference-equality check in
+  // buildVisitorMap's stable-config short-circuit depends on this.
+  const ruleConfig = {};
+  for (const p of jsPlugins) {
+    const name = p.meta?.name;
+    if (name && ruleOptions[name]) ruleConfig[name] = ruleOptions[name];
+  }
+
+  return { jsPlugins, nativeConfig, ruleSeverities, ruleOptions, ruleConfig, cwd };
 }
 
 function _normalizeSeverity(val) {
@@ -219,19 +229,13 @@ function applyFixes(source, fixes) {
 
 function _lintOne(filePath, resolved) {
   const tagNames = getTagNames();
-  const { jsPlugins, nativeConfig, ruleSeverities, ruleOptions } = resolved;
+  const { jsPlugins, nativeConfig, ruleConfig } = resolved;
 
   // Parse + native lint in one pass
   const { ast, diags: nativeDiags } = nativeConfig
     ? parseAndLintNative(filePath, { config: nativeConfig })
     : { ast: require("./index").parse(filePath), diags: [] };
 
-  // Run JS rules
-  const ruleConfig = {};
-  for (const p of jsPlugins) {
-    const name = p.meta?.name;
-    if (name && ruleOptions[name]) ruleConfig[name] = ruleOptions[name];
-  }
   const reports = jsPlugins.length > 0
     ? runPlugins(ast, jsPlugins, { tagNames, filename: filePath, ruleConfig })
     : [];
@@ -247,16 +251,11 @@ function _lintOne(filePath, resolved) {
 
 function _lintSourceOne(source, filename, resolved) {
   const tagNames = getTagNames();
-  const { jsPlugins, nativeConfig, ruleSeverities, ruleOptions } = resolved;
+  const { jsPlugins, nativeConfig, ruleConfig } = resolved;
 
   const ast = parseSource(source, { filename });
   const nativeDiags = nativeConfig ? lintSourceNative(source, { filename, config: nativeConfig }) : [];
 
-  const ruleConfig = {};
-  for (const p of jsPlugins) {
-    const name = p.meta?.name;
-    if (name && ruleOptions[name]) ruleConfig[name] = ruleOptions[name];
-  }
   const reports = jsPlugins.length > 0
     ? runPlugins(ast, jsPlugins, { tagNames, filename, ruleConfig })
     : [];
