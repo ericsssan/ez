@@ -110,10 +110,57 @@ for (const t of tasks) {
   totalBytes += t.bytes;
 }
 
-// Build all-rules config (production shape): every bundled core rule at "error".
+// Build all-rules config (production shape): every bundled core rule +
+// every installed plugin rule, all at "error". Mirrors a maxed-out editor
+// or CI config.
+//
+// Plugins are resolved from js/node_modules. Each entry's `prefix` is the
+// ESLint short name (drop `eslint-plugin-` or custom like `@typescript-eslint`);
+// the `plugin` is the required package module. createLinter accepts both
+// name strings AND {prefix, plugin} objects; we use the latter to get the
+// short `unicorn/foo` style rule IDs instead of `eslint-plugin-unicorn/foo`.
+function loadPluginDescriptors() {
+  const entries = [
+    { prefix: "@typescript-eslint", pkg: "@typescript-eslint/eslint-plugin" },
+    { prefix: "unicorn",            pkg: "eslint-plugin-unicorn"            },
+    { prefix: "react",              pkg: "eslint-plugin-react"              },
+    { prefix: "react-hooks",        pkg: "eslint-plugin-react-hooks"        },
+    { prefix: "jsdoc",              pkg: "eslint-plugin-jsdoc"              },
+    { prefix: "promise",            pkg: "eslint-plugin-promise"            },
+    { prefix: "sonarjs",            pkg: "eslint-plugin-sonarjs"            },
+    { prefix: "import",             pkg: "eslint-plugin-import"             },
+    { prefix: "n",                  pkg: "eslint-plugin-n"                  },
+    { prefix: "es-x",               pkg: "eslint-plugin-es-x"               },
+  ];
+  const out = [];
+  for (const { prefix, pkg } of entries) {
+    try {
+      const mod = require(require.resolve(pkg, {
+        paths: [path.resolve(__dirname, "../js"), process.cwd()],
+      }));
+      const plugin = mod?.default || mod;
+      if (plugin && plugin.rules) out.push({ prefix, plugin });
+    } catch { /* not installed */ }
+  }
+  return out;
+}
+const pluginDescs = loadPluginDescriptors();
+
 const coreRules = loadCoreRules({});
 const allRulesConfig = {};
 for (const d of coreRules) if (d.meta?.name) allRulesConfig[d.meta.name] = "error";
+let pluginRuleCount = 0;
+for (const { prefix, plugin } of pluginDescs) {
+  for (const ruleName of Object.keys(plugin.rules)) {
+    const rule = plugin.rules[ruleName];
+    const create = rule?.create || rule;
+    if (typeof create !== "function") continue;
+    // Skip deprecated rules — mirrors loadCoreRules behavior.
+    if (rule?.meta?.deprecated) continue;
+    allRulesConfig[`${prefix}/${ruleName}`] = "error";
+    pluginRuleCount++;
+  }
+}
 
 // Linter selection:
 //  - all-rules mode: one linter with every core rule enabled, shared across files
@@ -123,7 +170,7 @@ async function linterFor(ruleId) {
   if (!perRule) {
     let L = linterCache.get("__all__");
     if (!L) {
-      L = await createLinter({ rules: allRulesConfig });
+      L = await createLinter({ rules: allRulesConfig, plugins: pluginDescs });
       linterCache.set("__all__", L);
     }
     return L;
@@ -173,7 +220,8 @@ function percentile(sorted, p) {
   console.log(`Mode:   ${perRule ? "per-rule (synthetic)" : "all-rules (production shape)"}`);
   console.log(`Tasks:  ${tasks.length}  (${(totalBytes / 1024 / 1024).toFixed(2)} MB)`);
   if (perRule) console.log(`Unique rules: ${new Set(tasks.map(t => t.ruleId)).size}`);
-  else         console.log(`Rules enabled: ${Object.keys(allRulesConfig).length} core rules`);
+  else         console.log(`Rules enabled: ${Object.keys(allRulesConfig).length} total ` +
+                            `(${coreRules.length} core + ${pluginRuleCount} plugin from ${pluginDescs.length} plugins)`);
   if (kindArg) console.log(`Kind filter:   ${kindArg}`);
   if (prefArg) console.log(`Prefix filter: ${prefArg}`);
   console.log();

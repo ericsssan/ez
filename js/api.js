@@ -86,9 +86,14 @@ async function _resolveConfig(config = {}) {
   // Override with inline config
   if (config.rules) Object.assign(rules, config.rules);
   if (config.plugins) {
-    for (const name of config.plugins) {
-      if (SKIP_PLUGINS.has(name)) continue;
-      pluginPkgs.push(name);
+    for (const entry of config.plugins) {
+      if (typeof entry === "string") {
+        if (SKIP_PLUGINS.has(entry)) continue;
+        pluginPkgs.push(entry);
+      } else if (entry && entry.prefix && entry.plugin) {
+        if (SKIP_PLUGINS.has(entry.prefix)) continue;
+        pluginPkgs.push(entry);
+      }
     }
   }
 
