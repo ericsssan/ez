@@ -14,8 +14,8 @@ test_json3
 # Benchmark baselines (local)
 bench/baseline.json
 
-# Extracted fixture corpus (regenerable via `bun tests/differential/run.js --extract-fixtures bench/fixtures/extracted`)
-bench/fixtures/extracted/
+# Extracted fixture corpus (regenerable via `bun tests/differential/run.js --extract-fixtures tests/fixtures/extracted`)
+tests/fixtures/extracted/
 
 # Node
 node_modules/

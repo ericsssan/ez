@@ -340,6 +340,18 @@ const fromFixturesDir = _fromFixturesIdx >= 0
   ? path.resolve(process.cwd(), args[_fromFixturesIdx + 1])
   : (!noFixtures && !extractDir && fs.existsSync(_fixturesDefault) ? _fixturesDefault : null);
 
+// Warn when fixtures are missing and user didn't opt out — falling back to the
+// slow path (full ESLint + plugin intercept). Extracted fixtures aren't
+// committed to the repo (too large, regenerable).
+if (!fromFixturesDir && !extractDir && !noFixtures && !fs.existsSync(_fixturesDefault)) {
+  process.stderr.write(
+    "\n  NOTE: tests/fixtures/extracted/ not found — running SLOW path (full intercept).\n" +
+    "        For the FAST path, extract fixtures once:\n" +
+    "          bun tests/differential/run.js --extract-fixtures tests/fixtures/extracted\n" +
+    "        Pass --no-fixtures to silence this notice.\n\n"
+  );
+}
+
 
 // ── Helpers ───────────────────────────────────────────────────
 
