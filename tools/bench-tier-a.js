@@ -74,7 +74,7 @@ const SYNTHETIC_SOURCES = Array.from({ length: 8 }, (_, i) => makeSource(i));
 // to exercise realistic config. Rules chosen to have native=false, so the JS
 // dispatcher actually runs create() and the short-circuit is meaningful.
 const RULES = {
-  // Tier A (shared-handlers) — short-circuit candidates
+  // Tier A (shared-handlers) — eligible for short-circuit
   "no-buffer-constructor": "error",
   "strict": "error",
   "func-name-matching": "error",
@@ -86,11 +86,18 @@ const RULES = {
   "unicode-bom": "error",
   "max-nested-callbacks": "error",
   "no-sync": "error",
-  // Tier B (shared-handlers-proxied) — today's path for now
-  "no-var": "error",
-  "no-console": "error",
-  "prefer-const": "error",
-  "no-eval": "error",
+  // Tier B (shared-handlers-proxied) — eligible with redirecting Proxy
+  "sort-vars": "error",
+  "arrow-parens": "error",
+  "one-var": "error",
+  "wrap-iife": "error",
+  "semi-spacing": "error",
+  "space-infix-ops": "error",
+  "semi-style": "error",
+  "newline-before-return": "error",
+  "space-unary-ops": "error",
+  "no-unassigned-vars": "error",
+  "curly": "error",
   // Tier D (fresh-per-file) — always runs create()
   "no-loop-func": "error",
   "no-fallthrough": "error",
