@@ -31,8 +31,16 @@ const PARSER_OPTS = {
   range: true,
 };
 
-const TARGET_PROP = "sourceCode"; // only sourceCode captures are currently rewriteable
-const REPLACEMENT_EXPR = "context.sourceCode";
+// Rewritable target map: context property (or method) → replacement expression
+// to inline at each reference site. All targets must have file-stable values
+// (i.e. not depend on traversal state like getScope() / getAncestors() do).
+const REWRITE_TARGETS = {
+  // Property reads — stable per file.
+  sourceCode:     { kind: "prop",   replacement: "context.sourceCode" },
+  scopeManager:   { kind: "prop",   replacement: "context.scopeManager" },
+  // Method calls — return the stable SourceCode.
+  getSourceCode:  { kind: "method", replacement: "context.getSourceCode()" },
+};
 
 function parseSource(src) {
   try { return espree.parse(src, PARSER_OPTS); }
@@ -130,53 +138,92 @@ function getContextParamName(createFn) {
   return null; // destructured param — we don't rewrite these
 }
 
-// Find all capture declarations whose target is `sourceCode` (via `const sc = context.sourceCode`
-// or `const { sourceCode } = context`) inside the create body.
-// Returns: array of { kind, declaratorRange, varName, declarationRange, isSoleDeclarator }
-function findSourceCodeCaptures(createFn, ctxName) {
+// Find all capture declarations targeting a REWRITE_TARGETS entry.
+// Recognizes:
+//   const sc = context.sourceCode;              (prop)
+//   const sc = context.getSourceCode();          (method)
+//   const { sourceCode } = context;              (destructure prop)
+//   const { sourceCode: sc } = context;          (renamed destructure prop)
+//   let a, sc = context.sourceCode, b;           (multi-declarator)
+// Returns array of capture descriptors with enough info to remove each one cleanly.
+function findRewritableCaptures(createFn, ctxName) {
   const caps = [];
-  // We iterate top-level statements of the create body (no function descent).
   const body = createFn.body.body || [];
   for (const stmt of body) {
     if (stmt.type !== "VariableDeclaration") continue;
-    const isSole = stmt.declarations.length === 1;
-    for (const decl of stmt.declarations) {
-      // `const sc = context.sourceCode`
-      if (decl.id.type === "Identifier" && decl.init
-          && decl.init.type === "MemberExpression" && !decl.init.computed
-          && decl.init.object.type === "Identifier" && decl.init.object.name === ctxName
-          && decl.init.property.type === "Identifier" && decl.init.property.name === TARGET_PROP) {
-        caps.push({
-          kind: "direct",
-          varName: decl.id.name,
-          declaratorRange: decl.range,
-          declarationRange: stmt.range,
-          isSoleDeclarator: isSole,
-          declaration: stmt,
-        });
-      }
-      // `const { sourceCode } = context` or `const { sourceCode: sc } = context`
-      if (decl.id.type === "ObjectPattern" && decl.init
-          && decl.init.type === "Identifier" && decl.init.name === ctxName) {
-        for (const prop of decl.id.properties) {
-          if (prop.type !== "Property") continue;
-          if (prop.key.type !== "Identifier" || prop.key.name !== TARGET_PROP) continue;
-          const local = prop.value.type === "Identifier" ? prop.value.name : prop.key.name;
+    const decls = stmt.declarations;
+    for (let i = 0; i < decls.length; i++) {
+      const decl = decls[i];
+      if (!decl.init) continue;
+
+      // Direct: `X = context.sourceCode` or `X = context.getSourceCode()`
+      if (decl.id.type === "Identifier") {
+        const target = matchDirectTarget(decl.init, ctxName);
+        if (target) {
           caps.push({
-            kind: "destructure-single",
-            varName: local,
+            kind: "direct",
+            varName: decl.id.name,
+            targetProp: target,
+            declaratorIndex: i,
             declaratorRange: decl.range,
             declarationRange: stmt.range,
-            isSoleDeclarator: isSole && decl.id.properties.length === 1,
-            declaration: stmt,
+            declarations: decls,
+          });
+          continue;
+        }
+      }
+
+      // Destructure: `{ sourceCode, scopeManager } = context`
+      if (decl.id.type === "ObjectPattern"
+          && decl.init.type === "Identifier" && decl.init.name === ctxName) {
+        const destProps = decl.id.properties;
+        // Only rewrite if EVERY destructured prop is a rewritable target. Otherwise
+        // the analyzer's proxyCovered check should have rejected the rule; defensive.
+        const allSafe = destProps.every(p =>
+          p.type === "Property" && p.key.type === "Identifier"
+          && REWRITE_TARGETS[p.key.name] && REWRITE_TARGETS[p.key.name].kind === "prop"
+        );
+        if (!allSafe) continue;
+        for (const prop of destProps) {
+          const local = prop.value.type === "Identifier" ? prop.value.name : prop.key.name;
+          caps.push({
+            kind: "destructure",
+            varName: local,
+            targetProp: prop.key.name,
+            declaratorIndex: i,
+            declaratorRange: decl.range,
+            declarationRange: stmt.range,
+            declarations: decls,
             propRange: prop.range,
-            isSoleProp: decl.id.properties.length === 1,
+            destProps,
+            propIndex: destProps.indexOf(prop),
           });
         }
       }
     }
   }
   return caps;
+}
+
+// Return the target name if `init` matches `ctx.<prop>` or `ctx.<method>()`
+// for a known rewritable target; null otherwise.
+function matchDirectTarget(init, ctxName) {
+  // Property read: ctx.X
+  if (init.type === "MemberExpression" && !init.computed
+      && init.object.type === "Identifier" && init.object.name === ctxName
+      && init.property.type === "Identifier") {
+    const name = init.property.name;
+    if (REWRITE_TARGETS[name] && REWRITE_TARGETS[name].kind === "prop") return name;
+  }
+  // Method call: ctx.X()
+  if (init.type === "CallExpression" && init.arguments.length === 0
+      && init.callee.type === "MemberExpression" && !init.callee.computed
+      && init.callee.object.type === "Identifier" && init.callee.object.name === ctxName
+      && init.callee.property.type === "Identifier") {
+    const name = init.callee.property.name;
+    if (REWRITE_TARGETS[name] && REWRITE_TARGETS[name].kind === "method") return name;
+  }
+  return null;
 }
 
 // Find every identifier reference to varName inside createFn.body.
@@ -220,8 +267,8 @@ function rewrite(src, originalDir) {
   const ctxName = getContextParamName(createFn);
   if (!ctxName) return { src, error: "context-param-destructured" };
 
-  const captures = findSourceCodeCaptures(createFn, ctxName);
-  if (captures.length === 0) return { src, error: "no-sourcecode-capture" };
+  const captures = findRewritableCaptures(createFn, ctxName);
+  if (captures.length === 0) return { src, error: "no-rewritable-capture" };
 
   const edits = [];
 
@@ -243,40 +290,84 @@ function rewrite(src, originalDir) {
     });
   }
 
-  // For each capture: delete the declaration (or the single prop of the destructure)
-  // and replace each reference site with `context.sourceCode`.
+  // For each capture: delete the declarator (or statement) and replace each reference
+  // site with the target's replacement expression.
   for (const cap of captures) {
-    // Delete the declaration.
-    if (cap.kind === "direct") {
-      if (cap.isSoleDeclarator) {
-        // Remove the entire VariableDeclaration statement.
-        edits.push({ range: cap.declarationRange, text: "" });
-      } else {
-        // Remove just this declarator (keep siblings). Conservative: skip this rule,
-        // the analyzer shouldn't emit rewriteable for multi-declarator anyway.
-        return { src, error: "multi-declarator-capture" };
-      }
-    } else if (cap.kind === "destructure-single") {
-      if (cap.isSoleProp && cap.isSoleDeclarator) {
-        edits.push({ range: cap.declarationRange, text: "" });
-      } else {
-        // Multi-prop destructure like `const { sourceCode, scopeManager } = context`.
-        // Analyzer's proxyCovered gate rejects these (non-sourceCode props present),
-        // so we shouldn't see them here. Bail out if we do.
-        return { src, error: "multi-prop-destructure" };
-      }
-    }
+    const target = REWRITE_TARGETS[cap.targetProp];
+    if (!target) return { src, error: "unknown-target:" + cap.targetProp };
 
-    // Replace references.
+    const removal = computeRemoval(cap, src);
+    if (!removal) return { src, error: "could-not-compute-removal" };
+    edits.push({ range: removal.range, text: removal.text });
+
+    // Replace references to the bound variable throughout the create body.
     const sites = findReferenceSites(createFn, cap.varName);
     for (const s of sites) {
-      // Don't replace within the declaration itself (already deleted above).
-      if (s.range[0] >= cap.declarationRange[0] && s.range[1] <= cap.declarationRange[1]) continue;
-      edits.push({ range: s.range, text: REPLACEMENT_EXPR });
+      // Don't replace within the declarator we're already removing.
+      if (s.range[0] >= cap.declaratorRange[0] && s.range[1] <= cap.declaratorRange[1]) continue;
+      edits.push({ range: s.range, text: target.replacement });
     }
   }
 
   return { src: applyEdits(src, edits), captures: captures.length };
+}
+
+// Given a capture, determine what range of the source to remove (and what to put
+// in its place — empty for full removals, possibly a destructure remnant otherwise).
+function computeRemoval(cap, src) {
+  const decls = cap.declarations;
+  const stmtRange = cap.declarationRange;
+  const declRange = cap.declaratorRange;
+
+  if (cap.kind === "direct") {
+    if (decls.length === 1) {
+      return { range: stmtRange, text: "" };
+    }
+    // Multi-declarator: `let a = 1, sc = context.sourceCode, b = 2;`
+    // Remove this declarator plus one adjacent comma.
+    return removeDeclaratorInList(decls, cap.declaratorIndex, src);
+  }
+
+  if (cap.kind === "destructure") {
+    const destProps = cap.destProps;
+    if (destProps.length === 1 && decls.length === 1) {
+      return { range: stmtRange, text: "" };
+    }
+    if (destProps.length === 1 && decls.length > 1) {
+      // Sole prop but multi-declarator: remove whole declarator slot.
+      return removeDeclaratorInList(decls, cap.declaratorIndex, src);
+    }
+    // Multi-prop destructure: remove only this property.
+    return removeDestructureProp(destProps, cap.propIndex, src);
+  }
+  return null;
+}
+
+// Remove decls[idx] from a comma-separated VariableDeclaration.
+// Returns edit covering the declarator + one adjacent comma.
+function removeDeclaratorInList(decls, idx, src) {
+  const decl = decls[idx];
+  if (idx === 0) {
+    // First: remove from decl start through to start of decls[1].
+    const end = decls[1].range[0];
+    return { range: [decl.range[0], end], text: "" };
+  } else {
+    // Middle or last: remove from end of previous through end of this decl.
+    const prev = decls[idx - 1];
+    return { range: [prev.range[1], decl.range[1]], text: "" };
+  }
+}
+
+// Remove a single prop from a destructure pattern, keeping siblings intact.
+function removeDestructureProp(props, idx, src) {
+  const prop = props[idx];
+  if (idx === 0) {
+    const end = props[1].range[0];
+    return { range: [prop.range[0], end], text: "" };
+  } else {
+    const prev = props[idx - 1];
+    return { range: [prev.range[1], prop.range[1]], text: "" };
+  }
 }
 
 function parseArgs(argv) {

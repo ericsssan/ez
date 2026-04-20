@@ -678,11 +678,15 @@ function classifyRule(createFn) {
   // Dead/rewritable captures let the rule be treated as Tier A (directly or via rewrite).
   let bSubclass = undefined;
   let captureUsage = undefined;
-  // proxyCovered = true iff every non-primitive capture is SOLELY through `sourceCode`.
-  // Our current runtime Proxy only wraps context.sourceCode; rules capturing getScope,
-  // getAncestors, getDeclaredVariables, markVariableAsUsed, scopeManager, etc. at create
-  // time would retain stale bindings if the dispatcher short-circuited them via the
-  // SourceCode Proxy alone. Those rules must fall back to per-file create().
+  // proxyCovered = true iff every non-primitive capture targets a property whose
+  // value is STABLE across handler invocations (i.e. doesn't depend on current-node
+  // traversal state). Safe targets match the rewriter's REWRITE_TARGETS map:
+  //   sourceCode, scopeManager     (stable properties)
+  //   getSourceCode                (method returning stable SourceCode)
+  // Unsafe (node-traversal-dependent):
+  //   getScope, getAncestors, getDeclaredVariables, markVariableAsUsed, scope
+  // Unsafe captures can't be inlined; rule stays fresh-per-file.
+  const REWRITE_SAFE_TARGETS = new Set(["sourceCode", "scopeManager", "getSourceCode"]);
   let proxyCovered = true;
   if (tier === "B") {
     captureUsage = [];
@@ -700,10 +704,8 @@ function classifyRule(createFn) {
     let allDead = nonPrimCaptures.length > 0;
     let anyUnsafe = false;
     for (const c of nonPrimCaptures) {
-      // Record what file-state prop this capture pulls: sourceCode is Proxy-covered;
-      // anything else (getScope, scopeManager, getAncestors, ...) isn't.
       const prop = c.accessChain[0];
-      if (prop !== "sourceCode") proxyCovered = false;
+      if (!REWRITE_SAFE_TARGETS.has(prop)) proxyCovered = false;
 
       if (c.varName === "<destructured>") {
         captureUsage.push({ varName: c.varName, kind: "unsafe", reason: "destructured" });
