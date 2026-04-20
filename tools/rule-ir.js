@@ -33,13 +33,29 @@
 
 "use strict";
 
-const IR_VERSION = 1;
+// Rule IR — constrained, deterministic representation of an ESLint rule.
+// The validator below is the single source of truth for what's supported;
+// an unsupported op is a clear "extend the IR" signal, not a version bump.
 
-// Statement ops supported by v1. Everything else → unsupported pattern.
-const STMT_OPS = new Set(["report", "if", "return"]);
+// Statement ops.
+//   report              — context.report({ node, messageId })
+//   if                  — conditional
+//   return              — early exit (no value)
+//   iterate-children    — for-loop over `node.<prop>` yielding each element
+const STMT_OPS = new Set(["report", "if", "return", "iterate-children"]);
 
-// Expr ops supported by v1.
-const EXPR_OPS = new Set(["node-ref", "literal", "identifier", "member", "binary"]);
+// Expr ops.
+//   node-ref     — the handler's bound node parameter
+//   literal      — number/string/boolean/null
+//   identifier   — reference to a local binding (introduced by iterate-children etc.)
+//   member       — obj.prop
+//   binary       — comparison / logical
+//   call-helper  — invoke a helper fn declared in rule.helpers by name
+const EXPR_OPS = new Set(["node-ref", "literal", "identifier", "member", "binary", "call-helper"]);
+
+// Helper-function kinds. Rule.helpers is a map<name, Helper>.
+//   node-type-predicate — finite lookup table: NodeType string → bool or expr
+const HELPER_KINDS = new Set(["node-type-predicate"]);
 
 // Binary operators understood by codegen.
 const BINARY_OPS = new Set(["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]);
@@ -48,7 +64,6 @@ const BINARY_OPS = new Set(["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&"
 // { ok: false, reason: "...", path: "handlers[0].body[1].cond" }.
 function validateRule(rule) {
   if (!rule || typeof rule !== "object") return fail("not-an-object");
-  if (rule.irVersion !== IR_VERSION) return fail(`bad irVersion ${rule.irVersion}`);
   if (typeof rule.name !== "string" || !rule.name) return fail("missing name");
   if (!["correctness", "suspicious", "style", "performance"].includes(rule.category))
     return fail(`bad category ${rule.category}`);
@@ -56,6 +71,30 @@ function validateRule(rule) {
   if (rule.fixable != null && !["code", "whitespace"].includes(rule.fixable))
     return fail(`bad fixable ${rule.fixable}`);
   if (!rule.messages || typeof rule.messages !== "object") return fail("missing messages");
+  if (rule.helpers != null && typeof rule.helpers !== "object") return fail("helpers must be object");
+  for (const [hn, h] of Object.entries(rule.helpers || {})) {
+    const hPath = `helpers.${hn}`;
+    if (!HELPER_KINDS.has(h.kind)) return fail(`unsupported helper kind '${h.kind}'`, hPath);
+    if (h.kind === "node-type-predicate") {
+      if (typeof h.param !== "string") return fail("helper.param must be string", hPath);
+      if (!Array.isArray(h.cases)) return fail("helper.cases must be array", hPath);
+      for (let ci = 0; ci < h.cases.length; ci++) {
+        const c = h.cases[ci];
+        const cPath = `${hPath}.cases[${ci}]`;
+        if (!Array.isArray(c.types)) return fail("case.types must be array", cPath);
+        for (const t of c.types) if (typeof t !== "string") return fail("case.type must be string", cPath);
+        if (typeof c.returns === "boolean") {
+          /* ok */
+        } else if (c.returns && typeof c.returns === "object") {
+          const r = validateExpr(c.returns, `${cPath}.returns`);
+          if (!r.ok) return r;
+        } else {
+          return fail("case.returns must be boolean or Expr", cPath);
+        }
+      }
+      if (typeof h.default !== "boolean") return fail("helper.default must be boolean", hPath);
+    }
+  }
   if (!Array.isArray(rule.handlers)) return fail("handlers must be array");
   for (let hi = 0; hi < rule.handlers.length; hi++) {
     const h = rule.handlers[hi];
@@ -91,6 +130,18 @@ function validateStatement(s, path) {
     return { ok: true };
   }
   if (s.op === "return") return { ok: true };
+  if (s.op === "iterate-children") {
+    // { op: "iterate-children", source: Expr (must be member of node-ref, e.g. node.consequent),
+    //   elementBinding: string, body: Statement[] }
+    if (typeof s.elementBinding !== "string") return fail("iterate.elementBinding must be string", path);
+    const r = validateExpr(s.source, `${path}.source`);
+    if (!r.ok) return r;
+    for (let i = 0; i < (s.body || []).length; i++) {
+      const rr = validateStatement(s.body[i], `${path}.body[${i}]`);
+      if (!rr.ok) return rr;
+    }
+    return { ok: true };
+  }
   return fail("unreachable", path);
 }
 
@@ -119,6 +170,10 @@ function validateExpr(e, path) {
     if (!l.ok) return l;
     return validateExpr(e.rhs, `${path}.rhs`);
   }
+  if (e.op === "call-helper") {
+    if (typeof e.name !== "string") return fail("call-helper.name must be string", path);
+    return validateExpr(e.arg, `${path}.arg`);
+  }
   return fail("unreachable", path);
 }
 
@@ -127,9 +182,9 @@ function fail(reason, path) {
 }
 
 module.exports = {
-  IR_VERSION,
   STMT_OPS,
   EXPR_OPS,
   BINARY_OPS,
+  HELPER_KINDS,
   validateRule,
 };

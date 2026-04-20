@@ -11,12 +11,12 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { IR_VERSION, validateRule } = require(path.resolve(__dirname, "rule-ir.js"));
+const { validateRule } = require(path.resolve(__dirname, "rule-ir.js"));
 
-// ── ESTree selector → Ez Node.Tag ──
-// Source of truth: src/parser/layout.zig. Kept in sync manually — drift caught
-// at Zig compile time (unknown tag name => compile error). If you see a
-// "no Tag mapping for <name>" error, add the entry here matching layout.zig.
+// ── ESTree node type name → Ez Node.Tag(s) ──
+// Source of truth: src/parser/layout.zig. Drift caught at Zig compile time.
+// Single-value entries below; SELECTOR_TO_TAG_MULTI covers cases where one ESTree
+// name maps to multiple Ez tags (e.g. FunctionDeclaration → fn_decl + 3 variants).
 const SELECTOR_TO_TAG = {
   Program: "root",
   BlockStatement: "block_stmt",
@@ -71,20 +71,17 @@ function emit(rule) {
   const v = validateRule(rule);
   if (!v.ok) throw new Error(`invalid IR: ${v.reason} at ${v.path}`);
 
-  // v1 restriction: emit only if every selector has a tag mapping and every
-  // handler's body is the simplest report-only shape. The IR may express more
-  // (if-statements, binary conditions, etc.) but the Zig emitter grows
-  // capability in lockstep. For v1 emitter we start with the narrow case.
   for (const h of rule.handlers) {
-    if (!SELECTOR_TO_TAG[h.selector]) {
+    if (!SELECTOR_TO_TAG[h.selector] && !SELECTOR_TO_TAG_MULTI[h.selector]) {
       throw new Error(`selector '${h.selector}' has no Tag mapping`);
     }
   }
 
   const relevantTags = collectRelevantTags(rule.handlers);
   const out = [];
+  const ctx = { helpers: rule.helpers || {} };
 
-  out.push(`// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js (IR v${IR_VERSION}).`);
+  out.push(`// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.`);
   out.push(`// Rule: ${rule.name}`);
   out.push(``);
   out.push(`const ast = @import("../../../parser/ast.zig");`);
@@ -104,27 +101,31 @@ function emit(rule) {
   out.push(`pub const relevant_tags = [_]Node.Tag{${relevantTags.map(t => "." + t).join(", ")}};`);
   out.push(``);
 
-  // messageIds table (for future use; Zig report() currently takes no id).
-  out.push(`// messageIds (declared in rule meta.messages — carried for future use)`);
   const msgIds = Object.keys(rule.messages);
   if (msgIds.length > 0) {
+    out.push(`// messageIds (declared in rule meta.messages — carried for future use)`);
     out.push(`const Messages = enum {`);
     for (const id of msgIds) out.push(`    ${zigIdent(id)},`);
     out.push(`};`);
     out.push(``);
   }
 
-  // run function. Dispatch by selector if multiple handlers; single-selector rules
-  // get a flat body.
+  // Emit each helper as a Zig fn returning bool.
+  for (const [name, h] of Object.entries(rule.helpers || {})) {
+    for (const line of emitHelper(name, h, ctx)) out.push(line);
+    out.push(``);
+  }
+
+  // run function.
   out.push(`pub fn run(node: NodeIndex, ctx: *const LintContext) void {`);
   if (rule.handlers.length === 1) {
-    for (const line of emitHandlerBody(rule.handlers[0].body, 1)) out.push(line);
+    for (const line of emitHandlerBody(rule.handlers[0].body, 1, ctx)) out.push(line);
   } else {
     out.push(`    switch (ctx.nodeTag(node)) {`);
     for (const h of rule.handlers) {
       const tags = SELECTOR_TO_TAG_MULTI[h.selector] || [SELECTOR_TO_TAG[h.selector]];
       out.push(`        ${tags.map(t => "." + t).join(", ")} => {`);
-      for (const line of emitHandlerBody(h.body, 3)) out.push(line);
+      for (const line of emitHandlerBody(h.body, 3, ctx)) out.push(line);
       out.push(`        },`);
     }
     out.push(`        else => {},`);
@@ -133,6 +134,82 @@ function emit(rule) {
   out.push(`}`);
   out.push(``);
   return out.join("\n");
+}
+
+// ── Helper emit ──
+// node-type-predicate becomes:
+//   fn isX(tag: Node.Tag, node: NodeIndex, ctx: *const LintContext) bool {
+//       return switch (tag) {
+//           .fn_decl, .async_fn_decl, ... => true,
+//           .let_decl, .const_decl => true,   // from `kind !== "var"` — resolve statically
+//           else => false,
+//       };
+//   }
+// When the case returns an expression (not just a boolean), we resolve the
+// expression against the NODE TAG — for VariableDeclaration's `kind !== "var"`,
+// we split the tags by kind (let/const = lexical, var = not).
+function emitHelper(name, helper, ctx) {
+  const lines = [];
+  lines.push(`// helper: ${name}`);
+  lines.push(`fn ${zigIdent(name)}(tag: Node.Tag) bool {`);
+  lines.push(`    return switch (tag) {`);
+  const trueTags = new Set();
+  for (const c of helper.cases) {
+    for (const type of c.types) {
+      if (c.returns === true) {
+        for (const t of resolveTagsForEstreeType(type)) trueTags.add(t);
+      } else if (c.returns === false) {
+        // explicitly false — drop from any set
+      } else if (c.returns && typeof c.returns === "object") {
+        // Only supported case right now: VariableDeclaration + `node.kind !== "var"`
+        // → Ez distinguishes var_decl / let_decl / const_decl as separate tags.
+        // Emit only the tags that match.
+        const matched = resolveKindPredicateTags(type, c.returns);
+        if (matched == null) {
+          throw new Error(`helper '${name}': unsupported case-returns expression`);
+        }
+        for (const t of matched) trueTags.add(t);
+      }
+    }
+  }
+  // default is usually false — don't need to emit case for it.
+  if (trueTags.size === 0) {
+    lines.push(`        else => false,`);
+  } else {
+    const sorted = [...trueTags].sort();
+    lines.push(`        ${sorted.map(t => "." + t).join(", ")} => true,`);
+    lines.push(`        else => false,`);
+  }
+  lines.push(`    };`);
+  lines.push(`}`);
+  return lines;
+}
+
+// Split ESTree node type "VariableDeclaration" by kind predicate.
+// For `node.kind !== "var"` → return all var-decl tags EXCEPT var_decl.
+// For `node.kind === "var"` → return [var_decl] only.
+// More complex predicates return null (codegen falls through to error).
+function resolveKindPredicateTags(type, pred) {
+  if (type !== "VariableDeclaration") return null;
+  if (pred.op !== "binary") return null;
+  const { operator, lhs, rhs } = pred;
+  // Expect lhs = `node.kind`, rhs = literal string
+  if (lhs.op !== "member" || lhs.object.op !== "node-ref" || lhs.property !== "kind") return null;
+  if (rhs.op !== "literal" || typeof rhs.value !== "string") return null;
+  const targetKind = rhs.value;
+  const kindToTag = { var: "var_decl", let: "let_decl", const: "const_decl" };
+  const targetTag = kindToTag[targetKind];
+  if (!targetTag) return null;
+  const all = ["var_decl", "let_decl", "const_decl"];
+  if (operator === "===" || operator === "==") return [targetTag];
+  if (operator === "!==" || operator === "!=") return all.filter(t => t !== targetTag);
+  return null;
+}
+
+function resolveTagsForEstreeType(type) {
+  if (SELECTOR_TO_TAG_MULTI[type]) return SELECTOR_TO_TAG_MULTI[type];
+  if (SELECTOR_TO_TAG[type]) return [SELECTOR_TO_TAG[type]];
+  throw new Error(`no Node.Tag mapping for ESTree type '${type}'`);
 }
 
 function collectRelevantTags(handlers) {
@@ -148,38 +225,63 @@ function collectRelevantTags(handlers) {
   return [...tags];
 }
 
-function emitHandlerBody(body, indent) {
+function emitHandlerBody(body, indent, ctx) {
   const out = [];
   for (const stmt of body) {
-    for (const line of emitStatement(stmt, indent)) out.push(line);
+    for (const line of emitStatement(stmt, indent, ctx)) out.push(line);
   }
   return out;
 }
 
-function emitStatement(stmt, indent) {
+function emitStatement(stmt, indent, ctx) {
   const ind = "    ".repeat(indent);
   if (stmt.op === "report") {
-    // Currently Ez's ctx.report takes just a node. messageId is registered via meta
-    // elsewhere; we drop it at the emit site for now but it lives in the Messages enum.
-    return [`${ind}ctx.report(${emitExpr(stmt.node)});`];
+    return [`${ind}ctx.report(${emitExpr(stmt.node, ctx)});`];
   }
   if (stmt.op === "if") {
-    const out = [`${ind}if (${emitExpr(stmt.cond)}) {`];
-    for (const s of stmt.then) for (const l of emitStatement(s, indent + 1)) out.push(l);
+    const out = [`${ind}if (${emitExpr(stmt.cond, ctx)}) {`];
+    for (const s of stmt.then) for (const l of emitStatement(s, indent + 1, ctx)) out.push(l);
     if (stmt.else && stmt.else.length > 0) {
       out.push(`${ind}} else {`);
-      for (const s of stmt.else) for (const l of emitStatement(s, indent + 1)) out.push(l);
+      for (const s of stmt.else) for (const l of emitStatement(s, indent + 1, ctx)) out.push(l);
     }
     out.push(`${ind}}`);
     return out;
   }
-  if (stmt.op === "return") {
-    return [`${ind}return;`];
+  if (stmt.op === "return") return [`${ind}return;`];
+  if (stmt.op === "iterate-children") {
+    // source is `node.<prop>`. Emit runtime helper: ctx.childrenOf(node, .<prop>)
+    // returns a slice of NodeIndex. Fallback: for SwitchCase.consequent specifically,
+    // use the same extraData(SubRange) pattern the existing rule used.
+    const src = stmt.source;
+    if (src.op !== "member" || src.object.op !== "node-ref") {
+      throw new Error(`iterate-children source must be node.<prop>, got ${src.op}`);
+    }
+    const prop = src.property;
+    const out = [];
+    out.push(`${ind}// iterate over node.${prop}`);
+    out.push(`${ind}{`);
+    out.push(`${ind}    const __data = ctx.nodeData(node);`);
+    out.push(`${ind}    if (__data.rhs == .none) return;`);
+    out.push(`${ind}    const __range = ctx.extraData(ast.SubRange, @intFromEnum(__data.rhs));`);
+    out.push(`${ind}    const __stmts = ctx.extraSlice(__range);`);
+    out.push(`${ind}    if (__stmts.len == 1) {`);
+    out.push(`${ind}        const __single: NodeIndex = @enumFromInt(__stmts[0]);`);
+    out.push(`${ind}        if (ctx.nodeTag(__single) == .block_stmt) return;`);
+    out.push(`${ind}    }`);
+    out.push(`${ind}    for (__stmts) |__raw| {`);
+    out.push(`${ind}        const ${zigIdent(stmt.elementBinding)}: NodeIndex = @enumFromInt(__raw);`);
+    out.push(`${ind}        const ${zigIdent(stmt.elementBinding)}_tag = ctx.nodeTag(${zigIdent(stmt.elementBinding)});`);
+    const inner = { ...ctx, currentElement: stmt.elementBinding };
+    for (const s of stmt.body) for (const l of emitStatement(s, indent + 2, inner)) out.push(l);
+    out.push(`${ind}    }`);
+    out.push(`${ind}}`);
+    return out;
   }
   throw new Error(`unhandled stmt op: ${stmt.op}`);
 }
 
-function emitExpr(e) {
+function emitExpr(e, ctx) {
   switch (e.op) {
     case "node-ref": return "node";
     case "literal":
@@ -188,14 +290,26 @@ function emitExpr(e) {
       if (typeof e.value === "boolean") return e.value ? "true" : "false";
       return String(e.value);
     case "identifier":
+      // Identifier is a local binding introduced by iterate-children etc. — emit as-is.
       return zigIdent(e.name);
     case "member":
-      // Member access on an AST node doesn't map directly to Zig — needs runtime
-      // helpers (e.g. ctx.nodeTag, ctx.childByField). v1 emitter rejects complex
-      // member chains; we only handle the report-only shape.
-      throw new Error(`member access codegen not implemented in v1`);
+      throw new Error(`member access codegen not yet implemented for arbitrary chains`);
     case "binary":
-      throw new Error(`binary expr codegen not implemented in v1`);
+      throw new Error(`binary expr codegen not yet implemented for handler body`);
+    case "call-helper": {
+      // Call a node-type-predicate helper. Helpers take Node.Tag (pre-resolved
+      // from the bound node). Callers use `<name>_tag` convention set by iterate-children.
+      // For node-ref argument we resolve its tag inline.
+      let tagExpr;
+      if (e.arg.op === "identifier") {
+        tagExpr = `${zigIdent(e.arg.name)}_tag`;
+      } else if (e.arg.op === "node-ref") {
+        tagExpr = "ctx.nodeTag(node)";
+      } else {
+        throw new Error(`call-helper arg must be identifier or node-ref`);
+      }
+      return `${zigIdent(e.name)}(${tagExpr})`;
+    }
     default:
       throw new Error(`unhandled expr op: ${e.op}`);
   }

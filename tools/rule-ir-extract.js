@@ -15,7 +15,7 @@ const path = require("node:path");
 const { parseSource } = require(path.resolve(__dirname, "../js/index.js"));
 const { nodeView } = require(path.resolve(__dirname, "../js/estree-adapter.js"));
 const visitorKeys = require(path.resolve(__dirname, "../js/node_modules/eslint-visitor-keys")).KEYS;
-const { IR_VERSION, validateRule } = require(path.resolve(__dirname, "rule-ir.js"));
+const { validateRule } = require(path.resolve(__dirname, "rule-ir.js"));
 
 // ── Locate the exported rule ────────────────────────────────────
 
@@ -123,6 +123,17 @@ function extractHandlers(ruleObj, sourceFile) {
   const ctxName = getContextParamName(createFn);
   if (!ctxName) return { handlers: [], unsupported: "context-param-destructured" };
 
+  // Walk create body — collect helper fn definitions that match a known pattern
+  // (currently: node-type-predicate via `switch (node.type) { case "X": return true ... }`).
+  const createBodyStmts = createFn.body?.type === "BlockStatement" ? createFn.body.body : [];
+  const helpers = {};
+  for (const stmt of createBodyStmts) {
+    if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") {
+      const pred = extractNodeTypePredicate(stmt);
+      if (pred) helpers[stmt.id.name] = pred;
+    }
+  }
+
   const { handlers: rawHandlers, unsupported: splitErr } = splitHandlers(createFn);
   if (splitErr) return { handlers: [], unsupported: splitErr };
 
@@ -132,15 +143,80 @@ function extractHandlers(ruleObj, sourceFile) {
     if (stmts == null) {
       return { handlers: [], unsupported: `handler body shape: ${h.handler?.type}` };
     }
+    const scope = { ctxName, nodeParamName: h.nodeParam, locals: new Map(), helpers };
     const body = [];
     for (const stmt of stmts) {
-      const r = extractStatement(stmt, ctxName, /*nodeParamName*/ h.nodeParam);
+      const r = extractStatement(stmt, scope);
       if (!r.ok) return { handlers: [], unsupported: `${r.reason} at ${sourceFile}:${stmt.loc?.start?.line || "?"}` };
       body.push(...r.stmts);
     }
     irHandlers.push({ selector: h.selector, body });
   }
-  return { handlers: irHandlers };
+  return { handlers: irHandlers, helpers };
+}
+
+// Recognize a helper fn of shape:
+//   function isX(node) {
+//     switch (node.type) {
+//       case "A": return true;
+//       case "B": case "C": return true;
+//       case "D": return node.kind !== "var";
+//       default: return false;
+//     }
+//   }
+// Returns { kind: "node-type-predicate", param, cases, default } or null.
+function extractNodeTypePredicate(fn) {
+  if (!fn.params || fn.params.length !== 1) return null;
+  if (fn.params[0].type !== "Identifier") return null;
+  const paramName = fn.params[0].name;
+  const body = fn.body?.body;
+  if (!body || body.length !== 1 || body[0].type !== "SwitchStatement") return null;
+  const sw = body[0];
+  // discriminant must be `paramName.type`
+  const d = sw.discriminant;
+  if (d.type !== "MemberExpression" || d.computed
+      || d.object.type !== "Identifier" || d.object.name !== paramName
+      || d.property.type !== "Identifier" || d.property.name !== "type") return null;
+
+  const cases = [];
+  let defaultValue = false;
+  // Group consecutive empty cases (fallthrough) sharing the same return.
+  let pendingTypes = [];
+  for (const c of sw.cases) {
+    if (c.test === null) {
+      const ret = extractSwitchCaseReturn(c, paramName);
+      if (ret == null) return null;
+      if (ret !== false) defaultValue = ret === true ? true : false; // only accept literal false default for now
+      continue;
+    }
+    if (c.test.type !== "Literal" || typeof c.test.value !== "string") return null;
+    pendingTypes.push(c.test.value);
+    // If this case has a consequent (not empty), it terminates the group.
+    if (c.consequent && c.consequent.length > 0) {
+      const ret = extractSwitchCaseReturn(c, paramName);
+      if (ret == null) return null;
+      cases.push({ types: pendingTypes, returns: ret });
+      pendingTypes = [];
+    }
+  }
+  if (pendingTypes.length > 0) return null; // dangling fallthrough without return
+  return { kind: "node-type-predicate", param: paramName, cases, default: defaultValue };
+}
+
+// Return statement inside a switch case: must be `return <expr>` where expr is
+// a boolean literal OR a supported IR expression. Returns the IR form.
+function extractSwitchCaseReturn(c, paramName) {
+  const stmts = c.consequent || [];
+  if (stmts.length !== 1) return null;
+  const s = stmts[0];
+  if (s.type !== "ReturnStatement" || !s.argument) return null;
+  if (s.argument.type === "Literal" && typeof s.argument.value === "boolean") return s.argument.value;
+  // Otherwise attempt to extract as expression referencing paramName.
+  // e.g. `return node.kind !== "var"` — translate to IR binary.
+  const scope = { ctxName: null, nodeParamName: paramName, locals: new Map(), helpers: {} };
+  const r = extractExpr(s.argument, scope);
+  if (r.ok) return r.expr;
+  return null;
 }
 
 function findCreateFn(ruleObj) {
@@ -191,34 +267,33 @@ function getFunctionBodyStatements(fn) {
 
 // ── Translate a JS statement to IR ──
 
-function extractStatement(stmt, ctxName, nodeParamName) {
+function extractStatement(stmt, scope) {
   if (stmt.type === "ExpressionStatement") {
-    // Only supported: context.report({ node, messageId: "..." })
     const e = stmt.expression;
     if (e.type !== "CallExpression") return { ok: false, reason: `unsupported ExpressionStatement: ${e.type}` };
     const callee = e.callee;
     if (callee.type !== "MemberExpression" || callee.computed) return { ok: false, reason: "unsupported call callee" };
-    if (callee.object.type !== "Identifier" || callee.object.name !== ctxName) {
+    if (callee.object.type !== "Identifier" || callee.object.name !== scope.ctxName) {
       return { ok: false, reason: "call not on context" };
     }
     if (callee.property.type !== "Identifier" || callee.property.name !== "report") {
       return { ok: false, reason: `ctx.${callee.property.name} not supported (only report)` };
     }
-    return extractReportCall(e, ctxName, nodeParamName);
+    return extractReportCall(e, scope);
   }
   if (stmt.type === "IfStatement") {
-    const cond = extractExpr(stmt.test, ctxName, nodeParamName);
+    const cond = extractExpr(stmt.test, scope);
     if (!cond.ok) return cond;
     const thenStmts = [];
     for (const s of flattenBlock(stmt.consequent)) {
-      const r = extractStatement(s, ctxName, nodeParamName);
+      const r = extractStatement(s, scope);
       if (!r.ok) return r;
       thenStmts.push(...r.stmts);
     }
     const elseStmts = [];
     if (stmt.alternate) {
       for (const s of flattenBlock(stmt.alternate)) {
-        const r = extractStatement(s, ctxName, nodeParamName);
+        const r = extractStatement(s, scope);
         if (!r.ok) return r;
         elseStmts.push(...r.stmts);
       }
@@ -228,19 +303,115 @@ function extractStatement(stmt, ctxName, nodeParamName) {
     return { ok: true, stmts: [node] };
   }
   if (stmt.type === "ReturnStatement") {
-    if (stmt.argument) return { ok: false, reason: "return with value not supported in v1" };
+    if (stmt.argument) return { ok: false, reason: "return with value not supported outside helper fn" };
     return { ok: true, stmts: [{ op: "return" }] };
   }
   if (stmt.type === "BlockStatement") {
     const out = [];
     for (const s of stmt.body) {
-      const r = extractStatement(s, ctxName, nodeParamName);
+      const r = extractStatement(s, scope);
       if (!r.ok) return r;
       out.push(...r.stmts);
     }
     return { ok: true, stmts: out };
   }
+  // v2: C-style for-loop iterating node.<prop>:
+  //   for (let i = 0; i < node.consequent.length; i++) { const x = node.consequent[i]; <body> }
+  if (stmt.type === "ForStatement") {
+    return extractForLoop(stmt, scope);
+  }
+  // v2: top-level VariableDeclaration — add to scope for identifier resolution
+  // inside the current statement list. Actual "const x = node.consequent[i]" inside
+  // a for-loop is handled by the for-loop recognizer; this covers fallback cases.
+  if (stmt.type === "VariableDeclaration") {
+    return { ok: false, reason: `unsupported statement: VariableDeclaration outside for-loop pattern` };
+  }
   return { ok: false, reason: `unsupported statement: ${stmt.type}` };
+}
+
+// Match pattern:
+//   for (let i = 0; i < <iterExpr>.length; i++) {
+//     const <element> = <iterExpr>[i];
+//     <body>
+//   }
+// where <iterExpr> is `<nodeParam>.<prop>`. Emit as iterate-children IR.
+function extractForLoop(stmt, scope) {
+  const init = stmt.init;
+  const test = stmt.test;
+  const update = stmt.update;
+  const body = stmt.body;
+  // init: let i = 0
+  if (!init || init.type !== "VariableDeclaration" || init.declarations.length !== 1) {
+    return { ok: false, reason: "for-loop init must be `let i = 0`" };
+  }
+  const initDecl = init.declarations[0];
+  if (initDecl.id.type !== "Identifier") return { ok: false, reason: "for-loop init id not Identifier" };
+  const indexVar = initDecl.id.name;
+  if (!initDecl.init || initDecl.init.type !== "Literal" || initDecl.init.value !== 0) {
+    return { ok: false, reason: "for-loop init value must be 0" };
+  }
+  // test: i < X.length
+  if (!test || test.type !== "BinaryExpression" || test.operator !== "<") {
+    return { ok: false, reason: "for-loop test must be `i < X.length`" };
+  }
+  if (test.left.type !== "Identifier" || test.left.name !== indexVar) {
+    return { ok: false, reason: "for-loop test left must be index var" };
+  }
+  const lengthMember = test.right;
+  if (lengthMember.type !== "MemberExpression" || lengthMember.computed
+      || lengthMember.property.type !== "Identifier" || lengthMember.property.name !== "length") {
+    return { ok: false, reason: "for-loop test right must be X.length" };
+  }
+  const sourceExpr = lengthMember.object; // e.g. node.consequent
+  const sourceR = extractExpr(sourceExpr, scope);
+  if (!sourceR.ok) return sourceR;
+  // update: i++
+  if (!update || update.type !== "UpdateExpression" || update.operator !== "++"
+      || update.argument.type !== "Identifier" || update.argument.name !== indexVar) {
+    return { ok: false, reason: "for-loop update must be i++" };
+  }
+  // body: { const <element> = <iterExpr>[<indexVar>]; ... }
+  if (!body || body.type !== "BlockStatement" || body.body.length < 1) {
+    return { ok: false, reason: "for-loop body must be non-empty block" };
+  }
+  const firstStmt = body.body[0];
+  if (firstStmt.type !== "VariableDeclaration" || firstStmt.declarations.length !== 1) {
+    return { ok: false, reason: "for-loop body must start with `const x = arr[i]`" };
+  }
+  const eDecl = firstStmt.declarations[0];
+  if (eDecl.id.type !== "Identifier") return { ok: false, reason: "element binding must be identifier" };
+  const elementBinding = eDecl.id.name;
+  const elInit = eDecl.init;
+  if (!elInit || elInit.type !== "MemberExpression" || !elInit.computed) {
+    return { ok: false, reason: "element init must be computed member access" };
+  }
+  if (elInit.property.type !== "Identifier" || elInit.property.name !== indexVar) {
+    return { ok: false, reason: "element init index must match for-loop index" };
+  }
+  const elSourceR = extractExpr(elInit.object, scope);
+  if (!elSourceR.ok) return elSourceR;
+  // Ensure element source matches the iterated one (both node.<prop>).
+  if (JSON.stringify(elSourceR.expr) !== JSON.stringify(sourceR.expr)) {
+    return { ok: false, reason: "for-loop source mismatch between test and body" };
+  }
+  // Extract remaining body statements with element binding in scope.
+  const innerScope = { ...scope, locals: new Map(scope.locals) };
+  innerScope.locals.set(elementBinding, { kind: "iter-element" });
+  const innerBody = [];
+  for (let i = 1; i < body.body.length; i++) {
+    const r = extractStatement(body.body[i], innerScope);
+    if (!r.ok) return r;
+    innerBody.push(...r.stmts);
+  }
+  return {
+    ok: true,
+    stmts: [{
+      op: "iterate-children",
+      source: sourceR.expr,
+      elementBinding,
+      body: innerBody,
+    }],
+  };
 }
 
 function flattenBlock(stmt) {
@@ -249,23 +420,24 @@ function flattenBlock(stmt) {
   return [stmt];
 }
 
-function extractReportCall(call, ctxName, nodeParamName) {
-  // Forms supported in v1:
-  //   context.report({ node, messageId: "..." })
-  //   context.report({ node: <expr>, messageId: "..." })
-  //   context.report({ messageId: "..." })   (implicit node = handler param)
+function extractReportCall(call, scope) {
+  // Forms supported:
+  //   context.report({ node, messageId: "..." })                     (shorthand node)
+  //   context.report({ node: <expr>, messageId: "..." })             (explicit node)
+  //   context.report({ messageId: "..." })                           (implicit node = handler param)
+  // Node expr can be node-ref OR an identifier bound in scope (v2).
+  // v2: report.suggest arrays with pure-messageId entries are tolerated — we carry
+  // the primary messageId only (Zig API doesn't yet surface suggestions).
   if (call.arguments.length !== 1) return { ok: false, reason: `report with ${call.arguments.length} args` };
   const arg = call.arguments[0];
   if (arg.type !== "ObjectExpression") return { ok: false, reason: "report arg must be object literal" };
   let nodeExpr = { op: "node-ref" };
   let messageId = null;
-  let explicitNode = false;
   for (const p of arg.properties) {
     if (p.type !== "Property") return { ok: false, reason: "report arg has non-Property entry" };
     const k = p.key?.type === "Identifier" ? p.key.name : p.key?.value;
     if (k === "node") {
-      explicitNode = true;
-      const r = extractExpr(p.value, ctxName, nodeParamName);
+      const r = extractExpr(p.value, scope);
       if (!r.ok) return r;
       nodeExpr = r.expr;
     } else if (k === "messageId") {
@@ -273,28 +445,21 @@ function extractReportCall(call, ctxName, nodeParamName) {
         return { ok: false, reason: "non-literal messageId" };
       }
       messageId = p.value.value;
-    } else if (k === "loc" || k === "data" || k === "fix" || k === "suggest") {
-      return { ok: false, reason: `report.${k} not supported in v1` };
+    } else if (k === "suggest") {
+      // Ignore for v2 — suggestions aren't in Ez's report API yet.
+    } else if (k === "loc" || k === "data" || k === "fix") {
+      return { ok: false, reason: `report.${k} not supported in v2` };
     } else {
       return { ok: false, reason: `unknown report option: ${k}` };
     }
   }
   if (!messageId) return { ok: false, reason: "report missing messageId" };
-  // Shorthand: { node } — shorthand property with Identifier value. If the value identifier
-  // matches the handler's nodeParamName, treat as node-ref.
-  if (!explicitNode) {
-    // Look at `node` shorthand: value === "node" matching handler param name
-    // In extractExpr we'd resolve the identifier, but shorthand is already Identifier.
-    // Current extraction defaults to node-ref if no explicit `node` key — that's
-    // correct when rule writes `report({ node, messageId })`. Defensive: if a
-    // `node` prop was written but we couldn't extract it, caller got an error already.
-  }
   return { ok: true, stmts: [{ op: "report", node: nodeExpr, messageId }] };
 }
 
 // ── Translate a JS expr to IR ──
 
-function extractExpr(expr, ctxName, nodeParamName) {
+function extractExpr(expr, scope) {
   if (!expr) return { ok: false, reason: "null expr" };
   switch (expr.type) {
     case "Literal": {
@@ -304,14 +469,16 @@ function extractExpr(expr, ctxName, nodeParamName) {
       return { ok: false, reason: `unsupported literal type ${typeof v}` };
     }
     case "Identifier": {
-      if (expr.name === nodeParamName) return { ok: true, expr: { op: "node-ref" } };
-      // Other identifiers: local vars, imported helpers, etc. v1 bails.
-      return { ok: false, reason: `identifier '${expr.name}' — only node param allowed in v1` };
+      if (expr.name === scope.nodeParamName) return { ok: true, expr: { op: "node-ref" } };
+      const local = scope.locals?.get(expr.name);
+      if (local) return { ok: true, expr: { op: "identifier", name: expr.name } };
+      // Other identifiers: not in scope.
+      return { ok: false, reason: `identifier '${expr.name}' — not in scope` };
     }
     case "MemberExpression": {
-      if (expr.computed) return { ok: false, reason: "computed member access in v1" };
+      if (expr.computed) return { ok: false, reason: "computed member access in v2" };
       if (expr.property.type !== "Identifier") return { ok: false, reason: "non-identifier property" };
-      const obj = extractExpr(expr.object, ctxName, nodeParamName);
+      const obj = extractExpr(expr.object, scope);
       if (!obj.ok) return obj;
       return { ok: true, expr: { op: "member", object: obj.expr, property: expr.property.name, computed: false } };
     }
@@ -321,11 +488,23 @@ function extractExpr(expr, ctxName, nodeParamName) {
       if (!["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||"].includes(op)) {
         return { ok: false, reason: `unsupported operator ${op}` };
       }
-      const L = extractExpr(expr.left, ctxName, nodeParamName);
+      const L = extractExpr(expr.left, scope);
       if (!L.ok) return L;
-      const R = extractExpr(expr.right, ctxName, nodeParamName);
+      const R = extractExpr(expr.right, scope);
       if (!R.ok) return R;
       return { ok: true, expr: { op: "binary", operator: op, lhs: L.expr, rhs: R.expr } };
+    }
+    case "CallExpression": {
+      // Recognize call to a declared helper: isLexicalDeclaration(statement)
+      const callee = expr.callee;
+      if (callee.type !== "Identifier") return { ok: false, reason: "call callee not identifier" };
+      if (!scope.helpers || !scope.helpers[callee.name]) {
+        return { ok: false, reason: `unknown helper call '${callee.name}'` };
+      }
+      if (expr.arguments.length !== 1) return { ok: false, reason: "helper call must have 1 arg" };
+      const arg = extractExpr(expr.arguments[0], scope);
+      if (!arg.ok) return arg;
+      return { ok: true, expr: { op: "call-helper", name: callee.name, arg: arg.expr } };
     }
     default:
       return { ok: false, reason: `unsupported expr type ${expr.type}` };
@@ -341,15 +520,15 @@ function extractRule(file) {
   const meta = extractMeta(ruleObj);
   // Rule name: try meta.docs.url (last path segment) or fall back to basename.
   const name = deriveRuleName(ruleObj, file);
-  const { handlers, unsupported } = extractHandlers(ruleObj, file);
+  const { handlers, helpers, unsupported } = extractHandlers(ruleObj, file);
   if (unsupported) return { ok: false, unsupported };
   const rule = {
-    irVersion: IR_VERSION,
     name,
     category: meta.category,
     description: meta.description,
     fixable: meta.fixable,
     messages: meta.messages,
+    helpers: helpers && Object.keys(helpers).length > 0 ? helpers : undefined,
     handlers,
   };
   const v = validateRule(rule);
