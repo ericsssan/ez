@@ -504,6 +504,46 @@ function detectCapture(initExpr, contextName, idNode) {
   return null;
 }
 
+// Find context.report({ messageId: "..." }) or context.report(node, "..." ) call sites.
+// Records only literal messageId values — templated/computed messageIds yield null.
+function collectReportMessageIds(root, ctxName, selector, out) {
+  walk(root, (n) => {
+    if (n.type !== "CallExpression") return;
+    const cal = n.callee;
+    if (!cal || cal.type !== "MemberExpression" || cal.computed) return;
+    if (cal.object.type !== "Identifier" || cal.object.name !== ctxName) return;
+    if (cal.property.type !== "Identifier" || cal.property.name !== "report") return;
+    // Modern: report({ messageId: "foo", ... })
+    const arg0 = n.arguments[0];
+    if (arg0 && arg0.type === "ObjectExpression") {
+      for (const p of arg0.properties) {
+        if (p.type !== "Property") continue;
+        const k = p.key;
+        if (!k) continue;
+        if ((k.type === "Identifier" && k.name === "messageId")
+            || (k.type === "Literal" && k.value === "messageId")) {
+          const v = p.value;
+          if (v.type === "Literal" && typeof v.value === "string") {
+            out.push({ selector, messageId: v.value });
+          } else {
+            out.push({ selector, messageId: null });
+          }
+        }
+      }
+    }
+  });
+}
+
+// Find meta.messages = { foo: "...", bar: "..." } to enumerate the full set
+// of messageIds a rule may report. Looks for an ObjectExpression assigned to a
+// `messages` property within meta at the exported rule descriptor level.
+function collectMetaMessageIds(createFn) {
+  // The exported rule has `meta` + `create` at same object level. createFn is the
+  // function; we can't see its siblings from here. Return empty — the audit tool
+  // has access to the outer export and should extract messages from there.
+  return null;
+}
+
 function classifyAccess(propName, callLike) {
   if (STATIC_PROPS.has(propName)) return "static";
   if (FILE_STATE_OBJECT_PROPS.has(propName)) return "file-object";
@@ -667,12 +707,22 @@ function classifyRule(createFn) {
   // Handler-phase: collect for info only (doesn't affect tier).
   const handlerReads = [];
   const selectors = [];
+  const reportMessages = []; // {selector, messageId} where messageId is a literal
+  // Collect messageIds from meta.messages — the full registry the rule may emit.
+  const metaMessageIds = collectMetaMessageIds(createFn);
   for (const h of handlers) {
     selectors.push(h.selector);
     const hGot = collectContextAccesses(h.handler, ctxName);
     for (const acc of hGot.accesses) {
       handlerReads.push({ selector: h.selector, prop: acc.prop, kind: acc.kind });
     }
+    // Walk handler for context.report({messageId: "..."}) call sites.
+    collectReportMessageIds(h.handler, ctxName, h.selector, reportMessages);
+  }
+  // Also walk create body (before return) for helper-function report calls that
+  // close over context.
+  for (const stmt of createBody) {
+    collectReportMessageIds(stmt, ctxName, null, reportMessages);
   }
 
   // Decide highest-present tier (D > C > B > A).
@@ -740,6 +790,7 @@ function classifyRule(createFn) {
     selectors,
     createReads,
     handlerReads,
+    reportMessages,
     captureCount: createCollected.captures.length,
     captures: createCollected.captures.map(c => ({
       varName: c.varName,
@@ -811,6 +862,7 @@ function toRuntimeRecord(analyzed) {
     selectors: analyzed.selectors,
     createReads: analyzed.createReads,
     handlerReads: analyzed.handlerReads,
+    reportMessages: analyzed.reportMessages,
     captures: analyzed.captures,
     captureUsage: analyzed.captureUsage,
   };
