@@ -210,7 +210,7 @@ function applyEdits(src, edits) {
   return out;
 }
 
-function rewrite(src) {
+function rewrite(src, originalDir) {
   const ast = parseSource(src);
   if (ast._error) return { src, error: ast._error };
 
@@ -224,6 +224,24 @@ function rewrite(src) {
   if (captures.length === 0) return { src, error: "no-sourcecode-capture" };
 
   const edits = [];
+
+  // Relative require() paths won't resolve from the rewritten file's new location.
+  // Rewrite each relative specifier to an absolute path anchored at the original
+  // rule's directory. `originalDir` is caller-supplied.
+  if (originalDir) {
+    walk(ast, (n) => {
+      if (n.type !== "CallExpression") return;
+      if (n.callee.type !== "Identifier" || n.callee.name !== "require") return;
+      const arg = n.arguments[0];
+      if (!arg || arg.type !== "Literal" || typeof arg.value !== "string") return;
+      const spec = arg.value;
+      if (!(spec.startsWith("./") || spec.startsWith("../"))) return;
+      // Resolve to absolute, keep double-quoted string.
+      const abs = path.resolve(originalDir, spec);
+      // Replace the literal (including surrounding quotes) with a JSON-encoded absolute path.
+      edits.push({ range: arg.range, text: JSON.stringify(abs) });
+    });
+  }
 
   // For each capture: delete the declaration (or the single prop of the destructure)
   // and replace each reference site with `context.sourceCode`.
@@ -292,7 +310,7 @@ function main(argv) {
   if (!opts.out) {
     const file = opts.inputs[0];
     const src = fs.readFileSync(file, "utf8");
-    const r = rewrite(src);
+    const r = rewrite(src, path.dirname(path.resolve(file)));
     if (r.error) {
       process.stderr.write(`error: ${r.error}\n`);
       process.exit(3);
@@ -315,6 +333,7 @@ function main(argv) {
   const outDir = path.resolve(opts.out, opts.plugin);
   fs.mkdirSync(outDir, { recursive: true });
 
+  const absRuleDir = path.resolve(ruleDir);
   let attempted = 0, written = 0, failed = 0;
   for (const entry of fs.readdirSync(ruleDir)) {
     if (!(entry.endsWith(".js") || entry.endsWith(".cjs") || entry.endsWith(".mjs"))) continue;
@@ -323,7 +342,7 @@ function main(argv) {
     if (!record || record.strategy !== "shared-handlers-via-rewrite") continue;
     attempted++;
     const src = fs.readFileSync(path.join(ruleDir, entry), "utf8");
-    const r = rewrite(src);
+    const r = rewrite(src, absRuleDir);
     if (r.error) {
       failed++;
       process.stderr.write(`  skip ${ruleName}: ${r.error}\n`);

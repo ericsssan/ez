@@ -8,6 +8,23 @@ const path = require("path");
 
 const BUNDLED_RULES_DIR = path.join(__dirname, "node_modules/eslint/lib/rules");
 
+// Rewritten rule sources live under .ez/rules-rewritten/<plugin-key>/<rule>.js.
+// Produced by tools/rule-rewriter.js for rules whose metadata marks them as
+// shared-handlers-via-rewrite. Loading the rewritten version gives the rule a
+// Tier A shape (no capture), so the dispatcher's shared-handlers short-circuit
+// activates with zero runtime overhead.
+const REWRITE_DIR = path.resolve(process.cwd(), ".ez/rules-rewritten");
+
+function rewrittenPath(pluginKey, ruleName) {
+  if (!fs.existsSync(REWRITE_DIR)) return null;
+  // Try common file extensions that analyzer+rewriter preserved (.js, .cjs, .mjs).
+  for (const ext of [".js", ".cjs", ".mjs"]) {
+    const p = path.join(REWRITE_DIR, pluginKey, ruleName + ext);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
 // ── Core rules ───────────────────────────────────────────────
 
 /**
@@ -26,19 +43,26 @@ function loadCoreRules(opts = {}) {
     throw new Error("ez: eslint rules not found at " + rulesDir + " — run `npm install` in js/");
   }
   const rules = [];
+  let rewriteCount = 0;
   for (const file of fs.readdirSync(rulesDir)) {
     if (!file.endsWith(".js") || file === "index.js") continue;
     const name = file.slice(0, -3);
     if (only && !only.has(name)) continue;
     try {
-      const mod = require(path.join(rulesDir, file));
+      // Prefer rewritten source if available — gives Tier A shape.
+      const rw = rewrittenPath("eslint", name);
+      const mod = require(rw || path.join(rulesDir, file));
       if (typeof mod.create !== "function") continue;
       if (mod.meta?.deprecated && !includeDeprecated && !(only && only.has(name))) continue;
+      if (rw) rewriteCount++;
       rules.push({
         meta: { name, defaultOptions: mod.meta?.defaultOptions, schema: mod.meta?.schema, messages: mod.meta?.messages, fixable: mod.meta?.fixable },
         create: mod.create,
       });
     } catch { /* skip broken rules */ }
+  }
+  if (process.env.EZ_DEBUG_STRATEGY === "1" && rewriteCount > 0) {
+    process.stderr.write(`[ez:rewrite] loaded ${rewriteCount} rewritten core rules\n`);
   }
   return rules;
 }
