@@ -678,6 +678,12 @@ function classifyRule(createFn) {
   // Dead/rewritable captures let the rule be treated as Tier A (directly or via rewrite).
   let bSubclass = undefined;
   let captureUsage = undefined;
+  // proxyCovered = true iff every non-primitive capture is SOLELY through `sourceCode`.
+  // Our current runtime Proxy only wraps context.sourceCode; rules capturing getScope,
+  // getAncestors, getDeclaredVariables, markVariableAsUsed, scopeManager, etc. at create
+  // time would retain stale bindings if the dispatcher short-circuited them via the
+  // SourceCode Proxy alone. Those rules must fall back to per-file create().
+  let proxyCovered = true;
   if (tier === "B") {
     captureUsage = [];
     // Collect non-primitive captures from both `const x = context.sourceCode` and
@@ -694,15 +700,19 @@ function classifyRule(createFn) {
     let allDead = nonPrimCaptures.length > 0;
     let anyUnsafe = false;
     for (const c of nonPrimCaptures) {
+      // Record what file-state prop this capture pulls: sourceCode is Proxy-covered;
+      // anything else (getScope, scopeManager, getAncestors, ...) isn't.
+      const prop = c.accessChain[0];
+      if (prop !== "sourceCode") proxyCovered = false;
+
       if (c.varName === "<destructured>") {
-        // Non-shorthand destructure that we couldn't recover a local name for — stay conservative.
         captureUsage.push({ varName: c.varName, kind: "unsafe", reason: "destructured" });
         anyUnsafe = true;
         allDead = false;
         continue;
       }
       const usage = classifyCaptureUsage(c.varName, createFn);
-      captureUsage.push({ varName: c.varName, ...usage });
+      captureUsage.push({ varName: c.varName, prop, ...usage });
       if (usage.kind === "unsafe") { anyUnsafe = true; allDead = false; }
       else if (usage.kind === "rewritable") { allDead = false; }
     }
@@ -715,6 +725,7 @@ function classifyRule(createFn) {
   return {
     tier,
     bSubclass,
+    proxyCovered: tier === "B" ? proxyCovered : undefined,
     stateful,
     statefulCtors: createCollected.stateInits.map(s => s.ctor),
     selectors,
@@ -751,14 +762,25 @@ function analyzeRuleFile(file) {
 // Map internal tier code to a runtime instantiation strategy name.
 // The runtime dispatcher branches on this to decide how to call plugin.create().
 // bSubclass refines Tier B: dead/rewritable captures can be treated as Tier A.
-function tierToInstantiationStrategy(tier, bSubclass) {
+// proxyCovered gates the Proxy strategy: if the rule captures non-sourceCode file-state
+// (getScope, scopeManager, etc.), the Proxy doesn't cover those and short-circuiting
+// create() would leave the rule with stale bindings → force fresh-per-file instead.
+function tierToInstantiationStrategy(tier, bSubclass, proxyCovered) {
   switch (tier) {
     case "A": return "shared-handlers";          // create() once at startup, handlers reusable directly
     case "B":
       if (bSubclass === "dead" || bSubclass === "none") return "shared-handlers";
-      if (bSubclass === "rewritable") return "shared-handlers-via-rewrite";
-      return "shared-handlers-proxied";          // unsafe — needs Proxy
-    case "C": return "shared-handlers-proxied";  // primitive caching, same treatment as B
+      if (bSubclass === "rewritable") {
+        return proxyCovered ? "shared-handlers-via-rewrite" : "fresh-per-file";
+      }
+      // unsafe: Proxy can help only if all file-state captures are sourceCode.
+      return proxyCovered ? "shared-handlers-proxied" : "fresh-per-file";
+    case "C":
+      // Primitive captures (getFilename, getCwd) can't be Proxy-wrapped. The
+      // captured string stays baked to the first file's value. Always route to
+      // fresh-per-file; needs the auto-rewrite transform to ever become eligible
+      // for the shared-handlers path.
+      return "fresh-per-file";
     case "D": return "fresh-per-file";           // per-file create() (today's path)
     default:  return "fresh-per-file";           // conservative fallback for U / errors
   }
@@ -774,9 +796,10 @@ function toRuntimeRecord(analyzed) {
     };
   }
   return {
-    strategy: tierToInstantiationStrategy(analyzed.tier, analyzed.bSubclass),
+    strategy: tierToInstantiationStrategy(analyzed.tier, analyzed.bSubclass, analyzed.proxyCovered),
     tier: analyzed.tier,
     bSubclass: analyzed.bSubclass,
+    proxyCovered: analyzed.proxyCovered,
     stateful: analyzed.stateful,
     statefulCtors: analyzed.statefulCtors,
     selectors: analyzed.selectors,
