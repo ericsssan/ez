@@ -22,14 +22,9 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const espree = require("espree");
-
-const PARSER_OPTS = {
-  ecmaVersion: "latest",
-  sourceType: "script",
-  loc: true,
-  range: true,
-};
+const { parseSource } = require(path.resolve(__dirname, "../js/index.js"));
+const { nodeView } = require(path.resolve(__dirname, "../js/estree-adapter.js"));
+const visitorKeys = require(path.resolve(__dirname, "../js/node_modules/eslint-visitor-keys")).KEYS;
 
 // Rewritable target map: context property (or method) → replacement expression
 // to inline at each reference site. All targets must have file-stable values
@@ -42,15 +37,17 @@ const REWRITE_TARGETS = {
   getSourceCode:  { kind: "method", replacement: "context.getSourceCode()" },
 };
 
-function parseSource(src) {
-  try { return espree.parse(src, PARSER_OPTS); }
-  catch {
-    try { return espree.parse(src, { ...PARSER_OPTS, sourceType: "module" }); }
-    catch (e) { return { _error: e.message }; }
+function parseFile(src) {
+  try {
+    const raw = parseSource(src, { filename: "<rule>" });
+    return nodeView(raw, 0);
+  } catch (e) {
+    return { _error: e.message || String(e) };
   }
 }
 
-// Walk AST (same as analyzer's walker; keep in sync).
+// Walk AST using eslint-visitor-keys (Ez's nodeView is getter-based so Object.keys
+// returns internal storage slots, not ESTree child properties).
 function walk(node, visit, parent = null, key = null, opts = {}) {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) {
@@ -60,9 +57,12 @@ function walk(node, visit, parent = null, key = null, opts = {}) {
   if (typeof node.type !== "string") return;
   visit(node, parent, key);
   if (opts.stopAtFunctions && isFunctionLike(node)) return;
-  for (const k of Object.keys(node)) {
-    if (k === "type" || k === "loc" || k === "range") continue;
-    walk(node[k], visit, node, k, opts);
+  const keys = visitorKeys[node.type];
+  if (!keys) return;
+  for (const k of keys) {
+    const child = node[k];
+    if (child == null) continue;
+    walk(child, visit, node, k, opts);
   }
 }
 
@@ -70,63 +70,185 @@ function isFunctionLike(n) {
   return n && (n.type === "FunctionExpression" || n.type === "FunctionDeclaration" || n.type === "ArrowFunctionExpression");
 }
 
-// ── Locating the rule's create function (mirrors rule-analyzer's logic) ────────
-// We only need enough to find the create function and the capture declarations
-// inside its body. Minimal reimplementation to avoid importing analyzer.
+// ── Locating the rule's create function ────────────────────────────────────────
+// Mirrors rule-analyzer's logic including:
+//   - module.exports = ... / exports.default = ... / export default ...
+//   - (0, fn)(...) sequence-unwrap
+//   - identifier resolution via module-level bindings
+//   - IIFE unwrap
+//   - higher-order wrappers (Components.detect, createRule, iterateJsdoc, etc.)
+
+function buildModuleBindings(ast) {
+  const bindings = new Map();
+  for (const node of ast.body) {
+    if (node.type === "VariableDeclaration") {
+      for (const decl of node.declarations) {
+        if (decl.id.type === "Identifier" && decl.init) bindings.set(decl.id.name, decl.init);
+      }
+    } else if (node.type === "FunctionDeclaration" && node.id) {
+      bindings.set(node.id.name, node);
+    }
+  }
+  return bindings;
+}
+
+function resolveIdentifier(node, bindings, maxDepth = 4) {
+  let cur = node;
+  let depth = 0;
+  while (cur && cur.type === "Identifier" && depth < maxDepth) {
+    const bound = bindings.get(cur.name);
+    if (!bound) return null;
+    cur = bound;
+    depth++;
+  }
+  return cur;
+}
+
+function isPlaceholder(node) {
+  if (!node) return true;
+  if (node.type === "UnaryExpression" && node.operator === "void") return true;
+  if (node.type === "Identifier" && node.name === "undefined") return true;
+  if (node.type === "Literal" && node.value === null) return true;
+  return false;
+}
+
+function isModuleExports(n) {
+  return n.type === "MemberExpression" && !n.computed
+    && n.object.type === "Identifier" && n.object.name === "module"
+    && n.property.type === "Identifier" && n.property.name === "exports";
+}
+function isExportsDefault(n) {
+  return n.type === "MemberExpression" && !n.computed
+    && n.object.type === "Identifier" && n.object.name === "exports"
+    && n.property.type === "Identifier" && n.property.name === "default";
+}
+
+function unwrapSequence(node) {
+  if (!node) return node;
+  if (node.type !== "CallExpression") return node;
+  if (node.callee.type !== "SequenceExpression") return node;
+  const e = node.callee.expressions;
+  if (e.length === 2 && e[0].type === "Literal" && e[0].value === 0) {
+    return { type: "CallExpression", callee: e[1], arguments: node.arguments, range: node.range };
+  }
+  return node;
+}
+
+function unwrapIIFE(node) {
+  if (!node || node.type !== "CallExpression" || node.arguments.length !== 0) return node;
+  const callee = node.callee;
+  if (!isFunctionLike(callee)) return node;
+  const body = callee.body;
+  if (!body || body.type !== "BlockStatement") return node;
+  let ret = null;
+  for (const stmt of body.body) {
+    if (stmt.type === "ReturnStatement" && stmt.argument) { ret = stmt.argument; break; }
+  }
+  if (!ret) return node;
+  if (ret.type === "Identifier") {
+    for (const stmt of body.body) {
+      if (stmt.type === "FunctionDeclaration" && stmt.id && stmt.id.name === ret.name) return stmt;
+      if (stmt.type === "VariableDeclaration") {
+        for (const decl of stmt.declarations) {
+          if (decl.id.type === "Identifier" && decl.id.name === ret.name
+              && decl.init && isFunctionLike(decl.init)) return decl.init;
+        }
+      }
+    }
+  } else if (isFunctionLike(ret)) return ret;
+  return node;
+}
+
+function resolveCreateValue(node, bindings) {
+  if (!node) return node;
+  if (node.type === "Identifier" && bindings) {
+    const r = resolveIdentifier(node, bindings);
+    if (r) return resolveCreateValue(r, bindings);
+  }
+  const afterIIFE = unwrapIIFE(node);
+  if (afterIIFE !== node) return afterIIFE;
+  if (node.type === "CallExpression" && node.arguments.length >= 1) {
+    const first = node.arguments[0];
+    if (isFunctionLike(first)) return first;
+    if (first && first.type === "Identifier" && bindings) {
+      const r = resolveIdentifier(first, bindings);
+      if (isFunctionLike(r)) return r;
+    }
+    if (first && first.type === "ObjectExpression") {
+      for (const prop of first.properties) {
+        if (prop.type !== "Property") continue;
+        const keyMatch = (prop.key.type === "Identifier" && prop.key.name === "create")
+          || (prop.key.type === "Literal" && prop.key.value === "create");
+        if (keyMatch) {
+          const inner = resolveCreateValue(prop.value, bindings);
+          if (isFunctionLike(inner)) return inner;
+        }
+      }
+    }
+  }
+  return node;
+}
+
+function resolveExported(node, bindings) {
+  if (!node) return node;
+  if (node.type === "Identifier" && bindings) {
+    const r = resolveIdentifier(node, bindings);
+    if (r) return unwrapSequence(r);
+  }
+  return node;
+}
 
 function findCreate(ast) {
-  // Collect module.exports = ... | exports.default = ... assignments.
+  const bindings = buildModuleBindings(ast);
+
+  // Collect all assignments to module.exports / exports.default — take last non-placeholder.
   let chosen = null;
   walk(ast, (n) => {
     if (n.type === "AssignmentExpression" && n.operator === "=") {
-      const L = n.left;
-      const isMe = L.type === "MemberExpression" && !L.computed
-        && L.object.type === "Identifier" && L.object.name === "module"
-        && L.property.type === "Identifier" && L.property.name === "exports";
-      const isEd = L.type === "MemberExpression" && !L.computed
-        && L.object.type === "Identifier" && L.object.name === "exports"
-        && L.property.type === "Identifier" && L.property.name === "default";
-      if (!isMe && !isEd) return;
-      let cand = n.right;
-      if (cand.type === "CallExpression" && cand.callee.type === "SequenceExpression") {
-        const e = cand.callee.expressions;
-        if (e.length === 2 && e[0].type === "Literal" && e[0].value === 0) {
-          cand = { ...cand, callee: e[1] };
-        }
-      }
-      if (cand && cand.type !== "UnaryExpression" && cand.type !== "Identifier" && cand.type !== "Literal") chosen = cand;
+      if (!(isModuleExports(n.left) || isExportsDefault(n.left))) return;
+      let cand = unwrapSequence(n.right);
+      if (isExportsDefault(cand) || isModuleExports(cand)) return;
+      if (!isPlaceholder(cand)) chosen = cand;
     }
   });
+  if (chosen) chosen = resolveExported(chosen, bindings);
+
   if (!chosen) {
     for (const stmt of ast.body) {
-      if (stmt.type === "ExportDefaultDeclaration") { chosen = stmt.declaration; break; }
+      if (stmt.type === "ExportDefaultDeclaration") {
+        chosen = resolveExported(unwrapSequence(stmt.declaration), bindings);
+        break;
+      }
     }
   }
   if (!chosen) return null;
 
-  // ObjectExpression → find create prop
   const extract = (objExpr) => {
     for (const p of objExpr.properties || []) {
       if (p.type !== "Property") continue;
       const key = p.key;
-      if ((key.type === "Identifier" && key.name === "create") ||
-          (key.type === "Literal" && key.value === "create")) {
-        return resolveCreate(p.value);
-      }
-    }
-    return null;
-  };
-  const resolveCreate = (val) => {
-    if (isFunctionLike(val)) return val;
-    if (val.type === "CallExpression" && val.arguments.length >= 1 && isFunctionLike(val.arguments[0])) {
-      return val.arguments[0];
+      const keyMatch = (key.type === "Identifier" && key.name === "create")
+        || (key.type === "Literal" && key.value === "create");
+      if (!keyMatch) continue;
+      const resolved = resolveCreateValue(p.value, bindings);
+      if (isFunctionLike(resolved)) return resolved;
     }
     return null;
   };
 
+  if (isFunctionLike(chosen)) return chosen;
   if (chosen.type === "ObjectExpression") return extract(chosen);
-  if (chosen.type === "CallExpression" && chosen.arguments[0]?.type === "ObjectExpression") {
-    return extract(chosen.arguments[0]);
+  if (chosen.type === "CallExpression" && chosen.arguments.length >= 1) {
+    const arg0 = chosen.arguments[0];
+    if (arg0 && arg0.type === "ObjectExpression") {
+      const c = extract(arg0);
+      if (c) return c;
+    }
+    if (isFunctionLike(arg0)) return arg0;
+    if (arg0 && arg0.type === "Identifier") {
+      const r = resolveIdentifier(arg0, bindings);
+      if (isFunctionLike(r)) return r;
+    }
   }
   return null;
 }
@@ -258,7 +380,7 @@ function applyEdits(src, edits) {
 }
 
 function rewrite(src, originalDir) {
-  const ast = parseSource(src);
+  const ast = parseFile(src);
   if (ast._error) return { src, error: ast._error };
 
   const createFn = findCreate(ast);

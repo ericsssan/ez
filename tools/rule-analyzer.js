@@ -13,14 +13,9 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const espree = require("espree");
-
-const PARSER_OPTS = {
-  ecmaVersion: "latest",
-  sourceType: "script",
-  loc: false,
-  range: false,
-};
+const { parseSource } = require(path.resolve(__dirname, "../js/index.js"));
+const { nodeView } = require(path.resolve(__dirname, "../js/estree-adapter.js"));
+const visitorKeys = require(path.resolve(__dirname, "../js/node_modules/eslint-visitor-keys")).KEYS;
 
 // Context property taxonomy.
 // See: https://eslint.org/docs/latest/extend/custom-rules#the-context-object
@@ -49,13 +44,10 @@ const STATE_CTORS = new Set(["Map", "Set", "WeakMap", "WeakSet"]);
 function parseFile(file) {
   const src = fs.readFileSync(file, "utf8");
   try {
-    return espree.parse(src, PARSER_OPTS);
-  } catch (_e) {
-    try {
-      return espree.parse(src, { ...PARSER_OPTS, sourceType: "module" });
-    } catch (e) {
-      return { _parseError: e.message };
-    }
+    const raw = parseSource(src, { filename: file });
+    return nodeView(raw, 0); // root Program view
+  } catch (e) {
+    return { _parseError: e.message || String(e) };
   }
 }
 
@@ -156,14 +148,23 @@ function isExportsDefault(node) {
 
 // (0, foo)(x) is TypeScript's way of ensuring `this` is undefined when calling foo.
 // Unwrap the outer sequence to expose the actual call.
+//
+// Ez's nodeView uses getter-based prototype accessors; spreading `{...node}` enumerates
+// the underlying storage slots (_ast, _i, ...) instead of the ESTree-visible properties,
+// producing a broken object. Construct a plain proxy with the handful of fields
+// downstream code actually reads.
 function unwrapSequence(node) {
   if (!node) return node;
   if (node.type !== "CallExpression") return node;
   if (node.callee.type !== "SequenceExpression") return node;
   const exprs = node.callee.expressions;
   if (exprs.length === 2 && exprs[0].type === "Literal" && exprs[0].value === 0) {
-    // Replace callee with the real one so downstream can see it as a regular CallExpression.
-    return { ...node, callee: exprs[1] };
+    return {
+      type: "CallExpression",
+      callee: exprs[1],
+      arguments: node.arguments,
+      range: node.range,
+    };
   }
   return node;
 }
@@ -333,6 +334,10 @@ function getContextParamName(createFn) {
 }
 
 // opts.stopAtFunctions — do not descend into nested function bodies (they run later, not now).
+//
+// Ez's AST view is getter-based (backed by buffer indices), so Object.keys() returns
+// internal slots (_ast, _i, ...). Use eslint-visitor-keys to know the real child
+// property names per node type.
 function walk(node, visit, parent = null, key = null, opts = {}) {
   if (!node || typeof node !== "object") return;
   if (Array.isArray(node)) {
@@ -343,12 +348,14 @@ function walk(node, visit, parent = null, key = null, opts = {}) {
   visit(node, parent, key);
   if (opts.stopAtFunctions && isFunctionLike(node)) {
     // Skip function body — those statements execute when the function is called, not now.
-    // But still visit the function node itself (so captures can still be detected).
     return;
   }
-  for (const k of Object.keys(node)) {
-    if (k === "type" || k === "loc" || k === "range") continue;
-    walk(node[k], visit, node, k, opts);
+  const keys = visitorKeys[node.type];
+  if (!keys) return; // unknown node type — can't descend safely
+  for (const k of keys) {
+    const child = node[k];
+    if (child == null) continue;
+    walk(child, visit, node, k, opts);
   }
 }
 
