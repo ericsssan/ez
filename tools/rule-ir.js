@@ -45,17 +45,22 @@
 const STMT_OPS = new Set(["report", "if", "return", "iterate-children"]);
 
 // Expr ops.
-//   node-ref     — the handler's bound node parameter
-//   literal      — number/string/boolean/null
-//   identifier   — reference to a local binding (introduced by iterate-children etc.)
-//   member       — obj.prop
-//   binary       — comparison / logical
-//   call-helper  — invoke a helper fn declared in rule.helpers by name
-const EXPR_OPS = new Set(["node-ref", "literal", "identifier", "member", "binary", "call-helper"]);
+//   node-ref        — the handler's bound node parameter
+//   literal         — number/string/boolean/null
+//   identifier      — reference to a local binding (iterate-children element or top-level constant)
+//   member          — obj.prop
+//   binary          — comparison / logical
+//   call-helper     — invoke a helper fn declared in rule.helpers by name
+//   set-contains    — <const-string-set>.has(<expr>)
+const EXPR_OPS = new Set(["node-ref", "literal", "identifier", "member", "binary", "call-helper", "set-contains"]);
 
-// Helper-function kinds. Rule.helpers is a map<name, Helper>.
+// Helper-function kinds.
 //   node-type-predicate — finite lookup table: NodeType string → bool or expr
 const HELPER_KINDS = new Set(["node-type-predicate"]);
+
+// Top-level constant kinds (declared at top of rule.create body, used in handler bodies).
+//   string-set — `const X = new Set([s1, s2, ...])` with string literals
+const CONSTANT_KINDS = new Set(["string-set"]);
 
 // Binary operators understood by codegen.
 const BINARY_OPS = new Set(["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]);
@@ -71,6 +76,15 @@ function validateRule(rule) {
   if (rule.fixable != null && !["code", "whitespace"].includes(rule.fixable))
     return fail(`bad fixable ${rule.fixable}`);
   if (!rule.messages || typeof rule.messages !== "object") return fail("missing messages");
+  if (rule.constants != null && typeof rule.constants !== "object") return fail("constants must be object");
+  for (const [cn, c] of Object.entries(rule.constants || {})) {
+    const cPath = `constants.${cn}`;
+    if (!CONSTANT_KINDS.has(c.kind)) return fail(`unsupported constant kind '${c.kind}'`, cPath);
+    if (c.kind === "string-set") {
+      if (!Array.isArray(c.values)) return fail("string-set.values must be array", cPath);
+      for (const v of c.values) if (typeof v !== "string") return fail("string-set entry must be string", cPath);
+    }
+  }
   if (rule.helpers != null && typeof rule.helpers !== "object") return fail("helpers must be object");
   for (const [hn, h] of Object.entries(rule.helpers || {})) {
     const hPath = `helpers.${hn}`;
@@ -174,6 +188,10 @@ function validateExpr(e, path) {
     if (typeof e.name !== "string") return fail("call-helper.name must be string", path);
     return validateExpr(e.arg, `${path}.arg`);
   }
+  if (e.op === "set-contains") {
+    if (typeof e.setName !== "string") return fail("set-contains.setName must be string", path);
+    return validateExpr(e.value, `${path}.value`);
+  }
   return fail("unreachable", path);
 }
 
@@ -186,5 +204,6 @@ module.exports = {
   EXPR_OPS,
   BINARY_OPS,
   HELPER_KINDS,
+  CONSTANT_KINDS,
   validateRule,
 };

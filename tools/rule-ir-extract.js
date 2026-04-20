@@ -123,14 +123,23 @@ function extractHandlers(ruleObj, sourceFile) {
   const ctxName = getContextParamName(createFn);
   if (!ctxName) return { handlers: [], unsupported: "context-param-destructured" };
 
-  // Walk create body — collect helper fn definitions that match a known pattern
-  // (currently: node-type-predicate via `switch (node.type) { case "X": return true ... }`).
+  // Walk create body — collect:
+  //   - helper fn definitions matching a known pattern (node-type-predicate)
+  //   - top-level `const X = new Set([literals])` as constants
   const createBodyStmts = createFn.body?.type === "BlockStatement" ? createFn.body.body : [];
   const helpers = {};
+  const constants = {};
   for (const stmt of createBodyStmts) {
     if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") {
       const pred = extractNodeTypePredicate(stmt);
       if (pred) helpers[stmt.id.name] = pred;
+    }
+    if (stmt.type === "VariableDeclaration") {
+      for (const decl of stmt.declarations) {
+        if (decl.id.type !== "Identifier" || !decl.init) continue;
+        const c = extractConstantInit(decl.init);
+        if (c) constants[decl.id.name] = c;
+      }
     }
   }
 
@@ -143,7 +152,7 @@ function extractHandlers(ruleObj, sourceFile) {
     if (stmts == null) {
       return { handlers: [], unsupported: `handler body shape: ${h.handler?.type}` };
     }
-    const scope = { ctxName, nodeParamName: h.nodeParam, locals: new Map(), helpers };
+    const scope = { ctxName, nodeParamName: h.nodeParam, locals: new Map(), helpers, constants };
     const body = [];
     for (const stmt of stmts) {
       const r = extractStatement(stmt, scope);
@@ -152,7 +161,26 @@ function extractHandlers(ruleObj, sourceFile) {
     }
     irHandlers.push({ selector: h.selector, body });
   }
-  return { handlers: irHandlers, helpers };
+  return { handlers: irHandlers, helpers, constants };
+}
+
+// Recognize top-level constant initializers.
+//   new Set([s1, s2, ...])  →  { kind: "string-set", values: [...] }
+// Returns null if shape doesn't match.
+function extractConstantInit(init) {
+  if (init.type === "NewExpression"
+      && init.callee.type === "Identifier" && init.callee.name === "Set"
+      && init.arguments.length === 1
+      && init.arguments[0].type === "ArrayExpression") {
+    const vals = [];
+    for (const el of init.arguments[0].elements) {
+      if (!el) return null;
+      if (el.type !== "Literal" || typeof el.value !== "string") return null;
+      vals.push(el.value);
+    }
+    return { kind: "string-set", values: vals };
+  }
+  return null;
 }
 
 // Recognize a helper fn of shape:
@@ -495,16 +523,31 @@ function extractExpr(expr, scope) {
       return { ok: true, expr: { op: "binary", operator: op, lhs: L.expr, rhs: R.expr } };
     }
     case "CallExpression": {
-      // Recognize call to a declared helper: isLexicalDeclaration(statement)
       const callee = expr.callee;
-      if (callee.type !== "Identifier") return { ok: false, reason: "call callee not identifier" };
-      if (!scope.helpers || !scope.helpers[callee.name]) {
-        return { ok: false, reason: `unknown helper call '${callee.name}'` };
+      // SET.has(value) — emit set-contains
+      if (callee.type === "MemberExpression" && !callee.computed
+          && callee.object.type === "Identifier"
+          && callee.property.type === "Identifier" && callee.property.name === "has"
+          && expr.arguments.length === 1) {
+        const setName = callee.object.name;
+        const constant = scope.constants?.[setName];
+        if (constant && constant.kind === "string-set") {
+          const val = extractExpr(expr.arguments[0], scope);
+          if (!val.ok) return val;
+          return { ok: true, expr: { op: "set-contains", setName, value: val.expr } };
+        }
       }
-      if (expr.arguments.length !== 1) return { ok: false, reason: "helper call must have 1 arg" };
-      const arg = extractExpr(expr.arguments[0], scope);
-      if (!arg.ok) return arg;
-      return { ok: true, expr: { op: "call-helper", name: callee.name, arg: arg.expr } };
+      // Helper call: isLexicalDeclaration(statement)
+      if (callee.type === "Identifier") {
+        if (!scope.helpers || !scope.helpers[callee.name]) {
+          return { ok: false, reason: `unknown call target '${callee.name}'` };
+        }
+        if (expr.arguments.length !== 1) return { ok: false, reason: "helper call must have 1 arg" };
+        const arg = extractExpr(expr.arguments[0], scope);
+        if (!arg.ok) return arg;
+        return { ok: true, expr: { op: "call-helper", name: callee.name, arg: arg.expr } };
+      }
+      return { ok: false, reason: "unsupported CallExpression shape" };
     }
     default:
       return { ok: false, reason: `unsupported expr type ${expr.type}` };
@@ -520,7 +563,7 @@ function extractRule(file) {
   const meta = extractMeta(ruleObj);
   // Rule name: try meta.docs.url (last path segment) or fall back to basename.
   const name = deriveRuleName(ruleObj, file);
-  const { handlers, helpers, unsupported } = extractHandlers(ruleObj, file);
+  const { handlers, helpers, constants, unsupported } = extractHandlers(ruleObj, file);
   if (unsupported) return { ok: false, unsupported };
   const rule = {
     name,
@@ -528,6 +571,7 @@ function extractRule(file) {
     description: meta.description,
     fixable: meta.fixable,
     messages: meta.messages,
+    constants: constants && Object.keys(constants).length > 0 ? constants : undefined,
     helpers: helpers && Object.keys(helpers).length > 0 ? helpers : undefined,
     handlers,
   };

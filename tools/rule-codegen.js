@@ -84,6 +84,8 @@ function emit(rule) {
   out.push(`// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.`);
   out.push(`// Rule: ${rule.name}`);
   out.push(``);
+  const needsStd = Object.keys(rule.constants || {}).length > 0;
+  if (needsStd) out.push(`const std = @import("std");`);
   out.push(`const ast = @import("../../../parser/ast.zig");`);
   out.push(`const NodeIndex = ast.NodeIndex;`);
   out.push(`const Node = ast.Node;`);
@@ -107,6 +109,20 @@ function emit(rule) {
     out.push(`const Messages = enum {`);
     for (const id of msgIds) out.push(`    ${zigIdent(id)},`);
     out.push(`};`);
+    out.push(``);
+  }
+
+  // Emit top-level constants (currently: string sets).
+  for (const [name, c] of Object.entries(rule.constants || {})) {
+    for (const line of emitConstant(name, c)) out.push(line);
+    out.push(``);
+  }
+  if (Object.keys(rule.constants || {}).length > 0) {
+    // Shared helper for set containment check.
+    out.push(`fn containsStr(haystack: []const []const u8, needle: []const u8) bool {`);
+    out.push(`    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;`);
+    out.push(`    return false;`);
+    out.push(`}`);
     out.push(``);
   }
 
@@ -212,6 +228,27 @@ function resolveTagsForEstreeType(type) {
   throw new Error(`no Node.Tag mapping for ESTree type '${type}'`);
 }
 
+// Resolve an IR expression to a Zig string expression for set-contains checks.
+// The set's elements are string literals, so the RHS must evaluate to a []const u8.
+// Supported today: literal strings, member-of-node like `node.name` / `node.operator`.
+function resolveValueAsZigString(expr) {
+  if (expr.op === "literal" && typeof expr.value === "string") return `"${zigStr(expr.value)}"`;
+  if (expr.op === "member" && expr.object.op === "node-ref") {
+    // node.<prop> — fetch token text of the node's main token. Works for operator,
+    // name, etc. where the "value" is the raw token.
+    return `ctx.tokenText(ctx.nodeMainToken(node))`;
+  }
+  throw new Error(`set-contains value codegen: unsupported shape ${expr.op}`);
+}
+
+function emitConstant(name, c) {
+  if (c.kind === "string-set") {
+    const values = c.values.map(v => `"${zigStr(v)}"`).join(", ");
+    return [`const ${zigIdent(name)} = [_][]const u8{ ${values} };`];
+  }
+  throw new Error(`unsupported constant kind '${c.kind}'`);
+}
+
 function collectRelevantTags(handlers) {
   const tags = new Set();
   for (const h of handlers) {
@@ -297,18 +334,18 @@ function emitExpr(e, ctx) {
     case "binary":
       throw new Error(`binary expr codegen not yet implemented for handler body`);
     case "call-helper": {
-      // Call a node-type-predicate helper. Helpers take Node.Tag (pre-resolved
-      // from the bound node). Callers use `<name>_tag` convention set by iterate-children.
-      // For node-ref argument we resolve its tag inline.
       let tagExpr;
-      if (e.arg.op === "identifier") {
-        tagExpr = `${zigIdent(e.arg.name)}_tag`;
-      } else if (e.arg.op === "node-ref") {
-        tagExpr = "ctx.nodeTag(node)";
-      } else {
-        throw new Error(`call-helper arg must be identifier or node-ref`);
-      }
+      if (e.arg.op === "identifier") tagExpr = `${zigIdent(e.arg.name)}_tag`;
+      else if (e.arg.op === "node-ref") tagExpr = "ctx.nodeTag(node)";
+      else throw new Error(`call-helper arg must be identifier or node-ref`);
       return `${zigIdent(e.name)}(${tagExpr})`;
+    }
+    case "set-contains": {
+      // Resolve the RHS expression to a Zig-side string. For `node.operator` etc.
+      // we use ctx.tokenText(ctx.nodeMainToken(node)). For simple literals, use the
+      // literal directly. This is a tight fit to the pattern we've seen so far.
+      const valStr = resolveValueAsZigString(e.value);
+      return `containsStr(${zigIdent(e.setName)}[0..], ${valStr})`;
     }
     default:
       throw new Error(`unhandled expr op: ${e.op}`);
