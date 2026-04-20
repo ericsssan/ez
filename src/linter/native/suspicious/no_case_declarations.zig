@@ -28,12 +28,21 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         if (ctx.nodeTag(single) == .block_stmt) return;
     }
 
-    // Check if any statement is a lexical declaration without a block wrapper
+    // Check if any statement is a lexical declaration without a block wrapper.
+    // ESLint's JS rule classifies ANY FunctionDeclaration as lexical (including
+    // generator and async-generator variants). Mirror that here.
     for (stmts) |raw| {
         const stmt: NodeIndex = @enumFromInt(raw);
         const stmt_tag = ctx.nodeTag(stmt);
         switch (stmt_tag) {
-            .let_decl, .const_decl, .class_decl, .fn_decl, .async_fn_decl => {
+            .let_decl,
+            .const_decl,
+            .class_decl,
+            .fn_decl,
+            .async_fn_decl,
+            .generator_fn_decl,
+            .async_generator_fn_decl,
+            => {
                 ctx.report(stmt);
             },
             else => {},
