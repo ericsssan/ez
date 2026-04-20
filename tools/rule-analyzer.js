@@ -761,28 +761,25 @@ function analyzeRuleFile(file) {
 
 // Map internal tier code to a runtime instantiation strategy name.
 // The runtime dispatcher branches on this to decide how to call plugin.create().
-// bSubclass refines Tier B: dead/rewritable captures can be treated as Tier A.
-// proxyCovered gates the Proxy strategy: if the rule captures non-sourceCode file-state
-// (getScope, scopeManager, etc.), the Proxy doesn't cover those and short-circuiting
-// create() would leave the rule with stale bindings → force fresh-per-file instead.
+// Three strategies:
+//   shared-handlers            — create() once, handlers stay valid. Tier A and
+//                                Tier B-dead/rewritable-after-rewrite land here.
+//   shared-handlers-via-rewrite — B-rewritable rules that haven't been rewritten
+//                                 yet. Dispatcher falls back to fresh-per-file
+//                                 until the rewriter transforms the source.
+//   fresh-per-file             — per-file create() (today's path). Everything
+//                                 else: Tier B-unsafe, Tier C, Tier D, unknown.
 function tierToInstantiationStrategy(tier, bSubclass, proxyCovered) {
   switch (tier) {
-    case "A": return "shared-handlers";          // create() once at startup, handlers reusable directly
+    case "A": return "shared-handlers";
     case "B":
       if (bSubclass === "dead" || bSubclass === "none") return "shared-handlers";
-      if (bSubclass === "rewritable") {
-        return proxyCovered ? "shared-handlers-via-rewrite" : "fresh-per-file";
-      }
-      // unsafe: Proxy can help only if all file-state captures are sourceCode.
-      return proxyCovered ? "shared-handlers-proxied" : "fresh-per-file";
-    case "C":
-      // Primitive captures (getFilename, getCwd) can't be Proxy-wrapped. The
-      // captured string stays baked to the first file's value. Always route to
-      // fresh-per-file; needs the auto-rewrite transform to ever become eligible
-      // for the shared-handlers path.
+      if (bSubclass === "rewritable" && proxyCovered) return "shared-handlers-via-rewrite";
       return "fresh-per-file";
-    case "D": return "fresh-per-file";           // per-file create() (today's path)
-    default:  return "fresh-per-file";           // conservative fallback for U / errors
+    case "C":
+    case "D":
+    default:
+      return "fresh-per-file";
   }
 }
 

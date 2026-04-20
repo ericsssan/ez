@@ -2,7 +2,6 @@
 
 const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
-const { createSourceCodeProxy } = require("./context-proxy");
 
 // Singleton — lazy-built on first rule registration. Reads per-plugin metadata files
 // produced by tools/rule-analyzer.js (`.ez/rules/<plugin>.json`) to learn how each rule's
@@ -3724,19 +3723,13 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       if (!recipe) continue;
       if (recipe.length === 0 && canSkipEmptyRecipes) continue;
 
-      // Tier A/B short-circuit: skip create() + slot rewire when the rule's captured
-      // state stays valid across files.
-      //   Tier A (shared-handlers): rule captures only options/settings. Safe as long
-      //     as sameConfig holds (options haven't changed).
-      //   Tier B (shared-handlers-proxied): rule captures sourceCode; cold path
-      //     replaced it with a Proxy (opt-in via EZ_ENABLE_TIER_B=1). Bench showed
-      //     Proxy-trap overhead exceeds create() savings by ~5% on tiny files with
-      //     heavy-sourceCode rules. Kept default-off.
+      // Tier A short-circuit: skip create() + slot rewire for shared-handlers rules
+      // when options haven't changed. Rule's cold-path visitors stay valid because
+      // the rule's create() only reads options/settings (classified by tools/rule-analyzer.js).
+      // Tier B Proxy was tried (see git history of this file) — overhead exceeded
+      // savings at realistic scale. Removed in favor of rewrite path.
       const strategy = perRuleCtxs[pi]._instantiationStrategy;
-      const tierBEnabled = process.env.EZ_ENABLE_TIER_B === "1";
-      const tierAEligible = !tierADisabled && strategy === "shared-handlers";
-      const tierBEligible = tierBEnabled && strategy === "shared-handlers-proxied";
-      if (sameConfig && (tierAEligible || tierBEligible)) {
+      if (!tierADisabled && sameConfig && strategy === "shared-handlers") {
         for (let r = 0; r < recipe.length; r++) {
           const step = recipe[r];
           if (step.sel) selIdx++;
@@ -3839,22 +3832,6 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     perRuleCtx._instantiationRecord = instantiationRecord;
     strategyHistogram[perRuleCtx._instantiationStrategy] =
       (strategyHistogram[perRuleCtx._instantiationStrategy] || 0) + 1;
-
-    // Tier B (shared-handlers-proxied): install a redirecting Proxy over sourceCode
-    // before calling create(). The rule captures the Proxy at create-time; the Proxy
-    // forwards to context.sourceCode (live slot updated per file) at handler-time.
-    //
-    // Default: disabled. Benchmarked on 2000 synthetic files × 14 Tier B rules,
-    // Proxy-trap overhead (even with bind caching) exceeds the per-file create()
-    // savings by ~5%. Kept as opt-in (EZ_ENABLE_TIER_B=1) for workloads where
-    // per-file create() cost dominates (e.g. rules doing little sourceCode work,
-    // or large-file workloads where the create() fixed cost matters more).
-    const tierBEnabled = process.env.EZ_ENABLE_TIER_B === "1";
-    if (tierBEnabled && perRuleCtx._instantiationStrategy === "shared-handlers-proxied") {
-      const sourceCodeProxy = createSourceCodeProxy(context);
-      perRuleCtx.sourceCode = sourceCodeProxy;
-      perRuleCtx.getSourceCode = () => sourceCodeProxy;
-    }
 
     perRuleCtxs.push(perRuleCtx);
     const recipe = [];

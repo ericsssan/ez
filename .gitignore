@@ -31,3 +31,6 @@ isolate-*.log
 *.heapprofile
 ez.node
 sanz.node
+
+# Scratch / ad-hoc output
+tmp/
