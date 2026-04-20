@@ -424,13 +424,19 @@ function collectContextAccesses(node, contextName, opts = {}) {
   const stateInits = []; // { ctor: string }
 
   walk(node, (n, parent) => {
-    // const { X, Y } = context;
+    // const { X, Y, Z: w } = context;
+    // Record BOTH the context property name (for classifying static vs file-state)
+    // and the local binding name (for capture-usage analysis later).
     if (n.type === "VariableDeclarator" && n.init && n.id.type === "ObjectPattern") {
       if (n.init.type === "Identifier" && n.init.name === contextName) {
-        const names = [];
+        const names = []; // { prop, local }
         for (const p of n.id.properties) {
-          if (p.type === "Property") {
-            if (p.key.type === "Identifier") names.push(p.key.name);
+          if (p.type === "Property" && p.key.type === "Identifier") {
+            const propName = p.key.name;
+            let localName = propName;
+            // { prop: localName } — value is an Identifier with the local binding.
+            if (p.value && p.value.type === "Identifier") localName = p.value.name;
+            names.push({ prop: propName, local: localName });
           }
         }
         destructures.push({ props: names });
@@ -499,6 +505,98 @@ function classifyAccess(propName, callLike) {
   return "unknown";
 }
 
+// For each Tier B capture (non-primitive file-state cached at create-time),
+// walk every deferred-execution site (handler bodies AND helper functions declared
+// in create scope that are invoked at handler-time) and classify usage.
+//
+//   dead       — captured but never referenced anywhere reachable from a handler
+//   rewritable — all references are `<var>.<prop>` or `<var>[<expr>]` member access
+//                (mechanically rewritable to `context.sourceCode.<prop>` at install time)
+//   unsafe     — at least one reference escapes (passed as argument, assigned, stored,
+//                returned, used in identity compare, etc.)
+//
+// "Dead" and "rewritable" captures can be treated as Tier A in the dispatcher:
+// dead directly, rewritable after a source-level transform.
+//
+// Note: we walk the *entire create function body* minus the capture's own declaration.
+// The create body contains handler functions (returned) + helper functions (called from
+// handlers via closure). All are deferred execution — their references to the captured
+// variable fire at handler time, not create time.
+function classifyCaptureUsage(varName, createFn) {
+  let dead = true;
+  let safeSites = 0;
+  let unsafeSites = 0;
+  const unsafeExamples = [];
+
+  walk(createFn.body, (node, parent, key) => {
+    if (node.type !== "Identifier") return;
+    if (node.name !== varName) return;
+    // Skip non-reference occurrences of the identifier.
+    if (parent) {
+      // `{ varName: value }` — identifier is a property key, not a reference.
+      if (parent.type === "Property" && parent.key === node && !parent.computed) return;
+      // `obj.varName` — identifier is the property name, not a reference to the binding.
+      if (parent.type === "MemberExpression" && parent.property === node && !parent.computed) return;
+      // Function/method parameter list, variable declarator id, catch param, etc.
+      if ((parent.type === "FunctionDeclaration" || parent.type === "FunctionExpression"
+           || parent.type === "ArrowFunctionExpression") && parent.id === node) return;
+      // The capture's own declaration: `const varName = context.sourceCode;` — skip the LHS.
+      if (parent.type === "VariableDeclarator" && parent.id === node) return;
+      // Function parameter with matching name (shadows) — skip as declaration site.
+      if (key === "params") return;
+    }
+    dead = false;
+    const role = classifyReferenceRole(node, parent, key);
+    if (role.safe) safeSites++;
+    else {
+      unsafeSites++;
+      if (unsafeExamples.length < 3) unsafeExamples.push(role.reason);
+    }
+  });
+
+  if (dead) return { kind: "dead" };
+  if (unsafeSites === 0) return { kind: "rewritable", sites: safeSites };
+  return { kind: "unsafe", sites: unsafeSites, examples: unsafeExamples };
+}
+
+function classifyReferenceRole(node, parent, key) {
+  if (!parent) return { safe: false, reason: "no-parent" };
+  switch (parent.type) {
+    case "MemberExpression":
+      // `node` is the object being accessed: `node.prop` — safe member access.
+      if (parent.object === node) return { safe: true };
+      return { safe: false, reason: "member-other" };
+    // Anything else = some form of escape (assign, call arg, return, store, etc.)
+    case "CallExpression":
+    case "NewExpression":
+      return { safe: false, reason: "call-arg" };
+    case "VariableDeclarator":
+      return { safe: false, reason: "aliased" };
+    case "AssignmentExpression":
+      return { safe: false, reason: "assigned" };
+    case "Property":
+    case "PropertyDefinition":
+      return { safe: false, reason: "stored" };
+    case "ReturnStatement":
+      return { safe: false, reason: "returned" };
+    case "BinaryExpression":
+      return { safe: false, reason: "compared" };
+    case "LogicalExpression":
+      return { safe: false, reason: "logical" };
+    case "ConditionalExpression":
+      return { safe: false, reason: "conditional" };
+    case "ArrayExpression":
+    case "SpreadElement":
+      return { safe: false, reason: "spread-or-array" };
+    case "UnaryExpression":
+      return { safe: false, reason: "unary" };
+    case "TemplateLiteral":
+      return { safe: false, reason: "template" };
+    default:
+      return { safe: false, reason: parent.type };
+  }
+}
+
 function classifyRule(createFn) {
   const ctxName = getContextParamName(createFn);
   if (!ctxName) {
@@ -539,13 +637,18 @@ function classifyRule(createFn) {
     }
   }
 
+  // Destructure entries now carry { prop, local } pairs.
+  const destructuredBindings = []; // { prop, local } for non-primitive file-state props
   for (const d of createCollected.destructures) {
-    for (const p of d.props) {
-      const cls = classifyAccess(p, false);
-      createReads.push({ prop: p, kind: "destructure", cls });
+    for (const { prop, local } of d.props) {
+      const cls = classifyAccess(prop, false);
+      createReads.push({ prop, local, kind: "destructure", cls });
       switch (cls) {
         case "static": tiers.A++; break;
-        case "file-object": tiers.B++; break;
+        case "file-object":
+          tiers.B++;
+          destructuredBindings.push({ prop, local });
+          break;
         case "file-primitive": tiers.C++; break;
         default: break;
       }
@@ -571,8 +674,47 @@ function classifyRule(createFn) {
   else if (tiers.C > 0) tier = "C";
   else if (tiers.B > 0) tier = "B";
 
+  // For Tier B: classify each non-primitive capture's usage across handler bodies.
+  // Dead/rewritable captures let the rule be treated as Tier A (directly or via rewrite).
+  let bSubclass = undefined;
+  let captureUsage = undefined;
+  if (tier === "B") {
+    captureUsage = [];
+    // Collect non-primitive captures from both `const x = context.sourceCode` and
+    // `const { sourceCode } = context` forms.
+    const nonPrimCaptures = createCollected.captures.filter(c => {
+      const first = c.accessChain[0];
+      if (!first) return false; // bare context assignment isn't a useful capture
+      return !FILE_STATE_PRIMITIVE_METHODS.has(first);
+    });
+    // Merge destructured bindings as synthetic captures (each binding classified individually).
+    for (const b of destructuredBindings) {
+      nonPrimCaptures.push({ varName: b.local, accessChain: [b.prop], callLike: false });
+    }
+    let allDead = nonPrimCaptures.length > 0;
+    let anyUnsafe = false;
+    for (const c of nonPrimCaptures) {
+      if (c.varName === "<destructured>") {
+        // Non-shorthand destructure that we couldn't recover a local name for — stay conservative.
+        captureUsage.push({ varName: c.varName, kind: "unsafe", reason: "destructured" });
+        anyUnsafe = true;
+        allDead = false;
+        continue;
+      }
+      const usage = classifyCaptureUsage(c.varName, createFn);
+      captureUsage.push({ varName: c.varName, ...usage });
+      if (usage.kind === "unsafe") { anyUnsafe = true; allDead = false; }
+      else if (usage.kind === "rewritable") { allDead = false; }
+    }
+    if (nonPrimCaptures.length === 0) bSubclass = "none";
+    else if (allDead) bSubclass = "dead";
+    else if (anyUnsafe) bSubclass = "unsafe";
+    else bSubclass = "rewritable";
+  }
+
   return {
     tier,
+    bSubclass,
     stateful,
     statefulCtors: createCollected.stateInits.map(s => s.ctor),
     selectors,
@@ -584,6 +726,7 @@ function classifyRule(createFn) {
       chain: c.accessChain,
       callLike: c.callLike,
     })),
+    captureUsage,
   };
 }
 
@@ -607,10 +750,14 @@ function analyzeRuleFile(file) {
 
 // Map internal tier code to a runtime instantiation strategy name.
 // The runtime dispatcher branches on this to decide how to call plugin.create().
-function tierToInstantiationStrategy(tier) {
+// bSubclass refines Tier B: dead/rewritable captures can be treated as Tier A.
+function tierToInstantiationStrategy(tier, bSubclass) {
   switch (tier) {
     case "A": return "shared-handlers";          // create() once at startup, handlers reusable directly
-    case "B": return "shared-handlers-proxied";  // create() once, wrap file-state in redirecting Proxy
+    case "B":
+      if (bSubclass === "dead" || bSubclass === "none") return "shared-handlers";
+      if (bSubclass === "rewritable") return "shared-handlers-via-rewrite";
+      return "shared-handlers-proxied";          // unsafe — needs Proxy
     case "C": return "shared-handlers-proxied";  // primitive caching, same treatment as B
     case "D": return "fresh-per-file";           // per-file create() (today's path)
     default:  return "fresh-per-file";           // conservative fallback for U / errors
@@ -627,14 +774,16 @@ function toRuntimeRecord(analyzed) {
     };
   }
   return {
-    strategy: tierToInstantiationStrategy(analyzed.tier),
+    strategy: tierToInstantiationStrategy(analyzed.tier, analyzed.bSubclass),
     tier: analyzed.tier,
+    bSubclass: analyzed.bSubclass,
     stateful: analyzed.stateful,
     statefulCtors: analyzed.statefulCtors,
     selectors: analyzed.selectors,
     createReads: analyzed.createReads,
     handlerReads: analyzed.handlerReads,
     captures: analyzed.captures,
+    captureUsage: analyzed.captureUsage,
   };
 }
 
@@ -710,13 +859,17 @@ function main(argv) {
 
   // Diagnostic mode: print summary + raw results to stdout.
   const tierCount = { A: 0, B: 0, C: 0, D: 0, U: 0, err: 0 };
+  const bSubCount = { dead: 0, rewritable: 0, unsafe: 0, none: 0 };
   for (const r of results) {
     if (r.error) tierCount.err++;
-    else tierCount[r.tier]++;
+    else {
+      tierCount[r.tier]++;
+      if (r.tier === "B" && r.bSubclass) bSubCount[r.bSubclass]++;
+    }
   }
 
   process.stdout.write(JSON.stringify({
-    summary: { total: results.length, ...tierCount },
+    summary: { total: results.length, ...tierCount, bSubclass: bSubCount },
     results,
   }, null, 2));
   process.stdout.write("\n");
