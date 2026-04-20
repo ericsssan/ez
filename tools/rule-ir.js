@@ -50,9 +50,10 @@ const STMT_OPS = new Set(["report", "if", "return", "iterate-children"]);
 //   identifier      — reference to a local binding (iterate-children element or top-level constant)
 //   member          — obj.prop
 //   binary          — comparison / logical
+//   unary           — !x, -x, +x, typeof x
 //   call-helper     — invoke a helper fn declared in rule.helpers by name
 //   set-contains    — <const-string-set>.has(<expr>)
-const EXPR_OPS = new Set(["node-ref", "literal", "identifier", "member", "binary", "call-helper", "set-contains"]);
+const EXPR_OPS = new Set(["node-ref", "literal", "identifier", "member", "binary", "unary", "call-helper", "set-contains"]);
 
 // Helper-function kinds.
 //   node-type-predicate — finite lookup table: NodeType string → bool or expr
@@ -64,6 +65,9 @@ const CONSTANT_KINDS = new Set(["string-set"]);
 
 // Binary operators understood by codegen.
 const BINARY_OPS = new Set(["===", "!==", "==", "!=", "<", "<=", ">", ">=", "&&", "||"]);
+
+// Unary operators understood by codegen.
+const UNARY_OPS = new Set(["!", "-", "+", "typeof"]);
 
 // Validate a Rule record matches the v1 grammar. Returns { ok: true } or
 // { ok: false, reason: "...", path: "handlers[0].body[1].cond" }.
@@ -183,6 +187,10 @@ function validateExpr(e, path) {
     const l = validateExpr(e.lhs, `${path}.lhs`);
     if (!l.ok) return l;
     return validateExpr(e.rhs, `${path}.rhs`);
+  }
+  if (e.op === "unary") {
+    if (!UNARY_OPS.has(e.operator)) return fail(`bad unary op '${e.operator}'`, path);
+    return validateExpr(e.operand, `${path}.operand`);
   }
   if (e.op === "call-helper") {
     if (typeof e.name !== "string") return fail("call-helper.name must be string", path);

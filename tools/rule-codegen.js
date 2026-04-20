@@ -241,6 +241,25 @@ function resolveValueAsZigString(expr) {
   throw new Error(`set-contains value codegen: unsupported shape ${expr.op}`);
 }
 
+function mapBinaryOp(op) {
+  // JS === / !== become Zig == / != (Zig doesn't have strict-equals; comparisons on
+  // string slices use std.mem.eql separately — handled by emitComparableOperand).
+  if (op === "===" || op === "==") return "==";
+  if (op === "!==" || op === "!=") return "!=";
+  if (op === "&&") return "and";
+  if (op === "||") return "or";
+  return op;
+}
+
+function emitComparableOperand(e, ctx) {
+  // If this is a member access on node-ref yielding a string-like property, fetch
+  // the token text. Otherwise emit the expression directly.
+  if (e.op === "member" && e.object.op === "node-ref") {
+    return `ctx.tokenText(ctx.nodeMainToken(node))`;
+  }
+  return emitExpr(e, ctx);
+}
+
 function emitConstant(name, c) {
   if (c.kind === "string-set") {
     const values = c.values.map(v => `"${zigStr(v)}"`).join(", ");
@@ -331,8 +350,21 @@ function emitExpr(e, ctx) {
       return zigIdent(e.name);
     case "member":
       throw new Error(`member access codegen not yet implemented for arbitrary chains`);
-    case "binary":
-      throw new Error(`binary expr codegen not yet implemented for handler body`);
+    case "binary": {
+      // Both operands must be emittable. Binary on node-refs (`node.operator === "+"`)
+      // is the common shape; emit Zig-level comparison using the same resolution as
+      // set-contains for string RHS.
+      const lhs = emitComparableOperand(e.lhs, ctx);
+      const rhs = emitComparableOperand(e.rhs, ctx);
+      return `(${lhs} ${mapBinaryOp(e.operator)} ${rhs})`;
+    }
+    case "unary": {
+      const o = emitExpr(e.operand, ctx);
+      if (e.operator === "!") return `!(${o})`;
+      if (e.operator === "-") return `-(${o})`;
+      if (e.operator === "+") return `+(${o})`;
+      throw new Error(`unary codegen unsupported: ${e.operator}`);
+    }
     case "call-helper": {
       let tagExpr;
       if (e.arg.op === "identifier") tagExpr = `${zigIdent(e.arg.name)}_tag`;

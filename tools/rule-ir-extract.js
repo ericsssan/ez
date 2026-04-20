@@ -271,6 +271,25 @@ function splitHandlers(createFn) {
     }
   }
   if (!returned) return { handlers: [], unsupported: "create-does-not-return-object" };
+
+  // Build create-body binding table for identifier handler resolution:
+  //   function fn(node) { ... }           or
+  //   const fn = function(node) { ... }   or
+  //   const fn = (node) => { ... }
+  // Enables `return { Sel: fn }` shapes where the handler is defined earlier.
+  const bindings = new Map();
+  for (const stmt of body.body) {
+    if (stmt.type === "FunctionDeclaration" && stmt.id?.type === "Identifier") {
+      bindings.set(stmt.id.name, stmt);
+    } else if (stmt.type === "VariableDeclaration") {
+      for (const decl of stmt.declarations) {
+        if (decl.id.type === "Identifier" && decl.init && isFunctionLike(decl.init)) {
+          bindings.set(decl.id.name, decl.init);
+        }
+      }
+    }
+  }
+
   const handlers = [];
   for (const p of returned.properties) {
     if (p.type !== "Property") continue;
@@ -279,10 +298,25 @@ function splitHandlers(createFn) {
     if (key.type === "Identifier") selector = key.name;
     else if (key.type === "Literal") selector = String(key.value);
     if (!selector) continue;
-    if (!isFunctionLike(p.value)) return { handlers: [], unsupported: `handler value not function: ${p.value?.type}` };
-    const nodeParam = p.value.params?.[0]?.type === "Identifier" ? p.value.params[0].name : null;
-    if (!nodeParam) return { handlers: [], unsupported: `handler param not identifier: ${p.value.params?.[0]?.type}` };
-    handlers.push({ selector, handler: p.value, nodeParam });
+
+    // Resolve the handler value: direct fn, or identifier → fn binding.
+    let handlerFn = p.value;
+    if (handlerFn.type === "Identifier" && bindings.has(handlerFn.name)) {
+      handlerFn = bindings.get(handlerFn.name);
+    }
+    if (!isFunctionLike(handlerFn)) {
+      return { handlers: [], unsupported: `handler value not function: ${p.value?.type}` };
+    }
+    const firstParam = handlerFn.params?.[0];
+    // Handler with no params (e.g. onCodePathStart()) — not extractable in v2.
+    if (!firstParam) {
+      return { handlers: [], unsupported: `handler has no param (event-style handler): ${selector}` };
+    }
+    if (firstParam.type !== "Identifier") {
+      return { handlers: [], unsupported: `handler param not identifier: ${firstParam.type}` };
+    }
+    const nodeParam = firstParam.name;
+    handlers.push({ selector, handler: handlerFn, nodeParam });
   }
   return { handlers };
 }
@@ -343,18 +377,63 @@ function extractStatement(stmt, scope) {
     }
     return { ok: true, stmts: out };
   }
-  // v2: C-style for-loop iterating node.<prop>:
+  // C-style for-loop iterating node.<prop>:
   //   for (let i = 0; i < node.consequent.length; i++) { const x = node.consequent[i]; <body> }
   if (stmt.type === "ForStatement") {
     return extractForLoop(stmt, scope);
   }
-  // v2: top-level VariableDeclaration — add to scope for identifier resolution
-  // inside the current statement list. Actual "const x = node.consequent[i]" inside
-  // a for-loop is handled by the for-loop recognizer; this covers fallback cases.
+  // VariableDeclaration inside handler body — support these cases:
+  //   const X = new Set([literals])   — hoist to rule-level constants, track binding
+  //   const X = context.sourceCode    — capture (pass through; fail on later use)
+  //   const X = context.options[0]    — capture (pass through; fail on later use)
+  //   const X = <other>               — track as unknown-local; fail if referenced
   if (stmt.type === "VariableDeclaration") {
-    return { ok: false, reason: `unsupported statement: VariableDeclaration outside for-loop pattern` };
+    for (const decl of stmt.declarations) {
+      if (decl.id.type !== "Identifier") {
+        scope.unknownLocals = scope.unknownLocals || new Set();
+        // can't name it; just bail
+        return { ok: false, reason: `destructured VariableDeclaration in handler` };
+      }
+      const name = decl.id.name;
+      if (!decl.init) {
+        scope.unknownLocals = scope.unknownLocals || new Set();
+        scope.unknownLocals.add(name);
+        continue;
+      }
+      const asConst = extractConstantInit(decl.init);
+      if (asConst) {
+        // Hoist to rule-level constants. Prefer the original name; if taken, suffix.
+        let hoistedName = name;
+        let n = 2;
+        while (scope.constants[hoistedName] && !deepEqual(scope.constants[hoistedName], asConst)) {
+          hoistedName = `${name}_${n++}`;
+        }
+        scope.constants[hoistedName] = asConst;
+        scope.locals.set(name, { kind: "const-ref", constantName: hoistedName });
+        continue;
+      }
+      // Unknown init — track binding so identifier use fails clearly.
+      scope.unknownLocals = scope.unknownLocals || new Set();
+      scope.unknownLocals.add(name);
+    }
+    return { ok: true, stmts: [] };
   }
   return { ok: false, reason: `unsupported statement: ${stmt.type}` };
+}
+
+function deepEqual(a, b) {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || !a || !b) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false;
+    return true;
+  }
+  const ak = Object.keys(a), bk = Object.keys(b);
+  if (ak.length !== bk.length) return false;
+  for (const k of ak) if (!deepEqual(a[k], b[k])) return false;
+  return true;
 }
 
 // Match pattern:
@@ -499,8 +578,16 @@ function extractExpr(expr, scope) {
     case "Identifier": {
       if (expr.name === scope.nodeParamName) return { ok: true, expr: { op: "node-ref" } };
       const local = scope.locals?.get(expr.name);
-      if (local) return { ok: true, expr: { op: "identifier", name: expr.name } };
-      // Other identifiers: not in scope.
+      if (local) {
+        if (local.kind === "const-ref") {
+          // Constant-set reference. Expose the hoisted name so set-contains can find it.
+          return { ok: true, expr: { op: "identifier", name: local.constantName, kind: "const-ref" } };
+        }
+        return { ok: true, expr: { op: "identifier", name: expr.name } };
+      }
+      if (scope.unknownLocals?.has(expr.name)) {
+        return { ok: false, reason: `identifier '${expr.name}' bound to unknown initializer` };
+      }
       return { ok: false, reason: `identifier '${expr.name}' — not in scope` };
     }
     case "MemberExpression": {
@@ -522,6 +609,15 @@ function extractExpr(expr, scope) {
       if (!R.ok) return R;
       return { ok: true, expr: { op: "binary", operator: op, lhs: L.expr, rhs: R.expr } };
     }
+    case "UnaryExpression": {
+      const op = expr.operator;
+      if (!["!", "-", "+", "typeof"].includes(op)) {
+        return { ok: false, reason: `unsupported unary operator ${op}` };
+      }
+      const o = extractExpr(expr.argument, scope);
+      if (!o.ok) return o;
+      return { ok: true, expr: { op: "unary", operator: op, operand: o.expr } };
+    }
     case "CallExpression": {
       const callee = expr.callee;
       // SET.has(value) — emit set-contains
@@ -529,7 +625,11 @@ function extractExpr(expr, scope) {
           && callee.object.type === "Identifier"
           && callee.property.type === "Identifier" && callee.property.name === "has"
           && expr.arguments.length === 1) {
-        const setName = callee.object.name;
+        const objName = callee.object.name;
+        // Resolve via scope: local const-ref → hoisted name; else direct constants lookup.
+        let setName = objName;
+        const local = scope.locals?.get(objName);
+        if (local && local.kind === "const-ref") setName = local.constantName;
         const constant = scope.constants?.[setName];
         if (constant && constant.kind === "string-set") {
           const val = extractExpr(expr.arguments[0], scope);
