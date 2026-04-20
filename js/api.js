@@ -289,15 +289,42 @@ function _lintSourceOne(source, filename, resolved) {
  * @param {object} [config] - Configuration options
  * @returns {Promise<Array<{file: string, diagnostics: Array}>>}
  */
+// Quick shape test: every entry looks like a concrete file path (no glob, known
+// JS/TS extension, no trailing slash). Used to skip discoverFiles when caller
+// has pre-discovered the set.
+const _FILE_PATH_RE = /\.(?:m?js|c?js|m?ts|c?ts|jsx|tsx|mjs|cjs|mts|cts)$/;
+const _GLOB_CHARS_RE = /[*?{}[\]]/;
+function _looksLikeFileList(targets) {
+  if (process.env.EZ_DISABLE_DISCOVER_FAST === "1") return false;
+  if (!Array.isArray(targets) || targets.length === 0) return false;
+  for (const t of targets) {
+    if (typeof t !== "string") return false;
+    if (t.length === 0) return false;
+    if (t.endsWith("/")) return false;
+    if (_GLOB_CHARS_RE.test(t)) return false;
+    if (!_FILE_PATH_RE.test(t)) return false;
+  }
+  return true;
+}
+
 async function lint(targets, config = {}) {
   const resolved = await _resolveConfig(config);
+  const targetList = Array.isArray(targets) ? targets : [targets];
   // Sort paths.  Unsorted readdir order interleaves varied AST shapes in a
   // way that thrashes JSC's JIT specialization: on corpora past ~30k files
   // the cumulative deoptimizations spiral into a multi-GB allocation burst
   // and crash Bun with a bus error.  Lexicographic ordering groups similar
   // files together and keeps the JIT stable.  Same fixture set, same total
   // work — just a deterministic visit order.
-  const files = discoverFiles(Array.isArray(targets) ? targets : [targets]).paths.sort();
+  //
+  // Fast path: when every target is already a plain file path (no glob chars,
+  // known JS/TS extension, no trailing slash), skip the NAPI discoverFiles
+  // round-trip and its stat() per path. Batch callers that pre-discover files
+  // (profile_corpus.js, CI pipelines) hit this path repeatedly — each skipped
+  // discovery saves ~40-50ms on a 500-file chunk.
+  const files = _looksLikeFileList(targetList)
+    ? [...targetList].sort()
+    : discoverFiles(targetList).paths.sort();
   const results = [];
   for (const file of files) {
     try {
@@ -334,13 +361,17 @@ async function lintSource(source, config = {}) {
  */
 async function fix(targets, config = {}) {
   const resolved = await _resolveConfig(config);
+  const targetList = Array.isArray(targets) ? targets : [targets];
   // Sort paths.  Unsorted readdir order interleaves varied AST shapes in a
   // way that thrashes JSC's JIT specialization: on corpora past ~30k files
   // the cumulative deoptimizations spiral into a multi-GB allocation burst
   // and crash Bun with a bus error.  Lexicographic ordering groups similar
   // files together and keeps the JIT stable.  Same fixture set, same total
-  // work — just a deterministic visit order.
-  const files = discoverFiles(Array.isArray(targets) ? targets : [targets]).paths.sort();
+  // work — just a deterministic visit order. Fast path when caller already
+  // supplied a plain file list — see _looksLikeFileList above.
+  const files = _looksLikeFileList(targetList)
+    ? [...targetList].sort()
+    : discoverFiles(targetList).paths.sort();
   const results = [];
   const fixedFiles = [];
 
