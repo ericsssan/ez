@@ -42,28 +42,47 @@ const code_path_mod = @import("code_path.zig");
 const CodePathBuilder = code_path_mod.CodePathBuilder;
 const Origin = code_path_mod.Origin;
 
-// ── Scoped binding map (same shape as semantic.zig) ─────────────────
+// ── Per-scope binding table ─────────────────────────────────────────
+// Replaces the global HashMap with per-scope sorted arrays.
+// Each scope owns a []const BindingEntry sorted by name_hash.
+// Main-pass lookups use linear scan (builders are unsorted/growing);
+// retry-pass lookups use binary search (arrays finalised at scope_close).
 
-const ScopedKey = struct { scope_id: u32, name: []const u8 };
-const ScopedContext = struct {
-    pub fn hash(_: @This(), k: ScopedKey) u64 {
-        const nh = std.hash.Wyhash.hash(0, k.name);
-        return nh ^ (@as(u64, k.scope_id) *% 0x9e3779b97f4a7c15);
-    }
-    pub fn eql(_: @This(), a: ScopedKey, b: ScopedKey) bool {
-        return a.scope_id == b.scope_id and std.mem.eql(u8, a.name, b.name);
-    }
+const BindingEntry = struct {
+    name_hash: u64,
+    sym_id: SymbolId,
 };
-const PrehashedKey = struct { scope_id: u32, name: []const u8, name_hash: u64 };
-const PrehashedCtx = struct {
-    pub fn hash(_: @This(), k: PrehashedKey) u64 {
-        return k.name_hash ^ (@as(u64, k.scope_id) *% 0x9e3779b97f4a7c15);
+
+fn bindingLessThan(_: void, a: BindingEntry, b: BindingEntry) bool {
+    return a.name_hash < b.name_hash;
+}
+
+fn scopeSearch(entries: []const BindingEntry, name_hash: u64, name: []const u8, sym_names: []const []const u8) ?SymbolId {
+    var lo: usize = 0;
+    var hi: usize = entries.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        const h = entries[mid].name_hash;
+        if (h < name_hash) {
+            lo = mid + 1;
+        } else if (h > name_hash) {
+            hi = mid;
+        } else {
+            var i: usize = mid;
+            while (true) {
+                if (std.mem.eql(u8, sym_names[entries[i].sym_id.toInt()], name)) return entries[i].sym_id;
+                if (i == 0 or entries[i - 1].name_hash != name_hash) break;
+                i -= 1;
+            }
+            i = mid + 1;
+            while (i < entries.len and entries[i].name_hash == name_hash) : (i += 1) {
+                if (std.mem.eql(u8, sym_names[entries[i].sym_id.toInt()], name)) return entries[i].sym_id;
+            }
+            return null;
+        }
     }
-    pub fn eql(_: @This(), a: PrehashedKey, b: ScopedKey) bool {
-        return a.scope_id == b.scope_id and std.mem.eql(u8, a.name, b.name);
-    }
-};
-const ScopeBindingMap = std.HashMapUnmanaged(ScopedKey, SymbolId, ScopedContext, 60);
+    return null;
+}
 
 // ── Options / minimal summary ───────────────────────────────────────
 
@@ -103,12 +122,11 @@ pub fn resolve(
     ast: *const Ast,
     events: []const Event,
 ) !Result {
-    const est_syms: u32 = @max(64, @as(u32, @intCast(ast.nodes.len / 6)));
-    var bindings: ScopeBindingMap = .empty;
-    defer bindings.deinit(allocator);
-    try bindings.ensureTotalCapacity(allocator, est_syms);
+    const StatsEntry = struct { name_hash: u64, name: []const u8 };
+    var builders: [256]std.ArrayListUnmanaged(StatsEntry) = undefined;
+    for (&builders) |*b| b.* = .{ .items = &.{}, .capacity = 0 };
+    defer for (&builders) |*b| b.deinit(allocator);
 
-    var stack: [256]u32 = undefined;
     var sp: u32 = 0;
     var scope_count: u32 = 0;
 
@@ -120,17 +138,16 @@ pub fn resolve(
     var binding_count: u32 = 0;
     var resolved: u32 = 0;
     var unresolved: u32 = 0;
-    var next_sym: u32 = 0;
 
     for (events) |e| switch (e.kind) {
         .scope_open => {
-            if (sp < stack.len) {
-                stack[sp] = scope_count;
-                sp += 1;
-            }
+            if (sp < builders.len) sp += 1;
             scope_count += 1;
         },
-        .scope_close => if (sp > 0) { sp -= 1; },
+        .scope_close => if (sp > 0) {
+            builders[sp - 1].clearRetainingCapacity();
+            sp -= 1;
+        },
         // CFG events ignored by the stats-only resolver — resolveFull handles them.
         .terminator, .branch_open, .branch_else, .branch_close,
         .loop_open, .loop_test_end, .loop_body_end, .loop_close,
@@ -143,13 +160,12 @@ pub fn resolve(
         => {},
         .declare => {
             if (sp == 0) continue;
-            const scope_id = stack[sp - 1];
             const main_tok = node_main_tokens[e.node];
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
-            bindings.putAssumeCapacity(.{ .scope_id = scope_id, .name = name }, SymbolId.fromInt(next_sym));
-            next_sym += 1;
+            const name_hash = std.hash.Wyhash.hash(0, name);
+            try builders[sp - 1].append(allocator, .{ .name_hash = name_hash, .name = name });
             binding_count += 1;
         },
         .reference => {
@@ -161,16 +177,15 @@ pub fn resolve(
             const name_hash = std.hash.Wyhash.hash(0, name);
             var i: i32 = @as(i32, @intCast(sp)) - 1;
             var found = false;
-            while (i >= 0) : (i -= 1) {
-                const sid = stack[@intCast(i)];
-                const pkey = PrehashedKey{ .scope_id = sid, .name = name, .name_hash = name_hash };
-                if (bindings.getAdapted(pkey, PrehashedCtx{}) != null) {
-                    resolved += 1;
-                    found = true;
-                    break;
+            done: while (i >= 0) : (i -= 1) {
+                for (builders[@intCast(i)].items) |entry| {
+                    if (entry.name_hash == name_hash and std.mem.eql(u8, entry.name, name)) {
+                        found = true;
+                        break :done;
+                    }
                 }
             }
-            if (!found) unresolved += 1;
+            if (found) resolved += 1 else unresolved += 1;
         },
     };
 
@@ -213,9 +228,28 @@ pub fn resolveFull(
     errdefer references.deinit();
     try references.ensureCapacity(est_syms * 2);
 
-    var binding_map: ScopeBindingMap = .empty;
-    defer binding_map.deinit(allocator);
-    try binding_map.ensureTotalCapacity(allocator, est_syms);
+    // Dedicated arena for ephemeral scope-resolution data.
+    // Scope builders, the sorted flat entry buffer, and scope-range table are
+    // all freed together at function exit — no per-scope allocations hit the
+    // outer allocator, giving FixedBufferAllocator-like throughput in production.
+    var scope_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scope_arena.deinit();
+    const sa = scope_arena.allocator();
+
+    // Per-depth builders: one ArrayList per open scope on the stack.
+    // Entries appended unsorted during declare events; sorted on scope_close.
+    var builders: [256]std.ArrayListUnmanaged(BindingEntry) = undefined;
+    for (&builders) |*b| b.* = .{ .items = &.{}, .capacity = 0 };
+    // (freed by scope_arena.deinit)
+
+    // Flat sorted binding store for the retry pass.
+    // all_entries: one big contiguous buffer; scope_ranges maps scope_id → [start,end).
+    const ScopeRange = struct { start: u32, end: u32 };
+    var scope_ranges = std.ArrayListUnmanaged(ScopeRange){ .items = &.{}, .capacity = 0 };
+    try scope_ranges.ensureTotalCapacity(sa, est_scopes);
+
+    var all_entries = std.ArrayListUnmanaged(BindingEntry){ .items = &.{}, .capacity = 0 };
+    try all_entries.ensureTotalCapacity(sa, est_syms);
 
     // node_reachable — default all-alive (no CFG in event path yet).
     const node_reachable = try allocator.alloc(u8, ast.nodes.len);
@@ -274,6 +308,7 @@ pub fn resolveFull(
             const kind: ScopeKind = @enumFromInt(e.aux);
             const node: NodeIndex = @enumFromInt(e.node);
             const sid = try scopes.addScope(kind, parent, node);
+            try scope_ranges.append(sa, .{ .start = 0, .end = 0 });
             if (sp < stack.len) {
                 stack[sp] = sid;
                 sp += 1;
@@ -306,6 +341,13 @@ pub fn resolveFull(
             if (sp > 0) {
                 const closed_sid = stack[sp - 1];
                 sp -= 1;
+                if (builders[sp].items.len > 0) {
+                    const start: u32 = @intCast(all_entries.items.len);
+                    std.mem.sortUnstable(BindingEntry, builders[sp].items, {}, bindingLessThan);
+                    try all_entries.appendSlice(sa, builders[sp].items);
+                    scope_ranges.items[closed_sid.toInt()] = .{ .start = start, .end = @intCast(all_entries.items.len) };
+                    builders[sp].clearRetainingCapacity();
+                }
                 const closed_kind = scopes.kinds.items[closed_sid.toInt()];
                 if (closed_kind == .function or closed_kind == .global or
                     closed_kind == .module or closed_kind == .static_block or
@@ -381,29 +423,30 @@ pub fn resolveFull(
             // var / function_decl hoist to the nearest enclosing var-scope
             // (function / global / module / static_block / class_field_init).
             // let / const / class / params stay in the current lexical scope.
-            const scope_id: ScopeId = blk: {
+            const target_depth: u32 = blk: {
                 if (kind == .@"var" or kind == .function_decl) {
                     var j: i32 = @as(i32, @intCast(sp)) - 1;
                     while (j >= 0) : (j -= 1) {
                         const sid = stack[@intCast(j)];
                         const sk = scopes.kinds.items[sid.toInt()];
                         switch (sk) {
-                            .global, .module, .function, .static_block, .class_field_initializer => break :blk sid,
+                            .global, .module, .function, .static_block, .class_field_initializer => break :blk @intCast(j),
                             else => {},
                         }
                     }
                 }
-                break :blk stack[sp - 1];
+                break :blk sp - 1;
             };
+            const scope_id = stack[target_depth];
             const main_tok = node_main_tokens[e.node];
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
+            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
-            try binding_map.ensureUnusedCapacity(allocator, 1);
-            binding_map.putAssumeCapacity(.{ .scope_id = scope_id.toInt(), .name = name }, sym_id);
+            try builders[target_depth].append(sa, .{ .name_hash = name_hash, .sym_id = sym_id });
             // Track running per-scope count — used by downstream code that
             // expects `bindings_count` to be populated (see semantic.zig).
             scopes.bindings_count.items[scope_id.toInt()] += 1;
@@ -429,20 +472,20 @@ pub fn resolveFull(
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
             const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
+            const sym_names = symbols.names.items;
             var i: i32 = @as(i32, @intCast(sp)) - 1;
-            while (i >= 0) : (i -= 1) {
-                const sid = stack[@intCast(i)];
-                const pkey = PrehashedKey{ .scope_id = sid.toInt(), .name = name, .name_hash = name_hash };
-                if (binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
-                    references.resolve(ref_id, sym_id);
-                    if (ref_kind.isRead()) symbols.markRead(sym_id);
-                    if (ref_kind.isWrite()) symbols.markWritten(sym_id);
-                    if (ref_kind == .type_of) symbols.markTypeOf(sym_id);
-                    break;
+            scope_walk: while (i >= 0) : (i -= 1) {
+                for (builders[@intCast(i)].items) |entry| {
+                    if (entry.name_hash == name_hash and std.mem.eql(u8, sym_names[entry.sym_id.toInt()], name)) {
+                        references.resolve(ref_id, entry.sym_id);
+                        if (ref_kind.isRead()) symbols.markRead(entry.sym_id);
+                        if (ref_kind.isWrite()) symbols.markWritten(entry.sym_id);
+                        if (ref_kind == .type_of) symbols.markTypeOf(entry.sym_id);
+                        break :scope_walk;
+                    }
                 }
             }
-            // Unresolved → leave symbol_id = .none; a post-pass could retry
-            // for forward references (hoisted fn/var declared later).
+            // Unresolved → leave symbol_id = .none; retry pass handles forward refs.
         },
 
         // ── If statement CodePath events ─────────────────────────
@@ -580,17 +623,23 @@ pub fn resolveFull(
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
             const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
+            const sym_names = symbols.names.items;
             var sid = ref_scope;
             const scope_count: u32 = @intCast(scopes.kinds.items.len);
             while (sid.toInt() < scope_count) {
-                const pkey = PrehashedKey{ .scope_id = sid.toInt(), .name = name, .name_hash = name_hash };
-                if (binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
-                    references.resolve(ref_id, sym_id);
-                    const rk = references.getKind(ref_id);
-                    if (rk.isRead()) symbols.markRead(sym_id);
-                    if (rk.isWrite()) symbols.markWritten(sym_id);
-                    if (rk == .type_of) symbols.markTypeOf(sym_id);
-                    break;
+                if (sid.toInt() < scope_ranges.items.len) {
+                    const range = scope_ranges.items[sid.toInt()];
+                    if (range.end > range.start) {
+                        const entries = all_entries.items[range.start..range.end];
+                        if (scopeSearch(entries, name_hash, name, sym_names)) |sym_id| {
+                            references.resolve(ref_id, sym_id);
+                            const rk = references.getKind(ref_id);
+                            if (rk.isRead()) symbols.markRead(sym_id);
+                            if (rk.isWrite()) symbols.markWritten(sym_id);
+                            if (rk == .type_of) symbols.markTypeOf(sym_id);
+                            break;
+                        }
+                    }
                 }
                 const parent_sid = scopes.parent(sid);
                 if (parent_sid.toInt() == sid.toInt()) break; // root
