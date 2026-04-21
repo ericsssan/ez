@@ -242,6 +242,13 @@ pub fn resolveFull(
     var scope_map = std.AutoHashMapUnmanaged(u64, SymbolId){};
     try scope_map.ensureTotalCapacity(sa, @intCast(est_syms));
 
+    // Direct-mapped L1 cache in front of scope_map.  Absorbs repeated lookups
+    // for the same identifier (common in any function body) without hitting the
+    // HashMap.  512 entries × 12 bytes = 6 KB — stays hot in L1D.
+    // Entry is "empty" when hash == 0 (Wyhash(0, name) == 0 is negligibly rare).
+    const RefCacheEntry = struct { hash: u64, sym: SymbolId };
+    var ref_cache = [_]RefCacheEntry{.{ .hash = 0, .sym = .none }} ** 512;
+
     // Per-depth undo stacks: on declare we record (name_hash, sym_id, prev) at
     // target_depth so scope_close can restore the previous binding in scope_map.
     const UndoEntry = struct { name_hash: u64, sym_id: SymbolId, prev: ?SymbolId };
@@ -357,15 +364,17 @@ pub fn resolveFull(
                     }
                     std.mem.sortUnstable(BindingEntry, all_entries.items[start..], {}, bindingLessThan);
                     scope_ranges.items[closed_sid.toInt()] = .{ .start = start, .end = @intCast(all_entries.items.len) };
-                    // Restore scope_map to pre-scope state (LIFO so shadowed entries are correct).
+                    // Restore scope_map and ref_cache to pre-scope state (LIFO).
                     var j: usize = closed_undos.len;
                     while (j > 0) {
                         j -= 1;
                         const undo = closed_undos[j];
                         if (undo.prev) |prev| {
                             try scope_map.put(sa, undo.name_hash, prev);
+                            ref_cache[undo.name_hash & 511] = .{ .hash = undo.name_hash, .sym = prev };
                         } else {
                             _ = scope_map.remove(undo.name_hash);
+                            ref_cache[undo.name_hash & 511] = .{ .hash = undo.name_hash, .sym = .none };
                         }
                     }
                     undo_stacks[sp].clearRetainingCapacity();
@@ -471,6 +480,7 @@ pub fn resolveFull(
             const prev = scope_map.get(name_hash);
             try undo_stacks[target_depth].append(sa, .{ .name_hash = name_hash, .sym_id = sym_id, .prev = prev });
             try scope_map.put(sa, name_hash, sym_id);
+            ref_cache[name_hash & 511] = .{ .hash = name_hash, .sym = sym_id };
             // Track running per-scope count — used by downstream code that
             // expects `bindings_count` to be populated (see semantic.zig).
             scopes.bindings_count.items[scope_id.toInt()] += 1;
@@ -497,28 +507,62 @@ pub fn resolveFull(
                 const len = tok_lens[main_tok];
                 break :blk std.hash.Wyhash.hash(0, source[start .. start + len]);
             };
-            if (scope_map.get(name_hash)) |sym_id| {
-                references.resolve(ref_id, sym_id);
-                if (ref_kind.isRead()) symbols.markRead(sym_id);
-                if (ref_kind.isWrite()) symbols.markWritten(sym_id);
-                if (ref_kind == .type_of) symbols.markTypeOf(sym_id);
+            const cache_slot = &ref_cache[name_hash & 511];
+            const sym_id: ?SymbolId = if (cache_slot.hash == name_hash) blk: {
+                // Cache hit — sym may be .none (known-unresolved in current scope).
+                break :blk if (cache_slot.sym != .none) cache_slot.sym else null;
+            } else blk: {
+                // Cache miss — probe scope_map and populate cache.
+                const result = scope_map.get(name_hash);
+                cache_slot.* = .{ .hash = name_hash, .sym = result orelse .none };
+                break :blk result;
+            };
+            if (sym_id) |sid| {
+                references.resolve(ref_id, sid);
+                if (ref_kind.isRead()) symbols.markRead(sid);
+                if (ref_kind.isWrite()) symbols.markWritten(sid);
+                if (ref_kind == .type_of) symbols.markTypeOf(sid);
             }
             // Unresolved → leave symbol_id = .none; retry pass handles forward refs.
         },
 
         // ── If statement CodePath events ─────────────────────────
-        .if_open => if (!skip_cfg) {
-            try cpb.pushChoiceContext(.test_kind, false);
-            const n: NodeIndex = @enumFromInt(e.node);
-            try cpb.makeIfConsequent(n);
+        // cfg_alive logic merged here (branch_open/else/close no longer
+        // emitted for if-statements; branch_* still fired by loops/try).
+        .if_open => {
+            if (bsp < branch_save.len) {
+                branch_save[bsp] = cfg_alive;
+                branch_cons[bsp] = cfg_alive;
+                bsp += 1;
+            }
+            if (!skip_cfg) {
+                try cpb.pushChoiceContext(.test_kind, false);
+                const n: NodeIndex = @enumFromInt(e.node);
+                try cpb.makeIfConsequent(n);
+            }
         },
-        .if_alt => if (!skip_cfg) {
-            const n: NodeIndex = @enumFromInt(e.node);
-            try cpb.makeIfAlternate(n);
+        .if_alt => {
+            if (bsp > 0) {
+                branch_cons[bsp - 1] = cfg_alive;
+                cfg_alive = branch_save[bsp - 1];
+            }
+            if (!skip_cfg) {
+                const n: NodeIndex = @enumFromInt(e.node);
+                try cpb.makeIfAlternate(n);
+            }
         },
-        .if_close => if (!skip_cfg) {
-            const n: NodeIndex = @enumFromInt(e.node);
-            try cpb.popChoiceContext(n);
+        .if_close => {
+            if (bsp > 0) {
+                bsp -= 1;
+                const save = branch_save[bsp];
+                const cons = branch_cons[bsp];
+                const alt = cfg_alive;
+                cfg_alive = if (cons == save and alt == save) save else cons or alt;
+            }
+            if (!skip_cfg) {
+                const n: NodeIndex = @enumFromInt(e.node);
+                try cpb.popChoiceContext(n);
+            }
         },
 
         // ── Loop CodePath events ─────────────────────────────────

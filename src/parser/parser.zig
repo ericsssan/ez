@@ -1548,18 +1548,15 @@ pub const Parser = struct {
         _ = try self.expect(.l_paren);
         const condition = try self.parseExpression();
         _ = try self.expect(.r_paren);
-        // Branch events wrap the consequent/alternate so the event resolver
-        // can compute per-node reachability for rules like no-unreachable.
-        try self.emitBranchOpen(.none);
+        // if_open/alt/close carry the cfg_alive logic (branch_open/else/close
+        // are no longer emitted for if — the resolver merges them).
         const if_ev = try self.emitIfOpen(false, .none);
         const consequent = try self.parseIfBody();
 
         if (self.eat(.kw_else)) |_| {
-            try self.emitBranchElse(.none);
             if (self.emit_scope_events) self.scope_events.events.items[if_ev].aux = 1;
             try self.emitIfAlt(.none);
             const alternate = try self.parseIfBody();
-            try self.emitBranchClose(.none);
             const extra = try self.addExtra(ast.IfData, .{
                 .consequent = consequent,
                 .alternate = alternate,
@@ -1577,7 +1574,6 @@ pub const Parser = struct {
             return if_else_node;
         }
 
-        try self.emitBranchClose(.none);
         const if_node = try self.addNode(.{
             .tag = .if_stmt,
             .main_token = if_tok,

@@ -54,6 +54,19 @@ pub fn main(init: std.process.Init) !void {
     const events = ev.items();
     std.debug.print("Events: {d}\n", .{events.len});
 
+    // Count events by kind so we can see what dominates the stream.
+    {
+        const EventKind = scope_events.EventKind;
+        var counts = [_]u32{0} ** (@typeInfo(EventKind).@"enum".fields.len);
+        for (events) |e| counts[@intFromEnum(e.kind)] += 1;
+        std.debug.print("Event breakdown:\n", .{});
+        inline for (@typeInfo(EventKind).@"enum".fields) |f| {
+            const n = counts[f.value];
+            if (n > 0) std.debug.print("  {s: <24} {d:>7}  ({d:.1}%)\n", .{ f.name, n, @as(f64, @floatFromInt(n)) * 100.0 / @as(f64, @floatFromInt(events.len)) });
+        }
+        std.debug.print("\n", .{});
+    }
+
     var total_ns: u64 = 0;
     for (0..ITERATIONS) |iter| {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
