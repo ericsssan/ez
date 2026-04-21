@@ -1,0 +1,175 @@
+{
+  "name": "no-compare-neg-zero",
+  "category": "correctness",
+  "description": "Disallow comparing against `-0`",
+  "fixable": null,
+  "messages": {
+    "unexpected": "Do not use the '{{operator}}' operator to compare against -0."
+  },
+  "constants": {
+    "OPERATORS_TO_CHECK": {
+      "kind": "string-set",
+      "values": [
+        ">",
+        ">=",
+        "<",
+        "<=",
+        "==",
+        "===",
+        "!=",
+        "!=="
+      ]
+    }
+  },
+  "handlers": [
+    {
+      "selector": "BinaryExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "node-operator-in-set",
+            "node": {
+              "op": "node-ref"
+            },
+            "setName": "OPERATORS_TO_CHECK"
+          },
+          "then": [
+            {
+              "op": "if",
+              "cond": {
+                "op": "binary",
+                "operator": "||",
+                "lhs": {
+                  "op": "binary",
+                  "operator": "&&",
+                  "lhs": {
+                    "op": "binary",
+                    "operator": "&&",
+                    "lhs": {
+                      "op": "binary",
+                      "operator": "&&",
+                      "lhs": {
+                        "op": "node-tag-equals",
+                        "node": {
+                          "op": "node-main-child",
+                          "node": {
+                            "op": "node-ref"
+                          }
+                        },
+                        "estreeType": "UnaryExpression"
+                      },
+                      "rhs": {
+                        "op": "node-operator-equals",
+                        "node": {
+                          "op": "node-main-child",
+                          "node": {
+                            "op": "node-ref"
+                          }
+                        },
+                        "operator": "-"
+                      }
+                    },
+                    "rhs": {
+                      "op": "node-tag-equals",
+                      "node": {
+                        "op": "node-main-child",
+                        "node": {
+                          "op": "node-main-child",
+                          "node": {
+                            "op": "node-ref"
+                          }
+                        }
+                      },
+                      "estreeType": "Literal"
+                    }
+                  },
+                  "rhs": {
+                    "op": "node-literal-value-equals",
+                    "node": {
+                      "op": "node-main-child",
+                      "node": {
+                        "op": "node-main-child",
+                        "node": {
+                          "op": "node-ref"
+                        }
+                      }
+                    },
+                    "value": 0
+                  }
+                },
+                "rhs": {
+                  "op": "binary",
+                  "operator": "&&",
+                  "lhs": {
+                    "op": "binary",
+                    "operator": "&&",
+                    "lhs": {
+                      "op": "binary",
+                      "operator": "&&",
+                      "lhs": {
+                        "op": "node-tag-equals",
+                        "node": {
+                          "op": "node-secondary-child",
+                          "node": {
+                            "op": "node-ref"
+                          }
+                        },
+                        "estreeType": "UnaryExpression"
+                      },
+                      "rhs": {
+                        "op": "node-operator-equals",
+                        "node": {
+                          "op": "node-secondary-child",
+                          "node": {
+                            "op": "node-ref"
+                          }
+                        },
+                        "operator": "-"
+                      }
+                    },
+                    "rhs": {
+                      "op": "node-tag-equals",
+                      "node": {
+                        "op": "node-main-child",
+                        "node": {
+                          "op": "node-secondary-child",
+                          "node": {
+                            "op": "node-ref"
+                          }
+                        }
+                      },
+                      "estreeType": "Literal"
+                    }
+                  },
+                  "rhs": {
+                    "op": "node-literal-value-equals",
+                    "node": {
+                      "op": "node-main-child",
+                      "node": {
+                        "op": "node-secondary-child",
+                        "node": {
+                          "op": "node-ref"
+                        }
+                      }
+                    },
+                    "value": 0
+                  }
+                }
+              },
+              "then": [
+                {
+                  "op": "report",
+                  "node": {
+                    "op": "node-ref"
+                  },
+                  "messageId": "unexpected"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

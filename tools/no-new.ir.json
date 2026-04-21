@@ -1,0 +1,41 @@
+{
+  "name": "no-new",
+  "category": "style",
+  "description": "Disallow `new` operators outside of assignments or comparisons",
+  "fixable": null,
+  "messages": {
+    "noNewStatement": "Do not use 'new' for side effects."
+  },
+  "handlers": [
+    {
+      "selector": "NewExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "node-tag-equals",
+            "estreeType": "ExpressionStatement",
+            "node": {
+              "op": "parent-node",
+              "node": {
+                "op": "node-ref"
+              }
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "parent-node",
+                "node": {
+                  "op": "node-ref"
+                }
+              },
+              "messageId": "noNewStatement"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

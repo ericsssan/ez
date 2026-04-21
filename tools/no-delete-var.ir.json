@@ -1,0 +1,49 @@
+{
+  "name": "no-delete-var",
+  "category": "style",
+  "description": "Disallow deleting variables",
+  "fixable": null,
+  "messages": {
+    "unexpected": "Variables should not be deleted."
+  },
+  "handlers": [
+    {
+      "selector": "UnaryExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary",
+            "operator": "&&",
+            "lhs": {
+              "op": "node-operator-equals",
+              "node": {
+                "op": "node-ref"
+              },
+              "operator": "delete"
+            },
+            "rhs": {
+              "op": "node-tag-equals",
+              "node": {
+                "op": "node-main-child",
+                "node": {
+                  "op": "node-ref"
+                }
+              },
+              "estreeType": "Identifier"
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "node-ref"
+              },
+              "messageId": "unexpected"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

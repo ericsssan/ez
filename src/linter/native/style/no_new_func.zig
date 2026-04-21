@@ -1,66 +1,115 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-new-func
+
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-
-pub const relevant_tags = [_]Node.Tag{ .new_expr, .call_expr };
+const ref_mod = @import("../../../parser/reference.zig");
+const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
     .name = "no-new-func",
     .category = .style,
     .default_severity = .warning,
-    .description = "Disallow `new Function()`",
+    .description = "Disallow `new` operators with the `Function` object",
 };
 
-/// Check if a node is the "Function" identifier
-fn isFunctionIdentifier(node: NodeIndex, ctx: *const LintContext) bool {
-    if (node == .none) return false;
-    if (ctx.nodeTag(node) != .identifier) return false;
-    const name = ctx.tokenText(ctx.nodeMainToken(node));
-    return std.mem.eql(u8, name, "Function");
+pub const relevant_tags = [_]Node.Tag{};
+
+pub const needs_semantic = true;
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    noFunctionConstructor,
+};
+
+const callMethods = [_][]const u8{ "apply", "bind", "call" };
+
+const __Function_names__ = [_][]const u8{ "Function" };
+
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
 }
 
-/// Check if a member expression is accessing Function.call, Function.apply, or Function.bind
-fn isFunctionCallOrApplyOrBind(node: NodeIndex, ctx: *const LintContext) bool {
-    if (node == .none) return false;
-    const tag = ctx.nodeTag(node);
-    if (tag != .member_expr and tag != .optional_member_expr) return false;
+pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
-    const data = ctx.nodeData(node);
-    const obj = data.lhs;
-
-    // Check if object is "Function"
-    if (!isFunctionIdentifier(obj, ctx)) return false;
-
-    // data.rhs is the property_ident node
-    const prop_name = ctx.memberPropertyName(data.rhs);
-    return std.mem.eql(u8, prop_name, "call") or
-           std.mem.eql(u8, prop_name, "apply") or
-           std.mem.eql(u8, prop_name, "bind");
+fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
+    if (n == .none) return false;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return true;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    return c.extraSlice(sr).len == 0;
 }
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const tag = ctx.nodeTag(node);
-    const data = ctx.nodeData(node);
+fn methodChainCall(c: *const LintContext, id_node: NodeIndex, methods: []const []const u8) NodeIndex {
+    const parent = c.parentOf(id_node);
+    if (parent == .none) return .none;
+    const ptag = c.nodeTag(parent);
+    const is_plain = ptag == .member_expr or ptag == .optional_member_expr;
+    const is_computed = ptag == .computed_member_expr or ptag == .optional_computed_member_expr;
+    if (!is_plain and !is_computed) return .none;
+    const p_data = c.nodeData(parent);
+    if (p_data.lhs != id_node) return .none;
+    const prop_node = p_data.rhs;
+    if (prop_node == .none) return .none;
+    const prop_tag = c.nodeTag(prop_node);
+    const name: []const u8 = if (is_plain) blk: {
+        if (prop_tag != .property_ident) break :blk "";
+        break :blk c.tokenText(c.nodeMainToken(prop_node));
+    } else blk: {
+        if (prop_tag != .string_literal) break :blk "";
+        break :blk stripQuotes(c.tokenText(c.nodeMainToken(prop_node)));
+    };
+    if (name.len == 0) return .none;
+    var ok = false;
+    for (methods) |m| if (std.mem.eql(u8, m, name)) { ok = true; break; };
+    if (!ok) return .none;
+    // Skip grouping (parenthesized) wrappers when walking up.
+    var wrapped = parent;
+    var gp = c.parentOf(wrapped);
+    while (gp != .none and c.nodeTag(gp) == .grouping_expr) {
+        wrapped = gp;
+        gp = c.parentOf(gp);
+    }
+    if (gp == .none) return .none;
+    const gtag = c.nodeTag(gp);
+    if (gtag != .call_expr and gtag != .optional_call_expr) return .none;
+    const gp_data = c.nodeData(gp);
+    if (gp_data.lhs != wrapped) return .none;
+    return gp;
+}
 
-    if (tag == .new_expr) {
-        // new Function(...)
-        const callee = data.lhs;
-        if (isFunctionIdentifier(callee, ctx)) {
-            ctx.report(node);
-        }
-    } else if (tag == .call_expr) {
-        // Function(...), Function.call(...), Function.apply(...), Function.bind(...)
-        const callee = data.lhs;
+fn stripQuotes(s: []const u8) []const u8 {
+    if (s.len >= 2) {
+        const a = s[0]; const b = s[s.len - 1];
+        if ((a == '"' and b == '"') or (a == '\'' and b == '\'')) return s[1 .. s.len - 1];
+    }
+    return s;
+}
 
-        if (isFunctionIdentifier(callee, ctx)) {
-            // Function(...) - direct call
-            ctx.report(node);
-        } else if (isFunctionCallOrApplyOrBind(callee, ctx)) {
-            // Function.call(...), Function.apply(...), Function.bind(...)
-            ctx.report(node);
+pub fn runOnSymbols(ctx: *const LintContext) void {
+    const refs = ctx.references();
+    const count = refs.count();
+    var r: u32 = 0;
+    while (r < count) : (r += 1) {
+        const ref_id = ReferenceId.fromInt(r);
+        if (refs.isResolved(ref_id)) continue;
+        const __ref_identifier__ = refs.getNode(ref_id);
+        const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
+        var __matches = false;
+        for (__Function_names__) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
+        if (!__matches) continue;
+        // Respect ESLint globals:"off" (config + inline /* global X:off */)
+        if (ctx.globalIsOff(__name__)) continue;
+        if ((((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) or blk: { const __t = ctx.nodeTag(ctx.parentOf(__ref_identifier__)); break :blk (__t == .call_expr or __t == .optional_call_expr); }) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
+            ctx.report(ctx.parentOf(__ref_identifier__));
         }
+        // Method-chain invocation check: <idNode>.<method>(...) — report outer call.
+        const __mc_call = methodChainCall(ctx, __ref_identifier__, callMethods[0..]);
+        if (__mc_call != .none) ctx.report(__mc_call);
     }
 }

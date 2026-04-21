@@ -1,0 +1,55 @@
+{
+  "irVersion": 1,
+  "name": "no-implied-eval",
+  "category": "suspicious",
+  "description": "Disallow the use of eval()-like methods",
+  "fixable": null,
+  "messages": {
+    "impliedEval": "Implied eval. Consider passing a function instead of a string."
+  },
+  "constants": {
+    "impliedEvalFns": { "kind": "string-set", "values": ["setTimeout", "setInterval", "execScript"] }
+  },
+  "handlers": [
+    {
+      "kind": "for-each-unresolved-global-ref",
+      "selector": "Identifier",
+      "namesConstant": "impliedEvalFns",
+      "refIdentifierBinding": "__ref_identifier__",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary", "operator": "&&",
+            "lhs": { "op": "globals-explicitly-set" },
+            "rhs": { "op": "unary", "operator": "!", "operand": { "op": "global-is-explicitly-enabled" } }
+          },
+          "then": [{ "op": "return" }]
+        },
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary", "operator": "&&",
+            "lhs": { "op": "node-tag-equals", "estreeType": "CallExpression", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } } },
+            "rhs": {
+              "op": "binary", "operator": "&&",
+              "lhs": {
+                "op": "nodes-equal",
+                "a": { "op": "node-callee", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } } },
+                "b": { "op": "identifier", "name": "__ref_identifier__" }
+              },
+              "rhs": {
+                "op": "node-tag-equals",
+                "estreeType": "StringLiteral",
+                "node": { "op": "node-first-arg", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } } }
+              }
+            }
+          },
+          "then": [
+            { "op": "report", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } }, "messageId": "impliedEval" }
+          ]
+        }
+      ]
+    }
+  ]
+}

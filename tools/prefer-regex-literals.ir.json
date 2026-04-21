@@ -1,0 +1,64 @@
+{
+  "irVersion": 1,
+  "name": "prefer-regex-literals",
+  "category": "style",
+  "description": "Disallow use of the RegExp constructor in favor of regular expression literals",
+  "fixable": null,
+  "messages": {
+    "unexpectedRegExp": "Use a regular expression literal instead of the 'RegExp' constructor."
+  },
+  "constants": {
+    "regexpBuiltin": { "kind": "string-set", "values": ["RegExp"] }
+  },
+  "handlers": [
+    {
+      "kind": "for-each-unresolved-global-ref",
+      "selector": "Identifier",
+      "namesConstant": "regexpBuiltin",
+      "refIdentifierBinding": "__ref_identifier__",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary", "operator": "&&",
+            "lhs": { "op": "node-tag-equals", "estreeType": "NewExpression",
+              "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } } },
+            "rhs": { "op": "nodes-equal",
+              "a": { "op": "node-callee", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } } },
+              "b": { "op": "identifier", "name": "__ref_identifier__" }
+            }
+          },
+          "then": [
+            {
+              "op": "if",
+              "cond": { "op": "node-tag-equals", "estreeType": "StringLiteral",
+                "node": { "op": "node-arg-at", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } }, "index": 0 }
+              },
+              "then": [
+                {
+                  "op": "if",
+                  "cond": { "op": "unary", "operator": "!", "operand": { "op": "node-arg-at", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } }, "index": 2 } },
+                  "then": [
+                    {
+                      "op": "if",
+                      "cond": {
+                        "op": "binary", "operator": "||",
+                        "lhs": { "op": "unary", "operator": "!", "operand": { "op": "node-arg-at", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } }, "index": 1 } },
+                        "rhs": { "op": "node-tag-equals", "estreeType": "StringLiteral",
+                          "node": { "op": "node-arg-at", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } }, "index": 1 }
+                        }
+                      },
+                      "then": [
+                        { "op": "report", "node": { "op": "parent-node-skip-grouping", "node": { "op": "identifier", "name": "__ref_identifier__" } }, "messageId": "unexpectedRegExp" }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

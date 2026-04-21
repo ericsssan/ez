@@ -595,15 +595,20 @@ for (const [prefix, pkg] of _pluginPackages) {
 // Run native for a single corpus test case (in-process, no subprocess).
 // ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
 // Returns [{rule,line}] on success, "skip" if case is unsupported, null on crash.
-function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions, nativeRuleName = null, isTs = false) {
+function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions, nativeRuleName = null, isTs = false, tcLanguageOptions = null) {
   if (hasCustomParser) return "skip";
   const _nativeName = nativeRuleName || ruleName;
   try {
-    // If the case has options, rebuild config with options embedded in ESLint array format.
-    // Config must use {"rules":{...}} format so Zig's configFromJson finds the "rules" key.
+    // Rebuild config when the case carries options or languageOptions (globals, parserOptions etc.).
     let config = ruleConfig;
-    if (hasOptions && ruleOptions && ruleOptions.length > 0) {
-      config = buildNativeConfig({ rules: { [_nativeName]: ["warn", ruleOptions[0]] } });
+    const needRebuild = (hasOptions && ruleOptions && ruleOptions.length > 0) || tcLanguageOptions;
+    if (needRebuild) {
+      const rules = (hasOptions && ruleOptions && ruleOptions.length > 0)
+        ? { [_nativeName]: ["warn", ruleOptions[0]] }
+        : { [_nativeName]: "warn" };
+      const cfgObj = { rules };
+      if (tcLanguageOptions) cfgObj.languageOptions = tcLanguageOptions;
+      config = buildNativeConfig(cfgObj);
     }
     const diags = ezLint(code, { config, lang: isTs ? "ts" : "js" });
     return diags
@@ -1574,7 +1579,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
     // Collect failing cases for --fails / --verbose output
     const failedCases = [];  // { tcIdx, kind:"runner"|"native", espreeLines, ourLines, code }
 
-    if (!filterRule && !verboseAll) {
+    if (!filterRule && !verboseAll && process.stderr.isTTY) {
       const pct = _total > 0 ? (_processed / _total * 100).toFixed(0) : "0";
       process.stderr.write(`\r  ${pct}% (${_processed}/${_total})  ${ruleName}  \x1B[K`);
     }
@@ -1695,7 +1700,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
 
       // Native comparison (in-process NAPI call).
       const _nt0 = Date.now();
-      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase);
+      const nativeResult = runNativeForCase(tc.code, ruleName, nativeRuleConfig, tc.hasCustomParser, tc.options.length > 0, tc.options, _nativeRuleName, _isTsCase, tc.languageOptions || null);
       const _ntDelta = Date.now() - _nt0;
       nativeOnlyMs += _ntDelta;
       _ruleNativeMs += _ntDelta;

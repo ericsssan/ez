@@ -1,0 +1,111 @@
+{
+  "name": "no-path-concat",
+  "category": "style",
+  "description": "Disallow string concatenation with `__dirname` and `__filename`",
+  "fixable": null,
+  "messages": {
+    "usePathFunctions": "Use path.join() or path.resolve() instead of + to create paths."
+  },
+  "constants": {
+    "MATCHER__set__": {
+      "kind": "string-set",
+      "values": [
+        "__dirname",
+        "__filename"
+      ]
+    }
+  },
+  "handlers": [
+    {
+      "selector": "BinaryExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary",
+            "operator": "&&",
+            "lhs": {
+              "op": "node-operator-equals",
+              "node": {
+                "op": "node-ref"
+              },
+              "operator": "+",
+              "category": "binary"
+            },
+            "rhs": {
+              "op": "binary",
+              "operator": "||",
+              "lhs": {
+                "op": "binary",
+                "operator": "&&",
+                "lhs": {
+                  "op": "node-tag-equals",
+                  "node": {
+                    "op": "node-main-child",
+                    "node": {
+                      "op": "node-ref"
+                    }
+                  },
+                  "estreeType": "Identifier"
+                },
+                "rhs": {
+                  "op": "set-contains",
+                  "setName": "MATCHER__set__",
+                  "value": {
+                    "op": "member",
+                    "object": {
+                      "op": "node-main-child",
+                      "node": {
+                        "op": "node-ref"
+                      }
+                    },
+                    "property": "name",
+                    "computed": false
+                  }
+                }
+              },
+              "rhs": {
+                "op": "binary",
+                "operator": "&&",
+                "lhs": {
+                  "op": "node-tag-equals",
+                  "node": {
+                    "op": "node-secondary-child",
+                    "node": {
+                      "op": "node-ref"
+                    }
+                  },
+                  "estreeType": "Identifier"
+                },
+                "rhs": {
+                  "op": "set-contains",
+                  "setName": "MATCHER__set__",
+                  "value": {
+                    "op": "member",
+                    "object": {
+                      "op": "node-secondary-child",
+                      "node": {
+                        "op": "node-ref"
+                      }
+                    },
+                    "property": "name",
+                    "computed": false
+                  }
+                }
+              }
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "node-ref"
+              },
+              "messageId": "usePathFunctions"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

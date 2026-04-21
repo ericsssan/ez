@@ -13,6 +13,7 @@ pub const meta = RuleMeta{
 };
 
 pub const needs_semantic = true;
+pub const needs_cfg = true;
 
 pub const relevant_tags = [_]Node.Tag{
     .while_stmt,

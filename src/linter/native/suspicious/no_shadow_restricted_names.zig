@@ -15,7 +15,7 @@ pub const meta = RuleMeta{
     .description = "Disallow identifiers from shadowing restricted names",
 };
 
-const restricted_names = [_][]const u8{ "undefined", "NaN", "Infinity", "eval", "arguments", "globalThis" };
+const always_restricted = [_][]const u8{ "undefined", "NaN", "Infinity", "eval", "arguments" };
 
 /// Returns true if the symbol safely shadows `undefined`:
 /// bound by a variable declarator without an initializer and never written after declaration.
@@ -69,14 +69,18 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (kind == .implicit_global) continue;
 
         const name = syms.getName(id);
-        for (restricted_names) |restricted| {
+        const report_global_this = ctx.getOptionBool("reportGlobalThis", false);
+        for (always_restricted) |restricted| {
             if (std.mem.eql(u8, name, restricted)) {
-                // Special case: `undefined` declared without init and never written is a safe shadow
                 if (std.mem.eql(u8, name, "undefined") and safelyShadowsUndefined(id, ctx)) break;
                 const decl_node = syms.getDeclNode(id);
                 ctx.report(decl_node);
                 break;
             }
+        }
+        if (report_global_this and std.mem.eql(u8, name, "globalThis")) {
+            const decl_node = syms.getDeclNode(id);
+            ctx.report(decl_node);
         }
     }
 }

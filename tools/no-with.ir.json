@@ -1,0 +1,23 @@
+{
+  "name": "no-with",
+  "category": "style",
+  "description": "Disallow `with` statements",
+  "fixable": null,
+  "messages": {
+    "unexpectedWith": "Unexpected use of 'with' statement."
+  },
+  "handlers": [
+    {
+      "selector": "WithStatement",
+      "body": [
+        {
+          "op": "report",
+          "node": {
+            "op": "node-ref"
+          },
+          "messageId": "unexpectedWith"
+        }
+      ]
+    }
+  ]
+}

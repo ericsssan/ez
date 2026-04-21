@@ -1,24 +1,30 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-new
+
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
-pub const relevant_tags = [_]Node.Tag{.expression_stmt};
-
 pub const meta = RuleMeta{
     .name = "no-new",
     .category = .style,
     .default_severity = .warning,
-    .description = "Disallow `new` for side effects without storing the result",
+    .description = "Disallow `new` operators outside of assignments or comparisons",
+};
+
+pub const relevant_tags = [_]Node.Tag{.new_expr};
+
+pub const needs_semantic = true;
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    noNewStatement,
 };
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
-    const expr = data.lhs;
-    if (expr == .none) return;
-
-    if (ctx.nodeTag(expr) == .new_expr) {
-        ctx.report(node);
+    if ((ctx.nodeTag(ctx.parentOf(node)) == .expression_stmt)) {
+        ctx.report(ctx.parentOf(node));
     }
 }

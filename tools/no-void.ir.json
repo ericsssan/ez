@@ -1,0 +1,72 @@
+{
+  "name": "no-void",
+  "category": "style",
+  "description": "Disallow `void` operators",
+  "fixable": null,
+  "messages": {
+    "noVoid": "Expected 'undefined' and instead saw 'void'."
+  },
+  "handlers": [
+    {
+      "selector": "UnaryExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "node-operator-equals",
+            "operator": "void",
+            "node": {
+              "op": "node-ref"
+            }
+          },
+          "then": [
+            {
+              "op": "if",
+              "cond": {
+                "op": "binary",
+                "operator": "&&",
+                "lhs": {
+                  "op": "binary",
+                  "operator": "&&",
+                  "lhs": {
+                    "op": "get-option-bool",
+                    "name": "allowAsStatement",
+                    "default": false
+                  },
+                  "rhs": {
+                    "op": "parent-node",
+                    "node": {
+                      "op": "node-ref"
+                    }
+                  }
+                },
+                "rhs": {
+                  "op": "node-tag-equals",
+                  "node": {
+                    "op": "parent-node",
+                    "node": {
+                      "op": "node-ref"
+                    }
+                  },
+                  "estreeType": "ExpressionStatement"
+                }
+              },
+              "then": [
+                {
+                  "op": "return"
+                }
+              ]
+            },
+            {
+              "op": "report",
+              "node": {
+                "op": "node-ref"
+              },
+              "messageId": "noVoid"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

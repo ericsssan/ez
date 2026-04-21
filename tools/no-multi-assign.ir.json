@@ -1,0 +1,32 @@
+{
+  "name": "no-multi-assign",
+  "category": "style",
+  "description": "Disallow use of chained assignment expressions",
+  "fixable": null,
+  "messages": {
+    "unexpectedChain": "Unexpected chained assignment."
+  },
+  "constants": {
+    "selectors": {
+      "kind": "string-array",
+      "values": [
+        "VariableDeclarator > AssignmentExpression.init",
+        "PropertyDefinition > AssignmentExpression.value"
+      ]
+    }
+  },
+  "handlers": [
+    {
+      "selector": "selectors",
+      "body": [
+        {
+          "op": "report",
+          "node": {
+            "op": "node-ref"
+          },
+          "messageId": "unexpectedChain"
+        }
+      ]
+    }
+  ]
+}

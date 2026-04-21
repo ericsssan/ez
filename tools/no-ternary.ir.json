@@ -1,0 +1,23 @@
+{
+  "name": "no-ternary",
+  "category": "style",
+  "description": "Disallow ternary operators",
+  "fixable": null,
+  "messages": {
+    "noTernaryOperator": "Ternary operator used."
+  },
+  "handlers": [
+    {
+      "selector": "ConditionalExpression",
+      "body": [
+        {
+          "op": "report",
+          "node": {
+            "op": "node-ref"
+          },
+          "messageId": "noTernaryOperator"
+        }
+      ]
+    }
+  ]
+}

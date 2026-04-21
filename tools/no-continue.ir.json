@@ -1,0 +1,23 @@
+{
+  "name": "no-continue",
+  "category": "style",
+  "description": "Disallow `continue` statements",
+  "fixable": null,
+  "messages": {
+    "unexpected": "Unexpected use of continue statement."
+  },
+  "handlers": [
+    {
+      "selector": "ContinueStatement",
+      "body": [
+        {
+          "op": "report",
+          "node": {
+            "op": "node-ref"
+          },
+          "messageId": "unexpected"
+        }
+      ]
+    }
+  ]
+}

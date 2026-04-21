@@ -1,10 +1,11 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-extra-boolean-cast
+
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-
-pub const relevant_tags = [_]Node.Tag{.logical_not};
 
 pub const meta = RuleMeta{
     .name = "no-extra-boolean-cast",
@@ -13,13 +14,28 @@ pub const meta = RuleMeta{
     .description = "Disallow unnecessary double-negation boolean casts (`!!x`)",
 };
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
-    const operand = data.lhs;
-    if (operand == .none) return;
+pub const relevant_tags = [_]Node.Tag{.logical_not, .call_expr, .optional_call_expr};
 
-    // Check if operand is also a logical_not (double negation !!x)
-    if (ctx.nodeTag(operand) == .logical_not) {
-        ctx.report(node);
+pub const needs_semantic = true;
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    unexpectedNegation,
+    unexpectedCall,
+};
+
+pub fn run(__node__: NodeIndex, ctx: *const LintContext) void {
+    switch (ctx.nodeTag(__node__)) {
+        .logical_not => {
+            if (((ctx.nodeTag(ctx.nodeData(__node__).lhs) == .logical_not) and ((ctx.nodeTag(ctx.nodeMainChildSkipGrouping(ctx.nodeData(__node__).lhs)) == .logical_not) or ctx.nodeInBooleanCtx(__node__)))) {
+                ctx.report(__node__);
+            }
+        },
+        .call_expr, .optional_call_expr => {
+            if ((ctx.nodeIsBooleanCall(__node__) and ctx.nodeInBooleanCtx(__node__))) {
+                ctx.report(__node__);
+            }
+        },
+        else => {},
     }
 }

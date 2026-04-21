@@ -1,0 +1,23 @@
+{
+  "name": "no-sync",
+  "category": "style",
+  "description": "Disallow synchronous methods",
+  "fixable": null,
+  "messages": {
+    "noSync": "Unexpected sync method: '{{propertyName}}'."
+  },
+  "handlers": [
+    {
+      "selector": "selector",
+      "body": [
+        {
+          "op": "report",
+          "node": {
+            "op": "node-ref"
+          },
+          "messageId": "noSync"
+        }
+      ]
+    }
+  ]
+}

@@ -34,16 +34,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             }
         },
         .switch_stmt => {
-            // Check discriminant: switch(NaN) { ... }
-            if (isNaN(data.lhs, ctx)) {
-                ctx.report(node);
-            }
+            if (!ctx.getOptionBool("enforceForSwitchCase", true)) return;
+            if (isNaN(data.lhs, ctx)) ctx.report(node);
         },
         .switch_case => {
-            // Check case test: case NaN:
-            if (isNaN(data.lhs, ctx)) {
-                ctx.report(node);
-            }
+            if (!ctx.getOptionBool("enforceForSwitchCase", true)) return;
+            if (isNaN(data.lhs, ctx)) ctx.report(node);
         },
         else => {},
     }

@@ -1,0 +1,62 @@
+{
+  "irVersion": 1,
+  "name": "no-extra-boolean-cast",
+  "category": "style",
+  "description": "Disallow unnecessary double-negation boolean casts (`!!x`)",
+  "fixable": null,
+  "messages": {
+    "unexpectedNegation": "Redundant double negation.",
+    "unexpectedCall": "Redundant Boolean call."
+  },
+  "handlers": [
+    {
+      "kind": "for-each-node",
+      "selector": "LogicalNot",
+      "nodeBinding": "__node__",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary", "operator": "&&",
+            "lhs": {
+              "op": "node-tag-equals", "estreeType": "LogicalNot",
+              "node": { "op": "node-main-child", "node": { "op": "identifier", "name": "__node__" } }
+            },
+            "rhs": {
+              "op": "binary", "operator": "||",
+              "lhs": {
+                "op": "node-tag-equals", "estreeType": "LogicalNot",
+                "node": {
+                  "op": "node-main-child-skip-grouping",
+                  "node": { "op": "node-main-child", "node": { "op": "identifier", "name": "__node__" } }
+                }
+              },
+              "rhs": { "op": "node-in-bool-ctx", "node": { "op": "identifier", "name": "__node__" } }
+            }
+          },
+          "then": [
+            { "op": "report", "node": { "op": "identifier", "name": "__node__" }, "messageId": "unexpectedNegation" }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "for-each-node",
+      "selector": "CallExpression",
+      "nodeBinding": "__node__",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary", "operator": "&&",
+            "lhs": { "op": "node-is-boolean-call", "node": { "op": "identifier", "name": "__node__" } },
+            "rhs": { "op": "node-in-bool-ctx", "node": { "op": "identifier", "name": "__node__" } }
+          },
+          "then": [
+            { "op": "report", "node": { "op": "identifier", "name": "__node__" }, "messageId": "unexpectedCall" }
+          ]
+        }
+      ]
+    }
+  ]
+}

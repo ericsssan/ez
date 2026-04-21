@@ -1,0 +1,77 @@
+{
+  "name": "no-new-wrappers",
+  "category": "style",
+  "description": "Disallow `new` operators with the `String`, `Number`, and `Boolean` objects",
+  "fixable": null,
+  "messages": {
+    "noConstructor": "Do not use {{fn}} as a constructor."
+  },
+  "constants": {
+    "wrapperObjects": {
+      "kind": "string-array",
+      "values": [
+        "String",
+        "Number",
+        "Boolean"
+      ]
+    }
+  },
+  "handlers": [
+    {
+      "selector": "Program:exit",
+      "kind": "for-each-unresolved-global-ref",
+      "namesConstant": "wrapperObjects",
+      "refIdentifierBinding": "__ref_identifier__",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary",
+            "operator": "&&",
+            "lhs": {
+              "op": "node-tag-equals",
+              "node": {
+                "op": "parent-node",
+                "node": {
+                  "op": "identifier",
+                  "name": "__ref_identifier__"
+                }
+              },
+              "estreeType": "NewExpression"
+            },
+            "rhs": {
+              "op": "nodes-equal",
+              "a": {
+                "op": "node-main-child",
+                "node": {
+                  "op": "parent-node",
+                  "node": {
+                    "op": "identifier",
+                    "name": "__ref_identifier__"
+                  }
+                }
+              },
+              "b": {
+                "op": "identifier",
+                "name": "__ref_identifier__"
+              }
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "parent-node",
+                "node": {
+                  "op": "identifier",
+                  "name": "__ref_identifier__"
+                }
+              },
+              "messageId": "noConstructor"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

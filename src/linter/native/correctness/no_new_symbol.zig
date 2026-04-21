@@ -1,47 +1,62 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-new-symbol
+
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-
-pub const relevant_tags = [_]Node.Tag{.new_expr};
-pub const needs_semantic = true;
+const ref_mod = @import("../../../parser/reference.zig");
+const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
     .name = "no-new-symbol",
     .category = .correctness,
-    .default_severity = .@"error",
+    .default_severity = .warning,
     .description = "Disallow `new` operators with the `Symbol` object",
 };
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
-    const callee = data.lhs;
+pub const relevant_tags = [_]Node.Tag{};
 
-    if (callee == .none) return;
-    if (ctx.nodeTag(callee) != .identifier) return;
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    noNewSymbol,
+};
 
-    const name = ctx.tokenText(ctx.nodeMainToken(callee));
-    if (!std.mem.eql(u8, name, "Symbol")) return;
+const __Symbol_names__ = [_][]const u8{ "Symbol" };
 
-    // Only flag if Symbol resolves to the global built-in (implicit global),
-    // not a locally-defined Symbol.
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
+}
+
+pub fn run(_: NodeIndex, _: *const LintContext) void {}
+
+fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
+    if (n == .none) return false;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return true;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    return c.extraSlice(sr).len == 0;
+}
+
+pub fn runOnSymbols(ctx: *const LintContext) void {
     const refs = ctx.references();
-    var i: u32 = 0;
-    while (i < refs.count()) : (i += 1) {
-        const ref_id = @import("../../../parser/reference.zig").ReferenceId.fromInt(i);
-        if (refs.getNode(ref_id) != callee) continue;
-
-        // Found the reference for this callee identifier.
-        if (!refs.isResolved(ref_id)) {
-            // Unresolved = implicit global (the built-in Symbol) → flag
-            ctx.report(callee);
+    const count = refs.count();
+    var r: u32 = 0;
+    while (r < count) : (r += 1) {
+        const ref_id = ReferenceId.fromInt(r);
+        if (refs.isResolved(ref_id)) continue;
+        const __ref_identifier__ = refs.getNode(ref_id);
+        const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
+        var __matches = false;
+        for (__Symbol_names__) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
+        if (!__matches) continue;
+        // Respect ESLint globals:"off" (config + inline /* global X:off */)
+        if (ctx.globalIsOff(__name__)) continue;
+        if (((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
+            ctx.report(__ref_identifier__);
         }
-        // Resolved = locally defined → don't flag
-        return;
     }
-
-    // No reference found — treat as implicit global → flag
-    ctx.report(callee);
 }

@@ -1,9 +1,14 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: prefer-regex-literals
+
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
+const ref_mod = @import("../../../parser/reference.zig");
+const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
     .name = "prefer-regex-literals",
@@ -12,45 +17,61 @@ pub const meta = RuleMeta{
     .description = "Disallow use of the RegExp constructor in favor of regular expression literals",
 };
 
-pub const relevant_tags = [_]Node.Tag{.new_expr};
+pub const relevant_tags = [_]Node.Tag{};
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
-    const callee = data.lhs;
-    if (callee == .none) return;
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    unexpectedRegExp,
+};
 
-    if (ctx.nodeTag(callee) != .identifier) return;
-    const name = ctx.tokenText(ctx.nodeMainToken(callee));
-    if (!std.mem.eql(u8, name, "RegExp")) return;
+const regexpBuiltin = [_][]const u8{ "RegExp" };
 
-    // new RegExp() — always flag
-    if (data.rhs == .none) {
-        ctx.report(node);
-        return;
-    }
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
+}
 
-    const range = ctx.extraData(ast.SubRange, @intFromEnum(data.rhs));
-    const args = ctx.extraSlice(range);
+fn nodeArgAt(c: *const LintContext, n: NodeIndex, idx: u32) NodeIndex {
+    if (n == .none) return .none;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return .none;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    const args = c.extraSlice(sr);
+    if (idx >= args.len) return .none;
+    return @enumFromInt(args[idx]);
+}
 
-    // new RegExp() with no args
-    if (args.len == 0) {
-        ctx.report(node);
-        return;
-    }
+pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
-    // new RegExp(string_literal) or new RegExp(string_literal, flags_literal)
-    const first_arg: NodeIndex = @enumFromInt(args[0]);
-    if (first_arg == .none) return;
-    const first_tag = ctx.nodeTag(first_arg);
+fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
+    if (n == .none) return false;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return true;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    return c.extraSlice(sr).len == 0;
+}
 
-    if (first_tag == .string_literal) {
-        // Check if 2nd arg is also a string literal or absent
-        if (args.len == 1) {
-            ctx.report(node);
-        } else {
-            const second_arg: NodeIndex = @enumFromInt(args[1]);
-            if (second_arg == .none or ctx.nodeTag(second_arg) == .string_literal) {
-                ctx.report(node);
+pub fn runOnSymbols(ctx: *const LintContext) void {
+    const refs = ctx.references();
+    const count = refs.count();
+    var r: u32 = 0;
+    while (r < count) : (r += 1) {
+        const ref_id = ReferenceId.fromInt(r);
+        if (refs.isResolved(ref_id)) continue;
+        const __ref_identifier__ = refs.getNode(ref_id);
+        const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
+        var __matches = false;
+        for (regexpBuiltin) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
+        if (!__matches) continue;
+        // Respect ESLint globals:"off" (config + inline /* global X:off */)
+        if (ctx.globalIsOff(__name__)) continue;
+        if (((ctx.nodeTag(ctx.parentOfSkipGrouping(__ref_identifier__)) == .new_expr) and (ctx.calleeOf(ctx.parentOfSkipGrouping(__ref_identifier__)) == __ref_identifier__))) {
+            if ((ctx.nodeTag(nodeArgAt(ctx, ctx.parentOfSkipGrouping(__ref_identifier__), 0)) == .string_literal)) {
+                if (!((nodeArgAt(ctx, ctx.parentOfSkipGrouping(__ref_identifier__), 2) != .none))) {
+                    if ((!((nodeArgAt(ctx, ctx.parentOfSkipGrouping(__ref_identifier__), 1) != .none)) or (ctx.nodeTag(nodeArgAt(ctx, ctx.parentOfSkipGrouping(__ref_identifier__), 1)) == .string_literal))) {
+                        ctx.report(ctx.parentOfSkipGrouping(__ref_identifier__));
+                    }
+                }
             }
         }
     }

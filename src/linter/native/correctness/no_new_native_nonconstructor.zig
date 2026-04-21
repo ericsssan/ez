@@ -1,36 +1,54 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-new-native-nonconstructor
+
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
+const ref_mod = @import("../../../parser/reference.zig");
+const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
     .name = "no-new-native-nonconstructor",
     .category = .correctness,
     .default_severity = .warning,
-    .description = "Disallow new operators with global non-constructor functions",
+    .description = "Disallow `new` operators with global non-constructor functions",
 };
 
-pub const relevant_tags = [_]Node.Tag{.new_expr};
+pub const relevant_tags = [_]Node.Tag{};
 
-// Functions that are NOT constructors but might be called with `new`
-const non_constructors = [_][]const u8{
-    "Symbol", "BigInt",
-    // Math, JSON, Reflect, Atomics are objects, not functions — already in no-constructor-new
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    noNewNonconstructor,
 };
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
-    const callee = data.lhs;
-    if (callee == .none) return;
-    if (ctx.nodeTag(callee) != .identifier) return;
+const nonConstructorGlobalFunctionNames = [_][]const u8{ "Symbol", "BigInt" };
 
-    const name = ctx.tokenText(ctx.nodeMainToken(callee));
-    for (non_constructors) |nc| {
-        if (std.mem.eql(u8, name, nc)) {
-            ctx.report(node);
-            return;
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
+}
+
+pub fn run(_: NodeIndex, _: *const LintContext) void {}
+
+pub fn runOnSymbols(ctx: *const LintContext) void {
+    const refs = ctx.references();
+    const count = refs.count();
+    var r: u32 = 0;
+    while (r < count) : (r += 1) {
+        const ref_id = ReferenceId.fromInt(r);
+        if (refs.isResolved(ref_id)) continue;
+        const __ref_identifier__ = refs.getNode(ref_id);
+        const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
+        var __matches = false;
+        for (nonConstructorGlobalFunctionNames) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
+        if (!__matches) continue;
+        // Respect ESLint globals:"off" (config + inline /* global X:off */)
+        if (ctx.globalIsOff(__name__)) continue;
+        if (((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
+            ctx.report(__ref_identifier__);
         }
     }
 }

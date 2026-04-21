@@ -1,0 +1,67 @@
+{
+  "name": "no-floating-decimal",
+  "category": "style",
+  "description": "Disallow leading or trailing decimal points in numeric literals",
+  "fixable": "code",
+  "messages": {
+    "leading": "A leading decimal point can be confused with a dot.",
+    "trailing": "A trailing decimal point can be confused with a dot."
+  },
+  "handlers": [
+    {
+      "selector": "Literal",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "node-tag-equals",
+            "node": {
+              "op": "node-ref"
+            },
+            "estreeType": "__TypeofNumber__"
+          },
+          "then": [
+            {
+              "op": "if",
+              "cond": {
+                "op": "node-raw-starts-with",
+                "node": {
+                  "op": "node-ref"
+                },
+                "prefix": "."
+              },
+              "then": [
+                {
+                  "op": "report",
+                  "node": {
+                    "op": "node-ref"
+                  },
+                  "messageId": "leading"
+                }
+              ]
+            },
+            {
+              "op": "if",
+              "cond": {
+                "op": "node-raw-ends-with",
+                "node": {
+                  "op": "node-ref"
+                },
+                "prefix": "."
+              },
+              "then": [
+                {
+                  "op": "report",
+                  "node": {
+                    "op": "node-ref"
+                  },
+                  "messageId": "trailing"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -62,7 +62,11 @@ const no_div_regex = @import("correctness/no_div_regex.zig");
 const array_callback_return = @import("correctness/array_callback_return.zig");
 const no_useless_backreference = @import("correctness/no_useless_backreference.zig");
 const no_new_native_nonconstructor = @import("correctness/no_new_native_nonconstructor.zig");
+const no_buffer_constructor = @import("correctness/no_buffer_constructor.zig");
 const guard_for_in = @import("correctness/guard_for_in.zig");
+const no_negated_in_lhs = @import("correctness/no_negated_in_lhs.zig");
+const no_new_statics = @import("correctness/no_new_statics.zig");
+const no_invalid_remove_event_listener = @import("correctness/no_invalid_remove_event_listener.zig");
 
 // ── Suspicious rules (43) ─────────────────────────────────────
 // (count unchanged)
@@ -135,10 +139,13 @@ const no_nested_ternary = @import("style/no_nested_ternary.zig");
 const no_new = @import("style/no_new.zig");
 const no_new_func = @import("style/no_new_func.zig");
 const no_new_object = @import("style/no_new_object.zig");
+const no_new_require = @import("style/no_new_require.zig");
+const no_process_env = @import("style/no_process_env.zig");
 const no_octal_escape = @import("style/no_octal_escape.zig");
 const no_param_reassign = @import("style/no_param_reassign.zig");
 const no_plusplus = @import("style/no_plusplus.zig");
 const no_proto = @import("style/no_proto.zig");
+const no_path_concat = @import("style/no_path_concat.zig");
 const no_return_assign = @import("style/no_return_assign.zig");
 const no_script_url = @import("style/no_script_url.zig");
 const no_unneeded_ternary = @import("style/no_unneeded_ternary.zig");
@@ -196,6 +203,16 @@ const max_classes_per_file = @import("style/max_classes_per_file.zig");
 const prefer_while = @import("style/prefer_while.zig");
 const no_useless_switch_case = @import("style/no_useless_switch_case.zig");
 const class_methods_use_this = @import("style/class_methods_use_this.zig");
+const avoid_new = @import("style/avoid_new.zig");
+// unicorn style rules
+const consistent_date_clone = @import("style/consistent_date_clone.zig");
+const prefer_dom_node_append = @import("style/prefer_dom_node_append.zig");
+const no_unnecessary_array_flat_depth = @import("style/no_unnecessary_array_flat_depth.zig");
+const prefer_array_flat_map = @import("style/prefer_array_flat_map.zig");
+const prefer_blob_reading_methods = @import("style/prefer_blob_reading_methods.zig");
+const prefer_response_static_json = @import("style/prefer_response_static_json.zig");
+const prefer_string_trim_start_end = @import("style/prefer_string_trim_start_end.zig");
+const require_number_to_fixed_digits_argument = @import("style/require_number_to_fixed_digits_argument.zig");
 
 // ── TypeScript rules (32) ─────────────────────────────────────
 const ts_no_explicit_any = @import("typescript/no_explicit_any.zig");
@@ -304,8 +321,12 @@ pub const all_rules = .{
     array_callback_return,
     no_useless_backreference,
     no_new_native_nonconstructor,
-    // Correctness v0.8 (1)
+    no_buffer_constructor,
+    // Correctness v0.8 (2)
     guard_for_in,
+    no_negated_in_lhs,
+    no_new_statics,
+    no_invalid_remove_event_listener,
     // Suspicious (28)
     eqeqeq,
     no_cond_assign,
@@ -375,10 +396,13 @@ pub const all_rules = .{
     no_new,
     no_new_func,
     no_new_object,
+    no_new_require,
+    no_process_env,
     no_octal_escape,
     no_param_reassign,
     no_plusplus,
     no_proto,
+    no_path_concat,
     no_return_assign,
     no_script_url,
     no_unneeded_ternary,
@@ -436,6 +460,15 @@ pub const all_rules = .{
     prefer_while,
     no_useless_switch_case,
     class_methods_use_this,
+    avoid_new,
+    consistent_date_clone,
+    prefer_dom_node_append,
+    no_unnecessary_array_flat_depth,
+    prefer_array_flat_map,
+    prefer_blob_reading_methods,
+    prefer_response_static_json,
+    prefer_string_trim_start_end,
+    require_number_to_fixed_digits_argument,
     // TypeScript (8)
     ts_no_explicit_any,
     ts_no_non_null_assertion,

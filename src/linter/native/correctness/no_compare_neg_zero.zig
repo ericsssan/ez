@@ -1,3 +1,6 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-compare-neg-zero
+
 const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
@@ -5,35 +8,31 @@ const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
 
-pub const relevant_tags = [_]Node.Tag{
-    .equal, .not_equal, .strict_equal, .strict_not_equal,
-    .less_than, .greater_than, .less_equal, .greater_equal,
-};
-
 pub const meta = RuleMeta{
     .name = "no-compare-neg-zero",
     .category = .correctness,
-    .default_severity = .@"error",
-    .description = "Disallow comparing against -0",
+    .default_severity = .warning,
+    .description = "Disallow comparing against `-0`",
 };
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
+pub const relevant_tags = [_]Node.Tag{.equal, .not_equal, .strict_equal, .strict_not_equal, .less_than, .greater_than, .less_equal, .greater_equal, .instanceof_expr, .in_expr, .add, .subtract, .multiply, .divide, .modulo, .exponentiate, .bitwise_and, .bitwise_or, .bitwise_xor, .shift_left, .shift_right, .unsigned_shift_right};
 
-    if (isNegZero(data.lhs, ctx) or isNegZero(data.rhs, ctx)) {
-        ctx.report(node);
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    unexpected,
+};
+
+const OPERATORS_TO_CHECK = [_][]const u8{ ">", ">=", "<", "<=", "==", "===", "!=", "!==" };
+
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
+}
+
+pub fn run(node: NodeIndex, ctx: *const LintContext) void {
+    if (blk: { const __t = ctx.nodeTag(node); break :blk (__t == .greater_than or __t == .greater_equal or __t == .less_than or __t == .less_equal or __t == .equal or __t == .strict_equal or __t == .not_equal or __t == .strict_not_equal); }) {
+        if (((((blk: { const __t = ctx.nodeTag(ctx.nodeData(node).lhs); break :blk (__t == .delete_expr or __t == .void_expr or __t == .typeof_expr or __t == .unary_plus or __t == .unary_minus or __t == .bitwise_not or __t == .logical_not); } and blk: { const __t = ctx.nodeTag(ctx.nodeData(node).lhs); break :blk (__t == .unary_minus or __t == .subtract); }) and blk: { const __t = ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).lhs).lhs); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); }) and ctx.nodeNumericValueEquals(ctx.nodeData(ctx.nodeData(node).lhs).lhs, 0)) or (((blk: { const __t = ctx.nodeTag(ctx.nodeData(node).rhs); break :blk (__t == .delete_expr or __t == .void_expr or __t == .typeof_expr or __t == .unary_plus or __t == .unary_minus or __t == .bitwise_not or __t == .logical_not); } and blk: { const __t = ctx.nodeTag(ctx.nodeData(node).rhs); break :blk (__t == .unary_minus or __t == .subtract); }) and blk: { const __t = ctx.nodeTag(ctx.nodeData(ctx.nodeData(node).rhs).lhs); break :blk (__t == .number_literal or __t == .string_literal or __t == .boolean_literal or __t == .null_literal or __t == .regex_literal or __t == .bigint_literal); }) and ctx.nodeNumericValueEquals(ctx.nodeData(ctx.nodeData(node).rhs).lhs, 0)))) {
+            ctx.report(node);
+        }
     }
 }
-
-fn isNegZero(idx: NodeIndex, ctx: *const LintContext) bool {
-    if (idx == .none) return false;
-    if (ctx.nodeTag(idx) != .unary_minus) return false;
-
-    const operand = ctx.nodeData(idx).lhs;
-    if (operand == .none) return false;
-    if (ctx.nodeTag(operand) != .number_literal) return false;
-
-    const text = ctx.tokenText(ctx.nodeMainToken(operand));
-    return std.mem.eql(u8, text, "0");
-}
-

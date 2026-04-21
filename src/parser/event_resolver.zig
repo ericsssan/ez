@@ -77,6 +77,11 @@ pub const Options = struct {
     /// rule is active.  The coarse `node_reachable` approximation (via
     /// terminator/branch events) is still populated.
     skip_cfg: bool = false,
+    /// Null-separated list of global names to pre-declare in the global scope
+    /// (ESLint `languageOptions.globals` whose value is anything other than
+    /// `"off"`).  References to these names resolve to the pre-declared
+    /// implicit-global symbol instead of remaining unresolved.
+    globals: []const u8 = &.{},
 };
 
 /// Lightweight stats used by the bench.  The full `SemanticResult` is the
@@ -452,16 +457,19 @@ pub fn resolveFull(
         },
 
         // ── Loop CodePath events ─────────────────────────────────
-        .loop_open => if (!skip_cfg) {
-            const loop_type: code_path_mod.LoopType = switch (e.aux) {
-                0 => .while_stmt,
-                1 => .do_while_stmt,
-                2 => .for_stmt,
-                3 => .for_in_stmt,
-                else => .for_of_stmt,
-            };
-            const n: NodeIndex = @enumFromInt(e.node);
-            try cpb.pushLoopContext(loop_type, null, n, n);
+        .loop_open => {
+            if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
+            if (!skip_cfg) {
+                const loop_type: code_path_mod.LoopType = switch (e.aux) {
+                    0 => .while_stmt,
+                    1 => .do_while_stmt,
+                    2 => .for_stmt,
+                    3 => .for_in_stmt,
+                    else => .for_of_stmt,
+                };
+                const n: NodeIndex = @enumFromInt(e.node);
+                try cpb.pushLoopContext(loop_type, null, n, n);
+            }
         },
         .loop_test_end => if (!skip_cfg) {
             cpb.setLoopContinueDest();
@@ -547,6 +555,46 @@ pub fn resolveFull(
             // falls back to makeUnreachable (rough but non-crashing).
         },
     };
+
+    // Retry unresolved references — `var`/`function` declarations hoist to the
+    // nearest var-scope, so a reference seen *before* the declaration in source
+    // order was left unresolved during the main pass.  Walk the scope chain
+    // using the now-complete binding_map.
+    if (!skip_resolve) {
+        const ref_count_retry = references.count();
+        var ri: u32 = 0;
+        while (ri < ref_count_retry) : (ri += 1) {
+            const ref_id = ReferenceId.fromInt(ri);
+            if (references.isResolved(ref_id)) continue;
+            const ref_scope = references.getScope(ref_id);
+            if (!ref_scope.isValid()) continue;
+            const ref_node = references.getNode(ref_id);
+            const node_i = @intFromEnum(ref_node);
+            if (node_i >= node_main_tokens.len) continue;
+            const main_tok = node_main_tokens[node_i];
+            const start = tok_starts[main_tok];
+            const len = tok_lens[main_tok];
+            const name = source[start .. start + len];
+            const name_hash = std.hash.Wyhash.hash(0, name);
+            var sid = ref_scope;
+            const scope_count: u32 = @intCast(scopes.kinds.items.len);
+            while (sid.toInt() < scope_count) {
+                const pkey = PrehashedKey{ .scope_id = sid.toInt(), .name = name, .name_hash = name_hash };
+                if (binding_map.getAdapted(pkey, PrehashedCtx{})) |sym_id| {
+                    references.resolve(ref_id, sym_id);
+                    const rk = references.getKind(ref_id);
+                    if (rk.isRead()) symbols.markRead(sym_id);
+                    if (rk.isWrite()) symbols.markWritten(sym_id);
+                    if (rk == .type_of) symbols.markTypeOf(sym_id);
+                    break;
+                }
+                const parent_sid = scopes.parent(sid);
+                if (parent_sid.toInt() == sid.toInt()) break; // root
+                if (!parent_sid.isValid()) break;
+                sid = parent_sid;
+            }
+        }
+    }
 
     // Post-passes: sort by symbol / scope for downstream lookups, matching
     // `semantic.zig`'s `buildRefRanges` and `buildScopeBindings`.

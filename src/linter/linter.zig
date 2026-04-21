@@ -156,6 +156,14 @@ const needs_semantic_flags: [registry.count]bool = blk: {
     break :blk arr;
 };
 
+const needs_cfg_flags: [registry.count]bool = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count]bool = undefined;
+    for (registry.all_rules, 0..) |Rule, i|
+        arr[i] = @hasDecl(Rule, "needs_cfg") and Rule.needs_cfg;
+    break :blk arr;
+};
+
 /// Per-rule language filter — from RuleMeta.lang (defaults to .all).
 const lang_flags: [registry.count]RuleLang = blk: {
     @setEvalBranchQuota(10_000);
@@ -285,6 +293,20 @@ pub fn lint(
 pub fn needsSemantic(config: ?*const Config) bool {
     for (0..registry.count) |rule_idx| {
         if (!needs_semantic_flags[rule_idx]) continue;
+        const sev = if (config) |cfg|
+            cfg.rule_severity_table[rule_idx]
+        else
+            default_severities[rule_idx];
+        if (sev != .off) return true;
+    }
+    return false;
+}
+
+/// Returns true when any active rule requires CodePathBuilder (CFG) output.
+/// When false, SemanticAnalyzer should be called with build_cfg=false.
+pub fn configNeedsCfg(config: ?*const Config) bool {
+    for (0..registry.count) |rule_idx| {
+        if (!needs_cfg_flags[rule_idx]) continue;
         const sev = if (config) |cfg|
             cfg.rule_severity_table[rule_idx]
         else

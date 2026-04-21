@@ -1,4 +1,6 @@
-const std = @import("std");
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-ternary
+
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -13,6 +15,11 @@ pub const meta = RuleMeta{
 };
 
 pub const relevant_tags = [_]Node.Tag{.conditional};
+
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    noTernaryOperator,
+};
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     ctx.report(node);

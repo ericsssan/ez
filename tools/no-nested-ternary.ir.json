@@ -1,0 +1,52 @@
+{
+  "name": "no-nested-ternary",
+  "category": "style",
+  "description": "Disallow nested ternary expressions",
+  "fixable": null,
+  "messages": {
+    "noNestedTernary": "Do not nest ternary expressions."
+  },
+  "handlers": [
+    {
+      "selector": "ConditionalExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary",
+            "operator": "||",
+            "lhs": {
+              "op": "node-tag-equals",
+              "node": {
+                "op": "conditional-alternate",
+                "node": {
+                  "op": "node-ref"
+                }
+              },
+              "estreeType": "ConditionalExpression"
+            },
+            "rhs": {
+              "op": "node-tag-equals",
+              "node": {
+                "op": "conditional-consequent",
+                "node": {
+                  "op": "node-ref"
+                }
+              },
+              "estreeType": "ConditionalExpression"
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "node-ref"
+              },
+              "messageId": "noNestedTernary"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

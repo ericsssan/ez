@@ -1,0 +1,102 @@
+{
+  "name": "no-new-func",
+  "category": "style",
+  "description": "Disallow `new` operators with the `Function` object",
+  "fixable": null,
+  "messages": {
+    "noFunctionConstructor": "The Function constructor is eval."
+  },
+  "constants": {
+    "callMethods": {
+      "kind": "string-set",
+      "values": [
+        "apply",
+        "bind",
+        "call"
+      ]
+    },
+    "__Function_names__": {
+      "kind": "string-array",
+      "values": [
+        "Function"
+      ]
+    }
+  },
+  "handlers": [
+    {
+      "selector": "Program:exit",
+      "kind": "for-each-unresolved-global-ref",
+      "namesConstant": "__Function_names__",
+      "refIdentifierBinding": "__ref_identifier__",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary",
+            "operator": "&&",
+            "lhs": {
+              "op": "binary",
+              "operator": "||",
+              "lhs": {
+                "op": "node-tag-equals",
+                "node": {
+                  "op": "parent-node",
+                  "node": {
+                    "op": "identifier",
+                    "name": "__ref_identifier__"
+                  }
+                },
+                "estreeType": "NewExpression"
+              },
+              "rhs": {
+                "op": "node-tag-equals",
+                "node": {
+                  "op": "parent-node",
+                  "node": {
+                    "op": "identifier",
+                    "name": "__ref_identifier__"
+                  }
+                },
+                "estreeType": "CallExpression"
+              }
+            },
+            "rhs": {
+              "op": "nodes-equal",
+              "a": {
+                "op": "node-main-child",
+                "node": {
+                  "op": "parent-node",
+                  "node": {
+                    "op": "identifier",
+                    "name": "__ref_identifier__"
+                  }
+                }
+              },
+              "b": {
+                "op": "identifier",
+                "name": "__ref_identifier__"
+              }
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "parent-node",
+                "node": {
+                  "op": "identifier",
+                  "name": "__ref_identifier__"
+                }
+              },
+              "messageId": "noFunctionConstructor"
+            }
+          ]
+        }
+      ],
+      "methodChainCheck": {
+        "methodsConstant": "callMethods",
+        "messageId": "noFunctionConstructor"
+      }
+    }
+  ]
+}

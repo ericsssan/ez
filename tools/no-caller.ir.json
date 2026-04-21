@@ -1,0 +1,104 @@
+{
+  "name": "no-caller",
+  "category": "style",
+  "description": "Disallow the use of `arguments.caller` or `arguments.callee`",
+  "fixable": null,
+  "messages": {
+    "unexpected": "Avoid arguments.{{prop}}."
+  },
+  "constants": {
+    "__rx_0__": {
+      "kind": "string-set",
+      "values": [
+        "callee",
+        "caller"
+      ]
+    }
+  },
+  "handlers": [
+    {
+      "selector": "MemberExpression",
+      "body": [
+        {
+          "op": "if",
+          "cond": {
+            "op": "binary",
+            "operator": "&&",
+            "lhs": {
+              "op": "binary",
+              "operator": "&&",
+              "lhs": {
+                "op": "binary",
+                "operator": "&&",
+                "lhs": {
+                  "op": "binary",
+                  "operator": "===",
+                  "lhs": {
+                    "op": "member",
+                    "object": {
+                      "op": "node-main-child",
+                      "node": {
+                        "op": "node-ref"
+                      }
+                    },
+                    "property": "name",
+                    "computed": false
+                  },
+                  "rhs": {
+                    "op": "literal",
+                    "value": "arguments"
+                  }
+                },
+                "rhs": {
+                  "op": "unary",
+                  "operator": "!",
+                  "operand": {
+                    "op": "node-is-computed",
+                    "node": {
+                      "op": "node-ref"
+                    }
+                  }
+                }
+              },
+              "rhs": {
+                "op": "member",
+                "object": {
+                  "op": "node-secondary-child",
+                  "node": {
+                    "op": "node-ref"
+                  }
+                },
+                "property": "name",
+                "computed": false
+              }
+            },
+            "rhs": {
+              "op": "set-contains",
+              "setName": "__rx_0__",
+              "value": {
+                "op": "member",
+                "object": {
+                  "op": "node-secondary-child",
+                  "node": {
+                    "op": "node-ref"
+                  }
+                },
+                "property": "name",
+                "computed": false
+              }
+            }
+          },
+          "then": [
+            {
+              "op": "report",
+              "node": {
+                "op": "node-ref"
+              },
+              "messageId": "unexpected"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

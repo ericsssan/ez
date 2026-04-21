@@ -4,6 +4,9 @@ const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
+const ReferenceId = @import("../../../parser/reference.zig").ReferenceId;
+
+pub const needs_semantic = true;
 
 pub const meta = RuleMeta{
     .name = "no-constant-binary-expression",
@@ -28,11 +31,27 @@ fn isAlwaysDefined(tag: Node.Tag) bool {
     };
 }
 
+fn isGlobalRef(node: NodeIndex, ctx: *const LintContext) bool {
+    const refs = ctx.references();
+    const count = refs.count();
+    var i: u32 = 0;
+    while (i < count) : (i += 1) {
+        const rid = ReferenceId.fromInt(i);
+        if (refs.getNode(rid) == node) {
+            const sym = refs.getSymbol(rid);
+            if (sym == .none) return true;
+            return ctx.symbols().getBindingKind(sym) == .implicit_global;
+        }
+    }
+    return true;
+}
+
 fn isNullOrUndefined(node: NodeIndex, ctx: *const LintContext) bool {
     const tag = ctx.nodeTag(node);
     if (tag == .null_literal) return true;
     if (tag == .identifier) {
-        return std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(node)), "undefined");
+        if (!std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(node)), "undefined")) return false;
+        return isGlobalRef(node, ctx);
     }
     return false;
 }

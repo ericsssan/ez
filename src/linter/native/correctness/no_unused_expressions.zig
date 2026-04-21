@@ -73,7 +73,19 @@ fn hasSideEffect(node: NodeIndex, ctx: *const LintContext, allow_short: bool, al
         // Delete has side effects
         .delete_expr => true,
 
-        // Sequence: side effect if any element has side effect.
+        // void evaluates its operand (which may have side effects)
+        .void_expr => hasSideEffect(ctx.nodeData(node).lhs, ctx, allow_short, allow_ternary, allow_tagged),
+
+        // TypeScript wrappers: check the inner expression (layout varies)
+        .ts_non_null_expr, .ts_as_expr => // lhs = expr, rhs = type/none
+            hasSideEffect(ctx.nodeData(node).lhs, ctx, allow_short, allow_ternary, allow_tagged),
+        .ts_type_assertion => // lhs = type, rhs = expr
+            hasSideEffect(ctx.nodeData(node).rhs, ctx, allow_short, allow_ternary, allow_tagged),
+
+        // Dynamic import() is always side-effectful (network fetch)
+        .import_expr => true,
+
+        // Sequence: ALL elements must have side effects (ESLint behavior: `f(), 0` is reported).
         // sequence_expr uses direct SubRange encoding: lhs = start, rhs = end
         .sequence_expr => {
             const seq_data = ctx.nodeData(node);
@@ -84,29 +96,30 @@ fn hasSideEffect(node: NodeIndex, ctx: *const LintContext, allow_short: bool, al
             };
             const parts = ctx.extraSlice(range);
             for (parts) |p| {
-                if (hasSideEffect(@enumFromInt(p), ctx, allow_short, allow_ternary, allow_tagged)) return true;
+                if (!hasSideEffect(@enumFromInt(p), ctx, allow_short, allow_ternary, allow_tagged)) return false;
             }
-            return false;
+            return true;
         },
 
         // Grouping: check inner
         .grouping_expr => hasSideEffect(ctx.nodeData(node).lhs, ctx, allow_short, allow_ternary, allow_tagged),
 
-        // Tagged templates: side effect, or allowed by option
-        .tagged_template => if (allow_tagged) true else true, // always side-effectful (tag is called)
+        // Tagged templates: valid only when allowTaggedTemplates is true.
+        .tagged_template => allow_tagged,
 
-        // Logical/ternary: side effect if any branch has side effect, or allowed by option
+        // Logical: with allowShortCircuit=false, always invalid.
+        // With allowShortCircuit=true, only the conditionally-executed RHS matters.
         .logical_and, .logical_or, .nullish_coalesce => {
-            if (allow_short) return true; // allowShortCircuit treats && || as having side effects
-            const d = ctx.nodeData(node);
-            return hasSideEffect(d.lhs, ctx, allow_short, allow_ternary, allow_tagged) or
-                hasSideEffect(d.rhs, ctx, allow_short, allow_ternary, allow_tagged);
+            if (!allow_short) return false;
+            return hasSideEffect(ctx.nodeData(node).rhs, ctx, allow_short, allow_ternary, allow_tagged);
         },
+        // Ternary: with allowTernary=false, always invalid.
+        // With allowTernary=true, BOTH branches must have side effects.
         .conditional => {
-            if (allow_ternary) return true; // allowTernary treats ?: as having side effects
+            if (!allow_ternary) return false;
             const d = ctx.nodeData(node);
             const cond_data = ctx.extraData(ast.Conditional, @intFromEnum(d.rhs));
-            return hasSideEffect(cond_data.consequent, ctx, allow_short, allow_ternary, allow_tagged) or
+            return hasSideEffect(cond_data.consequent, ctx, allow_short, allow_ternary, allow_tagged) and
                 hasSideEffect(cond_data.alternate, ctx, allow_short, allow_ternary, allow_tagged);
         },
 

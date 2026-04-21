@@ -1,62 +1,64 @@
+// GENERATED — do not edit. Source: tools/rule-ir-extract.js + tools/rule-codegen.js.
+// Rule: no-new-wrappers
+
+const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
 const LintContext = @import("../../lint_context.zig").LintContext;
 const RuleMeta = @import("../rule.zig").RuleMeta;
-const std = @import("std");
-
-pub const relevant_tags = [_]Node.Tag{.new_expr};
-pub const needs_semantic = true;
+const ref_mod = @import("../../../parser/reference.zig");
+const ReferenceId = ref_mod.ReferenceId;
 
 pub const meta = RuleMeta{
     .name = "no-new-wrappers",
-    .category = .suspicious,
+    .category = .style,
     .default_severity = .warning,
-    .description = "Disallow new operators with String, Number, and Boolean",
+    .description = "Disallow `new` operators with the `String`, `Number`, and `Boolean` objects",
 };
 
-const wrapper_types = [_][]const u8{ "String", "Number", "Boolean" };
+pub const relevant_tags = [_]Node.Tag{};
 
-pub fn run(node: NodeIndex, ctx: *const LintContext) void {
-    const data = ctx.nodeData(node);
-    const callee = data.lhs;
+pub const needs_semantic = true;
 
-    if (callee == .none) return;
+// messageIds (declared in rule meta.messages — carried for future use)
+const Messages = enum {
+    noConstructor,
+};
 
-    if (ctx.nodeTag(callee) != .identifier) return;
+const wrapperObjects = [_][]const u8{ "String", "Number", "Boolean" };
 
-    const name = ctx.tokenText(ctx.nodeMainToken(callee));
+fn containsStr(haystack: []const []const u8, needle: []const u8) bool {
+    for (haystack) |s| if (std.mem.eql(u8, s, needle)) return true;
+    return false;
+}
 
-    var is_wrapper = false;
-    for (wrapper_types) |wrapper| {
-        if (std.mem.eql(u8, name, wrapper)) { is_wrapper = true; break; }
-    }
-    if (!is_wrapper) return;
+pub fn run(_: NodeIndex, _: *const LintContext) void {}
 
-    // Only flag if the wrapper name resolves to the global built-in (not locally redefined).
-    // ESLint reports if variable.identifiers.length === 0 (no declarations, so it's a built-in).
-    // In our reference table, if the identifier has no matching resolved reference, it's either:
-    // - A global built-in (should report)
-    // - Marked as "off" in globals (should NOT report)
-    // The distinction is: if we find an unresolved reference, report. Otherwise, don't report.
+fn nodeArgsLenZero(c: *const LintContext, n: NodeIndex) bool {
+    if (n == .none) return false;
+    const d = c.nodeData(n);
+    if (d.rhs == .none) return true;
+    const sr = c.extraData(ast.SubRange, @intFromEnum(d.rhs));
+    return c.extraSlice(sr).len == 0;
+}
+
+pub fn runOnSymbols(ctx: *const LintContext) void {
     const refs = ctx.references();
-    const ReferenceId = @import("../../../parser/reference.zig").ReferenceId;
-    var i: u32 = 0;
-    while (i < refs.count()) : (i += 1) {
-        const ref_id = ReferenceId.fromInt(i);
-        if (refs.getNode(ref_id) != callee) continue;
-        // Found a reference to this callee.
-        // Only report if the reference is unresolved (undefined).
-        if (!refs.isResolved(ref_id)) {
-            ctx.report(node);
+    const count = refs.count();
+    var r: u32 = 0;
+    while (r < count) : (r += 1) {
+        const ref_id = ReferenceId.fromInt(r);
+        if (refs.isResolved(ref_id)) continue;
+        const __ref_identifier__ = refs.getNode(ref_id);
+        const __name__ = ctx.tokenText(ctx.nodeMainToken(__ref_identifier__));
+        var __matches = false;
+        for (wrapperObjects) |__n| { if (std.mem.eql(u8, __name__, __n)) { __matches = true; break; } }
+        if (!__matches) continue;
+        // Respect ESLint globals:"off" (config + inline /* global X:off */)
+        if (ctx.globalIsOff(__name__)) continue;
+        if (((ctx.nodeTag(ctx.parentOf(__ref_identifier__)) == .new_expr) and (ctx.nodeData(ctx.parentOf(__ref_identifier__)).lhs == __ref_identifier__))) {
+            ctx.report(ctx.parentOf(__ref_identifier__));
         }
-        return;
     }
-    // No references found means either:
-    // - The identifier is not tracked (e.g., marked "off" in globals)
-    // - The identifier is implicitly a built-in with no explicit references
-    // ESLint's logic is to report ONLY if variable exists with 0 identifiers.
-    // Without scope information, we can't distinguish these cases.
-    // Conservative approach: report only if we found an unresolved reference.
-    // Don't report if no references found.
 }

@@ -1,0 +1,23 @@
+{
+  "name": "no-debugger",
+  "category": "correctness",
+  "description": "Disallow the use of `debugger`",
+  "fixable": null,
+  "messages": {
+    "unexpected": "Unexpected 'debugger' statement."
+  },
+  "handlers": [
+    {
+      "selector": "DebuggerStatement",
+      "body": [
+        {
+          "op": "report",
+          "node": {
+            "op": "node-ref"
+          },
+          "messageId": "unexpected"
+        }
+      ]
+    }
+  ]
+}
