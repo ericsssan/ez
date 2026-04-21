@@ -1004,6 +1004,11 @@ pub fn convertSpansToUtf16(source: []const u8, tok_starts: []u32) u32 {
 /// All arrays must be sorted. Avoids re-scanning the source for each array.
 /// Returns the total UTF-16 length of the source.
 pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
+    // All-ASCII fast path: byte offsets already equal UTF-16 offsets — the
+    // arrays need no rewrite and the total length is just source.len.  One
+    // SIMD scan decides it.  Typical JS/TS source is pure ASCII.
+    if (isAllAscii(source)) return @intCast(source.len);
+
     var byte_pos: u32 = 0;
     var utf16_pos: u32 = 0;
     // Cursors: one per array, tracking which element to convert next.
@@ -1470,37 +1475,51 @@ pub fn computeNodePositions(
 }
 
 /// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).
-/// Line 1 starts at offset 0. Each `\n` starts a new line.
+/// Line 1 starts at offset 0. Each `\n` (or `\r` not followed by `\n`,
+/// or U+2028 / U+2029) starts a new line.
+///
+/// Single pass: size the output up-front using the SIMD-vectorised
+/// `std.mem.count` on `\n` (the overwhelming common case), then append
+/// any additional terminators as we fill.  Saves the entire "count"
+/// walk on files that use only `\n` line endings (most JS/TS sources).
 pub fn computeLineStarts(source: []const u8, alloc: std.mem.Allocator) ![]u32 {
-    // Count line terminators: \n, \r (not followed by \n), \u2028, \u2029
-    var count: u32 = 1; // line 1 always at offset 0
+    // Size output from a SIMD-vectorised `\n` count — exact for the common
+    // case of pure-LF line endings.  Tiny pad covers the occasional `\r`
+    // (no LF) or U+2028/9 without forcing a realloc.
+    const nl_count: u32 = @intCast(std.mem.count(u8, source, "\n"));
+    var capacity: u32 = nl_count + 1 + 16;
+
+    var starts = try alloc.alloc(u32, capacity);
+    errdefer alloc.free(starts);
+    starts[0] = 0;
+    var idx: u32 = 1;
     var i: usize = 0;
     while (i < source.len) : (i += 1) {
         const c = source[i];
-        if (c == '\n') { count += 1; }
-        else if (c == '\r') { count += 1; if (i + 1 < source.len and source[i + 1] == '\n') i += 1; } // \r\n = 1 line
-        else if (c == 0xE2 and i + 2 < source.len and source[i + 1] == 0x80 and (source[i + 2] == 0xA8 or source[i + 2] == 0xA9)) {
-            count += 1; i += 2; // U+2028 / U+2029 (3-byte UTF-8)
-        }
-    }
-
-    const starts = try alloc.alloc(u32, count);
-    starts[0] = 0;
-    var idx: u32 = 1;
-    i = 0;
-    while (i < source.len) : (i += 1) {
-        const c = source[i];
-        if (c == '\n') { if (idx < count) { starts[idx] = @intCast(i + 1); idx += 1; } }
-        else if (c == '\r') {
-            const skip_lf = (i + 1 < source.len and source[i + 1] == '\n');
-            if (skip_lf) i += 1;
-            if (idx < count) { starts[idx] = @intCast(i + 1); idx += 1; }
+        var add_here = false;
+        if (c == '\n') {
+            add_here = true;
+        } else if (c == '\r') {
+            if (i + 1 < source.len and source[i + 1] == '\n') i += 1;
+            add_here = true;
         } else if (c == 0xE2 and i + 2 < source.len and source[i + 1] == 0x80 and (source[i + 2] == 0xA8 or source[i + 2] == 0xA9)) {
             i += 2;
-            if (idx < count) { starts[idx] = @intCast(i + 1); idx += 1; }
+            add_here = true;
+        }
+        if (add_here) {
+            if (idx >= capacity) {
+                capacity *= 2;
+                starts = try alloc.realloc(starts, capacity);
+            }
+            starts[idx] = @intCast(i + 1);
+            idx += 1;
         }
     }
-    return starts[0..idx];
+    // Shrink to exact size.
+    if (idx < starts.len) {
+        starts = try alloc.realloc(starts, idx);
+    }
+    return starts;
 }
 
 // ── BOM Handling ─────────────────────────────────────────────────
