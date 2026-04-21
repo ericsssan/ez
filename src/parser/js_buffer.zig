@@ -1121,6 +1121,7 @@ pub fn computeNodePositions(
     tok_tags: []const token_mod.Tag,
     tok_starts: []const u32,
     tok_ends: []const u32,
+    pre_order: []const u32,
     node_count: u32,
     token_count: u32,
 ) !struct { starts: []u32, ends: []u32, max_tok: []u32, min_tok: []u32, sorted_by_start: []u32 } {
@@ -1454,22 +1455,32 @@ pub fn computeNodePositions(
         if (p != NONE and node_ends[i] > node_ends[p]) node_ends[p] = node_ends[i];
     }
 
-    // ── Sorted index for getNodeByRangeIndex: O(log n) lookup ──
-    // Sort node indices by (start ASC, range_size ASC) so innermost nodes
-    // come first among nodes sharing the same start position.
+    // ── Sorted index for getNodeByRangeIndex: no sort required ──
+    //
+    // pre_order is a DFS traversal in document order, so node_starts
+    // indexed through it is already non-decreasing — `for i: starts[pre_order[i]] <= starts[pre_order[i+1]]`.
+    // The only deviation from the sort's comparator is same-start ties:
+    // pre-order places parent before child (outer first), the comparator
+    // wants innermost first.  Parents and their descendants that share a
+    // start form a contiguous run in pre-order (siblings have distinct
+    // starts as ranges are non-overlapping), so reversing each equal-start
+    // run fixes the tie-break in O(n) total — no N log N sort, no
+    // per-comparison indirection.
     const sorted_by_start = try alloc.alloc(u32, n);
-    for (0..n) |i| sorted_by_start[i] = @intCast(i);
-    const SortCtx = struct {
-        starts: []const u32,
-        ends: []const u32,
-        pub fn lessThan(ctx: @This(), a: u32, b: u32) bool {
-            const sa = ctx.starts[a]; const sb = ctx.starts[b];
-            if (sa != sb) return sa < sb;
-            // Same start: smaller range (innermost) first
-            return (ctx.ends[a] -| sa) < (ctx.ends[b] -| sb);
+    {
+        var p: usize = 0;
+        while (p < n) {
+            const run_start_key = node_starts[pre_order[p]];
+            var q = p + 1;
+            while (q < n and node_starts[pre_order[q]] == run_start_key) q += 1;
+            // Copy pre_order[p..q] reversed into sorted_by_start[p..q].
+            var k: usize = 0;
+            while (k < q - p) : (k += 1) {
+                sorted_by_start[p + k] = pre_order[q - 1 - k];
+            }
+            p = q;
         }
-    };
-    std.mem.sortUnstable(u32, sorted_by_start, SortCtx{ .starts = node_starts, .ends = node_ends }, SortCtx.lessThan);
+    }
 
     return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok, .min_tok = minTok, .sorted_by_start = sorted_by_start };
 }

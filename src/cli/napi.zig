@@ -216,6 +216,7 @@ fn parseImpl(
         tokens.slice().items(.tag),
         tok_starts,
         tok_ends,
+        traversal.pre_order,
         node_count,
         token_count,
     );
@@ -521,6 +522,7 @@ fn parseAndLintImpl(
         tokens.slice().items(.tag),
         tok_starts,
         tok_ends,
+        traversal.pre_order,
         node_count,
         token_count,
     );
