@@ -236,10 +236,17 @@ pub fn resolveFull(
     defer scope_arena.deinit();
     const sa = scope_arena.allocator();
 
-    // Per-depth builders: one ArrayList per open scope on the stack.
-    // Entries appended unsorted during declare events; sorted on scope_close.
-    var builders: [256]std.ArrayListUnmanaged(BindingEntry) = undefined;
-    for (&builders) |*b| b.* = .{ .items = &.{}, .capacity = 0 };
+    // Single HashMap from name_hash → sym_id for all currently-visible names.
+    // Updated on every declare (add) and scope_close (undo).
+    // O(1) reference resolution instead of O(depth × entries_per_scope) linear scan.
+    var scope_map = std.AutoHashMapUnmanaged(u64, SymbolId){};
+    try scope_map.ensureTotalCapacity(sa, @intCast(est_syms));
+
+    // Per-depth undo stacks: on declare we record (name_hash, sym_id, prev) at
+    // target_depth so scope_close can restore the previous binding in scope_map.
+    const UndoEntry = struct { name_hash: u64, sym_id: SymbolId, prev: ?SymbolId };
+    var undo_stacks: [256]std.ArrayListUnmanaged(UndoEntry) = undefined;
+    for (&undo_stacks) |*u| u.* = .{ .items = &.{}, .capacity = 0 };
     // (freed by scope_arena.deinit)
 
     // Flat sorted binding store for the retry pass.
@@ -341,12 +348,27 @@ pub fn resolveFull(
             if (sp > 0) {
                 const closed_sid = stack[sp - 1];
                 sp -= 1;
-                if (builders[sp].items.len > 0) {
+                const closed_undos = undo_stacks[sp].items;
+                if (closed_undos.len > 0) {
+                    // Build retry-pass flat buffer from this scope's declared symbols.
                     const start: u32 = @intCast(all_entries.items.len);
-                    std.mem.sortUnstable(BindingEntry, builders[sp].items, {}, bindingLessThan);
-                    try all_entries.appendSlice(sa, builders[sp].items);
+                    for (closed_undos) |undo| {
+                        try all_entries.append(sa, .{ .name_hash = undo.name_hash, .sym_id = undo.sym_id });
+                    }
+                    std.mem.sortUnstable(BindingEntry, all_entries.items[start..], {}, bindingLessThan);
                     scope_ranges.items[closed_sid.toInt()] = .{ .start = start, .end = @intCast(all_entries.items.len) };
-                    builders[sp].clearRetainingCapacity();
+                    // Restore scope_map to pre-scope state (LIFO so shadowed entries are correct).
+                    var j: usize = closed_undos.len;
+                    while (j > 0) {
+                        j -= 1;
+                        const undo = closed_undos[j];
+                        if (undo.prev) |prev| {
+                            try scope_map.put(sa, undo.name_hash, prev);
+                        } else {
+                            _ = scope_map.remove(undo.name_hash);
+                        }
+                    }
+                    undo_stacks[sp].clearRetainingCapacity();
                 }
                 const closed_kind = scopes.kinds.items[closed_sid.toInt()];
                 if (closed_kind == .function or closed_kind == .global or
@@ -446,7 +468,9 @@ pub fn resolveFull(
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
-            try builders[target_depth].append(sa, .{ .name_hash = name_hash, .sym_id = sym_id });
+            const prev = scope_map.get(name_hash);
+            try undo_stacks[target_depth].append(sa, .{ .name_hash = name_hash, .sym_id = sym_id, .prev = prev });
+            try scope_map.put(sa, name_hash, sym_id);
             // Track running per-scope count — used by downstream code that
             // expects `bindings_count` to be populated (see semantic.zig).
             scopes.bindings_count.items[scope_id.toInt()] += 1;
@@ -464,26 +488,20 @@ pub fn resolveFull(
             const ref_id = try references.addReference(ref_kind, ref_node, scope_id, .none);
             if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
 
-            // Resolve via scope-chain walk with prehashed name.
+            // O(1) resolve via the scope_map (name_hash → sym_id for all visible names).
             if (sp == 0) continue;
             if (skip_resolve) continue;
             const main_tok = node_main_tokens[e.node];
-            const start = tok_starts[main_tok];
-            const len = tok_lens[main_tok];
-            const name = source[start .. start + len];
-            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
-            const sym_names = symbols.names.items;
-            var i: i32 = @as(i32, @intCast(sp)) - 1;
-            scope_walk: while (i >= 0) : (i -= 1) {
-                for (builders[@intCast(i)].items) |entry| {
-                    if (entry.name_hash == name_hash and std.mem.eql(u8, sym_names[entry.sym_id.toInt()], name)) {
-                        references.resolve(ref_id, entry.sym_id);
-                        if (ref_kind.isRead()) symbols.markRead(entry.sym_id);
-                        if (ref_kind.isWrite()) symbols.markWritten(entry.sym_id);
-                        if (ref_kind == .type_of) symbols.markTypeOf(entry.sym_id);
-                        break :scope_walk;
-                    }
-                }
+            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else blk: {
+                const start = tok_starts[main_tok];
+                const len = tok_lens[main_tok];
+                break :blk std.hash.Wyhash.hash(0, source[start .. start + len]);
+            };
+            if (scope_map.get(name_hash)) |sym_id| {
+                references.resolve(ref_id, sym_id);
+                if (ref_kind.isRead()) symbols.markRead(sym_id);
+                if (ref_kind.isWrite()) symbols.markWritten(sym_id);
+                if (ref_kind == .type_of) symbols.markTypeOf(sym_id);
             }
             // Unresolved → leave symbol_id = .none; retry pass handles forward refs.
         },
