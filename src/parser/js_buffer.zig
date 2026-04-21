@@ -1488,18 +1488,41 @@ pub fn computeNodePositions(
 /// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).
 /// Line 1 starts at offset 0. Each `\n` (or `\r` not followed by `\n`,
 /// or U+2028 / U+2029) starts a new line.
-///
-/// Single pass: size the output up-front using the SIMD-vectorised
-/// `std.mem.count` on `\n` (the overwhelming common case), then append
-/// any additional terminators as we fill.  Saves the entire "count"
-/// walk on files that use only `\n` line endings (most JS/TS sources).
 pub fn computeLineStarts(source: []const u8, alloc: std.mem.Allocator) ![]u32 {
-    // Size output from a SIMD-vectorised `\n` count — exact for the common
-    // case of pure-LF line endings.  Tiny pad covers the occasional `\r`
-    // (no LF) or U+2028/9 without forcing a realloc.
-    const nl_count: u32 = @intCast(std.mem.count(u8, source, "\n"));
-    var capacity: u32 = nl_count + 1 + 16;
+    // Fast path: LF-only ASCII-or-BMP source (covers essentially every
+    // modern JS/TS file).  Walk newlines with SIMD-vectorised
+    // indexOfScalarPos rather than a byte-by-byte loop with branches for
+    // CR and U+2028/9.
+    //
+    // Preconditions checked with cheap early-exit scans:
+    //   - no '\r' anywhere (no CRLF / CR-only line endings)
+    //   - no 0xE2 anywhere (no possibility of U+2028/9, which are 3-byte
+    //     UTF-8 sequences starting with 0xE2)
+    const has_cr = std.mem.indexOfScalar(u8, source, '\r') != null;
+    const has_e2 = std.mem.indexOfScalar(u8, source, 0xE2) != null;
 
+    const nl_count: u32 = @intCast(std.mem.count(u8, source, "\n"));
+
+    if (!has_cr and !has_e2) {
+        // Allocate exact size up-front — nl_count is authoritative here.
+        const starts = try alloc.alloc(u32, nl_count + 1);
+        errdefer alloc.free(starts);
+        starts[0] = 0;
+        var idx: u32 = 1;
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, source, pos, '\n')) |p| {
+            starts[idx] = @intCast(p + 1);
+            idx += 1;
+            pos = p + 1;
+        }
+        return starts;
+    }
+
+    // Slow path: rare line-terminator forms present.  Byte-by-byte scan
+    // with all the corner cases.  Sized from nl_count + small pad; a
+    // realloc catches the unusual file where CR-only lines or U+2028/9
+    // push us past the LF estimate.
+    var capacity: u32 = nl_count + 1 + 16;
     var starts = try alloc.alloc(u32, capacity);
     errdefer alloc.free(starts);
     starts[0] = 0;
@@ -1526,10 +1549,7 @@ pub fn computeLineStarts(source: []const u8, alloc: std.mem.Allocator) ![]u32 {
             idx += 1;
         }
     }
-    // Shrink to exact size.
-    if (idx < starts.len) {
-        starts = try alloc.realloc(starts, idx);
-    }
+    if (idx < starts.len) starts = try alloc.realloc(starts, idx);
     return starts;
 }
 
