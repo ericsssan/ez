@@ -5,20 +5,21 @@ const Token = @import("../src/parser/token.zig");
 const Tag = Token.Tag;
 
 fn expectTokens(source: []const u8, expected: []const Tag) !void {
-    var lexer = Lexer.init(testing.allocator, source);
-    for (expected) |exp_tag| {
-        const tok = lexer.next();
-        try testing.expectEqual(exp_tag, tok.tag);
+    var result = try Lexer.tokenizeWithLanguage(testing.allocator, source, .js);
+    defer result.deinit(testing.allocator);
+    const tags = result.tokens.items(.tag);
+    // tags includes the final EOF token; check expected tags then EOF
+    for (expected, 0..) |exp_tag, i| {
+        try testing.expectEqual(exp_tag, tags[i]);
     }
-    // Expect EOF at end
-    const eof = lexer.next();
-    try testing.expectEqual(Tag.eof, eof.tag);
+    try testing.expectEqual(Tag.eof, tags[expected.len]);
 }
 
 fn expectSingleToken(source: []const u8, expected_tag: Tag) !void {
-    var lexer = Lexer.init(testing.allocator, source);
-    const tok = lexer.next();
-    try testing.expectEqual(expected_tag, tok.tag);
+    var result = try Lexer.tokenizeWithLanguage(testing.allocator, source, .js);
+    defer result.deinit(testing.allocator);
+    const tags = result.tokens.items(.tag);
+    try testing.expectEqual(expected_tag, tags[0]);
 }
 
 // ── Keywords ─────────────────────────────────────────────

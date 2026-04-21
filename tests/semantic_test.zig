@@ -1,6 +1,6 @@
 const std = @import("std");
 const testing = std.testing;
-const Lexer = @import("../src/parser/lexer.zig").Lexer;
+const Lexer = @import("../src/parser/lexer.zig");
 const parser = @import("../src/parser/parser.zig");
 const semantic = @import("../src/parser/semantic.zig");
 const ast_mod = @import("../src/parser/ast.zig");

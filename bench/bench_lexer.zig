@@ -1,6 +1,5 @@
-// Lexer-only throughput bench per fixture.  Reports min_us + MB/s for:
+// Lexer3-only throughput bench per fixture.  Reports min_us + MB/s for:
 //  - Lex + materialize TokenList
-//  - Lex scan-only (no alloc)
 
 const std = @import("std");
 const ez = @import("ez");
@@ -33,11 +32,11 @@ pub fn main(init: std.process.Init) !void {
     const working_buf = try gpa.alloc(u8, WORKING_BUF_BYTES);
     defer gpa.free(working_buf);
 
-    std.debug.print("{s: <12}  {s: >8}  {s: >6}  {s: >8}  {s: >8}  {s: >8}  {s: >8}\n", .{
-        "fixture", "bytes", "toks", "lex_us", "MB/s", "scan_us", "scan_MB/s",
+    std.debug.print("{s: <12}  {s: >8}  {s: >6}  {s: >8}  {s: >8}\n", .{
+        "fixture", "bytes", "toks", "lex_us", "MB/s",
     });
-    std.debug.print("{s:-<12}  {s:->8}  {s:->6}  {s:->8}  {s:->8}  {s:->8}  {s:->8}\n", .{
-        "", "", "", "", "", "", "",
+    std.debug.print("{s:-<12}  {s:->8}  {s:->6}  {s:->8}  {s:->8}\n", .{
+        "", "", "", "", "",
     });
 
     for (FIXTURES) |fx| {
@@ -48,7 +47,6 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(source);
 
         var lex_times: [ITERATIONS]u64 = undefined;
-        var scan_times: [ITERATIONS]u64 = undefined;
         var tok_count: u32 = 0;
 
         // Lex + TokenList
@@ -70,23 +68,8 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Scan-only
-        {
-            for (0..WARMUP) |_| {
-                _ = Lexer.tokenizeCount(std.heap.page_allocator, source) catch 0;
-            }
-            for (0..ITERATIONS) |iter| {
-                const t0 = std.Io.Timestamp.now(io, .boot);
-                _ = Lexer.tokenizeCount(std.heap.page_allocator, source) catch { scan_times[iter] = 0; continue; };
-                const t1 = std.Io.Timestamp.now(io, .boot);
-                scan_times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
-            }
-        }
-
         const lex_med = minimum(&lex_times);
-        const scan_med = minimum(&scan_times);
         const lex_mbps: u64 = if (lex_med > 0) (source.len * 1000) / lex_med else 0;
-        const scan_mbps: u64 = if (scan_med > 0) (source.len * 1000) / scan_med else 0;
 
         // Token distribution
         {
@@ -109,10 +92,9 @@ pub fn main(init: std.process.Init) !void {
                 else if (name.len > 0 and (name[0] < 'a' or t == .arrow or std.mem.indexOf(u8, name, "_") != null)) op += 1
                 else other += 1;
             }
-            std.debug.print("{s: <12}  {d: >8}  {d: >6}  {d: >8}  {d: >8}  {d: >8}  {d: >8}  ", .{
+            std.debug.print("{s: <12}  {d: >8}  {d: >6}  {d: >8}  {d: >8}  ", .{
                 fx.name, source.len, tok_count,
                 lex_med / 1000, lex_mbps,
-                scan_med / 1000, scan_mbps,
             });
             const pct_i = if (tok_count > 0) (ident * 100) / tok_count else 0;
             const pct_o = if (tok_count > 0) (op * 100) / tok_count else 0;

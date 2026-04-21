@@ -188,4 +188,80 @@ pub fn build(b: *std.Build) void {
     bench_prof_cmd.step.dependOn(b.getInstallStep());
     const bench_prof_step = b.step("bench-profile", "resolveFull per-phase profile");
     bench_prof_step.dependOn(&bench_prof_cmd.step);
+
+    // ── Lint bench ───────────────────────────────────────────
+    const bench_lint_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_lint.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_lint_mod.addImport("ez", test_mod);
+    const bench_lint = b.addExecutable(.{
+        .name = "bench_lint",
+        .root_module = bench_lint_mod,
+    });
+    const bench_lint_cmd = b.addRunArtifact(bench_lint);
+    bench_lint_cmd.step.dependOn(b.getInstallStep());
+    const bench_lint_step = b.step("bench-lint", "Full Zig backend profile (lex+parse+resolve+lint)");
+    bench_lint_step.dependOn(&bench_lint_cmd.step);
+
+    // ── Lexer samply profiling build (ReleaseFast + DWARF symbols) ──────────
+    const bench_lex_syms_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_lexer.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
+    });
+    bench_lex_syms_mod.addImport("ez", test_mod);
+    const bench_lex_syms = b.addExecutable(.{
+        .name = "bench_lexer_syms",
+        .root_module = bench_lex_syms_mod,
+    });
+    const bench_lex_syms_install = b.addInstallArtifact(bench_lex_syms, .{});
+    const bench_lex_syms_step = b.step("bench-lexer-syms", "Build lexer bench with debug symbols for samply");
+    bench_lex_syms_step.dependOn(&bench_lex_syms_install.step);
+
+    // ── Ez full-pipeline bench (lex + parse + semantic, vs OXC) ─────────────
+    const bench_ez_parser_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_ez_parser.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_ez_parser_mod.addImport("ez", test_mod);
+    const bench_ez_parser = b.addExecutable(.{
+        .name = "bench_ez_parser",
+        .root_module = bench_ez_parser_mod,
+    });
+    const bench_ez_parser_cmd = b.addRunArtifact(bench_ez_parser);
+    bench_ez_parser_cmd.step.dependOn(b.getInstallStep());
+    const bench_ez_parser_step = b.step("bench-ez-parser", "Ez full pipeline vs OXC");
+
+    const bench_ez_parser_syms_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_ez_parser.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
+    });
+    bench_ez_parser_syms_mod.addImport("ez", test_mod);
+    const bench_ez_parser_syms = b.addExecutable(.{ .name = "bench_ez_parser_syms", .root_module = bench_ez_parser_syms_mod });
+    const bench_ez_parser_syms_install = b.addInstallArtifact(bench_ez_parser_syms, .{});
+    const bench_ez_parser_syms_step = b.step("bench-ez-parser-syms", "Build Ez parser bench with DWARF for sample");
+    bench_ez_parser_syms_step.dependOn(&bench_ez_parser_syms_install.step);
+    bench_ez_parser_step.dependOn(&bench_ez_parser_cmd.step);
+
+    // ── Backend bench (production path: what NAPI exposes to JS) ──
+    const bench_be_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_backend.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_be_mod.addImport("ez", test_mod);
+    const bench_be = b.addExecutable(.{
+        .name = "bench_backend",
+        .root_module = bench_be_mod,
+    });
+    const bench_be_cmd = b.addRunArtifact(bench_be);
+    bench_be_cmd.step.dependOn(b.getInstallStep());
+    const bench_be_step = b.step("bench-backend", "Zig backend profile (lex+parse+resolve+traversal+writebuf)");
+    bench_be_step.dependOn(&bench_be_cmd.step);
 }

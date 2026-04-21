@@ -62,24 +62,6 @@ pub fn main(init: std.process.Init) !void {
         printStats("Lexer only", &times, source.len);
     }
 
-    // ── Phase 1b: Lexer scan-only (no TokenList materialization) ─────
-    // Measures pure scanning speed — the upper bound on lex throughput.
-    {
-        for (0..WARMUP) |_| {
-            _ = Lexer.tokenizeCount(std.heap.page_allocator, source) catch 0;
-        }
-        for (0..ITERATIONS) |iter| {
-            const t0 = std.Io.Timestamp.now(io, .boot);
-            _ = Lexer.tokenizeCount(std.heap.page_allocator, source) catch {
-                times[iter] = 0;
-                continue;
-            };
-            const t1 = std.Io.Timestamp.now(io, .boot);
-            times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
-        }
-        printStats("Lexer scan-only (no alloc)", &times, source.len);
-    }
-
     // ── Phase 2: Lex + Parse ────────────────────────────────────────
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);

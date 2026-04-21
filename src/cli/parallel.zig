@@ -208,7 +208,10 @@ pub const ParallelRunner = struct {
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.parse_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         var sem_result = if (linter_mod.needsSemantic(self.config))
-            semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{ .build_parents = true }) catch {
+            semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{
+                .build_parents = true,
+                .build_cfg = linter_mod.configNeedsCfg(self.config),
+            }) catch {
                 const msg = std.fmt.allocPrint(
                     self.allocator,
                     "{s}: error: semantic analysis failed\n",

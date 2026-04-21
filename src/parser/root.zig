@@ -6,7 +6,7 @@ pub const span = @import("span.zig");
 pub const diagnostic = @import("diagnostic.zig");
 pub const debug = @import("debug.zig");
 
-pub const Lexer = @import("lexer.zig").Lexer;
+pub const Lexer = @import("lexer.zig");
 pub const Parser = @import("parser.zig").Parser;
 pub const scope = @import("scope.zig");
 pub const symbol = @import("symbol.zig");
@@ -25,7 +25,6 @@ test {
     _ = @import("span.zig");
     _ = @import("diagnostic.zig");
     _ = @import("debug.zig");
-    _ = @import("lexer.zig");
     _ = @import("parser.zig");
     _ = @import("scope.zig");
     _ = @import("symbol.zig");

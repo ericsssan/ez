@@ -227,20 +227,18 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Dump tokens mode ─────────────────────────────────────
     if (dump_tokens) {
-        var lexer = Lexer.initWithLanguage(allocator, source, lang);
-        while (true) {
-            const tok = lexer.next();
-            const text = tok.tag.lexeme() orelse blk: {
-                const start = tok.start;
+        var lex_result = try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path));
+        defer lex_result.deinit(allocator);
+        const tok_tags = lex_result.tokens.items(.tag);
+        const tok_starts = lex_result.tokens.items(.start);
+        for (tok_tags, tok_starts) |tag, start| {
+            const text = tag.lexeme() orelse blk: {
                 var end = start;
-                while (end < source.len and isTokenChar(source[end])) {
-                    end += 1;
-                }
+                while (end < source.len and isTokenChar(source[end])) end += 1;
                 if (end == start and start < source.len) end = start + 1;
                 break :blk source[start..end];
             };
-            try stdout.print("{d:>6} {s:<30} {s}\n", .{ tok.start, @tagName(tok.tag), text });
-            if (tok.tag == .eof) break;
+            try stdout.print("{d:>6} {s:<30} {s}\n", .{ start, @tagName(tag), text });
         }
         try stdout.flush();
         return;
@@ -307,7 +305,10 @@ fn lintSingleFile(
         }
     }
 
-    var sem_result = try semantic.SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{ .build_parents = true });
+    var sem_result = try semantic.SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{
+        .build_parents = true,
+        .build_cfg = linter.configNeedsCfg(config),
+    });
     defer sem_result.deinit(allocator);
 
     const raw_diagnostics = try linter.lint(allocator, &tree, &sem_result, config, lang);
