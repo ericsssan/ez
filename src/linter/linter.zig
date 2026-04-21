@@ -203,9 +203,10 @@ pub fn lint(
     config: ?*const Config,
     language: Language,
 ) ![]const LintDiagnostic {
-    // Keep safety checks in ReleaseFast — prevents Zig optimizer from generating
-    // illegal instructions on edge-case ASTs (e.g. generator+class+yield combos).
-    @setRuntimeSafety(true);
+    // The earlier illegal-instruction hazard on generator+class+yield combos
+    // was traced to specific rule bugs (require-yield, extraData OOB) which
+    // are now fixed — no need to force safety back on in the hot loop.
+    @setRuntimeSafety(false);
 
     var diagnostics: std.ArrayList(LintDiagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
