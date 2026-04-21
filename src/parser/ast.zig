@@ -709,6 +709,9 @@ pub const Ast = struct {
     /// parser was invoked without event emission enabled.  When present, the
     /// event-driven semantic analyzer consumes this instead of walking the tree.
     scope_events: []const ScopeEvent = &.{},
+    /// Precomputed wyhash(0, name) per token index for .identifier tokens.
+    /// Not owned by Ast — lifetime is tied to the TokenizeResult that produced it.
+    tok_hashes: []const u64 = &.{},
 
     pub const NodeList = std.MultiArrayList(Node);
     pub const TokenList = std.MultiArrayList(struct {

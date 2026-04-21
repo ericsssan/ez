@@ -35,6 +35,9 @@ pub const TokenizeResult = struct {
     comment_kinds: []const u8,
     comment_count: u32,
     line_starts: []const u32,
+    /// Precomputed wyhash(0, name) for each token at index i where tag == .identifier.
+    /// Zero for all other token kinds. Length == tokens.capacity (may exceed tokens.len).
+    tok_hashes: []u64,
 
     pub fn deinit(self: *TokenizeResult, allocator: std.mem.Allocator) void {
         self.tokens.deinit(allocator);
@@ -42,6 +45,7 @@ pub const TokenizeResult = struct {
         if (self.comment_ends.len > 0) allocator.free(self.comment_ends);
         if (self.comment_kinds.len > 0) allocator.free(self.comment_kinds);
         if (self.line_starts.len > 0) allocator.free(self.line_starts);
+        if (self.tok_hashes.len > 0) allocator.free(self.tok_hashes);
     }
 };
 
@@ -364,6 +368,10 @@ pub fn tokenizeWithAllOptions(
     var len_ptr   = ts_init.items(.len).ptr;
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
+
+    const hashes_raw = try alloc.alloc(u64, max_toks + 1);
+    @memset(hashes_raw, 0);
+    const hash_ptr: [*]u64 = hashes_raw.ptr;
 
     const cm_cap: u32 = @max(n / 200 + 16, 16);
     var cm_s = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
@@ -688,6 +696,7 @@ pub fn tokenizeWithAllOptions(
         }
 
         // ── Emit token ──
+        if (tag == .identifier) hash_ptr[tok_n] = std.hash.Wyhash.hash(0, src[pos..end]);
         tag_ptr[tok_n]   = tag;
         start_ptr[tok_n] = pos;
         len_ptr[tok_n]   = end - pos;
@@ -713,5 +722,6 @@ pub fn tokenizeWithAllOptions(
         .comment_kinds  = try cm_k.toOwnedSlice(alloc),
         .comment_count  = @intCast(cm_s.items.len),
         .line_starts    = try ls.toOwnedSlice(alloc),
+        .tok_hashes     = hashes_raw,
     };
 }

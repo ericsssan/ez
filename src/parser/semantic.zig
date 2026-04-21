@@ -108,6 +108,7 @@ pub const SemanticAnalyzer = struct {
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
         var result = try event_resolver.resolveFull(allocator, ast, ast.scope_events, .{
             .skip_cfg = !opts.build_cfg,
+            .tok_hashes = ast.tok_hashes,
         });
         if (opts.build_parents) {
             result.parent_indices = try parent_builder.computeParents(ast, allocator);

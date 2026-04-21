@@ -17,9 +17,10 @@ fn lintSource(source: []const u8) ![]const LintDiagnostic {
     var tokens = lex_result.tokens;
     var tree = try Parser.parse(allocator, source, tokens.slice());
     defer tree.deinit(allocator);
+    tree.tok_hashes = lex_result.tok_hashes;
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
-    return linter.lint(allocator, &tree, &sem, null);
+    return linter.lint(allocator, &tree, &sem, null, .js);
 }
 
 fn expectRule(diagnostics: []const LintDiagnostic, rule_name: []const u8) !void {

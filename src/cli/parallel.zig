@@ -205,6 +205,7 @@ pub const ParallelRunner = struct {
             });
             return;
         };
+        tree.tok_hashes = lex_result.tok_hashes;
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.parse_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         var sem_result = if (linter_mod.needsSemantic(self.config))

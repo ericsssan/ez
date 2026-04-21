@@ -24,7 +24,7 @@ fn parseAndLint(source: []const u8) !struct { nodes: usize, errors: usize, lint_
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
 
-    const diags = try linter.lint(allocator, &tree, &sem, null);
+    const diags = try linter.lint(allocator, &tree, &sem, null, .js);
     defer allocator.free(diags);
 
     return .{
@@ -129,7 +129,7 @@ test "recovery: lint fires on valid nodes despite errors" {
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
 
-    const diags = try linter.lint(allocator, &tree, &sem, null);
+    const diags = try linter.lint(allocator, &tree, &sem, null, .js);
     defer allocator.free(diags);
 
     var found_debugger = false;

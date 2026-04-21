@@ -95,6 +95,7 @@ fn parseImpl(
         .is_module = false,
         .emit_events = true,
     }) catch |e| return e;
+    tree.tok_hashes = lex_result.tok_hashes;
 
     // Compute parent indices and DFS traversal orders in a single pass.
     // All three arrays are allocated into the bump region.
@@ -381,6 +382,7 @@ fn parseAndLintImpl(
         .is_module = false,
         .emit_events = true,
     }) catch |e| return e;
+    tree.tok_hashes = lex_result.tok_hashes;
 
     const traversal = parent_builder.computeTraversal(&tree, alloc) catch |e| return e;
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);

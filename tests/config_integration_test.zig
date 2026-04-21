@@ -21,7 +21,7 @@ fn lintWithConfig(source: []const u8, config: ?*const Config) ![]const LintDiagn
     defer tree.deinit(allocator);
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
-    return linter.lint(allocator, &tree, &sem, config);
+    return linter.lint(allocator, &tree, &sem, config, .js);
 }
 
 fn lintWithInlineDisables(source: []const u8) ![]const LintDiagnostic {
@@ -31,7 +31,7 @@ fn lintWithInlineDisables(source: []const u8) ![]const LintDiagnostic {
     defer tree.deinit(allocator);
     var sem = try SemanticAnalyzer.analyze(allocator, &tree);
     defer sem.deinit(allocator);
-    const raw = try linter.lint(allocator, &tree, &sem, null);
+    const raw = try linter.lint(allocator, &tree, &sem, null, .js);
     defer allocator.free(raw);
     var disables = InlineDisables.parse(allocator, source) catch InlineDisables.empty();
     defer disables.deinit();

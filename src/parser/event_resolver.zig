@@ -82,6 +82,9 @@ pub const Options = struct {
     /// `"off"`).  References to these names resolve to the pre-declared
     /// implicit-global symbol instead of remaining unresolved.
     globals: []const u8 = &.{},
+    /// Precomputed wyhash(0, name) per token index from the lexer.  When
+    /// non-empty, eliminates runtime Wyhash calls in the identifier resolve loop.
+    tok_hashes: []const u64 = &.{},
 };
 
 /// Lightweight stats used by the bench.  The full `SemanticResult` is the
@@ -243,6 +246,7 @@ pub fn resolveFull(
     const tok_lens = ast.tokens.items(.len);
     const node_main_tokens = ast.nodes.items(.main_token);
     const source = ast.source;
+    const tok_hashes = opts.tok_hashes;
 
     // Control-flow state — cfg_alive tracks whether the current path is live.
     // Terminators set it to false; branch_open/else/close save/restore/merge
@@ -424,7 +428,7 @@ pub fn resolveFull(
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
-            const name_hash = std.hash.Wyhash.hash(0, name);
+            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
             var i: i32 = @as(i32, @intCast(sp)) - 1;
             while (i >= 0) : (i -= 1) {
                 const sid = stack[@intCast(i)];
@@ -575,7 +579,7 @@ pub fn resolveFull(
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
-            const name_hash = std.hash.Wyhash.hash(0, name);
+            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
             var sid = ref_scope;
             const scope_count: u32 = @intCast(scopes.kinds.items.len);
             while (sid.toInt() < scope_count) {
