@@ -156,6 +156,62 @@ pub const InlineDisables = struct {
         self.* = undefined;
     }
 
+    /// Parse directives from a pre-tokenized comment list.  Avoids the full
+    /// source state-machine scan done by `parse`: the lexer already
+    /// identified every comment while tokenizing, so we iterate that array
+    /// and only walk the source to count newlines for line numbers.
+    ///
+    /// `comment_kinds[i]` is 0 for line comments (`//`) and 1 for block
+    /// comments (`/* */`).  `comment_starts[i]` points to the leading `/`.
+    /// `comment_ends[i]` is one past the end: for line comments, before the
+    /// trailing newline; for block comments, after `*/`.
+    pub fn parseFromComments(
+        allocator: std.mem.Allocator,
+        source: []const u8,
+        comment_starts: []const u32,
+        comment_ends: []const u32,
+        comment_kinds: []const u8,
+    ) !InlineDisables {
+        var directives: std.ArrayList(DisableDirective) = .empty;
+        errdefer directives.deinit(allocator);
+
+        var pos: usize = 0;
+        var line: u32 = 0;
+        const n = @min(@min(comment_starts.len, comment_ends.len), comment_kinds.len);
+        var i: usize = 0;
+        while (i < n) : (i += 1) {
+            const c_start: usize = comment_starts[i];
+            const c_end: usize = comment_ends[i];
+            if (c_start > source.len) break;
+
+            // Count newlines between last comment and this one (std.mem.count is SIMD-vectorized on supported archs).
+            const up_to: usize = @min(c_start, source.len);
+            if (up_to > pos) {
+                line += @intCast(std.mem.count(u8, source[pos..up_to], "\n"));
+                pos = up_to;
+            }
+
+            // Body of the comment — skip leading `//` or `/*` and, for block
+            // comments, the trailing `*/`.  Bail if bounds look corrupt.
+            if (c_start + 2 > c_end or c_end > source.len) continue;
+            const body_start: usize = c_start + 2;
+            const body_end: usize = if (comment_kinds[i] == 1 and c_end >= body_start + 2)
+                c_end - 2
+            else
+                c_end;
+            if (body_end <= body_start) continue;
+            const body = source[body_start..body_end];
+            if (tryParseDirective(body, line)) |directive| {
+                try directives.append(allocator, directive);
+            }
+        }
+
+        return .{
+            .directives = try directives.toOwnedSlice(allocator),
+            .allocator = allocator,
+        };
+    }
+
     /// Check if a diagnostic at `line` (0-indexed) for `rule_name` should be suppressed.
     pub fn isSuppressed(self: *const InlineDisables, line: u32, rule_name: []const u8) bool {
         if (self.directives.len == 0) return false;

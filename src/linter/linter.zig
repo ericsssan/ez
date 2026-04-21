@@ -210,6 +210,9 @@ pub fn lint(
     var diagnostics: std.ArrayList(LintDiagnostic) = .empty;
     errdefer diagnostics.deinit(allocator);
 
+    const inline_globals = try @import("lint_context.zig").scanInlineGlobals(allocator, tree.source);
+    defer allocator.free(inline_globals);
+
     var ctx = LintContext{
         .ast = tree,
         .semantic = semantic,
@@ -218,6 +221,7 @@ pub fn lint(
         .language = language,
         .settings = if (config) |cfg| cfg.settings else null,
         .language_options = if (config) |cfg| cfg.language_options else null,
+        .inline_globals = inline_globals,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────

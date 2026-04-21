@@ -63,42 +63,19 @@ fn alwaysReturns(node: NodeIndex, ctx: *const LintContext) bool {
 
 /// Check if `node` (if_stmt or if_else_stmt) is in a "statement list" position.
 /// i.e., its parent is root/block_stmt/switch_case/switch_default.
-/// Also check that this node is NOT the alternate of another if statement
+/// Also rejects nodes that are the alternate of another if_else_stmt
 /// (to avoid double-reporting in else-if chains).
 fn isTopLevelIfInStatementList(node: NodeIndex, ctx: *const LintContext) bool {
-    const node_int = @intFromEnum(node);
-    const n = ctx.nodeCount();
-    var i: u32 = 0;
-    while (i < n) : (i += 1) {
-        const ni: NodeIndex = @enumFromInt(i);
-        const tag = ctx.nodeTag(ni);
-        const data = ctx.nodeData(ni);
-
-        switch (tag) {
-            // Statement list parents: root, block_stmt (direct SubRange)
-            .root, .block_stmt, .static_block => {
-                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
-                for (ctx.extraSlice(range)) |raw| {
-                    if (raw == node_int) return true;
-                }
-            },
-            // switch_case, switch_default: rhs = extra SubRange
-            .switch_case, .switch_default => {
-                if (data.rhs == .none) continue;
-                const range = ctx.extraData(SubRange, @intFromEnum(data.rhs));
-                for (ctx.extraSlice(range)) |raw| {
-                    if (raw == node_int) return true;
-                }
-            },
-            // If this node is the alternate of another if statement: NOT top-level
-            .if_else_stmt => {
-                const if_data = ctx.extraData(ast.IfData, @intFromEnum(data.rhs));
-                if (@intFromEnum(if_data.alternate) == node_int) return false;
-            },
-            else => {},
-        }
+    const parent = ctx.parentOf(node);
+    if (parent == .none) return false;
+    const tag = ctx.nodeTag(parent);
+    switch (tag) {
+        .root, .block_stmt, .static_block, .switch_case, .switch_default => return true,
+        // If `node` is the alternate of another if_else_stmt, it's an else-if chain
+        // — not a top-level if.  (If it's the consequent, we also return false.)
+        .if_else_stmt => return false,
+        else => return false,
     }
-    return false;
 }
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {

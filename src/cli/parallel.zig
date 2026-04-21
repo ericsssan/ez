@@ -171,7 +171,7 @@ pub const ParallelRunner = struct {
 
         const lang = Language.fromExtension(file_path) orelse .js;
 
-        var tokens = (Lexer.tokenizeWithLanguage(arena, source, lang) catch {
+        const lex_result = Lexer.tokenizeWithLanguage(arena, source, lang) catch {
             const msg = std.fmt.allocPrint(
                 self.allocator,
                 "{s}: error: tokenization failed\n",
@@ -185,7 +185,8 @@ pub const ParallelRunner = struct {
                 .had_error = true,
             });
             return;
-        }).tokens;
+        };
+        var tokens = lex_result.tokens;
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.lex_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         const is_module = std.mem.endsWith(u8, file_path, ".mjs") or std.mem.endsWith(u8, file_path, ".mts");
@@ -207,7 +208,7 @@ pub const ParallelRunner = struct {
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.parse_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
         var sem_result = if (linter_mod.needsSemantic(self.config))
-            semantic_mod.SemanticAnalyzer.analyze(arena, &tree) catch {
+            semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{ .build_parents = true }) catch {
                 const msg = std.fmt.allocPrint(
                     self.allocator,
                     "{s}: error: semantic analysis failed\n",
@@ -243,8 +244,15 @@ pub const ParallelRunner = struct {
         };
         if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.lint_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
 
-        // Filter by inline disable comments.
-        var disables = InlineDisables.parse(arena, source) catch InlineDisables.empty();
+        // Filter by inline disable comments.  Use the comment arrays the
+        // lexer already produced — avoids a second full source scan.
+        var disables = InlineDisables.parseFromComments(
+            arena,
+            source,
+            lex_result.comment_starts,
+            lex_result.comment_ends,
+            lex_result.comment_kinds,
+        ) catch InlineDisables.empty();
         const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, source) catch raw_diagnostics;
 
         // Count total diagnostics (parse errors + lint diagnostics).

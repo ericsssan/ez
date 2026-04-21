@@ -60,6 +60,17 @@ pub const LintDiagnostic = struct {
     }
 };
 
+// ── Inline Global Directive ────────────────────────────────
+
+/// One `/* global name[:value] */` entry parsed from source comments.
+/// `is_off` is true when value is literally "off".  Entries are collected
+/// once per file by `scanInlineGlobals` so per-lookup cost is O(n) on the
+/// small entry list instead of O(source) per call.
+pub const InlineGlobalEntry = struct {
+    name: []const u8,
+    is_off: bool,
+};
+
 // ── Lint Context ───────────────────────────────────────────
 
 pub const LintContext = struct {
@@ -80,6 +91,9 @@ pub const LintContext = struct {
     settings: ?*const std.json.Value = null,
     /// ESLint `languageOptions` object from config. Points into the config's retained JSON parse tree.
     language_options: ?*const std.json.Value = null,
+    /// Inline `/* global <name>[:off|readonly|...] */` directives parsed from source.
+    /// Populated once by the linter before rules run; empty when no directives exist.
+    inline_globals: []const InlineGlobalEntry = &.{},
 
     // ── AST accessors ─────────────────────────────────────
 
@@ -97,6 +111,160 @@ pub const LintContext = struct {
 
     pub fn tokenText(self: *const LintContext, index: TokenIndex) []const u8 {
         return self.ast.tokenText(index);
+    }
+
+    pub fn tokenLen(self: *const LintContext, index: TokenIndex) u32 {
+        return self.ast.tokens.items(.len)[index];
+    }
+
+    pub fn tokenEnd(self: *const LintContext, index: TokenIndex) u32 {
+        return self.ast.tokenStart(index) + self.tokenLen(index);
+    }
+
+    pub fn tokenHasNewlineBefore(self: *const LintContext, index: TokenIndex) bool {
+        return self.ast.tokens.items(.has_newline_before)[index];
+    }
+
+    pub fn tokenHasSpaceBetween(self: *const LintContext, a: TokenIndex, b: TokenIndex) bool {
+        return self.ast.tokenStart(b) > self.tokenEnd(a);
+    }
+
+    /// Parent of `n`, skipping intermediate grouping_expr wrappers.
+    pub fn parentOfSkipGrouping(self: *const LintContext, n: NodeIndex) NodeIndex {
+        var p = self.parentOf(n);
+        while (p != .none and self.ast.nodeTag(p) == .grouping_expr)
+            p = self.parentOf(p);
+        return p;
+    }
+
+    /// Returns true when `n` is directly in a boolean context:
+    /// condition of if/while/do-while/for, operand of !, condition of ternary,
+    /// or sole argument to Boolean()/new Boolean().
+    /// Walks up through grouping_expr wrappers before checking the parent slot.
+    pub fn nodeInBooleanCtx(self: *const LintContext, n: NodeIndex) bool {
+        var child = n;
+        var p = self.parentOf(child);
+        while (p != .none and self.ast.nodeTag(p) == .grouping_expr) {
+            child = p;
+            p = self.parentOf(p);
+        }
+        if (p == .none) return false;
+        const ptag = self.ast.nodeTag(p);
+        const pdata = self.ast.nodeData(p);
+        return switch (ptag) {
+            .if_stmt, .if_else_stmt, .while_stmt => pdata.lhs == child,
+            .do_while_stmt => pdata.rhs == child,
+            .logical_not => pdata.lhs == child,
+            .conditional => pdata.lhs == child,
+            .for_stmt => blk: {
+                const fdata = self.ast.extraData(ast_mod.ForData, @intFromEnum(pdata.lhs));
+                break :blk fdata.condition == child;
+            },
+            // Boolean(!!x) / new Boolean(!!x) — callee must be bare `Boolean` identifier
+            .call_expr, .new_expr, .optional_call_expr => blk: {
+                const callee = pdata.lhs;
+                if (callee == .none) break :blk false;
+                if (self.ast.nodeTag(callee) != .identifier) break :blk false;
+                const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+                if (!std.mem.eql(u8, name, "Boolean")) break :blk false;
+                if (pdata.rhs == .none) break :blk false;
+                const sr = self.ast.extraData(SubRange, @intFromEnum(pdata.rhs));
+                const args = self.ast.extraSlice(sr);
+                if (args.len == 0) break :blk false;
+                break :blk child == @as(NodeIndex, @enumFromInt(args[0]));
+            },
+            else => false,
+        };
+    }
+
+    /// Main child of `n` (data.lhs), with any grouping_expr wrappers stripped.
+    pub fn nodeMainChildSkipGrouping(self: *const LintContext, n: NodeIndex) NodeIndex {
+        if (n == .none) return .none;
+        var child = self.ast.nodeData(n).lhs;
+        while (child != .none and self.ast.nodeTag(child) == .grouping_expr) {
+            child = self.ast.nodeData(child).lhs;
+        }
+        return child;
+    }
+
+    /// Returns true when `n` is a call or new expression whose callee is the
+    /// bare identifier "Boolean" (e.g. `Boolean(x)` or `new Boolean(x)`).
+    pub fn nodeIsBooleanCall(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        const tag = self.ast.nodeTag(n);
+        if (tag != .call_expr and tag != .new_expr and tag != .optional_call_expr) return false;
+        const callee = self.ast.nodeData(n).lhs;
+        if (callee == .none) return false;
+        if (self.ast.nodeTag(callee) != .identifier) return false;
+        const name = self.ast.tokenText(self.ast.nodeMainToken(callee));
+        return std.mem.eql(u8, name, "Boolean");
+    }
+
+    /// Returns true when any element slot of an ArrayExpression is a hole (null element).
+    pub fn nodeElementsHasNull(self: *const LintContext, n: NodeIndex) bool {
+        if (n == .none) return false;
+        const data = self.ast.nodeData(n);
+        if (data.lhs == .none or data.rhs == .none) return false;
+        const sr = ast_mod.SubRange{
+            .start = @intFromEnum(data.lhs),
+            .end = @intFromEnum(data.rhs),
+        };
+        for (self.extraSlice(sr)) |raw| {
+            if (@as(NodeIndex, @enumFromInt(raw)) == .none) return true;
+        }
+        return false;
+    }
+
+    /// Callee of a call/new expression, with grouping_expr layers stripped.
+    /// Returns .none when `n` is .none or lhs is .none.
+    pub fn calleeOf(self: *const LintContext, n: NodeIndex) NodeIndex {
+        if (n == .none) return .none;
+        var callee = self.ast.nodeData(n).lhs;
+        while (callee != .none and self.ast.nodeTag(callee) == .grouping_expr)
+            callee = self.ast.nodeData(callee).lhs;
+        return callee;
+    }
+
+    /// Returns true if the static property name of a MemberExpression equals `name`.
+    /// Handles both non-computed (obj.prop) and computed string-literal (obj["prop"]) forms.
+    pub fn nodePropNameEquals(self: *const LintContext, n: NodeIndex, name: []const u8) bool {
+        if (n == .none) return false;
+        const tag = self.ast.nodeTag(n);
+        const rhs = self.ast.nodeData(n).rhs;
+        if (tag == .member_expr or tag == .optional_member_expr) {
+            return std.mem.eql(u8, self.ast.tokenText(self.ast.nodeMainToken(rhs)), name);
+        }
+        if (tag == .computed_member_expr or tag == .optional_computed_member_expr) {
+            if (self.ast.nodeTag(rhs) == .string_literal) {
+                const raw = self.ast.tokenText(self.ast.nodeMainToken(rhs));
+                if (raw.len >= 2) return std.mem.eql(u8, raw[1 .. raw.len - 1], name);
+            }
+            // No-expression template literal: `propName`
+            if (self.ast.nodeTag(rhs) == .template_literal) {
+                const tok = self.ast.nodeMainToken(rhs);
+                const raw = self.ast.tokenText(tok);
+                if (raw.len >= 2) return std.mem.eql(u8, raw[1 .. raw.len - 1], name);
+            }
+        }
+        return false;
+    }
+
+    /// Returns true if `n` is a numeric literal whose parsed value equals `val`.
+    pub fn nodeNumericValueEquals(self: *const LintContext, n: NodeIndex, val: f64) bool {
+        if (n == .none) return false;
+        if (self.ast.nodeTag(n) != .number_literal) return false;
+        const text = self.ast.tokenText(self.ast.nodeMainToken(n));
+        const parsed = std.fmt.parseFloat(f64, text) catch return false;
+        return parsed == val;
+    }
+
+    /// Returns true if `n` is a string literal whose value equals `val` (quotes stripped).
+    pub fn nodeStringValueEquals(self: *const LintContext, n: NodeIndex, val: []const u8) bool {
+        if (n == .none) return false;
+        if (self.ast.nodeTag(n) != .string_literal) return false;
+        const raw = self.ast.tokenText(self.ast.nodeMainToken(n));
+        if (raw.len < 2) return false;
+        return std.mem.eql(u8, raw[1 .. raw.len - 1], val);
     }
 
     /// Property name text for a MemberExpression (dot access).
@@ -124,6 +292,18 @@ pub const LintContext = struct {
 
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
         return self.ast.nodeSpan(index);
+    }
+
+    /// Parent node of `index`, or `.none` when semantic did not compute parents
+    /// or `index` is the program root.  Callers must ensure the active analysis
+    /// used `SemanticAnalyzer.Options.build_parents = true`.
+    pub fn parentOf(self: *const LintContext, index: NodeIndex) NodeIndex {
+        const parents = self.semantic.parent_indices;
+        const i = @intFromEnum(index);
+        if (i >= parents.len) return .none;
+        const p = parents[i];
+        if (p == std.math.maxInt(u32)) return .none;
+        return @enumFromInt(p);
     }
 
     // ── Semantic accessors ────────────────────────────────
@@ -180,6 +360,74 @@ pub const LintContext = struct {
     /// Get a string field from languageOptions.
     pub fn getLanguageOptionString(self: *const LintContext, key: []const u8) ?[]const u8 {
         return _jsonFieldString(self.language_options, key);
+    }
+
+    /// Get languageOptions.ecmaVersion as an integer. Returns 2022 when absent or "latest".
+    pub fn getEcmaVersion(self: *const LintContext) i64 {
+        const lo = self.language_options orelse return 2022;
+        if (lo.* != .object) return 2022;
+        const val = lo.object.get("ecmaVersion") orelse return 2022;
+        return switch (val) {
+            .integer => |i| i,
+            .float => |f| @intFromFloat(f),
+            .string => 2022, // "latest"
+            else => 2022,
+        };
+    }
+
+    /// Returns true when `languageOptions.globals[name] === "off"` or when an inline
+    /// directive `/* global name:off */` appears in the source.
+    /// Note: `false` means writable global (still enabled), not "off".
+    pub fn globalIsOff(self: *const LintContext, name: []const u8) bool {
+        if (self.language_options) |lo| {
+            if (lo.* == .object) {
+                if (lo.object.get("globals")) |g| {
+                    if (g == .object) {
+                        if (g.object.get(name)) |v| {
+                            if (v == .string and std.mem.eql(u8, v.string, "off")) return true;
+                        }
+                    }
+                }
+            }
+        }
+        for (self.inline_globals) |entry| {
+            if (entry.is_off and std.mem.eql(u8, entry.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// Returns true when a global is explicitly added to scope: present in
+    /// `languageOptions.globals` with any value other than "off", or declared
+    /// in an inline `/* globals name:true */` / `/* globals name:readonly */` comment.
+    pub fn globalIsExplicitlyEnabled(self: *const LintContext, name: []const u8) bool {
+        if (self.language_options) |lo| {
+            if (lo.* == .object) {
+                if (lo.object.get("globals")) |g| {
+                    if (g == .object) {
+                        if (g.object.get(name)) |v| {
+                            // Any value other than "off" means it's explicitly enabled.
+                            if (v == .string) return !std.mem.eql(u8, v.string, "off");
+                            if (v == .bool) return true; // true = readonly, false = writable; both enabled
+                            if (v == .null) return false;
+                        }
+                    }
+                }
+            }
+        }
+        for (self.inline_globals) |entry| {
+            if (!entry.is_off and std.mem.eql(u8, entry.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// Returns true when `languageOptions.globals` is an explicit object (even if empty),
+    /// meaning the caller has explicitly enumerated which globals are available.
+    /// When false, globals are unspecified and default environment rules apply.
+    pub fn globalsExplicitlySet(self: *const LintContext) bool {
+        const lo = self.language_options orelse return false;
+        if (lo.* != .object) return false;
+        const g = lo.object.get("globals") orelse return false;
+        return g == .object;
     }
 
     /// Get a string field from the rule's JSON options object.
@@ -282,4 +530,57 @@ fn _jsonFieldString(ptr: ?*const std.json.Value, key: []const u8) ?[]const u8 {
     if (obj.* != .object) return null;
     const val = obj.object.get(key) orelse return null;
     return if (val == .string) val.string else null;
+}
+
+/// Scan `source` once for `/* global[s] name[:value], ... */` directives and
+/// return the collected entries.  Callers assign the result to
+/// `LintContext.inline_globals` so rules can look up globals in O(entries)
+/// instead of O(source) per call.
+pub fn scanInlineGlobals(allocator: std.mem.Allocator, source: []const u8) ![]const InlineGlobalEntry {
+    var list: std.ArrayList(InlineGlobalEntry) = .empty;
+    errdefer list.deinit(allocator);
+
+    var i: usize = 0;
+    while (i + 4 < source.len) : (i += 1) {
+        if (source[i] != '/' or source[i + 1] != '*') continue;
+        var end: usize = i + 2;
+        while (end + 1 < source.len and !(source[end] == '*' and source[end + 1] == '/')) end += 1;
+        if (end + 1 >= source.len) break;
+        const body = source[i + 2 .. end];
+        try collectGlobalsEntries(allocator, &list, body, "global");
+        try collectGlobalsEntries(allocator, &list, body, "globals");
+        i = end + 1;
+    }
+    return list.toOwnedSlice(allocator);
+}
+
+fn collectGlobalsEntries(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(InlineGlobalEntry),
+    body: []const u8,
+    directive: []const u8,
+) !void {
+    var s: usize = 0;
+    while (s < body.len and (body[s] == ' ' or body[s] == '\t' or body[s] == '\n' or body[s] == '\r')) s += 1;
+    if (s + directive.len > body.len) return;
+    if (!std.mem.eql(u8, body[s .. s + directive.len], directive)) return;
+    s += directive.len;
+    if (s < body.len and body[s] != ' ' and body[s] != '\t') return;
+    while (s < body.len) {
+        while (s < body.len and (body[s] == ' ' or body[s] == '\t' or body[s] == ',' or body[s] == '\n' or body[s] == '\r')) s += 1;
+        if (s >= body.len) break;
+        const name_start = s;
+        while (s < body.len and body[s] != ':' and body[s] != ',' and body[s] != ' ' and body[s] != '\t' and body[s] != '\n' and body[s] != '\r') s += 1;
+        const name = body[name_start..s];
+        if (name.len == 0) break;
+        var value: []const u8 = "";
+        if (s < body.len and body[s] == ':') {
+            s += 1;
+            while (s < body.len and (body[s] == ' ' or body[s] == '\t')) s += 1;
+            const v_start = s;
+            while (s < body.len and body[s] != ',' and body[s] != ' ' and body[s] != '\t' and body[s] != '\n' and body[s] != '\r') s += 1;
+            value = body[v_start..s];
+        }
+        try list.append(allocator, .{ .name = name, .is_off = std.mem.eql(u8, value, "off") });
+    }
 }

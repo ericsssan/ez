@@ -691,7 +691,7 @@ fn lintImpl(
     const arena = arena_impl.allocator();
 
     var sem_result = if (linter_mod.needsSemantic(config))
-        try semantic_mod.SemanticAnalyzer.analyze(arena, &tree)
+        try semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{ .build_parents = true })
     else
         semantic_mod.SemanticResult.initEmpty(arena);
     const diagnostics = try linter_mod.lint(arena, &tree, &sem_result, config, language);
@@ -766,16 +766,35 @@ const n = struct {
 
 // ── Config helpers ────────────────────────────────────────────────
 
-/// Build a Config from a JSON-encoded ESLint config object.
+/// Single-slot cache for the most recently parsed config.  Callers of
+/// NAPI linting typically reuse the same config bytes across files, so
+/// hashing the incoming bytes and reusing the previously parsed Config
+/// skips a ~10ms JSON parse per file.  NAPI is invoked from the JS main
+/// thread, so this single-threaded cache is safe in typical use.
+var g_config_cache_hash: u64 = 0;
+var g_config_cache: ?linter_root.config.Config = null;
+
+/// Build (or reuse) a Config from a JSON-encoded ESLint config object.
+/// Returns a pointer into the cache — callers must NOT call deinit on it.
 /// Expected format: {"rules":{"name": sev | [sev, opts...]}, "settings":{...}, "languageOptions":{...}}
 /// Unrecognised rule names are ignored. Rules not in the JSON default to .off.
-fn configFromJson(bytes: []const u8) linter_root.config.Config {
+fn configFromJson(bytes: []const u8) *const linter_root.config.Config {
+    const hash = std.hash.Wyhash.hash(0, bytes);
+    if (g_config_cache) |*cached| {
+        if (g_config_cache_hash == hash) return cached;
+        cached.deinit();
+        g_config_cache = null;
+    }
     var config = linter_root.config.parseConfigJson(std.heap.page_allocator, bytes) catch {
-        return linter_root.config.Config.initAllOff(std.heap.page_allocator);
+        g_config_cache = linter_root.config.Config.initAllOff(std.heap.page_allocator);
+        g_config_cache_hash = hash;
+        return &g_config_cache.?;
     };
     // Override the table with .off as default: only explicitly configured rules run.
     config.buildSeverityTableWithDefault(.off);
-    return config;
+    g_config_cache = config;
+    g_config_cache_hash = hash;
+    return &g_config_cache.?;
 }
 
 /// Try to read a Uint8Array (TypedArray) argument as a byte slice.
@@ -956,14 +975,13 @@ fn napiParseAndLintFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value 
     if (n.napi_get_arraybuffer_info(env, argv[3], &out_data, &out_len) != n.OK) return null;
     const out_ptr: [*]u8 = @ptrCast(out_data orelse return returnU32(env, 0));
 
-    var config_val: ?linter_root.config.Config = null;
-    defer if (config_val) |*c| c.deinit();
+    // Config is cached by content hash in configFromJson — don't deinit.
+    var config_ptr: ?*const linter_root.config.Config = null;
     if (argc >= 5) {
         if (getOptionalConfigBytes(env, argv[4])) |bytes| {
-            config_val = configFromJson(bytes);
+            config_ptr = configFromJson(bytes);
         }
     }
-    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
 
     const file_info = readFileIntoBuf(buf_ptr, @intCast(buf_len), path_z) catch return returnU32(env, 0);
 
@@ -1019,15 +1037,13 @@ fn napiLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     }
     const out_ptr: [*]u8 = @ptrCast(out_data orelse return null);
 
-    // Optional config Uint8Array (arg 6)
-    var config_val: ?linter_root.config.Config = null;
-    defer if (config_val) |*c| c.deinit();
+    // Optional config Uint8Array (arg 6) — cached by content hash; don't deinit.
+    var config_ptr: ?*const linter_root.config.Config = null;
     if (argc >= 6) {
         if (getOptionalConfigBytes(env, argv[5])) |bytes| {
-            config_val = configFromJson(bytes);
+            config_ptr = configFromJson(bytes);
         }
     }
-    const config_ptr: ?*const linter_root.config.Config = if (config_val != null) &config_val.? else null;
 
     const bytes_written = lintImpl(
         buf_ptr, @intCast(src_buf_len),

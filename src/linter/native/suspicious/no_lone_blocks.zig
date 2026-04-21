@@ -20,40 +20,32 @@ const ParentInfo = struct {
     child_index: u32,
 };
 
-/// Scan all nodes to find which statement-list contains `target`.
-/// Returns info about the parent or null if not found in any statement list.
+/// Look up `target`'s parent via the pre-computed parent-indices array, then
+/// locate `target` within the parent's statement list.  Returns null when the
+/// parent is not a statement-list holder (e.g. body of `if`/`for`/`while`).
 fn findParent(target: NodeIndex, ctx: *const LintContext) ?ParentInfo {
-    const target_int = @intFromEnum(target);
-    const n = ctx.nodeCount();
-    var i: u32 = 0;
-    while (i < n) : (i += 1) {
-        const ni: NodeIndex = @enumFromInt(i);
-        const tag = ctx.nodeTag(ni);
-        const data = ctx.nodeData(ni);
+    const parent = ctx.parentOf(target);
+    if (parent == .none) return null;
+    const tag = ctx.nodeTag(parent);
+    const data = ctx.nodeData(parent);
 
-        switch (tag) {
-            // Direct SubRange: lhs = start, rhs = end
-            .root, .block_stmt, .static_block => {
-                const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
-                const stmts = ctx.extraSlice(range);
-                for (stmts, 0..) |raw, idx| {
-                    if (raw == target_int) {
-                        return ParentInfo{ .tag = tag, .child_count = @intCast(stmts.len), .child_index = @intCast(idx) };
-                    }
-                }
-            },
-            // switch_case / switch_default: rhs = extra index to SubRange
-            .switch_case, .switch_default => {
-                if (data.rhs == .none) continue;
-                const range = ctx.extraData(SubRange, @intFromEnum(data.rhs));
-                const stmts = ctx.extraSlice(range);
-                for (stmts, 0..) |raw, idx| {
-                    if (raw == target_int) {
-                        return ParentInfo{ .tag = tag, .child_count = @intCast(stmts.len), .child_index = @intCast(idx) };
-                    }
-                }
-            },
-            else => {},
+    const stmts: []const u32 = switch (tag) {
+        .root, .block_stmt, .static_block => blk: {
+            const range = SubRange{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) };
+            break :blk ctx.extraSlice(range);
+        },
+        .switch_case, .switch_default => blk: {
+            if (data.rhs == .none) return null;
+            const range = ctx.extraData(SubRange, @intFromEnum(data.rhs));
+            break :blk ctx.extraSlice(range);
+        },
+        else => return null,
+    };
+
+    const target_int = @intFromEnum(target);
+    for (stmts, 0..) |raw, idx| {
+        if (raw == target_int) {
+            return ParentInfo{ .tag = tag, .child_count = @intCast(stmts.len), .child_index = @intCast(idx) };
         }
     }
     return null;
@@ -69,7 +61,10 @@ fn blockHasScopedDecl(node: NodeIndex, ctx: *const LintContext) bool {
     for (stmts) |raw| {
         const stmt: NodeIndex = @enumFromInt(raw);
         switch (ctx.nodeTag(stmt)) {
-            .let_decl, .const_decl, .class_decl => return true,
+            .let_decl, .const_decl, .class_decl,
+            // Function declarations in blocks create block scope in strict mode
+            // and are implementation-defined in sloppy mode — the block is needed.
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl => return true,
             else => {},
         }
     }

@@ -294,8 +294,9 @@ fn lintSingleFile(
     // Detect language from file extension
     const lang = Language.fromExtension(file_path) orelse .js;
 
-    var tokens = (try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path))).tokens;
-    defer tokens.deinit(allocator);
+    var lex_result = try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path));
+    defer lex_result.deinit(allocator);
+    var tokens = lex_result.tokens;
 
     var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, isModuleFile(file_path));
     defer tree.deinit(allocator);
@@ -306,14 +307,21 @@ fn lintSingleFile(
         }
     }
 
-    var sem_result = try semantic.SemanticAnalyzer.analyze(allocator, &tree);
+    var sem_result = try semantic.SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{ .build_parents = true });
     defer sem_result.deinit(allocator);
 
     const raw_diagnostics = try linter.lint(allocator, &tree, &sem_result, config, lang);
     defer allocator.free(raw_diagnostics);
 
-    // Apply inline disable filtering.
-    var disables = InlineDisables.parse(allocator, source) catch InlineDisables.empty();
+    // Apply inline disable filtering.  Reuse the lexer's comment list instead
+    // of re-scanning the source.
+    var disables = InlineDisables.parseFromComments(
+        allocator,
+        source,
+        lex_result.comment_starts,
+        lex_result.comment_ends,
+        lex_result.comment_kinds,
+    ) catch InlineDisables.empty();
     defer disables.deinit();
     const lint_diagnostics = try linter.filterByInlineDisables(allocator, raw_diagnostics, &disables, source);
     defer allocator.free(lint_diagnostics);
