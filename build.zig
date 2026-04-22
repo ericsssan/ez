@@ -178,6 +178,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("bench/bench_profile.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .strip = false,
     });
     bench_prof_mod.addImport("ez", test_mod);
     const bench_prof = b.addExecutable(.{
@@ -204,6 +205,23 @@ pub fn build(b: *std.Build) void {
     bench_lint_cmd.step.dependOn(b.getInstallStep());
     const bench_lint_step = b.step("bench-lint", "Full Zig backend profile (lex+parse+resolve+lint)");
     bench_lint_step.dependOn(&bench_lint_cmd.step);
+
+    // ── Parallel scheduling bench (A: static / B: WS N_CPU / C: WS 2×N_CPU) ─
+    const bench_par_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_parallel.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_par_mod.addImport("ez", test_mod);
+    const bench_par = b.addExecutable(.{
+        .name = "bench_parallel",
+        .root_module = bench_par_mod,
+    });
+    const bench_par_cmd = b.addRunArtifact(bench_par);
+    bench_par_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| bench_par_cmd.addArgs(args);
+    const bench_par_step = b.step("bench-parallel", "Compare static-chunk vs work-stealing scheduling");
+    bench_par_step.dependOn(&bench_par_cmd.step);
 
     // ── Lexer samply profiling build (ReleaseFast + DWARF symbols) ──────────
     const bench_lex_syms_mod = b.createModule(.{

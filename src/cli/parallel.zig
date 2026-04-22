@@ -142,10 +142,79 @@ pub const ParallelRunner = struct {
         }
     }
 
+    // ── Work-stealing variants ────────────────────────────────────
+
+    /// Shared context for work-stealing threads.
+    const WorkStealCtx = struct {
+        runner: *ParallelRunner,
+        io: Io,
+        files: []const []const u8,
+        cursor: std.atomic.Value(u32),
+    };
+
+    fn threadWorkerWS(ctx: *WorkStealCtx) void {
+        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_impl.deinit();
+        while (true) {
+            const idx = ctx.cursor.fetchAdd(1, .acq_rel);
+            if (idx >= ctx.files.len) break;
+            ctx.runner.lintOneFile(ctx.io, ctx.files[idx], &arena_impl);
+            _ = arena_impl.reset(.retain_capacity);
+        }
+    }
+
+    /// Work-stealing scheduler. `thread_mult` controls thread count: 1 = N_CPU,
+    /// 2 = 2×N_CPU. All threads share an atomic cursor into the file list.
+    pub fn lintFilesWorkStealing(self: *ParallelRunner, io: Io, files: []const []const u8, thread_mult: u32) !void {
+        if (files.len == 0) return;
+
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const thread_count = @min(files.len, cpu_count * thread_mult);
+
+        if (thread_count <= 1) {
+            var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena_impl.deinit();
+            for (files) |path| {
+                self.lintOneFile(io, path, &arena_impl);
+                _ = arena_impl.reset(.retain_capacity);
+            }
+            return;
+        }
+
+        var ctx = WorkStealCtx{
+            .runner = self,
+            .io = io,
+            .files = files,
+            .cursor = .init(0),
+        };
+
+        const threads = try self.allocator.alloc(std.Thread, thread_count);
+        defer self.allocator.free(threads);
+        var spawned: usize = 0;
+
+        for (0..thread_count) |t| {
+            threads[t] = std.Thread.spawn(.{}, threadWorkerWS, .{&ctx}) catch break;
+            spawned += 1;
+        }
+
+        for (threads[0..spawned]) |thread| thread.join();
+
+        // If no threads spawned at all, drain remaining files in current thread.
+        if (spawned == 0) {
+            var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena_impl.deinit();
+            while (true) {
+                const idx = ctx.cursor.fetchAdd(1, .acq_rel);
+                if (idx >= files.len) break;
+                self.lintOneFile(io, files[idx], &arena_impl);
+                _ = arena_impl.reset(.retain_capacity);
+            }
+        }
+    }
+
     fn lintOneFile(self: *ParallelRunner, io: Io, file_path: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
         const arena = arena_impl.allocator();
-
-        var t_phase = if (self.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
+        var t_io = if (self.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
 
         const source = Io.Dir.cwd().readFileAlloc(
             io,
@@ -167,7 +236,138 @@ pub const ParallelRunner = struct {
             });
             return;
         };
-        if (self.profile_phases) { const t_now = Io.Clock.Timestamp.now(io, .awake); _ = self.timings.io_ns.fetchAdd(@intCast(@max(0, t_phase.durationTo(t_now).raw.nanoseconds)), .monotonic); t_phase = t_now; }
+        if (self.profile_phases) {
+            const t_now = Io.Clock.Timestamp.now(io, .awake);
+            _ = self.timings.io_ns.fetchAdd(@intCast(@max(0, t_io.durationTo(t_now).raw.nanoseconds)), .monotonic);
+        }
+        self.lintSource(io, file_path, source, arena_impl);
+    }
+
+    // ── Channel-based I/O+compute pipeline ──────────────────────────
+
+    const CHAN_CAP: u32 = 64;   // ring buffer capacity (must be power of 2)
+    const CHAN_MASK: u32 = CHAN_CAP - 1;
+
+    const IoSlot = struct {
+        path:   []const u8 = "",
+        source: ?[]u8 = null, // null = read error; gpa-alloc'd, freed by compute thread
+        done:   bool = false, // true = sentinel, compute thread should exit
+    };
+
+    const ChannelCtx = struct {
+        runner:    *ParallelRunner,
+        io:        Io,
+        files:     []const []const u8,
+        slots:     [CHAN_CAP]IoSlot = undefined,
+        head:      std.atomic.Value(u32) = .init(0), // advanced by compute threads
+        tail:      u32 = 0,                          // only I/O thread writes
+        sem_space: Io.Semaphore = .{ .permits = CHAN_CAP },
+        sem_items: Io.Semaphore = .{ .permits = 0 },
+        n_compute: u32,
+    };
+
+    fn ioWorkerChannel(ctx: *ChannelCtx) void {
+        const io = ctx.io;
+        for (ctx.files) |path| {
+            ctx.sem_space.waitUncancelable(io);
+
+            var t_io = if (ctx.runner.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
+            const source: ?[]u8 = Io.Dir.cwd().readFileAlloc(
+                io, path, ctx.runner.allocator, Io.Limit.limited(10 * 1024 * 1024),
+            ) catch null;
+            if (ctx.runner.profile_phases) {
+                const t_now = Io.Clock.Timestamp.now(io, .awake);
+                _ = ctx.runner.timings.io_ns.fetchAdd(
+                    @intCast(@max(0, t_io.durationTo(t_now).raw.nanoseconds)), .monotonic);
+            }
+
+            ctx.slots[ctx.tail & CHAN_MASK] = .{ .path = path, .source = source, .done = false };
+            ctx.tail +%= 1;
+            ctx.sem_items.post(io);
+        }
+        // Shut down all compute threads with sentinel slots.
+        for (0..ctx.n_compute) |_| {
+            ctx.sem_space.waitUncancelable(io);
+            ctx.slots[ctx.tail & CHAN_MASK] = .{ .done = true };
+            ctx.tail +%= 1;
+            ctx.sem_items.post(io);
+        }
+    }
+
+    fn computeWorkerChannel(ctx: *ChannelCtx) void {
+        const io = ctx.io;
+        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_impl.deinit();
+
+        while (true) {
+            ctx.sem_items.waitUncancelable(io);
+            const idx = ctx.head.fetchAdd(1, .acq_rel);
+            const slot = ctx.slots[idx & CHAN_MASK];
+
+            if (slot.done) break; // sentinel — do not release sem_space
+
+            ctx.sem_space.post(io); // slot consumed, release its space
+
+            if (slot.source) |src| {
+                ctx.runner.lintSource(io, slot.path, src, &arena_impl);
+                _ = arena_impl.reset(.retain_capacity);
+                ctx.runner.allocator.free(src);
+            } else {
+                const msg = std.fmt.allocPrint(
+                    ctx.runner.allocator, "{s}: error: could not read file\n", .{slot.path},
+                ) catch "";
+                ctx.runner.appendResult(.{
+                    .file_path = slot.path, .output = msg,
+                    .error_count = 1, .warning_count = 0, .had_error = true,
+                });
+            }
+        }
+    }
+
+    /// 1 I/O thread (caller) + N_CPU compute threads, connected by a bounded ring buffer.
+    /// On macOS (Io.Threaded / blocking pread), this is ~10% slower than lintFiles because
+    /// serial reads starve compute threads. Switch default in parallel.zig once Zig's Io.Uring
+    /// file reads are implemented on Linux — at that point the channel unlocks true overlap.
+    pub fn lintFilesChannel(self: *ParallelRunner, io: Io, files: []const []const u8) !void {
+        if (files.len == 0) return;
+
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const n_compute: u32 = @intCast(@min(files.len, cpu_count));
+
+        if (n_compute <= 1) {
+            var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+            defer arena_impl.deinit();
+            for (files) |path| {
+                self.lintOneFile(io, path, &arena_impl);
+                _ = arena_impl.reset(.retain_capacity);
+            }
+            return;
+        }
+
+        var ctx = ChannelCtx{
+            .runner    = self,
+            .io        = io,
+            .files     = files,
+            .n_compute = n_compute,
+        };
+
+        const threads = try self.allocator.alloc(std.Thread, n_compute);
+        defer self.allocator.free(threads);
+        var spawned: usize = 0;
+
+        for (0..n_compute) |t| {
+            threads[t] = std.Thread.spawn(.{}, computeWorkerChannel, .{&ctx}) catch break;
+            spawned += 1;
+        }
+
+        ioWorkerChannel(&ctx); // caller thread drives I/O
+
+        for (threads[0..spawned]) |thread| thread.join();
+    }
+
+    fn lintSource(self: *ParallelRunner, io: Io, file_path: []const u8, source: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
+        const arena = arena_impl.allocator();
+        var t_phase = if (self.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
 
         const lang = Language.fromExtension(file_path) orelse .js;
 
@@ -211,7 +411,7 @@ pub const ParallelRunner = struct {
         var sem_result = if (linter_mod.needsSemantic(self.config))
             semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{
                 .build_parents = true,
-                .build_cfg = linter_mod.configNeedsCfg(self.config),
+                .build_ref_ranges = linter_mod.configNeedsRefRanges(self.config),
             }) catch {
                 const msg = std.fmt.allocPrint(
                     self.allocator,
