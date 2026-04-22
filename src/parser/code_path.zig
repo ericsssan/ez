@@ -402,7 +402,7 @@ pub const CodePathBuilder = struct {
         try self.seg_used.ensureTotalCapacity(self.allocator, est_segments);
         try self.seg_next.ensureTotalCapacity(self.allocator, est_segments);
         try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
-        try self.events.ensureTotalCapacity(self.allocator, est_segments * 4);
+        try self.events.ensureTotalCapacity(self.allocator, est_segments * 2);
         try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments * 2);
         try self.prev_targets.ensureTotalCapacity(self.allocator, est_segments * 2);
         try self.all_next_targets.ensureTotalCapacity(self.allocator, est_segments * 2);
