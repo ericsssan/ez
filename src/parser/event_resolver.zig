@@ -42,48 +42,6 @@ const code_path_mod = @import("code_path.zig");
 const CodePathBuilder = code_path_mod.CodePathBuilder;
 const Origin = code_path_mod.Origin;
 
-// ── Per-scope binding table ─────────────────────────────────────────
-// Replaces the global HashMap with per-scope sorted arrays.
-// Each scope owns a []const BindingEntry sorted by name_hash.
-// Main-pass lookups use linear scan (builders are unsorted/growing);
-// retry-pass lookups use binary search (arrays finalised at scope_close).
-
-const BindingEntry = struct {
-    name_hash: u64,
-    sym_id: SymbolId,
-};
-
-fn bindingLessThan(_: void, a: BindingEntry, b: BindingEntry) bool {
-    return a.name_hash < b.name_hash;
-}
-
-fn scopeSearch(entries: []const BindingEntry, name_hash: u64, name: []const u8, sym_names: []const []const u8) ?SymbolId {
-    var lo: usize = 0;
-    var hi: usize = entries.len;
-    while (lo < hi) {
-        const mid = lo + (hi - lo) / 2;
-        const h = entries[mid].name_hash;
-        if (h < name_hash) {
-            lo = mid + 1;
-        } else if (h > name_hash) {
-            hi = mid;
-        } else {
-            var i: usize = mid;
-            while (true) {
-                if (std.mem.eql(u8, sym_names[entries[i].sym_id.toInt()], name)) return entries[i].sym_id;
-                if (i == 0 or entries[i - 1].name_hash != name_hash) break;
-                i -= 1;
-            }
-            i = mid + 1;
-            while (i < entries.len and entries[i].name_hash == name_hash) : (i += 1) {
-                if (std.mem.eql(u8, sym_names[entries[i].sym_id.toInt()], name)) return entries[i].sym_id;
-            }
-            return null;
-        }
-    }
-    return null;
-}
-
 // ── Options / minimal summary ───────────────────────────────────────
 
 pub const Options = struct {
@@ -272,15 +230,6 @@ pub fn resolveFull(
     for (&undo_stacks) |*u| u.* = .{ .items = &.{}, .capacity = 0 };
     // (freed by scope_arena.deinit)
 
-    // Flat sorted binding store for the retry pass.
-    // all_entries: one big contiguous buffer; scope_ranges maps scope_id → [start,end).
-    const ScopeRange = struct { start: u32, end: u32 };
-    var scope_ranges = std.ArrayListUnmanaged(ScopeRange){ .items = &.{}, .capacity = 0 };
-    try scope_ranges.ensureTotalCapacity(sa, est_scopes);
-
-    var all_entries = std.ArrayListUnmanaged(BindingEntry){ .items = &.{}, .capacity = 0 };
-    try all_entries.ensureTotalCapacity(sa, est_syms);
-
     // Unresolved ref ids collected during the main pass so the retry pass can
     // iterate only the small set (~5-20K) instead of scanning all refs (245K).
     const UnresolvedRef = struct { ref_id: ReferenceId, name_hash: u64 };
@@ -344,7 +293,6 @@ pub fn resolveFull(
             const kind: ScopeKind = @enumFromInt(e.aux);
             const node: NodeIndex = @enumFromInt(e.node);
             const sid = try scopes.addScope(kind, parent, node);
-            try scope_ranges.append(sa, .{ .start = 0, .end = 0 });
             if (sp < stack.len) {
                 stack[sp] = sid;
                 sp += 1;
@@ -379,13 +327,6 @@ pub fn resolveFull(
                 sp -= 1;
                 const closed_undos = undo_stacks[sp].items;
                 if (closed_undos.len > 0) {
-                    // Build retry-pass flat buffer from this scope's declared symbols.
-                    const start: u32 = @intCast(all_entries.items.len);
-                    for (closed_undos) |undo| {
-                        try all_entries.append(sa, .{ .name_hash = undo.name_hash, .sym_id = undo.sym_id });
-                    }
-                    sortBindings(all_entries.items[start..]);
-                    scope_ranges.items[closed_sid.toInt()] = .{ .start = start, .end = @intCast(all_entries.items.len) };
                     // Restore scope_map and ref_cache to pre-scope state (LIFO).
                     var j: usize = closed_undos.len;
                     while (j > 0) {
@@ -787,29 +728,6 @@ pub fn resolveFull(
 }
 
 // ── Post-passes (copied from semantic.zig internals) ────────────────
-
-/// Inline sort for small binding-entry slices.  Avoids the sortUnstable
-/// function-call overhead for the common case of 1-4 declarations per scope.
-fn sortBindings(slice: []BindingEntry) void {
-    if (slice.len <= 1) return;
-    if (slice.len == 2) {
-        if (slice[0].name_hash > slice[1].name_hash)
-            std.mem.swap(BindingEntry, &slice[0], &slice[1]);
-        return;
-    }
-    if (slice.len <= 12) {
-        var i: usize = 1;
-        while (i < slice.len) : (i += 1) {
-            const key = slice[i];
-            var j: usize = i;
-            while (j > 0 and slice[j - 1].name_hash > key.name_hash) : (j -= 1)
-                slice[j] = slice[j - 1];
-            slice[j] = key;
-        }
-        return;
-    }
-    std.mem.sortUnstable(BindingEntry, slice, {}, bindingLessThan);
-}
 
 // buildRefRanges builds an indirect ref-by-symbol index without touching the
 // main reference arrays.  Instead of permuting all 5 SoA columns in place
