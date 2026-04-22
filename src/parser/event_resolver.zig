@@ -252,6 +252,11 @@ pub fn resolveFull(
     };
     var scope_map = std.HashMapUnmanaged(u64, SymbolId, NameHashCtx, 80){};
     try scope_map.ensureTotalCapacity(sa, @intCast(est_syms));
+    // Hoisting map: var/function_decl declarations keyed by
+    // (name_hash ^ scope_id * prime) → SymbolId.  The retry pass uses this
+    // for O(1) lookups per var-scope level instead of O(log N) binary search.
+    var hoist_map = std.HashMapUnmanaged(u64, SymbolId, NameHashCtx, 80){};
+    try hoist_map.ensureTotalCapacity(sa, @intCast(est_syms / 4));
 
     // Direct-mapped L1 cache in front of scope_map.  Absorbs repeated lookups
     // for the same identifier (common in any function body) without hitting the
@@ -494,6 +499,11 @@ pub fn resolveFull(
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
+            if (kind == .@"var" or kind == .function_decl) {
+                const hk = name_hash ^ (@as(u64, scope_id.toInt()) *% 0x9e3779b97f4a7c15);
+                const ghop = try hoist_map.getOrPut(sa, hk);
+                if (!ghop.found_existing) ghop.value_ptr.* = sym_id;
+            }
             const gop = try scope_map.getOrPut(sa, name_hash);
             const prev: ?SymbolId = if (gop.found_existing) gop.value_ptr.* else null;
             try undo_stacks[target_depth].append(sa, .{ .name_hash = name_hash, .sym_id = sym_id, .prev = prev });
@@ -693,43 +703,57 @@ pub fn resolveFull(
 
     // Retry unresolved references — `var`/`function` declarations hoist to the
     // nearest var-scope, so a reference seen *before* the declaration in source
-    // order was left unresolved during the main pass.  Walk the scope chain
-    // using the now-complete binding_map.
+    // order was left unresolved during the main pass.  Walk the var-scope chain
+    // using hoist_map (O(1) per level) instead of all_entries binary search
+    // (O(log N) per level across every lexical scope).
     if (!skip_resolve) {
+        const scope_count: u32 = @intCast(scopes.kinds.items.len);
+        const kinds = scopes.kinds.items;
         for (unresolved_refs.items) |ur| {
             const ref_id = ur.ref_id;
             const ref_scope = references.getScope(ref_id);
             if (!ref_scope.isValid()) continue;
-            const ref_node = references.getNode(ref_id);
-            const node_i = @intFromEnum(ref_node);
-            if (node_i >= node_main_tokens.len) continue;
-            const main_tok = node_main_tokens[node_i];
-            const start = tok_starts[main_tok];
-            const len = tok_lens[main_tok];
-            const name = source[start .. start + len];
-            const name_hash = ur.name_hash; // precomputed — no tok_hashes lookup
-            const sym_names = symbols.names.items;
-            var sid = ref_scope;
-            const scope_count: u32 = @intCast(scopes.kinds.items.len);
-            while (sid.toInt() < scope_count) {
-                if (sid.toInt() < scope_ranges.items.len) {
-                    const range = scope_ranges.items[sid.toInt()];
-                    if (range.end > range.start) {
-                        const entries = all_entries.items[range.start..range.end];
-                        if (scopeSearch(entries, name_hash, name, sym_names)) |sym_id| {
-                            references.resolve(ref_id, sym_id);
-                            const rk = references.getKind(ref_id);
-                            if (rk.isRead()) symbols.markRead(sym_id);
-                            if (rk.isWrite()) symbols.markWritten(sym_id);
-                            if (rk == .type_of) symbols.markTypeOf(sym_id);
-                            break;
-                        }
+            const name_hash = ur.name_hash;
+
+            // Find the nearest var-scope enclosing ref_scope.
+            var vsid = ref_scope;
+            while (vsid.toInt() < scope_count) {
+                switch (kinds[vsid.toInt()]) {
+                    .global, .module, .function, .static_block, .class_field_initializer => break,
+                    else => {
+                        const p = scopes.parent(vsid);
+                        if (!p.isValid() or p.toInt() == vsid.toInt()) break;
+                        vsid = p;
+                    },
+                }
+            }
+
+            // Walk var-scope ancestors, O(1) hash lookup per level.
+            while (vsid.toInt() < scope_count) {
+                const hk = name_hash ^ (@as(u64, vsid.toInt()) *% 0x9e3779b97f4a7c15);
+                if (hoist_map.get(hk)) |sym_id| {
+                    references.resolve(ref_id, sym_id);
+                    const rk = references.getKind(ref_id);
+                    if (rk.isRead()) symbols.markRead(sym_id);
+                    if (rk.isWrite()) symbols.markWritten(sym_id);
+                    if (rk == .type_of) symbols.markTypeOf(sym_id);
+                    break;
+                }
+                var p = scopes.parent(vsid);
+                if (!p.isValid() or p.toInt() == vsid.toInt()) break;
+                // Advance p to the next var-scope.
+                while (p.toInt() < scope_count) {
+                    switch (kinds[p.toInt()]) {
+                        .global, .module, .function, .static_block, .class_field_initializer => break,
+                        else => {
+                            const pp = scopes.parent(p);
+                            if (!pp.isValid() or pp.toInt() == p.toInt()) break;
+                            p = pp;
+                        },
                     }
                 }
-                const parent_sid = scopes.parent(sid);
-                if (parent_sid.toInt() == sid.toInt()) break; // root
-                if (!parent_sid.isValid()) break;
-                sid = parent_sid;
+                if (p.toInt() == vsid.toInt()) break;
+                vsid = p;
             }
         }
     }
