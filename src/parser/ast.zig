@@ -738,10 +738,12 @@ pub const Ast = struct {
     // ── Accessors ──────────────────────────────────────────
 
     pub inline fn nodeTag(self: *const Ast, index: NodeIndex) Node.Tag {
+        if (index == .none) return .root;
         return self.nodes.items(.tag)[index.toInt()];
     }
 
     pub inline fn nodeMainToken(self: *const Ast, index: NodeIndex) TokenIndex {
+        if (index == .none) return 0;
         return self.nodes.items(.main_token)[index.toInt()];
     }
 

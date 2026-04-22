@@ -11,6 +11,7 @@ const symbol_mod = @import("symbol.zig");
 const SymbolTable = symbol_mod.SymbolTable;
 const ref_mod = @import("reference.zig");
 const ReferenceTable = ref_mod.ReferenceTable;
+const ReferenceId = ref_mod.ReferenceId;
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 
 const event_resolver = @import("event_resolver.zig");
@@ -41,6 +42,11 @@ pub const SemanticResult = struct {
     /// Length = node count when populated, &.{} when not computed.
     parent_indices: []const u32 = &.{},
 
+    /// Indirect ref index sorted by symbol — populated by buildRefRanges.
+    /// symbols.getRefRange(sym) returns [start, end) into this slice.
+    /// Empty when skip_ref_ranges is true.
+    ref_by_sym: []const ReferenceId = &.{},
+
     /// Return an empty SemanticResult with no scopes/symbols/references.
     /// Used when the caller determines that no semantic-phase rules are active,
     /// allowing `analyze` to be skipped entirely.
@@ -66,6 +72,7 @@ pub const SemanticResult = struct {
         if (self.loop_exit_reachable.len > 0) allocator.free(self.loop_exit_reachable);
         if (self.code_path_result) |*cpr| cpr.deinit(allocator);
         if (self.parent_indices.len > 0) allocator.free(self.parent_indices);
+        if (self.ref_by_sym.len > 0) allocator.free(self.ref_by_sym);
         self.* = undefined;
     }
 };
@@ -86,6 +93,9 @@ pub const SemanticAnalyzer = struct {
         /// Compute per-node parent indices.  Set when any active rule needs
         /// `ctx.parentOf()` (e.g. rules inspecting `node.parent.type`).
         build_parents: bool = false,
+        /// Build the per-symbol ref-range index (counting sort over all refs).
+        /// Skip when no active rule calls symbols.getRefRange().
+        build_ref_ranges: bool = true,
     };
 
     /// Analyze an AST that was parsed with scope-event emission enabled.
@@ -108,6 +118,7 @@ pub const SemanticAnalyzer = struct {
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
         var result = try event_resolver.resolveFull(allocator, ast, ast.scope_events, .{
             .skip_cfg = !opts.build_cfg,
+            .skip_ref_ranges = !opts.build_ref_ranges,
             .tok_hashes = ast.tok_hashes,
         });
         if (opts.build_parents) {

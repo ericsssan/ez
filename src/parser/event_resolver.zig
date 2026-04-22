@@ -96,6 +96,10 @@ pub const Options = struct {
     /// rule is active.  The coarse `node_reachable` approximation (via
     /// terminator/branch events) is still populated.
     skip_cfg: bool = false,
+    /// Skip buildRefRanges (the counting sort that groups references by symbol).
+    /// Enable when no active rule calls symbols.getRefRange().  Currently only
+    /// no_func_assign uses ref ranges.
+    skip_ref_ranges: bool = false,
     /// Null-separated list of global names to pre-declare in the global scope
     /// (ESLint `languageOptions.globals` whose value is anything other than
     /// `"off"`).  References to these names resolve to the pre-declared
@@ -210,6 +214,7 @@ pub fn resolveFull(
 ) !semantic_mod.SemanticResult {
     const skip_resolve = opts.skip_resolve;
     const skip_cfg = opts.skip_cfg;
+    const skip_ref_ranges = opts.skip_ref_ranges;
 
     // Pre-sized tables (same heuristics as semantic.zig).
     const node_n: u32 = @intCast(ast.nodes.len);
@@ -239,7 +244,13 @@ pub fn resolveFull(
     // Single HashMap from name_hash → sym_id for all currently-visible names.
     // Updated on every declare (add) and scope_close (undo).
     // O(1) reference resolution instead of O(depth × entries_per_scope) linear scan.
-    var scope_map = std.AutoHashMapUnmanaged(u64, SymbolId){};
+    // Identity hash context: our keys are already Wyhash-derived u64s — skip the
+    // redundant re-hash that AutoHashMapUnmanaged would apply.
+    const NameHashCtx = struct {
+        pub fn hash(_: @This(), key: u64) u64 { return key; }
+        pub fn eql(_: @This(), a: u64, b: u64) bool { return a == b; }
+    };
+    var scope_map = std.HashMapUnmanaged(u64, SymbolId, NameHashCtx, 80){};
     try scope_map.ensureTotalCapacity(sa, @intCast(est_syms));
 
     // Direct-mapped L1 cache in front of scope_map.  Absorbs repeated lookups
@@ -264,6 +275,12 @@ pub fn resolveFull(
 
     var all_entries = std.ArrayListUnmanaged(BindingEntry){ .items = &.{}, .capacity = 0 };
     try all_entries.ensureTotalCapacity(sa, est_syms);
+
+    // Unresolved ref ids collected during the main pass so the retry pass can
+    // iterate only the small set (~5-20K) instead of scanning all refs (245K).
+    const UnresolvedRef = struct { ref_id: ReferenceId, name_hash: u64 };
+    var unresolved_refs = std.ArrayListUnmanaged(UnresolvedRef){ .items = &.{}, .capacity = 0 };
+    // (freed by scope_arena.deinit)
 
     // node_reachable — default all-alive (no CFG in event path yet).
     const node_reachable = try allocator.alloc(u8, ast.nodes.len);
@@ -362,7 +379,7 @@ pub fn resolveFull(
                     for (closed_undos) |undo| {
                         try all_entries.append(sa, .{ .name_hash = undo.name_hash, .sym_id = undo.sym_id });
                     }
-                    std.mem.sortUnstable(BindingEntry, all_entries.items[start..], {}, bindingLessThan);
+                    sortBindings(all_entries.items[start..]);
                     scope_ranges.items[closed_sid.toInt()] = .{ .start = start, .end = @intCast(all_entries.items.len) };
                     // Restore scope_map and ref_cache to pre-scope state (LIFO).
                     var j: usize = closed_undos.len;
@@ -370,7 +387,7 @@ pub fn resolveFull(
                         j -= 1;
                         const undo = closed_undos[j];
                         if (undo.prev) |prev| {
-                            try scope_map.put(sa, undo.name_hash, prev);
+                            scope_map.getPtr(undo.name_hash).?.* = prev;
                             ref_cache[undo.name_hash & 511] = .{ .hash = undo.name_hash, .sym = prev };
                         } else {
                             _ = scope_map.remove(undo.name_hash);
@@ -477,9 +494,10 @@ pub fn resolveFull(
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
-            const prev = scope_map.get(name_hash);
+            const gop = try scope_map.getOrPut(sa, name_hash);
+            const prev: ?SymbolId = if (gop.found_existing) gop.value_ptr.* else null;
             try undo_stacks[target_depth].append(sa, .{ .name_hash = name_hash, .sym_id = sym_id, .prev = prev });
-            try scope_map.put(sa, name_hash, sym_id);
+            gop.value_ptr.* = sym_id;
             ref_cache[name_hash & 511] = .{ .hash = name_hash, .sym = sym_id };
             // Track running per-scope count — used by downstream code that
             // expects `bindings_count` to be populated (see semantic.zig).
@@ -498,8 +516,8 @@ pub fn resolveFull(
             const ref_id = try references.addReference(ref_kind, ref_node, scope_id, .none);
             if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
 
-            // O(1) resolve via the scope_map (name_hash → sym_id for all visible names).
-            if (sp == 0) continue;
+            // Compute name_hash before the sp==0 branch so it can be stored in
+            // both unresolved-append paths (avoids L3 tok_hashes re-fetch in retry).
             if (skip_resolve) continue;
             const main_tok = node_main_tokens[e.node];
             const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else blk: {
@@ -507,6 +525,12 @@ pub fn resolveFull(
                 const len = tok_lens[main_tok];
                 break :blk std.hash.Wyhash.hash(0, source[start .. start + len]);
             };
+
+            // O(1) resolve via the scope_map (name_hash → sym_id for all visible names).
+            if (sp == 0) {
+                try unresolved_refs.append(sa, .{ .ref_id = ref_id, .name_hash = name_hash });
+                continue;
+            }
             const cache_slot = &ref_cache[name_hash & 511];
             const sym_id: ?SymbolId = if (cache_slot.hash == name_hash) blk: {
                 // Cache hit — sym may be .none (known-unresolved in current scope).
@@ -522,8 +546,10 @@ pub fn resolveFull(
                 if (ref_kind.isRead()) symbols.markRead(sid);
                 if (ref_kind.isWrite()) symbols.markWritten(sid);
                 if (ref_kind == .type_of) symbols.markTypeOf(sid);
+            } else {
+                // Unresolved → retry pass handles forward refs (hoisted var/function).
+                try unresolved_refs.append(sa, .{ .ref_id = ref_id, .name_hash = name_hash });
             }
-            // Unresolved → leave symbol_id = .none; retry pass handles forward refs.
         },
 
         // ── If statement CodePath events ─────────────────────────
@@ -670,11 +696,8 @@ pub fn resolveFull(
     // order was left unresolved during the main pass.  Walk the scope chain
     // using the now-complete binding_map.
     if (!skip_resolve) {
-        const ref_count_retry = references.count();
-        var ri: u32 = 0;
-        while (ri < ref_count_retry) : (ri += 1) {
-            const ref_id = ReferenceId.fromInt(ri);
-            if (references.isResolved(ref_id)) continue;
+        for (unresolved_refs.items) |ur| {
+            const ref_id = ur.ref_id;
             const ref_scope = references.getScope(ref_id);
             if (!ref_scope.isValid()) continue;
             const ref_node = references.getNode(ref_id);
@@ -684,7 +707,7 @@ pub fn resolveFull(
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
-            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
+            const name_hash = ur.name_hash; // precomputed — no tok_hashes lookup
             const sym_names = symbols.names.items;
             var sid = ref_scope;
             const scope_count: u32 = @intCast(scopes.kinds.items.len);
@@ -713,7 +736,10 @@ pub fn resolveFull(
 
     // Post-passes: sort by symbol / scope for downstream lookups, matching
     // `semantic.zig`'s `buildRefRanges` and `buildScopeBindings`.
-    try buildRefRanges(&symbols, &references, allocator);
+    const ref_by_sym: []ReferenceId = if (!skip_ref_ranges)
+        try buildRefRanges(&symbols, &references, sa, allocator)
+    else
+        &.{};
     try buildScopeBindings(&scopes, &symbols, allocator);
 
     const cpb_result = if (skip_cfg) blk: {
@@ -728,6 +754,7 @@ pub fn resolveFull(
         .scopes = scopes,
         .symbols = symbols,
         .references = references,
+        .ref_by_sym = ref_by_sym,
         .diagnostics = &.{},
         .node_reachable = node_reachable,
         .loop_exit_reachable = loop_exit_reachable,
@@ -737,27 +764,82 @@ pub fn resolveFull(
 
 // ── Post-passes (copied from semantic.zig internals) ────────────────
 
+/// Inline sort for small binding-entry slices.  Avoids the sortUnstable
+/// function-call overhead for the common case of 1-4 declarations per scope.
+fn sortBindings(slice: []BindingEntry) void {
+    if (slice.len <= 1) return;
+    if (slice.len == 2) {
+        if (slice[0].name_hash > slice[1].name_hash)
+            std.mem.swap(BindingEntry, &slice[0], &slice[1]);
+        return;
+    }
+    if (slice.len <= 12) {
+        var i: usize = 1;
+        while (i < slice.len) : (i += 1) {
+            const key = slice[i];
+            var j: usize = i;
+            while (j > 0 and slice[j - 1].name_hash > key.name_hash) : (j -= 1)
+                slice[j] = slice[j - 1];
+            slice[j] = key;
+        }
+        return;
+    }
+    std.mem.sortUnstable(BindingEntry, slice, {}, bindingLessThan);
+}
+
+// buildRefRanges builds an indirect ref-by-symbol index without touching the
+// main reference arrays.  Instead of permuting all 5 SoA columns in place
+// (the old sortBySymbolWithMax approach, ~12 passes + 5 dupe allocs ≈ 6 MB),
+// we do a 3-pass counting sort over a single new array:
+//
+//   ref_by_sym[i]  — ref_id at sorted position i  (owned by SemanticResult)
+//   sym_ref_range  — [start, end) into ref_by_sym per symbol
+//
+// Total: 3 passes over N refs + 1 pass over K symbols, 1.76 MB temp (arena).
+// Callers access refs as: ref_by_sym[range.start .. range.end].
 fn buildRefRanges(
     symbols: *SymbolTable,
     references: *ReferenceTable,
-    allocator: std.mem.Allocator,
-) !void {
+    sa: std.mem.Allocator,   // scope_arena — temp arrays freed in bulk
+    allocator: std.mem.Allocator, // outer allocator — ref_by_sym persists
+) ![]ReferenceId {
     const sym_count: u32 = @intCast(symbols.names.items.len);
-    try references.sortBySymbolWithMax(allocator, sym_count);
+    const ref_count: u32 = references.count();
+    if (ref_count == 0 or sym_count == 0) return &.{};
 
-    const ref_count = references.count();
-    if (ref_count == 0) return;
+    const sym_ids = references.symbol_ids.items;
+    const buckets = sym_count + 1; // last bucket holds unresolved (.none)
 
-    var i: u32 = 0;
-    while (i < ref_count) {
-        const sym = references.getSymbol(ReferenceId.fromInt(i));
-        if (sym == .none) break;
-        const start = i;
-        while (i < ref_count and references.getSymbol(ReferenceId.fromInt(i)) == sym) {
-            i += 1;
-        }
-        symbols.setRefRange(sym, .{ .start = start, .end = i });
+    // Pass 1: count refs per symbol.
+    const counts = try sa.alloc(u32, buckets);
+    @memset(counts, 0);
+    for (sym_ids) |s| {
+        counts[if (s == .none) sym_count else s.toInt()] += 1;
     }
+
+    // Pass 2: prefix sum → per-symbol start positions.
+    // Only valid symbol IDs (0..sym_count-1) get entries in the symbol table.
+    // The last bucket (index sym_count) holds unresolved refs — no symbol entry.
+    const starts = try sa.alloc(u32, buckets);
+    var acc: u32 = 0;
+    for (0..sym_count) |i| {
+        starts[i] = acc;
+        symbols.setRefRange(@enumFromInt(i), .{ .start = acc, .end = acc + counts[i] });
+        acc += counts[i];
+    }
+    starts[sym_count] = acc;
+
+    // Pass 3: scatter ref_ids into the sorted index.
+    const ref_by_sym = try allocator.alloc(ReferenceId, ref_count);
+    const cursor = try sa.alloc(u32, buckets);
+    @memcpy(cursor, starts);
+    for (sym_ids, 0..) |s, old| {
+        const b = if (s == .none) sym_count else s.toInt();
+        ref_by_sym[cursor[b]] = ReferenceId.fromInt(@intCast(old));
+        cursor[b] += 1;
+    }
+
+    return ref_by_sym;
 }
 
 fn buildScopeBindings(
