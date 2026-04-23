@@ -1442,9 +1442,9 @@
     },
     "@typescript-eslint/no-redeclare": {
       "runner": {
-        "fn": 14,
+        "fn": 13,
         "fp": 1,
-        "crash": 1
+        "crash": 0
       },
       "native": {
         "fn": 35,
@@ -1874,9 +1874,9 @@
     },
     "@typescript-eslint/explicit-member-accessibility": {
       "runner": {
-        "fn": 18,
-        "fp": 2,
-        "crash": 19
+        "fn": 8,
+        "fp": 4,
+        "crash": 7
       },
       "native": {
         "fn": 41,
@@ -1885,8 +1885,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 18,
-        "fp": 2,
+        "fn": 8,
+        "fp": 4,
         "crash": 0
       }
     },
@@ -4143,7 +4143,7 @@
     "jsdoc/require-jsdoc": {
       "runner": {
         "fn": 7,
-        "fp": 11,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -4154,7 +4154,7 @@
       },
       "hybrid": {
         "fn": 7,
-        "fp": 11,
+        "fp": 9,
         "crash": 0
       }
     },
@@ -8426,9 +8426,9 @@
     },
     "no-unused-vars": {
       "runner": {
-        "fn": 18,
+        "fn": 6,
         "fp": 6,
-        "crash": 11
+        "crash": 0
       },
       "native": {
         "fn": 101,
@@ -9866,9 +9866,9 @@
     },
     "no-redeclare": {
       "runner": {
-        "fn": 21,
+        "fn": 3,
         "fp": 5,
-        "crash": 22
+        "crash": 0
       },
       "native": {
         "fn": 47,
@@ -17571,8 +17571,8 @@
     "import/newline-after-import": {
       "runner": {
         "fn": 11,
-        "fp": 9,
-        "crash": 3
+        "fp": 12,
+        "crash": 0
       },
       "native": {
         "fn": 40,
@@ -17582,7 +17582,7 @@
       },
       "hybrid": {
         "fn": 11,
-        "fp": 9,
+        "fp": 12,
         "crash": 0
       }
     },
@@ -22412,9 +22412,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 8442,
-    "runnerCasesPerSec": 12655,
-    "nativeCasesPerSec": 87057,
+    "totalElapsedMs": 8525,
+    "runnerCasesPerSec": 12556,
+    "nativeCasesPerSec": 86773,
     "totalCases": 79831
   }
 }

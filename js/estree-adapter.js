@@ -213,6 +213,7 @@ const SH = {
   SCOPE_THROUGH_REF_STARTS: 156, // u32[scope_count]
   SCOPE_THROUGH_REF_COUNTS: 160, // u32[scope_count]
   SCOPE_THROUGH_REF_IDS: 164,    // u32[total_through_refs]
+  SYM_REF_INDIRECT: 168,         // u32[ref_count] — ref_by_sym indirect index
 };
 
 const FLAG_HAS_BOM = 1;
@@ -418,6 +419,8 @@ class AstView {
         this._symDeclNodes    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_DECL_NODES, true), this._semSymbolCount);
         this._symRefStarts    = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_REF_STARTS, true), this._semSymbolCount);
         this._symRefEnds      = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_REF_ENDS, true),   this._semSymbolCount);
+        const _symRefIndirectOff = dv.getUint32(semOff + SH.SYM_REF_INDIRECT, true);
+        this._symRefBySym     = (_symRefIndirectOff > 0 && this._semRefCount > 0) ? new Uint32Array(buffer, _symRefIndirectOff, this._semRefCount) : null;
         this._symNameStarts   = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_STARTS, true),this._semSymbolCount);
         this._symNameLens     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_LENS, true),  this._semSymbolCount);
         // Pre-decode all symbol names eagerly: 1 TextDecoder call per file (ASCII fast path)
@@ -2067,7 +2070,11 @@ const NodeProto = {
         // @ followed by decorator name — use end of the expression (next meaningful token)
         const decEnd = (i + 1 < ast.tokenCount) ? ast._tokEnds[i + 1] : ast._tokEnds[i];
         const decStart = ast._tokStarts[i];
-        decorators.push({ type: 'Decorator', start: decStart, end: decEnd, range: [decStart, decEnd] });
+        const _ls = this._ast._lineStarts();
+        const _sL = this._ast._findLineIdx(decStart);
+        const _eL = this._ast._findLineIdx(decEnd > decStart ? decEnd - 1 : decStart);
+        decorators.push({ type: 'Decorator', start: decStart, end: decEnd, range: [decStart, decEnd],
+          loc: { start: { line: _sL + 1, column: decStart - _ls[_sL] }, end: { line: _eL + 1, column: decEnd - _ls[_eL] } } });
       } else if (val === ')') {
         // Skip decorator arguments: @dec(args) — walk back to matching '('
         let depth = 1;

@@ -516,6 +516,9 @@ function collectSubtreeTokens(ast, nodeIdx, result) {
 
 // ESLint variable API stubs — never called, present for compat with rule consumers.
 const _FALSE = () => false;
+// TypeScript contextual modifiers tokenized as identifiers by our lexer but
+// expected as "Keyword" type tokens by @typescript-eslint rules.
+const _TS_MODIFIER_KWS = new Set(['public', 'private', 'protected']);
 
 function _mkGlobalVar(name, scope, writeable, implicitSetting) {
   return { name, defs: [], references: [], identifiers: [],
@@ -730,8 +733,11 @@ class SourceCode {
     // If this token is JSX text content (main token of a non-gap jsx_text_node),
     // report type "JSXText" so spacing/punctuation rules don't flag it.
     const isJsxText = ast._nodeTags && this._getJsxTextTokFlags()[i] === 1;
+    // TypeScript accessibility modifiers (public/private/protected) are tokenized as
+    // identifiers in our lexer but ESLint/TSESLint expects them as "Keyword" tokens.
+    const isModifierKw = rawType === 'Identifier' && _TS_MODIFIER_KWS.has(value);
     const tok = {
-      type: isJsxText ? 'JSXText' : (src.charCodeAt(start) === 35 /* # */ ? 'PrivateIdentifier' : rawType),
+      type: isJsxText ? 'JSXText' : isModifierKw ? 'Keyword' : (src.charCodeAt(start) === 35 /* # */ ? 'PrivateIdentifier' : rawType),
       value,
       range: [start, end],
       loc: {
@@ -802,8 +808,37 @@ class SourceCode {
     // Use strict range: only tokens within [startTok, maxTok] — no forward-scan extension.
     if (!ast._maxTokCache) ast._ensureMaxTokCache();
     if (!ast._minTokCache) _computeMinTok(ast);
-    const startTok = ast._minTokCache[node._i];
+    let startTok = ast._minTokCache[node._i];
     const maxTok   = ast._maxTokCache[node._i];
+    // Class members: scan backward to include preceding modifier tokens.
+    // TypeScript modifiers (public/private/protected) are identifier tokens; keyword
+    // modifiers (static/async/abstract/readonly/override/declare) have dedicated tags.
+    // Zig's minTok only covers the node's own subtree and misses these prefix tokens.
+    const _nt = node._tag;
+    if (_nt === T.method_def || _nt === T.computed_method_def ||
+        _nt === T.getter_def || _nt === T.computed_getter_def ||
+        _nt === T.setter_def || _nt === T.computed_setter_def ||
+        _nt === T.constructor_def ||
+        _nt === T.property_def || _nt === T.computed_property_def) {
+      const src2 = this.text;
+      while (startTok > 0) {
+        const pt = ast._tokTags[startTok - 1];
+        // keyword modifiers already have dedicated tags
+        if (pt === 56 /* kw_static */ || pt === 54 /* kw_async */ ||
+            pt === 70 /* kw_declare */ || pt === 71 /* kw_abstract */ ||
+            pt === 73 /* kw_readonly */ || pt === 76 /* kw_override */ ||
+            pt === 27 /* kw_function */ || pt === 78 /* asterisk/generator */) {
+          startTok--;
+        } else if (pt === 8 /* identifier */) {
+          // check if it's a TS access modifier (public/private/protected)
+          const ts = ast._tokStarts[startTok - 1];
+          const te = ast._tokEnds ? ast._tokEnds[startTok - 1] : ts + 9;
+          const tv = src2.slice(ts, te);
+          if (_TS_MODIFIER_KWS.has(tv)) startTok--;
+          else break;
+        } else break;
+      }
+    }
     const fn = filterOrOpts && typeof filterOrOpts.filter === 'function' ? filterOrOpts.filter : null;
     const toks = [];
     for (let t = startTok; t <= maxTok; t++) {
@@ -1846,7 +1881,8 @@ class SourceCode {
       while ((m = blockCommentRe.exec(src)) !== null) {
         const val = m[1];
         if (!/^\s*globals?\b/.test(val)) continue;
-        const syntheticComment = { type: 'Block', value: val, start: m.index, end: m.index + m[0].length };
+        const _cEnd = m.index + m[0].length;
+        const syntheticComment = { type: 'Block', value: val, start: m.index, end: _cEnd, range: [m.index, _cEnd] };
         const body = val.replace(/^\s*globals?\s*/, '').replace(/\s*$/, '');
         for (const entry of body.match(/[$_\p{ID_Start}][$\w\p{ID_Continue}]*(?:\s*:\s*[^,\s]+)?/gu) || []) {
           const trimmed = entry.trim();
