@@ -155,9 +155,10 @@ const _GLOBAL_MIN_VERSION = {
 // per reference (previously each ref had isWrite/isRead/etc. as own closures over `kind`).
 // _kind is stored as an own property; methods read it via `this._kind`.
 const _refProto = {
-  isWrite:          function() { return this._kind === 1 || this._kind === 2; },
+  // kind 4 = write_init: VarDecl initializer write. Counts as write but not read.
+  isWrite:          function() { return this._kind === 1 || this._kind === 2 || this._kind === 4; },
   isRead:           function() { return this._kind === 0 || this._kind === 2 || this._kind === 3; },
-  isWriteOnly:      function() { return this._kind === 1; },
+  isWriteOnly:      function() { return this._kind === 1 || this._kind === 4; },
   isReadOnly:       function() { return this._kind === 0 || this._kind === 3; },
   isReadWrite:      function() { return this._kind === 2; },
   // typescript-eslint scope-manager compat: isValueReference / isTypeReference getters.
@@ -624,7 +625,7 @@ class SourceCode {
    * Lazily computed and cached per file.
    */
   _getJsxTextTokFlags() {
-    if (this._jsxTextTokFlags !== null) return this._jsxTextTokFlags;
+    if (this._jsxTextTokFlags != null) return this._jsxTextTokFlags;
     const ast = this._ast;
     const flags = new Uint8Array(ast.tokenCount);
     const nodeTags = ast._nodeTags;
@@ -1331,7 +1332,15 @@ class SourceCode {
     // the actual global scope (scope 0). Rules like no-shadow rely on this to detect top-level
     // declarations shadowing builtin globals (e.g. `var Object = 0;`).
     if (nodeIdx === 0 && this._sourceType !== 'module') {
-      if (this._globalReturn) {
+      // When there's only one scope (global, no separate module scope) or globalReturn,
+      // return scope 0 directly — it contains both builtins and top-level declarations.
+      // _buildScope(1) would return a stub with an empty upper.set, causing _wrapScopeWithGlobals
+      // to capture an empty map as globalScope and break ReferenceTracker's set.get() lookups.
+      // Scope 1 might be a function scope (kind=2) if the program's first child is an
+      // IIFE or similar — in that case there is no separate module/script scope and we
+      // must return scope 0 (global) directly so ReferenceTracker gets a Program block.
+      const scope1Kind = ast._scopeKinds ? ast._scopeKinds[1] : undefined;
+      if (this._globalReturn || (ast._semScopeCount || 0) <= 1 || scope1Kind !== 1) {
         return this._buildScope(0);
       }
       const moduleScope = this._buildScope(1);
@@ -1358,6 +1367,7 @@ class SourceCode {
     // Rules like no-global-assign iterate `variables`, while ReferenceTracker uses `set`.
     let _mergedVars;
     let _setProxy;
+    // Flag to ensure globalScope.through is triggered at most once per wrapper.
     const wrapper = new Proxy(moduleScope, {
       get(target, prop) {
         if (prop === 'set') {
@@ -1496,7 +1506,11 @@ class SourceCode {
     // ESLint's script mode has only one global scope covering all top-level code.
     // Our Zig analyzer always creates a two-level structure (global=0, module=1), so we fix the
     // reported type here so rules like no-alert, no-implicit-globals, no-unused-vars work correctly.
-    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global' : (_SCOPE_KIND_NAMES[kind] || 'block');
+    // In module mode with a single scope (kind=0, no parent), treat it as "module" scope so rules
+    // like no-useless-assignment that check `variable.scope.type === "module"` work correctly.
+    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global'
+      : (kind === 0 && this._sourceType === 'module' && upper === null) ? 'module'
+      : (_SCOPE_KIND_NAMES[kind] || 'block');
 
     // Cheap fields only — expensive arrays (variables/references/through/childScopes) are lazy.
     const scope = {
@@ -1755,6 +1769,13 @@ class SourceCode {
       }
     }
 
+    // In module mode the root scope has type='module' for local declarations, but globals
+    // (defs=[]) should appear to be in a 'global' scope so that rules like no-useless-assignment
+    // that check variable.scope.type === "global" can skip them correctly.
+    const globalScopeRef = (kind === 0 && this._sourceType === 'module')
+      ? new Proxy(scope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } })
+      : scope;
+
     // Global scope: add built-in globals so no-undef doesn't flag NaN, undefined, etc.
     if (kind === 0) {
       const ecmaVersion = this._ecmaVersion;
@@ -1762,7 +1783,7 @@ class SourceCode {
         const minVer = _GLOBAL_MIN_VERSION[name];
         if (minVer !== undefined && ecmaVersion < minVer) continue;
         if (!set.has(name)) {
-          const g = _mkGlobalVar(name, scope, false, 'writable');
+          const g = _mkGlobalVar(name, globalScopeRef, false, 'writable');
           set.set(name, g);
           variables.push(g);
         }
@@ -1773,7 +1794,7 @@ class SourceCode {
       if (this._envGlobals) {
         for (const name of _ENV_GLOBALS) {
           if (!set.has(name)) {
-            const g = _mkGlobalVar(name, scope, false, 'writable');
+            const g = _mkGlobalVar(name, globalScopeRef, false, 'writable');
             set.set(name, g);
             variables.push(g);
           }
@@ -1796,7 +1817,7 @@ class SourceCode {
               existing.eslintImplicitGlobalSetting = isWritable ? 'writable' : 'readonly';
             }
           } else {
-            const g = _mkGlobalVar(name, scope, isWritable, isWritable ? 'writable' : 'readonly');
+            const g = _mkGlobalVar(name, globalScopeRef, isWritable, isWritable ? 'writable' : 'readonly');
             set.set(name, g);
             variables.push(g);
           }
@@ -1808,7 +1829,7 @@ class SourceCode {
     if (kind === 0 && this._sourceType === 'commonjs') {
       for (const name of ['require', 'module', 'exports', '__dirname', '__filename', 'global', 'process', 'Buffer', 'clearImmediate', 'setImmediate']) {
         if (!set.has(name)) {
-          const g = _mkGlobalVar(name, scope, false, 'readonly');
+          const g = _mkGlobalVar(name, globalScopeRef, false, 'readonly');
           set.set(name, g);
           variables.push(g);
         }
@@ -1816,12 +1837,16 @@ class SourceCode {
     }
 
     // Process /*global X, Y */ and /*globals X: writable */ directive comments.
+    // The Zig AST buffer may not include comment data, so we scan the source text
+    // directly for /* globals ... */ block comments.
     if (kind === 0) {
-      const comments = ast.commentsInRange(0, ast.sourceLen);
-      for (const comment of comments) {
-        if (comment.type !== 'Block') continue;
-        const val = comment.value;
+      const src = ast.source;
+      const blockCommentRe = /\/\*([\s\S]*?)\*\//g;
+      let m;
+      while ((m = blockCommentRe.exec(src)) !== null) {
+        const val = m[1];
         if (!/^\s*globals?\b/.test(val)) continue;
+        const syntheticComment = { type: 'Block', value: val, start: m.index, end: m.index + m[0].length };
         const body = val.replace(/^\s*globals?\s*/, '').replace(/\s*$/, '');
         for (const entry of body.match(/[$_\p{ID_Start}][$\w\p{ID_Continue}]*(?:\s*:\s*[^,\s]+)?/gu) || []) {
           const trimmed = entry.trim();
@@ -1838,16 +1863,34 @@ class SourceCode {
           if (set.has(name)) {
             const v = set.get(name);
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
-            v.eslintExplicitGlobalComments.push(comment);
+            v.eslintExplicitGlobalComments.push(syntheticComment);
             if (isWritable) v.writeable = true;
           } else {
             const globalVar = { name, defs: [], references: [], identifiers: [],
-              scope, eslintUsed: false, writeable: isWritable,
-              eslintExplicitGlobalComments: [comment],
+              scope: globalScopeRef, eslintUsed: false, writeable: isWritable,
+              eslintExplicitGlobalComments: [syntheticComment],
               isRead: () => false, isWritten: () => false };
             set.set(name, globalVar);
             variables.push(globalVar);
           }
+        }
+      }
+    }
+
+    // Script top-level scope (kind=0, script mode): process /* exported */ directives.
+    // In script mode our Zig analyzer creates only one scope (kind=0), so /* exported */
+    // must be handled here rather than in the kind=1 block below.
+    if (kind === 0 && this._sourceType !== 'module') {
+      const src = ast.source;
+      const blockCommentRe2 = /\/\*([\s\S]*?)\*\//g;
+      let m2;
+      while ((m2 = blockCommentRe2.exec(src)) !== null) {
+        const val2 = m2[1];
+        if (!/^\s*exported\b/.test(val2)) continue;
+        const body2 = val2.replace(/^\s*exported\s*/, '').trim();
+        for (const name of (body2.match(/[$_a-zA-Z][\w$]*/g) || [])) {
+          const v = set.get(name);
+          if (v) { v.eslintExported = true; v.eslintUsed = true; }
         }
       }
     }
@@ -1884,17 +1927,19 @@ class SourceCode {
       }
 
       // Process /* exported X, Y */ comments — mark variables as intentionally exported.
-      // This suppresses no-implicit-globals for variables listed in /* exported */ comments.
+      // Scan source text directly (same as /* globals */ above) since comment AST data
+      // may not be present in all buffer variants.
       {
-        const comments = ast.commentsInRange(0, ast.sourceLen);
-        for (const comment of comments) {
-          if (comment.type !== 'Block') continue;
-          const val = comment.value;
+        const src = ast.source;
+        const blockCommentRe = /\/\*([\s\S]*?)\*\//g;
+        let m;
+        while ((m = blockCommentRe.exec(src)) !== null) {
+          const val = m[1];
           if (!/^\s*exported\b/.test(val)) continue;
           const body = val.replace(/^\s*exported\s*/, '').trim();
           for (const name of (body.match(/[$_a-zA-Z][\w$]*/g) || [])) {
             const v = set.get(name);
-            if (v) v.eslintExported = true;
+            if (v) { v.eslintExported = true; v.eslintUsed = true; }
           }
         }
       }
@@ -2243,10 +2288,13 @@ class SourceCode {
 
     // Build references for this symbol from Zig-side ref ranges (O(refs_for_sym)).
     const references = [];
+    let hasWriteInitRef = false; // true if a write_init (kind=4) Zig ref exists → skip JS synthRef synthesis
     const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
     const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
     for (let j = refStart; j < refEnd; j++) {
-      references.push(this._buildReference(j));
+      const refId = ast._symRefBySym ? ast._symRefBySym[j] : j;
+      if (ast._refKinds && ast._refKinds[refId] === 4) hasWriteInitRef = true;
+      references.push(this._buildReference(refId));
     }
 
     const declNodeIdx = ast._symDeclNodes[symId];
@@ -2336,7 +2384,7 @@ class SourceCode {
         }
       }
     }
-    if ((is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+    if (!hasWriteInitRef && (is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
       let curIdx = ast._parentData[declNodeIdx];
       let initAdded = false;
       while (!initAdded && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
@@ -2404,7 +2452,7 @@ class SourceCode {
     // Add write reference for `var` in for-in/for-of headers (e.g. `for (var i in obj)`).
     // ESLint scope analysis creates an implicit write ref so rules like no-loop-func can detect
     // that the loop variable changes each iteration (making closures over it unsafe).
-    if (is_var && !is_let && !is_const && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+    if (!hasWriteInitRef && is_var && !is_let && !is_const && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
       let curIdx = ast._parentData[declNodeIdx];
       let forInOfChecked = false;
       while (!forInOfChecked && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
@@ -2542,10 +2590,12 @@ class SourceCode {
     ref.identifier = refNode;
     ref.from = from;
     ref.resolved = resolved;
-    ref.init = false;
     ref._kind = kind;
+    // kind 4 = write_init: VarDecl initializer. ESLint scope-manager marks these with init=true
+    // so prefer-const and similar rules know this write is the declaration initializer, not a reassignment.
+    ref.init = (kind === 4);
     // Read pre-baked write expression from Zig buffer (pre-computed during semantic analysis).
-    if (kind === 1 || kind === 2) { // write or read_write
+    if (kind === 1 || kind === 2 || kind === 4) { // write, read_write, or write_init
       const weIdx = ast._refWriteExprIds ? ast._refWriteExprIds[refIdx] : NONE32;
       ref.writeExpr = (weIdx !== undefined && weIdx !== NONE32 && weIdx < ast.nodeCount)
         ? nodeView(ast, weIdx) : null;
@@ -2616,7 +2666,8 @@ class SourceCode {
           const rs = _ast._symRefStarts ? _ast._symRefStarts[_symId] : 0;
           const re = _ast._symRefEnds ? _ast._symRefEnds[_symId] : 0;
           for (let j = rs; j < re; j++) {
-            this._refs.push(builder._buildReference(j));
+            const refId = _ast._symRefBySym ? _ast._symRefBySym[j] : j;
+            this._refs.push(builder._buildReference(refId));
           }
         }
         return this._refs;
@@ -2670,8 +2721,11 @@ class SourceCode {
       ? nodeView(ast, scopeNodeIdx) : null;
     const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */;
     const set = new Map();
+    // In module mode, the root scope (kind=0, no parent) acts as module scope.
+    const thinTypeName = (kind === 0 && this._sourceType === 'module' && upper === null)
+      ? 'module' : (_SCOPE_KIND_NAMES[kind] || 'block');
     const s = {
-      type: _SCOPE_KIND_NAMES[kind] || 'block', isStrict, variables: [], references: [],
+      type: thinTypeName, isStrict, variables: [], references: [],
       set, through: [], childScopes: [], implicit: { variables: [], left: [], leftToBeResolved: [] },
       block, upper, lookup: () => null,
     };

@@ -369,7 +369,10 @@ pub fn tokenizeWithAllOptions(
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
 
-    const hashes_raw = try alloc.alloc(u64, max_toks + 1);
+    // hashes_raw must cover the actual token count, which can exceed max_toks
+    // for token-dense code (e.g. `if(a){}`).  The hard upper bound is n+1
+    // (one token per source char, plus EOF).
+    const hashes_raw = try alloc.alloc(u64, n + 1);
     @memset(hashes_raw, 0);
     const hash_ptr: [*]u64 = hashes_raw.ptr;
 
@@ -482,6 +485,23 @@ pub fn tokenizeWithAllOptions(
                     tag = .r_brace; end = pos + 1;
                 }
             },
+
+            // ── Simple single-char tokens (IS_SIMPLE, non-newline) ──────────
+            // Phase 2 handles these in batch when pos+16<=n. When near EOF
+            // (pos+16>n), Phase 2 is skipped and we need scalar fallbacks here.
+            '(' => { tag = .l_paren;   end = pos + 1; },
+            ')' => { tag = .r_paren;   end = pos + 1; },
+            '[' => { tag = .l_bracket; end = pos + 1; },
+            ']' => { tag = .r_bracket; end = pos + 1; },
+            '{' => {
+                if (tmpl_depth > 0) brace_d[tmpl_depth - 1] += 1;
+                tag = .l_brace; end = pos + 1;
+            },
+            ';' => { tag = .semicolon; end = pos + 1; },
+            ',' => { tag = .comma;     end = pos + 1; },
+            '~' => { tag = .tilde;     end = pos + 1; },
+            '@' => { tag = .at_sign;   end = pos + 1; },
+            ':' => { tag = .colon;     end = pos + 1; },
 
             // ── '.' ─────────────────────────────────────────────────────────
             '.' => {
@@ -625,7 +645,9 @@ pub fn tokenizeWithAllOptions(
                     pos = res.end; continue :outer;
                 }
                 if (pos + 1 < n and src[pos + 1] == '=') { tag = .slash_equal; end = pos + 2; }
-                else if (regexAllowed(prev_kind)) { end = regexEnd(src, pos); tag = .regex_literal; }
+                // In JSX/TSX mode, `</tag>` must not have `/` tokenized as regex.
+                // `.less_than` before `/` means we are inside a closing tag.
+                else if (regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = regexEnd(src, pos); tag = .regex_literal; }
                 else { tag = .slash; end = pos + 1; }
             },
 
@@ -715,12 +737,13 @@ pub fn tokenizeWithAllOptions(
     tok_n += 1;
     tokens.len = tok_n;
 
+    const comment_count: u32 = @intCast(cm_s.items.len);
     return .{
         .tokens         = tokens,
         .comment_starts = try cm_s.toOwnedSlice(alloc),
         .comment_ends   = try cm_e.toOwnedSlice(alloc),
         .comment_kinds  = try cm_k.toOwnedSlice(alloc),
-        .comment_count  = @intCast(cm_s.items.len),
+        .comment_count  = comment_count,
         .line_starts    = try ls.toOwnedSlice(alloc),
         .tok_hashes     = hashes_raw,
     };
