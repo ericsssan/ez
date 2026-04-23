@@ -349,12 +349,17 @@ function _findDefNode(declNode, defType) {
     case 'ClassName':
       while (cur) { if (_CLASS_TAG_SET.has(cur._tag)) return cur; cur = cur.parent; }
       break;
-    case 'ImportBinding':
-      // declNode IS the specifier (ImportSpecifier / ImportDefaultSpecifier /
-      // ImportNamespaceSpecifier). Return it directly so def.node.type is the
-      // specifier type (e.g. "ImportNamespaceSpecifier"), matching ESLint's
-      // eslint-scope behaviour. def.parent will be set to specifier.parent = ImportDeclaration.
+    case 'ImportBinding': {
+      // def.node should be the specifier (ImportSpecifier / ImportDefaultSpecifier /
+      // ImportNamespaceSpecifier), not the local Identifier. Zig may store either
+      // the specifier or its local identifier as the decl node.
+      if (declNode.type === 'Identifier') {
+        const p = declNode.parent;
+        if (p && (p.type === 'ImportSpecifier' || p.type === 'ImportDefaultSpecifier' ||
+                  p.type === 'ImportNamespaceSpecifier')) return p;
+      }
       return declNode;
+    }
     case 'Parameter':
       while (cur) {
         if (_FN_TAGS.has(cur._tag)) {

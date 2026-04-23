@@ -11361,7 +11361,7 @@
     "no-shadow": {
       "runner": {
         "fn": 76,
-        "fp": 47,
+        "fp": 45,
         "crash": 0
       },
       "native": {
@@ -12674,7 +12674,7 @@
     },
     "no-import-assign": {
       "runner": {
-        "fn": 31,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -17696,9 +17696,9 @@
     },
     "import/no-namespace": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
-        "crash": 6
+        "crash": 0
       },
       "native": {
         "fn": 6,
@@ -17707,7 +17707,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -19424,8 +19424,8 @@
     },
     "unicorn/prefer-export-from": {
       "runner": {
-        "fn": 29,
-        "fp": 0,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -19435,8 +19435,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 29,
-        "fp": 0,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -19514,9 +19514,9 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 19,
+        "fn": 18,
         "fp": 1,
-        "crash": 1
+        "crash": 0
       },
       "native": {
         "fn": 153,
@@ -19525,7 +19525,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 19,
+        "fn": 18,
         "fp": 1,
         "crash": 0
       }
@@ -20882,7 +20882,7 @@
     },
     "react/display-name": {
       "runner": {
-        "fn": 20,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       },
@@ -20893,7 +20893,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 20,
+        "fn": 6,
         "fp": 0,
         "crash": 0
       }
@@ -21782,7 +21782,7 @@
     },
     "react/void-dom-elements-no-children": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -21793,7 +21793,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -21854,8 +21854,8 @@
     },
     "react/prop-types": {
       "runner": {
-        "fn": 133,
-        "fp": 82,
+        "fn": 124,
+        "fp": 111,
         "crash": 63
       },
       "native": {
@@ -21865,8 +21865,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 133,
-        "fp": 82,
+        "fn": 124,
+        "fp": 111,
         "crash": 0
       }
     },
@@ -21980,7 +21980,7 @@
     },
     "react/no-multi-comp": {
       "runner": {
-        "fn": 12,
+        "fn": 8,
         "fp": 0,
         "crash": 0
       },
@@ -21991,7 +21991,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 12,
+        "fn": 8,
         "fp": 0,
         "crash": 0
       }
@@ -22214,7 +22214,7 @@
     },
     "react/no-array-index-key": {
       "runner": {
-        "fn": 12,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -22225,7 +22225,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 12,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -22412,9 +22412,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 8523,
-    "runnerCasesPerSec": 12549,
-    "nativeCasesPerSec": 84927,
+    "totalElapsedMs": 8476,
+    "runnerCasesPerSec": 12633,
+    "nativeCasesPerSec": 93698,
     "totalCases": 79831
   }
 }
