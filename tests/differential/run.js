@@ -8,7 +8,7 @@ if (typeof Bun === "undefined") {
 /**
  * Differential test — compares Ez backends against ESLint+Espree.
  *
- * Input: ESLint submodule test cases + plugin conformance tests.
+ * Input: pre-extracted fixture JSON files (see tests/differential/extract.js).
  * Compares Ez backends (runner, native, hybrid) against ESLint+Espree oracle.
  * Per-case options and sourceType forwarded to both sides.
  *
@@ -36,285 +36,7 @@ const path = require("path");
 const JS_ROOT      = path.resolve(__dirname, "../../js");
 const ESLINT_ROOT  = path.resolve(__dirname, "../conformance/eslint");
 const BASELINE_FILE = path.resolve(__dirname, "baseline.json");
-
-// ── Bun plugin stubs ─────────────────────────────────────────
-// Intercept module resolution for test framework packages so that
-// importing plugin test files captures their valid/invalid cases
-// instead of running a real test suite.
-//
-// build.module() registers virtual modules that win over any local
-// node_modules/ for both CJS require() and ESM import() from any
-// subdirectory.  This handles plugins that ship their own eslint
-// (e.g. jsdoc) without needing per-plugin guards.
-//
-// Note: require(absolute_path) bypasses build.module interception,
-// so the eslintLinter below (loaded via absolute JS_ROOT path) stays real.
-const { plugin: _bunPlugin } = require("bun");
-_bunPlugin({
-  name: "ez-capture",
-  setup(build) {
-    const PARSER_VERSION  = "99.0.0";
-    const PARSER_PACKAGES = ["@typescript-eslint/parser", "typescript-eslint-parser", "babel-eslint", "@babel/eslint-parser"];
-
-    // ── eslint redirect with stub RuleTester ────────────────────
-    // All plugins must use the SAME eslint Linter so our verify() intercept works.
-    // Re-export real Linter/ESLint/SourceCode but replace RuleTester with our stub
-    // that delegates to __EZ_SILENT_RUN__ for reliable case capture.
-    // Real RuleTester has complex fix/suggestion re-verification that doesn't match
-    // our capture model — the stub gives consistent single-verify-per-case behavior.
-    const ESLINT_PATH = JSON.stringify(path.join(JS_ROOT, "node_modules/eslint"));
-    build.module("eslint", () => ({
-      loader: "js",
-      contents: `
-const _eslint = require(${ESLINT_PATH});
-class RuleTester {
-  constructor(...args) { this._config = typeof args[0] === 'function' ? (args[1] || {}) : (args[0] || {}); }
-  run(name, rule, cases) { if (typeof global.__EZ_SILENT_RUN__ === "function") global.__EZ_SILENT_RUN__(new _eslint.Linter(), name, cases, this._config); }
-  static get describe() { return null; }
-  static get it()       { return null; }
-}
-export { RuleTester };
-export const Linter = _eslint.Linter;
-export const ESLint = _eslint.ESLint;
-export const SourceCode = _eslint.SourceCode;
-export default { RuleTester, Linter: _eslint.Linter, ESLint: _eslint.ESLint, SourceCode: _eslint.SourceCode };
-`,
-    }));
-
-    // ── ava stub ──────────────────────────────────────────────
-    // ava is not installed. Stub as no-op so import doesn't crash.
-    build.module("ava", () => ({
-      loader: "js",
-      contents: `const s = Object.assign(function(){}, { before:()=>{}, after:()=>{}, beforeEach:()=>{}, afterEach:()=>{}, serial:()=>{}, skip:()=>{}, failing:()=>{}, only:()=>{} }); export default s;`,
-    }));
-
-    // ── Test framework redirects ────────────────────────────────
-    // These frameworks import from 'eslint' — our redirect gives them the stub
-    // RuleTester. But they may also have structural differences (extra constructor
-    // args, etc.) so re-export the stub from 'eslint' directly.
-    build.module("eslint-ava-rule-tester", () => ({ loader: "js", contents: `export { RuleTester as default } from 'eslint';` }));
-    build.module("@typescript-eslint/rule-tester", () => ({ loader: "js", contents: `export { RuleTester } from 'eslint'; export { RuleTester as default } from 'eslint';` }));
-    build.onLoad({ filter: /snapshot-rule-tester\.js$/ }, () => ({ loader: "js", contents: `export { RuleTester as default } from 'eslint';` }));
-
-    // ── Parser stubs ──────────────────────────────────────────
-    // Prevent loading heavy real parsers. Stub parser cases are detected as
-    // custom-parser and skipped in comparison.
-    const parserContents = `const parser = { parse() { return { type: "Program", body: [], range: [0, 0] }; } }; export default parser; export const parse = parser.parse;`;
-    for (const pkg of PARSER_PACKAGES) {
-      build.module(pkg, () => ({ loader: "js", contents: parserContents }));
-      build.module(`${pkg}/package.json`, () => ({ loader: "js", contents: `export const version = "${PARSER_VERSION}"; export default { version: "${PARSER_VERSION}" };` }));
-    }
-    // typescript-eslint — jsdoc uses `import { parser } from 'typescript-eslint'`.
-    build.module("typescript-eslint", () => ({
-      loader: "js",
-      contents: `const parser = { parse() { return { type: "Program", body: [], range: [0,0] }; }, parseForESLint() { return { ast: { type: "Program", body: [], range: [0,0] }, services: {}, scopeManager: null, visitorKeys: {} }; } }; export { parser }; export default { parser };`,
-    }));
-
-    // ── Source file stubs (avoid loading real TS rule sources) ─
-    build.onLoad({ filter: /eslint-plugin[/\\]src[/\\]rules[/\\].+\.ts$/ }, () => ({ loader: "js", contents: `export default {};` }));
-    build.onLoad({ filter: /sonarjs-src[/\\].*[/\\](helpers|files)\.(ts|js)$/ }, () => ({ loader: "js", contents: `export default {}; export const normalizePath = (p) => p;` }));
-
-    // ── jsdoc performance intercepts ─────────────────────────────
-    // Profiling multi-rule lint (20 files × 50 jsdoc rules):
-    //   getJSDocComment: ~355k calls / 245ms (62.7%) without cache
-    //   parseComment:    ~4.5k calls / 28ms (7.2%) with 10x redundancy per comment
-    // Both are deterministic per (sourceCode, node) pair, so stash results on the
-    // Comment/Node object itself via a Symbol. Patching at onLoad avoids editing the
-    // submodule's node_modules (which would be wiped on reinstall).
-    // Additionally: short-circuit iterateJsdoc's *:not(Program) handler for nodes
-    // cached as no-jsdoc, so later rules bail before any work.
-
-    // checkIndentation uses `new RegExp(..., 'gv')` with dynamic excludeTags per call.
-    // Bun/V8's `v` flag (ES2024 unicodeSets) costs ~5 ms to compile on first encounter
-    // with a given pattern. Rule's inputs are ASCII-only JSDoc tag names, and `v`
-    // adds nothing — unicode-property-escapes / set-notation are unused. Strip to `g`.
-    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]rules[/\\]checkIndentation\.js$/ }, async (args) => {
-      const fs = require("fs");
-      const src = fs.readFileSync(args.path, "utf8");
-      // Replace both literal /.../gv and `new RegExp(..., 'gv')` forms.
-      const out = src
-        .replaceAll("/gmv", "/gm")
-        .replaceAll("/gv", "/g")
-        .replaceAll("/v", "/")
-        .replaceAll("'gv'", "'g'")
-        .replaceAll("'gmv'", "'gm'");
-      return { loader: "js", contents: out };
-    });
-
-    // Memo getDefaultTagStructureForMode by mode (read-only; 4 keys total).
-    // Without memo, native `Map` op was ~4.7% of CPU time from rebuild on every rule call.
-    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]getDefaultTagStructureForMode\.js$/ }, async (args) => {
-      const fs = require("fs");
-      const src = fs.readFileSync(args.path, "utf8");
-      return { loader: "js", contents: src.replace(
-        /export default getDefaultTagStructureForMode;?\s*$/,
-        `const _ez_gdts_cache = new Map();
-const _ez_origGDTS = getDefaultTagStructureForMode;
-const _ez_getDefaultTagStructureForMode = (mode) => { let v = _ez_gdts_cache.get(mode); if (v !== undefined) return v; v = _ez_origGDTS(mode); _ez_gdts_cache.set(mode, v); return v; };
-export default _ez_getDefaultTagStructureForMode;`
-      ) };
-    });
-
-    // parseInlineTags.parseDescription: matchAll reads RegExp.prototype.flags on every call
-    // (Bun accessor overhead was 7.0% self / 676ms). Replace with explicit exec+lastIndex.
-    build.onLoad({ filter: /@es-joy[/\\]jsdoccomment[/\\]src[/\\]parseInlineTags\.js$/ }, async (args) => {
-      const fs = require("fs");
-      const src = fs.readFileSync(args.path, "utf8");
-      return { loader: "js", contents: src.replace(
-        `function parseDescription (description) {
-  /** @type {import('.').InlineTag[]} */
-  const result = [];
-
-  // This could have been expressed in a single pattern,
-  // but having two avoids a potentially exponential time regex.
-
-  const prefixedTextPattern = /(?:\\[(?<text>[^\\]]+)\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\}/gvd;
-  // The pattern used to match for text after tag uses a negative lookbehind
-  // on the ']' char to avoid matching the prefixed case too.
-  const suffixedAfterPattern = /(?<!\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\s*(?<separator>[\\s\\|])?\\s*(?<text>[^\\}]*)\\}/gvd;
-
-  const matches = [
-    ...description.matchAll(prefixedTextPattern),
-    ...description.matchAll(suffixedAfterPattern)
-  ];`,
-        `const _ez_prefixedTextPattern = /(?:\\[(?<text>[^\\]]+)\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\}/gvd;
-const _ez_suffixedAfterPattern = /(?<!\\])\\{@(?<tag>[^\\}\\s]+)\\s?(?<namepathOrURL>[^\\}\\s\\|]*)\\s*(?<separator>[\\s\\|])?\\s*(?<text>[^\\}]*)\\}/gvd;
-function _ez_execAll(re, str) { const out = []; re.lastIndex = 0; let m; while ((m = re.exec(str)) !== null) { out.push(m); if (m.index === re.lastIndex) re.lastIndex++; } return out; }
-function parseDescription (description) {
-  const result = [];
-  const matches = [ ..._ez_execAll(_ez_prefixedTextPattern, description), ..._ez_execAll(_ez_suffixedAfterPattern, description) ];`
-      ) };
-    });
-
-    // jsdocUtils.getPreferredTagNameSimple: Object.entries(tagNames).find(...) on every call
-    // (6% of CPU self time: 617ms / 10.25s). Precompute alias→preferred once per tagNames identity.
-    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]jsdocUtils\.js$/ }, async (args) => {
-      const fs = require("fs");
-      const src = fs.readFileSync(args.path, "utf8");
-      return { loader: "js", contents: src.replace(
-        `  const preferredTagName = Object.entries(tagNames).find(([
-    , aliases,
-  ]) => {
-    return aliases.includes(name);
-  })?.[0];`,
-        `  if (!globalThis.__ez_aliasCache) globalThis.__ez_aliasCache = new WeakMap();
-  let _ez_aliasMap = globalThis.__ez_aliasCache.get(tagNames);
-  if (!_ez_aliasMap) {
-    _ez_aliasMap = new Map();
-    for (const [preferred, aliases] of Object.entries(tagNames)) {
-      for (const alias of aliases) _ez_aliasMap.set(alias, preferred);
-    }
-    globalThis.__ez_aliasCache.set(tagNames, _ez_aliasMap);
-  }
-  const preferredTagName = _ez_aliasMap.get(name);`
-      ) };
-    });
-
-    build.onLoad({ filter: /eslint-plugin-jsdoc[/\\]src[/\\]iterateJsdoc\.js$/ }, async (args) => {
-      const fs = require("fs");
-      const src = fs.readFileSync(args.path, "utf8");
-      let wrapped = src.replace(
-        `'*:not(Program)' (node) {
-          const commentNode = getJSDocComment(
-            sourceCode, node, /** @type {Settings} */ (settings),
-          );`,
-        `'*:not(Program)' (node) {
-          const _ezGjdcCommon = node && typeof node === 'object' ? node[Symbol.for('ez.gjdc.common')] : undefined;
-          if (_ezGjdcCommon === null && !ruleConfig.nonComment) return;
-          const commentNode = _ezGjdcCommon !== undefined ? _ezGjdcCommon : getJSDocComment(
-            sourceCode, node, /** @type {Settings} */ (settings),
-          );`
-      );
-      // Plug upstream leak: trackedJsdocs is a module-scope Set that grows per-lint
-      // and is never cleared. Clear it on Program:exit so it doesn't accumulate across files.
-      wrapped = wrapped.replace(
-        `        'Program:exit' () {`,
-        `        'Program:exit' () {
-          // EZ patch: clear cross-file accumulation
-          const _ezTracked = trackedJsdocs;`
-      ).replace(
-        `          callIterator(
-            context,
-            null,
-            untrackedJSdoc,
-            /** @type {StateObject} */
-            (state),
-            true,
-          );
-        },
-      };
-    },
-    meta: ruleConfig.meta,
-  };
-};`,
-        `          callIterator(
-            context,
-            null,
-            untrackedJSdoc,
-            /** @type {StateObject} */
-            (state),
-            true,
-          );
-          _ezTracked.clear();
-        },
-      };
-    },
-    meta: ruleConfig.meta,
-  };
-};`
-      );
-      return { loader: "js", contents: wrapped };
-    });
-    build.onLoad({ filter: /@es-joy[/\\]jsdoccomment[/\\]src[/\\]jsdoccomment\.js$/ }, async (args) => {
-      const fs = require("fs");
-      const src = fs.readFileSync(args.path, "utf8");
-      const wrapped = src.replace(
-        /\bexport\s*\{([^}]*)\}/,
-        (m, names) => {
-          const list = names.split(',').map(s => s.trim()).filter(Boolean);
-          return `const _EZ_GJDC_COMMON = Symbol.for('ez.gjdc.common');
-const _EZ_GJDC_MAP = Symbol.for('ez.gjdc.map');
-const _EZ_GJDC_FALLBACK = new WeakMap();
-const _ez_origGetJSDocComment = getJSDocComment;
-const _ez_getJSDocComment = function (sourceCode, node, settings, opts) {
-  const o = opts || {};
-  const isDefault = settings && settings.minLines === 0 && settings.maxLines === 1 &&
-    !settings.skipInvokedExpressionsForCommentFinding && !o.checkOverloads && !o.nonJSDoc;
-  if (isDefault && node && typeof node === 'object') {
-    const hit = node[_EZ_GJDC_COMMON];
-    if (hit !== undefined) return hit;
-    const r = _ez_origGetJSDocComment(sourceCode, node, settings, o);
-    try { node[_EZ_GJDC_COMMON] = r === null ? null : r; } catch {}
-    return r;
-  }
-  if (node && typeof node === 'object') {
-    let inner = node[_EZ_GJDC_MAP];
-    if (!inner) { inner = _EZ_GJDC_FALLBACK.get(node); }
-    const key = settings.minLines + '|' + settings.maxLines + '|' +
-      (settings.skipInvokedExpressionsForCommentFinding ? 1 : 0) + '|' +
-      (o.checkOverloads ? 1 : 0) + '|' + (o.nonJSDoc ? 1 : 0);
-    if (inner && inner.has(key)) return inner.get(key);
-    const r = _ez_origGetJSDocComment(sourceCode, node, settings, o);
-    if (!inner) { inner = new Map(); try { node[_EZ_GJDC_MAP] = inner; } catch { _EZ_GJDC_FALLBACK.set(node, inner); } }
-    inner.set(key, r);
-    return r;
-  }
-  return _ez_origGetJSDocComment(sourceCode, node, settings, o);
-};
-export { ${list.map(n => n === 'getJSDocComment' ? '_ez_getJSDocComment as getJSDocComment' : n).join(', ')} }`;
-        }
-      );
-      return { loader: "js", contents: wrapped };
-    });
-
-    // Note: parseComment memoization was attempted but reverted — the returned JSDoc
-    // block is mutable and some callers extend `tags[i].inlineTags` in place, which
-    // breaks cached reuse. getJSDocComment's result (a Comment token) is safely cached.
-  },
-});
-
-// Pre-load eslint redirect into CJS cache so ESM/CJS interop works.
-require("eslint");
+const CONFORMANCE_DIR = path.resolve(__dirname, "../conformance");
 
 // ── CLI flags ─────────────────────────────────────────────────
 
@@ -329,36 +51,32 @@ const _ruleIdx     = args.indexOf("--rule");
 const filterRule   = _ruleIdx >= 0 ? args[_ruleIdx + 1] : null;
 const _diffIdx     = args.indexOf("--diff");
 const diffFile     = _diffIdx >= 0 ? args[_diffIdx + 1] : null;
-const _extractIdx  = args.indexOf("--extract-fixtures");
-// Resolve against initial cwd now — sonarjs tests chdir() during phase 1 loading.
-const extractDir   = _extractIdx >= 0 ? path.resolve(process.cwd(), args[_extractIdx + 1]) : null;
+const noFixtures   = args.includes("--no-fixtures");
 // Default fixture dir — used for fast path (skip intercept, read pre-extracted JSON).
 const _fixturesDefault = path.resolve(__dirname, "../fixtures/extracted");
 const _fromFixturesIdx = args.indexOf("--from-fixtures");
-const noFixtures   = args.includes("--no-fixtures");
 const fromFixturesDir = _fromFixturesIdx >= 0
   ? path.resolve(process.cwd(), args[_fromFixturesIdx + 1])
-  : (!noFixtures && !extractDir && fs.existsSync(_fixturesDefault) ? _fixturesDefault : null);
+  : (!noFixtures && fs.existsSync(_fixturesDefault) ? _fixturesDefault : null);
 
-// Warn when fixtures are missing and user didn't opt out — falling back to the
-// slow path (full ESLint + plugin intercept). Extracted fixtures aren't
-// committed to the repo (too large, regenerable).
-if (!fromFixturesDir && !extractDir && !noFixtures && !fs.existsSync(_fixturesDefault)) {
+if (noFixtures) {
   process.stderr.write(
-    "\n  NOTE: tests/fixtures/extracted/ not found — running SLOW path (full intercept).\n" +
-    "        For the FAST path, extract fixtures once:\n" +
-    "          bun tests/differential/run.js --extract-fixtures tests/fixtures/extracted\n" +
-    "        Pass --no-fixtures to silence this notice.\n\n"
+    "error: --no-fixtures is no longer supported. Run extract.js first:\n" +
+    "  bun tests/differential/extract.js tests/fixtures/extracted\n"
   );
+  process.exit(1);
 }
 
+if (!fromFixturesDir) {
+  process.stderr.write(
+    "\n  error: tests/fixtures/extracted/ not found.\n" +
+    "         Extract fixtures first:\n" +
+    "           bun tests/differential/extract.js tests/fixtures/extracted\n\n"
+  );
+  process.exit(1);
+}
 
 // ── Helpers ───────────────────────────────────────────────────
-
-/** Convert camelCase to kebab-case. Used to map test file names to rule names (jsdoc). */
-function camelToKebab(str) {
-  return str.replace(/[A-Z]/g, c => '-' + c.toLowerCase());
-}
 
 /** Truncate a multi-line code string to N lines, adding ellipsis. */
 function truncateCode(code, maxLines = 8) {
@@ -438,11 +156,10 @@ const COMPARABLE_RULES = new Set(
 // Any git submodule at tests/conformance/eslint-plugin-<name>/ is picked up
 // automatically. No code changes needed when adding a new plugin.
 
-const CONFORMANCE_DIR = path.resolve(__dirname, "../conformance");
-
 // Candidate test subdirectory paths, checked in order of preference per plugin convention.
 const _TEST_DIR_CANDIDATES = [
-  "tests/lib/rules",        // react
+  "tests/lib/rules",        // react, n, es-x
+  "tests/src/rules",        // import
   "test/rules/assertions",  // jsdoc
   "__tests__",              // promise
   "test",                   // unicorn
@@ -450,10 +167,11 @@ const _TEST_DIR_CANDIDATES = [
   "tests",
   // typescript-eslint: load directly from submodule source (no extraction script needed)
   "typescript-eslint-src/packages/eslint-plugin/tests/rules",
+  // react-hooks: sparse checkout of facebook/react monorepo
+  "packages/eslint-plugin-react-hooks/__tests__",
 ];
 
 // Scan conformance/ for eslint-plugin-* submodule directories.
-// Auto-installs devDependencies (bun install --ignore-scripts) when node_modules is absent.
 const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
   ? fs.readdirSync(CONFORMANCE_DIR)
       .filter(d => d.startsWith("eslint-plugin-"))
@@ -464,52 +182,17 @@ const _discoveredPlugins = fs.existsSync(CONFORMANCE_DIR)
         try {
           const pkgJson = JSON.parse(fs.readFileSync(path.join(pluginDir, "package.json"), "utf8"));
           if (pkgJson.type === "module") testFormat = "esm";
-          // Allow conformance package.json to override the prefix (e.g. scoped packages like @typescript-eslint).
+          if (pkgJson.testFormat) testFormat = pkgJson.testFormat;
           if (pkgJson.prefix) prefix = pkgJson.prefix;
         } catch { /* no package.json — assume CJS */ }
-        // Auto-install only when node_modules is absent AND require() would fail.
-        // We skip plugins whose index.js works without installed deps (react, promise) — installing
-        // their devDeps would put a real `eslint` in node_modules and shadow our Bun.plugin stub.
-        if (!fs.existsSync(path.join(pluginDir, "node_modules"))) {
-          let needsInstall = false;
-          try { require(pluginDir); } catch { needsInstall = true; }
-          if (needsInstall) {
-            process.stderr.write(`info: installing ${d}...\n`);
-            const r = Bun.spawnSync(["bun", "install", "--ignore-scripts"], { cwd: pluginDir, stderr: "pipe" });
-            if (r.exitCode !== 0) {
-              process.stderr.write(`warn: bun install failed for ${d}: ${r.stderr?.toString().trim()}\n`);
-            }
-          }
-        }
-        // Find the test directory; cache its file listing to avoid a second readdirSync below.
-        let testsDir = null, testsDirFiles = null;
+        let testsDir = null;
         for (const c of _TEST_DIR_CANDIDATES) {
           const d2 = path.join(pluginDir, c);
           if (fs.existsSync(d2)) {
             const files = fs.readdirSync(d2);
-            if (files.some(f => f.endsWith(".js") || f.endsWith(".test.ts"))) {
+            if (files.some(f => f.endsWith(".js") || f.endsWith(".ts"))) {
               testsDir = d2;
-              testsDirFiles = files;
               break;
-            }
-          }
-        }
-        // sonarjs-nested: S*/unit.test.ts layout — each rule lives in its own S<N>/ subdir.
-        if (!testsDir) {
-          const sonarRulesDir = path.join(pluginDir, "sonarjs-src/packages/analysis/src/jsts/rules");
-          if (fs.existsSync(sonarRulesDir)) {
-            testsDir = sonarRulesDir;
-            testFormat = "sonarjs-nested";
-          }
-        }
-        // Detect static-export format: test files export { valid, invalid } directly
-        // rather than calling RuleTester.run() (e.g. jsdoc vs react/promise/unicorn).
-        if (testsDirFiles && testFormat !== "sonarjs-nested") {
-          const sample = testsDirFiles.find(f => f.endsWith(".js") && f !== "utils.js" && f !== "utils");
-          if (sample) {
-            const peek = fs.readFileSync(path.join(testsDir, sample), "utf8");
-            if (/^\s*export default\b/m.test(peek) && !peek.includes("RuleTester")) {
-              testFormat = "static-export";
             }
           }
         }
@@ -522,8 +205,6 @@ const _pluginPackages     = new Map(); // prefix  → loaded plugin package
 
 for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
   let pkg = null;
-  // CJS plugins: require() resolves via "main".
-  // ESM plugins that lack a built CJS dist: fall back to dynamic import() of the ESM entry.
   try { pkg = require(pluginDir); } catch {
     if (testFormat !== "cjs") {
       let esmEntry = null;
@@ -542,9 +223,6 @@ for (const { prefix, pluginDir, testsDir, testFormat } of _discoveredPlugins) {
   if (!pkg) {
     process.stderr.write(`warn: ${path.basename(pluginDir)} could not be loaded\n`);
     continue;
-  }
-  if (!testsDir) {
-    process.stderr.write(`warn: ${path.basename(pluginDir)} loaded but no test directory found (non-standard layout?)\n`);
   }
   _pluginPackages.set(prefix, pkg);
   const rulesMap = pkg.rules || {};
@@ -566,22 +244,15 @@ const tagNames                  = getTagNames();
 const RULES_DIR_NM              = path.join(JS_ROOT, "node_modules/eslint/lib/rules");
 
 // @typescript-eslint/parser for oracle: used when test cases specify a TS parser.
-// Load by absolute path so the build.module() stub for "@typescript-eslint/parser" is bypassed.
-// The stub (used by react/promise/unicorn) lacks parseForESLint, making all TS cases appear custom.
 let _tsParser = null;
 {
   const _tsParserDist = path.join(CONFORMANCE_DIR, "eslint-plugin-typescript-eslint/node_modules/@typescript-eslint/parser/dist/index.js");
   try { _tsParser = require(_tsParserDist); } catch { /* not installed */ }
-  // Sanity-check: the real parser exposes parseForESLint; stubs don't.
   if (typeof _tsParser?.parseForESLint !== "function") _tsParser = null;
 }
 global.__EZ_TS_PARSER__ = _tsParser;
 
 const eslintLinter = new Linter();
-global.__EZ_LINTER_CLASS__ = Linter;
-
-// Timing accumulators for runner breakdown (parse vs plugin).
-let _runnerParseMs = 0, _runnerPluginMs = 0;
 
 // ── Espree (reference) ────────────────────────────────────────
 
@@ -591,6 +262,8 @@ for (const [prefix, pkg] of _pluginPackages) {
   _espreePlugins[prefix] = pkg;
 }
 
+// Timing accumulators for runner breakdown (parse vs plugin).
+let _runnerParseMs = 0, _runnerPluginMs = 0;
 
 // Run native for a single corpus test case (in-process, no subprocess).
 // ruleConfig is a pre-built Uint8Array from buildNativeConfig for the target rule.
@@ -598,19 +271,21 @@ for (const [prefix, pkg] of _pluginPackages) {
 function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOptions, ruleOptions, nativeRuleName = null, isTs = false, tcLanguageOptions = null) {
   if (hasCustomParser) return "skip";
   const _nativeName = nativeRuleName || ruleName;
+  const isJsx = !!(tcLanguageOptions?.parserOptions?.ecmaFeatures?.jsx);
   try {
     // Rebuild config when the case carries options or languageOptions (globals, parserOptions etc.).
     let config = ruleConfig;
     const needRebuild = (hasOptions && ruleOptions && ruleOptions.length > 0) || tcLanguageOptions;
     if (needRebuild) {
       const rules = (hasOptions && ruleOptions && ruleOptions.length > 0)
-        ? { [_nativeName]: ["warn", ruleOptions[0]] }
+        ? { [_nativeName]: ["warn", ...ruleOptions] }
         : { [_nativeName]: "warn" };
       const cfgObj = { rules };
       if (tcLanguageOptions) cfgObj.languageOptions = tcLanguageOptions;
       config = buildNativeConfig(cfgObj);
     }
-    const diags = ezLint(code, { config, lang: isTs ? "ts" : "js" });
+    const lang = isTs ? (isJsx ? "tsx" : "ts") : (isJsx ? "jsx" : "js");
+    const diags = ezLint(code, { config, lang });
     return diags
       .filter(d => d.ruleName === _nativeName)
       .map(d => ({ rule: _nativeName, line: offsetToLine(code, d.offset) }));
@@ -686,413 +361,6 @@ function diff(reference, candidate) {
     .map(k => { const [rule, line] = k.split(":"); return { rule, line: +line }; });
 
   return { fn, fp, crashes };
-}
-
-// ── ESLint submodule corpus extraction ────────────────────────
-// Intercept Module._load to:
-//   - Route rule-tester → CapturingRuleTester (extracts test cases without running them)
-//   - Redirect bare imports from ESLint submodule → js/node_modules
-//   - Stub custom parsers (@typescript-eslint/parser, fixture parsers)
-
-const CUSTOM_PARSER_STUB = {
-  parse() { return { type: "Program", body: [], range: [0, 0] }; }
-};
-
-// ESLint's RuleTester registers rules under this namespace internally.
-const _RULE_TO_TEST_PREFIX = "rule-to-test/";
-
-let _captured = null;
-// Number of upcoming verify() calls to skip. After the primary capture, RuleTester calls
-// verify() once more for each autofix (fix-check) and once per suggestion (suggestion-check).
-// All of these operate on the mutated output code, not the original — skip them.
-let _linterSkipCalls = 0;
-
-// Returns true when parser is one we handle natively (espree or absent).
-function _isNativeParser(parser) {
-  if (!parser) return true;
-  if (parser?.name === "espree") return true;
-  // Espree module object (exported by the 'espree' package): has parse() + latestEcmaVersion.
-  // Different installed versions all match this shape, so we don't check by name alone.
-  if (typeof parser?.parse === "function" && typeof parser?.latestEcmaVersion === "number") return true;
-  return false;
-}
-
-/** Returns true if the parser is a TypeScript parser (ez can handle these with lang:"ts"). */
-function _isTsParser(parser) {
-  if (!parser) return false;
-  // @typescript-eslint/parser and typescript-eslint both expose parseForESLint.
-  if (typeof parser?.parseForESLint === "function") return true;
-  // typescript-eslint stub (our build.module() shim) also has parseForESLint.
-  return false;
-}
-
-/** Lowercase the file extension so ESLint glob patterns (case-sensitive) can match it. */
-function _normalizeFilenameExt(filename) {
-  const dot = filename.lastIndexOf(".");
-  if (dot < 0) return filename;
-  return filename.slice(0, dot) + filename.slice(dot).toLowerCase();
-}
-
-function normalizeCase(c, defaultConfig = {}) {
-  const defaultLO = defaultConfig.languageOptions || {};
-  if (typeof c === "string") {
-    const _defParser = defaultLO.parser || null;
-    const _isCustomDef = (p) => p && !_isNativeParser(p) && !_isTsParser(p);
-    return {
-      code: c,
-      options: [],
-      languageOptions: defaultLO,
-      hasCustomParser: !!_isCustomDef(_defParser),
-      isTypeScript: _isTsParser(_defParser),
-      eslintResult: null,
-    };
-  }
-  const caseLO = c.languageOptions || {};
-  // Merge with default (case overrides default)
-  const mergedLO = { ...defaultLO, ...caseLO };
-  const caseParser = c.parser || caseLO.parser || null;
-  const defaultParser = defaultLO.parser || null;
-  // A parser is "custom" (not handled by ez) only if it is neither espree nor a TS parser.
-  // TS parsers are treated as native because ez can parse TypeScript with lang:"ts".
-  const _isCustom = (p) => p && !_isNativeParser(p) && !_isTsParser(p);
-  const hasCustomParser = !!_isCustom(caseParser) || !!_isCustom(defaultParser);
-  // Track whether this case uses a TS parser so the runner passes lang:"ts" to ez.
-  const isTypeScript = _isTsParser(caseParser) || _isTsParser(defaultParser);
-  return {
-    code:            c.code || "",
-    options:         c.options || [],
-    languageOptions: mergedLO,
-    filename:        c.filename ? _normalizeFilenameExt(c.filename) : null,
-    name:            c.name || null,            // RuleTester allows test descriptions
-    only:            !!c.only,                   // focus flag from ruletester
-    output:          c.output !== undefined ? c.output : null, // autofix expected output
-    hasCustomParser,
-    isTypeScript,
-    eslintResult: null,  // filled during capture by running real ESLint
-  };
-}
-
-function installCorpusIntercept() {
-  const TESTS_DIR = path.join(ESLINT_ROOT, "tests/lib/rules");
-
-  // ── Plugin path: universal Linter.prototype.verify intercept ─────────────
-  // Patch the real Linter (npm-installed eslint) so any verify() call during
-  // corpus capture is recorded inline.  __EZ_CAPTURE_PREFIX__ activates capture.
-  const _realVerifyOrig = Linter.prototype.verify;
-  Linter.prototype.verify = function patchedVerify(code, config, options) {
-    const result = _realVerifyOrig.call(this, code, config, options);
-
-    if (!global.__EZ_CAPTURE_PREFIX__) return result;
-    // Skip "No matching configuration found"
-    if (result.length === 1 && result[0].ruleId === null &&
-        result[0].message?.startsWith("No matching configuration found")) return result;
-    // Skip fatal parse errors
-    if (result.some(m => m.fatal)) return result;
-    // Extract rule name + options from flat config
-    const flatConfig = Array.isArray(config) ? config : [config];
-    let fullName = null, ruleOptions = [], langOpts = {};
-    for (const cfg of flatConfig) {
-      if (cfg.rules && !fullName) {
-        const names = Object.keys(cfg.rules);
-        if (names.length > 0) {
-          fullName = names[0];
-          const entry = cfg.rules[fullName];
-          ruleOptions = Array.isArray(entry) ? entry.slice(1) : [];
-        }
-      }
-      if (cfg.languageOptions) langOpts = cfg.languageOptions;
-    }
-    if (!fullName) return result;
-    const _isTsCase = typeof langOpts.parser?.parseForESLint === "function";
-    const filename = typeof options === "string" ? options : options?.filename;
-    const eslintResult = result
-      .filter(m => !m.fatal && m.ruleId === fullName)
-      .map(m => ({ rule: fullName, line: m.line }));
-    // Capture ESLint's autofix output for fix verification.
-    const eslintFixes = result
-      .filter(m => m.fix && m.ruleId === fullName)
-      .map(m => m.fix);
-    const tc = {
-      code: typeof code === "string" ? code : "",
-      options: ruleOptions,
-      languageOptions: langOpts,
-      filename: filename ? _normalizeFilenameExt(filename) : null,
-      hasCustomParser: false,
-      isTypeScript: _isTsCase,
-      eslintResult,
-      eslintFixes: eslintFixes.length > 0 ? eslintFixes : null,
-      // Declared intent from __EZ_SILENT_RUN__ (null for core ESLint path).
-      declaredKind:   global.__EZ_DECLARED_KIND__   || null,
-      declaredErrors: global.__EZ_DECLARED_ERRORS__ || null,
-      name:           global.__EZ_CASE_NAME__       || null,
-      output:         global.__EZ_CASE_OUTPUT__ !== undefined ? global.__EZ_CASE_OUTPUT__ : null,
-    };
-    if (!_captured) _captured = { name: fullName, defaultConfig: {}, cases: [] };
-    _captured.cases.push(tc);
-    return result;
-  };
-
-  // __EZ_SILENT_RUN__ — called by all RuleTester stubs.
-  // Iterates test cases, calls linter.verify() per case; the intercept above captures inline.
-  // global.__EZ_CAPTURE_PREFIX__ must be set by the caller before invoking.
-  global.__EZ_SILENT_RUN__ = (linterInst, name, cases, defaultConfig = {}) => {
-    const prefix = global.__EZ_CAPTURE_PREFIX__ || null;
-    const fullName = prefix ? `${prefix}/${name}` : name;
-
-    // Tag each case with declared kind + declared errors before merging.
-    // Preserves the test-author's intent (valid/invalid) separately from
-    // oracle output so extraction can store both.
-    const taggedValid   = (cases.valid   || []).map(c => ({ _declaredKind: "valid",   _declaredErrors: [],                              ...( typeof c === "string" ? { code: c } : c ) }));
-    const taggedInvalid = (cases.invalid || []).map(c => ({ _declaredKind: "invalid", _declaredErrors: (typeof c === "object" && c.errors) ? c.errors : [], ...( typeof c === "string" ? { code: c } : c ) }));
-    const allInputCases = [...taggedValid, ...taggedInvalid];
-    for (let _cIdx = 0; _cIdx < allInputCases.length; _cIdx++) {
-      const c = allInputCases[_cIdx];
-      const tc = normalizeCase(c, defaultConfig);
-      // Carry declared metadata through so the verify intercept and extraction see it.
-      tc._declaredKind   = c._declaredKind;
-      tc._declaredErrors = c._declaredErrors;
-      // @typescript-eslint rules: stub parser lacks parseForESLint so normalizeCase
-      // can't detect TS mode. Override based on prefix.
-      if (!tc.isTypeScript && _tsParser && prefix && prefix.startsWith("@typescript-eslint")) {
-        tc.isTypeScript = true;
-      }
-      if (tc.hasCustomParser) continue;
-      const sourceType  = tc.languageOptions?.sourceType  || "script";
-      const ecmaVersion = tc.languageOptions?.ecmaVersion ?? 2022;
-      const jsxEnabled  = !!(tc.languageOptions?.parserOptions?.ecmaFeatures?.jsx);
-      const ruleEntry   = tc.options.length > 0 ? ["error", ...tc.options] : "error";
-      const pluginPfx   = fullName.includes("/") ? fullName.split("/")[0] : null;
-      const pluginCfg   = pluginPfx && _espreePlugins[pluginPfx]
-        ? { [pluginPfx]: _espreePlugins[pluginPfx] } : {};
-      const langOpts    = { ecmaVersion, sourceType };
-      if (jsxEnabled) langOpts.parserOptions = { ecmaFeatures: { jsx: true } };
-      if (tc.languageOptions?.globals) langOpts.globals = tc.languageOptions.globals;
-      // Inject real TS parser for @typescript-eslint rules (stub parser lacks parseForESLint,
-      // so normalizeCase can't detect TS mode — detect by prefix instead).
-      if (_tsParser && (tc.isTypeScript || (prefix && prefix.startsWith("@typescript-eslint")))) langOpts.parser = _tsParser;
-      try {
-        const oracleExt      = tc.isTypeScript ? (jsxEnabled ? ".tsx" : ".ts") : ".js";
-        const oracleFilename = tc.filename || ("test" + oracleExt);
-        const flatCfg = [{
-          files: ["**/*.js", "**/*.mjs", "**/*.cjs", "**/*.jsx", "**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
-          plugins: pluginCfg,
-          languageOptions: langOpts,
-          rules: { [fullName]: ruleEntry },
-        }];
-
-        // Pass declared metadata to the verify intercept via globals (verify is sync).
-        global.__EZ_DECLARED_KIND__   = tc._declaredKind   || null;
-        global.__EZ_DECLARED_ERRORS__ = tc._declaredErrors || null;
-        global.__EZ_CASE_NAME__       = tc.name             || null;
-        global.__EZ_CASE_OUTPUT__     = tc.output !== undefined ? tc.output : null;
-        // Primary call — intercept fires and captures inline
-        const messages = linterInst.verify(tc.code, flatCfg, { filename: oracleFilename });
-        // Retry with relative filename if "No matching configuration found"
-        if (messages.length === 1 && messages[0].ruleId === null &&
-            messages[0].message?.startsWith("No matching configuration found")) {
-          const ext = path.extname(oracleFilename) || ".js";
-          linterInst.verify(tc.code, flatCfg, { filename: "test" + ext });
-        }
-        global.__EZ_DECLARED_KIND__ = null;
-        global.__EZ_DECLARED_ERRORS__ = null;
-        global.__EZ_CASE_NAME__ = null;
-        global.__EZ_CASE_OUTPUT__ = null;
-      } catch {
-        global.__EZ_DECLARED_KIND__ = null;
-        global.__EZ_DECLARED_ERRORS__ = null;
-        global.__EZ_CASE_NAME__ = null;
-        global.__EZ_CASE_OUTPUT__ = null;
-        continue;
-      }
-    }
-  };
-
-  // ── Core rule path: Linter.prototype.verify intercept ─────────────────────
-  // For ESLint core tests, we let the REAL RuleTester run (no stub) and intercept
-  // verify() on the submodule's own Linter class.  global.__EZ_CAPTURE_RULE__ = "ruleName"
-  // activates capture for the currently-loading test file.
-  let _linterOrig = null;
-  let _SubmoduleLinter = null;
-  try {
-    _SubmoduleLinter = require(path.join(ESLINT_ROOT, "lib/linter/linter"))?.Linter;
-  } catch { /* submodule not present — skip core intercept */ }
-
-  if (_SubmoduleLinter) {
-    _linterOrig = _SubmoduleLinter.prototype.verify;
-    _SubmoduleLinter.prototype.verify = function patchedVerify(code, config, options) {
-      const result = _linterOrig.call(this, code, config, options);
-      const ruleName = global.__EZ_CAPTURE_RULE__;
-      if (!ruleName) return result;
-      // Skip fix-check and suggestion-check calls (they operate on mutated output, not original).
-      if (_linterSkipCalls > 0) {
-        _linterSkipCalls--;
-        return result;
-      }
-      // `config` is a FlatConfigArray; use getConfig() to get normalized rules+languageOptions.
-      // The submodule's RuleTester registers the rule under "rule-to-test/<name>" namespace.
-      const filename = typeof options === "string" ? options : (options?.filename ?? "test.js");
-      let ruleOptions = [], langOpts = {};
-      let fullRuleId = ruleName;
-      try {
-        const normalized = typeof config.getConfig === "function"
-          ? config.getConfig(filename)
-          : null;
-        if (normalized) {
-          // Try "rule-to-test/<name>" (RuleTester's internal namespace) first, then bare name.
-          const prefixed = _RULE_TO_TEST_PREFIX + ruleName;
-          fullRuleId = normalized.rules?.[prefixed] !== undefined ? prefixed : ruleName;
-          const entry = normalized.rules?.[fullRuleId];
-          ruleOptions = Array.isArray(entry) ? entry.slice(1) : [];
-          if (normalized.languageOptions) langOpts = normalized.languageOptions;
-        }
-      } catch { /* skip if config extraction fails */ }
-      // Single pass: detect fatal parse errors, collect fix flag, and build eslintResult.
-      const _isTsCase = typeof langOpts.parser?.parseForESLint === "function";
-      // Babel parsers (no latestEcmaVersion, no parseForESLint-that-we-trust) — skip.
-      // TS parser cases: capture using oracle result (already ran with TS parser).
-      let hasFatal = false, hasFix = false;
-      const eslintResult = [];
-      for (const m of result) {
-        if (m.fatal) { hasFatal = true; continue; }
-        if (m.fix) hasFix = true;
-        if (m.ruleId === fullRuleId || m.ruleId === ruleName) {
-          eslintResult.push({ rule: ruleName, line: m.line }); // short rule name for comparison
-        }
-      }
-      if (hasFatal) return result; // parse error — skip
-      const eslintFixes = result
-        .filter(m => m.fix && (m.ruleId === fullRuleId || m.ruleId === ruleName))
-        .map(m => m.fix);
-      const tc = {
-        code: typeof code === "string" ? code : "",
-        options: ruleOptions,
-        languageOptions: langOpts,
-        filename: _normalizeFilenameExt(filename),
-        hasCustomParser: false,
-        isTypeScript: _isTsCase,
-        eslintResult,
-        eslintFixes: eslintFixes.length > 0 ? eslintFixes : null,
-      };
-      if (!_captured) _captured = { name: ruleName, defaultConfig: {}, cases: [] };
-      _captured.cases.push(tc);
-      // Count upcoming secondary verify() calls to skip:
-      // 1 for the fix-check (if any autofix), plus 1 per suggestion across all messages.
-      const suggestionCount = result.reduce((n, m) => n + (m.suggestions?.length || 0), 0);
-      _linterSkipCalls = (hasFix ? 1 : 0) + suggestionCount;
-      return result;
-    };
-  }
-
-  return {
-    TESTS_DIR,
-    restore: () => {
-      if (_SubmoduleLinter && _linterOrig) _SubmoduleLinter.prototype.verify = _linterOrig;
-      Linter.prototype.verify = _realVerifyOrig;
-      delete global.__EZ_SILENT_RUN__;
-      delete global.__EZ_CAPTURE_RULE__;
-      delete global.__EZ_CAPTURE_PREFIX__;
-    },
-  };
-}
-
-// evalSonarjsTest — synchronous eval-based loader for sonarjs unit.test.ts files.
-// Sonarjs is a special case: tests use `node:test`'s describe/it which Bun.plugin cannot
-// intercept (built-in module). Callbacks schedule asynchronously, so await import() resolves
-// before stubs fire. Workaround: transpile TS → strip imports → inject preamble → eval().
-// The preamble uses the same __EZ_SILENT_RUN__ mechanism as all other plugin stubs.
-// Two sonarjs-specific details:
-//   - describe/it wrappers fire callbacks synchronously (can't stub node:test)
-//   - _ezRuleName overrides run()'s first arg (sonarjs passes descriptions, not rule names)
-function evalSonarjsTest(testFile, ruleName) {
-  const content = fs.readFileSync(testFile, "utf8");
-  let js;
-  try {
-    js = new Bun.Transpiler({ loader: "ts", target: "node" }).transformSync(content);
-  } catch { return; }
-  // Strip all import/export lines so the eval scope resolves them from the preamble.
-  js = js.replace(/^import\s[^]*?from\s+['"][^'"]+['"]\s*;?\s*$/gm, "");
-  js = js.replace(/^import\s+['"][^'"]+['"]\s*;?\s*$/gm, "");
-  js = js.replace(/^export\s+\{[^}]*\}\s*;?\s*$/gm, "");
-  // Replace import.meta.dirname (used in rule-tester.ts fixtures paths — not in test files,
-  // but handle defensively).
-  js = js.replace(/import\.meta\.dirname/g, JSON.stringify(path.dirname(testFile)));
-  const PREAMBLE = [
-    "const rule = {};",
-    `const _ezRuleName = ${JSON.stringify(ruleName)};`,
-    "class _EzRuleTester {",
-    "  constructor() {}",
-    "  run(_name, r, cases) { if (typeof global.__EZ_SILENT_RUN__ === 'function') global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), _ezRuleName, cases, {}); }",
-    "}",
-    "const DefaultParserRuleTester = _EzRuleTester;",
-    "const NoTypeCheckingRuleTester = _EzRuleTester;",
-    "const RuleTester = _EzRuleTester;",
-    "const describe = (name, fn) => { try { fn(); } catch {} };",
-    "const it = (name, fn) => { try { fn(); } catch {} };",
-  ].join("\n");
-  try { eval(PREAMBLE + "\n" + js); } catch { /* partial captures ok */ }
-}
-
-// testFormat:
-//   "cjs"           — require() + RuleTester stub calls __EZ_SILENT_RUN__ (react, promise, core)
-//   "esm"           — import() + RuleTester stub calls __EZ_SILENT_RUN__ (unicorn)
-//   "static-export" — import() + reads export default { valid, invalid } directly (jsdoc)
-async function loadRuleCases(testsDir, baseName, { capturePrefix = null, captureRule = null, testFormat = "cjs" } = {}) {
-  // Accept both .js and .test.ts (typescript-eslint source tests)
-  let testFile = path.join(testsDir, `${baseName}.js`);
-  if (!fs.existsSync(testFile)) {
-    const tsFile = path.join(testsDir, `${baseName}.test.ts`);
-    if (fs.existsSync(tsFile)) testFile = tsFile;
-    else return null;
-  }
-  _captured = null;
-  _linterSkipCalls = 0;
-  global.__EZ_CAPTURE_PREFIX__ = capturePrefix;
-  global.__EZ_CAPTURE_RULE__   = captureRule;
-  // For core rule CJS tests (captureRule set), the real RuleTester runs inside the test file.
-  // Bun's build.module() stubs @typescript-eslint/parser with a fake that can't parse TypeScript,
-  // causing fatal errors when the test's second run() uses it.  Override the cache entry with the
-  // real parser so the submodule RuleTester can successfully run TS test cases.
-  const _TS_PARSER_CACHE_KEY = "@typescript-eslint/parser";
-  let _savedTsParserCache;
-  if (_tsParser && captureRule && testFormat === "cjs") {
-    _savedTsParserCache = require.cache[_TS_PARSER_CACHE_KEY];
-    require.cache[_TS_PARSER_CACHE_KEY] = {
-      id: _TS_PARSER_CACHE_KEY, filename: _TS_PARSER_CACHE_KEY,
-      exports: _tsParser, loaded: true,
-    };
-  }
-  try {
-    // .ts files always use dynamic import (Bun handles TypeScript natively)
-    if (testFile.endsWith(".ts")) {
-      await import(`${testFile}?_ez=${Date.now()}`);
-    } else if (testFormat === "cjs") {
-      delete require.cache[testFile];
-      try { require(testFile); } catch { /* partial captures ok */ }
-    } else {
-      const mod = await import(`${testFile}?_ez=${Date.now()}`);
-      if (testFormat === "static-export") {
-        const testCases = mod.default || mod;
-        if (testCases && typeof testCases === "object" && ("valid" in testCases || "invalid" in testCases)) {
-          const ruleBaseName = camelToKebab(baseName);
-          global.__EZ_SILENT_RUN__(new (global.__EZ_LINTER_CLASS__)(), ruleBaseName, testCases, {});
-        }
-      }
-      // "esm": __EZ_CAPTURE__ already called by RuleTester.run() stub during import
-    }
-  } catch (e) {
-    if (filterRule) process.stderr.write(`warn: failed to load ${path.basename(testFile)}: ${e.message}\n`);
-    return null;
-  } finally {
-    global.__EZ_CAPTURE_PREFIX__ = null;
-    global.__EZ_CAPTURE_RULE__   = null;
-    // Restore @typescript-eslint/parser cache if we overrode it.
-    if (_savedTsParserCache !== undefined) {
-      require.cache[_TS_PARSER_CACHE_KEY] = _savedTsParserCache;
-    } else if (_tsParser && captureRule && testFormat === "cjs") {
-      delete require.cache[_TS_PARSER_CACHE_KEY];
-    }
-  }
-  return _captured;
 }
 
 // ── Baseline ──────────────────────────────────────────────────
@@ -1175,25 +443,18 @@ const _timeoutMs = !saveBaseline && !benchEslint && baseline?.perf?.totalElapsed
 
 // ── Corpus — espree + runner + native + hybrid ───────────────
 
-// Wrapped in async IIFE so unicorn ESM test files can be loaded with await import().
+// Wrapped in async IIFE so plugin ESM loading can use await import().
 (async () => {
 if (fs.existsSync(ESLINT_ROOT)) {
   const nativeLabel = nativeAvailable ? "espree + runner + native" : "espree + runner";
   console.log(`\nESLint corpus (${COMPARABLE_RULES.size} rules, ${nativeLabel})\n`);
 
-  const { TESTS_DIR, restore } = installCorpusIntercept();
   const RULES_DIR_SUB = path.join(ESLINT_ROOT, "lib/rules");
 
-  // Plugin test directories — derived from auto-discovered conformance submodules.
-  const PLUGIN_TEST_DIRS = _discoveredPlugins.filter(p => p.testsDir);
-
-  // Phase 1: Load all rule cases upfront.
+  // Phase 1: Load all rule cases from pre-extracted fixtures.
   const allRuleData = [];
 
-  // Fast path: read pre-extracted fixtures instead of loading full ESLint + plugin
-  // test suites.  Skips hundreds of ms of plugin loading + full intercept run.
-  // Triggered when tests/fixtures/extracted/ exists (unless --no-fixtures).
-  if (fromFixturesDir) {
+  {
     const corpusRoot = path.join(fromFixturesDir, "corpus");
     if (fs.existsSync(corpusRoot)) {
       console.log(`Loading fixtures from ${fromFixturesDir}`);
@@ -1207,19 +468,25 @@ if (fs.existsSync(ESLINT_ROOT)) {
                        prefixSafe.startsWith("_") ? "@" + prefixSafe.slice(1) : prefixSafe;
         for (const ruleSafe of ruleDirs) {
           const ruleDir = path.join(prefixDir, ruleSafe);
-          const fullName = prefix ? `${prefix}/${ruleSafe}` : ruleSafe;
+          // Prefer the bundled _cases.json (single read per rule, O(rule_count) I/O).
+          // Falls back to per-case .js/.json files if bundle missing.
+          const bundlePath = path.join(ruleDir, "_cases.json");
+          let bundleCases = null;
+          let bundleRule = null;
+          if (fs.existsSync(bundlePath)) {
+            try {
+              const bundle = JSON.parse(fs.readFileSync(bundlePath, "utf8"));
+              bundleCases = bundle.cases;
+              bundleRule  = bundle.rule || null;
+            } catch { /* fall through */ }
+          }
+          // Use rule name from bundle (handles multi-segment rules like n/prefer-global/buffer).
+          const fullName = bundleRule || (prefix ? `${prefix}/${ruleSafe}` : ruleSafe);
           if (filterRule && fullName !== filterRule) continue;
           const ruleModule = prefix
             ? _pluginRuleModules.get(fullName)
             : (() => { try { return require(path.join(ESLINT_ROOT, "lib/rules", `${ruleSafe}.js`)); } catch { return null; } })();
           if (!ruleModule) continue;
-          // Prefer the bundled _cases.json (single read per rule, O(rule_count) I/O).
-          // Falls back to per-case .js/.json files if bundle missing.
-          const bundlePath = path.join(ruleDir, "_cases.json");
-          let bundleCases = null;
-          if (fs.existsSync(bundlePath)) {
-            try { bundleCases = JSON.parse(fs.readFileSync(bundlePath, "utf8")).cases; } catch { /* fall through */ }
-          }
           const allCases = [];
           let defaultSourceType = "script";
           let isTypeScript = false;
@@ -1287,232 +554,6 @@ if (fs.existsSync(ESLINT_ROOT)) {
       }
       console.log(`  loaded ${allRuleData.length} rules, ${allRuleData.reduce((s, r) => s + r.allCases.length, 0)} cases in ${Date.now() - t0}ms`);
     }
-  }
-
-  // Slow path (full intercept) — skipped entirely when fast path loaded anything.
-  if (allRuleData.length === 0) {
-
-  // 1a: ESLint core rules — real RuleTester runs; Linter.prototype.verify intercept captures cases
-  for (const ruleName of COMPARABLE_RULES) {
-    if (ruleName.includes("/")) continue; // skip plugin rules here
-    const cases = await loadRuleCases(TESTS_DIR, ruleName, { captureRule: ruleName });
-    if (!cases) continue;
-    const ruleModule = (() => {
-      try { return require(path.join(RULES_DIR_SUB, `${ruleName}.js`)); } catch { return null; }
-    })();
-    if (!ruleModule) continue;
-    const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
-    const defaultParser = cases.defaultConfig?.languageOptions?.parser;
-    const isTypeScript = defaultParser && typeof defaultParser === 'object';
-    const allCases = cases.cases;
-    allRuleData.push({ ruleName, ruleModule, defaultSourceType, isTypeScript, allCases });
-  }
-
-  // 1b: Plugin rules — load test cases from plugin submodule test dirs.
-  for (const { prefix, pluginDir, testsDir, testFormat } of PLUGIN_TEST_DIRS) {
-    if (!fs.existsSync(testsDir)) continue;
-
-    // sonarjs-nested: S*/unit.test.ts layout — build S→ruleName map then scan subdirs
-    if (testFormat === "sonarjs-nested") {
-      const pluginPkg = _pluginPackages.get(prefix);
-      const sNumToName = new Map();
-      for (const [name, rule] of Object.entries(pluginPkg?.rules || {})) {
-        const url = rule.meta?.docs?.url || "";
-        const m = url.match(/\/S(\d+)/);
-        if (m) sNumToName.set("S" + m[1], name);
-      }
-      // Supplement with cjs/S*/meta.js (eslintId field) — look in js/node_modules first, fall back to pluginDir
-      const cjsDir = fs.existsSync(path.join(JS_ROOT, "node_modules/eslint-plugin-sonarjs/cjs"))
-        ? path.join(JS_ROOT, "node_modules/eslint-plugin-sonarjs/cjs")
-        : path.join(pluginDir, "node_modules/eslint-plugin-sonarjs/cjs");
-      if (fs.existsSync(cjsDir)) {
-        for (const d of fs.readdirSync(cjsDir)) {
-          if (!d.startsWith("S")) continue;
-          try {
-            const meta = require(path.join(cjsDir, d, "meta.js"));
-            if (meta.eslintId && !sNumToName.has(d)) sNumToName.set(d, meta.eslintId);
-          } catch { /* skip */ }
-        }
-      }
-      for (const sDir of fs.readdirSync(testsDir).filter(d => /^S\d+$/.test(d))) {
-        const testFile = path.join(testsDir, sDir, "unit.test.ts");
-        if (!fs.existsSync(testFile)) continue;
-        const ruleName = sNumToName.get(sDir);
-        if (!ruleName) continue;
-        const fullName = `${prefix}/${ruleName}`;
-        const ruleModule = _pluginRuleModules.get(fullName);
-        if (!ruleModule) continue;
-        if (filterRule && fullName !== filterRule) continue;
-        _captured = null;
-        _linterSkipCalls = 0;
-        global.__EZ_CAPTURE_PREFIX__ = prefix;
-        global.__EZ_CAPTURE_RULE__   = null;
-        try { evalSonarjsTest(testFile, ruleName); } finally { global.__EZ_CAPTURE_PREFIX__ = null; global.__EZ_CAPTURE_RULE__ = null; }
-        if (!_captured) continue;
-        allRuleData.push({ ruleName: fullName, ruleModule, defaultSourceType: "module", isTypeScript: false, allCases: _captured.cases });
-      }
-      continue;
-    }
-
-    // Normal flat test directory
-    const _dirEntries = fs.readdirSync(testsDir, { withFileTypes: true });
-    const testFiles = _dirEntries
-      .filter(e => e.isFile() && (e.name.endsWith(".js") || e.name.endsWith(".test.ts")) && e.name !== "utils.js" && e.name !== "utils")
-      .map(e => e.name);
-    for (const file of testFiles) {
-      const baseName = file.replace(/\.(test\.ts|js)$/, "");
-      // Rule names may be kebab-case (react/promise/unicorn) or mapped from camelCase files (jsdoc).
-      // Try direct match first, then camelCase → kebab-case conversion.
-      const kebabName = camelToKebab(baseName);
-      const fullName     = `${prefix}/${baseName}`;
-      const fullNameKebab = `${prefix}/${kebabName}`;
-      const ruleModule = _pluginRuleModules.get(fullName) || _pluginRuleModules.get(fullNameKebab);
-      if (!ruleModule) continue;
-      const canonicalName = _pluginRuleModules.has(fullName) ? fullName : fullNameKebab;
-      if (filterRule && canonicalName !== filterRule) continue;
-      const cases = await loadRuleCases(testsDir, baseName, { capturePrefix: prefix, testFormat });
-      if (!cases) continue;
-      const defaultSourceType = cases.defaultConfig?.languageOptions?.sourceType || "script";
-      const defaultParser = cases.defaultConfig?.languageOptions?.parser;
-      const isTypeScript = defaultParser && _isTsParser(defaultParser);
-      const allCases = cases.cases;
-      allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType, isTypeScript, allCases });
-    }
-    // Subdirectory-based rules (e.g. no-shadow/, naming-convention/ in @typescript-eslint).
-    // Load all .test.ts files inside the subdirectory and merge their cases.
-    for (const entry of _dirEntries.filter(e => e.isDirectory())) {
-      const dirName = entry.name;
-      const kebabName = camelToKebab(dirName);
-      const fullName = `${prefix}/${dirName}`;
-      const fullNameKebab = `${prefix}/${kebabName}`;
-      const ruleModule = _pluginRuleModules.get(fullName) || _pluginRuleModules.get(fullNameKebab);
-      if (!ruleModule) continue;
-      const canonicalName = _pluginRuleModules.has(fullName) ? fullName : fullNameKebab;
-      if (filterRule && canonicalName !== filterRule) continue;
-      const subDirPath = path.join(testsDir, dirName);
-      const subFiles = fs.readdirSync(subDirPath)
-        .filter(f => f.endsWith(".test.ts") || (f.endsWith(".js") && f !== "utils.js"))
-        .sort();
-      _captured = null;
-      _linterSkipCalls = 0;
-      global.__EZ_CAPTURE_PREFIX__ = prefix;
-      global.__EZ_CAPTURE_RULE__   = null;
-      for (const file of subFiles) {
-        const testFile = path.join(subDirPath, file);
-        try { await import(`${testFile}?_ez=${Date.now()}`); } catch (e) {
-          if (filterRule) process.stderr.write(`warn: failed to load ${file}: ${e.message}\n`);
-        }
-      }
-      global.__EZ_CAPTURE_PREFIX__ = null;
-      global.__EZ_CAPTURE_RULE__   = null;
-      if (!_captured) continue;
-      allRuleData.push({ ruleName: canonicalName, ruleModule, defaultSourceType: "module", isTypeScript: true, allCases: _captured.cases });
-    }
-  }
-  } // end of: if (allRuleData.length === 0) — slow path
-
-  // ── Fixture extraction (--extract-fixtures <dir>) ────────────
-  // Writes every case (valid + invalid) as a standalone file under
-  //   <dir>/corpus/<prefix>/<rule>/{valid,invalid}/N.{js,ts,jsx,tsx}
-  // plus concatenated {valid,invalid,all}-{js,ts}.{js,ts} for single-file benches.
-  if (extractDir) {
-    const outRoot = extractDir; // already absolute
-    fs.mkdirSync(outRoot, { recursive: true });
-    const corpusRoot = path.join(outRoot, "corpus");
-    fs.mkdirSync(corpusRoot, { recursive: true });
-
-    const concat = {
-      valid:   { js: "", ts: "" },
-      invalid: { js: "", ts: "" },
-    };
-    const tally = {
-      valid:   { js: 0, ts: 0, jsx: 0, tsx: 0 },
-      invalid: { js: 0, ts: 0, jsx: 0, tsx: 0 },
-    };
-    let nRules = 0;
-
-    for (const { ruleName, allCases } of allRuleData) {
-      const buckets = { valid: [], invalid: [] };
-      for (const c of allCases) {
-        // Prefer declared kind (set by __EZ_SILENT_RUN__); fall back to oracle-inferred.
-        const k = c.declaredKind || (c.eslintResult && c.eslintResult.length > 0 ? "invalid" : "valid");
-        buckets[k].push(c);
-      }
-      if (buckets.valid.length + buckets.invalid.length === 0) continue;
-      nRules++;
-
-      const [prefix, bareRule] = ruleName.includes("/") ? ruleName.split("/", 2) : ["eslint", ruleName];
-      const safePrefix = prefix.replace(/[@\/]/g, "_");
-      const safeRule = bareRule.replace(/[\/]/g, "_");
-
-      // Also build a per-rule bundle that the fast runner reads in ONE file
-      // instead of 100+ per-case reads. Massive speedup on corpus load.
-      const ruleBundle = { rule: ruleName, cases: [] };
-      for (const kind of ["valid", "invalid"]) {
-        if (buckets[kind].length === 0) continue;
-        const dir = path.join(corpusRoot, safePrefix, safeRule, kind);
-        fs.mkdirSync(dir, { recursive: true });
-        for (let i = 0; i < buckets[kind].length; i++) {
-          const tc = buckets[kind][i];
-          if (typeof tc.code !== "string" || tc.code.length === 0) continue;
-          const jsx = !!(tc.languageOptions?.parserOptions?.ecmaFeatures?.jsx);
-          const ext = tc.isTypeScript ? (jsx ? ".tsx" : ".ts") : (jsx ? ".jsx" : ".js");
-          const base = path.join(dir, `${i}`);
-          fs.writeFileSync(`${base}${ext}`, tc.code);
-          // Sidecar metadata: options, sourceType, languageOptions, filename,
-          // and expected ESLint result lines — everything the fast test runner
-          // needs to reproduce the exact run without the oracle.
-          const meta = {
-            rule: ruleName,
-            kind,                                              // declared or oracle-inferred
-            index: i,                                          // position within bucket
-            name: tc.name || null,                             // test description if declared
-            options: tc.options || [],
-            // Preserve exact state — don't inject defaults here. Fast-path reader
-            // falls back to the rule's defaultSourceType when these are null.
-            sourceType: tc.languageOptions?.sourceType || null,
-            ecmaVersion: tc.languageOptions?.ecmaVersion ?? null,
-            isTypeScript: !!tc.isTypeScript,
-            jsx,
-            filename: tc.filename || null,                     // preserved for filename-dependent rules
-            globals: tc.languageOptions?.globals || null,
-            parserOptions: tc.languageOptions?.parserOptions || null,
-            output: tc.output !== undefined ? tc.output : null, // expected autofix output
-            declaredErrors: tc.declaredErrors || [],           // test-author's expected errors
-            oracleLines: (tc.eslintResult || []).map(r => r.line), // what ESLint actually reported
-            oracleFixes: tc.eslintFixes || null,               // autofix output from ESLint
-          };
-          fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2));
-          // Add to the per-rule bundle (code embedded for runner fast-load)
-          ruleBundle.cases.push({ ...meta, code: tc.code, ext });
-          const lang = (ext === ".ts" || ext === ".tsx") ? "ts" : "js";
-          concat[kind][lang] += `// === ${ruleName} #${i} (${kind}) ===\n${tc.code}\n;\n`;
-          tally[kind][ext.slice(1)]++;
-        }
-      }
-      // Write the per-rule bundle alongside the per-case files.
-      fs.writeFileSync(path.join(corpusRoot, safePrefix, safeRule, "_cases.json"), JSON.stringify(ruleBundle));
-    }
-
-    const all_js = concat.valid.js + concat.invalid.js;
-    const all_ts = concat.valid.ts + concat.invalid.ts;
-    fs.writeFileSync(path.join(outRoot, "valid-all.js"),   concat.valid.js);
-    fs.writeFileSync(path.join(outRoot, "valid-all.ts"),   concat.valid.ts);
-    fs.writeFileSync(path.join(outRoot, "invalid-all.js"), concat.invalid.js);
-    fs.writeFileSync(path.join(outRoot, "invalid-all.ts"), concat.invalid.ts);
-    fs.writeFileSync(path.join(outRoot, "all.js"),         all_js);
-    fs.writeFileSync(path.join(outRoot, "all.ts"),         all_ts);
-
-    const sum = t => t.js + t.ts + t.jsx + t.tsx;
-    console.log(`\nExtracted from ${nRules} rules → ${outRoot}`);
-    console.log(`  valid:   ${sum(tally.valid)}   (js=${tally.valid.js} ts=${tally.valid.ts} jsx=${tally.valid.jsx} tsx=${tally.valid.tsx})`);
-    console.log(`  invalid: ${sum(tally.invalid)} (js=${tally.invalid.js} ts=${tally.invalid.ts} jsx=${tally.invalid.jsx} tsx=${tally.invalid.tsx})`);
-    console.log(`  per-file: corpus/<prefix>/<rule>/{valid,invalid}/N.{js,ts,jsx,tsx}`);
-    console.log(`  concat:   valid-all.{js,ts}  invalid-all.{js,ts}  all.{js,ts}`);
-    console.log(`  sizes:    valid.js=${concat.valid.js.length} valid.ts=${concat.valid.ts.length}`);
-    console.log(`            invalid.js=${concat.invalid.js.length} invalid.ts=${concat.invalid.ts.length}`);
-    console.log(`            all.js=${all_js.length} all.ts=${all_ts.length}`);
-    process.exit(0);
   }
 
   // Phase 2: Per-rule analysis (native runs in-process via NAPI, same loop as runner).
@@ -1966,7 +1007,6 @@ if (fs.existsSync(ESLINT_ROOT)) {
   }
   if (!filterRule && !verboseAll) process.stderr.write("\r\x1B[K"); // clear progress line
 
-  restore();
   const runnerMs = Date.now() - runnerT0;
 
   // Derived totals reused in perf + summary output.
@@ -2205,4 +1245,4 @@ if (saveBaseline) {
 } else {
   console.log("No regressions.");
 }
-})(); // end async IIFE (wraps corpus + summary so unicorn ESM loading can use await)
+})(); // end async IIFE
