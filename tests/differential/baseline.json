@@ -19622,7 +19622,7 @@
     },
     "unicorn/no-for-loop": {
       "runner": {
-        "fn": 44,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -19633,7 +19633,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 44,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -22412,9 +22412,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 8525,
-    "runnerCasesPerSec": 12556,
-    "nativeCasesPerSec": 86773,
+    "totalElapsedMs": 8523,
+    "runnerCasesPerSec": 12549,
+    "nativeCasesPerSec": 84927,
     "totalCases": 79831
   }
 }

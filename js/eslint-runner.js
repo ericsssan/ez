@@ -3342,8 +3342,37 @@ class SourceCode {
         if (!scope || !scope.block) return null;
         // Verify this scope was directly created by this node (scope.block === node).
         // If the scope's block node differs, this node doesn't introduce a new scope.
-        if (scope.block._i !== node._i) return null;
-        return scope;
+        if (scope.block._i === node._i) return scope;
+        // Special case: Zig attaches the for-loop block scope to the ForStatement, not
+        // its body BlockStatement. Rules like unicorn/no-for-loop call acquire(node.body)
+        // expecting to get the body scope — return a filtered view when the scope's block
+        // is the enclosing for-statement whose .body is this block.
+        if (node.type === 'BlockStatement' && scope.block._i !== undefined) {
+          const blockNode = scope.block;
+          if ((blockNode.type === 'ForStatement' || blockNode.type === 'ForInStatement' ||
+               blockNode.type === 'ForOfStatement') && blockNode.body?._i === node._i) {
+            // Return a proxy that filters references to only those inside the body block.
+            const bodyRange = node.range;
+            if (bodyRange) {
+              const [bStart, bEnd] = bodyRange;
+              return new Proxy(scope, {
+                get(t, p) {
+                  if (p === 'references') {
+                    const allRefs = t.references;
+                    return allRefs.filter(r => {
+                      const s = r.identifier?.range?.[0];
+                      return s !== undefined && s >= bStart && s < bEnd;
+                    });
+                  }
+                  if (p === 'block') return node; // body block is this node
+                  return Reflect.get(t, p);
+                }
+              });
+            }
+            return scope;
+          }
+        }
+        return null;
       },
       get scopes() {
         if (sc._allScopes) return sc._allScopes;
@@ -3685,6 +3714,20 @@ class RuleContext {
   }
 
   /**
+   * ESLint 9: context.on(type, handler) — alternative to returning visitors from create().
+   * Used by unicorn rules. Listeners are merged into the visitor map by buildVisitorMap.
+   */
+  on(type, handler) {
+    if (!this._onListeners) this._onListeners = Object.create(null);
+    if (!this._onListeners[type]) this._onListeners[type] = handler;
+    else {
+      // Multiple listeners for same type: chain them
+      const prev = this._onListeners[type];
+      this._onListeners[type] = function(node) { prev(node); handler(node); };
+    }
+  }
+
+  /**
    * Returns ancestor nodes of the current node (root → parent, not including current node).
    * Compatible with ESLint v7 context.getAncestors().
    */
@@ -3837,12 +3880,16 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         const merged = _mergeRuleOptions(plugins[pi].meta?.defaultOptions, configured);
         perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
       }
+      perRuleCtxs[pi]._onListeners = null; // reset before create() so context.on() accumulates
       let visitors = null;
       try {
         if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(pluginRuleIds[pi]);
         visitors = plugins[pi].create(perRuleCtxs[pi]);
       } catch { /* empty-recipe match */ }
-      if (!visitors || typeof visitors !== 'object') {
+      if (!visitors || typeof visitors !== 'object') visitors = {};
+      // Merge context.on() listeners into visitors (used by unicorn / ESLint 9 rules).
+      if (perRuleCtxs[pi]._onListeners) Object.assign(visitors, perRuleCtxs[pi]._onListeners);
+      if (Object.keys(visitors).length === 0) {
         if (recipe.length !== 0) { mismatch = true; break; }
         continue;
       }
@@ -3926,11 +3973,15 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     perRuleCtxs.push(perRuleCtx);
     const recipe = [];
     let visitors;
+    perRuleCtx._onListeners = null; // reset before create() so context.on() accumulates fresh
     try {
       if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(ruleId);
       visitors = plugin.create(perRuleCtx);
     } catch { perPluginRecipe.push(recipe); continue; }
-    if (!visitors || typeof visitors !== 'object') { perPluginRecipe.push(recipe); continue; }
+    if (!visitors || typeof visitors !== 'object') visitors = {};
+    // Merge context.on() listeners (used by unicorn and ESLint 9 rules) into visitors.
+    if (perRuleCtx._onListeners) Object.assign(visitors, perRuleCtx._onListeners);
+    if (Object.keys(visitors).length === 0) { perPluginRecipe.push(recipe); continue; }
     for (const [visitorKey, handler] of Object.entries(visitors)) {
       if (typeof handler !== 'function') continue;
       if (_isSelector(visitorKey)) {
