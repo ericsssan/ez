@@ -2317,6 +2317,10 @@ class SourceCode {
     const flags16 = ast._symFlags[symId];
     const NONE32 = 0xFFFFFFFF;
 
+    // Skip anonymous symbols (empty name) from empty destructuring patterns like `({}) =>`.
+    // ESLint's eslint-scope only creates variables for actual identifiers, not the pattern itself.
+    if (!name) { this._varCache[symId] = null; return null; }
+
     // SymbolFlags bits (matches symbol.zig):
     // 0=is_var, 1=is_let, 2=is_const, 3=is_function, 4=is_class,
     // 5=is_parameter, 6=is_catch_param, 7=is_import, 8=is_export,
