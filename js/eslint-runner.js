@@ -828,11 +828,11 @@ class SourceCode {
       const src2 = this.text;
       while (startTok > 0) {
         const pt = ast._tokTags[startTok - 1];
-        // keyword modifiers already have dedicated tags
-        if (pt === 56 /* kw_static */ || pt === 54 /* kw_async */ ||
-            pt === 70 /* kw_declare */ || pt === 71 /* kw_abstract */ ||
-            pt === 73 /* kw_readonly */ || pt === 76 /* kw_override */ ||
-            pt === 27 /* kw_function */ || pt === 78 /* asterisk/generator */) {
+        // keyword modifiers with dedicated tags (actual binary values)
+        if (pt === 46 /* kw_static */ || pt === 44 /* kw_async */ ||
+            pt === 60 /* kw_declare */ || pt === 61 /* kw_abstract */ ||
+            pt === 63 /* kw_readonly */ || pt === 68 /* kw_override */ ||
+            pt === 22 /* kw_function */ || pt === 89 /* asterisk/generator */) {
           startTok--;
         } else if (pt === 8 /* identifier */) {
           // check if it's a TS access modifier (public/private/protected)
