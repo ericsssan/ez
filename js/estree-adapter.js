@@ -2354,12 +2354,17 @@ const NodeProto = {
   },
 
   get typeArguments() {
-    if (this._tag !== T.ts_type_reference) return undefined;
+    if (this._typeArgs !== undefined) return this._typeArgs;
+    if (this._tag !== T.ts_type_reference) { this._typeArgs = undefined; return undefined; }
     const rhs = this._ast.nodeRhs(this._i);
-    if (rhs === NONE) return null;
+    if (rhs === NONE) { this._typeArgs = null; return null; }
     const sub = this._ast.extraSubRange(rhs);
     const params = this._ast._nodesFromRange(sub.start, sub.end);
-    return _syntheticNode('TSTypeParameterInstantiation', this.start, this.end, { params }, this._ast);
+    const synth = _syntheticNode('TSTypeParameterInstantiation', this.start, this.end, { params, parent: this }, this._ast);
+    // Set each param's parent to the TSTypeParameterInstantiation
+    for (const p of params) p._parent = synth;
+    this._typeArgs = synth;
+    return synth;
   },
 
   /**

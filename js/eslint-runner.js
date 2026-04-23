@@ -6644,7 +6644,8 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // call node.parent.type unconditionally. Assign a minimal synthetic parent so those checks
   // don't crash. TSTypeParameterInstantiation is the natural parent for type-arg positions.
   if (pd && _hasTsKwRemap && _tsTypeRefTagNum >= 0) {
-    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [] };
+    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [],
+      parent: { type: 'TSTypeReference', typeParameters: null } };
     const n = ast.nodeCount;
     for (let i = 1; i < n; i++) {
       if (pd[i] !== NONE) continue;
