@@ -1476,15 +1476,30 @@ pub const ParallelRunner = struct {
 
         // Cheap pre-check: stat the first SAMPLE_SIZE files. If none are big,
         // skip the size partition entirely and run B's flow over `files`
-        // directly — no allocation, no copy. The "any_big" check is just a
-        // hint; if a big file slipped past the sample it falls through to
-        // the small-file worker (lintOneFile handles it, just without the
-        // 3-stage wall savings).
+        // directly — no allocation, no copy.
+        //
+        // Skip the sample for very small corpora (<= SKIP_SAMPLE_BELOW): the
+        // ~10µs/file sample cost wouldn't amortize, and small corpora finish
+        // so quickly that the long-pole optimisation would be a small slice
+        // of the wall anyway. Also early-exit at the FIRST big file detected
+        // (don't keep sampling once we know we need to partition).
         const SAMPLE_SIZE = 32;
+        const SKIP_SAMPLE_BELOW: usize = 64;
         var any_big = false;
-        if (enable_3stage) {
+        if (enable_3stage and files.len >= SKIP_SAMPLE_BELOW) {
             const sample_n = @min(SAMPLE_SIZE, files.len);
             for (files[0..sample_n]) |path| {
+                const fd = openFileFast(path);
+                if (fd < 0) continue;
+                const sz = fdSize(fd);
+                _ = std.c.close(fd);
+                if (sz > BIG_FILE_THRESHOLD) { any_big = true; break; }
+            }
+        } else if (enable_3stage) {
+            // Tiny corpus: still check, but cheaper — if even one of the few
+            // files is big, do the partition. Bench/fixtures (7 files, one
+            // 9MB) hits this branch.
+            for (files) |path| {
                 const fd = openFileFast(path);
                 if (fd < 0) continue;
                 const sz = fdSize(fd);
