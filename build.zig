@@ -4,23 +4,12 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // zig-fiber-queue: BoundedQueue + CompletionSignal for std.Io.Evented pipeline.
-    // Workarounds for two Zig 0.17.0-dev bugs in std.Io.Evented:
-    //   1. std.Io.Queue/Mutex crashes under contention in GCD fiber contexts
-    //      → BoundedQueue uses pthread_mutex_t + pthread_cond_t instead
-    //   2. group.await migrates main fiber to a GCD worker thread (lifecycle bug)
-    //      → CompletionSignal lets main OS thread wait on a pthread condvar
-    // Note: Dispatch.zig Fiber.resume patched locally to fix x30 clobber bug.
-    const fiber_queue_dep = b.dependency("zig_fiber_queue", .{ .target = target, .optimize = optimize });
-    const fiber_queue_mod = fiber_queue_dep.module("fiber_queue");
-
     // ── Main executable ──────────────────────────────────────
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    exe_mod.addImport("fiber_queue", fiber_queue_mod);
     const exe = b.addExecutable(.{
         .name = "ez",
         .root_module = exe_mod,
@@ -42,7 +31,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    test_mod.addImport("fiber_queue", fiber_queue_mod);
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
     });
@@ -225,7 +213,6 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseFast,
         .strip = false,
     });
-    bench_par_ez_mod.addImport("fiber_queue", fiber_queue_mod);
     const bench_par_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_parallel.zig"),
         .target = target,
@@ -282,6 +269,77 @@ pub fn build(b: *std.Build) void {
     ceiling_cmd.step.dependOn(b.getInstallStep());
     const ceiling_step = b.step("test-ceiling", "Concurrent lex+parse ceiling on typescript.js");
     ceiling_step.dependOn(&ceiling_cmd.step);
+
+    // ── Profiling target: run only strategy K, many iters ──
+    const tk_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_k_only.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
+    });
+    tk_mod.addImport("ez", bench_par_ez_mod);
+    const tk_exe = b.addExecutable(.{ .name = "test_k_only", .root_module = tk_mod });
+    const tk_cmd = b.addRunArtifact(tk_exe);
+    tk_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| tk_cmd.addArgs(args);
+    const tk_step = b.step("test-k", "Run only strategy K (for profiling)");
+    tk_step.dependOn(&tk_cmd.step);
+
+    // ── Phase 1 PoC: simdjson-style bitmap construction ──
+    const sj_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_simdjson_phase1.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    sj_mod.addImport("ez", test_mod);
+    const sj_exe = b.addExecutable(.{ .name = "test_simdjson_phase1", .root_module = sj_mod });
+    const sj_cmd = b.addRunArtifact(sj_exe);
+    sj_cmd.step.dependOn(b.getInstallStep());
+    const sj_step = b.step("test-sj", "Phase 1 bitmap-construction PoC (simdjson-style)");
+    sj_step.dependOn(&sj_cmd.step);
+
+    // ── Differential test: lexer.zig vs lexer_simdjson.zig ──
+    const sjd_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_simdjson_diff.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    sjd_mod.addImport("ez", test_mod);
+    const sjd_exe = b.addExecutable(.{ .name = "test_simdjson_diff", .root_module = sjd_mod });
+    const sjd_cmd = b.addRunArtifact(sjd_exe);
+    sjd_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| sjd_cmd.addArgs(args);
+    const sjd_step = b.step("test-sj-diff", "Differential lex parity check");
+    sjd_step.dependOn(&sjd_cmd.step);
+
+    // ── Pool strategy bench ──
+    const pool_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_pool.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    pool_mod.addImport("ez", test_mod);
+    const pool_exe = b.addExecutable(.{ .name = "bench_pool", .root_module = pool_mod });
+    b.installArtifact(pool_exe);
+    const pool_cmd = b.addRunArtifact(pool_exe);
+    pool_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| pool_cmd.addArgs(args);
+    const pool_step = b.step("bench-pool", "Pool vs hybrid_3stage vs ws_aio strategies");
+    pool_step.dependOn(&pool_cmd.step);
+
+    // ── Profile harness for macOS `sample` ──
+    const sjp_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_simdjson_profile.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    sjp_mod.addImport("ez", test_mod);
+    const sjp_exe = b.addExecutable(.{ .name = "test_simdjson_profile", .root_module = sjp_mod });
+    b.installArtifact(sjp_exe);
+    const sjp_cmd = b.addRunArtifact(sjp_exe);
+    sjp_cmd.step.dependOn(b.getInstallStep());
+    const sjp_step = b.step("test-sj-profile", "Long-running profile harness for sampling");
+    sjp_step.dependOn(&sjp_cmd.step);
 
     // ── Real lex-parse pipeline (with shared token buffer) ──
     const real_mod = b.createModule(.{

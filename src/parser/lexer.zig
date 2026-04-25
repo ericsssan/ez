@@ -130,7 +130,7 @@ inline fn simpleRun16Punct(chunk: V16) u32 {
 // SIMD body-skip helpers (identical to Lexer2 — no changes)
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline fn identEnd(src: []const u8, start: u32) u32 {
+pub inline fn identEnd(src: []const u8, start: u32) u32 {
     const n: u32 = @intCast(src.len);
     var i = start + 1;
     while (i + 16 <= n) {
@@ -153,7 +153,7 @@ inline fn identEnd(src: []const u8, start: u32) u32 {
     return i;
 }
 
-fn stringEnd(src: []const u8, open: u32) u32 {
+pub inline fn stringEnd(src: []const u8, open: u32) u32 {
     const n: u32 = @intCast(src.len);
     const quote = src[open];
     const vq  = @as(V16, @splat(quote));
@@ -183,7 +183,7 @@ fn stringEnd(src: []const u8, open: u32) u32 {
     return i;
 }
 
-fn lineCommentEnd(src: []const u8, start: u32) u32 {
+pub fn lineCommentEnd(src: []const u8, start: u32) u32 {
     const n: u32 = @intCast(src.len);
     const vnl = @as(V16, @splat(@as(u8, '\n')));
     const vcr = @as(V16, @splat(@as(u8, '\r')));
@@ -198,7 +198,7 @@ fn lineCommentEnd(src: []const u8, start: u32) u32 {
     return i;
 }
 
-fn blockCommentEnd(src: []const u8, open: u32) struct { end: u32, has_nl: bool } {
+pub fn blockCommentEnd(src: []const u8, open: u32) struct { end: u32, has_nl: bool } {
     const n: u32 = @intCast(src.len);
     const vstar = @as(V16, @splat(@as(u8, '*')));
     const vnl   = @as(V16, @splat(@as(u8, '\n')));
@@ -235,7 +235,7 @@ fn blockCommentEnd(src: []const u8, open: u32) struct { end: u32, has_nl: bool }
     return .{ .end = n, .has_nl = has_nl };
 }
 
-fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr: bool } {
+pub fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr: bool } {
     const n: u32 = @intCast(src.len);
     const vtick = @as(V16, @splat(@as(u8, '`')));
     const vbs   = @as(V16, @splat(@as(u8, '\\')));
@@ -264,7 +264,7 @@ fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr: boo
     return .{ .end = n, .has_expr = false };
 }
 
-fn regexEnd(src: []const u8, open: u32) u32 {
+pub inline fn regexEnd(src: []const u8, open: u32) u32 {
     const n: u32 = @intCast(src.len);
     var i = open + 1;
     var in_class = false;
@@ -285,7 +285,7 @@ fn regexEnd(src: []const u8, open: u32) u32 {
     return i;
 }
 
-fn numberEnd(src: []const u8, open: u32) u32 {
+pub inline fn numberEnd(src: []const u8, open: u32) u32 {
     const n: u32 = @intCast(src.len);
     var i = open;
     // Track whether this is a legacy octal literal (starts with `0` followed by
@@ -334,7 +334,7 @@ fn numberEnd(src: []const u8, open: u32) u32 {
 // Regex disambiguation (identical to Lexer2)
 // ─────────────────────────────────────────────────────────────────────────────
 
-inline fn regexAllowed(prev: Tag) bool {
+pub inline fn regexAllowed(prev: Tag) bool {
     return switch (prev) {
         .eof,
         .l_paren, .l_brace, .l_bracket,
@@ -404,10 +404,8 @@ pub fn tokenizeWithBuf(
     // hashes_raw matches token capacity exactly. max_toks is now n/2 + 128
     // which empirically covers all observed corpora; tokens never overflow
     // it so hashes_raw doesn't need a separate larger bound.
-    const hashes_raw = try alloc.alloc(u64, max_toks);
-    @memset(hashes_raw, 0);
-    const hash_ptr: [*]u64 = hashes_raw.ptr;
-
+    // tok_hashes lazy: computed on demand by event_resolver to save ~2ms in lex.
+    const hashes_raw: []u64 = &.{};
     const cm_cap: u32 = @max(n / 200 + 16, 16);
     var cm_s = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
     var cm_e = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
@@ -778,7 +776,6 @@ pub fn tokenizeWithBuf(
         }
 
         // ── Emit token ──
-        if (tag == .identifier) hash_ptr[tok_n] = std.hash.Wyhash.hash(0, src[pos..end]);
         tag_ptr[tok_n]   = tag;
         start_ptr[tok_n] = pos;
         len_ptr[tok_n]   = end - pos;

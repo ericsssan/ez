@@ -8,6 +8,8 @@ pub const diagnostic = @import("parser/root.zig").diagnostic;
 pub const debug = @import("parser/root.zig").debug;
 
 pub const Lexer = @import("parser/root.zig").Lexer;
+pub const LexerLegacy = @import("parser/root.zig").LexerLegacy;
+pub const LexerSimdjson = @import("parser/root.zig").LexerSimdjson;
 pub const Parser = @import("parser/root.zig").Parser;
 pub const scope = @import("parser/root.zig").scope;
 pub const symbol = @import("parser/root.zig").symbol;
@@ -32,6 +34,7 @@ pub const gitignore = @import("linter/root.zig").gitignore;
 // ── CLI module ────────────────────────────────────────────
 pub const file_discovery = @import("cli/file_discovery.zig");
 pub const parallel = @import("cli/parallel.zig");
+pub const parallel_pool = @import("cli/parallel_pool.zig");
 pub const diagnostic_formatter = @import("cli/diagnostic_formatter.zig");
 pub const napi = @import("cli/napi.zig");
 
