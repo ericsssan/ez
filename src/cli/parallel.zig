@@ -1320,6 +1320,156 @@ pub const ParallelRunner = struct {
         return n;
     }
 
+    // ── Multi-threaded POSIX AIO worker ─────────────────────────────────────
+    //
+    // Per-thread variant of lintFilesPosixAio: each worker keeps its own
+    // AIO ring of depth AIO_DEPTH_PER_THREAD outstanding reads, draining and
+    // refilling as files complete. Total in-flight AIO requests across all
+    // workers is `AIO_DEPTH_PER_THREAD * worker_count` — kept modest so we
+    // don't overrun the kernel's AIO worker thread pool.
+
+    const AIO_DEPTH_PER_THREAD: usize = 4;
+
+    const AioWorkerCtx = struct {
+        runner: *ParallelRunner,
+        io: Io,
+        files: []const []const u8,
+    };
+
+    fn aioWorkerThread(ctx: *AioWorkerCtx) void {
+        if (ctx.files.len == 0) return;
+
+        var ring: [AIO_DEPTH_PER_THREAD]AioSlot = undefined;
+        for (&ring) |*s| s.* = .{ .idx = 0, .fd = -1, .size = 0, .buf = &.{}, .cb = undefined, .in_flight = false };
+
+        const initial = @min(AIO_DEPTH_PER_THREAD, ctx.files.len);
+        for (0..initial) |i| {
+            if (!aioSetup(&ring[i], i, ctx.files[i])) appendReadError(ctx.runner, ctx.files[i]);
+        }
+
+        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_impl.deinit();
+
+        var consumed: usize = 0;
+        var next_issue: usize = initial;
+        var ptrs: [AIO_DEPTH_PER_THREAD]?*const aiocb = undefined;
+
+        while (consumed < ctx.files.len) {
+            var n: c_int = 0;
+            for (&ring) |*s| {
+                if (s.in_flight) {
+                    ptrs[@intCast(n)] = &s.cb;
+                    n += 1;
+                }
+            }
+            if (n == 0) {
+                // No in-flight reads but still files to issue (initial submit failures).
+                if (next_issue < ctx.files.len) {
+                    if (!aioSetup(&ring[0], next_issue, ctx.files[next_issue])) {
+                        appendReadError(ctx.runner, ctx.files[next_issue]);
+                        consumed += 1;
+                    }
+                    next_issue += 1;
+                    continue;
+                }
+                break;
+            }
+            _ = aio_suspend(@ptrCast(&ptrs), n, null);
+
+            for (&ring) |*slot| {
+                if (!slot.in_flight) continue;
+                const err = aio_error(&slot.cb);
+                if (err == EINPROGRESS) continue;
+                const bytes = aio_return(&slot.cb);
+                slot.in_flight = false;
+
+                if (err == 0 and bytes > 0) {
+                    ctx.runner.lintSource(ctx.io, ctx.files[slot.idx], slot.buf[0..@intCast(bytes)], &arena_impl);
+                } else {
+                    appendReadError(ctx.runner, ctx.files[slot.idx]);
+                }
+                _ = arena_impl.reset(.retain_capacity);
+
+                std.heap.smp_allocator.free(slot.buf);
+                _ = std.c.close(slot.fd);
+                slot.fd = -1;
+                slot.buf = &.{};
+                consumed += 1;
+
+                if (next_issue < ctx.files.len) {
+                    if (!aioSetup(slot, next_issue, ctx.files[next_issue])) {
+                        appendReadError(ctx.runner, ctx.files[next_issue]);
+                        consumed += 1;
+                    }
+                    next_issue += 1;
+                }
+            }
+        }
+    }
+
+    // ── Strategy K: multi-thread AIO + 3-stage hybrid ───────────────────────
+    //
+    // Big files: each gets a dedicated 3-thread pipeline.
+    // Small files: distributed across N-3 worker threads, each running its
+    //              own per-thread POSIX AIO ring (kernel async reads).
+    pub fn lintFilesAioHybrid3Stage(self: *ParallelRunner, io: Io, files: []const []const u8) !void {
+        if (files.len == 0) return;
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+
+        var big = std.ArrayList([]const u8).empty;
+        var small = std.ArrayList([]const u8).empty;
+        defer big.deinit(self.allocator);
+        defer small.deinit(self.allocator);
+        for (files) |path| {
+            const fd = openFileFast(path);
+            if (fd < 0) { try small.append(self.allocator, path); continue; }
+            const sz = fdSize(fd);
+            _ = std.c.close(fd);
+            if (sz > BIG_FILE_THRESHOLD) try big.append(self.allocator, path)
+            else try small.append(self.allocator, path);
+        }
+
+        try self.results.ensureTotalCapacity(self.allocator, self.results.items.len + files.len);
+
+        const small_threads_n = if (big.items.len > 0)
+            @max(1, cpu_count - 3)
+        else
+            @min(small.items.len, cpu_count);
+
+        var small_threads_buf: []std.Thread = &[_]std.Thread{};
+        if (small.items.len > 0) small_threads_buf = try self.allocator.alloc(std.Thread, small_threads_n);
+        defer if (small_threads_buf.len > 0) self.allocator.free(small_threads_buf);
+        const small_threads = small_threads_buf;
+
+        var ctxs_buf: []AioWorkerCtx = &[_]AioWorkerCtx{};
+        if (small.items.len > 0) ctxs_buf = try self.allocator.alloc(AioWorkerCtx, small_threads_n);
+        defer if (ctxs_buf.len > 0) self.allocator.free(ctxs_buf);
+
+        var small_spawned: usize = 0;
+        if (small.items.len > 0) {
+            const chunk = (small.items.len + small_threads_n - 1) / small_threads_n;
+            for (0..small_threads_n) |t| {
+                const start = t * chunk;
+                if (start >= small.items.len) break;
+                const end = @min(start + chunk, small.items.len);
+                ctxs_buf[t] = .{
+                    .runner = self,
+                    .io = io,
+                    .files = small.items[start..end],
+                };
+                small_threads[t] = std.Thread.spawn(.{}, aioWorkerThread, .{&ctxs_buf[t]}) catch {
+                    aioWorkerThread(&ctxs_buf[t]);
+                    continue;
+                };
+                small_spawned += 1;
+            }
+        }
+
+        for (big.items) |path| self.lintOneFile3Stage(io, path);
+
+        for (small_threads[0..small_spawned]) |th| th.join();
+    }
+
     // ── Hybrid 3-stage pipeline ─────────────────────────────────────────────
     //
     // Big files (> BIG_THRESHOLD) get a 3-thread pipeline (lex || parse ||
