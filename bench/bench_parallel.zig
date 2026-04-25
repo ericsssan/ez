@@ -192,7 +192,7 @@ pub fn main(init: std.process.Init) !void {
 
 // ── Strategy enum ────────────────────────────────────────────────
 
-const Strategy = enum { static, ws1, ws2, channel, per_thread_pipelined, advisory, posix_aio, mmap_all, aio_mmap, hybrid_3stage, aio_hybrid_3stage, ws_aio };
+const Strategy = enum { static, ws1, ws2, channel, per_thread_pipelined, advisory, posix_aio, mmap_all, aio_mmap, hybrid_3stage, aio_hybrid_3stage, ws_aio, pool };
 
 fn timeRunReused(io: std.Io, files: []const []const u8, strategy: Strategy, runner: *ParallelRunner) u64 {
     // Reset accumulator state from previous run; ev (if present) is reused.
@@ -215,6 +215,7 @@ fn timeRunReused(io: std.Io, files: []const []const u8, strategy: Strategy, runn
         .hybrid_3stage        => runner.lintFilesHybrid3Stage(io, files) catch {},
         .aio_hybrid_3stage    => runner.lintFilesAioHybrid3Stage(io, files) catch {},
         .ws_aio               => runner.lintFilesWsAio(io, files) catch {},
+        .pool                 => @import("ez").parallel_pool.lintFilesPooled(runner, io, files) catch {},
     }
     return @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
 }
@@ -246,6 +247,7 @@ fn profileRun(
         .hybrid_3stage        => runner.lintFilesHybrid3Stage(io, files) catch {},
         .aio_hybrid_3stage    => runner.lintFilesAioHybrid3Stage(io, files) catch {},
         .ws_aio               => runner.lintFilesWsAio(io, files) catch {},
+        .pool                 => @import("ez").parallel_pool.lintFilesPooled(&runner, io, files) catch {},
     }
 
     const t = &runner.timings;
@@ -264,7 +266,7 @@ fn profileRun(
         .static, .ws1, .channel, .per_thread_pipelined => @min(files.len, cpu_count),
         .ws2                                            => @min(files.len, cpu_count * 2),
         .advisory, .posix_aio, .mmap_all, .aio_mmap   => 1,
-        .hybrid_3stage, .aio_hybrid_3stage, .ws_aio     => @min(files.len, cpu_count),
+        .hybrid_3stage, .aio_hybrid_3stage, .ws_aio, .pool => @min(files.len, cpu_count),
     };
     const avail_ns = wall_ns * thread_count;           // total thread-ns if 100% busy
     const util_pct = if (avail_ns > 0) cpu_ns * 100 / avail_ns else 0;

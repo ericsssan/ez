@@ -922,7 +922,7 @@ pub const ParallelRunner = struct {
         }
     }
 
-    fn lintOneFile(self: *ParallelRunner, io: Io, file_path: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
+    pub fn lintOneFile(self: *ParallelRunner, io: Io, file_path: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
         const arena = arena_impl.allocator();
         var t_io = if (self.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
 
@@ -1789,7 +1789,7 @@ pub const ParallelRunner = struct {
     /// sequentially on the resulting AST.  Used by the hybrid scheduler for
     /// files large enough that the ~22ms wall savings exceed the ~50µs
     /// thread spawn overhead (empirically ~50KB+).
-    fn lintOneFile3Stage(self: *ParallelRunner, io: Io, file_path: []const u8) void {
+    pub fn lintOneFile3Stage(self: *ParallelRunner, io: Io, file_path: []const u8) void {
         var arena_lex = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_lex.deinit();
         var arena_parse = std.heap.ArenaAllocator.init(std.heap.page_allocator);
