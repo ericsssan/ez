@@ -1320,6 +1320,36 @@ pub const ParallelRunner = struct {
         return n;
     }
 
+    /// Synchronous wrapper around POSIX AIO: open file, submit one aio_read,
+    /// block on aio_suspend, return the bytes (allocated from `alloc`).
+    /// Used by lintOneFile3Stage for big-file loads — equivalent in latency
+    /// to readFileAlloc on warm cache, and lets the kernel overlap the read
+    /// with other in-flight AIO work on cold cache.
+    fn aioReadFull(alloc: std.mem.Allocator, file_path: []const u8) ?[]u8 {
+        const fd = openFileFast(file_path);
+        if (fd < 0) return null;
+        defer _ = std.c.close(fd);
+        const size = fdSize(fd);
+        if (size == 0 or size > MAX_FILE_SIZE) return null;
+
+        const buf = alloc.alloc(u8, @intCast(size)) catch return null;
+        var cb = std.mem.zeroes(aiocb);
+        cb.aio_fildes = fd;
+        cb.aio_offset = 0;
+        cb.aio_buf = buf.ptr;
+        cb.aio_nbytes = buf.len;
+        cb.aio_sigevent.sigev_notify = SIGEV_NONE;
+        if (aio_read(&cb) != 0) return null;
+
+        const ptrs: [1]?*const aiocb = .{&cb};
+        _ = aio_suspend(@ptrCast(&ptrs), 1, null);
+
+        const err = aio_error(&cb);
+        const bytes = aio_return(&cb);
+        if (err != 0 or bytes <= 0) return null;
+        return buf[0..@intCast(bytes)];
+    }
+
     // ── Multi-threaded POSIX AIO worker ─────────────────────────────────────
     //
     // Per-thread variant of lintFilesPosixAio: each worker keeps its own
@@ -1409,9 +1439,29 @@ pub const ParallelRunner = struct {
 
     // ── Strategy K: multi-thread AIO + 3-stage hybrid ───────────────────────
     //
-    // Big files: each gets a dedicated 3-thread pipeline.
-    // Small files: distributed across N-3 worker threads, each running its
+    // Big files: processed by `big_workers = max(1, cpu_count/3)` workers in
+    //            parallel. Each big-file worker runs lintOneFile3Stage which
+    //            internally uses 3 threads (calling + 2 spawned). This lets
+    //            multi-big-file corpora process several huge files at once
+    //            instead of serialising them on the main thread.
+    // Small files: distributed across remaining threads, each running its
     //              own per-thread POSIX AIO ring (kernel async reads).
+
+    const BigQueueCtx = struct {
+        runner: *ParallelRunner,
+        io: Io,
+        files: []const []const u8,
+        cursor: std.atomic.Value(u32),
+    };
+
+    fn bigQueueWorker(ctx: *BigQueueCtx) void {
+        while (true) {
+            const idx = ctx.cursor.fetchAdd(1, .acq_rel);
+            if (idx >= ctx.files.len) break;
+            ctx.runner.lintOneFile3Stage(ctx.io, ctx.files[idx]);
+        }
+    }
+
     pub fn lintFilesAioHybrid3Stage(self: *ParallelRunner, io: Io, files: []const []const u8) !void {
         if (files.len == 0) return;
         const cpu_count = std.Thread.getCpuCount() catch 1;
@@ -1431,42 +1481,67 @@ pub const ParallelRunner = struct {
 
         try self.results.ensureTotalCapacity(self.allocator, self.results.items.len + files.len);
 
-        const small_threads_n = if (big.items.len > 0)
-            @max(1, cpu_count - 3)
+        // Each big-file worker uses 3 threads (calling + 2 helpers) inside
+        // lintOneFile3Stage. Cap the number of concurrent big-file workers
+        // so that big_workers * 3 + small_workers ≤ cpu_count.
+        const big_workers = if (big.items.len == 0) 0
+            else @min(big.items.len, @max(1, cpu_count / 3));
+        const small_workers = if (big_workers > 0)
+            @max(1, cpu_count - big_workers * 3)
         else
             @min(small.items.len, cpu_count);
 
+        // Spawn small-file AIO workers.
         var small_threads_buf: []std.Thread = &[_]std.Thread{};
-        if (small.items.len > 0) small_threads_buf = try self.allocator.alloc(std.Thread, small_threads_n);
+        if (small.items.len > 0) small_threads_buf = try self.allocator.alloc(std.Thread, small_workers);
         defer if (small_threads_buf.len > 0) self.allocator.free(small_threads_buf);
         const small_threads = small_threads_buf;
 
-        var ctxs_buf: []AioWorkerCtx = &[_]AioWorkerCtx{};
-        if (small.items.len > 0) ctxs_buf = try self.allocator.alloc(AioWorkerCtx, small_threads_n);
-        defer if (ctxs_buf.len > 0) self.allocator.free(ctxs_buf);
+        var small_ctxs_buf: []AioWorkerCtx = &[_]AioWorkerCtx{};
+        if (small.items.len > 0) small_ctxs_buf = try self.allocator.alloc(AioWorkerCtx, small_workers);
+        defer if (small_ctxs_buf.len > 0) self.allocator.free(small_ctxs_buf);
 
         var small_spawned: usize = 0;
         if (small.items.len > 0) {
-            const chunk = (small.items.len + small_threads_n - 1) / small_threads_n;
-            for (0..small_threads_n) |t| {
+            const chunk = (small.items.len + small_workers - 1) / small_workers;
+            for (0..small_workers) |t| {
                 const start = t * chunk;
                 if (start >= small.items.len) break;
                 const end = @min(start + chunk, small.items.len);
-                ctxs_buf[t] = .{
+                small_ctxs_buf[t] = .{
                     .runner = self,
                     .io = io,
                     .files = small.items[start..end],
                 };
-                small_threads[t] = std.Thread.spawn(.{}, aioWorkerThread, .{&ctxs_buf[t]}) catch {
-                    aioWorkerThread(&ctxs_buf[t]);
+                small_threads[t] = std.Thread.spawn(.{}, aioWorkerThread, .{&small_ctxs_buf[t]}) catch {
+                    aioWorkerThread(&small_ctxs_buf[t]);
                     continue;
                 };
                 small_spawned += 1;
             }
         }
 
-        for (big.items) |path| self.lintOneFile3Stage(io, path);
+        // Spawn big-file workers (each pulls from a shared cursor).
+        var big_ctx = BigQueueCtx{
+            .runner = self,
+            .io = io,
+            .files = big.items,
+            .cursor = std.atomic.Value(u32).init(0),
+        };
+        var big_threads_buf: []std.Thread = &[_]std.Thread{};
+        if (big_workers > 1) big_threads_buf = try self.allocator.alloc(std.Thread, big_workers - 1);
+        defer if (big_threads_buf.len > 0) self.allocator.free(big_threads_buf);
+        const big_threads = big_threads_buf;
 
+        var big_spawned: usize = 0;
+        for (0..big_threads.len) |t| {
+            big_threads[t] = std.Thread.spawn(.{}, bigQueueWorker, .{&big_ctx}) catch continue;
+            big_spawned += 1;
+        }
+        // Calling thread acts as the last big-file worker.
+        if (big_workers > 0) bigQueueWorker(&big_ctx);
+
+        for (big_threads[0..big_spawned]) |th| th.join();
         for (small_threads[0..small_spawned]) |th| th.join();
     }
 
@@ -1556,12 +1631,11 @@ pub const ParallelRunner = struct {
         var arena_sem = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_sem.deinit();
 
-        // Read source on the calling thread (sequential, only ~1ms even on
-        // 9MB).  Could hand off to a 4th thread for true 4-stage but I/O is
-        // already cheap on warm cache.
-        const source = Io.Dir.cwd().readFileAlloc(
-            io, file_path, arena_parse.allocator(), Io.Limit.limited(10 * 1024 * 1024),
-        ) catch {
+        // POSIX AIO read: submit aio_read, then aio_suspend until done.
+        // On warm cache this is ~equivalent to sync read; on cold cache the
+        // kernel can overlap the read with other in-flight work in the
+        // process (e.g. small-file workers' AIO rings).
+        const source = aioReadFull(arena_parse.allocator(), file_path) orelse {
             const msg = std.fmt.allocPrint(self.allocator, "{s}: error: read failed\n", .{file_path}) catch "";
             self.appendResult(.{ .file_path = file_path, .output = msg, .error_count = 1, .warning_count = 0, .had_error = true });
             return;
