@@ -1290,7 +1290,7 @@ pub const ParallelRunner = struct {
         std.debug.print("  Total:     {d:6}ms\n",         .{total_ms});
     }
 
-    fn appendResult(self: *ParallelRunner, result: FileResult) void {
+    pub fn appendResult(self: *ParallelRunner, result: FileResult) void {
         self.mutex.lock();
         defer self.mutex.unlock();
         self.results.append(self.allocator, result) catch {};
