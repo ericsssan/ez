@@ -21,8 +21,8 @@ const ez = @import("ez");
 const ParallelRunner = ez.parallel.ParallelRunner;
 const FileDiscovery = ez.file_discovery.FileDiscovery;
 
-const RUNS: usize = 7;
-const WARMUP: usize = 2;
+const RUNS: usize = 5;
+const WARMUP: usize = 0;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
