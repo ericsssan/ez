@@ -116,6 +116,17 @@ pub const Parser = struct {
     /// Cached pointer to token byte lengths.
     tok_lens_ptr: [*]const u32,
     tok_i: u32,
+    /// Visible token count for the parser. In sequential (lexer-finalized)
+    /// mode this equals `tokens.len`. In streaming (lex-parse pipeline) mode
+    /// it is a snapshot of the producer's published count, refreshed via
+    /// `refreshParsedLen()` on the slow path when `tok_i` reaches it.
+    parsed_len: usize,
+    /// Streaming-mode coordination. When non-null, the lex thread is producing
+    /// tokens concurrently and `parsed_len` is a stale local cache; refresh by
+    /// loading `published_len` (acquire). `lex_done` distinguishes "more tokens
+    /// will come" from "EOF reached".
+    published_len: ?*std.atomic.Value(usize) = null,
+    lex_done: ?*std.atomic.Value(bool) = null,
     nodes: Ast.NodeList,
     /// Cached pointers into the nodes SoA — refreshed whenever nodes grows.
     /// `MultiArrayList.items(.tag)` reconstructs the slice (loops over field
@@ -201,20 +212,36 @@ pub const Parser = struct {
         /// `scope_events` field.  Enables the fast-path semantic analyzer
         /// automatically when the caller passes the Ast to analyze().
         emit_events: bool = false,
+        /// Streaming mode (lex-parse pipeline). When set, the parser blocks
+        /// in advance/peekAt slow paths until the producer publishes more
+        /// tokens, instead of treating "past tokens.len" as EOF. The producer
+        /// (lexer running on another thread) must atomically store the
+        /// up-to-date token count to `published_len` (release) and set
+        /// `lex_done` true after the final publish.
+        streaming: ?StreamingHooks = null,
+    };
+
+    pub const StreamingHooks = struct {
+        published_len: *std.atomic.Value(usize),
+        lex_done: *std.atomic.Value(bool),
+        /// Hint used to pre-size parser internal arrays. In streaming mode
+        /// `tokens.len` reflects the buffer capacity (not produced tokens),
+        /// but estimating from source bytes is generally cleaner.
+        capacity_hint: usize,
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
-        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out, opts.emit_events);
+        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out, opts.emit_events, opts.streaming);
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
     /// Always emits scope events — the event-driven semantic analyzer is the
     /// sole path (tree walker was removed).
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, null, true);
+        return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null);
     }
 
-    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool) !Ast {
+    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool, streaming: ?StreamingHooks) !Ast {
         var p = Parser{
             .source = source,
             .tokens = tokens,
@@ -223,6 +250,9 @@ pub const Parser = struct {
             .tok_starts_ptr = tokens.items(.start).ptr,
             .tok_lens_ptr = tokens.items(.len).ptr,
             .tok_i = 0,
+            .parsed_len = if (streaming != null) 0 else tokens.len,
+            .published_len = if (streaming) |s| s.published_len else null,
+            .lex_done = if (streaming) |s| s.lex_done else null,
             .nodes = .empty,
             .node_tags_ptr = undefined,
             .node_data_ptr = undefined,
@@ -231,7 +261,7 @@ pub const Parser = struct {
             .scratch = .empty,
             .diagnostics = .empty,
             .gpa = allocator,
-            .max_nodes = tokens.len * 16,
+            .max_nodes = if (streaming) |s| s.capacity_hint * 16 else tokens.len * 16,
             .in_function = false,
             .in_async = is_module_file, // top-level await in modules (ES2022)
             .in_generator = false,
@@ -271,19 +301,21 @@ pub const Parser = struct {
         // Empirically ~0.75 AST nodes per token; extra_data grows larger than
         // the 3/8 estimate for typical JS — use 3/4 to avoid regrowths during
         // long statement / arg lists (each grow is an allocator round-trip
-        // plus memcpy).
-        const estimated_node_count: usize = @max(tokens.len * 3 / 4, 1);
-        const estimated_extra_count: usize = @max(tokens.len * 3 / 4, 1);
+        // plus memcpy). In streaming mode tokens.len is the buffer capacity,
+        // not the actual produced count — caller passes a tighter hint.
+        const sizing_count = if (streaming) |s| s.capacity_hint else tokens.len;
+        const estimated_node_count: usize = @max(sizing_count * 3 / 4, 1);
+        const estimated_extra_count: usize = @max(sizing_count * 3 / 4, 1);
         try p.nodes.ensureTotalCapacity(allocator, estimated_node_count);
         p.refreshNodePtrs();
         try p.extra_data.ensureTotalCapacity(allocator, estimated_extra_count);
         // Scratch is a stack used by statement-list / arg-list parsers. Peak
         // depth depends on the largest block in the file (could be thousands
         // of top-level statements). Pre-size generously to avoid growth.
-        try p.scratch.ensureTotalCapacity(allocator, @max(1024, tokens.len / 16));
+        try p.scratch.ensureTotalCapacity(allocator, @max(1024, sizing_count / 16));
 
         // Pre-size the event buffer if emission is on (≈ tokens.len / 3 events on typical JS).
-        if (p.emit_scope_events) try p.scope_events.ensureCapacity(allocator, tokens.len / 3);
+        if (p.emit_scope_events) try p.scope_events.ensureCapacity(allocator, sizing_count / 3);
 
         // Pre-size ref_event_idx to estimated node count — direct array indexed
         // by NodeIndex. Sentinel 0xFFFFFFFF = "no event recorded". Auto-grows
@@ -292,6 +324,12 @@ pub const Parser = struct {
             p.ref_event_idx = try allocator.alloc(u32, estimated_node_count);
             @memset(p.ref_event_idx, std.math.maxInt(u32));
         }
+
+        // Streaming mode: block until the producer publishes the first batch
+        // (or signals lex_done). Without this the parser's first peek() —
+        // which is a raw tags_ptr load with no bounds check on the hot path —
+        // could read an unwritten slot.
+        if (streaming != null) p.refreshParsedLen();
 
         try p.parseProgram();
 
@@ -351,10 +389,48 @@ pub const Parser = struct {
     /// Consume the current token and return its index.
     pub inline fn advance(self: *Parser) TokenIndex {
         const result = self.tok_i;
-        if (self.tok_i < self.tokens.len - 1) {
+        if (self.tok_i < self.parsed_len - 1) {
             self.tok_i += 1;
+        } else if (self.published_len != null) {
+            // Streaming: producer may publish more — refresh and retry.
+            self.refreshParsedLen();
+            if (self.tok_i < self.parsed_len - 1) self.tok_i += 1;
         }
         return result;
+    }
+
+    /// Streaming slow-path: refresh the visible token count from the lex
+    /// thread's published_len. Spins (with thread yield) until either more
+    /// tokens are available or the lexer signals EOF. In non-streaming mode
+    /// this is a no-op.
+    fn refreshParsedLen(self: *Parser) void {
+        const pub_atomic = self.published_len orelse return;
+        // Fast path: a quick atomic load may already have new tokens.
+        const cur = pub_atomic.load(.acquire);
+        if (cur > self.parsed_len) {
+            self.parsed_len = cur;
+            return;
+        }
+        // Slow path: spin/yield until publisher advances or EOF.
+        var spins: u32 = 0;
+        while (true) {
+            const v = pub_atomic.load(.acquire);
+            if (v > self.parsed_len) {
+                self.parsed_len = v;
+                return;
+            }
+            if (self.lex_done.?.load(.acquire)) {
+                self.parsed_len = pub_atomic.load(.acquire);
+                return;
+            }
+            spins += 1;
+            if (spins < 100) {
+                std.atomic.spinLoopHint();
+            } else {
+                std.Thread.yield() catch {};
+                spins = 0;
+            }
+        }
     }
 
     /// Skip balanced parentheses, consuming from `(` to matching `)`.
@@ -394,13 +470,24 @@ pub const Parser = struct {
 
     /// Return the tag of the current token.
     pub inline fn peek(self: *const Parser) TokenTag {
+        // The streaming invariant is enforced by advance/peekAt: when this
+        // function runs, tok_i is always within the published range (or the
+        // pre-written .eof sentinel). Identical hot path to the non-streaming
+        // case — zero overhead.
         return self.tags_ptr[self.tok_i];
     }
 
     /// Look ahead by `offset` tokens from the current position.
-    pub inline fn peekAt(self: *const Parser, offset: u32) TokenTag {
+    pub inline fn peekAt(self: *Parser, offset: u32) TokenTag {
         const idx = self.tok_i + offset;
-        if (idx >= self.tokens.len) return .eof;
+        if (idx >= self.parsed_len) {
+            if (self.published_len != null) {
+                self.refreshParsedLen();
+                if (idx >= self.parsed_len) return .eof;
+                return self.tags_ptr[idx];
+            }
+            return .eof;
+        }
         return self.tags_ptr[idx];
     }
 
@@ -1999,14 +2086,14 @@ pub const Parser = struct {
     /// Check for "use strict" starting at a specific token position.
     fn checkDirectivePrologueAt(self: *Parser, start_pos: u32) void {
         var pos = start_pos;
-        while (pos < self.tokens.len) {
+        while (pos < self.parsed_len) {
             const tag = self.tags_ptr[pos];
             if (tag != .string_literal) break;
 
             // A string literal is only a directive if it's a complete expression statement.
             // `"use strict".foo`, `"use strict"[x]`, `"use strict"(x)`, `"use strict"`tpl``
             // are NOT directives — they're member/call/tagged-template expressions.
-            if (pos + 1 < self.tokens.len) {
+            if (pos + 1 < self.parsed_len) {
                 const next_tag = self.tags_ptr[pos + 1];
                 if (next_tag == .dot or next_tag == .l_bracket or next_tag == .l_paren or
                     next_tag == .template_head or next_tag == .template_no_sub)
@@ -2021,7 +2108,7 @@ pub const Parser = struct {
             }
 
             pos += 1;
-            if (pos < self.tokens.len and self.tags_ptr[pos] == .semicolon) {
+            if (pos < self.parsed_len and self.tags_ptr[pos] == .semicolon) {
                 pos += 1;
             }
         }
@@ -5405,7 +5492,7 @@ pub const Parser = struct {
     /// Uses the has_newline_before flag stored per token at lex time — O(1) for
     /// adjacent tokens, O(k) for non-adjacent (k = tokens between a and b).
     pub fn hasNewLineBetween(self: *const Parser, tok_a: u32, tok_b: u32) bool {
-        if (tok_a >= self.tokens.len or tok_b >= self.tokens.len) return false;
+        if (tok_a >= self.parsed_len or tok_b >= self.parsed_len) return false;
         const nl = self.newlines_ptr;
         // Common case: adjacent tokens — single array read.
         if (tok_b == tok_a + 1) return nl[tok_b];
@@ -5421,15 +5508,15 @@ pub const Parser = struct {
     /// then checks if `=` follows.
     fn looksLikeLetDestructuring(self: *const Parser) bool {
         var i = self.tok_i + 1; // should be `{`
-        if (i >= self.tokens.len or self.tokenTagAt(i) != .l_brace) return false;
+        if (i >= self.parsed_len or self.tokenTagAt(i) != .l_brace) return false;
         i += 1;
         var depth: u32 = 1;
-        while (i < self.tokens.len and depth > 0) : (i += 1) {
+        while (i < self.parsed_len and depth > 0) : (i += 1) {
             const tag = self.tokenTagAt(i);
             if (tag == .l_brace) depth += 1 else if (tag == .r_brace) depth -= 1;
         }
         // i now points to the token after the matching `}`
-        return i < self.tokens.len and self.tokenTagAt(i) == .equal;
+        return i < self.parsed_len and self.tokenTagAt(i) == .equal;
     }
 
     // ────────────────────────────────────────────────────────────
@@ -5457,7 +5544,7 @@ pub const Parser = struct {
     pub fn checkUseStrictNonSimpleParams(self: *Parser, params: SubRange) !void {
         if (self.peek() == .l_brace) {
             var pos = self.tok_i + 1;
-            while (pos < self.tokens.len) {
+            while (pos < self.parsed_len) {
                 const tag = self.tags_ptr[pos];
                 if (tag != .string_literal) break;
                 const start = self.tok_starts_ptr[pos];
@@ -5484,7 +5571,7 @@ pub const Parser = struct {
                     break;
                 }
                 pos += 1;
-                if (pos < self.tokens.len and self.tags_ptr[pos] == .semicolon) pos += 1;
+                if (pos < self.parsed_len and self.tags_ptr[pos] == .semicolon) pos += 1;
             }
         }
     }

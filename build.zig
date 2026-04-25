@@ -4,12 +4,23 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // zig-fiber-queue: BoundedQueue + CompletionSignal for std.Io.Evented pipeline.
+    // Workarounds for two Zig 0.17.0-dev bugs in std.Io.Evented:
+    //   1. std.Io.Queue/Mutex crashes under contention in GCD fiber contexts
+    //      → BoundedQueue uses pthread_mutex_t + pthread_cond_t instead
+    //   2. group.await migrates main fiber to a GCD worker thread (lifecycle bug)
+    //      → CompletionSignal lets main OS thread wait on a pthread condvar
+    // Note: Dispatch.zig Fiber.resume patched locally to fix x30 clobber bug.
+    const fiber_queue_dep = b.dependency("zig_fiber_queue", .{ .target = target, .optimize = optimize });
+    const fiber_queue_mod = fiber_queue_dep.module("fiber_queue");
+
     // ── Main executable ──────────────────────────────────────
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
+    exe_mod.addImport("fiber_queue", fiber_queue_mod);
     const exe = b.addExecutable(.{
         .name = "ez",
         .root_module = exe_mod,
@@ -31,6 +42,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    test_mod.addImport("fiber_queue", fiber_queue_mod);
     const unit_tests = b.addTest(.{
         .root_module = test_mod,
     });
@@ -207,12 +219,20 @@ pub fn build(b: *std.Build) void {
     bench_lint_step.dependOn(&bench_lint_cmd.step);
 
     // ── Parallel scheduling bench (A: static / B: WS N_CPU / C: WS 2×N_CPU) ─
+    const bench_par_ez_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
+    });
+    bench_par_ez_mod.addImport("fiber_queue", fiber_queue_mod);
     const bench_par_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_parallel.zig"),
         .target = target,
         .optimize = .ReleaseFast,
+        .strip = false,
     });
-    bench_par_mod.addImport("ez", test_mod);
+    bench_par_mod.addImport("ez", bench_par_ez_mod);
     const bench_par = b.addExecutable(.{
         .name = "bench_parallel",
         .root_module = bench_par_mod,
@@ -222,6 +242,73 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| bench_par_cmd.addArgs(args);
     const bench_par_step = b.step("bench-parallel", "Compare static-chunk vs work-stealing scheduling");
     bench_par_step.dependOn(&bench_par_cmd.step);
+
+    // ── LSP / daemon single-file latency bench ───────────────────────────────
+    const bench_lsp_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_lsp.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_lsp_mod.addImport("ez", bench_par_ez_mod);
+    const bench_lsp_exe = b.addExecutable(.{ .name = "bench_lsp", .root_module = bench_lsp_mod });
+    const bench_lsp_cmd = b.addRunArtifact(bench_lsp_exe);
+    bench_lsp_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| bench_lsp_cmd.addArgs(args);
+    const bench_lsp_step = b.step("bench-lsp", "Single-file latency (LSP/daemon shape): G vs G+mmap");
+    bench_lsp_step.dependOn(&bench_lsp_cmd.step);
+
+    // ── Test: typescript.js pipeline timing under different analyze options ──
+    const tsp_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_ts_pipeline.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    tsp_mod.addImport("ez", test_mod);  // ← swap: use Debug ez to compare with bench_ez_parser
+    const tsp = b.addExecutable(.{ .name = "test_ts_pipeline", .root_module = tsp_mod });
+    const tsp_cmd = b.addRunArtifact(tsp);
+    tsp_cmd.step.dependOn(b.getInstallStep());
+    const tsp_step = b.step("test-ts-pipeline", "Time typescript.js pipeline under various analyze options");
+    tsp_step.dependOn(&tsp_cmd.step);
+
+    // ── Pipeline ceiling: concurrent lex+parse upper-bound ──
+    const ceiling_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_pipeline_ceiling.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    ceiling_mod.addImport("ez", test_mod);
+    const ceiling = b.addExecutable(.{ .name = "test_pipeline_ceiling", .root_module = ceiling_mod });
+    const ceiling_cmd = b.addRunArtifact(ceiling);
+    ceiling_cmd.step.dependOn(b.getInstallStep());
+    const ceiling_step = b.step("test-ceiling", "Concurrent lex+parse ceiling on typescript.js");
+    ceiling_step.dependOn(&ceiling_cmd.step);
+
+    // ── Real lex-parse pipeline (with shared token buffer) ──
+    const real_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_pipeline_real.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    real_mod.addImport("ez", test_mod);
+    const real_exe = b.addExecutable(.{ .name = "test_pipeline_real", .root_module = real_mod });
+    const real_cmd = b.addRunArtifact(real_exe);
+    real_cmd.step.dependOn(b.getInstallStep());
+    const real_step = b.step("test-real", "Real lex-parse pipeline benchmark");
+    real_step.dependOn(&real_cmd.step);
+
+    // ── Pipeline crash isolation test ────────────────────────────────────────
+    const test_pipeline_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_pipeline.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    test_pipeline_mod.addImport("ez", bench_par_ez_mod);
+    const test_pipeline_exe = b.addExecutable(.{ .name = "test_pipeline", .root_module = test_pipeline_mod });
+    const test_pipeline_cmd = b.addRunArtifact(test_pipeline_exe);
+    test_pipeline_cmd.step.dependOn(b.getInstallStep());
+    if (b.args) |args| test_pipeline_cmd.addArgs(args);
+    const test_pipeline_step = b.step("test-pipeline", "Isolate lintFilesPipelined crash (7 runs, gpa, real files)");
+    test_pipeline_step.dependOn(&test_pipeline_cmd.step);
 
     // ── Lexer samply profiling build (ReleaseFast + DWARF symbols) ──────────
     const bench_lex_syms_mod = b.createModule(.{

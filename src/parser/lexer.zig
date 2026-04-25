@@ -52,7 +52,17 @@ pub const TokenizeResult = struct {
 pub const TokenizeOptions = struct {
     is_module: bool = false,
     annex_b: bool = true,
+    /// Streaming publish: when non-null, the lexer atomically stores `tok_n`
+    /// to this slot every PUBLISH_BATCH tokens, allowing a concurrent parser
+    /// to consume tokens as they are produced. Null in sequential mode —
+    /// hot-loop branch is predicted not-taken with zero overhead.
+    publish_to: ?*std.atomic.Value(usize) = null,
 };
+
+/// Streaming publish granularity. Tuned to amortise atomic store cost
+/// (~10ns each) over many tokens — at 1024 the lex side adds <20µs total
+/// publish overhead on a 9MB file, while the parse side rarely waits.
+pub const PUBLISH_BATCH: usize = 1024;
 
 pub fn tokenizeWithLanguage(alloc: std.mem.Allocator, source: []const u8, lang: Language) !TokenizeResult {
     return tokenizeWithAllOptions(alloc, source, lang, .{});
@@ -360,13 +370,26 @@ pub fn tokenizeWithAllOptions(
     language: Language,
     opts: TokenizeOptions,
 ) !TokenizeResult {
+    return tokenizeWithBuf(alloc, source, language, opts, null);
+}
+
+/// Variant that lets the caller supply a pre-allocated TokenList. Used by
+/// the streaming pipeline driver: parser thread already holds a slice over
+/// the buffer, and the lexer thread writes into the same backing memory.
+pub fn tokenizeWithBuf(
+    alloc: std.mem.Allocator,
+    source: []const u8,
+    language: Language,
+    opts: TokenizeOptions,
+    tokens_buf: ?*TokenList,
+) !TokenizeResult {
     _ = opts.annex_b;
     const src = source;
     const n: u32 = @intCast(src.len);
 
     const max_toks: u32 = @max(n / 5 + 64, 64);
-    var tokens = TokenList{};
-    try tokens.ensureTotalCapacity(alloc, max_toks);
+    var tokens: TokenList = if (tokens_buf) |b| b.* else TokenList{};
+    if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, max_toks);
     const ts_init = tokens.slice();
     var tag_ptr   = ts_init.items(.tag).ptr;
     var start_ptr = ts_init.items(.start).ptr;
@@ -455,6 +478,12 @@ pub fn tokenizeWithAllOptions(
                     }
                 }
                 pos += run;
+                // Streaming publish: amortised over PUBLISH_BATCH tokens to
+                // keep the atomic store rate low. In sequential mode the
+                // option is null and the branch is predicted not-taken.
+                if (opts.publish_to) |p| {
+                    if ((tok_n & (PUBLISH_BATCH - 1)) == 0) p.store(tok_n, .release);
+                }
                 continue :outer; // byte is stale after pos changes — restart loop
             }
         }
@@ -759,6 +788,9 @@ pub fn tokenizeWithAllOptions(
         // an identifier for regex disambiguation: `a.in / b` is division, not regex.
         prev_kind = if (tag.isKeyword() and prev_kind == .dot) .identifier else tag;
         pos       = end;
+        if (opts.publish_to) |p| {
+            if ((tok_n & (PUBLISH_BATCH - 1)) == 0) p.store(tok_n, .release);
+        }
     }
 
     // ── EOF token ──
