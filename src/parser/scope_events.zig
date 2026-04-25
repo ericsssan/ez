@@ -108,7 +108,7 @@ pub const EventStream = struct {
     /// in sequential mode — branch is predicted not-taken with zero overhead.
     publish_to: ?*std.atomic.Value(usize) = null,
 
-    pub const PUBLISH_BATCH: usize = 256;
+    pub const PUBLISH_BATCH: usize = 4096;
 
     pub fn deinit(self: *EventStream, alloc: std.mem.Allocator) void {
         self.events.deinit(alloc);
