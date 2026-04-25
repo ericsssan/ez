@@ -217,9 +217,17 @@ const ForkContext = struct {
     fn createSegments(self: *ForkContext, start_idx: i32, end_idx: i32, builder: *CodePathBuilder, mode: CreateMode) ![]SegmentId {
         const total: i32 = @intCast(self.totalLen());
 
+        // Bump-allocate result slice from the stable pool (no arena overhead,
+        // no realloc risk — pool is pre-sized in ensureCapacity).
+        // Falls back to arena alloc only if pool is exhausted (unlikely).
+        const pool_start = builder.seg_id_pool_top;
+        const result: []SegmentId = if (pool_start + self.count <= builder.seg_id_pool_cap) blk: {
+            builder.seg_id_pool_top += self.count;
+            break :blk builder.seg_id_pool[pool_start .. pool_start + self.count];
+        } else try self.allocator.alloc(SegmentId, self.count);
+
         // Guard: if the list is empty, create segments with no prev
         if (total == 0) {
-            const result = try self.allocator.alloc(SegmentId, self.count);
             for (0..self.count) |i| {
                 result[i] = switch (mode) {
                     .next => try builder.newNextSegment(&.{}),
@@ -232,10 +240,7 @@ const ForkContext = struct {
         const norm_start: usize = @intCast(if (start_idx >= 0) start_idx else total + start_idx);
         const norm_end: usize = @intCast(if (end_idx >= 0) end_idx else total + end_idx);
 
-        const result = try self.allocator.alloc(SegmentId, self.count);
-        // Stack buffer avoids the per-lane arena alloc for prev_slice.
-        // newNextSegment/newUnreachableSegment copy the data via flattenUnused +
-        // createSegment's appendSlice — the slice is transient.
+        // Stack buffer for prev segments — avoids per-lane arena alloc.
         var prev_buf: [16]SegmentId = undefined;
 
         for (0..self.count) |i| {
@@ -290,11 +295,15 @@ const ChoiceContext = struct {
     true_fork: ForkContext,
     false_fork: ForkContext,
     processed: bool,
+    // For loop kind: skip last_branch_end (body-end) when forming post-loop segment.
+    // True for while/for (body-end loops back, not a post-loop exit); false for do-while.
+    skip_last_branch_end: bool = false,
 };
 
 const SwitchContext = struct {
     upper: ?*SwitchContext,
     default_segments: ?[]SegmentId,
+    prev_break_target_is_switch: bool = false,
 };
 
 const TryContext = struct {
@@ -323,6 +332,12 @@ const LoopContext = struct {
     continue_dest_segments: ?[]SegmentId = null,
     entry_segments: ?[]SegmentId = null,
     continue_fork: ForkContext,
+    break_fork: ForkContext,
+    node: NodeIndex = .none,
+    label: []const u8 = "",
+    is_do_while: bool = false,
+    has_skip_path: bool = false,
+    prev_break_target_is_switch: bool = false,
 };
 
 // ── CodePathBuilder ──────────────────────────────────────────────
@@ -364,6 +379,23 @@ pub const CodePathBuilder = struct {
     switch_context: ?*SwitchContext,
     try_context: ?*TryContext,
     loop_context: ?*LoopContext,
+    break_target_is_switch: bool,
+
+    // ── ChoiceContext slab ───────────────────────────────────────
+    // Pre-allocated pool of ChoiceContext structs — eliminates per-push
+    // arena allocation (44K+ calls per file for if/logical/ternary).
+    // Max nesting depth of 128 covers all realistic JS source.
+    choice_slab: []ChoiceContext,
+    choice_slab_top: u32,
+
+    // ── Segment-ID result pool ───────────────────────────────────
+    // createSegments returns []SegmentId slices that ForkContext stores
+    // as entries.  Instead of arena-allocating each result slice, we
+    // bump-allocate from this fixed-size pool.  Slices remain valid
+    // (no realloc) for the lifetime of the CPB arena.
+    seg_id_pool: [*]SegmentId,
+    seg_id_pool_top: u32,
+    seg_id_pool_cap: u32,
 
     pub fn init(alloc: Allocator) CodePathBuilder {
         return .{
@@ -389,6 +421,12 @@ pub const CodePathBuilder = struct {
             .switch_context = null,
             .try_context = null,
             .loop_context = null,
+            .break_target_is_switch = false,
+            .choice_slab = &.{},
+            .choice_slab_top = 0,
+            .seg_id_pool = undefined,
+            .seg_id_pool_top = 0,
+            .seg_id_pool_cap = 0,
         };
     }
 
@@ -412,12 +450,31 @@ pub const CodePathBuilder = struct {
         try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
         try self.cp_returned_pool.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.cp_thrown_pool.ensureTotalCapacity(self.allocator, est_codepaths / 4);
+        // ChoiceContext slab: 128 slots covers realistic nesting depth.
+        self.choice_slab = try self.allocator.alloc(ChoiceContext, 128);
+        self.choice_slab_top = 0;
+        // Segment-ID result pool: each createSegments call uses count slots (usually 1).
+        // est_segments is a safe upper bound for the total pool usage per file.
+        const pool = try self.allocator.alloc(SegmentId, est_segments);
+        self.seg_id_pool = pool.ptr;
+        self.seg_id_pool_top = 0;
+        self.seg_id_pool_cap = @intCast(pool.len);
     }
 
     /// Free all internal allocations. Call after finish() returns the Result.
     pub fn deinit(self: *CodePathBuilder) void {
         self.arena.deinit();
         self.* = undefined;
+    }
+
+    /// Returns the segment ID at the current execution point, or NONE_SEG if no
+    /// code path is active. Used by event_resolver to tag each reference with
+    /// the segment where it occurs.
+    pub fn currentSegId(self: *const CodePathBuilder) SegmentId {
+        if (self.current_codepath == NONE_CP) return NONE_SEG;
+        const h = self.fork_context.head();
+        if (h.len == 0) return NONE_SEG;
+        return h[0];
     }
 
     // ── Segment creation ─────────────────────────────────────
@@ -852,7 +909,13 @@ pub const CodePathBuilder = struct {
 
     pub fn pushChoiceContext(self: *CodePathBuilder, kind: ChoiceKind, is_forking: bool) !void {
         _ = is_forking;
-        const ctx = try self.allocator.create(ChoiceContext);
+        // Use the pre-allocated slab instead of arena alloc.
+        // Falls back to arena alloc only when nesting exceeds 128 (pathological).
+        const ctx: *ChoiceContext = if (self.choice_slab_top < self.choice_slab.len) blk: {
+            const c = &self.choice_slab[self.choice_slab_top];
+            self.choice_slab_top += 1;
+            break :blk c;
+        } else try self.allocator.create(ChoiceContext);
         ctx.* = .{
             .upper = self.choice_context,
             .kind = kind,
@@ -866,31 +929,43 @@ pub const CodePathBuilder = struct {
     pub fn popChoiceContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.choice_context orelse return;
         self.choice_context = ctx.upper;
+        // Return slab slot if this context came from the slab.
+        if (@intFromPtr(ctx) >= @intFromPtr(self.choice_slab.ptr) and
+            @intFromPtr(ctx) < @intFromPtr(self.choice_slab.ptr) + self.choice_slab.len * @sizeOf(ChoiceContext))
+        {
+            self.choice_slab_top -= 1;
+        }
 
-        // Current (last branch ending) segments — arena-backed, no mutation until
-        // after we've copied out the ref below.  No dupe needed.
         const last_branch_end = self.fork_context.head();
-
-        // End current segments
         try self.leaveFromCurrentSegment(node, .exit);
 
-        // Merge branch endings:
-        // true_fork.head() = if-consequent ending (saved by makeIfAlternate)
-        // last_branch_end = else-alternate ending (or last case in switch)
         var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
-        if (!ctx.true_fork.empty()) {
-            // ctx is being discarded; its arena-backed slice stays valid.  No dupe needed.
+        if (ctx.kind == .loop) {
+            // Loop: addAll entries — skip-path + all continue/break exits must all
+            // become predecessors of the post-loop segment.
+            const n_tf = ctx.true_fork.totalLen();
+            for (0..n_tf) |i| {
+                try combined.add(ctx.true_fork.getEntry(i), self);
+            }
+        } else if (!ctx.true_fork.empty()) {
             try combined.add(ctx.true_fork.head(), self);
         }
-        try combined.add(last_branch_end, self);
+        // For while/for loops: body-end loops back (not a post-loop exit); skip it so
+        // post-loop is formed from true_fork only (skip-path + break exits).
+        // For do-while: condition-end IS the exit path; include last_branch_end.
+        if (!ctx.skip_last_branch_end) {
+            try combined.add(last_branch_end, self);
+        }
 
         if (!combined.empty()) {
             const merged = try combined.makeNext(0, -1, self);
             try self.fork_context.replaceHead(merged, self);
+            try self.forwardCurrentToHead(node, .exit);
+        } else if (!ctx.skip_last_branch_end) {
+            // Non-loop contexts with empty combined: current head is unchanged, still emit start.
+            // Loop contexts: head was already started by makeUnreachable, skip double-fire.
+            try self.forwardCurrentToHead(node, .exit);
         }
-
-        // Start merged segment
-        try self.forwardCurrentToHead(node, .exit);
     }
 
     pub fn makeIfConsequent(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -949,8 +1024,10 @@ pub const CodePathBuilder = struct {
         ctx.* = .{
             .upper = self.switch_context,
             .default_segments = null,
+            .prev_break_target_is_switch = self.break_target_is_switch,
         };
         self.switch_context = ctx;
+        self.break_target_is_switch = true;
 
         // Push fork context and choice context for the switch
         try self.pushForkContext();
@@ -960,6 +1037,7 @@ pub const CodePathBuilder = struct {
     pub fn popSwitchContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.switch_context orelse return;
         self.switch_context = ctx.upper;
+        self.break_target_is_switch = ctx.prev_break_target_is_switch;
         // Merge switch-break segments into the choice context BEFORE merging.
         try self.popChoiceContext(node);
 
@@ -1179,21 +1257,38 @@ pub const CodePathBuilder = struct {
     // ── Loops ────────────────────────────────────────────────
 
     /// `target_node`: the loop's condition/body/update child node for isLoopingTarget matching.
-    pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, _: NodeIndex, target_node: NodeIndex) !void {
-        _ = label;
+    /// `has_skip_path`: true when the loop has a condition that can be false initially (while/for
+    ///   with condition, for-in/of with potentially empty collection).  false for do-while and
+    ///   for(;;) / for(init;;update) — loops that cannot be skipped on the first iteration.
+    pub fn pushLoopContext(self: *CodePathBuilder, loop_type: LoopType, label: ?[]const u8, loop_node: NodeIndex, target_node: NodeIndex, has_skip_path: bool) !void {
         const ctx = try self.allocator.create(LoopContext);
         ctx.* = .{
             .upper = self.loop_context,
             .continue_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
+            .break_fork = newEmptyForkContext(self.allocator, self.fork_context, false),
+            .node = loop_node,
+            .label = label orelse "",
+            .is_do_while = (loop_type == .do_while_stmt),
+            .has_skip_path = has_skip_path,
+            .prev_break_target_is_switch = self.break_target_is_switch,
         };
         self.loop_context = ctx;
+        self.break_target_is_switch = false;
 
         try self.pushChoiceContext(.loop, false);
 
+        // For while/for loops (non-do-while): body-end doesn't directly reach
+        // post-loop — it either loops back or exits via break. Skip last_branch_end
+        // when forming the post-loop segment in popChoiceContext.
+        // For do-while: condition-end IS the exit path, so include last_branch_end.
+        if (self.choice_context) |cc| {
+            cc.skip_last_branch_end = !ctx.is_do_while;
+        }
+
         // For while/for loops, save current head as the "loop skipped" path.
         // If the condition is false initially, control skips the body entirely.
-        // do-while always executes the body at least once, so no skip path.
-        if (loop_type != .do_while_stmt) {
+        // do-while and for(;;) cannot be skipped, so no false/skip path.
+        if (has_skip_path) {
             if (self.choice_context) |cc| {
                 try cc.true_fork.add(self.fork_context.head(), self);
             }
@@ -1212,14 +1307,21 @@ pub const CodePathBuilder = struct {
     pub fn popLoopContext(self: *CodePathBuilder, node: NodeIndex) !void {
         const ctx = self.loop_context orelse return;
         self.loop_context = ctx.upper;
-        // Merge continue segments into choice context — these flow back to loop head
-        // and indicate the loop CAN iterate (preventing false unreachable-loop reports)
-        if (!ctx.continue_fork.empty()) {
-            if (self.choice_context) |cc| {
-                try cc.true_fork.addAll(&ctx.continue_fork);
-            }
+        self.break_target_is_switch = ctx.prev_break_target_is_switch;
+        if (self.choice_context) |cc| {
+            if (!ctx.continue_fork.empty()) try cc.true_fork.addAll(&ctx.continue_fork);
+            if (!ctx.break_fork.empty()) try cc.true_fork.addAll(&ctx.break_fork);
         }
-        try self.popChoiceContext(node);
+        // Use the loop statement node for segment events so they fire at the correct
+        // AST node during traversal. The loop_close event arrives with node=.none
+        // (only loop_open is patched); fall back to `node` if ctx.node is unset.
+        const loop_node = if (ctx.node != .none) ctx.node else node;
+        // For infinite loops (no condition, no skip path, not do-while): body-end loops
+        // forever so mark it unreachable — post-loop is formed from break exits only.
+        // Loops with a skip path (while/for with condition) and do-while are excluded:
+        // their body-end is reachable (loops back), or the condition-end is the exit.
+        if (!ctx.is_do_while and !ctx.has_skip_path) try self.makeUnreachable(loop_node);
+        try self.popChoiceContext(loop_node);
     }
 
     pub fn makeLoopBackEdge(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -1239,17 +1341,25 @@ pub const CodePathBuilder = struct {
                 }
             }
         }
-        // Emit LOOP event with entry_segments as toSegment (for isLoopingTarget)
-        // The entry segment is the one created at pushLoopContext — rules use it
-        // to map segment→loop via onCodePathSegmentStart.
+        // Emit LOOP event with entry_segments as toSegment (for isLoopingTarget).
+        // Also emit from continue_fork segments — `continue` creates back-edges too.
         const entry = ctx.entry_segments orelse ctx.continue_dest_segments;
         if (entry) |e| {
+            const loop_node = if (ctx.node != .none) ctx.node else node;
             for (head) |from_seg| {
                 if (from_seg != NONE_SEG and (self.seg_reachable.items[from_seg] != 0)) {
                     for (e) |to_seg| {
-                        if (to_seg != NONE_SEG) {
-                            try self.emitSegLoop(from_seg, to_seg, node);
-                        }
+                        if (to_seg != NONE_SEG) try self.emitSegLoop(from_seg, to_seg, loop_node);
+                    }
+                }
+            }
+            // continue-based back-edges
+            const n_cont = ctx.continue_fork.totalLen();
+            for (0..n_cont) |ei| {
+                for (ctx.continue_fork.getEntry(ei)) |from_seg| {
+                    if (from_seg == NONE_SEG or self.seg_reachable.items[from_seg] == 0) continue;
+                    for (e) |to_seg| {
+                        if (to_seg != NONE_SEG) try self.emitSegLoop(from_seg, to_seg, loop_node);
                     }
                 }
             }
@@ -1265,6 +1375,7 @@ pub const CodePathBuilder = struct {
 
     pub fn makeReturn(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
+        if (cp_id == NONE_CP) return;
 
         // Record reachable segments in returned pool (unreachable returns are dead code).
         const head = self.fork_context.head();
@@ -1318,8 +1429,57 @@ pub const CodePathBuilder = struct {
         try self.forwardCurrentToHead(node, .exit);
     }
 
+    pub fn makeContinue(self: *CodePathBuilder, node: NodeIndex) !void {
+        if (self.loop_context) |lc| {
+            try lc.continue_fork.add(self.fork_context.head(), self);
+        }
+        try self.makeUnreachable(node);
+    }
+
+    /// Labeled `continue lbl` — walks the LoopContext chain and adds to the
+    /// matching loop's continue_fork.  Falls back to innermost if not found.
+    pub fn makeContinueLabeled(self: *CodePathBuilder, label: []const u8, node: NodeIndex) !void {
+        var lc = self.loop_context;
+        while (lc) |ctx| : (lc = ctx.upper) {
+            if (ctx.label.len > 0 and std.mem.eql(u8, ctx.label, label)) {
+                try ctx.continue_fork.add(self.fork_context.head(), self);
+                break;
+            }
+        } else if (self.loop_context) |lc_inner| {
+            try lc_inner.continue_fork.add(self.fork_context.head(), self);
+        }
+        try self.makeUnreachable(node);
+    }
+
+    /// Labeled `break lbl` — walks the LoopContext chain and adds to the
+    /// matching loop's break_fork.  Falls back to innermost if not found.
+    pub fn makeBreakLabeled(self: *CodePathBuilder, label: []const u8, node: NodeIndex) !void {
+        var lc = self.loop_context;
+        while (lc) |ctx| : (lc = ctx.upper) {
+            if (ctx.label.len > 0 and std.mem.eql(u8, ctx.label, label)) {
+                try ctx.break_fork.add(self.fork_context.head(), self);
+                break;
+            }
+        } else if (self.loop_context) |lc_inner| {
+            if (!self.break_target_is_switch) {
+                try lc_inner.break_fork.add(self.fork_context.head(), self);
+            }
+        }
+        try self.makeUnreachable(node);
+    }
+
+    pub fn makeBreak(self: *CodePathBuilder, node: NodeIndex) !void {
+        if (!self.break_target_is_switch) {
+            if (self.loop_context) |lc| {
+                try lc.break_fork.add(self.fork_context.head(), self);
+            }
+        }
+        try self.makeUnreachable(node);
+    }
+
     pub fn makeThrow(self: *CodePathBuilder, node: NodeIndex) !void {
         const cp_id = self.current_codepath;
+        if (cp_id == NONE_CP) return;
 
         const head = self.fork_context.head();
         var any_reachable = false;

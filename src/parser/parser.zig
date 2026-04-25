@@ -344,6 +344,11 @@ pub const Parser = struct {
         if (p.emit_scope_events) {
             const event_cap = if (streaming != null) sizing_count * 2 else sizing_count / 3;
             try p.scope_events.ensureCapacity(allocator, event_cap);
+            // Streaming: wire EventStream's per-push publish to the same atomic.
+            // This publishes every PUBLISH_BATCH events instead of only at
+            // top-level statement boundaries — necessary for files with one
+            // huge top-level IIFE (typescript.js etc.).
+            if (streaming) |s| p.scope_events.publish_to = s.events_publish_to;
         }
 
         // Pre-size ref_event_idx to estimated node count — direct array indexed

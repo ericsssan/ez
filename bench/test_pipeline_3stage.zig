@@ -91,13 +91,18 @@ const SemCtx = struct {
 };
 
 fn semThread(ctx: *SemCtx) void {
-    // KNOWN BUG: starting sem on ast_ready (concurrent with parse) panics in
-    // CodePathBuilder.makeReturn with current_codepath = NONE_CP. Race
-    // condition between sem reading events and parser establishing the
-    // module/global code path. Falls back to "pseudo-3-stage" — sem starts
-    // after parse_done, so the bench at least demonstrates the streaming
-    // hooks work on finalized data. Real 3-stage requires diagnosing this
-    // race (likely a reordering or alignment issue in the events buffer).
+    // KNOWN BUG: starting sem on ast_ready (concurrent with parse) crashes
+    // intermittently (SIGBUS / SEGV). Several cpb functions (makeReturn,
+    // makeThrow, etc.) hit current_codepath = NONE_CP, plus other deeper
+    // races in the codepath state machine. Frequent publish (every 256
+    // events via scope_events.push) reproduces the race more reliably than
+    // top-level-statement boundary publish. Race likely in cpb internals
+    // assuming ordered event delivery during nested scope transitions.
+    //
+    // Falls back to "pseudo-3-stage" — sem waits for parse_done. Still
+    // exercises the streaming sem code path on finalized data, preserving
+    // foundation for a future fix. The actual win for full 3-stage requires
+    // diagnosing the cpb race.
     while (!ctx.parse_done.load(.acquire)) std.atomic.spinLoopHint();
     _ = ctx.ast_ready;
     var sem = event_resolver.resolveFull(ctx.alloc, ctx.ast, ctx.ast.scope_events, .{

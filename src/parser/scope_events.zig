@@ -86,6 +86,10 @@ pub const EventKind = enum(u8) {
     if_open,
     if_alt,
     if_close,
+    /// Cancelled event — no-op in all resolvers.  Used to neutralise
+    /// orphan reference events that were speculatively emitted for arrow
+    /// function parameters and later superseded by proper declare events.
+    nop,
 };
 
 pub const Event = packed struct(u64) {
@@ -98,6 +102,13 @@ pub const Event = packed struct(u64) {
 /// Growable, unmanaged event buffer.  Caller provides the allocator.
 pub const EventStream = struct {
     events: std.ArrayList(Event) = .empty,
+    /// Streaming publish: when non-null, push() atomically stores the current
+    /// event count to this slot every PUBLISH_BATCH events, allowing a
+    /// concurrent sem thread to consume events as they are produced. Null
+    /// in sequential mode — branch is predicted not-taken with zero overhead.
+    publish_to: ?*std.atomic.Value(usize) = null,
+
+    pub const PUBLISH_BATCH: usize = 256;
 
     pub fn deinit(self: *EventStream, alloc: std.mem.Allocator) void {
         self.events.deinit(alloc);
@@ -105,6 +116,10 @@ pub const EventStream = struct {
 
     pub inline fn push(self: *EventStream, alloc: std.mem.Allocator, ev: Event) !void {
         try self.events.append(alloc, ev);
+        if (self.publish_to) |p| {
+            const n = self.events.items.len;
+            if ((n & (PUBLISH_BATCH - 1)) == 0) p.store(n, .release);
+        }
     }
 
     pub inline fn pushAssumeCapacity(self: *EventStream, ev: Event) void {
