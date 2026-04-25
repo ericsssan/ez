@@ -1320,6 +1320,19 @@ pub const ParallelRunner = struct {
         return n;
     }
 
+    /// Fast file-size lookup using fstatat — one syscall, no fd needed.
+    /// ~3× cheaper than openFileFast + fdSize + close (3 syscalls).
+    fn statSizeFast(path: []const u8) u64 {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        if (path.len >= path_buf.len) return 0;
+        @memcpy(path_buf[0..path.len], path);
+        path_buf[path.len] = 0;
+        const path_z: [*:0]const u8 = @ptrCast(&path_buf);
+        var st: std.posix.Stat = undefined;
+        if (std.c.fstatat(AT_FDCWD, path_z, &st, 0) != 0) return 0;
+        return @intCast(st.size);
+    }
+
     /// Synchronous wrapper around POSIX AIO: open file, submit one aio_read,
     /// block on aio_suspend, return the bytes (allocated from `alloc`).
     /// Used by lintOneFile3Stage for big-file loads — equivalent in latency
@@ -1581,37 +1594,26 @@ pub const ParallelRunner = struct {
         // open+fstat+close overhead too.
         const enable_3stage = cpu_count >= 3;
 
-        // Cheap pre-check: stat the first SAMPLE_SIZE files. If none are big,
-        // skip the size partition entirely and run B's flow over `files`
-        // directly — no allocation, no copy.
+        // Cheap pre-check: stat the first SAMPLE_SIZE files via fstatat — a
+        // single syscall per file (vs 3 for open+fstat+close). Drops sample
+        // cost from ~10µs/file to ~3µs/file. If none are big, skip the
+        // partition entirely and route everything through the WS+AIO pool.
         //
         // Skip the sample for very small corpora (<= SKIP_SAMPLE_BELOW): the
-        // ~10µs/file sample cost wouldn't amortize, and small corpora finish
-        // so quickly that the long-pole optimisation would be a small slice
-        // of the wall anyway. Also early-exit at the FIRST big file detected
-        // (don't keep sampling once we know we need to partition).
-        const SAMPLE_SIZE = 32;
+        // sample cost wouldn't amortize, and small corpora finish quickly
+        // anyway. Also early-exit at the FIRST big file detected.
+        const SAMPLE_SIZE = 64;
         const SKIP_SAMPLE_BELOW: usize = 64;
         var any_big = false;
         if (enable_3stage and files.len >= SKIP_SAMPLE_BELOW) {
             const sample_n = @min(SAMPLE_SIZE, files.len);
             for (files[0..sample_n]) |path| {
-                const fd = openFileFast(path);
-                if (fd < 0) continue;
-                const sz = fdSize(fd);
-                _ = std.c.close(fd);
-                if (sz > BIG_FILE_THRESHOLD) { any_big = true; break; }
+                if (statSizeFast(path) > BIG_FILE_THRESHOLD) { any_big = true; break; }
             }
         } else if (enable_3stage) {
-            // Tiny corpus: still check, but cheaper — if even one of the few
-            // files is big, do the partition. Bench/fixtures (7 files, one
-            // 9MB) hits this branch.
+            // Tiny corpus: still check, but cheap — fstatat all of them.
             for (files) |path| {
-                const fd = openFileFast(path);
-                if (fd < 0) continue;
-                const sz = fdSize(fd);
-                _ = std.c.close(fd);
-                if (sz > BIG_FILE_THRESHOLD) { any_big = true; break; }
+                if (statSizeFast(path) > BIG_FILE_THRESHOLD) { any_big = true; break; }
             }
         }
 
@@ -1624,10 +1626,7 @@ pub const ParallelRunner = struct {
         var small_files: []const []const u8 = files;
         if (any_big) {
             for (files) |path| {
-                const fd = openFileFast(path);
-                if (fd < 0) { try small.append(self.allocator, path); continue; }
-                const sz = fdSize(fd);
-                _ = std.c.close(fd);
+                const sz = statSizeFast(path);
                 if (sz > BIG_FILE_THRESHOLD) try big.append(self.allocator, path)
                 else try small.append(self.allocator, path);
             }
