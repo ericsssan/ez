@@ -127,6 +127,11 @@ pub const Parser = struct {
     /// will come" from "EOF reached".
     published_len: ?*std.atomic.Value(usize) = null,
     lex_done: ?*std.atomic.Value(bool) = null,
+    /// Event-stream publisher for the 3-stage pipeline: when non-null, the
+    /// parser stores `scope_events.len()` to this slot at statement boundaries
+    /// so a concurrent semantic analyzer can consume events as they are
+    /// produced. Null in 1- and 2-stage modes.
+    events_publish_to: ?*std.atomic.Value(usize) = null,
     nodes: Ast.NodeList,
     /// Cached pointers into the nodes SoA — refreshed whenever nodes grows.
     /// `MultiArrayList.items(.tag)` reconstructs the slice (loops over field
@@ -228,6 +233,11 @@ pub const Parser = struct {
         /// `tokens.len` reflects the buffer capacity (not produced tokens),
         /// but estimating from source bytes is generally cleaner.
         capacity_hint: usize,
+        /// Optional event-stream publisher for the 3-stage pipeline. When
+        /// set, the parser publishes the current event count to this atomic
+        /// after every top-level statement so a concurrent sem thread can
+        /// consume events incrementally.
+        events_publish_to: ?*std.atomic.Value(usize) = null,
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
@@ -253,6 +263,7 @@ pub const Parser = struct {
             .parsed_len = if (streaming != null) 0 else tokens.len,
             .published_len = if (streaming) |s| s.published_len else null,
             .lex_done = if (streaming) |s| s.lex_done else null,
+            .events_publish_to = if (streaming) |s| s.events_publish_to else null,
             .nodes = .empty,
             .node_tags_ptr = undefined,
             .node_data_ptr = undefined,
@@ -1341,6 +1352,10 @@ pub const Parser = struct {
             };
             consecutive_errors = 0; // reset on successful parse
             try self.scratch.append(self.gpa, @intFromEnum(stmt));
+            // 3-stage pipeline: publish current event count so the sem thread
+            // can consume up to here. Coarse-grained (per top-level statement)
+            // — the consumer's hot path doesn't pay any per-event sync cost.
+            if (self.events_publish_to) |p| p.store(self.scope_events.events.items.len, .release);
         }
 
         const stmts = self.scratch.items[scratch_top..];

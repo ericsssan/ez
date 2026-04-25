@@ -50,10 +50,6 @@ pub const Options = struct {
     diagnose_redeclare: bool = false,
     /// Skip reference resolution inner scope-chain walk.  Bench-only.
     skip_resolve: bool = false,
-    /// Skip full CodePathBuilder construction.  Enable when no CFG-dependent
-    /// rule is active.  The coarse `node_reachable` approximation (via
-    /// terminator/branch events) is still populated.
-    skip_cfg: bool = false,
     /// Skip buildRefRanges (the counting sort that groups references by symbol).
     /// Enable when no active rule calls symbols.getRefRange().  Currently only
     /// no_func_assign uses ref ranges.
@@ -66,6 +62,16 @@ pub const Options = struct {
     /// Precomputed wyhash(0, name) per token index from the lexer.  When
     /// non-empty, eliminates runtime Wyhash calls in the identifier resolve loop.
     tok_hashes: []const u64 = &.{},
+    /// Streaming mode: when set, the producer (parser thread) is publishing
+    /// events incrementally. The resolver walks the events slice via
+    /// indexed access bounded by `events_published.load(.acquire)` and blocks
+    /// on the slow path when it catches up to the producer.
+    streaming: ?StreamingHooks = null,
+};
+
+pub const StreamingHooks = struct {
+    events_published: *std.atomic.Value(usize),
+    parse_done: *std.atomic.Value(bool),
 };
 
 /// Lightweight stats used by the bench.  The full `SemanticResult` is the
@@ -76,6 +82,35 @@ pub const Result = struct {
     resolved: u32,
     unresolved: u32,
 };
+
+/// Returns the "looping target" node for a loop — the child node that ESLint's
+/// `isLoopingTarget` function recognises as the loop's entry point on each
+/// iteration.  This is the node that the loop-body segment's seg_start event
+/// must be keyed to so that `onCodePathSegmentStart(seg, node)` fires with the
+/// right node.
+///
+/// Mirrors ESLint's `isLoopingTarget` check (no-unreachable-loop):
+///   WhileStatement  → test (condition)
+///   DoWhileStatement → body
+///   ForStatement    → update || test || body
+///   ForIn/ForOf     → left (binding)
+fn loopingTargetNode(ast: *const ast_mod.Ast, n: NodeIndex, loop_type: code_path_mod.LoopType) NodeIndex {
+    const data = ast.nodes.items(.data)[@intFromEnum(n)];
+    return switch (loop_type) {
+        .while_stmt => data.lhs, // condition
+        .do_while_stmt => data.lhs, // body
+        .for_stmt => blk: {
+            const fd = ast.extraData(ast_mod.ForData, @intFromEnum(data.lhs));
+            if (fd.update != .none) break :blk fd.update;
+            if (fd.condition != .none) break :blk fd.condition;
+            break :blk data.rhs; // body (for (;;) { ... })
+        },
+        .for_in_stmt, .for_of_stmt => blk: {
+            const fd = ast.extraData(ast_mod.ForInOfData, @intFromEnum(data.lhs));
+            break :blk fd.binding; // left (binding)
+        },
+    };
+}
 
 // ── PoC stats-only resolver (kept for the existing bench harness) ───
 
@@ -119,6 +154,7 @@ pub fn resolve(
         .cond_open, .cond_alt, .cond_close,
         .label_open, .label_close,
         .if_open, .if_alt, .if_close,
+        .nop,
         => {},
         .declare => {
             if (sp == 0) continue;
@@ -171,7 +207,6 @@ pub fn resolveFull(
     opts: Options,
 ) !semantic_mod.SemanticResult {
     const skip_resolve = opts.skip_resolve;
-    const skip_cfg = opts.skip_cfg;
     const skip_ref_ranges = opts.skip_ref_ranges;
 
     // Pre-sized tables (same heuristics as semantic.zig).
@@ -251,7 +286,7 @@ pub fn resolveFull(
     // Pre-size cpb ArrayLists from event volume.  Segments scale roughly with
     // (if + loop + switch + logical + cond) events; over-estimation is harmless
     // since the arena is freed wholesale.
-    if (!skip_cfg) {
+    {
         const ev_len: u32 = @intCast(events.len);
         try cpb.ensureCapacity(ev_len / 4, ev_len / 40);
     }
@@ -264,8 +299,12 @@ pub fn resolveFull(
     const tok_starts = ast.tokens.items(.start);
     const tok_lens = ast.tokens.items(.len);
     const node_main_tokens = ast.nodes.items(.main_token);
+    const node_tags = ast.nodes.items(.tag);
+    const node_datas = ast.nodes.items(.data);
     const source = ast.source;
     const tok_hashes = opts.tok_hashes;
+    // Pending label text set by label_open (aux=1) before the loop_open it wraps.
+    var pending_label: []const u8 = "";
 
     // Control-flow state — cfg_alive tracks whether the current path is live.
     // Terminators set it to false; branch_open/else/close save/restore/merge
@@ -287,7 +326,32 @@ pub fn resolveFull(
     // Actually the parser DOES emit a scope_open for the root — so no
     // explicit creation here.
 
-    for (events) |e| switch (e.kind) {
+    var ev_i: usize = 0;
+    var ev_visible: usize = if (opts.streaming) |s| s.events_published.load(.acquire) else events.len;
+    main_event_loop: while (true) {
+        if (ev_i >= ev_visible) {
+            if (opts.streaming) |s| {
+                // Slow path: wait for the parser to publish more events.
+                var spins: u32 = 0;
+                while (true) {
+                    const v = s.events_published.load(.acquire);
+                    if (v > ev_i) { ev_visible = v; break; }
+                    if (s.parse_done.load(.acquire)) {
+                        ev_visible = s.events_published.load(.acquire);
+                        break;
+                    }
+                    spins += 1;
+                    if (spins < 100) std.atomic.spinLoopHint() else {
+                        std.Thread.yield() catch {};
+                        spins = 0;
+                    }
+                }
+                if (ev_i >= ev_visible) break :main_event_loop;
+            } else break :main_event_loop;
+        }
+        const e = events[ev_i];
+        ev_i += 1;
+        switch (e.kind) {
         .scope_open => {
             const parent: ScopeId = if (sp == 0) ScopeId.fromInt(std.math.maxInt(u32)) else stack[sp - 1];
             const kind: ScopeKind = @enumFromInt(e.aux);
@@ -318,7 +382,7 @@ pub fn resolveFull(
                     .class_field_initializer => .class_field_initializer,
                     else => unreachable,
                 };
-                if (!skip_cfg) try cpb.enterCodePath(node, origin, node);
+                try cpb.enterCodePath(node, origin, node);
             }
         },
         .scope_close => {
@@ -332,8 +396,13 @@ pub fn resolveFull(
                     while (j > 0) {
                         j -= 1;
                         const undo = closed_undos[j];
+                        const cur_ptr = scope_map.getPtr(undo.name_hash);
+                        // Skip if a shallower-target (hoisted) declaration has
+                        // already overwritten this scope's entry. That declaration's
+                        // own undo (at a shallower depth) will handle restoration.
+                        if (cur_ptr == null or cur_ptr.?.* != undo.sym_id) continue;
                         if (undo.prev) |prev| {
-                            scope_map.getPtr(undo.name_hash).?.* = prev;
+                            cur_ptr.?.* = prev;
                             ref_cache[undo.name_hash & 511] = .{ .hash = undo.name_hash, .sym = prev };
                         } else {
                             _ = scope_map.remove(undo.name_hash);
@@ -354,7 +423,7 @@ pub fn resolveFull(
                         cfg_alive = true;
                     }
                     const closed_node = scopes.node_ids.items[closed_sid.toInt()];
-                    if (!skip_cfg) try cpb.exitCodePath(closed_node);
+                    try cpb.exitCodePath(closed_node);
                 }
             }
         },
@@ -368,13 +437,26 @@ pub fn resolveFull(
 
             // Drive CodePathBuilder state.  aux: 0=return, 1=throw, 2=break, 3=continue.
             const term_node: NodeIndex = @enumFromInt(e.node);
-            if (!skip_cfg) switch (e.aux) {
+            const term_i = @intFromEnum(term_node);
+            switch (e.aux) {
                 0 => try cpb.makeReturn(term_node),
                 1 => try cpb.makeThrow(term_node),
-                // break/continue: without loop/switch context events, we can
-                // only approximate by marking the current segment unreachable.
+                2 => if (term_i < node_tags.len and node_tags[term_i] == .break_label) blk: {
+                    const lbl_n = node_datas[term_i].lhs;
+                    const lt = node_main_tokens[@intFromEnum(lbl_n)];
+                    const lbl = source[tok_starts[lt] .. tok_starts[lt] + tok_lens[lt]];
+                    try cpb.makeBreakLabeled(lbl, term_node);
+                    break :blk;
+                } else try cpb.makeBreak(term_node),
+                3 => if (term_i < node_tags.len and node_tags[term_i] == .continue_label) blk: {
+                    const lbl_n = node_datas[term_i].lhs;
+                    const lt = node_main_tokens[@intFromEnum(lbl_n)];
+                    const lbl = source[tok_starts[lt] .. tok_starts[lt] + tok_lens[lt]];
+                    try cpb.makeContinueLabeled(lbl, term_node);
+                    break :blk;
+                } else try cpb.makeContinue(term_node),
                 else => try cpb.makeUnreachable(term_node),
-            };
+            }
         },
         .branch_open => {
             // Save the pre-branch alive state.
@@ -465,6 +547,7 @@ pub fn resolveFull(
             const ref_kind: ReferenceKind = @enumFromInt(e.aux);
             const ref_node: NodeIndex = @enumFromInt(e.node);
             const ref_id = try references.addReference(ref_kind, ref_node, scope_id, .none);
+            references.seg_ids.items[ref_id.toInt()] = cpb.currentSegId();
             if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
 
             // Compute name_hash before the sp==0 branch so it can be stored in
@@ -495,7 +578,7 @@ pub fn resolveFull(
             if (sym_id) |sid| {
                 references.resolve(ref_id, sid);
                 if (ref_kind.isRead()) symbols.markRead(sid);
-                if (ref_kind.isWrite()) symbols.markWritten(sid);
+                if (ref_kind.isWrite() and ref_kind != .write_init) symbols.markWritten(sid);
                 if (ref_kind == .type_of) symbols.markTypeOf(sid);
             } else {
                 // Unresolved → retry pass handles forward refs (hoisted var/function).
@@ -512,21 +595,17 @@ pub fn resolveFull(
                 branch_cons[bsp] = cfg_alive;
                 bsp += 1;
             }
-            if (!skip_cfg) {
-                try cpb.pushChoiceContext(.test_kind, false);
-                const n: NodeIndex = @enumFromInt(e.node);
-                try cpb.makeIfConsequent(n);
-            }
+            try cpb.pushChoiceContext(.test_kind, false);
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeIfConsequent(n);
         },
         .if_alt => {
             if (bsp > 0) {
                 branch_cons[bsp - 1] = cfg_alive;
                 cfg_alive = branch_save[bsp - 1];
             }
-            if (!skip_cfg) {
-                const n: NodeIndex = @enumFromInt(e.node);
-                try cpb.makeIfAlternate(n);
-            }
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.makeIfAlternate(n);
         },
         .if_close => {
             if (bsp > 0) {
@@ -536,76 +615,88 @@ pub fn resolveFull(
                 const alt = cfg_alive;
                 cfg_alive = if (cons == save and alt == save) save else cons or alt;
             }
-            if (!skip_cfg) {
-                const n: NodeIndex = @enumFromInt(e.node);
-                try cpb.popChoiceContext(n);
-            }
+            const n: NodeIndex = @enumFromInt(e.node);
+            try cpb.popChoiceContext(n);
         },
 
         // ── Loop CodePath events ─────────────────────────────────
         .loop_open => {
             if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
-            if (!skip_cfg) {
-                const loop_type: code_path_mod.LoopType = switch (e.aux) {
-                    0 => .while_stmt,
-                    1 => .do_while_stmt,
-                    2 => .for_stmt,
-                    3 => .for_in_stmt,
-                    else => .for_of_stmt,
-                };
-                const n: NodeIndex = @enumFromInt(e.node);
-                try cpb.pushLoopContext(loop_type, null, n, n);
-            }
+            const loop_type: code_path_mod.LoopType = switch (e.aux) {
+                0 => .while_stmt,
+                1 => .do_while_stmt,
+                2 => .for_stmt,
+                3 => .for_in_stmt,
+                else => .for_of_stmt,
+            };
+            const n: NodeIndex = @enumFromInt(e.node);
+            const target = loopingTargetNode(ast, n, loop_type);
+            // has_skip_path: false for do-while (always executes once), for(;;) /
+            // for(init;;update) (no condition), and while(true) (condition is always truthy).
+            const has_skip_path: bool = switch (loop_type) {
+                .do_while_stmt => false,
+                .for_stmt => blk: {
+                    const fd = ast.extraData(ast_mod.ForData, @intFromEnum(ast.nodes.items(.data)[@intFromEnum(n)].lhs));
+                    break :blk fd.condition != .none;
+                },
+                .while_stmt => blk: {
+                    const cond = ast.nodes.items(.data)[@intFromEnum(n)].lhs;
+                    if (cond == .none) break :blk false;
+                    if (ast.nodes.items(.tag)[@intFromEnum(cond)] != .boolean_literal) break :blk true;
+                    // while(true): condition is always truthy — no skip path
+                    break :blk ast.tokenTag(ast.nodeMainToken(cond)) != .kw_true;
+                },
+                else => true, // for-in, for-of always have a skip path
+            };
+            const loop_label: ?[]const u8 = if (pending_label.len > 0) pending_label else null;
+            pending_label = "";
+            try cpb.pushLoopContext(loop_type, loop_label, n, target, has_skip_path);
         },
-        .loop_test_end => if (!skip_cfg) {
-            cpb.setLoopContinueDest();
-        },
-        .loop_body_end => if (!skip_cfg) {
+        .loop_test_end => cpb.setLoopContinueDest(),
+        .loop_body_end => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeLoopBackEdge(n);
         },
-        .loop_close => if (!skip_cfg) {
+        .loop_close => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popLoopContext(n);
         },
 
         // ── Try/catch/finally CodePath events ────────────────────
-        .try_open => if (!skip_cfg) {
+        .try_open => {
             const has_finalizer = e.aux == 1;
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.pushTryContext(has_finalizer, n);
         },
         .try_body_end => {},
-        .try_catch_start => if (!skip_cfg) {
+        .try_catch_start => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeCatchBlock(n);
         },
         .try_catch_end => {},
-        .try_finally_start => if (!skip_cfg) {
+        .try_finally_start => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeFinallyBlock(n);
         },
-        .try_close => if (!skip_cfg) {
+        .try_close => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popTryContext(n);
         },
 
         // ── Switch CodePath events ───────────────────────────────
-        .switch_open => if (!skip_cfg) {
-            try cpb.pushSwitchContext(e.aux == 1, null);
-        },
-        .switch_case_start => if (!skip_cfg) {
+        .switch_open => try cpb.pushSwitchContext(e.aux == 1, null),
+        .switch_case_start => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeSwitchCaseBody(e.aux == 1, n);
         },
         .switch_case_end => {},
-        .switch_close => if (!skip_cfg) {
+        .switch_close => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popSwitchContext(n);
         },
 
         // ── Logical/conditional short-circuit CodePath events ────
-        .logical_open => if (!skip_cfg) {
+        .logical_open => {
             const ck: code_path_mod.ChoiceKind = switch (e.aux) {
                 0 => .logical_and,
                 1 => .logical_or,
@@ -613,34 +704,44 @@ pub fn resolveFull(
             };
             try cpb.pushChoiceContext(ck, true);
         },
-        .logical_right => if (!skip_cfg) {
+        .logical_right => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeLogicalRight(n);
         },
-        .logical_close => if (!skip_cfg) {
+        .logical_close => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popChoiceContext(n);
         },
-        .cond_open => if (!skip_cfg) {
+        .cond_open => {
             try cpb.pushChoiceContext(.test_kind, true);
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeIfConsequent(n);
         },
-        .cond_alt => if (!skip_cfg) {
+        .cond_alt => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.makeIfAlternate(n);
         },
-        .cond_close => if (!skip_cfg) {
+        .cond_close => {
             const n: NodeIndex = @enumFromInt(e.node);
             try cpb.popChoiceContext(n);
         },
 
         // ── Labeled statements (break/continue targets) ─────────
-        .label_open, .label_close => {
-            // TODO: push/pop break context.  Without it, labeled break/continue
-            // falls back to makeUnreachable (rough but non-crashing).
+        .label_open => {
+            if (e.aux == 1) { // loop label — extract text for upcoming loop_open
+                const label_n: NodeIndex = @enumFromInt(e.node);
+                const lt = node_main_tokens[@intFromEnum(label_n)];
+                const start = tok_starts[lt];
+                const len = tok_lens[lt];
+                pending_label = source[start .. start + len];
+            }
         },
-    };
+        .label_close => {
+            pending_label = ""; // consumed or no loop found — clear either way
+        },
+        .nop => {},
+        }
+    }
 
     // Retry unresolved references — `var`/`function` declarations hoist to the
     // nearest var-scope, so a reference seen *before* the declaration in source
@@ -676,7 +777,7 @@ pub fn resolveFull(
                     references.resolve(ref_id, sym_id);
                     const rk = references.getKind(ref_id);
                     if (rk.isRead()) symbols.markRead(sym_id);
-                    if (rk.isWrite()) symbols.markWritten(sym_id);
+                    if (rk.isWrite() and rk != .write_init) symbols.markWritten(sym_id);
                     if (rk == .type_of) symbols.markTypeOf(sym_id);
                     break;
                 }
@@ -707,13 +808,8 @@ pub fn resolveFull(
         &.{};
     try buildScopeBindings(&scopes, &symbols, allocator);
 
-    const cpb_result = if (skip_cfg) blk: {
-        cpb.deinit();
-        break :blk @as(?CodePathBuilder.Result, null);
-    } else blk: {
-        // finish() transfers the arena into the Result; do NOT call cpb.deinit() after.
-        break :blk cpb.finish();
-    };
+    // finish() transfers the arena into the Result; do NOT call cpb.deinit() after.
+    const cpb_result = cpb.finish();
 
     return .{
         .scopes = scopes,
