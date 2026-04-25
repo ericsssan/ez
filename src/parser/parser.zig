@@ -390,9 +390,17 @@ pub const Parser = struct {
     pub inline fn advance(self: *Parser) TokenIndex {
         const result = self.tok_i;
         if (self.tok_i < self.parsed_len - 1) {
+            @branchHint(.likely);
             self.tok_i += 1;
-        } else if (self.published_len != null) {
-            // Streaming: producer may publish more — refresh and retry.
+            return result;
+        }
+        // EOF or streaming-refill — extracted to keep the hot path tight.
+        return self.advanceSlow(result);
+    }
+
+    fn advanceSlow(self: *Parser, result: TokenIndex) TokenIndex {
+        @branchHint(.cold);
+        if (self.published_len != null) {
             self.refreshParsedLen();
             if (self.tok_i < self.parsed_len - 1) self.tok_i += 1;
         }
@@ -480,15 +488,20 @@ pub const Parser = struct {
     /// Look ahead by `offset` tokens from the current position.
     pub inline fn peekAt(self: *Parser, offset: u32) TokenTag {
         const idx = self.tok_i + offset;
-        if (idx >= self.parsed_len) {
-            if (self.published_len != null) {
-                self.refreshParsedLen();
-                if (idx >= self.parsed_len) return .eof;
-                return self.tags_ptr[idx];
-            }
-            return .eof;
+        if (idx < self.parsed_len) {
+            @branchHint(.likely);
+            return self.tags_ptr[idx];
         }
-        return self.tags_ptr[idx];
+        return self.peekAtSlow(idx);
+    }
+
+    fn peekAtSlow(self: *Parser, idx: u32) TokenTag {
+        @branchHint(.cold);
+        if (self.published_len != null) {
+            self.refreshParsedLen();
+            if (idx < self.parsed_len) return self.tags_ptr[idx];
+        }
+        return .eof;
     }
 
     /// Get the source text for the token at `index`.
