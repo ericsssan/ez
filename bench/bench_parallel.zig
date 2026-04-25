@@ -72,6 +72,7 @@ pub fn main(init: std.process.Init) !void {
     var times_i: [RUNS]u64 = undefined;
     var times_j: [RUNS]u64 = undefined;
     var times_k: [RUNS]u64 = undefined;
+    var times_l: [RUNS]u64 = undefined;
 
     var ra = ParallelRunner.init(gpa); defer ra.deinit(); ra.bench_skip_lint = true;
     var rb = ParallelRunner.init(gpa); defer rb.deinit(); rb.bench_skip_lint = true;
@@ -84,6 +85,7 @@ pub fn main(init: std.process.Init) !void {
     var ri = ParallelRunner.init(gpa); defer ri.deinit(); ri.bench_skip_lint = true;
     var rj = ParallelRunner.init(gpa); defer rj.deinit(); rj.bench_skip_lint = true;
     var rk = ParallelRunner.init(gpa); defer rk.deinit(); rk.bench_skip_lint = true;
+    var rl = ParallelRunner.init(gpa); defer rl.deinit(); rl.bench_skip_lint = true;
 
     for (0..RUNS) |run| {
         times_a[run] = if (only_last) 1 else timeRunReused(io, files, .static,               &ra);
@@ -96,10 +98,11 @@ pub fn main(init: std.process.Init) !void {
         times_h[run] = if (only_last) 1 else timeRunReused(io, files, .mmap_all, &rh);
         times_i[run] = if (only_last) 1 else timeRunReused(io, files, .aio_mmap, &ri);
         times_j[run] = if (only_last) 1 else timeRunReused(io, files, .hybrid_3stage, &rj);
-        times_k[run] = timeRunReused(io, files, .aio_hybrid_3stage, &rk);
+        times_k[run] = if (only_last) 1 else timeRunReused(io, files, .aio_hybrid_3stage, &rk);
+        times_l[run] = timeRunReused(io, files, .ws_aio, &rl);
 
         const label: []const u8 = if (run < WARMUP) " (warmup)" else "";
-        std.debug.print("  run {d}:  A={d}  B={d}  C={d}  D={d}  E={d}  F={d}  G={d}  H={d}  I={d}  J={d}  K={d}{s}\n", .{
+        std.debug.print("  run {d}:  A={d}  B={d}  C={d}  D={d}  E={d}  F={d}  G={d}  H={d}  I={d}  J={d}  K={d}  L={d}{s}\n", .{
             run + 1,
             times_a[run] / 1_000_000,
             times_b[run] / 1_000_000,
@@ -112,6 +115,7 @@ pub fn main(init: std.process.Init) !void {
             times_i[run] / 1_000_000,
             times_j[run] / 1_000_000,
             times_k[run] / 1_000_000,
+            times_l[run] / 1_000_000,
             label,
         });
     }
@@ -127,6 +131,7 @@ pub fn main(init: std.process.Init) !void {
     const med_i = median(times_i[WARMUP..]);
     const med_j = median(times_j[WARMUP..]);
     const med_k = median(times_k[WARMUP..]);
+    const med_l = median(times_l[WARMUP..]);
 
     const fps_a = files.len * 1_000_000_000 / @max(med_a, 1);
     const fps_b = files.len * 1_000_000_000 / @max(med_b, 1);
@@ -139,6 +144,7 @@ pub fn main(init: std.process.Init) !void {
     const fps_i = files.len * 1_000_000_000 / @max(med_i, 1);
     const fps_j = files.len * 1_000_000_000 / @max(med_j, 1);
     const fps_k = files.len * 1_000_000_000 / @max(med_k, 1);
+    const fps_l = files.len * 1_000_000_000 / @max(med_l, 1);
 
     const pct_b = pctDiff(fps_a, fps_b);
     const pct_c = pctDiff(fps_a, fps_c);
@@ -150,6 +156,7 @@ pub fn main(init: std.process.Init) !void {
     const pct_i = pctDiff(fps_a, fps_i);
     const pct_j = pctDiff(fps_a, fps_j);
     const pct_k = pctDiff(fps_a, fps_k);
+    const pct_l = pctDiff(fps_a, fps_l);
 
     std.debug.print("\n── wall-clock (median) ──────────────────────────────────\n", .{});
     std.debug.print("  A  static    N_CPU       : {d:>6}ms  {d:>8} files/s  (baseline)\n", .{ med_a / 1_000_000, fps_a });
@@ -163,6 +170,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("  I  1T POSIX AIO + mmap   : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_i / 1_000_000, fps_i, sign(pct_i), pct_i });
     std.debug.print("  J  hybrid 3-stage        : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_j / 1_000_000, fps_j, sign(pct_j), pct_j });
     std.debug.print("  K  AIO + 3-stage hybrid  : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_k / 1_000_000, fps_k, sign(pct_k), pct_k });
+    std.debug.print("  L  WS + AIO (no 3-stage) : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_l / 1_000_000, fps_l, sign(pct_l), pct_l });
 
     // ── Profile run — phase breakdown + CPU utilisation ─────────
     std.debug.print("\n── phase breakdown (one profiling run each) ─────────────\n", .{});
@@ -177,13 +185,14 @@ pub fn main(init: std.process.Init) !void {
     profileRun(gpa, io, files, .aio_mmap,             med_i, cpu_count, "I  1T POSIX AIO + mmap");
     profileRun(gpa, io, files, .hybrid_3stage,        med_j, cpu_count, "J  hybrid 3-stage");
     profileRun(gpa, io, files, .aio_hybrid_3stage,    med_k, cpu_count, "K  AIO + 3-stage hybrid");
+    profileRun(gpa, io, files, .ws_aio,               med_l, cpu_count, "L  WS + AIO (no 3-stage)");
 
     std.debug.print("\n", .{});
 }
 
 // ── Strategy enum ────────────────────────────────────────────────
 
-const Strategy = enum { static, ws1, ws2, channel, per_thread_pipelined, advisory, posix_aio, mmap_all, aio_mmap, hybrid_3stage, aio_hybrid_3stage };
+const Strategy = enum { static, ws1, ws2, channel, per_thread_pipelined, advisory, posix_aio, mmap_all, aio_mmap, hybrid_3stage, aio_hybrid_3stage, ws_aio };
 
 fn timeRunReused(io: std.Io, files: []const []const u8, strategy: Strategy, runner: *ParallelRunner) u64 {
     // Reset accumulator state from previous run; ev (if present) is reused.
@@ -205,6 +214,7 @@ fn timeRunReused(io: std.Io, files: []const []const u8, strategy: Strategy, runn
         .aio_mmap             => runner.lintFilesAioMmap(io, files) catch {},
         .hybrid_3stage        => runner.lintFilesHybrid3Stage(io, files) catch {},
         .aio_hybrid_3stage    => runner.lintFilesAioHybrid3Stage(io, files) catch {},
+        .ws_aio               => runner.lintFilesWsAio(io, files) catch {},
     }
     return @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
 }
@@ -235,6 +245,7 @@ fn profileRun(
         .aio_mmap             => runner.lintFilesAioMmap(io, files) catch {},
         .hybrid_3stage        => runner.lintFilesHybrid3Stage(io, files) catch {},
         .aio_hybrid_3stage    => runner.lintFilesAioHybrid3Stage(io, files) catch {},
+        .ws_aio               => runner.lintFilesWsAio(io, files) catch {},
     }
 
     const t = &runner.timings;
@@ -253,7 +264,7 @@ fn profileRun(
         .static, .ws1, .channel, .per_thread_pipelined => @min(files.len, cpu_count),
         .ws2                                            => @min(files.len, cpu_count * 2),
         .advisory, .posix_aio, .mmap_all, .aio_mmap   => 1,
-        .hybrid_3stage, .aio_hybrid_3stage              => @min(files.len, cpu_count),
+        .hybrid_3stage, .aio_hybrid_3stage, .ws_aio     => @min(files.len, cpu_count),
     };
     const avail_ns = wall_ns * thread_count;           // total thread-ns if 100% busy
     const util_pct = if (avail_ns > 0) cpu_ns * 100 / avail_ns else 0;

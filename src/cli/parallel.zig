@@ -1437,6 +1437,113 @@ pub const ParallelRunner = struct {
         }
     }
 
+    // ── Strategy L: pure work-stealing + per-worker AIO ─────────────────────
+    //
+    // No sampling, no size partition, no 3-stage. Every file goes through
+    // a work-stealing pool where each worker maintains its own AIO ring
+    // (depth 4) and pulls the next file from a shared atomic cursor as
+    // reads complete. Combines B's load balance with G's async I/O.
+    //
+    // Trades: no long-pole optimisation. Big files block their worker for
+    // the full lex+parse+sem time. On bench/fixtures (typescript.js
+    // dominated), wall ≈ typescript.js sequential time = ~50ms.
+
+    const WsAioCtx = struct {
+        runner: *ParallelRunner,
+        io: Io,
+        files: []const []const u8,
+        cursor: std.atomic.Value(u32),
+    };
+
+    fn wsAioWorker(ctx: *WsAioCtx) void {
+        var ring: [AIO_DEPTH_PER_THREAD]AioSlot = undefined;
+        for (&ring) |*s| s.* = .{ .idx = 0, .fd = -1, .size = 0, .buf = &.{}, .cb = undefined, .in_flight = false };
+
+        var arena_impl = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_impl.deinit();
+
+        // Submit initial batch from the shared cursor.
+        for (&ring) |*slot| {
+            const idx = ctx.cursor.fetchAdd(1, .acq_rel);
+            if (idx >= ctx.files.len) break;
+            if (!aioSetup(slot, idx, ctx.files[idx])) appendReadError(ctx.runner, ctx.files[idx]);
+        }
+
+        var ptrs: [AIO_DEPTH_PER_THREAD]?*const aiocb = undefined;
+
+        while (true) {
+            var n: c_int = 0;
+            for (&ring) |*s| {
+                if (s.in_flight) {
+                    ptrs[@intCast(n)] = &s.cb;
+                    n += 1;
+                }
+            }
+            if (n == 0) break;
+
+            _ = aio_suspend(@ptrCast(&ptrs), n, null);
+
+            for (&ring) |*slot| {
+                if (!slot.in_flight) continue;
+                const err = aio_error(&slot.cb);
+                if (err == EINPROGRESS) continue;
+                const bytes = aio_return(&slot.cb);
+                slot.in_flight = false;
+
+                if (err == 0 and bytes > 0) {
+                    ctx.runner.lintSource(ctx.io, ctx.files[slot.idx], slot.buf[0..@intCast(bytes)], &arena_impl);
+                } else {
+                    appendReadError(ctx.runner, ctx.files[slot.idx]);
+                }
+                _ = arena_impl.reset(.retain_capacity);
+
+                std.heap.smp_allocator.free(slot.buf);
+                _ = std.c.close(slot.fd);
+                slot.fd = -1;
+                slot.buf = &.{};
+
+                // Pull next from shared cursor.
+                const next_idx = ctx.cursor.fetchAdd(1, .acq_rel);
+                if (next_idx < ctx.files.len) {
+                    if (!aioSetup(slot, next_idx, ctx.files[next_idx])) appendReadError(ctx.runner, ctx.files[next_idx]);
+                }
+            }
+        }
+    }
+
+    pub fn lintFilesWsAio(self: *ParallelRunner, io: Io, files: []const []const u8) !void {
+        if (files.len == 0) return;
+        const cpu_count = std.Thread.getCpuCount() catch 1;
+        const worker_count = @min(files.len, cpu_count);
+        try self.results.ensureTotalCapacity(self.allocator, self.results.items.len + files.len);
+
+        var ctx = WsAioCtx{
+            .runner = self,
+            .io = io,
+            .files = files,
+            .cursor = std.atomic.Value(u32).init(0),
+        };
+
+        const extra = if (worker_count > 0) worker_count - 1 else 0;
+        var threads_buf: []std.Thread = &[_]std.Thread{};
+        if (extra > 0) threads_buf = try self.allocator.alloc(std.Thread, extra);
+        defer if (threads_buf.len > 0) self.allocator.free(threads_buf);
+        const threads = threads_buf;
+
+        var spawned: usize = 0;
+        for (0..extra) |t| {
+            threads[t] = std.Thread.spawn(.{}, wsAioWorker, .{&ctx}) catch {
+                wsAioWorker(&ctx);
+                continue;
+            };
+            spawned += 1;
+        }
+        // Calling thread joins the pool.
+        wsAioWorker(&ctx);
+
+        for (threads[0..spawned]) |th| th.join();
+    }
+
     // ── Strategy K: multi-thread AIO + 3-stage hybrid ───────────────────────
     //
     // Big files: processed by `big_workers = max(1, cpu_count/3)` workers in
@@ -1549,12 +1656,12 @@ pub const ParallelRunner = struct {
             else
                 @min(small_files.len, cpu_count);
 
-        // Small files: shared work-stealing cursor instead of static chunks.
-        // Static chunking lets some threads finish early and idle while others
-        // lag (size variance across files). Cursor-based work-stealing keeps
-        // every thread busy until the last file is done. Calling thread also
-        // joins the work-stealing pool after dispatching big workers.
-        var small_ctx = WorkStealCtx{
+        // Small files: WS + per-worker AIO ring. Each worker keeps 4 reads
+        // in flight; kernel pipelines I/O while compute runs on completed
+        // ones. Combines load balance (shared cursor) with I/O parallelism
+        // (AIO ring per thread). Empirically 2× faster than sync-read WS
+        // on small-file corpora (137K vs 71K files/s on conformance).
+        var small_ctx = WsAioCtx{
             .runner = self,
             .io = io,
             .files = small_files,
@@ -1568,8 +1675,8 @@ pub const ParallelRunner = struct {
 
         var small_spawned: usize = 0;
         for (0..extra_small) |t| {
-            small_threads[t] = std.Thread.spawn(.{}, threadWorkerWS, .{&small_ctx}) catch {
-                threadWorkerWS(&small_ctx);
+            small_threads[t] = std.Thread.spawn(.{}, wsAioWorker, .{&small_ctx}) catch {
+                wsAioWorker(&small_ctx);
                 continue;
             };
             small_spawned += 1;
@@ -1593,10 +1700,10 @@ pub const ParallelRunner = struct {
             big_spawned += 1;
         }
 
-        // Calling thread joins the small-file work-stealing pool. If there
-        // are no small files but big files exist, it pitches in on big files.
+        // Calling thread joins the small-file pool. If there are no small
+        // files but big files exist, it pitches in on big files.
         if (small_files.len > 0) {
-            threadWorkerWS(&small_ctx);
+            wsAioWorker(&small_ctx);
         } else if (big.items.len > 0) {
             bigQueueWorker(&big_ctx);
         }
