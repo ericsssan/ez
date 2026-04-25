@@ -709,9 +709,6 @@ pub const Ast = struct {
     /// parser was invoked without event emission enabled.  When present, the
     /// event-driven semantic analyzer consumes this instead of walking the tree.
     scope_events: []const ScopeEvent = &.{},
-    /// Precomputed wyhash(0, name) per token index for .identifier tokens.
-    /// Not owned by Ast — lifetime is tied to the TokenizeResult that produced it.
-    tok_hashes: []const u64 = &.{},
 
     pub const NodeList = std.MultiArrayList(Node);
     pub const TokenList = std.MultiArrayList(struct {
@@ -869,6 +866,7 @@ pub const Ast = struct {
 
     /// Get a slice of node indices from extra_data.
     pub inline fn extraSlice(self: *const Ast, range: SubRange) []const u32 {
+        if (range.start > range.end or range.end > self.extra_data.len) return &.{};
         return self.extra_data[range.start..range.end];
     }
 

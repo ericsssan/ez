@@ -394,7 +394,6 @@ pub const Parser = struct {
                     .extra_data = extra_full,
                     .errors = &.{},
                     .scope_events = events_full,
-                    .tok_hashes = &.{},
                 };
                 if (s.ast_ready) |r| r.store(true, .release);
             }

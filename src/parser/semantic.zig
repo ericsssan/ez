@@ -87,9 +87,6 @@ pub const SemanticAnalyzer = struct {
     pub const Options = struct {
         is_module: bool = true,
         globals: []const u8 = &.{},
-        /// Build full CFG (CodePathBuilder segments/paths).  Skip when no
-        /// CFG-dependent rule is active (no-unreachable, no-useless-return).
-        build_cfg: bool = true,
         /// Compute per-node parent indices.  Set when any active rule needs
         /// `ctx.parentOf()` (e.g. rules inspecting `node.parent.type`).
         build_parents: bool = false,
@@ -117,9 +114,7 @@ pub const SemanticAnalyzer = struct {
 
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
         var result = try event_resolver.resolveFull(allocator, ast, ast.scope_events, .{
-            .skip_cfg = !opts.build_cfg,
             .skip_ref_ranges = !opts.build_ref_ranges,
-            .tok_hashes = ast.tok_hashes,
         });
         if (opts.build_parents) {
             result.parent_indices = try parent_builder.computeParents(ast, allocator);
@@ -142,8 +137,11 @@ fn computeLoopBodyExitability(ast: *const Ast, loop_exit_reachable: []u8, node_r
 
 
 
-    // Propagate unreachability after infinite empty loops within statement lists.
-    // E.g., `while(true); while(true) break;` — the second loop is unreachable.
+    // Propagate unreachability within statement lists after:
+    //   - direct terminators: return, throw, break, continue
+    //   - infinite empty loops: while(true);  (no break possible)
+    // This ensures no-unreachable fires on statement nodes, not just on the
+    // identifier/reference sub-nodes that the event resolver marks via cfg_alive.
     {
         var j: u32 = 0;
         while (j < n) : (j += 1) {
@@ -163,7 +161,13 @@ fn computeLoopBodyExitability(ast: *const Ast, loop_exit_reachable: []u8, node_r
             for (stmts) |s_raw| {
                 if (s_raw >= n) continue;
                 if (dead and s_raw < node_reachable.len) node_reachable[s_raw] = 0;
-                if (!dead and isInfiniteEmptyLoop(ast, tags, datas, @enumFromInt(s_raw))) dead = true;
+                if (!dead) {
+                    const stag = tags[s_raw];
+                    if (stag == .return_stmt or stag == .throw_stmt or
+                        stag == .break_stmt or stag == .continue_stmt or
+                        isInfiniteEmptyLoop(ast, tags, datas, @enumFromInt(s_raw)))
+                        dead = true;
+                }
             }
         }
     }
@@ -255,6 +259,79 @@ fn isInfiniteEmptyLoop(
     }
 }
 
+/// Returns true if no path through `node` has a `break`/`break_label` that could
+/// escape the immediately enclosing infinite loop.  `return` and `throw` are NOT
+/// counted as break-escapes: they propagate upward but don't create a normal loop
+/// exit path.  Nested loops absorb their own unlabeled breaks.
+fn bodyHasNoBreakEscape(
+    ast: *const Ast,
+    tags: []const ast_mod.Node.Tag,
+    datas: []const ast_mod.Node.Data,
+    node: NodeIndex,
+    in_switch: bool,
+    depth: u32,
+) bool {
+    if (depth > 48) return true;
+    if (node == .none) return true;
+    const ni = @intFromEnum(node);
+    if (ni >= tags.len) return true;
+    const tag = tags[ni];
+    const data = datas[ni];
+    const d = depth + 1;
+    return switch (tag) {
+        // return/throw propagate upward — don't create a normal loop exit.
+        .return_stmt, .throw_stmt => true,
+        // break outside a switch exits the infinite loop (creates normal exit path).
+        // break inside a switch exits only the switch — absorbed, doesn't escape the infinite loop.
+        .break_stmt => in_switch,
+        // break_label always escapes some enclosing loop (conservatively, the infinite one).
+        .break_label => false,
+        .block_stmt => blk: {
+            const start = @intFromEnum(data.lhs);
+            const end = @intFromEnum(data.rhs);
+            if (start > end or end > ast.extra_data.len) break :blk true;
+            for (ast.extra_data[start..end]) |s_raw| {
+                if (s_raw >= tags.len) continue;
+                if (!bodyHasNoBreakEscape(ast, tags, datas, @enumFromInt(s_raw), in_switch, d)) break :blk false;
+            }
+            break :blk true;
+        },
+        .if_stmt => bodyHasNoBreakEscape(ast, tags, datas, data.rhs, in_switch, d),
+        .if_else_stmt => blk: {
+            const extra_idx = @intFromEnum(data.rhs);
+            if (extra_idx >= ast.extra_data.len) break :blk true;
+            const ifdata = ast.extraData(ast_mod.IfData, extra_idx);
+            break :blk bodyHasNoBreakEscape(ast, tags, datas, ifdata.consequent, in_switch, d) and
+                bodyHasNoBreakEscape(ast, tags, datas, ifdata.alternate, in_switch, d);
+        },
+        // Nested loops absorb their own unlabeled breaks — don't recurse into them.
+        .while_stmt, .do_while_stmt, .for_stmt,
+        .for_in_stmt, .for_of_stmt, .for_await_of_stmt => true,
+        // Switch absorbs unlabeled breaks.
+        .switch_stmt => blk: {
+            const extra_idx = @intFromEnum(data.rhs);
+            if (extra_idx >= ast.extra_data.len) break :blk true;
+            const range = ast.extraData(ast_mod.SubRange, extra_idx);
+            if (range.start > range.end or range.end > ast.extra_data.len) break :blk true;
+            for (ast.extraSlice(range)) |c_raw| {
+                if (c_raw >= datas.len) continue;
+                const c_data = datas[c_raw];
+                const c_extra_idx = @intFromEnum(c_data.rhs);
+                if (c_extra_idx >= ast.extra_data.len) continue;
+                const c_range = ast.extraData(ast_mod.SubRange, c_extra_idx);
+                if (c_range.start > c_range.end or c_range.end > ast.extra_data.len) continue;
+                for (ast.extraSlice(c_range)) |s_raw| {
+                    if (s_raw >= tags.len) continue;
+                    if (!bodyHasNoBreakEscape(ast, tags, datas, @enumFromInt(s_raw), true, d)) break :blk false;
+                }
+            }
+            break :blk true;
+        },
+        .labeled_stmt => bodyHasNoBreakEscape(ast, tags, datas, data.lhs, in_switch, d),
+        else => true,
+    };
+}
+
 /// Returns true if `node` always exits (break/return/throw) on all paths.
 /// `in_switch`: true when inside a switch case body — break exits the switch, not the outer loop.
 /// `depth`: recursion depth limit to prevent stack overflow on deeply nested ASTs.
@@ -324,6 +401,33 @@ fn bodyAlwaysExits(
         },
         // labeled statement: recurse into the inner statement
         .labeled_stmt => bodyAlwaysExits(ast, tags, datas, data.lhs, in_switch, d),
+        // An infinite loop (while(true) / for(;;)) with no accessible break/return/throw
+        // traps execution — the outer loop body never falls through to the loop-back.
+        .while_stmt => blk: {
+            const cond = data.lhs;
+            if (cond == .none) break :blk false;
+            const ci = @intFromEnum(cond);
+            if (ci >= tags.len) break :blk false;
+            if (tags[ci] != .boolean_literal) break :blk false;
+            if (ast.tokenTag(ast.nodeMainToken(cond)) != .kw_true) break :blk false;
+            break :blk bodyHasNoBreakEscape(ast, tags, datas, data.rhs, false, d);
+        },
+        .do_while_stmt => blk: {
+            const cond = data.rhs;
+            if (cond == .none) break :blk false;
+            const ci = @intFromEnum(cond);
+            if (ci >= tags.len) break :blk false;
+            if (tags[ci] != .boolean_literal) break :blk false;
+            if (ast.tokenTag(ast.nodeMainToken(cond)) != .kw_true) break :blk false;
+            break :blk bodyHasNoBreakEscape(ast, tags, datas, data.lhs, false, d);
+        },
+        .for_stmt => blk: {
+            const extra_idx = @intFromEnum(data.lhs);
+            if (extra_idx >= ast.extra_data.len) break :blk false;
+            const fdata = ast.extraData(ast_mod.ForData, extra_idx);
+            if (fdata.condition != .none) break :blk false;
+            break :blk bodyHasNoBreakEscape(ast, tags, datas, data.rhs, false, d);
+        },
         else => false,
     };
 }

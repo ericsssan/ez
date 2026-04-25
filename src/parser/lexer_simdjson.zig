@@ -562,17 +562,18 @@ pub fn tokenizeWithBuf(
     const src = source;
     const n: u32 = @intCast(src.len);
 
-    const max_toks: u32 = @max(n / 2 + 128, 128);
+    // Initial cap empirically covers ~99.9% of real-world files (typescript.js
+    // peaks at 0.15 tok/byte; n/4 = 4× headroom). Pathological all-punct
+    // files (e.g. `;;;;…`) can exceed; we double-and-grow on overflow.
+    var cap: u32 = @max(n / 4 + 128, 128);
     var tokens: TokenList = if (tokens_buf) |b| b.* else TokenList{};
-    if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, max_toks);
-    const ts_init = tokens.slice();
+    if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, cap);
+    var ts_init = tokens.slice();
     var tag_ptr   = ts_init.items(.tag).ptr;
     var start_ptr = ts_init.items(.start).ptr;
     var len_ptr   = ts_init.items(.len).ptr;
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
-    // tok_hashes lazy: computed on demand by event_resolver to save ~2ms in lex.
-    const hashes_raw: []u64 = &.{};
     const cm_cap: u32 = @max(n / 200 + 16, 16);
     var cm_s = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
     var cm_e = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
@@ -604,6 +605,16 @@ pub fn tokenizeWithBuf(
     // Word-by-word walk.
     var wi: usize = 0;
     while (wi < bm.ident.len) : (wi += 1) {
+        if (tok_n + 1024 > cap) {
+            tokens.len = tok_n;
+            cap *= 2;
+            tokens.ensureTotalCapacity(alloc, cap) catch return error.OutOfMemory;
+            ts_init = tokens.slice();
+            tag_ptr   = ts_init.items(.tag).ptr;
+            start_ptr = ts_init.items(.start).ptr;
+            len_ptr   = ts_init.items(.len).ptr;
+            nl_ptr    = ts_init.items(.has_newline_before).ptr;
+        }
         const w_id = bm.ident[wi];
         const w_nl = bm.newline[wi];
         const w_st = bm.structural[wi];
@@ -1071,6 +1082,5 @@ pub fn tokenizeWithBuf(
         .comment_kinds  = try cm_k.toOwnedSlice(alloc),
         .comment_count  = comment_count,
         .line_starts    = try ls.toOwnedSlice(alloc),
-        .tok_hashes     = hashes_raw,
     };
 }

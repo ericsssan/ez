@@ -59,9 +59,6 @@ pub const Options = struct {
     /// `"off"`).  References to these names resolve to the pre-declared
     /// implicit-global symbol instead of remaining unresolved.
     globals: []const u8 = &.{},
-    /// Precomputed wyhash(0, name) per token index from the lexer.  When
-    /// non-empty, eliminates runtime Wyhash calls in the identifier resolve loop.
-    tok_hashes: []const u64 = &.{},
     /// Streaming mode: when set, the producer (parser thread) is publishing
     /// events incrementally. The resolver walks the events slice via
     /// indexed access bounded by `events_published.load(.acquire)` and blocks
@@ -341,7 +338,6 @@ pub fn resolveFull(
     const node_tags = if (opts.streaming) |s| ast.nodes.items(.tag).ptr[0..s.node_count_hint] else ast.nodes.items(.tag);
     const node_datas = if (opts.streaming) |s| ast.nodes.items(.data).ptr[0..s.node_count_hint] else ast.nodes.items(.data);
     const source = ast.source;
-    const tok_hashes = opts.tok_hashes;
     // Pending label text set by label_open (aux=1) before the loop_open it wraps.
     var pending_label: []const u8 = "";
 
@@ -588,7 +584,7 @@ pub fn resolveFull(
             const start = tok_starts[main_tok];
             const len = tok_lens[main_tok];
             const name = source[start .. start + len];
-            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else std.hash.Wyhash.hash(0, name);
+            const name_hash = std.hash.Wyhash.hash(0, name);
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
@@ -621,10 +617,10 @@ pub fn resolveFull(
             if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
 
             // Compute name_hash before the sp==0 branch so it can be stored in
-            // both unresolved-append paths (avoids L3 tok_hashes re-fetch in retry).
+            // (tok_hashes removed; lazy compute always.)
             if (skip_resolve) continue;
             const main_tok = node_main_tokens[e.node];
-            const name_hash = if (tok_hashes.len != 0) tok_hashes[main_tok] else blk: {
+            const name_hash = blk: {
                 const start = tok_starts[main_tok];
                 const len = tok_lens[main_tok];
                 break :blk std.hash.Wyhash.hash(0, source[start .. start + len]);

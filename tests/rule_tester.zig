@@ -47,7 +47,7 @@ pub const RuleTester = struct {
 
     fn expectClean(rule: []const u8, code: []const u8, lang: Language) !void {
         const diags = try lintWithLang(code, lang);
-        defer testing.allocator.free(diags);
+        defer linter.freeDiagnostics(testing.allocator, diags);
 
         for (diags) |d| {
             const name = linter.rule_names[d.rule_index];
@@ -60,7 +60,7 @@ pub const RuleTester = struct {
 
     fn expectErrors(rule: []const u8, code: []const u8, expected: usize, lang: Language) !void {
         const diags = try lintWithLang(code, lang);
-        defer testing.allocator.free(diags);
+        defer linter.freeDiagnostics(testing.allocator, diags);
 
         var actual: usize = 0;
         for (diags) |d| {
@@ -89,12 +89,14 @@ fn lintWithLang(source: []const u8, lang: Language) ![]const LintDiagnostic {
     defer lex_result.deinit(allocator);
     var tokens = lex_result.tokens;
 
-    var tree = try Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, false);
+    var tree = try Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, true);
     defer tree.deinit(allocator);
-    tree.tok_hashes = lex_result.tok_hashes;
 
-    var sem = try SemanticAnalyzer.analyze(allocator, &tree);
+    var sem = try SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{
+        .is_module = true,
+        .build_parents = true,
+    });
     defer sem.deinit(allocator);
 
-    return linter.lint(allocator, &tree, &sem, null, .js);
+    return linter.lint(allocator, &tree, &sem, null, lang);
 }
