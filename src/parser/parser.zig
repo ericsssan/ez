@@ -132,12 +132,15 @@ pub const Parser = struct {
     /// that LLVM eliminates).
     scope_events: ScopeEventStream = .{},
     emit_scope_events: bool = false,
-    /// Cache of node-id → event-index for the most recent reference event for
-    /// that node. Eliminates O(N) backward scans in cancelReferenceForNode,
-    /// upgradeReferenceKindUnbounded, and convertRefToDeclare. Without this,
-    /// large patterns (or many declarations in a long file) trigger O(N²)
-    /// behavior — e.g. typescript.js parse goes from 4400ms to ~12ms.
-    ref_event_idx: std.AutoHashMapUnmanaged(u32, u32) = .{},
+    /// Direct-indexed cache of node-id → event-index for the most recent
+    /// reference event for that node. Indexed by NodeIndex value; sentinel
+    /// 0xFFFFFFFF means "no recent reference event". Eliminates O(N) backward
+    /// scans in cancelReferenceForNode, upgradeReferenceKindUnbounded, and
+    /// convertRefToDeclare. Sized to estimated_node_count at parse start;
+    /// auto-grows alongside nodes. Direct array beats AutoHashMap because
+    /// emitReference fires per-reference (~1.8M times on typescript.js) and
+    /// each put incurred wyhash + bucket probe + amortized grow.
+    ref_event_idx: []u32 = &.{},
     /// Suppression flag for param-declare emission while we're speculatively
     /// parsing parenthesized content that MIGHT be an arrow's parameter list.
     /// When the arrow is confirmed we walk the params SubRange and emit
@@ -253,7 +256,7 @@ pub const Parser = struct {
         defer p.scratch.deinit(allocator);
         // If events were requested, hand the stream back; otherwise free it.
         defer if (events_out == null) p.scope_events.deinit(allocator);
-        defer p.ref_event_idx.deinit(allocator);
+        defer if (p.ref_event_idx.len > 0) allocator.free(p.ref_event_idx);
         // Note: diagnostics ownership transfers to the returned Ast,
         // but we need a defer in case of early error.
         var diag_transferred = false;
@@ -281,6 +284,14 @@ pub const Parser = struct {
 
         // Pre-size the event buffer if emission is on (≈ tokens.len / 3 events on typical JS).
         if (p.emit_scope_events) try p.scope_events.ensureCapacity(allocator, tokens.len / 3);
+
+        // Pre-size ref_event_idx to estimated node count — direct array indexed
+        // by NodeIndex. Sentinel 0xFFFFFFFF = "no event recorded". Auto-grows
+        // alongside nodes (refreshRefEventIdx in addNode's grow path).
+        if (p.emit_scope_events) {
+            p.ref_event_idx = try allocator.alloc(u32, estimated_node_count);
+            @memset(p.ref_event_idx, std.math.maxInt(u32));
+        }
 
         try p.parseProgram();
 
@@ -444,6 +455,12 @@ pub const Parser = struct {
         if (self.nodes.len >= self.nodes.capacity) {
             try self.nodes.ensureTotalCapacity(self.gpa, self.nodes.capacity * 2 + 16);
             self.refreshNodePtrs();
+            // Grow ref_event_idx in lockstep so direct-indexed lookups stay valid.
+            if (self.ref_event_idx.len < self.nodes.capacity) {
+                const old_len = self.ref_event_idx.len;
+                self.ref_event_idx = try self.gpa.realloc(self.ref_event_idx, self.nodes.capacity);
+                @memset(self.ref_event_idx[old_len..], std.math.maxInt(u32));
+            }
         }
         self.nodes.appendAssumeCapacity(node);
         return NodeIndex.fromInt(result);
@@ -600,7 +617,12 @@ pub const Parser = struct {
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
         });
-        try self.ref_event_idx.put(self.gpa, @intFromEnum(node), event_idx);
+        // Direct-array cache (no hashing). Bounds-checked: nodes capacity may
+        // have grown ahead of ref_event_idx if cache wasn't extended yet.
+        const node_u32 = @intFromEnum(node);
+        if (node_u32 < self.ref_event_idx.len) {
+            self.ref_event_idx[node_u32] = event_idx;
+        }
     }
 
     pub const TerminatorKind = enum(u8) { @"return", @"throw", @"break", @"continue" };
@@ -925,13 +947,13 @@ pub const Parser = struct {
     pub fn upgradeReferenceKindUnbounded(self: *Parser, node: NodeIndex, new_kind: ReferenceKindU8) bool {
         if (!self.emit_scope_events) return false;
         const node_u32 = @intFromEnum(node);
-        // Fast path: cache hit (O(1) instead of O(N) scan).
-        if (self.ref_event_idx.get(node_u32)) |idx| {
-            const events = self.scope_events.events.items;
-            if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
-                events[idx].aux = @intFromEnum(new_kind);
-                return true;
-            }
+        if (node_u32 >= self.ref_event_idx.len) return false;
+        const idx = self.ref_event_idx[node_u32];
+        if (idx == std.math.maxInt(u32)) return false;
+        const events = self.scope_events.events.items;
+        if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
+            events[idx].aux = @intFromEnum(new_kind);
+            return true;
         }
         return false;
     }
@@ -995,13 +1017,13 @@ pub const Parser = struct {
     pub fn convertRefToDeclare(self: *Parser, node: NodeIndex, kind: BindingKindU8) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
-        // O(1) cached lookup — avoids O(N) backward scan that made large files O(N²).
-        if (self.ref_event_idx.get(node_u32)) |idx| {
-            const events = self.scope_events.events.items;
-            if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
-                events[idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
-                _ = self.ref_event_idx.remove(node_u32);
-            }
+        if (node_u32 >= self.ref_event_idx.len) return;
+        const idx = self.ref_event_idx[node_u32];
+        if (idx == std.math.maxInt(u32)) return;
+        const events = self.scope_events.events.items;
+        if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
+            events[idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
+            self.ref_event_idx[node_u32] = std.math.maxInt(u32);
         }
     }
 
@@ -1013,13 +1035,13 @@ pub const Parser = struct {
     pub fn cancelReferenceForNode(self: *Parser, node: NodeIndex) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
-        // O(1) cached lookup — avoids O(N) backward scan that made large files O(N²).
-        if (self.ref_event_idx.get(node_u32)) |idx| {
-            const events = self.scope_events.events.items;
-            if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
-                events[idx].kind = .nop;
-                _ = self.ref_event_idx.remove(node_u32);
-            }
+        if (node_u32 >= self.ref_event_idx.len) return;
+        const idx = self.ref_event_idx[node_u32];
+        if (idx == std.math.maxInt(u32)) return;
+        const events = self.scope_events.events.items;
+        if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
+            events[idx].kind = .nop;
+            self.ref_event_idx[node_u32] = std.math.maxInt(u32);
         }
     }
 

@@ -278,6 +278,10 @@ fn regexEnd(src: []const u8, open: u32) u32 {
 fn numberEnd(src: []const u8, open: u32) u32 {
     const n: u32 = @intCast(src.len);
     var i = open;
+    // Track whether this is a legacy octal literal (starts with `0` followed by
+    // more digits).  Legacy octals must not consume a trailing `.` because `.`
+    // signals property / method access on the number: `01.a` → member access.
+    var is_legacy_octal = false;
     if (src[i] == '0' and i + 1 < n) {
         switch (src[i + 1]) {
             'x', 'X' => {
@@ -298,11 +302,12 @@ fn numberEnd(src: []const u8, open: u32) u32 {
                 if (i < n and src[i] == 'n') i += 1;
                 return i;
             },
+            '0'...'7' => { is_legacy_octal = true; }, // valid octal digits; 8/9 are decimal
             else => {},
         }
     }
     while (i < n) { switch (src[i]) { '0'...'9', '_' => i += 1, else => break } }
-    if (i < n and src[i] == '.') {
+    if (!is_legacy_octal and i < n and src[i] == '.') {
         i += 1;
         while (i < n) { switch (src[i]) { '0'...'9', '_' => i += 1, else => break } }
     }
@@ -369,10 +374,12 @@ pub fn tokenizeWithAllOptions(
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
 
-    // hashes_raw must cover the actual token count, which can exceed max_toks
-    // for token-dense code (e.g. `if(a){}`).  The hard upper bound is n+1
-    // (one token per source char, plus EOF).
-    const hashes_raw = try alloc.alloc(u64, n + 1);
+    // hashes_raw is parallel to TokenList — same capacity (max_toks). The token
+    // SoA never grows past max_toks (raw tag_ptr/start_ptr writes would corrupt
+    // heap if it did), so hashes_raw matches that bound. Only `.identifier`
+    // tokens write here; @memset zeroes unused slots so reads of non-identifier
+    // slots are deterministic (zero) rather than uninit.
+    const hashes_raw = try alloc.alloc(u64, max_toks);
     @memset(hashes_raw, 0);
     const hash_ptr: [*]u64 = hashes_raw.ptr;
 
@@ -386,6 +393,10 @@ pub fn tokenizeWithAllOptions(
 
     var prev_kind: Tag  = .eof;
     var saw_nl:   bool  = false;
+    // Tracks whether we are at the logical start of a line (for Annex B --> comment).
+    // True at the start of the file; set true after any newline; cleared when a real
+    // (non-comment, non-whitespace) token is emitted.
+    var at_line_start: bool = true;
     var tmpl_depth: u32 = 0;
     var brace_d = [_]u32{0} ** 16;
 
@@ -457,9 +468,9 @@ pub fn tokenizeWithAllOptions(
         switch (byte) {
             // ── Whitespace not caught by fast path (tail of file, etc.) ──────
             ' ', '\t' => { pos += 1; continue :outer; },
-            '\n' => { saw_nl = true; try ls.append(alloc, pos + 1); pos += 1; continue :outer; },
+            '\n' => { saw_nl = true; at_line_start = true; try ls.append(alloc, pos + 1); pos += 1; continue :outer; },
             '\r' => {
-                saw_nl = true;
+                saw_nl = true; at_line_start = true;
                 if (pos + 1 < n and src[pos + 1] == '\n') {
                     try ls.append(alloc, pos + 2); pos += 2;
                 } else {
@@ -535,6 +546,16 @@ pub fn tokenizeWithAllOptions(
 
             // ── '-' ─────────────────────────────────────────────────────────
             '-' => {
+                // Annex B: `-->` at the start of a line is a single-line comment
+                // (HTML close comment).  `at_line_start` is true when no real token
+                // has been emitted since the last newline (or since file start).
+                if (at_line_start and pos + 2 <= n and src[pos + 1] == '-' and src[pos + 2] == '>') {
+                    const ce = lineCommentEnd(src, pos + 3);
+                    try cm_s.append(alloc, pos);
+                    try cm_e.append(alloc, ce);
+                    try cm_k.append(alloc, 0);
+                    saw_nl = true; pos = ce; continue :outer;
+                }
                 if (pos + 1 < n and src[pos + 1] == '-') { tag = .minus_minus;  end = pos + 2; }
                 else if (pos + 1 < n and src[pos + 1] == '=') { tag = .minus_equal; end = pos + 2; }
                 else { tag = .minus; end = pos + 1; }
@@ -589,6 +610,14 @@ pub fn tokenizeWithAllOptions(
 
             // ── '<' ─────────────────────────────────────────────────────────
             '<' => {
+                // Annex B: `<!--` is a single-line comment (HTML open comment).
+                if (pos + 3 <= n and src[pos + 1] == '!' and src[pos + 2] == '-' and src[pos + 3] == '-') {
+                    const ce = lineCommentEnd(src, pos + 4);
+                    try cm_s.append(alloc, pos);
+                    try cm_e.append(alloc, ce);
+                    try cm_k.append(alloc, 0);
+                    saw_nl = true; pos = ce; continue :outer;
+                }
                 if (pos + 1 < n and src[pos + 1] == '=') { tag = .less_equal; end = pos + 2; }
                 else if (pos + 1 < n and src[pos + 1] == '<') {
                     if (pos + 2 < n and src[pos + 2] == '=') { tag = .less_less_equal; end = pos + 3; }
@@ -641,7 +670,7 @@ pub fn tokenizeWithAllOptions(
                     try cm_s.append(alloc, pos);
                     try cm_e.append(alloc, res.end);
                     try cm_k.append(alloc, 1);
-                    if (res.has_nl) saw_nl = true;
+                    if (res.has_nl) { saw_nl = true; at_line_start = true; }
                     pos = res.end; continue :outer;
                 }
                 if (pos + 1 < n and src[pos + 1] == '=') { tag = .slash_equal; end = pos + 2; }
@@ -697,7 +726,7 @@ pub fn tokenizeWithAllOptions(
                 if (byte == 0xE2 and pos + 2 < n and src[pos + 1] == 0x80 and
                     (src[pos + 2] == 0xA8 or src[pos + 2] == 0xA9))
                 {
-                    saw_nl = true; pos += 3; continue :outer;
+                    saw_nl = true; at_line_start = true; pos += 3; continue :outer;
                 }
                 if (byte == 0xEF and pos + 2 < n and src[pos + 1] == 0xBB and src[pos + 2] == 0xBF) {
                     pos += 3; continue :outer;
@@ -724,8 +753,11 @@ pub fn tokenizeWithAllOptions(
         len_ptr[tok_n]   = end - pos;
         nl_ptr[tok_n]    = saw_nl;
         tok_n += 1;
-        saw_nl    = false;
-        prev_kind = tag;
+        saw_nl       = false;
+        at_line_start = false;
+        // When a keyword is used as a property name (preceded by `.`), treat it as
+        // an identifier for regex disambiguation: `a.in / b` is division, not regex.
+        prev_kind = if (tag.isKeyword() and prev_kind == .dot) .identifier else tag;
         pos       = end;
     }
 
