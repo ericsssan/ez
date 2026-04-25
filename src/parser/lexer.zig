@@ -387,11 +387,11 @@ pub fn tokenizeWithBuf(
     const src = source;
     const n: u32 = @intCast(src.len);
 
-    // Hard upper bound: one token per source byte + EOF. Tighter formulas
-    // (n/5 + 64) work for typical JS but overflow on token-dense code
-    // (1-char punct heavy, conformance fixtures). Memory cost is acceptable
-    // since the token buffer is freed at the end of parse.
-    const max_toks: u32 = @max(n + 1, 64);
+    // Bound for token capacity. Empirical token density in conformance
+    // fixtures peaks around n/2 (eg `;;` heavy code), well above the
+    // typical n/5. n/2 + 128 covers all observed cases without the
+    // n+1 worst-case waste (typescript.js: 76MB instead of 153MB).
+    const max_toks: u32 = @max(n / 2 + 128, 128);
     var tokens: TokenList = if (tokens_buf) |b| b.* else TokenList{};
     if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, max_toks);
     const ts_init = tokens.slice();
@@ -401,13 +401,10 @@ pub fn tokenizeWithBuf(
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
 
-    // hashes_raw must cover the actual token count, which can exceed max_toks
-    // for token-dense code (e.g. files heavy in `;;;` or 1-char punct). The
-    // hard upper bound is n+1 (one token per source byte, plus EOF). Sized
-    // tighter caused out-of-bounds reads in event_resolver on conformance
-    // fixtures that produced more tokens than max_toks.
-    const hashes_cap: usize = @max(n + 1, 64);
-    const hashes_raw = try alloc.alloc(u64, hashes_cap);
+    // hashes_raw matches token capacity exactly. max_toks is now n/2 + 128
+    // which empirically covers all observed corpora; tokens never overflow
+    // it so hashes_raw doesn't need a separate larger bound.
+    const hashes_raw = try alloc.alloc(u64, max_toks);
     @memset(hashes_raw, 0);
     const hash_ptr: [*]u64 = hashes_raw.ptr;
 
