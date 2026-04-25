@@ -1466,17 +1466,30 @@ pub const ParallelRunner = struct {
         if (files.len == 0) return;
         const cpu_count = std.Thread.getCpuCount() catch 1;
 
+        // Low-core machines (< 3 CPUs): the 3-stage pipeline needs a minimum
+        // of 3 threads per file to be a net win. With fewer cores, spawning
+        // a 3-thread pipeline oversubscribes and adds context-switch
+        // overhead. Skip the size-partition entirely and let every file go
+        // through the small-file AIO worker — saves the per-file
+        // open+fstat+close overhead too.
+        const enable_3stage = cpu_count >= 3;
+
         var big = std.ArrayList([]const u8).empty;
         var small = std.ArrayList([]const u8).empty;
         defer big.deinit(self.allocator);
         defer small.deinit(self.allocator);
-        for (files) |path| {
-            const fd = openFileFast(path);
-            if (fd < 0) { try small.append(self.allocator, path); continue; }
-            const sz = fdSize(fd);
-            _ = std.c.close(fd);
-            if (sz > BIG_FILE_THRESHOLD) try big.append(self.allocator, path)
-            else try small.append(self.allocator, path);
+        if (enable_3stage) {
+            for (files) |path| {
+                const fd = openFileFast(path);
+                if (fd < 0) { try small.append(self.allocator, path); continue; }
+                const sz = fdSize(fd);
+                _ = std.c.close(fd);
+                if (sz > BIG_FILE_THRESHOLD) try big.append(self.allocator, path)
+                else try small.append(self.allocator, path);
+            }
+        } else {
+            // Treat everything as small — no size partition, no 3-stage.
+            try small.appendSlice(self.allocator, files);
         }
 
         try self.results.ensureTotalCapacity(self.allocator, self.results.items.len + files.len);
