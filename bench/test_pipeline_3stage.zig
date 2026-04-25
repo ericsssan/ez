@@ -72,11 +72,6 @@ fn parseThread(ctx: *ParseCtx) void {
         return;
     };
     _ = &tree;
-    // Publish final event count and signal done.
-    // (The parser also publishes per top-level statement; this is the final flush.)
-    // events count comes from the ast_view's scope_events length AFTER parse.
-    // But parser owns scope_events via p.scope_events; ast_view captured it.
-    // The parser's final ev count is in tree.scope_events.len.
     ctx.events_publish.store(tree.scope_events.len, .release);
     ctx.parse_done.store(true, .release);
 }

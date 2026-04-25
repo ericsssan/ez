@@ -411,7 +411,14 @@ pub const Parser = struct {
         // Compact out elided scope_open events (empty block scopes with no
         // block-scoped declarations).  One O(N) pass over the event stream;
         // the savings compound across every resolveFull call on the same source.
-        if (p.emit_scope_events) {
+        //
+        // SKIPPED in streaming mode: a concurrent sem thread has already
+        // consumed events up to events_publish (which was set to the PRE-
+        // compaction count). Shrinking items.len here would leave the atomic
+        // pointing at indices beyond the now-shorter buffer; sem would read
+        // shifted/garbage events. Sem already treats .elided scope_open as
+        // a regular (no-op) scope, so skipping compaction is correct.
+        if (p.emit_scope_events and streaming == null) {
             const evs = p.scope_events.events.items;
             var wi: usize = 0;
             for (evs) |ev| {

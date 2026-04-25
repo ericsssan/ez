@@ -291,8 +291,14 @@ pub fn resolveFull(
 
     // Unresolved ref ids collected during the main pass so the retry pass can
     // iterate only the small set (~5-20K) instead of scanning all refs (245K).
+    // Pre-size in streaming mode to avoid arena fragmentation that hurts
+    // resolveUnresolved cache locality.
     const UnresolvedRef = struct { ref_id: ReferenceId, name_hash: u64 };
     var unresolved_refs = std.ArrayListUnmanaged(UnresolvedRef){ .items = &.{}, .capacity = 0 };
+    if (opts.streaming) |s| {
+        // ~15% of events are unresolved on average; round up.
+        try unresolved_refs.ensureTotalCapacity(sa, @max(1024, s.node_count_hint / 4));
+    }
     // (freed by scope_arena.deinit)
 
     // node_reachable — default all-alive (no CFG in event path yet).
@@ -412,8 +418,13 @@ pub fn resolveFull(
         ev_i += 1;
         switch (e.kind) {
         .scope_open => {
-            const parent: ScopeId = if (sp == 0) ScopeId.fromInt(std.math.maxInt(u32)) else stack[sp - 1];
             const kind: ScopeKind = @enumFromInt(e.aux);
+            // Elided scopes (parser-emitted block scopes that turned out empty
+            // — no let/const/class) have no matching scope_close. Sequential
+            // mode strips them via parser compaction; streaming skips
+            // compaction (race) so resolver must skip inline.
+            if (kind == .elided) continue;
+            const parent: ScopeId = if (sp == 0) ScopeId.fromInt(std.math.maxInt(u32)) else stack[sp - 1];
             const node: NodeIndex = @enumFromInt(e.node);
             const sid = try scopes.addScope(kind, parent, node);
             if (sp < stack.len) {
