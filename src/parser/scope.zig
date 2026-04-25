@@ -47,6 +47,11 @@ pub const ScopeKind = enum(u8) {
     /// no-use-before-define treat references inside them as crossing a function
     /// boundary.
     class_field_initializer,
+    /// Block scope emitted speculatively by the parser but determined to hold
+    /// no block-scoped declarations (let/const/class).  event_resolver skips
+    /// these — no ScopeId is created and references inside are attributed to
+    /// the enclosing scope.  No matching scope_close is emitted.
+    elided,
 };
 
 // ── Scope Flags ────────────────────────────────────────────
@@ -189,7 +194,7 @@ pub const ScopeTree = struct {
                 scope_flags.has_this_binding = true;
                 scope_flags.is_var_scope = true; // var declarations hoist to static block, not beyond
             },
-            .block, .catch_clause, .switch_stmt, .with_stmt => {},
+            .block, .catch_clause, .switch_stmt, .with_stmt, .elided => {},
             .class_field_initializer => {
                 // Treated as an implicit function scope: var declarations hoist here,
                 // this is available, always strict (class context).
@@ -206,21 +211,20 @@ pub const ScopeTree = struct {
             }
         }
 
-        // Capacity is pre-allocated via ensureCapacity() before traversal.
-        // Fall back to growable append only if pre-sizing was skipped.
-        if (self.kinds.items.len >= self.kinds.capacity) {
-            try self.ensureCapacity(@intCast(self.kinds.capacity * 2 + 16));
-        }
-
-        self.kinds.appendAssumeCapacity(scope_kind);
-        self.flags.appendAssumeCapacity(scope_flags);
-        self.parents.appendAssumeCapacity(parent_id);
-        self.first_child.appendAssumeCapacity(.none);
-        self.last_child.appendAssumeCapacity(.none);
-        self.next_sibling.appendAssumeCapacity(.none);
-        self.node_ids.appendAssumeCapacity(node_id);
-        self.bindings_start.appendAssumeCapacity(0);
-        self.bindings_count.appendAssumeCapacity(0);
+        // ArrayList.ensureTotalCapacity rounds up differently per element size,
+        // so the 9 parallel arrays drift out of sync after grows (kinds is u8,
+        // parents is u32 — different power-of-2 rounding gives different
+        // actual capacities). Use try append on each (it ensures unused
+        // capacity per-array).
+        try self.kinds.append(self.gpa, scope_kind);
+        try self.flags.append(self.gpa, scope_flags);
+        try self.parents.append(self.gpa, parent_id);
+        try self.first_child.append(self.gpa, .none);
+        try self.last_child.append(self.gpa, .none);
+        try self.next_sibling.append(self.gpa, .none);
+        try self.node_ids.append(self.gpa, node_id);
+        try self.bindings_start.append(self.gpa, 0);
+        try self.bindings_count.append(self.gpa, 0);
 
         // Link into the parent's child list — O(1) via last_child pointer.
         if (parent_id.isValid()) {

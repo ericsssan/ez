@@ -387,7 +387,11 @@ pub fn tokenizeWithBuf(
     const src = source;
     const n: u32 = @intCast(src.len);
 
-    const max_toks: u32 = @max(n / 5 + 64, 64);
+    // Hard upper bound: one token per source byte + EOF. Tighter formulas
+    // (n/5 + 64) work for typical JS but overflow on token-dense code
+    // (1-char punct heavy, conformance fixtures). Memory cost is acceptable
+    // since the token buffer is freed at the end of parse.
+    const max_toks: u32 = @max(n + 1, 64);
     var tokens: TokenList = if (tokens_buf) |b| b.* else TokenList{};
     if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, max_toks);
     const ts_init = tokens.slice();
@@ -397,12 +401,13 @@ pub fn tokenizeWithBuf(
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
 
-    // hashes_raw is parallel to TokenList — same capacity (max_toks). The token
-    // SoA never grows past max_toks (raw tag_ptr/start_ptr writes would corrupt
-    // heap if it did), so hashes_raw matches that bound. Only `.identifier`
-    // tokens write here; @memset zeroes unused slots so reads of non-identifier
-    // slots are deterministic (zero) rather than uninit.
-    const hashes_raw = try alloc.alloc(u64, max_toks);
+    // hashes_raw must cover the actual token count, which can exceed max_toks
+    // for token-dense code (e.g. files heavy in `;;;` or 1-char punct). The
+    // hard upper bound is n+1 (one token per source byte, plus EOF). Sized
+    // tighter caused out-of-bounds reads in event_resolver on conformance
+    // fixtures that produced more tokens than max_toks.
+    const hashes_cap: usize = @max(n + 1, 64);
+    const hashes_raw = try alloc.alloc(u64, hashes_cap);
     @memset(hashes_raw, 0);
     const hash_ptr: [*]u64 = hashes_raw.ptr;
 

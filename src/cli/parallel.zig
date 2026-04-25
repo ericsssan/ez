@@ -1481,19 +1481,31 @@ pub const ParallelRunner = struct {
 
         try self.results.ensureTotalCapacity(self.allocator, self.results.items.len + files.len);
 
-        // Each big-file worker uses 3 threads (calling + 2 helpers) inside
-        // lintOneFile3Stage. Cap the number of concurrent big-file workers
-        // so that big_workers * 3 + small_workers ≤ cpu_count.
+        // Adaptive thread allocation. Each big-file worker uses 3 threads
+        // (calling + 2 helpers in lintOneFile3Stage), so big_workers * 3 +
+        // small_workers ≤ cpu_count.
+        //
+        //   0 big files          → 0 big workers, all cores on small AIO
+        //   1 big file           → 1 big worker (3 threads), N-3 small AIO
+        //   2 big files          → 2 big workers (6 threads), N-6 small AIO
+        //   3+ big files         → cap at floor(N/3) big workers, the rest
+        //                          queue up serially through them
+        //
+        // The small worker count never goes below 1 if any small files exist
+        // (so they don't starve waiting for big files to finish).
         const big_workers = if (big.items.len == 0) 0
             else @min(big.items.len, @max(1, cpu_count / 3));
-        const small_workers = if (big_workers > 0)
-            @max(1, cpu_count - big_workers * 3)
-        else
-            @min(small.items.len, cpu_count);
+        const small_workers = if (small.items.len == 0) 0
+            else if (big_workers > 0)
+                @max(1, cpu_count -| big_workers * 3)
+            else
+                @min(small.items.len, cpu_count);
 
-        // Spawn small-file AIO workers.
+        // Spawn the (small_workers - 1) extra small-file AIO workers; the calling
+        // thread will run the last chunk inline at the end.
+        const extra_small = if (small.items.len > 0) small_workers - 1 else 0;
         var small_threads_buf: []std.Thread = &[_]std.Thread{};
-        if (small.items.len > 0) small_threads_buf = try self.allocator.alloc(std.Thread, small_workers);
+        if (extra_small > 0) small_threads_buf = try self.allocator.alloc(std.Thread, extra_small);
         defer if (small_threads_buf.len > 0) self.allocator.free(small_threads_buf);
         const small_threads = small_threads_buf;
 
@@ -1502,6 +1514,7 @@ pub const ParallelRunner = struct {
         defer if (small_ctxs_buf.len > 0) self.allocator.free(small_ctxs_buf);
 
         var small_spawned: usize = 0;
+        var calling_chunk: ?[]const []const u8 = null;
         if (small.items.len > 0) {
             const chunk = (small.items.len + small_workers - 1) / small_workers;
             for (0..small_workers) |t| {
@@ -1513,7 +1526,13 @@ pub const ParallelRunner = struct {
                     .io = io,
                     .files = small.items[start..end],
                 };
-                small_threads[t] = std.Thread.spawn(.{}, aioWorkerThread, .{&small_ctxs_buf[t]}) catch {
+                if (t == 0) {
+                    // Calling thread will run this chunk after dispatching the
+                    // big-file worker. Saves one std.Thread.spawn round-trip.
+                    calling_chunk = small.items[start..end];
+                    continue;
+                }
+                small_threads[t - 1] = std.Thread.spawn(.{}, aioWorkerThread, .{&small_ctxs_buf[t]}) catch {
                     aioWorkerThread(&small_ctxs_buf[t]);
                     continue;
                 };
@@ -1521,7 +1540,7 @@ pub const ParallelRunner = struct {
             }
         }
 
-        // Spawn big-file workers (each pulls from a shared cursor).
+        // Spawn N big-file workers, all sharing one cursor over big.items.
         var big_ctx = BigQueueCtx{
             .runner = self,
             .io = io,
@@ -1529,17 +1548,25 @@ pub const ParallelRunner = struct {
             .cursor = std.atomic.Value(u32).init(0),
         };
         var big_threads_buf: []std.Thread = &[_]std.Thread{};
-        if (big_workers > 1) big_threads_buf = try self.allocator.alloc(std.Thread, big_workers - 1);
+        if (big_workers > 0) big_threads_buf = try self.allocator.alloc(std.Thread, big_workers);
         defer if (big_threads_buf.len > 0) self.allocator.free(big_threads_buf);
         const big_threads = big_threads_buf;
 
         var big_spawned: usize = 0;
-        for (0..big_threads.len) |t| {
+        for (0..big_workers) |t| {
             big_threads[t] = std.Thread.spawn(.{}, bigQueueWorker, .{&big_ctx}) catch continue;
             big_spawned += 1;
         }
-        // Calling thread acts as the last big-file worker.
-        if (big_workers > 0) bigQueueWorker(&big_ctx);
+
+        // Calling thread runs its small-file chunk concurrently with everyone
+        // else. If there are no small files but big ones exist, calling thread
+        // also pitches in on big files.
+        if (calling_chunk) |chunk| {
+            small_ctxs_buf[0] = .{ .runner = self, .io = io, .files = chunk };
+            aioWorkerThread(&small_ctxs_buf[0]);
+        } else if (big.items.len > 0) {
+            bigQueueWorker(&big_ctx);
+        }
 
         for (big_threads[0..big_spawned]) |th| th.join();
         for (small_threads[0..small_spawned]) |th| th.join();
@@ -1742,7 +1769,7 @@ pub const ParallelRunner = struct {
                     .streaming = .{
                         .events_published = c.events_pub,
                         .parse_done = c.parse_done,
-                        .node_count_hint = c.cap_hint,
+                        .node_count_hint = c.cap_hint * 2,
                     },
                 }) catch return;
                 sem.deinit(c.alloc);
