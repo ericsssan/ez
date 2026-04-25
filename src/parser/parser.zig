@@ -132,6 +132,12 @@ pub const Parser = struct {
     /// that LLVM eliminates).
     scope_events: ScopeEventStream = .{},
     emit_scope_events: bool = false,
+    /// Cache of node-id → event-index for the most recent reference event for
+    /// that node. Eliminates O(N) backward scans in cancelReferenceForNode,
+    /// upgradeReferenceKindUnbounded, and convertRefToDeclare. Without this,
+    /// large patterns (or many declarations in a long file) trigger O(N²)
+    /// behavior — e.g. typescript.js parse goes from 4400ms to ~12ms.
+    ref_event_idx: std.AutoHashMapUnmanaged(u32, u32) = .{},
     /// Suppression flag for param-declare emission while we're speculatively
     /// parsing parenthesized content that MIGHT be an arrow's parameter list.
     /// When the arrow is confirmed we walk the params SubRange and emit
@@ -247,6 +253,7 @@ pub const Parser = struct {
         defer p.scratch.deinit(allocator);
         // If events were requested, hand the stream back; otherwise free it.
         defer if (events_out == null) p.scope_events.deinit(allocator);
+        defer p.ref_event_idx.deinit(allocator);
         // Note: diagnostics ownership transfers to the returned Ast,
         // but we need a defer in case of early error.
         var diag_transferred = false;
@@ -282,6 +289,21 @@ pub const Parser = struct {
         const errors = try p.diagnostics.toOwnedSlice(allocator);
         errdefer allocator.free(errors);
         diag_transferred = true;
+
+        // Compact out elided scope_open events (empty block scopes with no
+        // block-scoped declarations).  One O(N) pass over the event stream;
+        // the savings compound across every resolveFull call on the same source.
+        if (p.emit_scope_events) {
+            const evs = p.scope_events.events.items;
+            var wi: usize = 0;
+            for (evs) |ev| {
+                if (ev.kind == .scope_open and
+                    ev.aux == @intFromEnum(ScopeKindU8.elided)) continue;
+                evs[wi] = ev;
+                wi += 1;
+            }
+            p.scope_events.events.items.len = wi;
+        }
 
         // Hand the event stream back to the caller.  If `events_out` is given,
         // we transfer ownership there; otherwise if emission was on we also
@@ -477,6 +499,17 @@ pub const Parser = struct {
         if (decl_node == .none) return;
         const d = self.node_data_ptr[decl_node.toInt()];
         try self.emitDeclaresFromPattern(d.lhs, kind);
+        // For simple identifier bindings with an initializer, also emit a write
+        // reference.  This matches eslint-scope's behavior: declaration + init is
+        // a write reference, enabling liveness analysis to flag useless initial
+        // values.  Destructuring is excluded due to complex event-ordering issues
+        // with default-value expressions that reference sibling bindings.
+        if (d.rhs != .none and d.lhs != .none) {
+            const binding_tag = self.node_tags_ptr[@intFromEnum(d.lhs)];
+            if (binding_tag == .identifier) {
+                try self.emitReference(.write_init, d.lhs);
+            }
+        }
     }
 
     /// Walk a binding pattern (identifier / array_pattern / object_pattern /
@@ -509,7 +542,10 @@ pub const Parser = struct {
         const tag = self.node_tags_ptr[idx];
         const data = self.node_data_ptr[idx];
         switch (tag) {
-            .identifier => try self.emitDeclare(kind, node),
+            .identifier => {
+                self.cancelReferenceForNode(node);
+                try self.emitDeclare(kind, node);
+            },
             // Default value: `x = 1` — lhs is the inner pattern, rhs is default expression.
             .assignment_pattern => try emitDeclaresFromPatternImpl(self, data.lhs, kind),
             // Rest: `...x` — lhs is the inner pattern.
@@ -558,11 +594,13 @@ pub const Parser = struct {
 
     pub inline fn emitReference(self: *Parser, kind: ReferenceKindU8, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
+        const event_idx: u32 = @intCast(self.scope_events.events.items.len);
         try self.scope_events.push(self.gpa, .{
             .kind = .reference,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
         });
+        try self.ref_event_idx.put(self.gpa, @intFromEnum(node), event_idx);
     }
 
     pub const TerminatorKind = enum(u8) { @"return", @"throw", @"break", @"continue" };
@@ -663,13 +701,15 @@ pub const Parser = struct {
         });
     }
 
-    pub inline fn emitTryCatchStart(self: *Parser, node: NodeIndex) !void {
-        if (!self.emit_scope_events) return;
+    pub inline fn emitTryCatchStart(self: *Parser, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
         try self.scope_events.push(self.gpa, .{
             .kind = .try_catch_start,
             .aux = 0,
             .node = @intFromEnum(node),
         });
+        return idx;
     }
 
     pub inline fn emitTryCatchEnd(self: *Parser, node: NodeIndex) !void {
@@ -681,13 +721,15 @@ pub const Parser = struct {
         });
     }
 
-    pub inline fn emitTryFinallyStart(self: *Parser, node: NodeIndex) !void {
-        if (!self.emit_scope_events) return;
+    pub inline fn emitTryFinallyStart(self: *Parser, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
         try self.scope_events.push(self.gpa, .{
             .kind = .try_finally_start,
             .aux = 0,
             .node = @intFromEnum(node),
         });
+        return idx;
     }
 
     pub inline fn emitTryClose(self: *Parser, node: NodeIndex) !void {
@@ -808,13 +850,15 @@ pub const Parser = struct {
         return idx;
     }
 
-    pub inline fn emitIfAlt(self: *Parser, node: NodeIndex) !void {
-        if (!self.emit_scope_events) return;
+    pub inline fn emitIfAlt(self: *Parser, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.scope_events.len());
         try self.scope_events.push(self.gpa, .{
             .kind = .if_alt,
             .aux = 0,
             .node = @intFromEnum(node),
         });
+        return idx;
     }
 
     pub inline fn emitIfClose(self: *Parser, node: NodeIndex) !void {
@@ -874,6 +918,75 @@ pub const Parser = struct {
         }
     }
 
+    /// Unbounded version of upgradeReferenceKind — searches all emitted events.
+    /// Returns true if a ref was found and upgraded, false if none existed.
+    /// Used for destructuring assignment LHS patterns where identifiers may be
+    /// many events back.
+    pub fn upgradeReferenceKindUnbounded(self: *Parser, node: NodeIndex, new_kind: ReferenceKindU8) bool {
+        if (!self.emit_scope_events) return false;
+        const node_u32 = @intFromEnum(node);
+        // Fast path: cache hit (O(1) instead of O(N) scan).
+        if (self.ref_event_idx.get(node_u32)) |idx| {
+            const events = self.scope_events.events.items;
+            if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
+                events[idx].aux = @intFromEnum(new_kind);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Walk a destructuring assignment LHS pattern and upgrade all identifier
+    /// ref events from read to write, emitting new write refs when no prior
+    /// ref exists (e.g. for shorthand properties where parsePropertyName does
+    /// not emit a ref). Called after reinterpretAsPattern for non-identifier LHS.
+    pub fn upgradePatternRefsToWrite(self: *Parser, node: NodeIndex) std.mem.Allocator.Error!void {
+        if (!self.emit_scope_events) return;
+        if (node == .none) return;
+        const idx = @intFromEnum(node);
+        if (idx >= self.nodes.len) return;
+        const tag = self.node_tags_ptr[idx];
+        const data = self.node_data_ptr[idx];
+        switch (tag) {
+            .identifier => {
+                // Try to upgrade existing read ref. If none (e.g. from parsePropertyName),
+                // emit a fresh write ref so liveness analysis tracks this write.
+                if (!self.upgradeReferenceKindUnbounded(node, .write)) {
+                    try self.emitReference(.write, node);
+                }
+            },
+            .member_expr, .optional_member_expr, .computed_member_expr, .optional_computed_member_expr => {
+                // Member expressions are valid assignment targets but don't produce
+                // symbol write refs — the object/property refs are reads.
+            },
+            .array_pattern => {
+                const start = data.lhs.toInt();
+                const end = data.rhs.toInt();
+                var i = start;
+                while (i < end) : (i += 1) {
+                    if (i < self.extra_data.items.len)
+                        try self.upgradePatternRefsToWrite(NodeIndex.fromInt(self.extra_data.items[i]));
+                }
+            },
+            .object_pattern => {
+                const start = data.lhs.toInt();
+                const end = data.rhs.toInt();
+                var i = start;
+                while (i < end) : (i += 1) {
+                    if (i < self.extra_data.items.len)
+                        try self.upgradePatternRefsToWrite(NodeIndex.fromInt(self.extra_data.items[i]));
+                }
+            },
+            .shorthand_property => try self.upgradePatternRefsToWrite(data.lhs),
+            .property => try self.upgradePatternRefsToWrite(data.rhs),
+            .computed_property => try self.upgradePatternRefsToWrite(data.rhs),
+            .rest_element => try self.upgradePatternRefsToWrite(data.lhs),
+            .assignment_pattern => try self.upgradePatternRefsToWrite(data.lhs),
+            .grouping_expr => try self.upgradePatternRefsToWrite(data.lhs),
+            else => {},
+        }
+    }
+
     /// Walk back through ALL emitted events (unbounded) to find a reference
     /// event for `node` and convert it into a declare event with the given
     /// binding kind.  Used for arrow parameters where the param identifier
@@ -882,18 +995,30 @@ pub const Parser = struct {
     pub fn convertRefToDeclare(self: *Parser, node: NodeIndex, kind: BindingKindU8) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
-        const events = self.scope_events.events.items;
-        var i: usize = events.len;
-        while (i > 0) {
-            i -= 1;
-            const e = events[i];
-            if (e.kind == .reference and e.node == node_u32) {
-                self.scope_events.events.items[i] = .{
-                    .kind = .declare,
-                    .aux = @intFromEnum(kind),
-                    .node = node_u32,
-                };
-                return;
+        // O(1) cached lookup — avoids O(N) backward scan that made large files O(N²).
+        if (self.ref_event_idx.get(node_u32)) |idx| {
+            const events = self.scope_events.events.items;
+            if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
+                events[idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
+                _ = self.ref_event_idx.remove(node_u32);
+            }
+        }
+    }
+
+    /// Neutralise a speculatively-emitted reference event for `node` by
+    /// converting it to a `.nop`.  Used when arrow function params were parsed
+    /// as expression identifiers (emitting `.reference`) before being
+    /// reinterpreted as bindings — the orphan reference would otherwise be
+    /// seen as an unresolved use by rules like `no-undef`.
+    pub fn cancelReferenceForNode(self: *Parser, node: NodeIndex) void {
+        if (!self.emit_scope_events) return;
+        const node_u32 = @intFromEnum(node);
+        // O(1) cached lookup — avoids O(N) backward scan that made large files O(N²).
+        if (self.ref_event_idx.get(node_u32)) |idx| {
+            const events = self.scope_events.events.items;
+            if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
+                events[idx].kind = .nop;
+                _ = self.ref_event_idx.remove(node_u32);
             }
         }
     }
@@ -1364,7 +1489,33 @@ pub const Parser = struct {
         const scope_ev = try self.emitScopeOpen(.block, .none);
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
-        try self.emitScopeClose(.none);
+
+        // Elide scopes that bind nothing block-scoped (no let/const/class at this
+        // level). var and function_decl hoist to the var-scope regardless, so
+        // attributing references to the parent scope is semantically equivalent.
+        // event_resolver recognises .elided scope_open and skips creating a ScopeId.
+        const keep_scope = blk: {
+            if (!self.emit_scope_events) break :blk true;
+            var depth: i32 = 0;
+            for (self.scope_events.events.items[scope_ev + 1 ..]) |ev| {
+                switch (ev.kind) {
+                    .scope_open => depth += 1,
+                    .scope_close => depth -= 1,
+                    .declare => if (depth == 0) {
+                        const bk: BindingKindU8 = @enumFromInt(ev.aux);
+                        if (!bk.isHoisted()) break :blk true;
+                    },
+                    else => {},
+                }
+            }
+            break :blk false;
+        };
+
+        if (keep_scope) {
+            try self.emitScopeClose(.none);
+        } else if (self.emit_scope_events) {
+            self.scope_events.events.items[scope_ev].aux = @intFromEnum(ScopeKindU8.elided);
+        }
 
         const node = try self.addNode(.{
             .tag = .block_stmt,
@@ -1374,7 +1525,7 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(range.end),
             },
         });
-        self.patchScopeOpenNode(scope_ev, node);
+        if (keep_scope) self.patchScopeOpenNode(scope_ev, node);
         return node;
     }
 
@@ -1555,7 +1706,7 @@ pub const Parser = struct {
 
         if (self.eat(.kw_else)) |_| {
             if (self.emit_scope_events) self.scope_events.events.items[if_ev].aux = 1;
-            try self.emitIfAlt(.none);
+            const if_alt_ev = try self.emitIfAlt(.none);
             const alternate = try self.parseIfBody();
             const extra = try self.addExtra(ast.IfData, .{
                 .consequent = consequent,
@@ -1571,6 +1722,9 @@ pub const Parser = struct {
             });
             try self.emitIfClose(if_else_node);
             self.patchEventNode(if_ev, if_else_node);
+            // Patch if_alt to use the alternate body — gives the else-branch segment
+            // a first/last range that covers only the else body, not the entire if-else.
+            self.patchEventNode(if_alt_ev, alternate);
             return if_else_node;
         }
 
@@ -2470,9 +2624,17 @@ pub const Parser = struct {
             else => {},
         }
 
+        const is_loop_label = switch (self.peek()) {
+            .kw_while, .kw_for, .kw_do => true,
+            else => false,
+        };
+        // Emit before parsing body so loop_open fires while pending_label is set.
+        // We pass label_node (property_ident) — event_resolver reads label text from it.
+        _ = try self.emitLabelOpen(is_loop_label, label_node);
+
         const stmt = try self.parseStatement();
 
-        return self.addNode(.{
+        const node = try self.addNode(.{
             .tag = .labeled_stmt,
             .main_token = label_tok,
             .data = .{
@@ -2480,6 +2642,8 @@ pub const Parser = struct {
                 .rhs = label_node,
             },
         });
+        try self.emitLabelClose(node);
+        return node;
     }
 
     /// Parse `try { } [catch (e) { }] [finally { }]`.
@@ -2500,7 +2664,7 @@ pub const Parser = struct {
         // gets a stable NodeView (required for ESLint identity checks).
         if (self.eat(.kw_catch)) |catch_tok| {
             try self.emitBranchElse(.none);
-            try self.emitTryCatchStart(.none);
+            const try_catch_ev = try self.emitTryCatchStart(.none);
             const catch_scope_ev = try self.emitScopeOpen(.catch_clause, .none);
             var catch_param: NodeIndex = .none;
             if (self.eat(.l_paren)) |_| {
@@ -2516,17 +2680,19 @@ pub const Parser = struct {
                 .data = .{ .lhs = catch_param, .rhs = catch_body },
             });
             self.patchScopeOpenNode(catch_scope_ev, catch_node);
+            self.patchEventNode(try_catch_ev, catch_node);
             try self.emitTryCatchEnd(catch_node);
         }
         try self.emitBranchClose(.none);
 
         // Parse finally clause
         if (self.eat(.kw_finally)) |_| {
-            try self.emitTryFinallyStart(.none);
+            const try_finally_ev = try self.emitTryFinallyStart(.none);
             // Mark has_finalizer retroactively on the try_open event.
             if (self.emit_scope_events)
                 self.scope_events.events.items[try_ev].aux = 1;
             finally_body = try self.parseBlockStatement();
+            self.patchEventNode(try_finally_ev, finally_body);
         }
 
         // Must have at least catch or finally.
@@ -2953,70 +3119,17 @@ pub const Parser = struct {
         // Optional: extends superClass (must be LeftHandSideExpression)
         const super_class: NodeIndex = if (self.eat(.kw_extends) != null) blk: {
             if (self.language.isTs()) {
-                // Handle expression-start tokens in extends: (expr), class expr, function expr
-                if (self.peek() == .l_paren or self.peek() == .kw_class or
-                    self.peek() == .kw_function or self.peek() == .kw_new)
-                {
-                    _ = try self.parseAssignmentExpression();
-                } else {
-                    // Parse extends as a type to advance token position (handles generics A<T>).
-                    // Drop the TSTypeReference wrapper (last node created by parseType) since it
-                    // would be an orphan (super_class=.none). Keep the inner identifier/member
-                    // nodes so the superClass getter can find the base class via mainToken scan.
-                    const _ext_nodes_before = self.nodes.len;
-                    _ = try typescript.parseType(self);
-                    if (self.nodes.len > _ext_nodes_before) {
-                        self.nodes.len = @intCast(self.nodes.len - 1);
-                    }
-                }
-                // Handle mixin call: `extends Constructor<T>()`
-                if (self.peek() == .l_paren) {
-                    _ = self.advance(); // eat '('
-                    while (self.peek() != .r_paren and !self.isAtEnd()) {
-                        _ = try self.parseAssignmentExpression();
-                        if (self.peek() == .comma) _ = self.advance() else break;
-                    }
-                    _ = try self.expect(.r_paren);
-                }
-                // Handle type args after call: `extends getBase() <number>`
-                if (self.peek() == .less_than) {
-                    const saved_tok = self.tok_i;
-                    const saved_diag = self.diagnostics.items.len;
-                    const saved_nodes = self.nodes.len;
-                    const saved_extra = self.extra_data.items.len;
-                    _ = typescript.parseTypeArguments(self) catch {
-                        self.tok_i = saved_tok;
-                        self.diagnostics.shrinkRetainingCapacity(saved_diag);
-                        self.nodes.len = @intCast(saved_nodes);
-                        self.extra_data.shrinkRetainingCapacity(saved_extra);
-                    };
-                }
-                // Handle member access after call/paren: `extends (foo()).B`
-                while (self.peek() == .dot) {
-                    _ = self.advance(); // eat '.'
-                    if (self.peek() == .identifier or self.peek().isKeyword()) {
-                        _ = self.advance();
-                    }
-                    // May have type args on member: extends foo().Bar<T>
-                    if (self.peek() == .less_than) {
-                        const saved_tok = self.tok_i;
-                        const saved_diag = self.diagnostics.items.len;
-                        const saved_nodes = self.nodes.len;
-                        const saved_extra = self.extra_data.items.len;
-                        _ = typescript.parseTypeArguments(self) catch {
-                            self.tok_i = saved_tok;
-                            self.diagnostics.shrinkRetainingCapacity(saved_diag);
-                            self.nodes.len = @intCast(saved_nodes);
-                            self.extra_data.shrinkRetainingCapacity(saved_extra);
-                        };
-                    }
-                }
-                // May have multiple: `extends A, B` (mixins) — consume extras
+                // Parse the first extends expression.
+                // parseAssignmentExpression handles TS type arguments (A<T>) via tryParseTsTypeArguments,
+                // so `class C extends React.Component<Props>` correctly produces a MemberExpression
+                // for React.Component and consumes the <Props> type args.
+                const expr = try self.parseAssignmentExpression();
+                // May have multiple: `extends A, B` (mixins) — consume extras as types
                 while (self.peek() == .comma) {
                     _ = self.advance();
                     _ = try typescript.parseType(self);
                 }
-                break :blk .none; // super_class node not used for TS
+                break :blk expr;
             }
             const expr = try self.parseAssignmentExpression();
             // Reject binary/unary expressions — extends only allows LHS expressions
@@ -3948,6 +4061,12 @@ pub const Parser = struct {
 
         // Default value: `param = defaultExpr`
         const inner_param: NodeIndex = if (self.eat(.equal) != null) blk: {
+            // Set decl_name_text so named fn/class exprs in the default get fn_expr_name binding.
+            const saved_decl_name = self.decl_name_text;
+            if (self.emit_scope_events and binding_tag == .identifier) {
+                self.decl_name_text = self.tokenText(self.node_main_token_ptr[binding.toInt()]);
+            }
+            defer self.decl_name_text = saved_decl_name;
             const default_val = try self.parseAssignmentExpression();
             break :blk try self.addNode(.{
                 .tag = .assignment_pattern,
@@ -4044,10 +4163,12 @@ pub const Parser = struct {
         }
 
         // TS `import type { ... }` or `import type X from '...'` or `import type * as X from '...'`
+        var is_type_import = false;
         if (self.language.isTs() and self.peek() == .kw_type and
             (self.peekAt(1) == .l_brace or self.peekAt(1) == .identifier or self.peekAt(1) == .asterisk))
         {
             _ = self.advance(); // skip 'type'
+            is_type_import = true;
         }
 
         // Default import: `import x from '...'`
@@ -4072,19 +4193,19 @@ pub const Parser = struct {
                 },
             });
             try self.scratch.append(self.gpa, @intFromEnum(spec));
-            try self.emitDeclare(.import_binding, local_node);
+            try self.emitDeclare(if (is_type_import) .type_import_binding else .import_binding, local_node);
 
             // May be followed by `, { ... }` or `, * as ns`
             if (self.eat(.comma) != null) {
                 if (self.peek() == .l_brace) {
-                    try self.parseNamedImportSpecifiers();
+                    try self.parseNamedImportSpecifiers(is_type_import);
                 } else if (self.peek() == .asterisk) {
                     const ns_spec = try self.parseNamespaceImportSpecifier();
                     try self.scratch.append(self.gpa, @intFromEnum(ns_spec));
                 }
             }
         } else if (self.peek() == .l_brace) {
-            try self.parseNamedImportSpecifiers();
+            try self.parseNamedImportSpecifiers(is_type_import);
         } else if (self.peek() == .asterisk) {
             const ns_spec = try self.parseNamespaceImportSpecifier();
             try self.scratch.append(self.gpa, @intFromEnum(ns_spec));
@@ -4125,20 +4246,19 @@ pub const Parser = struct {
     }
 
     /// Parse `{ x, y as z }` import specifiers, appending to self.scratch.
-    pub fn parseNamedImportSpecifiers(self: *Parser) Error!void {
+    pub fn parseNamedImportSpecifiers(self: *Parser, force_type: bool) Error!void {
         _ = try self.expect(.l_brace);
 
         while (self.peek() != .r_brace and !self.isAtEnd()) {
             // TS inline type specifier: `import { type foo }` or `import { type foo as bar }`
-            // `type` is a modifier when followed by an identifier, not `,` or `}` or `as`.
-            // TS inline type specifier: `import { type foo }` or `import { type foo as bar }`
-            // `type` is a modifier when followed by an identifier, not `,` or `}` or `as`.
+            var specifier_is_type = force_type;
             if (self.language.isTs() and self.peek() == .kw_type) {
                 const next = self.peekAt(1);
                 if (next == .identifier or next.isTsContextualKeyword() or
                     next == .kw_default or next == .string_literal)
                 {
                     _ = self.advance(); // skip 'type' modifier
+                    specifier_is_type = true;
                 }
             }
             const imported_tok = self.tok_i;
@@ -4218,7 +4338,7 @@ pub const Parser = struct {
                 },
             });
             try self.scratch.append(self.gpa, @intFromEnum(spec));
-            try self.emitDeclare(.import_binding, local_node);
+            try self.emitDeclare(if (specifier_is_type) .type_import_binding else .import_binding, local_node);
 
             if (self.eat(.comma) == null) break;
         }
@@ -4498,6 +4618,26 @@ pub const Parser = struct {
                 });
             },
             else => {
+                if (self.language.isTs()) {
+                    // `export default interface Foo { ... }` — TS interface as default export.
+                    if (self.peek() == .kw_interface) {
+                        const decl = try @import("typescript.zig").parseInterfaceDeclaration(self);
+                        return self.addNode(.{
+                            .tag = .export_default_expr,
+                            .main_token = export_tok,
+                            .data = .{ .lhs = decl, .rhs = .none },
+                        });
+                    }
+                    // `export default enum Foo { ... }` — TS enum as default export.
+                    if (self.peek() == .kw_enum) {
+                        const decl = try @import("typescript.zig").parseEnumDeclaration(self);
+                        return self.addNode(.{
+                            .tag = .export_default_expr,
+                            .main_token = export_tok,
+                            .data = .{ .lhs = decl, .rhs = .none },
+                        });
+                    }
+                }
                 const expr = try self.parseAssignmentExpression();
                 try self.expectSemicolon();
                 return self.addNode(.{
@@ -4648,6 +4788,16 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
+        }
+
+        // Direct export `export { foo, bar }`: emit read references for local identifiers
+        // so the scope analysis knows these names are "used" (for no-unused-vars and
+        // no-useless-assignment which checks reference.identifier.parent.type === "ExportSpecifier").
+        for (specs) |spec_raw| {
+            const spec_lhs = self.nodeData(spec_raw).lhs;
+            if (spec_lhs != .none and self.nodeTag(@intFromEnum(spec_lhs)) == .property_ident) {
+                try self.emitReference(.read, spec_lhs);
+            }
         }
 
         return self.addNode(.{
@@ -4965,6 +5115,11 @@ pub const Parser = struct {
                             try self.emitDiagnostic(self.currentSpan(), "'await' is not allowed as a binding name in async/module", .{});
                         }
                         if (self.eat(.equal) != null) {
+                            // Set decl_name_text so named fn/class expressions in the
+                            // default get fn_expr_name binding (ESLint fn_expr_exceptions).
+                            const saved_decl_name = self.decl_name_text;
+                            if (self.emit_scope_events) self.decl_name_text = self.tokenText(key_tok);
+                            defer self.decl_name_text = saved_decl_name;
                             const default_val = try self.parseAssignmentExpression();
                             const pattern = try self.addNode(.{
                                 .tag = .assignment_pattern,
