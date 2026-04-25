@@ -88,6 +88,7 @@ const SemCtx = struct {
     events_published: *std.atomic.Value(usize),
     parse_done: *std.atomic.Value(bool),
     ast_ready: *std.atomic.Value(bool),
+    stats: *event_resolver.Stats,
 };
 
 fn semThread(ctx: *SemCtx) void {
@@ -98,7 +99,11 @@ fn semThread(ctx: *SemCtx) void {
         .streaming = .{
             .events_published = ctx.events_published,
             .parse_done = ctx.parse_done,
-            .node_count_hint = ctx.capacity_hint * 2,
+            // Tighter hint — capacity_hint is max_toks (≈ source.len/5), and
+            // actual nodes typically max out at max_toks*3/4. Passing 2× was
+            // bloating est_syms/est_scopes and the reachable arrays' memsets.
+            .node_count_hint = ctx.capacity_hint,
+            .stats = ctx.stats,
         },
     }) catch return;
     sem.deinit(ctx.alloc);
@@ -181,6 +186,7 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 .ast_view = &ast_view,
                 .ast_ready = &ast_ready,
             };
+            var stats = event_resolver.Stats{};
             var sem_c = SemCtx{
                 .alloc = arena_sem.allocator(),
                 .ast = &ast_view,
@@ -188,6 +194,7 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 .events_published = &events_pub,
                 .parse_done = &parse_done,
                 .ast_ready = &ast_ready,
+                .stats = &stats,
             };
 
             const t0 = std.Io.Timestamp.now(io, .boot);
@@ -199,6 +206,18 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             t_sem.join();
             const wall: u64 = @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
             if (wall < p3_min) p3_min = wall;
+            // Print stats once per file (last iteration's stats).
+            std.debug.print("    sem: loop={d}us spin={d}us post={d}us (resolve={d}+bindings={d}) events={d} scopes={d} syms={d} unresolved={d}\n", .{
+                stats.events_loop_ns / 1000,
+                stats.spin_ns / 1000,
+                stats.post_passes_ns / 1000,
+                stats.resolve_unresolved_ns / 1000,
+                stats.build_scope_bindings_ns / 1000,
+                stats.events_processed,
+                stats.scope_count,
+                stats.symbol_count,
+                stats.unresolved_count,
+            });
         }
     }
 

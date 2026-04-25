@@ -76,6 +76,25 @@ pub const StreamingHooks = struct {
     /// `ast.nodes.len` reflects the parser's still-growing count. Caller passes
     /// the same upper-bound hint used to size the parser's pre-allocated nodes.
     node_count_hint: usize,
+    /// Optional diagnostic counters — populated by resolveFull when set. Lets
+    /// callers see where sem time is going (loop vs spin vs post-passes) and
+    /// how often it parks the kernel via yield.
+    stats: ?*Stats = null,
+};
+
+pub const Stats = struct {
+    events_loop_ns: u64 = 0,
+    spin_ns: u64 = 0,
+    post_passes_ns: u64 = 0,
+    resolve_unresolved_ns: u64 = 0,
+    build_ref_ranges_ns: u64 = 0,
+    build_scope_bindings_ns: u64 = 0,
+    spin_count: u64 = 0,
+    yield_count: u64 = 0,
+    events_processed: u64 = 0,
+    unresolved_count: u64 = 0,
+    scope_count: u64 = 0,
+    symbol_count: u64 = 0,
 };
 
 /// Lightweight stats used by the bench.  The full `SemanticResult` is the
@@ -350,12 +369,19 @@ pub fn resolveFull(
     else
         events;
     var ev_visible: usize = if (opts.streaming) |s| s.events_published.load(.acquire) else events_view.len;
+
+    // Per-stage timing for diagnostic stats.
+    var loop_start_ts: std.c.timespec = undefined;
+    if (opts.streaming != null) _ = std.c.clock_gettime(.MONOTONIC, &loop_start_ts);
     main_event_loop: while (true) {
         if (ev_i >= ev_visible) {
             @branchHint(.cold);
             if (opts.streaming) |s| {
-                // Slow path: wait for the parser to publish more events.
+                var spin_start_ts: std.c.timespec = undefined;
+                if (s.stats != null) _ = std.c.clock_gettime(.MONOTONIC, &spin_start_ts);
                 var spins: u32 = 0;
+                var yields: u32 = 0;
+                var spin_iters: u64 = 0;
                 while (true) {
                     const v = s.events_published.load(.acquire);
                     if (v > ev_i) { ev_visible = v; break; }
@@ -364,10 +390,20 @@ pub fn resolveFull(
                         break;
                     }
                     spins += 1;
+                    spin_iters += 1;
                     if (spins < 100) std.atomic.spinLoopHint() else {
                         std.Thread.yield() catch {};
                         spins = 0;
+                        yields += 1;
                     }
+                }
+                if (s.stats) |st| {
+                    var spin_end_ts: std.c.timespec = undefined;
+                    _ = std.c.clock_gettime(.MONOTONIC, &spin_end_ts);
+                    const dt: u64 = @intCast((spin_end_ts.sec - spin_start_ts.sec) * std.time.ns_per_s + (spin_end_ts.nsec - spin_start_ts.nsec));
+                    st.spin_ns += dt;
+                    st.spin_count += spin_iters;
+                    st.yield_count += yields;
                 }
                 if (ev_i >= ev_visible) break :main_event_loop;
             } else break :main_event_loop;
@@ -766,6 +802,17 @@ pub fn resolveFull(
         }
     }
 
+    // Capture loop end time and start post-passes timer.
+    var post_start_ts: std.c.timespec = undefined;
+    if (opts.streaming) |s| {
+        _ = std.c.clock_gettime(.MONOTONIC, &post_start_ts);
+        if (s.stats) |st| {
+            const dt: u64 = @intCast((post_start_ts.sec - loop_start_ts.sec) * std.time.ns_per_s + (post_start_ts.nsec - loop_start_ts.nsec));
+            st.events_loop_ns = dt;
+            st.events_processed = ev_i;
+        }
+    }
+
     // Retry unresolved references — `var`/`function` declarations hoist to the
     // nearest var-scope, so a reference seen *before* the declaration in source
     // order was left unresolved during the main pass.  Walk the var-scope chain
@@ -829,7 +876,28 @@ pub fn resolveFull(
         try buildRefRanges(&symbols, &references, sa, allocator)
     else
         &.{};
+    var t_after_resolve: std.c.timespec = undefined;
+    if (opts.streaming) |s| {
+        if (s.stats) |st| {
+            _ = std.c.clock_gettime(.MONOTONIC, &t_after_resolve);
+            st.resolve_unresolved_ns = @intCast((t_after_resolve.sec - post_start_ts.sec) * std.time.ns_per_s + (t_after_resolve.nsec - post_start_ts.nsec));
+            st.unresolved_count = unresolved_refs.items.len;
+            st.scope_count = scopes.kinds.items.len;
+            st.symbol_count = symbols.names.items.len;
+        }
+    }
+
     try buildScopeBindings(&scopes, &symbols, allocator);
+
+    // Capture post-passes time.
+    if (opts.streaming) |s| {
+        if (s.stats) |st| {
+            var post_end_ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(.MONOTONIC, &post_end_ts);
+            st.build_scope_bindings_ns = @intCast((post_end_ts.sec - t_after_resolve.sec) * std.time.ns_per_s + (post_end_ts.nsec - t_after_resolve.nsec));
+            st.post_passes_ns = @intCast((post_end_ts.sec - post_start_ts.sec) * std.time.ns_per_s + (post_end_ts.nsec - post_start_ts.nsec));
+        }
+    }
 
     // finish() transfers the arena into the Result; do NOT call cpb.deinit() after.
     const cpb_result = cpb.finish();

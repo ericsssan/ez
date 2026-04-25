@@ -328,9 +328,12 @@ pub const Parser = struct {
         // and a realloc would invalidate them. Pre-size to safe upper bounds
         // so addNode / scope_events.push hit the appendAssumeCapacity fast path
         // every time.
-        const node_cap_factor: usize = if (streaming != null) 2 else 1;
-        const estimated_node_count: usize = @max(sizing_count * 3 / 4 * node_cap_factor, 1);
-        const estimated_extra_count: usize = @max(sizing_count * 3 / 4 * node_cap_factor, 1);
+        // Streaming mode: same pre-size as sequential (3/4 sizing_count). The
+        // 2x factor was speculative safety; in practice typescript.js etc. fit
+        // and the larger allocation pushes the node buffer out of L2 → causes
+        // the sem thread's post-passes to fall back to RAM bandwidth.
+        const estimated_node_count: usize = @max(sizing_count * 3 / 4, 1);
+        const estimated_extra_count: usize = @max(sizing_count * 3 / 4, 1);
         try p.nodes.ensureTotalCapacity(allocator, estimated_node_count);
         p.refreshNodePtrs();
         try p.extra_data.ensureTotalCapacity(allocator, estimated_extra_count);
