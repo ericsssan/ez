@@ -296,6 +296,19 @@ pub fn build(b: *std.Build) void {
     const real_step = b.step("test-real", "Real lex-parse pipeline benchmark");
     real_step.dependOn(&real_cmd.step);
 
+    // ── 3-stage real pipeline (lex || parse || sem) ──
+    const p3_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_pipeline_3stage.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    p3_mod.addImport("ez", test_mod);
+    const p3_exe = b.addExecutable(.{ .name = "test_pipeline_3stage", .root_module = p3_mod });
+    const p3_cmd = b.addRunArtifact(p3_exe);
+    p3_cmd.step.dependOn(b.getInstallStep());
+    const p3_step = b.step("test-3stage", "3-stage real pipeline benchmark");
+    p3_step.dependOn(&p3_cmd.step);
+
     // ── Pipeline crash isolation test ────────────────────────────────────────
     const test_pipeline_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_pipeline.zig"),

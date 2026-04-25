@@ -72,6 +72,10 @@ pub const Options = struct {
 pub const StreamingHooks = struct {
     events_published: *std.atomic.Value(usize),
     parse_done: *std.atomic.Value(bool),
+    /// Upper bound on node count — used to pre-size node_reachable etc. since
+    /// `ast.nodes.len` reflects the parser's still-growing count. Caller passes
+    /// the same upper-bound hint used to size the parser's pre-allocated nodes.
+    node_count_hint: usize,
 };
 
 /// Lightweight stats used by the bench.  The full `SemanticResult` is the
@@ -209,8 +213,9 @@ pub fn resolveFull(
     const skip_resolve = opts.skip_resolve;
     const skip_ref_ranges = opts.skip_ref_ranges;
 
-    // Pre-sized tables (same heuristics as semantic.zig).
-    const node_n: u32 = @intCast(ast.nodes.len);
+    // Pre-sized tables (same heuristics as semantic.zig). Streaming: use the
+    // upper-bound hint since ast.nodes.len is still growing on the parser thread.
+    const node_n: u32 = if (opts.streaming) |s| @intCast(s.node_count_hint) else @intCast(ast.nodes.len);
     const est_scopes = @max(16, node_n / 20);
     const est_syms   = @max(64, node_n / 6);
 
@@ -272,10 +277,13 @@ pub fn resolveFull(
     // (freed by scope_arena.deinit)
 
     // node_reachable — default all-alive (no CFG in event path yet).
-    const node_reachable = try allocator.alloc(u8, ast.nodes.len);
+    // In streaming mode, ast.nodes.len reflects the parser's growing count;
+    // size to the caller-provided upper bound instead.
+    const reach_size: usize = if (opts.streaming) |s| s.node_count_hint else ast.nodes.len;
+    const node_reachable = try allocator.alloc(u8, reach_size);
     errdefer allocator.free(node_reachable);
     @memset(node_reachable, 1);
-    const loop_exit_reachable = try allocator.alloc(u8, ast.nodes.len);
+    const loop_exit_reachable = try allocator.alloc(u8, reach_size);
     errdefer allocator.free(loop_exit_reachable);
     @memset(loop_exit_reachable, 1);
 
@@ -296,11 +304,17 @@ pub fn resolveFull(
     var stack: [256]ScopeId = undefined;
     var sp: u32 = 0;
 
-    const tok_starts = ast.tokens.items(.start);
-    const tok_lens = ast.tokens.items(.len);
-    const node_main_tokens = ast.nodes.items(.main_token);
-    const node_tags = ast.nodes.items(.tag);
-    const node_datas = ast.nodes.items(.data);
+    // In streaming mode, the parser is concurrently growing nodes/tokens.
+    // The slice's .len is racy, but the .ptr is stable (parser pre-sized
+    // both to safe upper bounds — guaranteed no realloc during parse).
+    // Reconstruct slices using the upper-bound hint for .len so bounds
+    // checks pass; per-event read of node[idx] is happens-after the
+    // event's release-store, so the data is committed.
+    const tok_starts = if (opts.streaming) |s| ast.tokens.items(.start).ptr[0..s.node_count_hint] else ast.tokens.items(.start);
+    const tok_lens = if (opts.streaming) |s| ast.tokens.items(.len).ptr[0..s.node_count_hint] else ast.tokens.items(.len);
+    const node_main_tokens = if (opts.streaming) |s| ast.nodes.items(.main_token).ptr[0..s.node_count_hint] else ast.nodes.items(.main_token);
+    const node_tags = if (opts.streaming) |s| ast.nodes.items(.tag).ptr[0..s.node_count_hint] else ast.nodes.items(.tag);
+    const node_datas = if (opts.streaming) |s| ast.nodes.items(.data).ptr[0..s.node_count_hint] else ast.nodes.items(.data);
     const source = ast.source;
     const tok_hashes = opts.tok_hashes;
     // Pending label text set by label_open (aux=1) before the loop_open it wraps.
@@ -327,9 +341,18 @@ pub fn resolveFull(
     // explicit creation here.
 
     var ev_i: usize = 0;
-    var ev_visible: usize = if (opts.streaming) |s| s.events_published.load(.acquire) else events.len;
+    // Streaming: events.len was 0 when the early ast view was captured.
+    // Reconstruct a slice over the pre-allocated buffer using the upper-bound
+    // hint as len so events[ev_i] doesn't panic on bounds. The actual valid
+    // range is enforced by the events_published atomic.
+    const events_view: []const Event = if (opts.streaming) |s|
+        events.ptr[0..(s.node_count_hint * 2)]
+    else
+        events;
+    var ev_visible: usize = if (opts.streaming) |s| s.events_published.load(.acquire) else events_view.len;
     main_event_loop: while (true) {
         if (ev_i >= ev_visible) {
+            @branchHint(.cold);
             if (opts.streaming) |s| {
                 // Slow path: wait for the parser to publish more events.
                 var spins: u32 = 0;
@@ -349,7 +372,7 @@ pub fn resolveFull(
                 if (ev_i >= ev_visible) break :main_event_loop;
             } else break :main_event_loop;
         }
-        const e = events[ev_i];
+        const e = events_view[ev_i];
         ev_i += 1;
         switch (e.kind) {
         .scope_open => {
@@ -636,13 +659,13 @@ pub fn resolveFull(
             const has_skip_path: bool = switch (loop_type) {
                 .do_while_stmt => false,
                 .for_stmt => blk: {
-                    const fd = ast.extraData(ast_mod.ForData, @intFromEnum(ast.nodes.items(.data)[@intFromEnum(n)].lhs));
+                    const fd = ast.extraData(ast_mod.ForData, @intFromEnum(node_datas[@intFromEnum(n)].lhs));
                     break :blk fd.condition != .none;
                 },
                 .while_stmt => blk: {
-                    const cond = ast.nodes.items(.data)[@intFromEnum(n)].lhs;
+                    const cond = node_datas[@intFromEnum(n)].lhs;
                     if (cond == .none) break :blk false;
-                    if (ast.nodes.items(.tag)[@intFromEnum(cond)] != .boolean_literal) break :blk true;
+                    if (node_tags[@intFromEnum(cond)] != .boolean_literal) break :blk true;
                     // while(true): condition is always truthy — no skip path
                     break :blk ast.tokenTag(ast.nodeMainToken(cond)) != .kw_true;
                 },

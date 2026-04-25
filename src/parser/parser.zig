@@ -238,6 +238,14 @@ pub const Parser = struct {
         /// after every top-level statement so a concurrent sem thread can
         /// consume events incrementally.
         events_publish_to: ?*std.atomic.Value(usize) = null,
+        /// Optional output slot for an early Ast view + a "ready" flag. Filled
+        /// by the parser after buffer pre-sizing, before parsing begins —
+        /// allows a concurrent sem thread to start with stable pointers into
+        /// the still-growing nodes/events arrays. The Ast.nodes/.scope_events
+        /// .len fields will lag behind the parser's actual count; sem must
+        /// use events_publish_to for the bound and node_count_hint for sizing.
+        ast_view_out: ?*Ast = null,
+        ast_ready: ?*std.atomic.Value(bool) = null,
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
@@ -315,8 +323,14 @@ pub const Parser = struct {
         // plus memcpy). In streaming mode tokens.len is the buffer capacity,
         // not the actual produced count — caller passes a tighter hint.
         const sizing_count = if (streaming) |s| s.capacity_hint else tokens.len;
-        const estimated_node_count: usize = @max(sizing_count * 3 / 4, 1);
-        const estimated_extra_count: usize = @max(sizing_count * 3 / 4, 1);
+        // Streaming mode: shared buffers must NEVER resize during parse,
+        // because a sem thread holds raw pointers (node_tags_ptr, events.items)
+        // and a realloc would invalidate them. Pre-size to safe upper bounds
+        // so addNode / scope_events.push hit the appendAssumeCapacity fast path
+        // every time.
+        const node_cap_factor: usize = if (streaming != null) 2 else 1;
+        const estimated_node_count: usize = @max(sizing_count * 3 / 4 * node_cap_factor, 1);
+        const estimated_extra_count: usize = @max(sizing_count * 3 / 4 * node_cap_factor, 1);
         try p.nodes.ensureTotalCapacity(allocator, estimated_node_count);
         p.refreshNodePtrs();
         try p.extra_data.ensureTotalCapacity(allocator, estimated_extra_count);
@@ -325,8 +339,12 @@ pub const Parser = struct {
         // of top-level statements). Pre-size generously to avoid growth.
         try p.scratch.ensureTotalCapacity(allocator, @max(1024, sizing_count / 16));
 
-        // Pre-size the event buffer if emission is on (≈ tokens.len / 3 events on typical JS).
-        if (p.emit_scope_events) try p.scope_events.ensureCapacity(allocator, sizing_count / 3);
+        // Pre-size the event buffer. Sequential: ≈ tokens.len/3 (typical).
+        // Streaming: 2× tokens.len (safe upper bound — never realloc during parse).
+        if (p.emit_scope_events) {
+            const event_cap = if (streaming != null) sizing_count * 2 else sizing_count / 3;
+            try p.scope_events.ensureCapacity(allocator, event_cap);
+        }
 
         // Pre-size ref_event_idx to estimated node count — direct array indexed
         // by NodeIndex. Sentinel 0xFFFFFFFF = "no event recorded". Auto-grows
@@ -341,6 +359,38 @@ pub const Parser = struct {
         // which is a raw tags_ptr load with no bounds check on the hot path —
         // could read an unwritten slot.
         if (streaming != null) p.refreshParsedLen();
+
+        // Streaming mode: publish an early Ast view so a concurrent sem thread
+        // can start. Pointers into nodes/scope_events/extra_data are stable
+        // (pre-sized to safe upper bounds, never realloc). The .len fields
+        // grow during parse — sem must read those via events_publish_to.
+        if (streaming) |s| {
+            if (s.ast_view_out) |out| {
+                // Construct an early Ast view with stable .ptr fields and
+                // .len fields set to the pre-allocated capacity (not 0).
+                // Indexing within `events_published` bounds is safe because
+                // the parser writes node[i] / event[i] before publishing,
+                // and sem reads via the atomic acquire.
+                var nodes_slice = p.nodes.slice();
+                nodes_slice.len = estimated_node_count;
+                const event_buf_cap = if (p.emit_scope_events) sizing_count * 2 else 0;
+                const events_full = if (p.emit_scope_events)
+                    p.scope_events.events.items.ptr[0..event_buf_cap]
+                else
+                    &[_]@import("scope_events.zig").Event{};
+                const extra_full = p.extra_data.items.ptr[0..estimated_extra_count];
+                out.* = .{
+                    .source = source,
+                    .tokens = p.tokens,
+                    .nodes = nodes_slice,
+                    .extra_data = extra_full,
+                    .errors = &.{},
+                    .scope_events = events_full,
+                    .tok_hashes = &.{},
+                };
+                if (s.ast_ready) |r| r.store(true, .release);
+            }
+        }
 
         try p.parseProgram();
 
@@ -1325,6 +1375,9 @@ pub const Parser = struct {
 
         // Open module/global scope for event stream.
         _ = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
+        // Streaming: publish the initial scope_open immediately so a concurrent
+        // sem thread sees the global code path before any other events.
+        if (self.events_publish_to) |p| p.store(self.scope_events.events.items.len, .release);
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
