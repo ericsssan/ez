@@ -1479,13 +1479,34 @@ pub const ParallelRunner = struct {
         defer big.deinit(self.allocator);
         defer small.deinit(self.allocator);
         if (enable_3stage) {
-            for (files) |path| {
+            // Cheap pre-check: stat the first SAMPLE_SIZE files. If none are
+            // big, skip the full size-partition (open+fstat+close is ~10µs
+            // per file, which adds up over thousands of small files). False
+            // negatives possible (a big file outside the sample falls into
+            // small pool and processes sequentially) but the small-file
+            // worker handles big files correctly via lintOneFile, just
+            // without 3-stage's wall savings.
+            const SAMPLE_SIZE = 32;
+            const sample_n = @min(SAMPLE_SIZE, files.len);
+            var any_big = false;
+            for (files[0..sample_n]) |path| {
                 const fd = openFileFast(path);
-                if (fd < 0) { try small.append(self.allocator, path); continue; }
+                if (fd < 0) continue;
                 const sz = fdSize(fd);
                 _ = std.c.close(fd);
-                if (sz > BIG_FILE_THRESHOLD) try big.append(self.allocator, path)
-                else try small.append(self.allocator, path);
+                if (sz > BIG_FILE_THRESHOLD) { any_big = true; break; }
+            }
+            if (any_big) {
+                for (files) |path| {
+                    const fd = openFileFast(path);
+                    if (fd < 0) { try small.append(self.allocator, path); continue; }
+                    const sz = fdSize(fd);
+                    _ = std.c.close(fd);
+                    if (sz > BIG_FILE_THRESHOLD) try big.append(self.allocator, path)
+                    else try small.append(self.allocator, path);
+                }
+            } else {
+                try small.appendSlice(self.allocator, files);
             }
         } else {
             // Treat everything as small — no size partition, no 3-stage.
@@ -1514,43 +1535,30 @@ pub const ParallelRunner = struct {
             else
                 @min(small.items.len, cpu_count);
 
-        // Spawn the (small_workers - 1) extra small-file AIO workers; the calling
-        // thread will run the last chunk inline at the end.
+        // Small files: shared work-stealing cursor instead of static chunks.
+        // Static chunking lets some threads finish early and idle while others
+        // lag (size variance across files). Cursor-based work-stealing keeps
+        // every thread busy until the last file is done. Calling thread also
+        // joins the work-stealing pool after dispatching big workers.
+        var small_ctx = WorkStealCtx{
+            .runner = self,
+            .io = io,
+            .files = small.items,
+            .cursor = std.atomic.Value(u32).init(0),
+        };
         const extra_small = if (small.items.len > 0) small_workers - 1 else 0;
         var small_threads_buf: []std.Thread = &[_]std.Thread{};
         if (extra_small > 0) small_threads_buf = try self.allocator.alloc(std.Thread, extra_small);
         defer if (small_threads_buf.len > 0) self.allocator.free(small_threads_buf);
         const small_threads = small_threads_buf;
 
-        var small_ctxs_buf: []AioWorkerCtx = &[_]AioWorkerCtx{};
-        if (small.items.len > 0) small_ctxs_buf = try self.allocator.alloc(AioWorkerCtx, small_workers);
-        defer if (small_ctxs_buf.len > 0) self.allocator.free(small_ctxs_buf);
-
         var small_spawned: usize = 0;
-        var calling_chunk: ?[]const []const u8 = null;
-        if (small.items.len > 0) {
-            const chunk = (small.items.len + small_workers - 1) / small_workers;
-            for (0..small_workers) |t| {
-                const start = t * chunk;
-                if (start >= small.items.len) break;
-                const end = @min(start + chunk, small.items.len);
-                small_ctxs_buf[t] = .{
-                    .runner = self,
-                    .io = io,
-                    .files = small.items[start..end],
-                };
-                if (t == 0) {
-                    // Calling thread will run this chunk after dispatching the
-                    // big-file worker. Saves one std.Thread.spawn round-trip.
-                    calling_chunk = small.items[start..end];
-                    continue;
-                }
-                small_threads[t - 1] = std.Thread.spawn(.{}, aioWorkerThread, .{&small_ctxs_buf[t]}) catch {
-                    aioWorkerThread(&small_ctxs_buf[t]);
-                    continue;
-                };
-                small_spawned += 1;
-            }
+        for (0..extra_small) |t| {
+            small_threads[t] = std.Thread.spawn(.{}, threadWorkerWS, .{&small_ctx}) catch {
+                threadWorkerWS(&small_ctx);
+                continue;
+            };
+            small_spawned += 1;
         }
 
         // Spawn N big-file workers, all sharing one cursor over big.items.
@@ -1571,12 +1579,10 @@ pub const ParallelRunner = struct {
             big_spawned += 1;
         }
 
-        // Calling thread runs its small-file chunk concurrently with everyone
-        // else. If there are no small files but big ones exist, calling thread
-        // also pitches in on big files.
-        if (calling_chunk) |chunk| {
-            small_ctxs_buf[0] = .{ .runner = self, .io = io, .files = chunk };
-            aioWorkerThread(&small_ctxs_buf[0]);
+        // Calling thread joins the small-file work-stealing pool. If there
+        // are no small files but big files exist, it pitches in on big files.
+        if (small.items.len > 0) {
+            threadWorkerWS(&small_ctx);
         } else if (big.items.len > 0) {
             bigQueueWorker(&big_ctx);
         }
