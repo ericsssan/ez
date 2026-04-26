@@ -4219,8 +4219,19 @@ pub const Parser = struct {
             .hash => {
                 // Private field: #name (keywords are valid private names too: #await, #yield, etc.)
                 const hash_tok = self.advance();
+                const hash_start = self.tok_starts_ptr[hash_tok];
                 if (self.peek() == .identifier or self.peek().isKeyword() or self.peek() == .escaped_keyword) {
-                    _ = self.advance(); // consume the name
+                    const ident_tok = self.tok_i;
+                    const ident_start = self.tok_starts_ptr[ident_tok];
+                    if (ident_start != hash_start + 1) {
+                        try self.emitError("No whitespace allowed between `#` and identifier");
+                    }
+                    // #constructor is forbidden as private name.
+                    const ident_text = self.tokenText(ident_tok);
+                    if (std.mem.eql(u8, ident_text, "constructor")) {
+                        try self.emitError("'#constructor' is not a valid private name");
+                    }
+                    _ = self.advance();
                 }
                 return self.addNode(.{
                     .tag = .identifier,
