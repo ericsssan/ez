@@ -1731,6 +1731,11 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                         try p.emitError("Rest parameter must be last");
                         return p.makeErrorNode();
                     }
+                    // Trailing comma after rest is forbidden.
+                    if (!p.is_ts and has_trailing_comma) {
+                        try p.emitError("Rest parameter must not have a trailing comma");
+                        return p.makeErrorNode();
+                    }
                     // Validate rest target contents (reject literals in patterns)
                     if (!p.is_ts) {
                         const rest_data = p.node_data_ptr[param_node.toInt()];
