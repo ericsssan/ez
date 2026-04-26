@@ -115,33 +115,40 @@ pub fn parseConditionalExpression(p: *Parser) Error!NodeIndex {
 
 fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
     var left = try parsePrefixExpression(p);
+    // Hoist: language is set once per parse call. Save the field load on
+    // every iter of the Pratt loop (millions of times across a large file).
+    const is_ts = p.language.isTs();
 
     while (true) {
         const tag = p.peek();
         if (tag == .eof) break;
 
-        // TS: `as` type assertion (postfix, same prec as relational)
-        if (tag == .kw_as and p.language.isTs()) {
-            if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
-            left = try parseTsTypePostfix(p, left, .ts_as_expr);
-            continue;
-        }
-
-        // TS: `satisfies` type check (postfix, same prec as relational)
-        if (tag == .kw_satisfies and p.language.isTs()) {
-            if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
-            left = try parseTsTypePostfix(p, left, .ts_satisfies_expr);
-            continue;
-        }
-
-        // TS: `!` non-null assertion (postfix, no newline before)
-        if (tag == .bang and p.language.isTs() and !p.isOnNewLine()) {
-            // Only treat as non-null assertion if it wouldn't make sense as logical not
-            // (i.e., we're not at the start of an expression)
-            const post_prec = Precedence.postfix;
-            if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
-            left = try parseTsNonNullExpression(p, left);
-            continue;
+        // TS-specific postfix forms collapsed under a single is_ts gate.
+        // Predicted-not-taken for plain JS files (~50% of corpus); when
+        // taken, the inner tag dispatch is a tight switch.
+        if (is_ts) {
+            switch (tag) {
+                .kw_as => {
+                    if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+                    left = try parseTsTypePostfix(p, left, .ts_as_expr);
+                    continue;
+                },
+                .kw_satisfies => {
+                    if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+                    left = try parseTsTypePostfix(p, left, .ts_satisfies_expr);
+                    continue;
+                },
+                .bang => if (!p.isOnNewLine()) {
+                    const post_prec = Precedence.postfix;
+                    if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
+                    left = try parseTsNonNullExpression(p, left);
+                    continue;
+                },
+                .less_than => {
+                    if (tryParseTsTypeArguments(p)) continue;
+                },
+                else => {},
+            }
         }
 
         // Postfix ++ / -- require no newline before the operator.
@@ -157,7 +164,7 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             if (@intFromEnum(Precedence.call) < @intFromEnum(min_prec)) break;
             // Arrow functions are not valid call/member targets without parens
             // In TS mode, skip this check (TypeScript handles it at type-check level)
-            if (!p.language.isTs() and tag == .l_paren and left != .none) {
+            if (!is_ts and tag == .l_paren and left != .none) {
                 const left_tag = p.node_tags_ptr[left.toInt()];
                 if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
                     try p.emitError("Arrow function is not directly callable (wrap in parens)");
@@ -170,12 +177,8 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             continue;
         }
 
-        // TS: `expr<Type>()` — generic call expression.
-        // If `<` is followed by what looks like type arguments and then `(`, `)`, etc.,
-        // parse as type arguments (skip them) and continue to the call.
-        if (tag == .less_than and p.language.isTs()) {
-            if (tryParseTsTypeArguments(p)) continue;
-        }
+        // (TS `<Type>` generic call handled in the consolidated `is_ts`
+        // switch above.)
 
         const infix_prec = getInfixPrecedence(p, tag);
         if (infix_prec == .none) break;
