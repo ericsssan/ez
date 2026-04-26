@@ -387,18 +387,18 @@ pub fn tokenizeWithBuf(
 
     // Bound for token capacity. Empirical token density in conformance
     // fixtures peaks around n/2 (eg `;;` heavy code), well above the
-    // typical n/5. n/2 + 128 covers all observed cases without the
-    // n+1 worst-case waste (typescript.js: 76MB instead of 153MB).
-    const max_toks: u32 = @max(n / 2 + 128, 128);
+    // Initial cap n/4+128 covers ~99.9% of real-world files. Pathological
+    // dense files (e.g. parse5's named_entity_trie.js at 0.78 tok/byte)
+    // exceed; we double-and-grow on overflow at outer loop boundary.
+    var cap: u32 = @max(n / 4 + 128, 128);
     var tokens: TokenList = if (tokens_buf) |b| b.* else TokenList{};
-    if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, max_toks);
-    const ts_init = tokens.slice();
+    if (tokens_buf == null) try tokens.ensureTotalCapacity(alloc, cap);
+    var ts_init = tokens.slice();
     var tag_ptr   = ts_init.items(.tag).ptr;
     var start_ptr = ts_init.items(.start).ptr;
     var len_ptr   = ts_init.items(.len).ptr;
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
     var tok_n: usize = 0;
-    // which empirically covers all observed corpora; tokens never overflow
     const cm_cap: u32 = @max(n / 200 + 16, 16);
     var cm_s = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
     var cm_e = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
@@ -422,6 +422,18 @@ pub fn tokenizeWithBuf(
     const vtb: V16 = @splat('\t');
 
     outer: while (pos < n) {
+        // Capacity guard: Phase 2 fast path emits up to 16 tokens per chunk,
+        // Phase 3 emits 1. 64-token margin covers worst case + slack.
+        if (tok_n + 64 > cap) {
+            tokens.len = tok_n;
+            cap *= 2;
+            tokens.ensureTotalCapacity(alloc, cap) catch return error.OutOfMemory;
+            ts_init = tokens.slice();
+            tag_ptr   = ts_init.items(.tag).ptr;
+            start_ptr = ts_init.items(.start).ptr;
+            len_ptr   = ts_init.items(.len).ptr;
+            nl_ptr    = ts_init.items(.has_newline_before).ptr;
+        }
         const byte = src[pos];
 
         // ══════════════════════════════════════════════════════════════════════
