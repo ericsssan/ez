@@ -569,6 +569,21 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     try p.emitError("Invalid destructuring target");
                     return error.ParseError;
                 }
+                // Strict mode: eval/arguments cannot be destructuring targets.
+                if (child_tag == .identifier and p.in_strict) {
+                    const ctok = p.node_main_token_ptr[child.toInt()];
+                    try p.checkStrictAssignTarget(ctok);
+                }
+                // Recurse into nested patterns / assignment_pattern defaults.
+                if (child_tag == .array_pattern or child_tag == .object_pattern or
+                    child_tag == .array_literal or child_tag == .object_literal)
+                {
+                    try validatePattern(p, child);
+                }
+                if (child_tag == .assignment_pattern) {
+                    const ad = p.node_data_ptr[child.toInt()];
+                    try validatePattern(p, ad.lhs);
+                }
             }
         }
     }
@@ -650,6 +665,17 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     if (sp_key_tag == .number_literal or sp_key_tag == .string_literal) {
                         try p.emitError("Invalid shorthand property in destructuring");
                         return error.ParseError;
+                    }
+                    // Strict mode: shorthand `{eval}` / `{arguments}` invalid.
+                    // Module/strict: `{yield}` is reserved.
+                    if (sp_key_tag == .identifier) {
+                        const sp_tok = p.node_main_token_ptr[sp_data.lhs.toInt()];
+                        if (p.in_strict) try p.checkStrictAssignTarget(sp_tok);
+                        const sp_text = p.tokenText(sp_tok);
+                        if ((p.in_strict or p.is_module) and std.mem.eql(u8, sp_text, "yield")) {
+                            try p.emitError("'yield' is reserved");
+                            return error.ParseError;
+                        }
                     }
                 }
             }
