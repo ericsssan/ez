@@ -988,14 +988,7 @@ pub const LexIter = struct {
                 },
                 '\'', '"' => {
                     end = Lex.stringEnd(self.src, p);
-                    // stringEnd returns position AFTER close quote on success,
-                    // OR position AT raw newline / EOF on unterminated string.
-                    // Detect: closed if end > p+1 and src[end-1] == quote.
-                    if (end <= p + 1 or self.src[end - 1] != byte) {
-                        tag = .invalid;
-                    } else {
-                        tag = .string_literal;
-                    }
+                    tag = .string_literal;
                 },
                 '`' => {
                     // Template literal. Simplified: emits one .template_literal
