@@ -283,6 +283,8 @@ fn isErrorTestFromOutput(io: std.Io, allocator: std.mem.Allocator, input_path: [
 
 /// Quick scan for top-level import/export/await to detect module mode.
 fn sourceHasModuleSyntax(source: []const u8) bool {
+    // import.meta anywhere implies module mode.
+    if (std.mem.indexOf(u8, source, "import.meta") != null) return true;
     var i: usize = 0;
     while (i < source.len) {
         const c = source[i];

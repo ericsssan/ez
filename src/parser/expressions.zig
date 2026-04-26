@@ -3323,6 +3323,9 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
             (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "meta")))
         {
             const meta_tok = p.advance(); // consume `meta`
+            if (!p.is_module and !p.is_ts) {
+                try p.emitError("'import.meta' is only valid in modules");
+            }
             const meta_id_node = try p.addNode(.{
                 .tag = .property_ident,
                 .main_token = import_tok,
