@@ -213,6 +213,10 @@ pub const Parser = struct {
     in_strict: bool,
     in_block: bool,
     in_class_field: bool,
+    /// One-shot flag: next parseBlock call is a FunctionBody StatementList.
+    /// FunctionBody uses TopLevelLexicallyDeclaredNames — FunctionDeclarations
+    /// don't participate in the lex/lex redecl check there.
+    is_fn_body_block: bool,
     in_constructor: bool,
     in_method: bool,
     in_conditional_extends: bool,
@@ -379,6 +383,7 @@ pub const Parser = struct {
             .in_strict = is_module_file,
             .in_block = false,
             .in_class_field = false,
+            .is_fn_body_block = false,
             .in_constructor = false,
             .in_method = false,
             .in_conditional_extends = false,
@@ -1552,7 +1557,7 @@ pub const Parser = struct {
         if (self.emit_scope_events) {
             const evs = self.scope_events.events.items[program_scope_ev + 1 ..];
             var depth: i32 = 0;
-            const Entry = struct { name: []const u8, kind: BindingKindU8 };
+            const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
             var names_buf: [128]Entry = undefined;
             var names_n: usize = 0;
             const allow_fn_dup = !self.is_module and !self.in_strict;
@@ -1563,15 +1568,20 @@ pub const Parser = struct {
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
                         if (bk == .@"var" or bk == .parameter) continue;
+                        // Sloppy script top-level: function decls hoist as var-bindings;
+                        // any flavor pair coexists. Module: strict lexical check applies.
+                        if (!self.is_module and bk == .function_decl) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
                         if (tok_start + tok_len > self.source.len) continue;
                         const name = self.source[tok_start..tok_start + tok_len];
+                        const flavor: u32 = if (bk == .function_decl) self.classifyFnDeclFlavor(main_tok_idx) else 0;
                         var dup = false;
                         for (names_buf[0..names_n]) |existing| {
                             if (!std.mem.eql(u8, existing.name, name)) continue;
-                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl) continue;
+                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl
+                                and existing.fn_flavor == 0 and flavor == 0) continue;
                             dup = true;
                             break;
                         }
@@ -1579,7 +1589,7 @@ pub const Parser = struct {
                             try self.emitDiagnostic(self.currentSpan(),
                                 "Identifier '{s}' has already been declared", .{name});
                         } else if (names_n < names_buf.len) {
-                            names_buf[names_n] = .{ .name = name, .kind = bk };
+                            names_buf[names_n] = .{ .name = name, .kind = bk, .fn_flavor = flavor };
                             names_n += 1;
                         }
                     },
@@ -1836,12 +1846,29 @@ pub const Parser = struct {
     }
 
     /// Parse `{ ... }`.
+    /// Classify a FunctionDeclaration's flavor by inspecting tokens around its name.
+    /// Only plain (non-async, non-generator) FunctionDeclaration enjoys B.3.2 legacy semantics.
+    pub fn classifyFnDeclFlavor(self: *Parser, name_tok: TokenIndex) u32 {
+        // 0 = plain, 1 = async, 2 = generator, 3 = async-generator
+        var t: i64 = @intCast(name_tok);
+        while (t >= 0 and self.tokenTagAt(@intCast(t)) != .kw_function) : (t -= 1) {}
+        if (t < 0) return 0;
+        const fn_tok: TokenIndex = @intCast(t);
+        const is_gen = (fn_tok + 1 < self.tokens.len) and self.tokenTagAt(fn_tok + 1) == .asterisk;
+        const is_async = fn_tok > 0 and self.tokenTagAt(fn_tok - 1) == .kw_async;
+        return (if (is_async) @as(u32, 1) else 0) | (if (is_gen) @as(u32, 2) else 0);
+    }
+
     pub fn parseBlockStatement(self: *Parser) Error!NodeIndex {
         const lbrace = try self.expect(.l_brace);
         const prev_in_block = self.in_block;
         self.in_block = true;
         defer self.in_block = prev_in_block;
         const scope_ev = try self.emitScopeOpen(.block, .none);
+        // Capture FunctionBody flag BEFORE parsing inner statements — nested
+        // parseBlockStatement calls would otherwise consume it.
+        const is_fn_body = self.is_fn_body_block;
+        self.is_fn_body_block = false;
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
 
@@ -1852,7 +1879,7 @@ pub const Parser = struct {
         if (self.emit_scope_events) {
             var depth: i32 = 0;
             const evs = self.scope_events.events.items[scope_ev + 1 ..];
-            const Entry = struct { name: []const u8, kind: BindingKindU8 };
+            const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
             var names_buf: [64]Entry = undefined;
             var names_n: usize = 0;
             const allow_fn_dup = !self.is_module and !self.in_strict;
@@ -1866,16 +1893,20 @@ pub const Parser = struct {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
                         // var/parameter never participate in lexical-redecl checks here.
                         if (bk == .@"var" or bk == .parameter) continue;
+                        // FunctionBody: function decls skip redecl check (TopLevelLexicallyDeclaredNames).
+                        if (is_fn_body and bk == .function_decl) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
                         if (tok_start + tok_len > self.source.len) continue;
                         const name = self.source[tok_start..tok_start + tok_len];
+                        const flavor: u32 = if (bk == .function_decl) self.classifyFnDeclFlavor(main_tok_idx) else 0;
                         var dup = false;
                         for (names_buf[0..names_n]) |existing| {
                             if (!std.mem.eql(u8, existing.name, name)) continue;
-                            // B.3.3: in sloppy script, two FunctionDeclaration in the same block coexist.
-                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl) continue;
+                            // B.3.3: in sloppy script, only plain FunctionDeclaration pairs are allowed.
+                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl
+                                and existing.fn_flavor == 0 and flavor == 0) continue;
                             dup = true;
                             break;
                         }
@@ -1883,7 +1914,7 @@ pub const Parser = struct {
                             try self.emitDiagnostic(self.currentSpan(),
                                 "Identifier '{s}' has already been declared", .{name});
                         } else if (names_n < names_buf.len) {
-                            names_buf[names_n] = .{ .name = name, .kind = bk };
+                            names_buf[names_n] = .{ .name = name, .kind = bk, .fn_flavor = flavor };
                             names_n += 1;
                         }
                     },
@@ -3454,6 +3485,7 @@ pub const Parser = struct {
             return decl_node;
         }
 
+        self.is_fn_body_block = true;
         const body = try self.parseBlockStatement();
         try self.emitScopeClose(.none); // close function scope
 
@@ -4054,6 +4086,7 @@ pub const Parser = struct {
                     });
                 }
 
+                self.is_fn_body_block = true;
                 const body = try self.parseBlockStatement();
 
                 const method_extra = try self.addExtra(ast.MethodData, .{
@@ -4258,6 +4291,7 @@ pub const Parser = struct {
                 return no_body_node;
             }
 
+            self.is_fn_body_block = true;
             const body = try self.parseBlockStatement();
             try self.emitScopeClose(.none); // close method scope
 

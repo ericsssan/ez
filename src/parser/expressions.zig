@@ -4408,6 +4408,9 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
         }
     }
 
+    const prev_fn_body = p.is_fn_body_block;
+    p.is_fn_body_block = true;
+    defer p.is_fn_body_block = prev_fn_body;
     return p.parseBlock();
 }
 
