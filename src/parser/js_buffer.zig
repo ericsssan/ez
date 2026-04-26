@@ -165,10 +165,18 @@ pub const SemanticHeader = extern struct {
     scope_through_ref_starts_offset: u32 = 0,  // u32[scope_count]
     scope_through_ref_counts_offset: u32 = 0,  // u32[scope_count]
     scope_through_ref_ids_offset: u32 = 0,     // u32[total_through]
+
+    // Indirect ref-by-symbol index: ref_by_sym[start..end] yields ReferenceIds
+    // for a given symbol. Parallel to symbol_ref_starts/ends offsets.
+    sym_ref_indirect_offset: u32 = 0,          // u32[ref_count]
+
+    // Scope → symbols CSR: sym IDs sorted by scope (counting sort).
+    // scope_bindings_start/count index into this array, not the raw sym table.
+    scope_sym_ids_offset: u32 = 0,             // u32[sym_count]
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 168);
+    std.debug.assert(@sizeOf(SemanticHeader) == 176);
     std.debug.assert(@offsetOf(SemanticHeader, "ref_write_expr_ids_offset") == 84);
     std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 148);
     std.debug.assert(@offsetOf(SemanticHeader, "symbol_kinds_offset") == 152);
@@ -375,6 +383,35 @@ pub fn writeSemanticData(
     } else {
         @memset(scope_ref_starts, 0);
         @memset(scope_ref_counts, 0);
+    }
+
+    // ── Scope → symbols CSR (counting sort of symbols by scope) ───────
+    // Provides a correct indirection array so that scope_bindings_start[s]
+    // indexes into scope_sym_ids (not the raw symbol table) and yields the
+    // actual symbols belonging to scope s.  Without this, buildScopeBindings
+    // would silently assign symbols to the wrong scope when symbols are stored
+    // in declaration order rather than sorted by scope.
+    const scope_sym_ids = try alloc.alloc(u32, symbol_count);
+    if (scope_count > 0 and symbol_count > 0) {
+        // Step 1: count syms per scope (reuse existing scope_bindings_count)
+        // scope_bindings_count is already correct; re-derive starts via prefix sum.
+        var sym_cursor = try alloc.alloc(u32, scope_count);
+        defer alloc.free(sym_cursor);
+        var sym_total: u32 = 0;
+        for (0..scope_count) |i| {
+            scope_bindings_start[i] = sym_total;
+            sym_cursor[i] = sym_total;
+            sym_total += scope_bindings_count[i];
+        }
+        // Step 2: scatter sym indices into sorted order
+        for (0..symbol_count) |i| {
+            const ssc = sem.symbols.scope_ids.items[i];
+            const s = if (ssc == .none) none32 else @intFromEnum(ssc);
+            if (s < scope_count) {
+                scope_sym_ids[sym_cursor[s]] = @intCast(i);
+                sym_cursor[s] += 1;
+            }
+        }
     }
 
     // ── Scope → through-refs CSR ───────────────────────────────────
@@ -606,6 +643,15 @@ pub fn writeSemanticData(
     sem_header.scope_through_ref_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_starts.ptr) else 0;
     sem_header.scope_through_ref_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_counts.ptr) else 0;
     sem_header.scope_through_ref_ids_offset = if (total_through > 0) ptrOffsetPub(buf, scope_through_ref_ids.ptr) else 0;
+
+    sem_header.scope_sym_ids_offset = if (symbol_count > 0) ptrOffsetPub(buf, scope_sym_ids.ptr) else 0;
+
+    // Serialize ref_by_sym indirect index (ReferenceId → u32).
+    if (sem.ref_by_sym.len > 0) {
+        const ref_by_sym_u32 = try alloc.alloc(u32, sem.ref_by_sym.len);
+        for (sem.ref_by_sym, 0..) |r, i| ref_by_sym_u32[i] = r.toInt();
+        sem_header.sym_ref_indirect_offset = ptrOffsetPub(buf, ref_by_sym_u32.ptr);
+    }
 
     return ptrOffsetPub(buf, header_mem.ptr);
 }
@@ -1407,7 +1453,9 @@ pub fn computeNodePositions(
                 // For property definitions in class bodies, only include the first `;`
                 // For specifiers: stop before `,` `}` `)` `from` to not consume siblings or import tail
                 if (is_specifier and (tt == .comma or tt == .r_brace or tt == .r_paren or tt == .kw_from)) break;
-                if (is_expr_stmt and (tt == .kw_else or tt == .kw_catch or tt == .kw_finally or tt == .kw_while)) break;
+                // `else` after any statement means the outer if-else owns it; don't include.
+                if (tt == .kw_else) break;
+                if (is_expr_stmt and (tt == .kw_catch or tt == .kw_finally or tt == .kw_while)) break;
                 const te = tok_ends[j];
                 if (te > ext_end) ext_end = te;
                 if ((is_expr_stmt or is_property) and tt == .semicolon) break;

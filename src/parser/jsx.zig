@@ -77,6 +77,11 @@ fn parseJsxOpeningElement(p: *Parser) Error!NodeIndex {
     // Parse element name — identifier or dotted name like Foo.Bar.Baz.
     const name_node = try parseJsxDottedName(p);
 
+    // Emit a read reference for component names (uppercase first letter).
+    // Lowercase names are HTML intrinsics; uppercase names are variable references.
+    // For member expressions like <Foo.Bar />, only the root <Foo> is a variable.
+    try emitJsxComponentRef(p, name_node);
+
     // Parse attributes until `>` or `/>`.
     const scratch_top = p.scratchLen();
 
@@ -579,4 +584,30 @@ fn parseJsxFragment(p: *Parser) Error!NodeIndex {
 // =====================================================================
 // Helpers
 // =====================================================================
+
+/// Emit a read reference for JSX component names.
+/// In JSX, uppercase-initial names (e.g. <Foo>, <Foo.Bar>) are variable
+/// references, not HTML intrinsics. We emit a .read reference so the scope
+/// analysis tracks that the variable is used.
+fn emitJsxComponentRef(p: *Parser, name_node: NodeIndex) !void {
+    if (!p.emit_scope_events) return;
+    // Walk down to the root identifier (lhs of member expressions).
+    var root = name_node;
+    while (true) {
+        if (root == .none) return;
+        const idx = @intFromEnum(root);
+        const t = p.nodeTag(idx);
+        if (t == .jsx_identifier) break;
+        if (t == .jsx_member_expr) {
+            root = p.nodeData(idx).lhs;
+        } else {
+            return; // namespaced names (foo:Bar) — no variable reference
+        }
+    }
+    // Only uppercase-initial identifiers are component references.
+    const root_tok = p.node_main_token_ptr[@intFromEnum(root)];
+    const text = p.tokenText(root_tok);
+    if (text.len == 0 or text[0] < 'A' or text[0] > 'Z') return;
+    try p.emitReference(.read, root);
+}
 

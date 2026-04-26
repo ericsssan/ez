@@ -790,7 +790,7 @@ pub fn tokenizeWithBuf(
         at_line_start = false;
         // When a keyword is used as a property name (preceded by `.`), treat it as
         // an identifier for regex disambiguation: `a.in / b` is division, not regex.
-        prev_kind = if (tag.isKeyword() and prev_kind == .dot) .identifier else tag;
+        prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
         pos       = end;
         if (opts.publish_to) |p| {
             if ((tok_n & (PUBLISH_BATCH - 1)) == 0) p.store(tok_n, .release);

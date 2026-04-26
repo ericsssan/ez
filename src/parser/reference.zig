@@ -41,19 +41,24 @@ pub const ReferenceKind = enum {
     read_write,
     /// `typeof x` — does not throw ReferenceError for undeclared identifiers
     type_of,
+    /// Initial write at a `let`/`const`/`var` declarator with an initializer
+    /// (`let x = 1`). Counts as a write for liveness purposes (no-useless-assignment)
+    /// but does NOT set `is_written` on the symbol — so `prefer-const` can still
+    /// detect variables that are never reassigned after their declaration.
+    write_init,
 
     /// Returns true when this reference reads from the symbol.
     pub fn isRead(self: ReferenceKind) bool {
         return switch (self) {
             .read, .read_write, .type_of => true,
-            .write => false,
+            .write, .write_init => false,
         };
     }
 
     /// Returns true when this reference writes to the symbol.
     pub fn isWrite(self: ReferenceKind) bool {
         return switch (self) {
-            .write, .read_write => true,
+            .write, .read_write, .write_init => true,
             .read, .type_of => false,
         };
     }
@@ -82,6 +87,9 @@ pub const ReferenceTable = struct {
     /// assignment, VariableDeclarator init, ForIn/Of iterable). `.none` for
     /// read-only references and update expressions (x++, x--).
     write_expr_ids: std.ArrayList(ast.NodeIndex),
+    /// Segment ID at which each reference occurs (set by event_resolver during
+    /// code-path analysis; std.math.maxInt(u32) = NONE_SEG if no code path active).
+    seg_ids: std.ArrayList(u32),
 
     /// Allocator used for all internal arrays.
     gpa: std.mem.Allocator,
@@ -93,6 +101,7 @@ pub const ReferenceTable = struct {
             .node_ids = .empty,
             .scope_ids = .empty,
             .write_expr_ids = .empty,
+            .seg_ids = .empty,
             .gpa = allocator,
         };
     }
@@ -103,6 +112,7 @@ pub const ReferenceTable = struct {
         try self.node_ids.ensureTotalCapacity(self.gpa, n);
         try self.scope_ids.ensureTotalCapacity(self.gpa, n);
         try self.write_expr_ids.ensureTotalCapacity(self.gpa, n);
+        try self.seg_ids.ensureTotalCapacity(self.gpa, n);
     }
 
     pub fn deinit(self: *ReferenceTable) void {
@@ -111,6 +121,7 @@ pub const ReferenceTable = struct {
         self.node_ids.deinit(self.gpa);
         self.scope_ids.deinit(self.gpa);
         self.write_expr_ids.deinit(self.gpa);
+        self.seg_ids.deinit(self.gpa);
     }
 
     /// Add a new reference. The reference starts unresolved (symbol_id = .none).
@@ -136,6 +147,7 @@ pub const ReferenceTable = struct {
         self.node_ids.appendAssumeCapacity(node_id);
         self.scope_ids.appendAssumeCapacity(scope_id);
         self.write_expr_ids.appendAssumeCapacity(write_expr);
+        self.seg_ids.appendAssumeCapacity(std.math.maxInt(u32));
 
         return ReferenceId.fromInt(index);
     }
@@ -173,6 +185,16 @@ pub const ReferenceTable = struct {
     /// Get the scope in which this reference occurs.
     pub fn getScope(self: *const ReferenceTable, ref_id: ReferenceId) ScopeId {
         return self.scope_ids.items[ref_id.toInt()];
+    }
+
+    /// Get the segment ID where this reference occurs (std.math.maxInt(u32) = NONE_SEG).
+    pub fn getSegId(self: *const ReferenceTable, ref_id: ReferenceId) u32 {
+        return self.seg_ids.items[ref_id.toInt()];
+    }
+
+    /// Set the segment ID for a reference (called by event_resolver after addReference).
+    pub fn setSegId(self: *ReferenceTable, ref_id: ReferenceId, seg_id: u32) void {
+        self.seg_ids.items[ref_id.toInt()] = seg_id;
     }
 
     /// Total number of tracked references.
@@ -248,6 +270,7 @@ pub const ReferenceTable = struct {
         try applyPermutation(ast.NodeIndex, self.node_ids.items,      new_pos, allocator);
         try applyPermutation(ScopeId,       self.scope_ids.items,     new_pos, allocator);
         try applyPermutation(ast.NodeIndex, self.write_expr_ids.items, new_pos, allocator);
+        try applyPermutation(u32,           self.seg_ids.items,       new_pos, allocator);
     }
 
     /// In-place permute `arr[new_pos[i]] = arr[i]` using cycle decomposition.

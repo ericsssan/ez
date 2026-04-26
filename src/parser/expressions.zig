@@ -1640,6 +1640,11 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     const single_arrow_ev = try p.emitScopeOpen(.function, .none);
     try p.emitDeclare(.parameter, param_node);
 
+    // Reset decl_name_text: arrow body should not inherit outer binding name.
+    const saved_decl_name_arrow = p.decl_name_text;
+    p.decl_name_text = &.{};
+    defer p.decl_name_text = saved_decl_name_arrow;
+
     const saved_fn = p.in_function;
     const saved_async = p.in_async;
     p.in_function = true;
@@ -1841,6 +1846,7 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     defer p.in_async = saved_async_gs;
 
     // Parse function part
+    const gs_scope_ev = try p.emitScopeOpen(.function, .none);
     _ = try p.expect(.l_paren);
 
     // Validate getter/setter parameter count before parsing (skip in TS — type error not syntax)
@@ -1942,15 +1948,18 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
         .body = body,
     });
 
+    try p.emitScopeClose(.none);
     const node_tag: Node.Tag = if (accessor_tag == .kw_get)
         (if (is_computed) .computed_getter_def else .getter_def)
     else
         (if (is_computed) .computed_setter_def else .setter_def);
-    return p.addNode(.{
+    const gs_node = try p.addNode(.{
         .tag = node_tag,
         .main_token = if (is_computed) computed_open else accessor_tok,
         .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
     });
+    p.patchScopeOpenNode(gs_scope_ev, gs_node);
+    return gs_node;
 }
 
 fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
@@ -1977,9 +1986,11 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     defer p.in_method = saved_method;
 
     _ = try p.parseOptionalTypeParameters();
+    const async_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
     _ = try p.parseOptionalTypeAnnotation();
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
+    try p.emitScopeClose(.none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
         .params_start = params_range.start,
@@ -1987,11 +1998,13 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
         .body = body,
         .modifiers = ast.ModifierBit.@"async" | (if (is_generator) ast.ModifierBit.generator else 0),
     });
-    return p.addNode(.{
+    const async_method_node = try p.addNode(.{
         .tag = if (is_computed) .computed_method_def else .method_def,
         .main_token = if (is_computed) computed_open else async_tok,
         .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
     });
+    p.patchScopeOpenNode(async_method_scope_ev, async_method_node);
+    return async_method_node;
 }
 
 fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
@@ -2013,9 +2026,11 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     defer p.in_method = saved_method;
 
     _ = try p.parseOptionalTypeParameters();
+    const gen_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
     _ = try p.parseOptionalTypeAnnotation(); // TS return type
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
+    try p.emitScopeClose(.none);
 
     const method_extra = try p.addExtra(ast.MethodData, .{
         .params_start = params_range.start,
@@ -2023,11 +2038,13 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
         .body = body,
         .modifiers = ast.ModifierBit.generator,
     });
-    return p.addNode(.{
+    const gen_method_node = try p.addNode(.{
         .tag = if (is_computed) .computed_method_def else .method_def,
         .main_token = if (is_computed) computed_open else star_tok,
         .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
     });
+    p.patchScopeOpenNode(gen_method_scope_ev, gen_method_node);
+    return gen_method_node;
 }
 
 fn parseComputedProperty(p: *Parser) Error!NodeIndex {
@@ -2053,19 +2070,23 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         p.in_method = true;
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method;
+        const comp_method_scope_ev = try p.emitScopeOpen(.function, .none);
         const params_range = try parseFormalParameters(p);
         _ = try p.parseOptionalTypeAnnotation(); // TS return type
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
+        try p.emitScopeClose(.none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
             .params_end = params_range.end,
             .body = body,
         });
-        return p.addNode(.{
+        const comp_method_node = try p.addNode(.{
             .tag = .computed_method_def,
             .main_token = open,
             .data = .{ .lhs = key_expr, .rhs = NodeIndex.fromInt(method_extra) },
         });
+        p.patchScopeOpenNode(comp_method_scope_ev, comp_method_node);
+        return comp_method_node;
     }
 
     // Computed property: [expr]: value (only valid in object literals, not class bodies)
@@ -2132,19 +2153,23 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         p.in_method = true;
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method;
+        const method_scope_ev = try p.emitScopeOpen(.function, .none);
         const params_range = try parseFormalParameters(p);
         _ = try p.parseOptionalTypeAnnotation();
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
+        try p.emitScopeClose(.none);
         const method_extra = try p.addExtra(ast.MethodData, .{
             .params_start = params_range.start,
             .params_end = params_range.end,
             .body = body,
         });
-        return p.addNode(.{
+        const method_node = try p.addNode(.{
             .tag = .method_def,
             .main_token = key_tok,
             .data = .{ .lhs = key, .rhs = NodeIndex.fromInt(method_extra) },
         });
+        p.patchScopeOpenNode(method_scope_ev, method_node);
+        return method_node;
     }
 
     // key: value (allow `in` for destructuring defaults: `{ a: b = 'x' in {} }`)
@@ -2203,7 +2228,11 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // Plain shorthand: { x }
+    // Plain shorthand: { x } — emit a read reference so scope analysis can see
+    // the identifier usage. When the cover-grammar expression is later converted
+    // to a destructuring pattern, emitDeclaresFromPatternImpl cancels this ref
+    // via cancelReferenceForNode before emitting the declare event.
+    try p.emitReference(.read, key);
     return p.addNode(.{
         .tag = .shorthand_property,
         .main_token = key_tok,
@@ -2348,6 +2377,10 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
             std.mem.eql(u8, nm_text, p.decl_name_text);
         try p.emitDeclare(if (matches_outer) .fn_expr_name else .function_decl, name_node);
     }
+    // Reset decl_name_text: don't propagate outer binding name into this fn's body.
+    const saved_decl_name_fn = p.decl_name_text;
+    p.decl_name_text = &.{};
+    defer p.decl_name_text = saved_decl_name_fn;
 
     const fn_expr_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
@@ -3425,6 +3458,12 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
     if (op_tag == .equal) {
         reinterpretAsPattern(p, left);
         try validatePattern(p, left);
+        // For destructuring assignment, upgrade all identifier refs in the
+        // LHS pattern from read to write. Simple identifier case is already
+        // handled above by upgradeReferenceKind.
+        if (effective_left_tag != .identifier) {
+            try p.upgradePatternRefsToWrite(left);
+        }
     }
 
     // Right-associative: recurse at assignment precedence.
@@ -4335,10 +4374,20 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
         };
 
         if (type_params_ok and p.peek() == .l_paren) {
-            // Speculatively try generic arrow: <T>(params) => body
+            // Speculatively try generic arrow: <T>(params) => body.
+            // Suppress declare emission during speculative params parse; replayed into the
+            // arrow's function scope below (same pattern as typed non-generic arrows).
+            var params_range = ast.SubRange{ .start = 0, .end = 0 };
             const arrow_ok = blk: {
                 _ = p.advance(); // consume `(`
-                _ = parseFormalParameters_inner(p, saved_tok) catch break :blk false;
+                const saved_suppress = p.suppress_param_declares;
+                p.suppress_param_declares = true;
+                const pr = parseFormalParameters_inner(p, saved_tok) catch {
+                    p.suppress_param_declares = saved_suppress;
+                    break :blk false;
+                };
+                p.suppress_param_declares = saved_suppress;
+                params_range = pr;
                 _ = p.parseOptionalTypeAnnotation() catch break :blk false;
                 if (p.peek() == .arrow and !p.isOnNewLine()) break :blk true;
                 break :blk false;
@@ -4352,11 +4401,12 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
                 defer p.in_function = saved_fn;
                 defer p.in_async = saved_async_ts2;
                 const generic_arrow_ev = try p.emitScopeOpen(.function, .none);
+                try p.emitParamDeclaresFromRange(params_range);
                 const body = try parseArrowBody(p);
                 try p.emitScopeClose(.none);
                 const extra = try p.addExtra(ast.ArrowData, .{
-                    .params_start = 0,
-                    .params_end = 0,
+                    .params_start = params_range.start,
+                    .params_end = params_range.end,
                     .body = body,
                 });
                 const generic_arrow_node = try p.addNode(.{
