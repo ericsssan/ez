@@ -605,6 +605,14 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
             const prop = NodeIndex.fromInt(p.extra_data.items[i]);
             if (prop == .none) continue;
             const prop_tag = p.node_tags_ptr[prop.toInt()];
+            // Strict-mode shorthand `{eval=0}` / `{arguments=0}` rewritten to assignment_pattern.
+            if (prop_tag == .assignment_pattern and p.in_strict) {
+                const ap = p.node_data_ptr[prop.toInt()];
+                if (ap.lhs != .none and p.node_tags_ptr[ap.lhs.toInt()] == .identifier) {
+                    const tt = p.node_main_token_ptr[ap.lhs.toInt()];
+                    try p.checkStrictAssignTarget(tt);
+                }
+            }
             // Getter/setter/method definitions are not valid in destructuring patterns
             if (prop_tag == .getter_def or prop_tag == .setter_def or prop_tag == .method_def or
                 prop_tag == .computed_method_def or prop_tag == .computed_getter_def or
@@ -691,7 +699,15 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
             if (prop_tag == .shorthand_property) {
                 const sp_data = p.node_data_ptr[prop.toInt()];
                 if (sp_data.lhs != .none) {
-                    const sp_key_tag = p.node_tags_ptr[sp_data.lhs.toInt()];
+                    var sp_lhs = sp_data.lhs;
+                    var sp_key_tag = p.node_tags_ptr[sp_lhs.toInt()];
+                    // Drill through assignment_pattern: `{eval = 0}` shorthand-with-default.
+                    if (sp_key_tag == .assignment_pattern) {
+                        const ap_data = p.node_data_ptr[sp_lhs.toInt()];
+                        sp_lhs = ap_data.lhs;
+                        if (sp_lhs == .none) continue;
+                        sp_key_tag = p.node_tags_ptr[sp_lhs.toInt()];
+                    }
                     if (sp_key_tag == .number_literal or sp_key_tag == .string_literal) {
                         try p.emitError("Invalid shorthand property in destructuring");
                         return error.ParseError;
@@ -699,7 +715,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     // Strict mode: shorthand `{eval}` / `{arguments}` invalid.
                     // Module/strict: `{yield}` is reserved.
                     if (sp_key_tag == .identifier) {
-                        const sp_tok = p.node_main_token_ptr[sp_data.lhs.toInt()];
+                        const sp_tok = p.node_main_token_ptr[sp_lhs.toInt()];
                         if (p.in_strict) try p.checkStrictAssignTarget(sp_tok);
                         const sp_text = p.tokenText(sp_tok);
                         if ((p.in_strict or p.is_module) and std.mem.eql(u8, sp_text, "yield")) {
