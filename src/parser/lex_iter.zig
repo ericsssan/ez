@@ -458,7 +458,10 @@ pub const LexIter = struct {
             // Number literal: digit-start.
             if (byte >= '0' and byte <= '9') {
                 const end_n = Lex.numberEnd(self.src, p);
-                const tag_n: Tag = if (end_n > p and self.src[end_n - 1] == 'n')
+                const num_valid = validateNumericLiteral(self.src, p, end_n);
+                const tag_n: Tag = if (!num_valid)
+                    .invalid
+                else if (end_n > p and self.src[end_n - 1] == 'n')
                     .bigint_literal
                 else
                     .number_literal;
@@ -1152,6 +1155,48 @@ test "LexIter 4-slot window: empty stream EOFs correctly" {
     try std.testing.expectEqual(@as(Tag, .eof), iter.peekAt(3));
     try std.testing.expectEqual(@as(Tag, .eof), iter.advance());
     try std.testing.expectEqual(@as(u32, 0), iter.position());
+}
+
+/// Validate numeric separator placement per spec:
+///   - `_` not after a base prefix (0x_, 0b_, 0o_)
+///   - `_` not adjacent to another `_`
+///   - `_` not at end (before bigint `n` or literal end)
+///   - `_` not adjacent to `.`, `e`, `E`, `+`, `-`
+/// Returns false if invalid.
+fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
+    if (end <= start) return true;
+    var i = start;
+    var is_hex: bool = false;
+    // Skip base prefix (0x/0b/0o). In hex, e/E are digits not exponent.
+    if (i + 1 < end and src[i] == '0') {
+        switch (src[i + 1]) {
+            'x', 'X' => { is_hex = true; i += 2; if (i >= end or src[i] == '_') return false; },
+            'b', 'B', 'o', 'O' => { i += 2; if (i >= end or src[i] == '_') return false; },
+            else => {},
+        }
+    }
+    var prev_is_us: bool = false;
+    while (i < end) : (i += 1) {
+        const c = src[i];
+        if (c == '_') {
+            if (prev_is_us) return false; // double underscore
+            if (i + 1 >= end) return false;
+            const next = src[i + 1];
+            // Forbid `_` immediately before `.`, exponent (e/E for non-hex),
+            // bigint suffix `n`, signs of exponent, or another `_`.
+            if (next == '.' or next == 'n' or next == '+' or next == '-' or next == '_') return false;
+            if (!is_hex and (next == 'e' or next == 'E')) return false;
+            prev_is_us = true;
+        } else {
+            if (prev_is_us) {
+                if (c == '.' or c == 'n') return false;
+                if (!is_hex and (c == 'e' or c == 'E')) return false;
+            }
+            prev_is_us = false;
+        }
+    }
+    if (prev_is_us) return false; // trailing _
+    return true;
 }
 
 /// Drop-in replacement for `Lexer.tokenizeWithLanguage` that uses the
