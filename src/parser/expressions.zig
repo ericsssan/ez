@@ -3666,7 +3666,10 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
     const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier or p.peek() == .escaped_keyword)
         p.advance()
     else if (p.peek() == .hash) blk: {
-        // Private field access: obj.#field (keywords are valid: obj.#await, obj.#yield)
+        // Private field access: obj.#field — only valid inside a class body.
+        if (!p.in_class) {
+            try p.emitError("Private field access is only allowed inside a class");
+        }
         const hash = p.advance();
         if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
         break :blk hash;
