@@ -3707,9 +3707,10 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
         },
     }
 
-    // Strict mode: cannot assign to eval or arguments
-    if (left_tag == .identifier and p.in_strict) {
-        const left_tok = p.node_main_token_ptr[left.toInt()];
+    // Strict mode: cannot assign to eval or arguments (also through parens).
+    if (effective_left_tag == .identifier and p.in_strict) {
+        const inner = if (left_tag == .grouping_expr) unwrapGrouping(p, left).node else left;
+        const left_tok = p.node_main_token_ptr[inner.toInt()];
         try p.checkStrictAssignTarget(left_tok);
     }
 
