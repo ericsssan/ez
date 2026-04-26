@@ -1822,7 +1822,9 @@ pub const Parser = struct {
                     .scope_close => depth -= 1,
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                        if (bk == .@"var" or bk == .parameter) continue;
+                        // Skip var/parameter/function_decl — B.3.3 hoisting
+                        // in script mode allows duplicate function decls.
+                        if (bk == .@"var" or bk == .parameter or bk == .function_decl) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
