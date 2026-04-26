@@ -546,20 +546,30 @@ pub const LexIter = struct {
                 byte == '_' or byte == '$')
             {
                 var end: u32 = p + 1;
-                while (end < n) : (end += 1) {
+                while (end < n) {
                     const c = self.src[end];
                     if ((c >= 'a' and c <= 'z') or
                         (c >= 'A' and c <= 'Z') or
                         (c >= '0' and c <= '9') or
-                        c == '_' or c == '$') continue;
+                        c == '_' or c == '$') { end += 1; continue; }
                     if (c >= 0x80) {
-                        // Distinguish LS/PS/BOM (terminators) from unicode
-                        // letters (continuation). LS=E2 80 A8, PS=E2 80 A9,
-                        // BOM=EF BB BF. Other high bytes continue the ident.
                         if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
                             (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9)) break;
                         if (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and
                             self.src[end + 2] == 0xBF) break;
+                        end += 1; continue;
+                    }
+                    // \u escape continuation: \uXXXX or \u{...}.
+                    if (c == '\\' and end + 1 < n and self.src[end + 1] == 'u') {
+                        end += 2;
+                        if (end < n and self.src[end] == '{') {
+                            end += 1;
+                            while (end < n and self.src[end] != '}') end += 1;
+                            if (end < n) end += 1;
+                        } else {
+                            var hc: u32 = 0;
+                            while (end < n and hc < 4) : ({ end += 1; hc += 1; }) {}
+                        }
                         continue;
                     }
                     break;
