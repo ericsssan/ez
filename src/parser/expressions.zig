@@ -4490,12 +4490,16 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
             // Check params for eval/arguments
             try p.checkParamsStrictMode(pr);
         }
-        // Function name must not be eval/arguments in strict mode
+        // Function name must not be eval/arguments or strict-reserved in strict mode
         if (name != .none) {
             const fn_name_tok = p.node_main_token_ptr[name.toInt()];
             const fn_name_text = p.tokenText(fn_name_tok);
             if (std.mem.eql(u8, fn_name_text, "eval") or std.mem.eql(u8, fn_name_text, "arguments")) {
                 try p.emitError("Unexpected eval or arguments in strict mode");
+                return error.ParseError;
+            }
+            if (!p.is_ts and p.isStrictReservedWord(fn_name_tok)) {
+                try p.emitError("Function name is a reserved word in strict mode");
                 return error.ParseError;
             }
         }
