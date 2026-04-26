@@ -750,7 +750,12 @@ fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
     if (node == .none) return;
     const tag = p.node_tags_ptr[node.toInt()];
     switch (tag) {
-        .identifier, .assignment_pattern, .assign => {},
+        .identifier => {},
+        .assignment_pattern, .assign => {
+            // Recurse into LHS (the actual binding pattern).
+            const d = p.node_data_ptr[node.toInt()];
+            if (d.lhs != .none) try validateArrowParam(p, d.lhs);
+        },
         .rest_element, .spread_element => {
             // Validate rest target recursively
             const d = p.node_data_ptr[node.toInt()];
@@ -1743,7 +1748,12 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                         }
                     }
                 },
-                .assign, .assignment_pattern => {},
+                .assign, .assignment_pattern => {
+                    // Recurse into LHS pattern for inner-parens validation.
+                    validateArrowParam(p, param_node) catch {
+                        return p.makeErrorNode();
+                    };
+                },
                 .array_pattern, .object_pattern, .array_literal,
                 .object_literal,
                 => {
