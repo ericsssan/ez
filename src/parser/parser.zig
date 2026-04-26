@@ -1801,12 +1801,50 @@ pub const Parser = struct {
         const prev_in_block = self.in_block;
         self.in_block = true;
         defer self.in_block = prev_in_block;
-        // Emit block scope open; corresponding close is emitted below.  We use
-        // `.none` as the node index because the block_stmt node isn't created
-        // until after the body is parsed — the consumer only needs kind + order.
         const scope_ev = try self.emitScopeOpen(.block, .none);
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
+
+        // Detect duplicate lexical declarations at this block's depth.
+        // Scan events emitted between scope_ev and now; track declare events
+        // at depth==0 with non-hoisted binding kinds (let/const/class/fn_decl
+        // when block-scoped). Diagnostic on duplicate name.
+        if (self.emit_scope_events) {
+            var depth: i32 = 0;
+            const evs = self.scope_events.events.items[scope_ev + 1 ..];
+            // Use a tiny inline buffer; scan O(N²) over local declares (small n).
+            var names_buf: [64][]const u8 = undefined;
+            var names_n: usize = 0;
+            for (evs) |ev| {
+                switch (ev.kind) {
+                    .scope_open => depth += 1,
+                    .scope_close => depth -= 1,
+                    .declare => if (depth == 0) {
+                        const bk: BindingKindU8 = @enumFromInt(ev.aux);
+                        // Only check non-hoisted (let/const/class/function in block).
+                        // var hoists out — skip. function_decl in block IS lexically
+                        // declared per ES2015+.
+                        if (bk == .@"var") continue;
+                        const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
+                        const tok_start = self.tok_starts_ptr[main_tok_idx];
+                        const tok_len = self.tok_lens_ptr[main_tok_idx];
+                        const name = self.source[tok_start..tok_start + tok_len];
+                        var dup = false;
+                        for (names_buf[0..names_n]) |existing| {
+                            if (std.mem.eql(u8, existing, name)) { dup = true; break; }
+                        }
+                        if (dup) {
+                            try self.emitDiagnostic(self.currentSpan(),
+                                "Identifier '{s}' has already been declared", .{name});
+                        } else if (names_n < names_buf.len) {
+                            names_buf[names_n] = name;
+                            names_n += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
 
         // Elide scopes that bind nothing block-scoped (no let/const/class at this
         // level). var and function_decl hoist to the var-scope regardless, so
