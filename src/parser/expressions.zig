@@ -584,7 +584,8 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     child_tag == .optional_computed_member_expr or
                     child_tag == .optional_call_expr or
                     child_tag == .import_meta or
-                    child_tag == .import_expr)
+                    child_tag == .import_expr or
+                    child_tag == .sequence_expr)
                 {
                     try p.emitError("Invalid destructuring target");
                     return error.ParseError;
@@ -688,7 +689,8 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         val_tag == .class_expr or val_tag == .fn_expr or
                         val_tag == .optional_member_expr or
                         val_tag == .optional_computed_member_expr or
-                        val_tag == .optional_call_expr)
+                        val_tag == .optional_call_expr or
+                        val_tag == .sequence_expr)
                     {
                         try p.emitError("Invalid destructuring target");
                         return error.ParseError;
