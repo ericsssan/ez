@@ -776,7 +776,17 @@ fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
             const e = d.rhs.toInt();
             var i = s;
             while (i < e) : (i += 1) {
-                try validateArrowParam(p, NodeIndex.fromInt(p.extra_data.items[i]));
+                const child = NodeIndex.fromInt(p.extra_data.items[i]);
+                if (child != .none) {
+                    const ct = p.node_tags_ptr[child.toInt()];
+                    if (ct == .rest_element or ct == .spread_element) {
+                        // Rest must be last; trailing comma after rest is invalid in BindingPattern.
+                        if (i < e - 1) {
+                            return p.emitError("Rest element must be last in destructuring pattern");
+                        }
+                    }
+                }
+                try validateArrowParam(p, child);
             }
         },
         .object_literal, .object_pattern => {
