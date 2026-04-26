@@ -246,11 +246,11 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Dump AST mode (default) ──────────────────────────────
     if (dump_ast) {
-        var tokens = (try Lexer.tokenizeWithOptions(allocator, source, lang, isModuleFile(file_path))).tokens;
-        defer tokens.deinit(allocator);
-
         const is_module = isModuleFile(file_path);
-        var tree = try parser.Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, is_module);
+        var lex = try Lexer.tokenizeWithOptions(allocator, source, lang, is_module);
+        defer lex.deinit(allocator);
+
+        var tree = try parser.Parser.parseWithLanguage(allocator, source, lex.tokens.slice(), lang, is_module);
         defer tree.deinit(allocator);
 
         if (tree.errors.len > 0) {
@@ -307,7 +307,7 @@ fn lintSingleFile(
 
     var sem_result = try semantic.SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{
         .build_parents = true,
-        .build_cfg = linter.configNeedsCfg(config),
+        .build_ref_ranges = linter.configNeedsRefRanges(config),
     });
     defer sem_result.deinit(allocator);
 
