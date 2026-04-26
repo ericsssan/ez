@@ -888,6 +888,24 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             break :blk try parseLiteral(p, .number_literal);
         },
         .string_literal => blk: {
+            // Detect unterminated string (lexer emits string_literal up to a LF/CR/EOF
+            // when no closing quote is found).
+            {
+                const tok = p.tok_i;
+                const ts = p.tok_starts_ptr[tok];
+                const tl = p.tok_lens_ptr[tok];
+                if (tl >= 2 and ts + tl <= p.source.len) {
+                    const open = p.source[ts];
+                    const last = p.source[ts + tl - 1];
+                    if (last != open) {
+                        try p.emitError("Unterminated string literal");
+                        return error.ParseError;
+                    }
+                } else if (tl < 2 or ts + tl > p.source.len) {
+                    try p.emitError("Unterminated string literal");
+                    return error.ParseError;
+                }
+            }
             try checkStringEscapes(p);
             if (p.in_strict) try checkStrictOctalString(p);
             break :blk try parseLiteral(p, .string_literal);
