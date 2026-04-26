@@ -2688,6 +2688,10 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const saved_fp = p.in_fn_params;
     p.in_fn_params = false;
     defer p.in_fn_params = saved_fp;
+    // Non-method function expressions have no super binding.
+    const saved_ic = p.in_class;
+    p.in_class = false;
+    defer p.in_class = saved_ic;
 
     // Named function expression: name binds only inside the function's own
     // scope.  We emit the declare AFTER emitting scope_open so the consumer
