@@ -1657,7 +1657,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         _ = p.advance(); // consume `)`
         // TS return type annotation: `(): Type =>`
         const empty_arrow_return_type = try p.parseOptionalTypeAnnotation();
-        if (p.peek() == .arrow and !p.isOnNewLine()) {
+        if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
             _ = p.advance(); // consume `=>`
             const saved_fn2 = p.in_function;
             const saved_async2 = p.in_async;
