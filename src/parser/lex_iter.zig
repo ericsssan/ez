@@ -575,6 +575,87 @@ pub const LexIter = struct {
                     break;
                 }
                 self.skip_until = end;
+                // If ident contained any \u escape, decode it and re-check
+                // against keywords — `null` is the keyword `null`,
+                // which is reserved (parser rejects as identifier reference).
+                const has_escape = std.mem.indexOfScalar(u8, self.src[p..end], '\\') != null;
+                if (has_escape) {
+                    var decoded_buf: [128]u8 = undefined;
+                    var dl: usize = 0;
+                    var i: u32 = p;
+                    var decoded_ok = true;
+                    while (i < end and dl < decoded_buf.len) {
+                        const c = self.src[i];
+                        if (c == '\\' and i + 1 < end and self.src[i + 1] == 'u') {
+                            i += 2;
+                            var cp: u32 = 0;
+                            if (i < end and self.src[i] == '{') {
+                                i += 1;
+                                while (i < end and self.src[i] != '}') : (i += 1) {
+                                    const h = self.src[i];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => { decoded_ok = false; break; },
+                                    };
+                                    cp = (cp << 4) | v;
+                                }
+                                if (i < end) i += 1;
+                            } else {
+                                var k: u32 = 0;
+                                while (k < 4 and i < end) : ({ i += 1; k += 1; }) {
+                                    const h = self.src[i];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => { decoded_ok = false; break; },
+                                    };
+                                    cp = (cp << 4) | v;
+                                }
+                            }
+                            // Encode codepoint as UTF-8 into decoded_buf.
+                            if (cp < 0x80 and dl < decoded_buf.len) {
+                                decoded_buf[dl] = @intCast(cp);
+                                dl += 1;
+                            } else {
+                                decoded_ok = false;
+                                break;
+                            }
+                        } else {
+                            decoded_buf[dl] = c;
+                            dl += 1;
+                            i += 1;
+                        }
+                    }
+                    if (decoded_ok and dl > 0) {
+                        const t_tag2 = keywordLookup(decoded_buf[0..dl], self.is_ts);
+                        // Only promote to keyword for "true" reserved words.
+                        // Contextual keywords (get/set/static/async/yield/let/
+                        // of/as/from/etc) remain .identifier when escaped —
+                        // spec says contextual keywords spelled with escapes
+                        // are NOT keywords in their special positions.
+                        const promote = switch (t_tag2) {
+                            .kw_null, .kw_true, .kw_false, .kw_if, .kw_else, .kw_for,
+                            .kw_while, .kw_do, .kw_function, .kw_return, .kw_break,
+                            .kw_continue, .kw_switch, .kw_case, .kw_default, .kw_try,
+                            .kw_catch, .kw_finally, .kw_throw, .kw_new, .kw_delete,
+                            .kw_typeof, .kw_void, .kw_instanceof, .kw_in, .kw_var,
+                            .kw_const, .kw_class, .kw_extends, .kw_super, .kw_this,
+                            .kw_import, .kw_export, .kw_debugger, .kw_with => true,
+                            else => false,
+                        };
+                        if (promote) {
+                            self.prev_kind = if (self.prev_kind == .dot) .identifier else t_tag2;
+                            const tok = Token{ .tag = t_tag2, .start = p, .len = end - p };
+                            self.last_emitted_nl = self.saw_nl;
+                            self.saw_nl = false;
+                            self.at_line_start = false;
+                            return tok;
+                        }
+                    }
+                }
                 // If we broke on LS/PS/BOM, set up a pending drain past it so
                 // next call resumes scanning the ident-bitmap continuation.
                 if (end < n) {
