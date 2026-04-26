@@ -930,7 +930,31 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             break :blk try parseLiteral(p, .string_literal);
         },
         .bigint_literal => try parseLiteral(p, .bigint_literal),
-        .regex_literal => try parseLiteral(p, .regex_literal),
+        .regex_literal => blk: {
+            // Detect unterminated regex (lexer emits up to LF/CR/EOF).
+            const tok = p.tok_i;
+            const ts = p.tok_starts_ptr[tok];
+            const tl = p.tok_lens_ptr[tok];
+            // Find the body end: scan to last `/` not inside char class.
+            var has_close = false;
+            if (ts + tl <= p.source.len and tl >= 2) {
+                var i: u32 = ts + 1;
+                var in_class = false;
+                const stop = ts + tl;
+                while (i < stop) : (i += 1) {
+                    const c = p.source[i];
+                    if (c == '\\' and i + 1 < stop) { i += 1; continue; }
+                    if (c == '[') in_class = true
+                    else if (c == ']') in_class = false
+                    else if (c == '/' and !in_class) { has_close = true; break; }
+                }
+            }
+            if (!has_close) {
+                try p.emitError("Unterminated regular expression literal");
+                return error.ParseError;
+            }
+            break :blk try parseLiteral(p, .regex_literal);
+        },
         .kw_true, .kw_false => try parseLiteral(p, .boolean_literal),
         .kw_null => try parseLiteral(p, .null_literal),
         .kw_this => try parseLiteral(p, .this_expr),
