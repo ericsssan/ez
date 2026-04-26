@@ -1175,9 +1175,15 @@ test "LexIter 4-slot window: empty stream EOFs correctly" {
 /// Returns false if invalid.
 fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
     if (end <= start) return true;
+    // BigInt with leading zero followed by digit (legacy octal/decimal-like)
+    // is not a valid BigInt literal.
+    if (end > start + 1 and src[end - 1] == 'n' and src[start] == '0' and
+        end - start > 2 and src[start + 1] >= '0' and src[start + 1] <= '9')
+    {
+        return false;
+    }
     var i = start;
     var is_hex: bool = false;
-    // Skip base prefix (0x/0b/0o). In hex, e/E are digits not exponent.
     if (i + 1 < end and src[i] == '0') {
         switch (src[i + 1]) {
             'x', 'X' => { is_hex = true; i += 2; if (i >= end or src[i] == '_') return false; },
