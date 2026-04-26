@@ -366,7 +366,20 @@ pub fn resolveFullCfg(
 ///     const sem   = try combineParts(gpa, scope, cfg);
 pub const ScopeCfgParallel = struct {
     thread: std.Thread,
-    result: union(enum) { pending: void, ok: CfgPart, err: anyerror },
+    allocator: std.mem.Allocator,
+    ast: *const Ast,
+    events: []const Event,
+    opts: Options,
+    result: CfgPart,
+    err: ?anyerror,
+
+    fn entry(self: *ScopeCfgParallel) void {
+        if (resolveFullCfg(self.allocator, self.ast, self.events, self.opts)) |r| {
+            self.result = r;
+        } else |e| {
+            self.err = e;
+        }
+    }
 
     pub fn start(
         allocator: std.mem.Allocator,
@@ -374,40 +387,26 @@ pub const ScopeCfgParallel = struct {
         events: []const Event,
         opts: Options,
     ) !*ScopeCfgParallel {
-        const Args = struct {
-            allocator: std.mem.Allocator,
-            ast: *const Ast,
-            events: []const Event,
-            opts: Options,
-            self: *ScopeCfgParallel,
-        };
         const self = try allocator.create(ScopeCfgParallel);
         errdefer allocator.destroy(self);
-        self.* = .{ .thread = undefined, .result = .{ .pending = {} } };
-        const args = try allocator.create(Args);
-        args.* = .{ .allocator = allocator, .ast = ast, .events = events, .opts = opts, .self = self };
-        const Run = struct {
-            fn entry(a: *Args) void {
-                if (resolveFullCfg(a.allocator, a.ast, a.events, a.opts)) |r| {
-                    a.self.result = .{ .ok = r };
-                } else |e| {
-                    a.self.result = .{ .err = e };
-                }
-                a.allocator.destroy(a);
-            }
+        self.* = .{
+            .thread = undefined,
+            .allocator = allocator,
+            .ast = ast,
+            .events = events,
+            .opts = opts,
+            .result = undefined,
+            .err = null,
         };
-        self.thread = try std.Thread.spawn(.{}, Run.entry, .{args});
+        self.thread = try std.Thread.spawn(.{}, entry, .{self});
         return self;
     }
 
     pub fn join(self: *ScopeCfgParallel, allocator: std.mem.Allocator) !CfgPart {
         self.thread.join();
         defer allocator.destroy(self);
-        return switch (self.result) {
-            .ok => |r| r,
-            .err => |e| e,
-            .pending => unreachable,
-        };
+        if (self.err) |e| return e;
+        return self.result;
     }
 };
 

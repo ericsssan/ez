@@ -19,6 +19,13 @@ const InlineDisables = linter.inline_disable.InlineDisables;
 
 /// Simple spin-lock mutex using std.atomic.Mutex.
 /// Provides a blocking `lock()` via busy-wait on `tryLock()`.
+/// Wall-clock nanoseconds (monotonic). Used by stage instrumentation.
+extern "c" fn clock_gettime_nsec_np(clk: c_int) u64;
+const CLOCK_UPTIME_RAW: c_int = 8;
+fn nowNs() u64 {
+    return clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+}
+
 const SpinLock = struct {
     inner: std.atomic.Mutex = .unlocked,
 
@@ -74,6 +81,9 @@ pub const ParallelRunner = struct {
     /// benchmark measures scheduling/IO/parse/sem overhead, not linter throughput.
     /// All strategies still produce valid result entries so file counts match.
     bench_skip_lint: bool = false,
+    /// When true, lintOneFile3Stage prints per-stage start/end timestamps
+    /// for each file so we can decompose the 3-stage pipeline wallclock.
+    bench_stage_log: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) ParallelRunner {
         return .{
@@ -1795,6 +1805,8 @@ pub const ParallelRunner = struct {
         defer arena_parse.deinit();
         var arena_sem = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_sem.deinit();
+        var arena_cfg = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena_cfg.deinit();
 
         // POSIX AIO read: submit aio_read, then aio_suspend until done.
         // On warm cache this is ~equivalent to sync read; on cold cache the
@@ -1834,6 +1846,7 @@ pub const ParallelRunner = struct {
             lang: Language,
             publish: *std.atomic.Value(usize),
             lex_done: *std.atomic.Value(bool),
+            t_start: *u64, t_end: *u64,
         };
         const ParseCtx = struct {
             alloc: std.mem.Allocator,
@@ -1848,34 +1861,43 @@ pub const ParallelRunner = struct {
             parse_done: *std.atomic.Value(bool),
             ast_view: *Ast,
             ast_ready: *std.atomic.Value(bool),
+            t_spawn: *u64, t_first_token_seen: *u64, t_end: *u64,
         };
         const SemCtx = struct {
             alloc: std.mem.Allocator,
+            alloc_cfg: std.mem.Allocator,
             ast: *const Ast,
             cap_hint: usize,
             events_pub: *std.atomic.Value(usize),
             parse_done: *std.atomic.Value(bool),
             ast_ready: *std.atomic.Value(bool),
+            t_spawn: *u64, t_ast_ready_seen: *u64, t_end: *u64,
         };
 
         const lex_runner = struct {
             fn go(c: *LexCtx) void {
+                c.t_start.* = nowNs();
                 var result = Lexer.tokenizeWithBuf(
                     c.alloc, c.source, c.lang,
                     .{ .publish_to = c.publish },
                     c.tokens_buf,
                 ) catch {
                     c.lex_done.store(true, .release);
+                    c.t_end.* = nowNs();
                     return;
                 };
                 c.tokens_buf.* = result.tokens;
                 c.publish.store(result.tokens.len, .release);
                 c.lex_done.store(true, .release);
+                c.t_end.* = nowNs();
                 _ = &result;
             }
         }.go;
         const parse_runner = struct {
             fn go(c: *ParseCtx) void {
+                c.t_spawn.* = nowNs();
+                while (c.published_len.load(.acquire) == 0 and !c.lex_done.load(.acquire)) std.atomic.spinLoopHint();
+                c.t_first_token_seen.* = nowNs();
                 var tree = parser_mod.Parser.parseWithOptions(c.alloc, c.source, c.tokens, .{
                     .language = c.lang,
                     .is_module = c.is_module,
@@ -1891,17 +1913,22 @@ pub const ParallelRunner = struct {
                 }) catch {
                     c.events_pub.store(c.events_pub.load(.monotonic), .release);
                     c.parse_done.store(true, .release);
+                    c.t_end.* = nowNs();
                     return;
                 };
                 _ = &tree;
                 c.events_pub.store(tree.scope_events.len, .release);
                 c.parse_done.store(true, .release);
+                c.t_end.* = nowNs();
             }
         }.go;
         const sem_runner = struct {
             fn go(c: *SemCtx) void {
+                c.t_spawn.* = nowNs();
                 while (!c.ast_ready.load(.acquire)) std.atomic.spinLoopHint();
-                var sem = event_resolver.resolveFull(c.alloc, c.ast, c.ast.scope_events, .{
+                c.t_ast_ready_seen.* = nowNs();
+                // Streaming path with parallel sem split.
+                const opts = event_resolver.Options{
                     .skip_resolve = false,
                     .skip_ref_ranges = true,
                     .streaming = .{
@@ -1909,14 +1936,49 @@ pub const ParallelRunner = struct {
                         .parse_done = c.parse_done,
                         .node_count_hint = c.cap_hint * 2,
                     },
-                }) catch return;
+                };
+                const events_slice = c.ast.scope_events;
+                const cfg_alloc = c.alloc_cfg;
+                const cfg_worker = event_resolver.ScopeCfgParallel.start(
+                    cfg_alloc, c.ast, events_slice, opts,
+                ) catch {
+                    c.t_end.* = nowNs();
+                    return;
+                };
+                const scope = event_resolver.resolveFullScope(
+                    c.alloc, c.ast, events_slice, opts,
+                ) catch {
+                    var dropped = cfg_worker.join(cfg_alloc) catch {
+                        c.t_end.* = nowNs();
+                        return;
+                    };
+                    dropped.deinit(cfg_alloc);
+                    c.t_end.* = nowNs();
+                    return;
+                };
+                const cfg = cfg_worker.join(cfg_alloc) catch {
+                    var s = scope;
+                    s.deinit(c.alloc);
+                    c.t_end.* = nowNs();
+                    return;
+                };
+                var sem = event_resolver.combineParts(c.alloc, scope, cfg) catch {
+                    c.t_end.* = nowNs();
+                    return;
+                };
                 sem.deinit(c.alloc);
+                c.t_end.* = nowNs();
             }
         }.go;
 
+        var t_lex_start: u64 = 0; var t_lex_end: u64 = 0;
+        var t_parse_spawn: u64 = 0; var t_parse_first: u64 = 0; var t_parse_end: u64 = 0;
+        var t_sem_spawn: u64 = 0; var t_sem_ready: u64 = 0; var t_sem_end: u64 = 0;
+        const t_pipeline_start = nowNs();
         var lex_ctx = LexCtx{
             .alloc = arena_lex.allocator(), .source = source, .tokens_buf = &tokens_buf,
             .lang = lang, .publish = &published, .lex_done = &lex_done,
+            .t_start = &t_lex_start, .t_end = &t_lex_end,
         };
         var parse_ctx = ParseCtx{
             .alloc = arena_parse.allocator(), .source = source, .tokens = tokens_buf.slice(),
@@ -1924,10 +1986,13 @@ pub const ParallelRunner = struct {
             .published_len = &published, .lex_done = &lex_done,
             .events_pub = &events_pub, .parse_done = &parse_done,
             .ast_view = &ast_view, .ast_ready = &ast_ready,
+            .t_spawn = &t_parse_spawn, .t_first_token_seen = &t_parse_first, .t_end = &t_parse_end,
         };
         var sem_ctx = SemCtx{
-            .alloc = arena_sem.allocator(), .ast = &ast_view, .cap_hint = max_toks,
+            .alloc = arena_sem.allocator(), .alloc_cfg = arena_cfg.allocator(),
+            .ast = &ast_view, .cap_hint = max_toks,
             .events_pub = &events_pub, .parse_done = &parse_done, .ast_ready = &ast_ready,
+            .t_spawn = &t_sem_spawn, .t_ast_ready_seen = &t_sem_ready, .t_end = &t_sem_end,
         };
 
         const t_lex = std.Thread.spawn(.{}, lex_runner, .{&lex_ctx}) catch return;
@@ -1943,6 +2008,28 @@ pub const ParallelRunner = struct {
         t_lex.join();
         t_parse.join();
         t_sem.join();
+        const t_pipeline_end = nowNs();
+        if (self.bench_stage_log) {
+            std.debug.print("STAGE-LOG {s} src.len={d}\n", .{ file_path, source.len });
+            std.debug.print("  lex   : start={d}us end={d}us  total={d}us\n", .{
+                (t_lex_start - t_pipeline_start) / 1000,
+                (t_lex_end - t_pipeline_start) / 1000,
+                (t_lex_end - t_lex_start) / 1000,
+            });
+            std.debug.print("  parse : spawn={d}us first_tok={d}us end={d}us  active={d}us\n", .{
+                (t_parse_spawn - t_pipeline_start) / 1000,
+                (t_parse_first - t_pipeline_start) / 1000,
+                (t_parse_end - t_pipeline_start) / 1000,
+                (t_parse_end - t_parse_first) / 1000,
+            });
+            std.debug.print("  sem   : spawn={d}us ready={d}us end={d}us  active={d}us\n", .{
+                (t_sem_spawn - t_pipeline_start) / 1000,
+                (t_sem_ready - t_pipeline_start) / 1000,
+                (t_sem_end - t_pipeline_start) / 1000,
+                (t_sem_end - t_sem_ready) / 1000,
+            });
+            std.debug.print("  wallclock={d}us\n", .{(t_pipeline_end - t_pipeline_start) / 1000});
+        }
 
         // Bench mode skips lint; record a placeholder result so file count
         // matches the other strategies.
