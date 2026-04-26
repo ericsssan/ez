@@ -411,6 +411,11 @@ fn parseYieldExpression(p: *Parser) Error!NodeIndex {
         // `yield` outside a generator — treat as identifier (may be arrow param).
         return parseIdentifierOrArrow(p);
     }
+    // yield expressions are forbidden inside generator parameter lists.
+    if (p.in_fn_params) {
+        try p.emitError("'yield' is not allowed in generator parameter list");
+        return error.ParseError;
+    }
     const tok = p.advance(); // consume `yield`
 
     // yield *delegated

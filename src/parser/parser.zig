@@ -224,6 +224,9 @@ pub const Parser = struct {
     /// Set while parsing the binding pattern of a `let`/`const` declaration.
     /// `let` as a binding name is forbidden anywhere in the pattern.
     in_lexical_decl: bool = false,
+    /// Set while parsing FormalParameters. `yield`/`await` expressions inside
+    /// initializers are forbidden when the function is a generator/async.
+    in_fn_params: bool = false,
     in_method: bool,
     in_conditional_extends: bool,
     language: Language,
@@ -4565,6 +4568,10 @@ pub const Parser = struct {
     /// Parse `(param, param = default, ...rest)`.
     pub fn parseFormalParameters(self: *Parser) Error!SubRange {
         _ = try self.expect(.l_paren);
+
+        const prev_fp = self.in_fn_params;
+        self.in_fn_params = true;
+        defer self.in_fn_params = prev_fp;
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
