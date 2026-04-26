@@ -2658,7 +2658,9 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     } else .{ .start = 0, .end = 0 };
 
     // Optional extends.
+    var had_extends = false;
     const super_node: NodeIndex = if (p.eat(.kw_extends)) |_| blk: {
+        had_extends = true;
         if (p.is_ts) {
             const ts_mod = @import("typescript.zig");
             // Use expression parsing for tokens that are expressions but not types
@@ -2705,6 +2707,9 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     const l_brace_tok = try p.expect(.l_brace);
     const prev_in_class = p.in_class;
     const prev_strict = p.in_strict;
+    const prev_heritage = p.class_has_heritage;
+    p.class_has_heritage = had_extends;
+    defer p.class_has_heritage = prev_heritage;
     p.in_class = true;
     p.in_strict = true;
     defer p.in_class = prev_in_class;
@@ -3759,6 +3764,8 @@ fn parseCallExpression(p: *Parser, callee: NodeIndex) Error!NodeIndex {
                 try p.emitError("'super()' is not allowed in class field initializers");
             } else if (!p.in_constructor) {
                 try p.emitError("'super()' is only valid in class constructors");
+            } else if (!p.class_has_heritage) {
+                try p.emitError("'super()' is only valid in derived classes (with 'extends')");
             }
         }
     }

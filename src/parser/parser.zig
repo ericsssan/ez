@@ -218,6 +218,9 @@ pub const Parser = struct {
     /// don't participate in the lex/lex redecl check there.
     is_fn_body_block: bool,
     in_constructor: bool,
+    /// Set when the lexically-enclosing class has an `extends` clause.
+    /// Required for `super(...)` calls in the constructor.
+    class_has_heritage: bool = false,
     in_method: bool,
     in_conditional_extends: bool,
     language: Language,
@@ -3668,6 +3671,9 @@ pub const Parser = struct {
         }
 
         const l_brace_tok = try self.expect(.l_brace);
+        const prev_heritage = self.class_has_heritage;
+        self.class_has_heritage = (super_class != .none);
+        defer self.class_has_heritage = prev_heritage;
         const body_range = try self.parseClassBody();
         _ = try self.expect(.r_brace);
         try self.emitScopeClose(.none); // close class scope
