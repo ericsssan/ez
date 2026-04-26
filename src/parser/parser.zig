@@ -5259,6 +5259,13 @@ pub const Parser = struct {
         while (true) {
             const decl_tok = self.tok_i;
             const binding = try self.parseBindingPattern();
+            // Using declarations require simple identifier binding, not destructuring.
+            if (binding != .none) {
+                const bt = self.node_tags_ptr[binding.toInt()];
+                if (bt == .array_pattern or bt == .object_pattern) {
+                    try self.emitError("'using' declaration requires an identifier binding");
+                }
+            }
             const using_type_annotation = try self.parseOptionalTypeAnnotation();
             if (using_type_annotation != .none) {
                 if (self.node_tags_ptr[binding.toInt()] == .identifier) {
@@ -5268,8 +5275,11 @@ pub const Parser = struct {
 
             const init: NodeIndex = if (self.eat(.equal) != null)
                 try self.parseAssignmentExpression()
-            else
-                .none;
+            else .none;
+            // Using declarations require an initializer.
+            if (init == .none) {
+                try self.emitError("'using' declaration requires an initializer");
+            }
 
             const decl = try self.addNode(.{
                 .tag = .declarator,
