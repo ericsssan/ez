@@ -390,6 +390,11 @@ fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
         // `await` used outside async context — treat as identifier reference.
         return parseIdentifierRef(p);
     }
+    // await expressions are forbidden inside async parameter lists.
+    if (p.in_fn_params) {
+        try p.emitError("'await' is not allowed in async parameter list");
+        return error.ParseError;
+    }
     const tok = p.advance(); // consume `await`
     const operand = try parseExpressionPrec(p, .unary);
     return p.addNode(.{
@@ -1334,7 +1339,10 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     defer p.in_generator = saved_gen;
 
     const async_fn_type_params = try p.parseOptionalTypeParameters();
+    const saved_fp_afe = p.in_fn_params;
+    defer p.in_fn_params = saved_fp_afe;
     const params_range = try parseFormalParameters(p);
+    p.in_fn_params = false; // body context: await/yield valid in async/generator body
     const async_fn_expr_return_type = try p.parseOptionalTypeAnnotation();
 
     // TS ambient async function expressions can be bodyless
@@ -1473,12 +1481,15 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         const saved_async = p.in_async;
         const saved_fn4 = p.in_function;
         const saved_gen4 = p.in_generator;
+        const saved_fp4 = p.in_fn_params;
         p.in_async = true;
         p.in_function = true;
         p.in_generator = false;
+        p.in_fn_params = false;
         defer p.in_async = saved_async;
         defer p.in_function = saved_fn4;
         defer p.in_generator = saved_gen4;
+        defer p.in_fn_params = saved_fp4;
         const body = if (p.peek() == .l_brace)
             try parseBlockBodyWithStrictChecks(p, params_range, .none)
         else
@@ -1879,6 +1890,10 @@ fn parseArrowBody(p: *Parser) Error!NodeIndex {
     const saved_gen = p.in_generator;
     p.in_generator = false;
     defer p.in_generator = saved_gen;
+    // Arrow body clears the outer fn-param context.
+    const saved_fp_ab = p.in_fn_params;
+    p.in_fn_params = false;
+    defer p.in_fn_params = saved_fp_ab;
     if (p.peek() == .l_brace) {
         // Entering a new function body: always allow `in` operator.
         // The `allow_in = false` flag from a for-loop init must not propagate
@@ -2657,6 +2672,10 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const saved_cf = p.in_class_field;
     p.in_class_field = false;
     defer p.in_class_field = saved_cf;
+    // Function/arrow body clears the outer fn-param context (await/yield now valid).
+    const saved_fp = p.in_fn_params;
+    p.in_fn_params = false;
+    defer p.in_fn_params = saved_fp;
 
     // Named function expression: name binds only inside the function's own
     // scope.  We emit the declare AFTER emitting scope_open so the consumer
@@ -4095,6 +4114,9 @@ fn parseTaggedTemplate(p: *Parser, tag_expr: NodeIndex) Error!NodeIndex {
 
 fn parseFormalParameters(p: *Parser) Error!SubRange {
     _ = try p.expect(.l_paren);
+    const prev_fp_params = p.in_fn_params;
+    p.in_fn_params = true;
+    defer p.in_fn_params = prev_fp_params;
     const scratch_top = p.scratchLen();
 
     while (p.peek() != .r_paren and p.peek() != .eof) {

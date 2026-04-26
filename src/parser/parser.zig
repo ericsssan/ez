@@ -3555,6 +3555,9 @@ pub const Parser = struct {
         }
 
         self.is_fn_body_block = true;
+        const prev_fp_body = self.in_fn_params;
+        self.in_fn_params = false; // body is outside params — clear for nested await/yield
+        defer self.in_fn_params = prev_fp_body;
         const body = try self.parseBlockStatement();
         try self.emitScopeClose(.none); // close function scope
 
