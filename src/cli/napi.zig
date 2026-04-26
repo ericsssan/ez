@@ -3,7 +3,30 @@ const parser = @import("../parser/root.zig");
 const js_buffer = parser.js_buffer;
 const layout = parser.layout;
 const Lexer = parser.Lexer;
+const lex_iter = parser.lex_iter;
 const parser_mod = @import("../parser/parser.zig");
+
+/// EZ_USE_FUSED env var toggles the per-call LexIter walker for napi
+/// (lex+parse) paths. Default off (uses monolithic Lexer.tokenizeWithLanguage).
+/// Set to "1" to opt-in for parity validation against the existing path.
+threadlocal var tl_use_fused_checked: bool = false;
+threadlocal var tl_use_fused: bool = false;
+fn useFused() bool {
+    if (!tl_use_fused_checked) {
+        tl_use_fused_checked = true;
+        const v = std.c.getenv("EZ_USE_FUSED");
+        if (v) |s| {
+            const slice = std.mem.sliceTo(s, 0);
+            tl_use_fused = slice.len > 0 and slice[0] == '1';
+        }
+    }
+    return tl_use_fused;
+}
+
+inline fn tokenizeMaybeFused(alloc: std.mem.Allocator, source: []const u8, language: Language) !Lexer.TokenizeResult {
+    if (useFused()) return lex_iter.tokenizeViaIter(alloc, source, language);
+    return Lexer.tokenizeWithLanguage(alloc, source, language);
+}
 const parent_builder = @import("../parser/parent_builder.zig");
 const semantic_mod = @import("../parser/semantic.zig");
 const Language = parser.token.Language;
@@ -86,7 +109,7 @@ fn parseImpl(
     const alloc = backing.allocator();
 
     // Tokenize — token arrays land in the bump region.
-    const lex_result = Lexer.tokenizeWithLanguage(alloc, source, language) catch |e| return e;
+    const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
     var tokens = lex_result.tokens;
 
     // Parse — node/extra_data arrays land in the bump region.
@@ -374,7 +397,7 @@ fn parseAndLintImpl(
     var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
     const alloc = backing.allocator();
 
-    const lex_result = Lexer.tokenizeWithLanguage(alloc, source, language) catch |e| return e;
+    const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
     var tokens = lex_result.tokens;
     var tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
         .language = language,
@@ -679,7 +702,7 @@ fn lintImpl(
     var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
     const bump = backing.allocator();
 
-    const lex_result = try Lexer.tokenizeWithLanguage(bump, source, language);
+    const lex_result = try tokenizeMaybeFused(bump, source, language);
     var tokens = lex_result.tokens;
     var tree = try parser_mod.Parser.parseWithOptions(bump, source, tokens.slice(), .{
         .language = language,

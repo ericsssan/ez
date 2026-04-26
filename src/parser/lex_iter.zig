@@ -283,12 +283,18 @@ pub const LexIter = struct {
             if (byte == '\n') {
                 self.saw_nl = true;
                 self.at_line_start = true;
+                if (self.line_starts) |ls| ls.append(self.cm_line_alloc.?, p + 1) catch {};
                 continue;
             }
             if (byte == '\r') {
                 self.saw_nl = true;
                 self.at_line_start = true;
-                if (p + 1 < n and self.src[p + 1] == '\n') self.skip_until = p + 2;
+                if (p + 1 < n and self.src[p + 1] == '\n') {
+                    self.skip_until = p + 2;
+                    if (self.line_starts) |ls| ls.append(self.cm_line_alloc.?, p + 2) catch {};
+                } else {
+                    if (self.line_starts) |ls| ls.append(self.cm_line_alloc.?, p + 1) catch {};
+                }
                 continue;
             }
 
@@ -401,13 +407,24 @@ pub const LexIter = struct {
                 '/' => {
                     if (p + 1 < n and self.src[p + 1] == '/') {
                         end = Lex.lineCommentEnd(self.src, p + 2);
+                        if (self.cm_starts) |cs| {
+                            const a = self.cm_line_alloc.?;
+                            cs.append(a, p) catch {};
+                            self.cm_ends.?.append(a, end) catch {};
+                            self.cm_kinds.?.append(a, 0) catch {}; // 0 = line
+                        }
                         self.skip_until = end;
                         continue;
                     }
                     if (p + 1 < n and self.src[p + 1] == '*') {
-                        // blockCommentEnd takes position of `/` (it does open+2 internally).
                         const r = Lex.blockCommentEnd(self.src, p);
                         end = r.end;
+                        if (self.cm_starts) |cs| {
+                            const a = self.cm_line_alloc.?;
+                            cs.append(a, p) catch {};
+                            self.cm_ends.?.append(a, end) catch {};
+                            self.cm_kinds.?.append(a, 1) catch {}; // 1 = block
+                        }
                         if (r.has_nl) {
                             self.saw_nl = true;
                             self.at_line_start = true;
@@ -527,6 +544,68 @@ test "LexIter 4-slot window: empty stream EOFs correctly" {
     try std.testing.expectEqual(@as(Tag, .eof), iter.peekAt(3));
     try std.testing.expectEqual(@as(Tag, .eof), iter.advance());
     try std.testing.expectEqual(@as(u32, 0), iter.position());
+}
+
+/// Drop-in replacement for `Lexer.tokenizeWithLanguage` that uses the
+/// per-call LexIter walker. Produces an identical `TokenizeResult`. Used
+/// by napi conformance path to validate fused walker on the full corpus.
+pub fn tokenizeViaIter(
+    alloc: std.mem.Allocator,
+    src: []const u8,
+    lang: @import("token.zig").Language,
+) !@import("lexer_simdjson.zig").TokenizeResult {
+    const Lexer = @import("lexer_simdjson.zig");
+    const TokenList = @import("ast.zig").Ast.TokenList;
+
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    Lexer.buildBitmaps(src, &bm);
+
+    var tokens: TokenList = .{};
+    errdefer tokens.deinit(alloc);
+    try tokens.ensureTotalCapacity(alloc, src.len / 4 + 128);
+
+    var cm_starts: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
+    var cm_ends: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
+    var cm_kinds: std.ArrayListUnmanaged(u8) = .{ .items = &.{}, .capacity = 0 };
+    var line_starts: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
+    errdefer cm_starts.deinit(alloc);
+    errdefer cm_ends.deinit(alloc);
+    errdefer cm_kinds.deinit(alloc);
+    errdefer line_starts.deinit(alloc);
+    try line_starts.append(alloc, 0);
+
+    var iter = LexIter.initOpts(src, &bm, .{ .is_ts = lang.isTs() });
+    iter.cm_starts = &cm_starts;
+    iter.cm_ends = &cm_ends;
+    iter.cm_kinds = &cm_kinds;
+    iter.line_starts = &line_starts;
+    iter.cm_line_alloc = alloc;
+
+    while (true) {
+        const cur = iter.peekToken(0);
+        const t = iter.advance();
+        if (t == .eof) break;
+        try tokens.append(alloc, .{
+            .tag = t,
+            .start = cur.start,
+            .len = cur.len,
+            .has_newline_before = false,
+        });
+    }
+    // EOF sentinel
+    try tokens.append(alloc, .{
+        .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false,
+    });
+
+    return .{
+        .tokens = tokens,
+        .comment_starts = try cm_starts.toOwnedSlice(alloc),
+        .comment_ends = try cm_ends.toOwnedSlice(alloc),
+        .comment_kinds = try cm_kinds.toOwnedSlice(alloc),
+        .comment_count = @intCast(cm_starts.items.len),
+        .line_starts = try line_starts.toOwnedSlice(alloc),
+    };
 }
 
 test "LexIter walker: minimal subset (idents + punct + newlines)" {

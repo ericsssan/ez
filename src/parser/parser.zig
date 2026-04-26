@@ -148,6 +148,16 @@ pub const Parser = struct {
     /// that LLVM eliminates).
     scope_events: ScopeEventStream = .{},
     emit_scope_events: bool = false,
+    /// LexIter token source — when non-null, peek/peekAt/advance pull from
+    /// the iter (which lazily walks the bitmap on demand). The parser still
+    /// maintains `tokens` (MultiArrayList) for AST back-references — every
+    /// advance appends the consumed token. Pre-allocated to source.len/2
+    /// (provably enough headroom) so append never grows; tags_ptr stays stable.
+    iter: ?*@import("lex_iter.zig").LexIter = null,
+    /// Owned token storage in iter mode. tokens (Slice) is a view; we bump
+    /// .len after appends. Null in pre-built-token mode.
+    tokens_owned: ?Ast.TokenList = null,
+
     /// Direct-indexed cache of node-id → event-index for the most recent
     /// reference event for that node. Indexed by NodeIndex value; sentinel
     /// 0xFFFFFFFF means "no recent reference event". Eliminates O(N) backward
@@ -278,27 +288,46 @@ pub const Parser = struct {
         language: Language,
         is_module_file: bool,
     ) !Ast {
-        var tokens: Ast.TokenList = .{};
-        defer tokens.deinit(allocator);
-        try tokens.ensureTotalCapacity(allocator, source.len / 4 + 128);
-        while (true) {
-            const cur = iter.peekToken(0);
-            const t = iter.advance();
-            if (t == .eof) break;
-            try tokens.append(allocator, .{
-                .tag = t,
-                .start = cur.start,
-                .len = cur.len,
-                .has_newline_before = false,
-            });
-        }
-        try tokens.append(allocator, .{
-            .tag = .eof, .start = @intCast(source.len), .len = 0, .has_newline_before = false,
-        });
-        return parseInternal(allocator, source, tokens.slice(), language, is_module_file, null, true, null);
+        // Source.len/2 is a safe upper bound on JS token count (worst case
+        // is `;;;;…` at 1 tok/byte; /2 gives 2× headroom over realistic ratios).
+        var tokens_owned: Ast.TokenList = .{};
+        try tokens_owned.ensureTotalCapacity(allocator, source.len / 2 + 128);
+        // Pre-write a sentinel .eof at every slot so peek of an unwritten slot
+        // returns .eof instead of garbage (advanceFromIter bumps len as it
+        // appends, so reading past that returns whatever's there).
+        return parseInternalWithIterOpt(
+            allocator, source, tokens_owned.slice(), language, is_module_file,
+            null, true, null, iter, tokens_owned,
+        );
+    }
+
+    fn parseInternalWithIter(
+        allocator: std.mem.Allocator,
+        source: []const u8,
+        tokens: TokenList.Slice,
+        language: Language,
+        is_module_file: bool,
+        iter: *@import("lex_iter.zig").LexIter,
+    ) !Ast {
+        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, null, true, null, iter, null);
     }
 
     fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool, streaming: ?StreamingHooks) !Ast {
+        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, events_out, emit_events, streaming, null, null);
+    }
+
+    fn parseInternalWithIterOpt(
+        allocator: std.mem.Allocator,
+        source: []const u8,
+        tokens: TokenList.Slice,
+        language: Language,
+        is_module_file: bool,
+        events_out: ?*ScopeEventStream,
+        emit_events: bool,
+        streaming: ?StreamingHooks,
+        iter_opt: ?*@import("lex_iter.zig").LexIter,
+        tokens_owned_in: ?Ast.TokenList,
+    ) !Ast {
         var p = Parser{
             .source = source,
             .tokens = tokens,
@@ -307,6 +336,8 @@ pub const Parser = struct {
             .tok_starts_ptr = tokens.items(.start).ptr,
             .tok_lens_ptr = tokens.items(.len).ptr,
             .tok_i = 0,
+            .iter = iter_opt,
+            .tokens_owned = tokens_owned_in,
             .parsed_len = if (streaming != null) 0 else tokens.len,
             .published_len = if (streaming) |s| s.published_len else null,
             .lex_done = if (streaming) |s| s.lex_done else null,
@@ -504,14 +535,37 @@ pub const Parser = struct {
 
     /// Consume the current token and return its index.
     pub inline fn advance(self: *Parser) TokenIndex {
+        if (self.iter) |it| return self.advanceFromIter(it);
         const result = self.tok_i;
         if (self.tok_i < self.parsed_len - 1) {
             @branchHint(.likely);
             self.tok_i += 1;
             return result;
         }
-        // EOF or streaming-refill — extracted to keep the hot path tight.
         return self.advanceSlow(result);
+    }
+
+    /// Iter-mode advance: pull token from iter, appendAssumeCapacity into
+    /// the pre-allocated tokens_owned, bump the Slice length to mirror.
+    /// tags_ptr/etc remain valid because we never grow the underlying buffer
+    /// (source.len/2 is a provable upper bound on JS token count).
+    fn advanceFromIter(self: *Parser, it: *@import("lex_iter.zig").LexIter) TokenIndex {
+        const cur = it.peekToken(0);
+        const tag = it.advance();
+        const result = self.tok_i;
+        if (self.tokens_owned) |*owned| {
+            owned.appendAssumeCapacity(.{
+                .tag = tag,
+                .start = cur.start,
+                .len = cur.len,
+                .has_newline_before = false, // TODO: thread through iter
+            });
+            // Mirror length on the Slice view (same underlying buffer).
+            self.tokens.len = owned.len;
+            self.parsed_len = owned.len;
+        }
+        self.tok_i = result + 1;
+        return result;
     }
 
     fn advanceSlow(self: *Parser, result: TokenIndex) TokenIndex {
@@ -593,16 +647,19 @@ pub const Parser = struct {
     }
 
     /// Return the tag of the current token.
-    pub inline fn peek(self: *const Parser) TokenTag {
-        // The streaming invariant is enforced by advance/peekAt: when this
-        // function runs, tok_i is always within the published range (or the
-        // pre-written .eof sentinel). Identical hot path to the non-streaming
-        // case — zero overhead.
+    pub inline fn peek(self: *Parser) TokenTag {
+        if (self.iter) |it| return it.peek();
         return self.tags_ptr[self.tok_i];
     }
 
     /// Look ahead by `offset` tokens from the current position.
     pub inline fn peekAt(self: *Parser, offset: u32) TokenTag {
+        if (self.iter) |it| {
+            // Iter supports peekAt(0..=3). Beyond that, we'd need to drain
+            // tokens into the buffer to look further — not yet supported.
+            std.debug.assert(offset < 4);
+            return it.peekAt(offset);
+        }
         const idx = self.tok_i + offset;
         if (idx < self.parsed_len) {
             @branchHint(.likely);
@@ -632,7 +689,7 @@ pub const Parser = struct {
     }
 
     /// Check whether we have reached the end of input.
-    pub fn isAtEnd(self: *const Parser) bool {
+    pub fn isAtEnd(self: *Parser) bool {
         return self.peek() == .eof;
     }
 
@@ -5852,7 +5909,7 @@ pub const Parser = struct {
 
     /// Check if an identifier-like token can be treated as an identifier.
     /// Includes TS contextual keywords that can be used as identifiers.
-    pub fn isIdentifierLike(self: *const Parser) bool {
+    pub fn isIdentifierLike(self: *Parser) bool {
         const tag = self.peek();
         if (tag == .identifier) return true;
         if (tag.isKeyword()) return true;

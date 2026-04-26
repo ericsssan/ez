@@ -214,7 +214,7 @@ fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module:
     if (!run_lint) return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
 
     // Run lint rules for must-reject tests to catch early errors via lint rules.
-    const lint_diags = ez.linter.lint(allocator, &tree, &sem, null) catch return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
+    const lint_diags = ez.linter.lint(allocator, &tree, &sem, null, .js) catch return .{ .has_error = false, .detail = .{ .kind = .lint, .count = 0 } };
     if (lint_diags.len > 0) {
         allocator.free(lint_diags);
         return .{ .has_error = true, .detail = .{ .kind = .lint, .count = @intCast(lint_diags.len) } };

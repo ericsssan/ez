@@ -2,7 +2,14 @@ const std = @import("std");
 const ez = @import("ez");
 const Lexer = ez.Lexer;
 const Parser = ez.Parser;
+const lex_iter = ez.lex_iter;
 const Io = std.Io;
+
+var g_use_fused: bool = false;
+fn tokenizeMaybe(alloc: std.mem.Allocator, source: []const u8, lang: ez.parser_root.token.Language, is_module: bool) !Lexer.TokenizeResult {
+    if (g_use_fused) return lex_iter.tokenizeViaIter(alloc, source, lang);
+    return Lexer.tokenizeWithOptions(alloc, source, lang, is_module);
+}
 
 /// Fast runner for tc39/test262-parser-tests (directory-based classification).
 /// Replaces the bash script that spawned a process per file.
@@ -30,6 +37,11 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    if (std.c.getenv("EZ_USE_FUSED")) |s| {
+        const slice = std.mem.sliceTo(s, 0);
+        if (slice.len > 0 and slice[0] == '1') g_use_fused = true;
+    }
 
     var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
@@ -109,7 +121,7 @@ pub fn main(init: std.process.Init) !void {
 
             const Result = enum { ok, has_errors, crashed };
             const result: Result = blk: {
-                var tokens = (Lexer.tokenizeWithOptions(file_alloc, source, .js, is_module) catch break :blk .crashed).tokens;
+                var tokens = (tokenizeMaybe(file_alloc, source, .js, is_module) catch break :blk .crashed).tokens;
                 defer tokens.deinit(file_alloc);
                 var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk .crashed;
                 defer tree.deinit(file_alloc);

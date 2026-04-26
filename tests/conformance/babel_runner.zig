@@ -2,15 +2,27 @@ const std = @import("std");
 const ez = @import("ez");
 const Lexer = ez.Lexer;
 const Parser = ez.Parser;
+const lex_iter = ez.lex_iter;
 const Io = std.Io;
 
 /// Fast in-process runner for Babel parser test fixtures.
 /// Usage: babel_runner <fixtures-dir>
 
+var g_use_fused: bool = false;
+fn tokenizeMaybe(alloc: std.mem.Allocator, source: []const u8, lang: ez.parser_root.token.Language, is_module: bool, annex_b: bool) !Lexer.TokenizeResult {
+    if (g_use_fused) return lex_iter.tokenizeViaIter(alloc, source, lang);
+    return Lexer.tokenizeWithAllOptions(alloc, source, lang, .{ .is_module = is_module, .annex_b = annex_b });
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    if (std.c.getenv("EZ_USE_FUSED")) |s| {
+        const slice = std.mem.sliceTo(s, 0);
+        if (slice.len > 0 and slice[0] == '1') g_use_fused = true;
+    }
 
     var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
@@ -80,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
         const file_alloc = arena.allocator();
 
         const parse_result = blk: {
-            var tokens = (Lexer.tokenizeWithAllOptions(file_alloc, source, .js, .{ .is_module = is_module, .annex_b = opts.annex_b }) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" }).tokens;
+            var tokens = (tokenizeMaybe(file_alloc, source, .js, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" }).tokens;
             defer tokens.deinit(file_alloc);
             var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
             defer tree.deinit(file_alloc);
@@ -93,7 +105,7 @@ pub fn main(init: std.process.Init) !void {
 
             // Run lint rules for must-reject tests to catch early errors via lint rules
             if (is_error_test) {
-                const lint_diags = ez.linter.lint(file_alloc, &tree, &sem, null) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
+                const lint_diags = ez.linter.lint(file_alloc, &tree, &sem, null, .js) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
                 if (lint_diags.len > 0) {
                     file_alloc.free(lint_diags);
                     break :blk ParseResult{ .has_error = true, .first_error = "lint error" };
