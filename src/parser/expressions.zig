@@ -3287,6 +3287,13 @@ fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex
     // No-substitution template: `text`
     if (p.peek() == .template_no_sub) {
         const tok = p.advance();
+        // Detect unterminated template (must end with backtick).
+        const ts = p.tok_starts_ptr[tok];
+        const tl = p.tok_lens_ptr[tok];
+        if (tl < 2 or ts + tl > p.source.len or p.source[ts + tl - 1] != '`') {
+            try p.emitError("Unterminated template literal");
+            return error.ParseError;
+        }
         // Validate escape sequences in untagged template
         if (validate_escapes) {
             const tok_start = p.tokenStart(tok);
