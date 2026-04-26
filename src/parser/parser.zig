@@ -1502,7 +1502,7 @@ pub const Parser = struct {
         self.checkDirectivePrologue();
 
         // Open module/global scope for event stream.
-        _ = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
+        const program_scope_ev = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
         // Streaming: publish the initial scope_open immediately so a concurrent
         // sem thread sees the global code path before any other events.
         if (self.events_publish_to) |p| p.store(self.scope_events.events.items.len, .release);
@@ -1547,6 +1547,46 @@ pub const Parser = struct {
             .lhs = NodeIndex.fromInt(range.start),
             .rhs = NodeIndex.fromInt(range.end),
         };
+
+        // Top-level lexical redeclaration check (mirror of block-scope logic).
+        if (self.emit_scope_events) {
+            const evs = self.scope_events.events.items[program_scope_ev + 1 ..];
+            var depth: i32 = 0;
+            const Entry = struct { name: []const u8, kind: BindingKindU8 };
+            var names_buf: [128]Entry = undefined;
+            var names_n: usize = 0;
+            const allow_fn_dup = !self.is_module and !self.in_strict;
+            for (evs) |ev| {
+                switch (ev.kind) {
+                    .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
+                    .scope_close => depth -= 1,
+                    .declare => if (depth == 0) {
+                        const bk: BindingKindU8 = @enumFromInt(ev.aux);
+                        if (bk == .@"var" or bk == .parameter) continue;
+                        const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
+                        const tok_start = self.tok_starts_ptr[main_tok_idx];
+                        const tok_len = self.tok_lens_ptr[main_tok_idx];
+                        if (tok_start + tok_len > self.source.len) continue;
+                        const name = self.source[tok_start..tok_start + tok_len];
+                        var dup = false;
+                        for (names_buf[0..names_n]) |existing| {
+                            if (!std.mem.eql(u8, existing.name, name)) continue;
+                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl) continue;
+                            dup = true;
+                            break;
+                        }
+                        if (dup) {
+                            try self.emitDiagnostic(self.currentSpan(),
+                                "Identifier '{s}' has already been declared", .{name});
+                        } else if (names_n < names_buf.len) {
+                            names_buf[names_n] = .{ .name = name, .kind = bk };
+                            names_n += 1;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
 
         // Close module/global scope for event stream.
         try self.emitScopeClose(.root);
