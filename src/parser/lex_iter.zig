@@ -469,6 +469,16 @@ pub const LexIter = struct {
                         num_valid = false;
                     }
                 }
+                // Numeric literal cannot be immediately followed by IdentifierStart
+                // or a decimal digit (per spec 12.9.3). ASCII range only.
+                if (num_valid and end_n < n) {
+                    const nb = self.src[end_n];
+                    if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                        nb == '_' or nb == '$')
+                    {
+                        num_valid = false;
+                    }
+                }
                 const tag_n: Tag = if (!num_valid)
                     .invalid
                 else if (end_n > p and self.src[end_n - 1] == 'n')
