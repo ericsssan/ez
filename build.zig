@@ -355,6 +355,34 @@ pub fn build(b: *std.Build) void {
     const pp_step = b.step("test-parse-profile", "Long-running parser profile harness");
     pp_step.dependOn(&pp_cmd.step);
 
+    // ── Sem profile harness ──
+    const sm_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_sem_profile.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    sm_mod.addImport("ez", test_mod);
+    const sm_exe = b.addExecutable(.{ .name = "test_sem_profile", .root_module = sm_mod });
+    b.installArtifact(sm_exe);
+    const sm_cmd = b.addRunArtifact(sm_exe);
+    sm_cmd.step.dependOn(b.getInstallStep());
+    const sm_step = b.step("test-sem-profile", "Long-running sem profile harness");
+    sm_step.dependOn(&sm_cmd.step);
+
+    // ── Sem split parity test ──
+    const sp_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_sem_split_parity.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    sp_mod.addImport("ez", test_mod);
+    const sp_exe = b.addExecutable(.{ .name = "test_sem_split_parity", .root_module = sp_mod });
+    b.installArtifact(sp_exe);
+    const sp_cmd = b.addRunArtifact(sp_exe);
+    sp_cmd.step.dependOn(b.getInstallStep());
+    const sp_step = b.step("test-sem-split-parity", "Verify resolveFullScope+resolveFullCfg ≡ resolveFull");
+    sp_step.dependOn(&sp_cmd.step);
+
     // ── Real lex-parse pipeline (with shared token buffer) ──
     const real_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_pipeline_real.zig"),
