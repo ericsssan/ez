@@ -1188,6 +1188,8 @@ fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
         switch (src[i + 1]) {
             'x', 'X' => { is_hex = true; i += 2; if (i >= end or src[i] == '_') return false; },
             'b', 'B', 'o', 'O' => { i += 2; if (i >= end or src[i] == '_') return false; },
+            // Leading-zero number with `_` immediately after — invalid.
+            '_' => return false,
             else => {},
         }
     }
