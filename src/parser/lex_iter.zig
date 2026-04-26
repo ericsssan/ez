@@ -365,6 +365,31 @@ pub const LexIter = struct {
                 continue;
             }
 
+            // Unicode whitespace (Zs category): NBSP (U+00A0 = C2 A0),
+            // OGHAM SPACE (U+1680 = E1 9A 80), En..Hair quad (U+2000..U+200A
+            // = E2 80 80..E2 80 8A), narrow NBSP (U+202F = E2 80 AF),
+            // medium math (U+205F = E2 81 9F), ideographic (U+3000 = E3 80 80).
+            if (byte == 0xC2 and p + 1 < n and self.src[p + 1] == 0xA0) {
+                self.skip_until = p + 2;
+                continue;
+            }
+            if (byte == 0xE1 and p + 2 < n and self.src[p + 1] == 0x9A and self.src[p + 2] == 0x80) {
+                self.skip_until = p + 3;
+                continue;
+            }
+            if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and (self.src[p + 2] >= 0x80 and self.src[p + 2] <= 0x8A or self.src[p + 2] == 0xAF)) {
+                self.skip_until = p + 3;
+                continue;
+            }
+            if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x81 and self.src[p + 2] == 0x9F) {
+                self.skip_until = p + 3;
+                continue;
+            }
+            if (byte == 0xE3 and p + 2 < n and self.src[p + 1] == 0x80 and self.src[p + 2] == 0x80) {
+                self.skip_until = p + 3;
+                continue;
+            }
+
             // High-byte (0x80+) identifier-start: scan to end of ident run via
             // ident bitmap. Phase 1's ident bitmap includes all high bytes,
             // so the run end is the next bit-clear position.
@@ -415,18 +440,60 @@ pub const LexIter = struct {
                 return tok;
             }
 
-            // `\u` escape opening an identifier (a or \u{...}).
+            // `\u` escape opening an identifier (\uXXXX or \u{HHHH}).
             if (byte == '\\' and p + 1 < n and self.src[p + 1] == 'u') {
                 var end_i: u32 = p + 2;
+                var valid = true;
                 if (end_i < n and self.src[end_i] == '{') {
                     end_i += 1;
-                    while (end_i < n and self.src[end_i] != '}') end_i += 1;
+                    const hex_start = end_i;
+                    var codepoint: u32 = 0;
+                    while (end_i < n and self.src[end_i] != '}') : (end_i += 1) {
+                        const c = self.src[end_i];
+                        const v: u32 = switch (c) {
+                            '0'...'9' => c - '0',
+                            'a'...'f' => c - 'a' + 10,
+                            'A'...'F' => c - 'A' + 10,
+                            else => { valid = false; break; },
+                        };
+                        codepoint = (codepoint << 4) | v;
+                        if (codepoint > 0x10FFFF) { valid = false; }
+                    }
+                    if (end_i >= n or self.src[end_i] != '}') valid = false; // unterminated
+                    if (end_i == hex_start) valid = false; // empty \u{}
+                    if (codepoint >= 0xD800 and codepoint <= 0xDFFF) valid = false; // lone surrogate
                     if (end_i < n) end_i += 1; // include }
                 } else {
-                    // \uXXXX — 4 hex digits.
+                    // \uXXXX — exactly 4 hex digits.
                     var hex_count: u32 = 0;
-                    while (end_i < n and hex_count < 4) : (hex_count += 1) end_i += 1;
+                    var cp: u32 = 0;
+                    while (end_i < n and hex_count < 4) : ({ end_i += 1; hex_count += 1; }) {
+                        const c = self.src[end_i];
+                        const v: u32 = switch (c) {
+                            '0'...'9' => c - '0',
+                            'a'...'f' => c - 'a' + 10,
+                            'A'...'F' => c - 'A' + 10,
+                            else => { valid = false; break; },
+                        };
+                        cp = (cp << 4) | v;
+                    }
+                    if (hex_count < 4) valid = false;
+                    // Reject lone high-surrogates (D800-DBFF). For full spec
+                    // compliance we'd allow them when immediately followed by a
+                    // low-surrogate \uDCxx, but matching monolithic behavior:
+                    // reject all surrogates here.
+                    if (cp >= 0xD800 and cp <= 0xDFFF) valid = false;
                 }
+
+                if (!valid) {
+                    self.skip_until = end_i;
+                    self.prev_kind = .invalid;
+                    self.last_emitted_nl = self.saw_nl;
+                    self.saw_nl = false;
+                    self.at_line_start = false;
+                    return Token{ .tag = .invalid, .start = p, .len = end_i - p };
+                }
+
                 // Continue consuming ident-continuation chars + further \u escapes.
                 while (end_i < n) {
                     const c = self.src[end_i];
