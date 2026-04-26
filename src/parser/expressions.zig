@@ -569,7 +569,10 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     child_tag == .this_expr or child_tag == .regex_literal or
                     child_tag == .template_literal or child_tag == .tagged_template or
                     child_tag == .super_expr or child_tag == .class_expr or
-                    child_tag == .fn_expr)
+                    child_tag == .fn_expr or
+                    child_tag == .optional_member_expr or
+                    child_tag == .optional_computed_member_expr or
+                    child_tag == .optional_call_expr)
                 {
                     try p.emitError("Invalid destructuring target");
                     return error.ParseError;
@@ -662,7 +665,10 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         val_tag == .call_expr or val_tag == .new_expr or
                         val_tag == .regex_literal or val_tag == .template_literal or
                         val_tag == .tagged_template or val_tag == .super_expr or
-                        val_tag == .class_expr or val_tag == .fn_expr)
+                        val_tag == .class_expr or val_tag == .fn_expr or
+                        val_tag == .optional_member_expr or
+                        val_tag == .optional_computed_member_expr or
+                        val_tag == .optional_call_expr)
                     {
                         try p.emitError("Invalid destructuring target");
                         return error.ParseError;
