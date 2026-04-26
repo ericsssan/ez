@@ -208,19 +208,140 @@ pub const LexIter = struct {
     }
 
     /// Produce ONE token from the Phase 2 walker, or null at EOF.
-    /// STUB — see file header for migration plan. Production implementation
-    /// is the 600-line port from `lexer_simdjson.tokenizeWithBuf`, with all
-    /// in-flight state preserved in struct fields between calls.
+    ///
+    /// MINIMUM VIABLE SUBSET — handles newlines (skip), ASCII identifier
+    /// starts (emit identifier), single-char punct/braces/parens/etc. Bytes
+    /// outside this subset return an error placeholder so the parser still
+    /// receives a token (preventing infinite advance loops). Subsequent
+    /// commits extend to strings/comments/regex/templates/numbers/operators
+    /// /keywords-vs-ident/BOM/LS-PS until the full Phase 2 walker is ported.
     fn walkerNext(self: *LexIter) ?Token {
-        // STUB: mark EOF immediately. Replace with single-token Phase 2 walker.
-        self.eof = true;
-        return null;
+        const n: u32 = @intCast(self.src.len);
+        const bm = self.bm;
+        // Outer loop: advance through bitmap words; inner loop: pop visit bits.
+        while (true) {
+            // Need to refill visit bits?
+            if (self.visit == 0) {
+                // Advance to next word.
+                while (true) {
+                    if (self.wi >= bm.ident.len) {
+                        self.eof = true;
+                        return null;
+                    }
+                    const w_id = bm.ident[self.wi];
+                    const w_nl = bm.newline[self.wi];
+                    const w_st = bm.structural[self.wi];
+                    // ident_starts: bit set where a new ident run begins.
+                    const id_starts = w_id & ~((w_id << 1) | self.prev_ident_last_bit);
+                    self.prev_ident_last_bit = (w_id >> 63) & 1;
+                    const word_off: u32 = @intCast(self.wi * 64);
+                    self.wi += 1;
+                    // Fast-forward whole words covered by skip_until.
+                    if (self.skip_until >= word_off + 64) continue;
+                    var visit = w_nl | w_st | id_starts;
+                    if (self.skip_until > word_off) {
+                        const shift: u6 = @intCast(self.skip_until - word_off);
+                        visit &= ~((@as(u64, 1) << shift) - 1);
+                    }
+                    if (visit != 0) {
+                        self.visit = visit;
+                        break;
+                    }
+                }
+            }
+
+            // Pop one visit bit.
+            const b: u32 = @ctz(self.visit);
+            self.visit &= self.visit - 1;
+            const word_off: u32 = @intCast((self.wi - 1) * 64);
+            const p: u32 = word_off + b;
+            if (p >= n) {
+                self.eof = true;
+                return null;
+            }
+            if (p < self.skip_until) continue;
+            const byte = self.src[p];
+
+            // Newline: state update, no emit.
+            if (byte == '\n') {
+                self.saw_nl = true;
+                self.at_line_start = true;
+                continue;
+            }
+            if (byte == '\r') {
+                self.saw_nl = true;
+                self.at_line_start = true;
+                if (p + 1 < n and self.src[p + 1] == '\n') self.skip_until = p + 2;
+                continue;
+            }
+
+            // Identifier-start: scan run end, emit identifier token.
+            // (Keyword-vs-ident distinction deferred until full walker port —
+            // returns .identifier for everything that looks ident-like.)
+            if ((byte >= 'a' and byte <= 'z') or
+                (byte >= 'A' and byte <= 'Z') or
+                byte == '_' or byte == '$')
+            {
+                var end: u32 = p + 1;
+                while (end < n) : (end += 1) {
+                    const c = self.src[end];
+                    if (!((c >= 'a' and c <= 'z') or
+                          (c >= 'A' and c <= 'Z') or
+                          (c >= '0' and c <= '9') or
+                          c == '_' or c == '$')) break;
+                }
+                self.skip_until = end;
+                self.prev_kind = .identifier;
+                const tok = Token{ .tag = .identifier, .start = p, .len = end - p };
+                self.saw_nl = false;
+                self.at_line_start = false;
+                return tok;
+            }
+
+            // Single-char punctuation / braces / parens / etc.
+            const single_tag: ?Tag = switch (byte) {
+                '(' => .l_paren,
+                ')' => .r_paren,
+                '[' => .l_bracket,
+                ']' => .r_bracket,
+                '{' => .l_brace,
+                '}' => .r_brace,
+                ',' => .comma,
+                ';' => .semicolon,
+                ':' => .colon,
+                '~' => .tilde,
+                '@' => .at_sign,
+                else => null,
+            };
+            if (single_tag) |tag| {
+                self.prev_kind = tag;
+                const tok = Token{ .tag = tag, .start = p, .len = 1 };
+                self.saw_nl = false;
+                self.at_line_start = false;
+                return tok;
+            }
+
+            // Unsupported byte (string/regex/comment/operator/template/digit/
+            // BOM/high-byte). Emit an .invalid placeholder so caller advances
+            // rather than spinning. Skip past this byte; subsequent commits
+            // implement the missing classes.
+            self.skip_until = p + 1;
+            self.prev_kind = .invalid;
+            const tok = Token{ .tag = .invalid, .start = p, .len = 1 };
+            self.saw_nl = false;
+            self.at_line_start = false;
+            return tok;
+        }
     }
 };
 
 test "LexIter 4-slot window: empty stream EOFs correctly" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
     const src = "";
-    var bm: Bitmaps = undefined;
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
     var iter = LexIter.init(src, &bm);
     try std.testing.expect(iter.isAtEnd());
     try std.testing.expectEqual(@as(Tag, .eof), iter.peek());
@@ -228,6 +349,33 @@ test "LexIter 4-slot window: empty stream EOFs correctly" {
     try std.testing.expectEqual(@as(Tag, .eof), iter.peekAt(3));
     try std.testing.expectEqual(@as(Tag, .eof), iter.advance());
     try std.testing.expectEqual(@as(u32, 0), iter.position());
+}
+
+test "LexIter walker: minimal subset (idents + punct + newlines)" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "foo (bar);\nbaz";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+
+    var iter = LexIter.init(src, &bm);
+    // Expected token stream:
+    //   identifier(foo) l_paren identifier(bar) r_paren semicolon identifier(baz) eof
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.peek());
+    try std.testing.expectEqualStrings("foo", src[iter.peekToken(0).start..][0..iter.peekToken(0).len]);
+    _ = iter.advance();
+
+    try std.testing.expectEqual(@as(Tag, .l_paren), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.peek());
+    try std.testing.expectEqualStrings("bar", src[iter.peekToken(0).start..][0..iter.peekToken(0).len]);
+    _ = iter.advance();
+    try std.testing.expectEqual(@as(Tag, .r_paren), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .semicolon), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.peek());
+    try std.testing.expectEqualStrings("baz", src[iter.peekToken(0).start..][0..iter.peekToken(0).len]);
+    _ = iter.advance();
+    try std.testing.expect(iter.isAtEnd());
 }
 
 test "LexIter struct size — fits in a couple cachelines" {
