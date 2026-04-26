@@ -1401,12 +1401,18 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     const saved_fn = p.in_function;
     const saved_async = p.in_async;
     const saved_gen = p.in_generator;
+    const saved_cf_afe = p.in_class_field;
+    const saved_ic_afe = p.in_class;
     p.in_function = true;
     p.in_async = true;
     p.in_generator = is_generator;
+    p.in_class_field = false;
+    p.in_class = false;
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
     defer p.in_generator = saved_gen;
+    defer p.in_class_field = saved_cf_afe;
+    defer p.in_class = saved_ic_afe;
 
     const async_fn_type_params = try p.parseOptionalTypeParameters();
     const saved_fp_afe = p.in_fn_params;
@@ -2249,14 +2255,17 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     const saved_method = p.in_method;
     const saved_gen_gs = p.in_generator;
     const saved_async_gs = p.in_async;
+    const saved_cf_gs = p.in_class_field;
     p.in_function = true;
     p.in_method = true;
     p.in_generator = false;
     p.in_async = false;
+    p.in_class_field = false;
     defer p.in_function = saved_fn;
     defer p.in_method = saved_method;
     defer p.in_generator = saved_gen_gs;
     defer p.in_async = saved_async_gs;
+    defer p.in_class_field = saved_cf_gs;
 
     // Parse function part
     const gs_scope_ev = try p.emitScopeOpen(.function, .none);
@@ -2389,14 +2398,17 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     const saved_async = p.in_async;
     const saved_gen = p.in_generator;
     const saved_method = p.in_method;
+    const saved_cf_am = p.in_class_field;
     p.in_function = true;
     p.in_async = true;
     p.in_generator = is_generator;
     p.in_method = true;
+    p.in_class_field = false;
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
     defer p.in_generator = saved_gen;
     defer p.in_method = saved_method;
+    defer p.in_class_field = saved_cf_am;
 
     _ = try p.parseOptionalTypeParameters();
     const async_method_scope_ev = try p.emitScopeOpen(.function, .none);
@@ -2431,12 +2443,15 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     const saved_fn = p.in_function;
     const saved_gen = p.in_generator;
     const saved_method = p.in_method;
+    const saved_cf_gm = p.in_class_field;
     p.in_function = true;
     p.in_generator = true;
     p.in_method = true;
+    p.in_class_field = false;
     defer p.in_function = saved_fn;
     defer p.in_generator = saved_gen;
     defer p.in_method = saved_method;
+    defer p.in_class_field = saved_cf_gm;
 
     _ = try p.parseOptionalTypeParameters();
     const gen_method_scope_ev = try p.emitScopeOpen(.function, .none);

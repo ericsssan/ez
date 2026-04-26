@@ -3992,19 +3992,23 @@ pub const Parser = struct {
         if (self.peek() == .kw_static and self.peekAt(1) == .l_brace) {
             const static_tok = self.advance(); // eat 'static'
             _ = self.advance(); // eat '{'
-            // Static blocks isolate break/continue/return context
+            // Static blocks isolate break/continue/return context;
+            // `arguments` is also forbidden (reuse class-field check).
             const prev_in_loop = self.in_loop;
             const prev_in_switch = self.in_switch;
             const prev_in_function = self.in_function;
+            const prev_cf_sb = self.in_class_field;
             self.in_loop = false;
             self.in_switch = false;
             self.in_function = false;
+            self.in_class_field = true;
             const static_scope_ev = try self.emitScopeOpen(.static_block, .none);
             const range = try self.parseStatementList(.r_brace);
             try self.emitScopeClose(.none);
             self.in_loop = prev_in_loop;
             self.in_switch = prev_in_switch;
             self.in_function = prev_in_function;
+            self.in_class_field = prev_cf_sb;
             _ = try self.expect(.r_brace);
             const static_node = try self.addNode(.{
                 .tag = .static_block,
