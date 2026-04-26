@@ -400,7 +400,8 @@ pub const LexIter = struct {
                         continue;
                     }
                     if (p + 1 < n and self.src[p + 1] == '*') {
-                        const r = Lex.blockCommentEnd(self.src, p + 2);
+                        // blockCommentEnd takes position of `/` (it does open+2 internally).
+                        const r = Lex.blockCommentEnd(self.src, p);
                         end = r.end;
                         if (r.has_nl) {
                             self.saw_nl = true;

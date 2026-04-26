@@ -44,20 +44,39 @@ pub fn main(init: std.process.Init) !void {
         ez.LexerSimdjson.buildBitmaps(src, &bm);
         var iter = ez.lex_iter.LexIter.init(src, &bm);
 
+        const ref_starts_x = ref.tokens.items(.start);
         var i: usize = 0;
         var first_mismatch_at: ?usize = null;
+        var first_pos_drift_at: ?usize = null;
+        var pos_drift_iter: u32 = 0;
         while (true) {
+            const cur = iter.peekToken(0);
             const t = iter.advance();
             if (t == .eof) break;
             if (i >= ref_count) {
                 if (first_mismatch_at == null) first_mismatch_at = i;
                 break;
             }
+            if (cur.start != ref_starts_x[i] and first_pos_drift_at == null) {
+                first_pos_drift_at = i;
+                pos_drift_iter = cur.start;
+            }
             if (t != ref_tags[i]) {
                 if (first_mismatch_at == null) first_mismatch_at = i;
                 break;
             }
             i += 1;
+        }
+        if (first_pos_drift_at) |pdi| {
+            const ref_at = ref_starts_x[pdi];
+            const prev_ref_start = if (pdi > 0) ref_starts_x[pdi - 1] else 0;
+            const prev_ref_len = if (pdi > 0) ref.tokens.items(.len)[pdi - 1] else 0;
+            const prev_ref_tag = if (pdi > 0) @tagName(ref_tags[pdi - 1]) else "<bos>";
+            const ctx_lo: u32 = prev_ref_start;
+            const ctx_hi: u32 = @min(@as(u32, @intCast(src.len)), pos_drift_iter + 30);
+            std.debug.print("    first pos drift at idx {d}: ref byte {d}, iter byte {d}\n", .{ pdi, ref_at, pos_drift_iter });
+            std.debug.print("    prev ref token: {s} at byte {d}, len {d}\n", .{ prev_ref_tag, prev_ref_start, prev_ref_len });
+            std.debug.print("    drift ctx (prev token → iter pos): {s}\n", .{src[ctx_lo..ctx_hi]});
         }
         const matched = first_mismatch_at == null and i == ref_count;
         total_tokens += ref_count;
@@ -75,14 +94,33 @@ pub fn main(init: std.process.Init) !void {
             var iter2 = ez.lex_iter.LexIter.init(src, &bm2);
             var j: usize = 0;
             var iter_tag: []const u8 = "<eof>";
+            var iter_start: u32 = 0;
             while (j <= idx) : (j += 1) {
+                // Capture token at j BEFORE advancing — slot[0] = current.
+                const cur_tok = iter2.peekToken(0);
                 const t2 = iter2.advance();
                 if (t2 == .eof) break;
-                if (j == idx) iter_tag = @tagName(t2);
+                if (j == idx) {
+                    iter_tag = @tagName(t2);
+                    iter_start = cur_tok.start;
+                }
             }
+            const ref_starts2 = ref.tokens.items(.start);
+            const ref_lens2 = ref.tokens.items(.len);
+            const ref_start = if (idx < ref_count) ref_starts2[idx] else 0;
+            const ref_len = if (idx < ref_count) ref_lens2[idx] else 0;
+            const ctx_lo: u32 = if (ref_start > 200) ref_start - 200 else 0;
+            const ctx_hi: u32 = @min(@as(u32, @intCast(src.len)), ref_start + ref_len + 60);
             std.debug.print("  FAIL {s}: idx {d} of {d}  ref={s}  iter={s}\n", .{
                 path, idx, ref_count, ref_tag, iter_tag,
             });
+            std.debug.print("    ref pos byte {d}, len {d}\n", .{ ref_start, ref_len });
+            std.debug.print("    iter pos byte {d}\n", .{iter_start});
+            std.debug.print("    drift: ref-iter = {d} bytes\n", .{@as(i64, ref_start) - @as(i64, iter_start)});
+            std.debug.print("    src ref ctx: ...{s}...\n", .{src[ctx_lo..ctx_hi]});
+            const iter_lo: u32 = if (iter_start > 60) iter_start - 60 else 0;
+            const iter_hi: u32 = @min(@as(u32, @intCast(src.len)), iter_start + 30);
+            std.debug.print("    src iter ctx: ...{s}...\n", .{src[iter_lo..iter_hi]});
         }
     }
 
