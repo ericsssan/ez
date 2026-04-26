@@ -1448,13 +1448,14 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     // Collect inner expressions into scratch space.
     const scratch_top = p.scratchLen();
 
+    var async_has_trailing_comma = false;
     if (p.peek() != .r_paren) {
         const first = try parseAssignmentOrSpread(p);
         try p.scratchPush(first);
 
         while (p.peek() == .comma) {
             _ = p.advance(); // consume `,`
-            if (p.peek() == .r_paren) break; // trailing comma
+            if (p.peek() == .r_paren) { async_has_trailing_comma = true; break; } // trailing comma
             const elem = try parseAssignmentOrSpread(p);
             try p.scratchPush(elem);
         }
@@ -1474,7 +1475,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         }
 
         // Check restrictions on async arrow params
-        for (params) |node_raw| {
+        for (params, 0..) |node_raw, idx| {
             const param_node = NodeIndex.fromInt(node_raw);
             if (param_node == .none) continue;
             const pt = p.node_tags_ptr[param_node.toInt()];
@@ -1488,6 +1489,23 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
                 }
                 if (p.in_strict) {
                     try p.checkStrictBinding(ptok);
+                }
+            }
+            // Rest param with trailing comma rejected.
+            if (!p.is_ts and (pt == .rest_element or pt == .spread_element)) {
+                if (idx < params.len - 1) {
+                    try p.emitError("Rest parameter must be last in async arrow");
+                    return error.ParseError;
+                }
+                if (async_has_trailing_comma) {
+                    try p.emitError("Rest parameter must not have a trailing comma");
+                    return error.ParseError;
+                }
+                // rest with default is invalid
+                const rd = p.node_data_ptr[param_node.toInt()];
+                if (rd.lhs != .none and p.node_tags_ptr[rd.lhs.toInt()] == .assignment_pattern) {
+                    try p.emitError("Rest parameter cannot have a default value");
+                    return error.ParseError;
                 }
             }
         }
