@@ -3870,6 +3870,16 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
         }
     }
 
+    // YieldExpression is at AssignmentExpression level; cannot be RHS of binary operators
+    // above the assignment level. Comma and assignment are not at this prec class.
+    if (!p.is_ts and rhs != .none) {
+        const rhs_tag = p.node_tags_ptr[rhs.toInt()];
+        if (rhs_tag == .yield_expr or rhs_tag == .yield_delegate) {
+            try p.emitError("Yield expression not allowed as binary operand (wrap in parens)");
+            return error.ParseError;
+        }
+    }
+
     const node_tag: Node.Tag = tokenToBinaryTag(op_tag);
     const node = try p.addNode(.{
         .tag = node_tag,
