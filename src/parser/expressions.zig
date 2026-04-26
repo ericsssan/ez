@@ -1560,6 +1560,15 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
                     return error.ParseError;
                 }
             }
+            // Deep validate (rejects parens around bindings, member expr, etc).
+            if (!p.is_ts and (pt == .array_pattern or pt == .object_pattern or
+                pt == .array_literal or pt == .object_literal or
+                pt == .assign or pt == .assignment_pattern))
+            {
+                validateArrowParam(p, param_node) catch {
+                    return error.ParseError;
+                };
+            }
         }
 
         const params_range = try p.addSlice(params);
