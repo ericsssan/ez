@@ -3666,12 +3666,22 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
     const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier or p.peek() == .escaped_keyword)
         p.advance()
     else if (p.peek() == .hash) blk: {
-        // Private field access: obj.#field — only valid inside a class body.
         if (!p.in_class) {
             try p.emitError("Private field access is only allowed inside a class");
         }
         const hash = p.advance();
-        if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
+        // Spec: no whitespace between `#` and identifier — token must be
+        // contiguous (start of ident == hash.start + 1).
+        const hash_start = p.tok_starts_ptr[hash];
+        if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) {
+            const ident_start = p.tok_starts_ptr[p.tok_i];
+            if (ident_start != hash_start + 1) {
+                try p.emitError("No whitespace allowed between `#` and identifier");
+            }
+            _ = p.advance();
+        } else {
+            try p.emitError("Expected identifier after `#`");
+        }
         break :blk hash;
     } else blk: {
         try p.emitError("Expected property name after '.'");
