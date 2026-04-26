@@ -1191,13 +1191,31 @@ class SourceCode {
    */
   getFirstTokenBetween(nodeA, nodeB, filterOrOpts) {
     if (!nodeA || !nodeB) return null;
+    const { fn, ic } = this._normalizeFilter(filterOrOpts);
+    const gapStart = nodeA.range ? nodeA.range[1] : (nodeA.end != null ? nodeA.end : (nodeA.mainToken != null ? this._ast._tokStarts[nodeA.mainToken] : 0));
+    const gapEnd   = nodeB.range ? nodeB.range[0] : (nodeB.start != null ? nodeB.start : (nodeB.mainToken != null ? this._ast._tokStarts[nodeB.mainToken] : 0));
+    if (gapStart >= gapEnd) return null;
+
+    if (ic) {
+      const merged = this._getTokensAndCommentsMerged();
+      let lo = 0, hi = merged.length - 1;
+      while (lo <= hi) { const m = (lo + hi) >> 1; if (merged[m].range[0] < gapStart) lo = m + 1; else hi = m - 1; }
+      for (let i = lo; i < merged.length; i++) {
+        if (merged[i].range[0] >= gapEnd) break;
+        if (!fn || fn(merged[i])) return merged[i];
+      }
+      return null;
+    }
+
     const ast = this._ast;
-    const startTok = nodeA.mainToken + 1;
-    const endTok = nodeB.mainToken;
-    const { fn } = this._normalizeFilter(filterOrOpts);
-    for (let i = startTok; i < endTok; i++) {
+    const starts = ast._tokStarts;
+    const tc = ast.tokenCount;
+    let lo = 0, hi = tc - 1;
+    while (lo <= hi) { const m = (lo + hi) >> 1; if (starts[m] < gapStart) lo = m + 1; else hi = m - 1; }
+    for (let i = lo; i < tc; i++) {
+      if (starts[i] >= gapEnd) break;
       const tok = this._makeToken(i);
-      if (tok === null) continue; // shadowed
+      if (tok === null) continue;
       if (!fn || fn(tok)) return tok;
     }
     return null;
@@ -1758,8 +1776,9 @@ class SourceCode {
   }
 
   /**
-   * Compute isStrict for a scope. Zig now sets SF_HAS_USE_STRICT correctly in semantic.zig,
-   * so we read the flag directly instead of scanning source text.
+   * Compute isStrict for a scope.
+   * Zig sets SF_STRICT_MODE for module/class scopes but does NOT set SF_HAS_USE_STRICT
+   * for "use strict" directive scopes. We scan the AST for directives here.
    */
   _computeIsStrict(kind, flags16, upper, block) {
     // Class bodies, static blocks, and class field initializers are always strict per spec.
@@ -1775,13 +1794,35 @@ class SourceCode {
     if (this._ecmaVersion === 3) return false;
     // Zig sets SF_HAS_USE_STRICT when the scope body starts with "use strict".
     if ((flags16 & SF_HAS_USE_STRICT) !== 0) return true;
+    // Zig does not set SF_HAS_USE_STRICT for "use strict" directives. Scan the AST instead.
+    // kind=0 (global) and kind=1 (module/script): block is the Program node; body is block.body
+    // kind=2 (function): block is the function node; the statements are at block.body.body
+    // Use `first.directive` (not `first.expression.value`) to avoid treating
+    // parenthesized literals like ('use strict') as directives.
+    if (block !== null) {
+      let stmts = null;
+      if (kind === 0 || kind === 1) {
+        stmts = block.body;
+      } else if (kind === 2) {
+        stmts = block.body && block.body.body;
+      }
+      if (stmts && stmts.length > 0) {
+        const first = stmts[0];
+        if (first && first.directive === 'use strict') {
+          return true;
+        }
+      }
+    }
     // impliedStrict: ecmaFeatures.impliedStrict=true makes the entire program strict.
     // kind=0 is the outermost global scope; if strict, all child scopes inherit via upper.isStrict.
     if (kind === 0 && this._impliedStrict) return true;
+    // Module mode: every scope is strict by spec (ES modules are always strict).
+    // Zig parses .js files with its own source-type detection independent of the JS-level
+    // sourceType option, so SF_STRICT_MODE is not reliably set for module-mode files.
+    // Use the JS-level sourceType to force strict on all scopes in module mode.
+    if (this._sourceType === 'module') return true;
     // In script/commonjs mode, inherit strict from parent scope (not forced by scope kind).
     if (this._sourceType === 'script' || this._sourceType === 'commonjs') return !!(upper && upper.isStrict);
-    // In module mode, use Zig's strict_mode flag (module scope inherits true everywhere).
-    return (flags16 & SF_STRICT_MODE) !== 0;
   }
 
   /**
@@ -1796,8 +1837,10 @@ class SourceCode {
     const variables = [];
     const symStart = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
     const symCount = ast._scopeBindCount ? ast._scopeBindCount[scopeId] : 0;
+    const symByScope = ast._scopeSymIds; // CSR indirection: symByScope[symStart+j] = actual symId
     for (let j = 0; j < symCount; j++) {
-      const v = this._buildVariable(symStart + j);
+      const rawSymId = symByScope ? symByScope[symStart + j] : (symStart + j);
+      const v = this._buildVariable(rawSymId);
       const existing = set.get(v.name);
       if (existing) {
         existing.identifiers.push(...v.identifiers);
@@ -2027,6 +2070,9 @@ class SourceCode {
     for (let j = 0; j < refCount; j++) {
       const refId = _scopeRefIds[refStart + j];
       const ref = this._buildReference(refId);
+      // Skip refs with null identifier — rules like @typescript-eslint/no-use-before-define
+      // crash when iterating references with null identifiers (e.g., implicit globals with no AST node).
+      if (!ref.identifier) continue;
       references.push(ref);
       // FEN (Function Expression Name) workaround: Zig binds the FEN symbol in
       // the function's own scope (kinds 3 or 13), but eslint-scope puts it in a
@@ -2193,7 +2239,11 @@ class SourceCode {
     // In script mode getScope(Program) wraps scope 1 with globals for ReferenceTracker.
     // Eagerly create that wrapper now and update reference.from to point to it, so
     // that rules using reference.from === scope (e.g. consistent-this) work correctly.
-    if (this._sourceType !== 'module' && (ast._semScopeCount || 0) > 1) {
+    // Only wrap scope 1 as global if it's actually the script/module scope (kind=1),
+    // not a function scope (kind=2) which can appear as scope 1 in files that start
+    // with an immediately-entered function scope (e.g. top-level IIFE-only files).
+    const _scope1Kind = ast._scopeKinds ? ast._scopeKinds[1] : undefined;
+    if (this._sourceType !== 'module' && (ast._semScopeCount || 0) > 1 && _scope1Kind === 1) {
       const moduleScope = this._buildScope(1);
       if (moduleScope) {
         const wrapper = this._wrapScopeWithGlobals(moduleScope);
@@ -2621,8 +2671,14 @@ class SourceCode {
     const symId = ast._refSymbolIds[refIdx];
     const kind  = ast._refKinds[refIdx];  // 0=read, 1=write, 2=read_write, 3=type_of
     const nodeIdx = ast._refNodeIds[refIdx];
-    const refNode = (nodeIdx !== NONE32 && nodeIdx < ast.nodeCount)
+    // nodeIdx===0 is the Program root — not a valid reference identifier (its parent is null,
+    // causing crashes in rules like @typescript-eslint/no-use-before-define that walk parent chain).
+    let refNode = (nodeIdx !== NONE32 && nodeIdx !== 0 && nodeIdx < ast.nodeCount)
       ? nodeView(ast, nodeIdx) : null;
+    // Additional safety: if refNode is an Identifier with null parent, discard it.
+    // referenceContainsTypeQuery walks node.parent recursively; a null parent causes a crash.
+    // Non-root identifiers with NONE parent data are malformed and should be skipped.
+    if (refNode !== null && refNode.parent === null) refNode = null;
 
     // Use thin variable for resolved to avoid recursive buildVariable→buildReference cycles.
     const resolved = symId !== NONE32 ? this._buildThinVariable(symId) : null;
@@ -3351,7 +3407,18 @@ class SourceCode {
         if (!scope || !scope.block) return null;
         // Verify this scope was directly created by this node (scope.block === node).
         // If the scope's block node differs, this node doesn't introduce a new scope.
-        if (scope.block._i === node._i) return scope;
+        if (scope.block._i === node._i) {
+          // eslint-scope's acquire(Program) always returns the global scope (type='global'),
+          // even in module mode. We conflate global/module into one scope (kind=0), so fix the
+          // reported type here. Rules like consistent-function-scoping check parentScope.type === 'global'.
+          if (node.type === 'Program' && scope.type !== 'global') {
+            if (scope._acquireGlobalProxy) return scope._acquireGlobalProxy;
+            const p = new Proxy(scope, { get(t, k) { return k === 'type' ? 'global' : Reflect.get(t, k); } });
+            scope._acquireGlobalProxy = p;
+            return p;
+          }
+          return scope;
+        }
         // Special case: Zig attaches the for-loop block scope to the ForStatement, not
         // its body BlockStatement. Rules like unicorn/no-for-loop call acquire(node.body)
         // expecting to get the body scope — return a filtered view when the scope's block
@@ -3611,8 +3678,13 @@ function _makeSafeHandler(ruleId, context) {
   const state = { inner: null };
   function safeHandler(node) {
     if (context._skipSet !== null && context._skipSet.has(ruleId)) return;
-    try { state.inner(node); }
-    catch (err) { context._reports.push({ ruleId, message: `Plugin error: ${err.message}` }); }
+    let result;
+    try { result = state.inner(node); }
+    catch (err) { context._reports.push({ ruleId, message: `Plugin error: ${err.message}` }); return; }
+    // ESLint 9: handlers may return a descriptor object instead of calling context.report().
+    if (result && typeof result === 'object' && !Array.isArray(result) && result.messageId) {
+      _execReport(result, ruleId, null, context);
+    }
   }
   safeHandler._state = state;
   return safeHandler;
@@ -3728,11 +3800,37 @@ class RuleContext {
    */
   on(type, handler) {
     if (!this._onListeners) this._onListeners = Object.create(null);
-    if (!this._onListeners[type]) this._onListeners[type] = handler;
-    else {
-      // Multiple listeners for same type: chain them
-      const prev = this._onListeners[type];
-      this._onListeners[type] = function(node) { prev(node); handler(node); };
+    // Handle array of types (e.g. functionTypes = ['FunctionDeclaration', ...])
+    const types = Array.isArray(type) ? type
+      : (typeof type === 'string' && type.includes(',')) ? type.split(',').map(t => t.trim())
+      : [type];
+    // Wrap handler to process ESLint 9 return-value diagnostic pattern.
+    const ctx = this;
+    const ruleId = this._currentRule;
+    const wrapped = function(node) {
+      const result = handler(node);
+      if (result && typeof result === 'object' && !Array.isArray(result) && result.messageId) {
+        _execReport(result, ruleId || ctx._currentRule, null, ctx);
+      }
+    };
+    for (const t of types) {
+      if (!this._onListeners[t]) this._onListeners[t] = wrapped;
+      else {
+        const prev = this._onListeners[t];
+        this._onListeners[t] = function(node) { prev(node); wrapped(node); };
+      }
+    }
+  }
+
+  /**
+   * ESLint 9: context.onExit(type, handler) — exit variant of context.on().
+   * Maps to type + ':exit' visitor keys.
+   */
+  onExit(type, handler) {
+    // Normalize: handle comma-separated types (e.g. "FunctionDeclaration, FunctionExpression")
+    const types = typeof type === 'string' ? type.split(',').map(t => t.trim()) : [type];
+    for (const t of types) {
+      this.on(t + ':exit', handler);
     }
   }
 
@@ -5684,6 +5782,26 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
   }
 
+  // Minimal synthetic code path for object-literal shorthand methods that have no Zig CFG entry.
+  // Rules like no-invalid-this use onCodePathStart to push a per-function stack entry; without
+  // this synthesis, `this` inside a shorthand method evaluates against the program's entry.
+  // hasCodePath/_cfgNodeBits are declared after this function but captured by ref (JS closures).
+  let _synthCpCounter = 0;
+  function _synthCodePath(fnExpr) {
+    return {
+      id: `synth_${++_synthCpCounter}`,
+      origin: 'function',
+      upper: null,
+      childCodePaths: [],
+      currentSegments: [],
+      initialSegment: null,
+      finalSegments: [],
+      returnedSegments: [],
+      thrownSegments: [],
+      get returnedForkContext() { return []; },
+    };
+  }
+
   function invokeMethodFnHandlers(methodNodeIdx, isExit) {
     const fnKey = isExit ? 'FunctionExpression:exit' : 'FunctionExpression';
     const hasDirectHandler = visitorMap.has(fnKey);
@@ -5700,6 +5818,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     fnExpr.loc = methodNode.loc;
     fnExpr._ast = ast;
     fnExpr._i = methodNodeIdx;
+    // Synthesize onCodePathStart/End for object-literal shorthand methods that lack a Zig code path.
+    // Class methods already have CFG entries (scope_open emitted by the parser); only synthesize
+    // for object literal methods (type='Property') where no CFG code path was created.
+    const needsCpSynth = hasCodePath && (!_cfgNodeBits || !_cfgNodeBits[methodNodeIdx]);
+    const isObjectMethod = needsCpSynth && methodNode.type === 'Property' && methodNode.kind === 'init';
+    let synthCp = null;
+    if (isObjectMethod && !isExit) {
+      synthCp = _synthCodePath(fnExpr);
+      const cpStartH = visitorMap.get('onCodePathStart');
+      if (cpStartH) for (let h = 0; h < cpStartH.length; h++) {
+        try { cpStartH[h]._state.inner(synthCp, fnExpr); }
+        catch (e) { context._reports.push({ ruleId: cpStartH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+      }
+      // Stash the synthetic code path on the fnExpr so we can pop it on exit.
+      fnExpr._synthCp = synthCp;
+    }
     if (hasDirectHandler) invokeHandlersWithNode(fnKey, fnExpr, methodNodeIdx);
     if (hasSelectorInterest) {
       // invokeSelectorHandlers expects a node index — borrow methodNodeIdx (the FE wraps it).
@@ -5722,6 +5856,18 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       _shNode = savedShNode;
       _shNodeIdx = savedShNodeIdx;
       _shAncestors = savedShAncestors;
+    }
+    // Fire onCodePathEnd for the synthetic code path (exit path for object methods).
+    if (isObjectMethod && isExit) {
+      const cpToEnd = fnExpr._synthCp || null;
+      if (cpToEnd) {
+        const cpEndH = visitorMap.get('onCodePathEnd');
+        if (cpEndH) for (let h = 0; h < cpEndH.length; h++) {
+          try { cpEndH[h]._state.inner(cpToEnd, fnExpr); }
+          catch (e) { context._reports.push({ ruleId: cpEndH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+        }
+        fnExpr._synthCp = null;
+      }
     }
   }
 

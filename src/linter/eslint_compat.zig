@@ -349,10 +349,10 @@ test "parseEslintConfig extends recommended" {
     defer config.deinit();
 
     // The "recommended" preset sets correctness rules to error.
-    // no-unreachable is a correctness rule — should be error from preset.
-    const unreachable_sev = config.rule_severities.get("no-unreachable");
-    try std.testing.expect(unreachable_sev != null);
-    try std.testing.expect(unreachable_sev.? == .@"error");
+    // no-empty is a correctness rule still active in the native registry.
+    const empty_sev = config.rule_severities.get("no-empty");
+    try std.testing.expect(empty_sev != null);
+    try std.testing.expect(empty_sev.? == .@"error");
 
     // But no-debugger was explicitly overridden to off after the preset.
     const debugger_sev = config.rule_severities.get("no-debugger");

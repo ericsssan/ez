@@ -214,6 +214,7 @@ const SH = {
   SCOPE_THROUGH_REF_COUNTS: 160, // u32[scope_count]
   SCOPE_THROUGH_REF_IDS: 164,    // u32[total_through_refs]
   SYM_REF_INDIRECT: 168,         // u32[ref_count] — ref_by_sym indirect index
+  SCOPE_SYM_IDS: 172,            // u32[sym_count] — sym IDs sorted by scope (CSR)
 };
 
 const FLAG_HAS_BOM = 1;
@@ -421,6 +422,8 @@ class AstView {
         this._symRefEnds      = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_REF_ENDS, true),   this._semSymbolCount);
         const _symRefIndirectOff = dv.getUint32(semOff + SH.SYM_REF_INDIRECT, true);
         this._symRefBySym     = (_symRefIndirectOff > 0 && this._semRefCount > 0) ? new Uint32Array(buffer, _symRefIndirectOff, this._semRefCount) : null;
+        const _scopeSymIdsOff = dv.getUint32(semOff + SH.SCOPE_SYM_IDS, true);
+        this._scopeSymIds     = (_scopeSymIdsOff > 0 && this._semSymbolCount > 0) ? new Uint32Array(buffer, _scopeSymIdsOff, this._semSymbolCount) : null;
         this._symNameStarts   = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_STARTS, true),this._semSymbolCount);
         this._symNameLens     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_LENS, true),  this._semSymbolCount);
         // Pre-decode all symbol names eagerly: 1 TextDecoder call per file (ASCII fast path)
@@ -980,6 +983,24 @@ function _tokenIdentifier(ast, tokIdx) {
   const start = ast._tokStarts[tokIdx];
   const end = ast._tokEnds ? ast._tokEnds[tokIdx] : start + name.length;
   return _syntheticNode('Identifier', start, end, { name, typeAnnotation: undefined }, ast);
+}
+
+/**
+ * Convert a member_expr chain (used for qualified type names like `React.FC`) to
+ * a TSQualifiedName node with .left/.right properties, as ESTree rules expect.
+ * Called recursively for nested qualifications.
+ */
+function _memberToQualifiedName(ast, idx) {
+  const lhs = ast.nodeLhs(idx);
+  const rhs = ast.nodeRhs(idx); // property_ident
+  const lhsTag = ast._nodeTags[lhs];
+  const leftNode = lhsTag === T.member_expr
+    ? _memberToQualifiedName(ast, lhs)
+    : nodeView(ast, lhs); // Identifier
+  const rightNode = nodeView(ast, rhs); // property_ident → Identifier
+  const start = leftNode.start;
+  const end = rightNode.end;
+  return _syntheticNode('TSQualifiedName', start, end, { left: leftNode, right: rightNode }, ast);
 }
 
 const NodeProto = {
@@ -2278,7 +2299,9 @@ const NodeProto = {
   },
 
   /**
-   * node.typeName — qualified name of TSTypeReference (Identifier or MemberExpression).
+   * node.typeName — qualified name of TSTypeReference (Identifier or TSQualifiedName).
+   * For qualified types like `React.FC`, the parser emits a member_expr chain.
+   * ESTree rules expect a TSQualifiedName with .left/.right instead of MemberExpression.
    */
   get typeName() {
     if (this._tag !== T.ts_type_reference) return undefined;
@@ -2289,6 +2312,9 @@ const NodeProto = {
       if (lhsTag === T.number_literal || lhsTag === T.bigint_literal ||
           lhsTag === T.string_literal || lhsTag === T.boolean_literal ||
           lhsTag === T.unary_minus) return undefined;
+      // member_expr in type position = qualified name: convert to TSQualifiedName
+      // e.g. `React.FC` → TSQualifiedName { left: Identifier("React"), right: Identifier("FC") }
+      if (lhsTag === T.member_expr) return _memberToQualifiedName(this._ast, lhs);
       return nodeView(this._ast, lhs);
     }
     // No separate name node (e.g., `as const` / `as readonly`): synthesize Identifier
@@ -2297,6 +2323,25 @@ const NodeProto = {
     const end = this.end;
     const name = this._ast.source.slice(start, end);
     return _syntheticNode('Identifier', start, end, { name }, this._ast);
+  },
+
+  /**
+   * node.exprName — the identifier/qualified name of a TSTypeQuery (`typeof X`).
+   * ESTree rules access returnType.exprName.name when returnType is TSTypeQuery.
+   * lhs is the ts_type_reference node wrapping the operand; its typeName is the name.
+   */
+  get exprName() {
+    if (this._tag !== 172 /* ts_typeof_type */) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    if (lhs === NONE) return undefined;
+    // lhs is a ts_type_reference; return its typeName (Identifier or TSQualifiedName)
+    const lhsTag = this._ast._nodeTags[lhs];
+    if (lhsTag !== T.ts_type_reference) return nodeView(this._ast, lhs);
+    const nameIdx = this._ast.nodeLhs(lhs);
+    if (nameIdx === NONE) return undefined;
+    const nameTag = this._ast._nodeTags[nameIdx];
+    if (nameTag === T.member_expr) return _memberToQualifiedName(this._ast, nameIdx);
+    return nodeView(this._ast, nameIdx);
   },
 
   /**
@@ -2351,6 +2396,18 @@ const NodeProto = {
     if (this._tag !== T.ts_array_type) return undefined;
     const lhs = this._ast.nodeLhs(this._i);
     return lhs === NONE ? undefined : nodeView(this._ast, lhs);
+  },
+
+  /**
+   * node.elementTypes — elements of TSTupleType (ts_tuple_type).
+   * lhs/rhs encode the SubRange start/end into extra_data.
+   */
+  get elementTypes() {
+    if (this._tag !== T.ts_tuple_type) return undefined;
+    const ast = this._ast;
+    const start = ast.nodeLhs(this._i);
+    const end   = ast.nodeRhs(this._i);
+    return ast._nodesFromRange(start, end);
   },
 
   get typeArguments() {
@@ -3244,6 +3301,13 @@ const NodeProto = {
       const idx = this._ast.nodeRhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
     }
+    // TSTypeReference used as TSExpressionWithTypeArguments (in extends/implements clause):
+    // expression = typeName (the Identifier or TSQualifiedName).
+    // Rules like @typescript-eslint/prefer-function-type access .expression on extends nodes.
+    if (t === T.ts_type_reference) {
+      const lhs = this._ast.nodeLhs(this._i);
+      return lhs === NONE ? null : nodeView(this._ast, lhs);
+    }
     // TSNonNullExpression: expression = lhs (already handled by argument getter, also expose here)
     if (t === T.ts_non_null_expr) {
       const idx = this._ast.nodeLhs(this._i);
@@ -3705,10 +3769,14 @@ const NodeProto = {
     if (this._tag !== T.jsx_fragment) return undefined;
     const ast = this._ast;
     const start = this.start; // already includes `<` after our js_buffer fix
-    const end = start + 2;   // `<>` = 2 UTF-16 code units
+    // main_token is the `>` token of `<>`.  Use its end position so the opening
+    // fragment range is correct even when `<` and `>` are on different lines
+    // (e.g. `< /* comment */ >`).
+    const mainTok = ast._mainTokens[this._i];
+    const end = ast._tokEnds ? ast._tokEnds[mainTok] : ast._tokStarts[mainTok] + 1;
     const ls = ast._lineStarts();
     const sli = ast._findLineIdx(start);
-    const eli = ast._findLineIdx(end);
+    const eli = ast._findLineIdx(end > 0 ? end - 1 : 0);
     return { type: 'JSXOpeningFragment', start, end, range: [start, end],
              loc: { start: { line: sli + 1, column: start - ls[sli] },
                     end:   { line: eli + 1, column: end   - ls[eli] } },
@@ -3720,10 +3788,22 @@ const NodeProto = {
     if (this._tag !== T.jsx_fragment) return undefined;
     const ast = this._ast;
     const end = this.end;   // end of `>`
-    const start = end - 3; // `</>` = 3 UTF-16 code units
+    // Scan backward through the token list to find the `<` (tag=98) that starts `</`.
+    // This is correct even when `</` and `>` are on different lines with comments between.
+    const starts = ast._tokStarts;
+    const tags = ast._tokTags;
+    const tc = ast.tokenCount;
+    // Binary search: last token whose start is strictly before nodeEnd
+    let endTokIdx = 0;
+    let lo = 0, hi = tc - 1;
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (starts[mid] < end) { endTokIdx = mid; lo = mid + 1; } else hi = mid - 1; }
+    // Scan backward (past `>` and `/`) to find `<` (less_than = token tag 98)
+    let ltIdx = endTokIdx - 1;
+    while (ltIdx >= 0 && tags[ltIdx] !== 98) ltIdx--;
+    const start = ltIdx >= 0 ? starts[ltIdx] : end - 3;
     const ls = ast._lineStarts();
     const sli = ast._findLineIdx(start);
-    const eli = ast._findLineIdx(end);
+    const eli = ast._findLineIdx(end > 0 ? end - 1 : 0);
     return { type: 'JSXClosingFragment', start, end, range: [start, end],
              loc: { start: { line: sli + 1, column: start - ls[sli] },
                     end:   { line: eli + 1, column: end   - ls[eli] } } };
