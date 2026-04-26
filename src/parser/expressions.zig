@@ -796,6 +796,7 @@ fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
         .member_expr, .computed_member_expr, .call_expr,
         .getter_def, .setter_def, .method_def,
         .number_literal, .string_literal,
+        .grouping_expr,
         => return p.emitError("Invalid destructuring in arrow function parameter"),
         else => {},
     }
