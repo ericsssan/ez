@@ -194,6 +194,15 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             }
         }
 
+        // Arrow function cannot be an operand of a binary operator (other than `,`/`=`).
+        if (left != .none and !is_ts and infix_prec != .comma and infix_prec != .assignment) {
+            const left_tag = p.node_tags_ptr[left.toInt()];
+            if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
+                try p.emitError("Arrow function not allowed as operand of binary operator (wrap in parens)");
+                break;
+            }
+        }
+
         left = try parseInfixExpression(p, left, infix_prec);
     }
 
