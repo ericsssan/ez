@@ -361,6 +361,7 @@ pub const LexIter = struct {
                 ':' => tag = .colon,
                 '~' => tag = .tilde,
                 '@' => tag = .at_sign,
+                '#' => tag = .hash,
                 '.' => {
                     if (p + 2 < n and self.src[p + 1] == '.' and self.src[p + 2] == '.') { tag = .ellipsis; end = p + 3; }
                     else { tag = .dot; }
@@ -677,6 +678,68 @@ test "LexIter walker: shift operators" {
     try std.testing.expectEqual(@as(Tag, .greater_greater_equal), iter.advance());
     try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // d
     try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter parity vs monolithic Lexer on small fixtures" {
+    const Lexer = @import("lexer_simdjson.zig");
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+
+    const cases = [_][]const u8{
+        "",
+        "x",
+        "1 + 2",
+        "function foo(a, b) { return a + b; }",
+        "if (x === null || y !== undefined) { return /* skip */ x ?? y; }",
+        "const re = /^[a-z]+$/i; const s = \"hello\";",
+        "`tmpl ${a + b} more ${c}!`",
+        "x >> 2; y >>> 3; z >>= 1; w <<= 2;",
+        "a => a * 2",
+        "class Foo { #priv = 42; static bar() {} }",
+    };
+
+    for (cases) |src| {
+        // Reference: existing monolithic lexer
+        var ref = try Lexer.tokenize(alloc, src);
+        defer ref.deinit(alloc);
+        const ref_tags = ref.tokens.items(.tag);
+        const ref_starts = ref.tokens.items(.start);
+        const ref_lens = ref.tokens.items(.len);
+
+        // Candidate: LexIter
+        var bm = try Bitmaps.init(alloc, src.len);
+        defer bm.deinit(alloc);
+        buildBitmaps(src, &bm);
+        var iter = LexIter.init(src, &bm);
+
+        // Strip trailing .eof from ref count — LexIter signals EOF rather than
+        // emitting a token for it, so meaningful-token counts are what we compare.
+        var ref_count = ref.tokens.len;
+        if (ref_count > 0 and ref_tags[ref_count - 1] == .eof) ref_count -= 1;
+
+        var i: usize = 0;
+        while (true) {
+            const t = iter.advance();
+            if (t == .eof) break;
+            if (i >= ref_count) {
+                std.debug.print("EXTRA token from iter at idx {d} on src=`{s}`: tag={s}\n", .{ i, src, @tagName(t) });
+                return error.IterEmittedExtra;
+            }
+            if (t != ref_tags[i]) {
+                std.debug.print("MISMATCH idx {d} src=`{s}`: ref={s} iter={s}\n", .{
+                    i, src, @tagName(ref_tags[i]), @tagName(t),
+                });
+                return error.TagMismatch;
+            }
+            _ = ref_starts;
+            _ = ref_lens;
+            i += 1;
+        }
+        if (i != ref_count) {
+            std.debug.print("UNDER count src=`{s}`: ref={d} iter={d}\n", .{ src, ref_count, i });
+            return error.UnderCount;
+        }
+    }
 }
 
 test "LexIter struct size — fits in a couple cachelines" {
