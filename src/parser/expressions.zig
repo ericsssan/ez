@@ -989,13 +989,20 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             const tl = p.tok_lens_ptr[tok];
             // Find the body end: scan to last `/` not inside char class.
             var has_close = false;
+            var has_newline_escape = false;
             if (ts + tl <= p.source.len and tl >= 2) {
                 var i: u32 = ts + 1;
                 var in_class = false;
                 const stop = ts + tl;
                 while (i < stop) : (i += 1) {
                     const c = p.source[i];
-                    if (c == '\\' and i + 1 < stop) { i += 1; continue; }
+                    if (c == '\\' and i + 1 < stop) {
+                        // Backslash-newline inside regex is invalid.
+                        const nc = p.source[i + 1];
+                        if (nc == '\n' or nc == '\r') has_newline_escape = true;
+                        i += 1;
+                        continue;
+                    }
                     if (c == '[') in_class = true
                     else if (c == ']') in_class = false
                     else if (c == '/' and !in_class) { has_close = true; break; }
@@ -1003,6 +1010,10 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             }
             if (!has_close) {
                 try p.emitError("Unterminated regular expression literal");
+                return error.ParseError;
+            }
+            if (has_newline_escape) {
+                try p.emitError("Invalid line terminator in regular expression literal");
                 return error.ParseError;
             }
             break :blk try parseLiteral(p, .regex_literal);
