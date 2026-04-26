@@ -1904,6 +1904,24 @@ fn parseObjectLiteral(p: *Parser) Error!NodeIndex {
 fn parseObjectProperty(p: *Parser) Error!NodeIndex {
     const tag = p.peek();
 
+    // Private names (#x) are only valid in class bodies, not object literals.
+    // Catch direct `#x:` form here; methods (get/set/async/generator with #x)
+    // are caught after the prefix consumption (e.g. `async * #x` → peek after async/* is .hash).
+    if (tag == .hash) {
+        try p.emitError("Private fields can only be declared in classes");
+    }
+    // Detect `get #x`, `set #x`, `* #x`, `async #x`, `async * #x` lookahead.
+    if ((tag == .kw_get or tag == .kw_set) and p.peekAt(1) == .hash) {
+        try p.emitError("Private fields can only be declared in classes");
+    }
+    if (tag == .asterisk and p.peekAt(1) == .hash) {
+        try p.emitError("Private fields can only be declared in classes");
+    }
+    if (tag == .kw_async) {
+        if (p.peekAt(1) == .hash) try p.emitError("Private fields can only be declared in classes");
+        if (p.peekAt(1) == .asterisk and p.peekAt(2) == .hash) try p.emitError("Private fields can only be declared in classes");
+    }
+
     // Spread: `...expr`
     if (tag == .ellipsis) {
         const tok = p.advance();
