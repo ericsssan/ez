@@ -336,8 +336,26 @@ pub const LexIter = struct {
                 ')' => tag = .r_paren,
                 '[' => tag = .l_bracket,
                 ']' => tag = .r_bracket,
-                '{' => tag = .l_brace,
-                '}' => tag = .r_brace,
+                '{' => {
+                    if (self.tmpl_depth > 0) self.brace_d[self.tmpl_depth - 1] += 1;
+                    tag = .l_brace;
+                },
+                '}' => {
+                    // Inside a template interpolation? Resume template scanning.
+                    if (self.tmpl_depth > 0 and self.brace_d[self.tmpl_depth - 1] == 0) {
+                        const r = Lex.templateChunkEnd(self.src, p);
+                        end = r.end;
+                        if (r.has_expr) {
+                            tag = .template_middle;
+                        } else {
+                            tag = .template_tail;
+                            self.tmpl_depth -= 1;
+                        }
+                    } else {
+                        if (self.tmpl_depth > 0) self.brace_d[self.tmpl_depth - 1] -= 1;
+                        tag = .r_brace;
+                    }
+                },
                 ',' => tag = .comma,
                 ';' => tag = .semicolon,
                 ':' => tag = .colon,
@@ -372,16 +390,12 @@ pub const LexIter = struct {
                     else { tag = .asterisk; }
                 },
                 '/' => {
-                    // Comments take precedence over /-operator. Regex disambiguation
-                    // (still TODO) would slot in here too, gated on prev_kind.
                     if (p + 1 < n and self.src[p + 1] == '/') {
-                        // Line comment: scan to newline, no token emit.
                         end = Lex.lineCommentEnd(self.src, p + 2);
                         self.skip_until = end;
                         continue;
                     }
                     if (p + 1 < n and self.src[p + 1] == '*') {
-                        // Block comment.
                         const r = Lex.blockCommentEnd(self.src, p + 2);
                         end = r.end;
                         if (r.has_nl) {
@@ -391,8 +405,15 @@ pub const LexIter = struct {
                         self.skip_until = end;
                         continue;
                     }
-                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .slash_equal; end = p + 2; }
-                    else { tag = .slash; }
+                    // Regex vs divide: prev_kind disambiguates per spec.
+                    if (Lex.regexAllowed(self.prev_kind)) {
+                        end = Lex.regexEnd(self.src, p);
+                        tag = .regex_literal;
+                    } else if (p + 1 < n and self.src[p + 1] == '=') {
+                        tag = .slash_equal; end = p + 2;
+                    } else {
+                        tag = .slash;
+                    }
                 },
                 '\'', '"' => {
                     end = Lex.stringEnd(self.src, p);
@@ -456,9 +477,14 @@ pub const LexIter = struct {
                     else { tag = .less_than;}
                 },
                 '>' => {
-                    // NOTE: >>= >>> >>>= deferred (interacts with TS type-arg parsing).
-                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .greater_equal; end = p + 2; }
-                    else { tag = .greater_than;}
+                    if (p + 1 < n and self.src[p + 1] == '>') {
+                        if (p + 2 < n and self.src[p + 2] == '>') {
+                            if (p + 3 < n and self.src[p + 3] == '=') { tag = .greater_greater_greater_equal; end = p + 4; }
+                            else { tag = .greater_greater_greater; end = p + 3; }
+                        } else if (p + 2 < n and self.src[p + 2] == '=') { tag = .greater_greater_equal; end = p + 3; }
+                        else { tag = .greater_greater; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .greater_equal; end = p + 2; }
+                    else { tag = .greater_than; }
                 },
                 else => {
                     // Unsupported byte (string/regex/comment/template/digit/
@@ -596,6 +622,60 @@ test "LexIter walker: numbers + strings + comments" {
     // line comment skipped, block comment skipped
     try std.testing.expectEqual(@as(Tag, .number_literal), iter.advance()); // 0xff
     try std.testing.expectEqual(@as(Tag, .number_literal), iter.advance()); // 1.5e3
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: regex vs divide disambiguation" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    // After `=`, `/` starts a regex. After identifier, `/` is divide.
+    const src = "x = /abc/g; y / 2";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // x
+    try std.testing.expectEqual(@as(Tag, .equal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .regex_literal), iter.advance()); // /abc/g
+    try std.testing.expectEqual(@as(Tag, .semicolon), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // y
+    try std.testing.expectEqual(@as(Tag, .slash), iter.advance()); // divide
+    try std.testing.expectEqual(@as(Tag, .number_literal), iter.advance()); // 2
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: template with interpolation" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "`hi ${name}!`";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    try std.testing.expectEqual(@as(Tag, .template_head), iter.advance());     // `hi ${
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());        // name
+    try std.testing.expectEqual(@as(Tag, .template_tail), iter.advance());     // }!`
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: shift operators" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "a >> b >>> c >>= d";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // a
+    try std.testing.expectEqual(@as(Tag, .greater_greater), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // b
+    try std.testing.expectEqual(@as(Tag, .greater_greater_greater), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // c
+    try std.testing.expectEqual(@as(Tag, .greater_greater_equal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // d
     try std.testing.expect(iter.isAtEnd());
 }
 
