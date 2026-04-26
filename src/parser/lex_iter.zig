@@ -1041,17 +1041,13 @@ pub const LexIter = struct {
                     else { tag = .equal; }
                 },
                 '<' => {
-                    // HTML-like open comment `<!--`: forbidden in module mode.
-                    if (p + 3 < n and self.src[p + 1] == '!' and self.src[p + 2] == '-' and self.src[p + 3] == '-') {
-                        if (self.is_module) {
-                            tag = .invalid;
-                            end = p + 4;
-                        } else {
-                            end = Lex.lineCommentEnd(self.src, p + 4);
-                            self.saw_nl = true;
-                            self.skip_until = end;
-                            continue;
-                        }
+                    // HTML-like open comment `<!--` is only recognized in Script goal.
+                    // In Module goal, `<!--` is just `<`, `!`, `--` per the standard tokeniser.
+                    if (!self.is_module and p + 3 < n and self.src[p + 1] == '!' and self.src[p + 2] == '-' and self.src[p + 3] == '-') {
+                        end = Lex.lineCommentEnd(self.src, p + 4);
+                        self.saw_nl = true;
+                        self.skip_until = end;
+                        continue;
                     } else if (p + 1 < n and self.src[p + 1] == '<') {
                         if (p + 2 < n and self.src[p + 2] == '=') { tag = .less_less_equal; end = p + 3; }
                         else { tag = .less_less; end = p + 2; }
