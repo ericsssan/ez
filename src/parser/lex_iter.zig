@@ -298,36 +298,112 @@ pub const LexIter = struct {
                 return tok;
             }
 
-            // Single-char punctuation / braces / parens / etc.
-            const single_tag: ?Tag = switch (byte) {
-                '(' => .l_paren,
-                ')' => .r_paren,
-                '[' => .l_bracket,
-                ']' => .r_bracket,
-                '{' => .l_brace,
-                '}' => .r_brace,
-                ',' => .comma,
-                ';' => .semicolon,
-                ':' => .colon,
-                '~' => .tilde,
-                '@' => .at_sign,
-                else => null,
-            };
-            if (single_tag) |tag| {
-                self.prev_kind = tag;
-                const tok = Token{ .tag = tag, .start = p, .len = 1 };
-                self.saw_nl = false;
-                self.at_line_start = false;
-                return tok;
+            // Operator + punct dispatch (largely a port of the structural
+            // switch in `lexer_simdjson.tokenizeWithBuf`).
+            var tag: Tag = .invalid;
+            var end: u32 = p + 1;
+            switch (byte) {
+                '(' => tag = .l_paren,
+                ')' => tag = .r_paren,
+                '[' => tag = .l_bracket,
+                ']' => tag = .r_bracket,
+                '{' => tag = .l_brace,
+                '}' => tag = .r_brace,
+                ',' => tag = .comma,
+                ';' => tag = .semicolon,
+                ':' => tag = .colon,
+                '~' => tag = .tilde,
+                '@' => tag = .at_sign,
+                '.' => {
+                    if (p + 2 < n and self.src[p + 1] == '.' and self.src[p + 2] == '.') { tag = .ellipsis; end = p + 3; }
+                    else { tag = .dot; }
+                },
+                '?' => {
+                    if (p + 1 < n and self.src[p + 1] == '?') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .question_question_equal; end = p + 3; }
+                        else { tag = .question_question; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '.') { tag = .question_dot; end = p + 2; }
+                    else { tag = .question; }
+                },
+                '+' => {
+                    if (p + 1 < n and self.src[p + 1] == '+') { tag = .plus_plus; end = p + 2; }
+                    else if (p + 1 < n and self.src[p + 1] == '=') { tag = .plus_equal; end = p + 2; }
+                    else { tag = .plus; }
+                },
+                '-' => {
+                    if (p + 1 < n and self.src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
+                    else if (p + 1 < n and self.src[p + 1] == '=') { tag = .minus_equal; end = p + 2; }
+                    else { tag = .minus; }
+                },
+                '*' => {
+                    if (p + 1 < n and self.src[p + 1] == '*') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .asterisk_asterisk_equal; end = p + 3; }
+                        else { tag = .asterisk_asterisk; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .asterisk_equal; end = p + 2; }
+                    else { tag = .asterisk; }
+                },
+                '/' => {
+                    // NOTE: regex/divide ambiguity NOT yet handled — always emits .slash.
+                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .slash_equal; end = p + 2; }
+                    else { tag = .slash; }
+                },
+                '%' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .percent_equal; end = p + 2; }
+                    else { tag = .percent; }
+                },
+                '&' => {
+                    if (p + 1 < n and self.src[p + 1] == '&') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .ampersand_ampersand_equal; end = p + 3; }
+                        else { tag = .ampersand_ampersand; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .ampersand_equal; end = p + 2; }
+                    else { tag = .ampersand; }
+                },
+                '|' => {
+                    if (p + 1 < n and self.src[p + 1] == '|') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .pipe_pipe_equal; end = p + 3; }
+                        else { tag = .pipe_pipe; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .pipe_equal; end = p + 2; }
+                    else { tag = .pipe; }
+                },
+                '^' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .caret_equal; end = p + 2; }
+                    else { tag = .caret; }
+                },
+                '!' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .bang_equal_equal; end = p + 3; }
+                        else { tag = .bang_equal; end = p + 2; }
+                    } else { tag = .bang; }
+                },
+                '=' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .equal_equal_equal; end = p + 3; }
+                        else { tag = .equal_equal; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '>') { tag = .arrow; end = p + 2; }
+                    else { tag = .equal; }
+                },
+                '<' => {
+                    if (p + 1 < n and self.src[p + 1] == '<') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .less_less_equal; end = p + 3; }
+                        else { tag = .less_less; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .less_equal; end = p + 2; }
+                    else { tag = .less_than;}
+                },
+                '>' => {
+                    // NOTE: >>= >>> >>>= deferred (interacts with TS type-arg parsing).
+                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .greater_equal; end = p + 2; }
+                    else { tag = .greater_than;}
+                },
+                else => {
+                    // Unsupported byte (string/regex/comment/template/digit/
+                    // BOM/high-byte). Emit .invalid placeholder + skip 1 byte.
+                    tag = .invalid;
+                },
             }
 
-            // Unsupported byte (string/regex/comment/operator/template/digit/
-            // BOM/high-byte). Emit an .invalid placeholder so caller advances
-            // rather than spinning. Skip past this byte; subsequent commits
-            // implement the missing classes.
-            self.skip_until = p + 1;
-            self.prev_kind = .invalid;
-            const tok = Token{ .tag = .invalid, .start = p, .len = 1 };
+            self.skip_until = end;
+            self.prev_kind = tag;
+            const tok = Token{ .tag = tag, .start = p, .len = end - p };
             self.saw_nl = false;
             self.at_line_start = false;
             return tok;
@@ -375,6 +451,43 @@ test "LexIter walker: minimal subset (idents + punct + newlines)" {
     try std.testing.expectEqual(@as(Tag, .identifier), iter.peek());
     try std.testing.expectEqualStrings("baz", src[iter.peekToken(0).start..][0..iter.peekToken(0).len]);
     _ = iter.advance();
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: multi-char operators" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "a == b !== c && d || e";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    const expected = [_]Tag{
+        .identifier, .equal_equal, .identifier, .bang_equal_equal, .identifier,
+        .ampersand_ampersand, .identifier, .pipe_pipe, .identifier,
+    };
+    for (expected) |want| {
+        try std.testing.expectEqual(want, iter.advance());
+    }
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: arrow / equality / spread" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "x => ...y === z";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .arrow), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .ellipsis), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .equal_equal_equal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
     try std.testing.expect(iter.isAtEnd());
 }
 
