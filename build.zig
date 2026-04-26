@@ -383,6 +383,32 @@ pub fn build(b: *std.Build) void {
     const sp_step = b.step("test-sem-split-parity", "Verify resolveFullScope+resolveFullCfg ≡ resolveFull");
     sp_step.dependOn(&sp_cmd.step);
 
+    // ── Production Phase 1 timing ──
+    const p1_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_phase1_prod.zig"),
+        .target = target, .optimize = .ReleaseFast,
+    });
+    p1_mod.addImport("ez", test_mod);
+    const p1_exe = b.addExecutable(.{ .name = "test_phase1_prod", .root_module = p1_mod });
+    b.installArtifact(p1_exe);
+    const p1_cmd = b.addRunArtifact(p1_exe);
+    p1_cmd.step.dependOn(b.getInstallStep());
+    const p1_step = b.step("test-phase1-prod", "Time production Phase 1 buildBitmaps");
+    p1_step.dependOn(&p1_cmd.step);
+
+    // ── LexIter parity sweep on fixtures ──
+    const li_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_lex_iter_diff.zig"),
+        .target = target, .optimize = .ReleaseFast,
+    });
+    li_mod.addImport("ez", test_mod);
+    const li_exe = b.addExecutable(.{ .name = "test_lex_iter_diff", .root_module = li_mod });
+    b.installArtifact(li_exe);
+    const li_cmd = b.addRunArtifact(li_exe);
+    li_cmd.step.dependOn(b.getInstallStep());
+    const li_step = b.step("test-lex-iter-diff", "LexIter parity sweep vs LexerSimdjson on fixtures");
+    li_step.dependOn(&li_cmd.step);
+
     // ── Real lex-parse pipeline (with shared token buffer) ──
     const real_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_pipeline_real.zig"),

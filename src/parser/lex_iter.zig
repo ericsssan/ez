@@ -317,10 +317,13 @@ pub const LexIter = struct {
                 }
                 self.skip_until = end;
                 const text = self.src[p..end];
-                var t_tag = keywordLookup(text, self.is_ts);
-                // After dot: keywords become idents (`x.if` is property access).
-                if (t_tag.isKeyword() and self.prev_kind == .dot) t_tag = .identifier;
-                self.prev_kind = t_tag;
+                const t_tag = keywordLookup(text, self.is_ts);
+                // Emit the keyword tag unchanged; the post-dot rule only
+                // affects `prev_kind` tracking (matches reference lexer).
+                self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot)
+                    .identifier
+                else
+                    t_tag;
                 const tok = Token{ .tag = t_tag, .start = p, .len = end - p };
                 self.saw_nl = false;
                 self.at_line_start = false;
@@ -599,8 +602,8 @@ test "LexIter walker: keyword recognition" {
     try std.testing.expectEqual(@as(Tag, .kw_return), iter.advance());
     try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // foo
     try std.testing.expectEqual(@as(Tag, .dot), iter.advance());
-    // After dot, "if" is an identifier (property name), not the keyword.
-    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
+    // Lexer emits .kw_if even post-dot; parser disambiguates via context.
+    try std.testing.expectEqual(@as(Tag, .kw_if), iter.advance());
     try std.testing.expect(iter.isAtEnd());
 }
 
@@ -678,6 +681,13 @@ test "LexIter walker: shift operators" {
     try std.testing.expectEqual(@as(Tag, .greater_greater_equal), iter.advance());
     try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // d
     try std.testing.expect(iter.isAtEnd());
+}
+
+test "keywordLookup direct call returns .kw_get for 'get'" {
+    const Lexer = @import("lexer_simdjson.zig");
+    try std.testing.expectEqual(@as(Tag, .kw_get), Lexer.keywordLookup("get", false));
+    try std.testing.expectEqual(@as(Tag, .kw_for), Lexer.keywordLookup("for", false));
+    try std.testing.expectEqual(@as(Tag, .kw_set), Lexer.keywordLookup("set", false));
 }
 
 test "LexIter parity vs monolithic Lexer on small fixtures" {

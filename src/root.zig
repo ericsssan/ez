@@ -31,6 +31,8 @@ pub const inline_disable = @import("linter/root.zig").inline_disable;
 pub const eslint_compat = @import("linter/root.zig").eslint_compat;
 pub const gitignore = @import("linter/root.zig").gitignore;
 
+pub const lex_iter = @import("parser/lex_iter.zig");
+
 // ── CLI module ────────────────────────────────────────────
 pub const file_discovery = @import("cli/file_discovery.zig");
 pub const parallel = @import("cli/parallel.zig");
