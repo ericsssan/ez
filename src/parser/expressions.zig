@@ -937,6 +937,22 @@ fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
     if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
         return parseArrowFunctionBody(p, tok, false);
     }
+    // Spec: IdentifierName decoded to a ReservedWord is SyntaxError as
+    // IdentifierReference. Walker emits .identifier; check decoded form.
+    const tok_tag = p.tokenTagAt(tok);
+    if (tok_tag == .identifier) {
+        const text = p.tokenText(tok);
+        if (std.mem.indexOfScalar(u8, text, '\\') != null) {
+            var resolved_buf: [256]u8 = undefined;
+            if (parser_mod.resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
+                if (parser_mod.isAlwaysReservedStr(resolved)) {
+                    try p.emitDiagnostic(p.currentSpan(),
+                        "'{s}' is a reserved word and cannot be used as an identifier", .{resolved});
+                    return error.ParseError;
+                }
+            }
+        }
+    }
     const node = try p.addNode(.{
         .tag = .identifier,
         .main_token = tok,

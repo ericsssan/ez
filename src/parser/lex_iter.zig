@@ -512,6 +512,10 @@ pub const LexIter = struct {
                     if (end_i >= n or self.src[end_i] != '}') valid = false; // unterminated
                     if (end_i == hex_start) valid = false; // empty \u{}
                     if (codepoint >= 0xD800 and codepoint <= 0xDFFF) valid = false; // lone surrogate
+                    if (codepoint == 0x00A0 or codepoint == 0x1680 or
+                        (codepoint >= 0x2000 and codepoint <= 0x200A) or codepoint == 0x202F or
+                        codepoint == 0x205F or codepoint == 0x3000 or codepoint == 0xFEFF or
+                        codepoint == 0x2028 or codepoint == 0x2029) valid = false;
                     if (end_i < n) end_i += 1; // include }
                 } else {
                     // \uXXXX — exactly 4 hex digits.
@@ -529,6 +533,10 @@ pub const LexIter = struct {
                     }
                     if (hex_count < 4) valid = false;
                     if (cp >= 0xD800 and cp <= 0xDFFF) valid = false;
+                    if (cp == 0x00A0 or cp == 0x1680 or
+                        (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
+                        cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
+                        cp == 0x2028 or cp == 0x2029) valid = false;
                     // ASCII codepoints must be valid ID_Start chars at first
                     // position (a-z, A-Z, _, $). Non-ASCII (>=0x80) is
                     // permissively accepted (full ID_Start table not available).
@@ -549,7 +557,8 @@ pub const LexIter = struct {
                     return Token{ .tag = .invalid, .start = p, .len = end_i - p };
                 }
 
-                // Continue consuming ident-continuation chars + further \u escapes.
+                // Continue consuming ident-continuation chars + further \u escapes
+                // (with validation: invalid escape → emit .invalid).
                 while (end_i < n) {
                     const c = self.src[end_i];
                     if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
@@ -558,13 +567,58 @@ pub const LexIter = struct {
                         end_i += 1;
                     } else if (c == '\\' and end_i + 1 < n and self.src[end_i + 1] == 'u') {
                         end_i += 2;
+                        var cp_c: u32 = 0;
+                        var ok_c = true;
                         if (end_i < n and self.src[end_i] == '{') {
                             end_i += 1;
-                            while (end_i < n and self.src[end_i] != '}') end_i += 1;
+                            const hs = end_i;
+                            while (end_i < n and self.src[end_i] != '}') : (end_i += 1) {
+                                const h = self.src[end_i];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { ok_c = false; break; },
+                                };
+                                cp_c = (cp_c << 4) | v;
+                                if (cp_c > 0x10FFFF) ok_c = false;
+                            }
+                            if (end_i >= n or self.src[end_i] != '}') ok_c = false;
+                            if (end_i == hs) ok_c = false;
                             if (end_i < n) end_i += 1;
                         } else {
                             var hex2: u32 = 0;
-                            while (end_i < n and hex2 < 4) : (hex2 += 1) end_i += 1;
+                            while (end_i < n and hex2 < 4) : ({ end_i += 1; hex2 += 1; }) {
+                                const h = self.src[end_i];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { ok_c = false; break; },
+                                };
+                                cp_c = (cp_c << 4) | v;
+                            }
+                            if (hex2 < 4) ok_c = false;
+                        }
+                        if (cp_c >= 0xD800 and cp_c <= 0xDFFF) ok_c = false;
+                        if (cp_c == 0x00A0 or cp_c == 0x1680 or
+                            (cp_c >= 0x2000 and cp_c <= 0x200A) or cp_c == 0x202F or
+                            cp_c == 0x205F or cp_c == 0x3000 or cp_c == 0xFEFF or
+                            cp_c == 0x2028 or cp_c == 0x2029) ok_c = false;
+                        if (cp_c < 0x80) {
+                            const cont_ok = (cp_c >= 'a' and cp_c <= 'z') or
+                                            (cp_c >= 'A' and cp_c <= 'Z') or
+                                            (cp_c >= '0' and cp_c <= '9') or
+                                            cp_c == '_' or cp_c == '$';
+                            if (!cont_ok) ok_c = false;
+                        }
+                        if (!ok_c) {
+                            self.skip_until = end_i;
+                            self.last_emitted_nl = self.saw_nl;
+                            self.saw_nl = false;
+                            self.at_line_start = false;
+                            self.prev_kind = .invalid;
+                            return Token{ .tag = .invalid, .start = p, .len = end_i - p };
                         }
                     } else break;
                 }
@@ -606,15 +660,72 @@ pub const LexIter = struct {
                     }
                     // \u escape continuation: \uXXXX or \u{...}.
                     if (c == '\\' and end + 1 < n and self.src[end + 1] == 'u') {
+                        const esc_start = end;
                         end += 2;
+                        var esc_valid = true;
+                        var cp: u32 = 0;
                         if (end < n and self.src[end] == '{') {
                             end += 1;
-                            while (end < n and self.src[end] != '}') end += 1;
+                            const hex_start = end;
+                            while (end < n and self.src[end] != '}') : (end += 1) {
+                                const h = self.src[end];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { esc_valid = false; break; },
+                                };
+                                cp = (cp << 4) | v;
+                                if (cp > 0x10FFFF) esc_valid = false;
+                            }
+                            if (end >= n or self.src[end] != '}') esc_valid = false;
+                            if (end == hex_start) esc_valid = false;
+                            if (cp >= 0xD800 and cp <= 0xDFFF) esc_valid = false;
+                        // Zs (whitespace) codepoints — not valid ID_Continue.
+                        if (cp == 0x00A0 or cp == 0x1680 or
+                            (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
+                            cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
+                            cp == 0x2028 or cp == 0x2029) esc_valid = false;
                             if (end < n) end += 1;
                         } else {
                             var hc: u32 = 0;
-                            while (end < n and hc < 4) : ({ end += 1; hc += 1; }) {}
+                            while (end < n and hc < 4) : ({ end += 1; hc += 1; }) {
+                                const h = self.src[end];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { esc_valid = false; break; },
+                                };
+                                cp = (cp << 4) | v;
+                            }
+                            if (hc < 4) esc_valid = false;
+                            if (cp >= 0xD800 and cp <= 0xDFFF) esc_valid = false;
+                        // Zs (whitespace) codepoints — not valid ID_Continue.
+                        if (cp == 0x00A0 or cp == 0x1680 or
+                            (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
+                            cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
+                            cp == 0x2028 or cp == 0x2029) esc_valid = false;
                         }
+                        // ASCII codepoints must be valid ID_Continue (a-z A-Z 0-9 _ $).
+                        if (esc_valid and cp < 0x80) {
+                            const ok = (cp >= 'a' and cp <= 'z') or
+                                       (cp >= 'A' and cp <= 'Z') or
+                                       (cp >= '0' and cp <= '9') or
+                                       cp == '_' or cp == '$';
+                            if (!ok) esc_valid = false;
+                        }
+                        if (!esc_valid) {
+                            // Invalid escape — emit .invalid for the entire span
+                            // from ident-start to end of attempted escape.
+                            self.skip_until = end;
+                            self.last_emitted_nl = self.saw_nl;
+                            self.saw_nl = false;
+                            self.at_line_start = false;
+                            self.prev_kind = .invalid;
+                            return Token{ .tag = .invalid, .start = p, .len = end - p };
+                        }
+                        _ = esc_start;
                         continue;
                     }
                     break;
@@ -697,10 +808,13 @@ pub const LexIter = struct {
                             .kw_import, .kw_export, .kw_debugger, .kw_with => true,
                             else => false,
                         };
-                        if (promote) {
-                            self.prev_kind = if (self.prev_kind == .dot) .identifier else t_tag2;
-                            return Token{ .tag = t_tag2, .start = p, .len = end - p };
-                        }
+                        // NOTE: Escape-spelled reserved words are context-
+                        // dependent: SyntaxError as identifier reference,
+                        // OK as property name (`{new(){}}`). Walker
+                        // emits .identifier; parser is responsible for
+                        // checking decoded text against reserved words in
+                        // the appropriate contexts.
+                        _ = promote;
                     }
                 }
                 // If we broke on LS/PS/BOM, set up a pending drain past it so
@@ -998,10 +1112,22 @@ pub const LexIter = struct {
     /// next ident, no drain needed.
     inline fn maybeScheduleDrainAfter(self: *LexIter, end: u32, n: u32) void {
         if (end >= n) return;
-        const c0 = self.src[end];
-        if (c0 < 0x80) return;
+        // Skip ALL whitespace (ASCII + Zs/LS/PS/BOM). If the run contains
+        // any high-byte ws AND the trailing char is an ident-cont position
+        // that the visit walker won't fire for (because the ident-bitmap
+        // run starts with a high-byte ws), schedule a drain.
         const after_ws = self.skipZsAndLs(end, n);
         if (after_ws == end or after_ws >= n) return;
+        // Did we cross any high-byte ws? If only ASCII ws was crossed, the
+        // visit walker handles the next token via id_starts (ASCII ws breaks
+        // the ident bitmap). High-byte ws (NBSP, etc) does NOT break the
+        // bitmap, hence the need for a drain.
+        var saw_high: bool = false;
+        var k: u32 = end;
+        while (k < after_ws) : (k += 1) {
+            if (self.src[k] >= 0x80) { saw_high = true; break; }
+        }
+        if (!saw_high) return;
         const nb = self.src[after_ws];
         const is_cont = (nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
             nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80;

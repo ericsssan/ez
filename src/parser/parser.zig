@@ -22,9 +22,24 @@ const ScopeKindU8 = @import("scope.zig").ScopeKind;
 const BindingKindU8 = @import("symbol.zig").BindingKind;
 const ReferenceKindU8 = @import("reference.zig").ReferenceKind;
 
+/// Always-reserved words (cannot appear as IdentifierReference even via escape).
+pub fn isAlwaysReservedStr(text: []const u8) bool {
+    const list = [_][]const u8{
+        "null", "true", "false", "if", "else", "for", "while", "do",
+        "function", "return", "break", "continue", "switch", "case",
+        "default", "try", "catch", "finally", "throw", "new", "delete",
+        "typeof", "void", "instanceof", "in", "var", "const", "class",
+        "extends", "super", "this", "import", "export", "debugger", "with",
+    };
+    inline for (list) |kw| {
+        if (std.mem.eql(u8, text, kw)) return true;
+    }
+    return false;
+}
+
 /// Resolve \uXXXX and \u{XXXX} escapes in identifier text.
 /// Returns the resolved string as a slice of `buf`, or null if invalid.
-fn resolveUnicodeEscapesParser(text: []const u8, buf: *[256]u8) ?[]const u8 {
+pub fn resolveUnicodeEscapesParser(text: []const u8, buf: *[256]u8) ?[]const u8 {
     var out_len: usize = 0;
     var i: usize = 0;
     while (i < text.len) {
@@ -3393,17 +3408,40 @@ pub const Parser = struct {
     pub fn parseClassDeclaration(self: *Parser) Error!NodeIndex {
         const class_tok = self.advance(); // eat 'class'
 
-        // Class name (required for declarations, optional for export default class / expressions)
-        const name: NodeIndex = if (self.peek() == .identifier or self.peek() == .escaped_keyword)
-            try self.parseIdentifier()
-        else if (self.peek() == .kw_await and !self.in_async and !self.is_module)
-            try self.parseIdentifier()
-        else if (self.peek() == .kw_yield and !self.in_generator and !self.in_strict)
-            try self.parseIdentifier()
-        else if (self.is_ts and self.peek() == .kw_abstract and self.peekAt(1) == .l_brace)
-            try self.parseIdentifier()
-        else
-            .none;
+        // Class name (required for declarations, optional for export default class / expressions).
+        // Class bodies are always strict mode — class name itself is also strict-mode-validated.
+        const name: NodeIndex = blk: {
+            const next = self.peek();
+            if (next == .identifier or next == .escaped_keyword) {
+                const tok_ix = self.tok_i;
+                const id = try self.parseIdentifier();
+                // Strict reserved (let/yield/static/etc) via escape — reject.
+                if (self.isStrictReservedWord(tok_ix)) {
+                    try self.emitDiagnostic(self.currentSpan(),
+                        "'{s}' is not a valid class name in strict mode", .{self.tokenText(tok_ix)});
+                    return error.ParseError;
+                }
+                // `await` reserved in module / async function (escape form too).
+                if (self.is_module or self.in_async) {
+                    const t = self.tokenText(tok_ix);
+                    if (std.mem.indexOfScalar(u8, t, '\\') != null) {
+                        var rb: [256]u8 = undefined;
+                        if (resolveUnicodeEscapesParser(t, &rb)) |r| {
+                            if (std.mem.eql(u8, r, "await")) {
+                                try self.emitDiagnostic(self.currentSpan(),
+                                    "'await' cannot be used as identifier here", .{});
+                                return error.ParseError;
+                            }
+                        }
+                    }
+                }
+                break :blk id;
+            }
+            if (next == .kw_await and !self.in_async and !self.is_module) break :blk try self.parseIdentifier();
+            if (next == .kw_yield and !self.in_generator and !self.in_strict) break :blk try self.parseIdentifier();
+            if (self.is_ts and next == .kw_abstract and self.peekAt(1) == .l_brace) break :blk try self.parseIdentifier();
+            break :blk .none;
+        };
 
         // class declaration requires a name (unless export default)
         if (name == .none and !self.in_export_default) {
@@ -5586,6 +5624,24 @@ pub const Parser = struct {
     /// `reference(.read)` semantic event.
     pub fn parseIdentifierRef(self: *Parser) !NodeIndex {
         const tok = self.advance();
+        // Spec: an IdentifierName that decodes (via \u escape) to a
+        // ReservedWord is a SyntaxError when used as IdentifierReference.
+        // The Lexer emits these as .identifier (since the surface form
+        // isn't the keyword); we validate decoded form here.
+        const tag = self.tokenTagAt(tok);
+        if (tag == .identifier) {
+            const text = self.tokenText(tok);
+            if (std.mem.indexOf(u8, text, "\\u")) |_| {
+                var resolved_buf: [256]u8 = undefined;
+                if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
+                    if (isAlwaysReservedStr(resolved)) {
+                        try self.emitDiagnostic(self.currentSpan(),
+                            "'{s}' is a reserved word and cannot be used as an identifier", .{resolved});
+                        return error.ParseError;
+                    }
+                }
+            }
+        }
         const node = try self.addNode(.{
             .tag = .identifier,
             .main_token = tok,
@@ -5594,6 +5650,7 @@ pub const Parser = struct {
         try self.emitReference(.read, node);
         return node;
     }
+
 
     /// Check if the identifier at `tok` is a strict-mode future reserved word.
     /// Returns true if it IS a strict reserved word (and thus invalid in strict mode).
