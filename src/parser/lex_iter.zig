@@ -273,10 +273,23 @@ pub const LexIter = struct {
                     return Token{ .tag = tag_n, .start = dp, .len = end_i - dp };
                 }
                 end_i = dp + 1;
-                while (end_i < n) : (end_i += 1) {
+                while (end_i < n) {
                     const c = self.src[end_i];
-                    if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                          (c >= '0' and c <= '9') or c == '_' or c == '$' or c >= 0x80)) break;
+                    if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                        (c >= '0' and c <= '9') or c == '_' or c == '$') { end_i += 1; continue; }
+                    if (c >= 0x80) {
+                        if (c == 0xE2 and end_i + 2 < n and self.src[end_i + 1] == 0x80 and
+                            (self.src[end_i + 2] == 0xA8 or self.src[end_i + 2] == 0xA9)) break;
+                        if (c == 0xEF and end_i + 2 < n and self.src[end_i + 1] == 0xBB and self.src[end_i + 2] == 0xBF) break;
+                        if (c == 0xC2 and end_i + 1 < n and self.src[end_i + 1] == 0xA0) break;
+                        if (c == 0xE1 and end_i + 2 < n and self.src[end_i + 1] == 0x9A and self.src[end_i + 2] == 0x80) break;
+                        if (c == 0xE2 and end_i + 2 < n and self.src[end_i + 1] == 0x80 and
+                            ((self.src[end_i + 2] >= 0x80 and self.src[end_i + 2] <= 0x8A) or self.src[end_i + 2] == 0xAF)) break;
+                        if (c == 0xE2 and end_i + 2 < n and self.src[end_i + 1] == 0x81 and self.src[end_i + 2] == 0x9F) break;
+                        if (c == 0xE3 and end_i + 2 < n and self.src[end_i + 1] == 0x80 and self.src[end_i + 2] == 0x80) break;
+                        end_i += 1; continue;
+                    }
+                    break;
                 }
                 self.skip_until = end_i;
                 const text = self.src[dp..end_i];
@@ -378,28 +391,30 @@ pub const LexIter = struct {
                 continue;
             }
 
-            // Unicode whitespace (Zs category): NBSP (U+00A0 = C2 A0),
-            // OGHAM SPACE (U+1680 = E1 9A 80), En..Hair quad (U+2000..U+200A
-            // = E2 80 80..E2 80 8A), narrow NBSP (U+202F = E2 80 AF),
-            // medium math (U+205F = E2 81 9F), ideographic (U+3000 = E3 80 80).
-            if (byte == 0xC2 and p + 1 < n and self.src[p + 1] == 0xA0) {
-                self.skip_until = p + 2;
-                continue;
-            }
-            if (byte == 0xE1 and p + 2 < n and self.src[p + 1] == 0x9A and self.src[p + 2] == 0x80) {
-                self.skip_until = p + 3;
-                continue;
-            }
-            if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and (self.src[p + 2] >= 0x80 and self.src[p + 2] <= 0x8A or self.src[p + 2] == 0xAF)) {
-                self.skip_until = p + 3;
-                continue;
-            }
-            if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x81 and self.src[p + 2] == 0x9F) {
-                self.skip_until = p + 3;
-                continue;
-            }
-            if (byte == 0xE3 and p + 2 < n and self.src[p + 1] == 0x80 and self.src[p + 2] == 0x80) {
-                self.skip_until = p + 3;
+            // Unicode whitespace (Zs category). When ws lands inside an
+            // ident-bitmap-run, the visit-bit walker won't fire for the
+            // ident-continuation position after the ws, so we set
+            // pending_drain_pos and recurse so this call emits the trailing
+            // token directly.
+            const ws_skip2: u32 = blk: {
+                if (byte == 0xC2 and p + 1 < n and self.src[p + 1] == 0xA0) break :blk 2;
+                if (byte == 0xE1 and p + 2 < n and self.src[p + 1] == 0x9A and self.src[p + 2] == 0x80) break :blk 3;
+                if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and ((self.src[p + 2] >= 0x80 and self.src[p + 2] <= 0x8A) or self.src[p + 2] == 0xAF)) break :blk 3;
+                if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x81 and self.src[p + 2] == 0x9F) break :blk 3;
+                if (byte == 0xE3 and p + 2 < n and self.src[p + 1] == 0x80 and self.src[p + 2] == 0x80) break :blk 3;
+                break :blk 0;
+            };
+            if (ws_skip2 != 0) {
+                self.skip_until = p + ws_skip2;
+                if (p + ws_skip2 < n) {
+                    const nb = self.src[p + ws_skip2];
+                    if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                        nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
+                    {
+                        self.pending_drain_pos = p + ws_skip2;
+                        return self.walkerNext();
+                    }
+                }
                 continue;
             }
 
@@ -439,11 +454,21 @@ pub const LexIter = struct {
                 self.skip_until = end_n;
                 if (end_n < n) {
                     const next_b = self.src[end_n];
-                    if ((next_b >= 'a' and next_b <= 'z') or (next_b >= 'A' and next_b <= 'Z') or
-                        (next_b >= '0' and next_b <= '9') or next_b == '_' or next_b == '$' or next_b >= 0x80)
-                    {
-                        self.pending_drain_pos = end_n;
+                    var is_cont: bool = (next_b >= 'a' and next_b <= 'z') or (next_b >= 'A' and next_b <= 'Z') or
+                        (next_b >= '0' and next_b <= '9') or next_b == '_' or next_b == '$';
+                    if (next_b >= 0x80) {
+                        // High byte — distinguish ident-cont from Zs/LS/PS/BOM.
+                        is_cont = true;
+                        if (next_b == 0xC2 and end_n + 1 < n and self.src[end_n + 1] == 0xA0) is_cont = false;
+                        if (next_b == 0xE1 and end_n + 2 < n and self.src[end_n + 1] == 0x9A and self.src[end_n + 2] == 0x80) is_cont = false;
+                        if (next_b == 0xE2 and end_n + 2 < n and self.src[end_n + 1] == 0x80 and
+                            ((self.src[end_n + 2] >= 0x80 and self.src[end_n + 2] <= 0x8A) or self.src[end_n + 2] == 0xA8 or
+                             self.src[end_n + 2] == 0xA9 or self.src[end_n + 2] == 0xAF)) is_cont = false;
+                        if (next_b == 0xE2 and end_n + 2 < n and self.src[end_n + 1] == 0x81 and self.src[end_n + 2] == 0x9F) is_cont = false;
+                        if (next_b == 0xE3 and end_n + 2 < n and self.src[end_n + 1] == 0x80 and self.src[end_n + 2] == 0x80) is_cont = false;
+                        if (next_b == 0xEF and end_n + 2 < n and self.src[end_n + 1] == 0xBB and self.src[end_n + 2] == 0xBF) is_cont = false;
                     }
+                    if (is_cont) self.pending_drain_pos = end_n;
                 }
                 self.prev_kind = tag_n;
                 const tok = Token{ .tag = tag_n, .start = p, .len = end_n - p };
