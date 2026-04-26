@@ -1812,8 +1812,10 @@ pub const Parser = struct {
         if (self.emit_scope_events) {
             var depth: i32 = 0;
             const evs = self.scope_events.events.items[scope_ev + 1 ..];
-            var names_buf: [64][]const u8 = undefined;
+            const Entry = struct { name: []const u8, kind: BindingKindU8 };
+            var names_buf: [64]Entry = undefined;
             var names_n: usize = 0;
+            const allow_fn_dup = !self.is_module and !self.in_strict;
             for (evs) |ev| {
                 switch (ev.kind) {
                     // Elided scope_opens have no matching scope_close — skip
@@ -1822,9 +1824,8 @@ pub const Parser = struct {
                     .scope_close => depth -= 1,
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                        // Skip var/parameter/function_decl — B.3.3 hoisting
-                        // in script mode allows duplicate function decls.
-                        if (bk == .@"var" or bk == .parameter or bk == .function_decl) continue;
+                        // var/parameter never participate in lexical-redecl checks here.
+                        if (bk == .@"var" or bk == .parameter) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
@@ -1832,13 +1833,17 @@ pub const Parser = struct {
                         const name = self.source[tok_start..tok_start + tok_len];
                         var dup = false;
                         for (names_buf[0..names_n]) |existing| {
-                            if (std.mem.eql(u8, existing, name)) { dup = true; break; }
+                            if (!std.mem.eql(u8, existing.name, name)) continue;
+                            // B.3.3: in sloppy script, two FunctionDeclaration in the same block coexist.
+                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl) continue;
+                            dup = true;
+                            break;
                         }
                         if (dup) {
                             try self.emitDiagnostic(self.currentSpan(),
                                 "Identifier '{s}' has already been declared", .{name});
                         } else if (names_n < names_buf.len) {
-                            names_buf[names_n] = name;
+                            names_buf[names_n] = .{ .name = name, .kind = bk };
                             names_n += 1;
                         }
                     },
