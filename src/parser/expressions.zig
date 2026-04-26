@@ -768,7 +768,13 @@ fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
         .rest_element, .spread_element => {
             // Validate rest target recursively
             const d = p.node_data_ptr[node.toInt()];
-            if (d.lhs != .none) try validateArrowParam(p, d.lhs);
+            if (d.lhs != .none) {
+                const tt = p.node_tags_ptr[d.lhs.toInt()];
+                if (tt == .assign or tt == .assignment_pattern) {
+                    return p.emitError("Rest parameter may not have a default initializer");
+                }
+                try validateArrowParam(p, d.lhs);
+            }
         },
         .array_literal, .array_pattern => {
             const d = p.node_data_ptr[node.toInt()];
@@ -1852,6 +1858,10 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                         const rest_data = p.node_data_ptr[param_node.toInt()];
                         if (rest_data.lhs != .none) {
                             const rest_tag = p.node_tags_ptr[rest_data.lhs.toInt()];
+                            if (rest_tag == .assign or rest_tag == .assignment_pattern) {
+                                try p.emitError("Rest parameter may not have a default initializer");
+                                return p.makeErrorNode();
+                            }
                             if (rest_tag == .identifier) {
                                 const rest_tok = p.node_main_token_ptr[rest_data.lhs.toInt()];
                                 if (hasDuplicateParam(p, params, idx, rest_tok)) {
