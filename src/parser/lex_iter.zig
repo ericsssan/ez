@@ -553,10 +553,18 @@ pub const LexIter = struct {
                         (c >= '0' and c <= '9') or
                         c == '_' or c == '$') { end += 1; continue; }
                     if (c >= 0x80) {
+                        // LS / PS / BOM terminators
                         if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
                             (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9)) break;
                         if (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and
                             self.src[end + 2] == 0xBF) break;
+                        // Zs whitespace terminators (NBSP, OGHAM, En..Hair, etc).
+                        if (c == 0xC2 and end + 1 < n and self.src[end + 1] == 0xA0) break;
+                        if (c == 0xE1 and end + 2 < n and self.src[end + 1] == 0x9A and self.src[end + 2] == 0x80) break;
+                        if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                            ((self.src[end + 2] >= 0x80 and self.src[end + 2] <= 0x8A) or self.src[end + 2] == 0xAF)) break;
+                        if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x81 and self.src[end + 2] == 0x9F) break;
+                        if (c == 0xE3 and end + 2 < n and self.src[end + 1] == 0x80 and self.src[end + 2] == 0x80) break;
                         end += 1; continue;
                     }
                     // \u escape continuation: \uXXXX or \u{...}.
@@ -745,8 +753,11 @@ pub const LexIter = struct {
                     if (p + 1 < n and self.src[p + 1] == '?') {
                         if (p + 2 < n and self.src[p + 2] == '=') { tag = .question_question_equal; end = p + 3; }
                         else { tag = .question_question; end = p + 2; }
-                    } else if (p + 1 < n and self.src[p + 1] == '.') { tag = .question_dot; end = p + 2; }
-                    else { tag = .question; }
+                    } else if (p + 1 < n and self.src[p + 1] == '.' and
+                               !(p + 2 < n and self.src[p + 2] >= '0' and self.src[p + 2] <= '9'))
+                    {
+                        tag = .question_dot; end = p + 2;
+                    } else { tag = .question; }
                 },
                 '+' => {
                     if (p + 1 < n and self.src[p + 1] == '+') { tag = .plus_plus; end = p + 2; }
