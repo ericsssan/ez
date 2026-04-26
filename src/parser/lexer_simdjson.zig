@@ -447,7 +447,18 @@ fn stringEndBM(
                 const c = src[p];
                 if (c == quote) return p + 1;
                 if (c == '\\') {
-                    i = p + 2;
+                    // Line continuation: \<CRLF>, \<LS>, \<PS> consume the
+                    // entire line-terminator sequence. Other escapes consume
+                    // a single byte after the backslash.
+                    if (p + 2 < n and src[p + 1] == '\r' and src[p + 2] == '\n') {
+                        i = p + 3;
+                    } else if (p + 3 < n and src[p + 1] == 0xE2 and src[p + 2] == 0x80 and
+                               (src[p + 3] == 0xA8 or src[p + 3] == 0xA9))
+                    {
+                        i = p + 4;
+                    } else {
+                        i = p + 2;
+                    }
                     break;
                 }
                 if (c == '\n' or c == '\r') return p;

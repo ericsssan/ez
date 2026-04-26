@@ -167,7 +167,21 @@ pub inline fn stringEnd(src: []const u8, open: u32) u32 {
             const p = i + b;
             const c = src[p];
             if (c == quote) return p + 1;
-            if (c == '\\') { i = p + 2; continue; }
+            if (c == '\\') {
+                // Line continuation: \<CRLF> consumes both bytes; \<CR>, \<LF>,
+                // \<LS>, \<PS> consume the line terminator. Other escapes
+                // consume one byte after the backslash.
+                if (p + 2 < n and src[p + 1] == '\r' and src[p + 2] == '\n') {
+                    i = p + 3;
+                } else if (p + 3 < n and src[p + 1] == 0xE2 and src[p + 2] == 0x80 and
+                           (src[p + 3] == 0xA8 or src[p + 3] == 0xA9))
+                {
+                    i = p + 4;
+                } else {
+                    i = p + 2;
+                }
+                continue;
+            }
             return p;
         }
         i += 16;
@@ -175,7 +189,18 @@ pub inline fn stringEnd(src: []const u8, open: u32) u32 {
     while (i < n) : (i += 1) {
         const c = src[i];
         if (c == quote) return i + 1;
-        if (c == '\\') { i += 1; continue; }
+        if (c == '\\') {
+            if (i + 2 < n and src[i + 1] == '\r' and src[i + 2] == '\n') {
+                i += 2;
+            } else if (i + 3 < n and src[i + 1] == 0xE2 and src[i + 2] == 0x80 and
+                       (src[i + 3] == 0xA8 or src[i + 3] == 0xA9))
+            {
+                i += 3;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
         if (c == '\n' or c == '\r') return i;
     }
     return i;
@@ -201,14 +226,18 @@ pub fn blockCommentEnd(src: []const u8, open: u32) struct { end: u32, has_nl: bo
     const vstar = @as(V16, @splat(@as(u8, '*')));
     const vnl   = @as(V16, @splat(@as(u8, '\n')));
     const vcr   = @as(V16, @splat(@as(u8, '\r')));
+    const ve2   = @as(V16, @splat(@as(u8, 0xE2)));
     var i = open + 2;
     var has_nl = false;
     while (i + 16 <= n) {
         const chunk: V16 = src[i..][0..16].*;
         const nl_mask: u16 = @bitCast((chunk == vnl) | (chunk == vcr));
+        // LS (E2 80 A8) and PS (E2 80 A9) checked via 0xE2 lead-byte hits.
+        const e2_mask: u16 = @bitCast(chunk == ve2);
         var sm: u16 = @bitCast(chunk == vstar);
         if (sm == 0) {
             if (nl_mask != 0) has_nl = true;
+            if (!has_nl and e2_mask != 0) has_nl = checkLsPs(src, i, e2_mask, n);
             i += 16;
             continue;
         }
@@ -220,17 +249,34 @@ pub fn blockCommentEnd(src: []const u8, open: u32) struct { end: u32, has_nl: bo
                     const before: u16 = (@as(u16, 1) << @intCast(b)) - 1;
                     if ((nl_mask & before) != 0) has_nl = true;
                 }
+                if (!has_nl and e2_mask != 0 and b > 0) {
+                    const before: u16 = (@as(u16, 1) << @intCast(b)) - 1;
+                    const e2_before = e2_mask & before;
+                    if (e2_before != 0) has_nl = checkLsPs(src, i, e2_before, n);
+                }
                 return .{ .end = p + 2, .has_nl = has_nl };
             }
         }
         if (nl_mask != 0) has_nl = true;
+        if (!has_nl and e2_mask != 0) has_nl = checkLsPs(src, i, e2_mask, n);
         i += 16;
     }
     while (i + 1 < n) : (i += 1) {
         if (src[i] == '\n' or src[i] == '\r') has_nl = true;
+        if (src[i] == 0xE2 and i + 2 < n and src[i + 1] == 0x80 and (src[i + 2] == 0xA8 or src[i + 2] == 0xA9)) has_nl = true;
         if (src[i] == '*' and src[i + 1] == '/') return .{ .end = i + 2, .has_nl = has_nl };
     }
     return .{ .end = n, .has_nl = has_nl };
+}
+
+inline fn checkLsPs(src: []const u8, base: u32, mask: u16, n: u32) bool {
+    var m = mask;
+    while (m != 0) {
+        const b: u32 = @ctz(m); m &= m -% 1;
+        const p = base + b;
+        if (p + 2 < n and src[p + 1] == 0x80 and (src[p + 2] == 0xA8 or src[p + 2] == 0xA9)) return true;
+    }
+    return false;
 }
 
 pub fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr: bool } {

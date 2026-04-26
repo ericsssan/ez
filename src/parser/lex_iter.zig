@@ -257,19 +257,12 @@ pub const LexIter = struct {
                 if (byte >= '0' and byte <= '9') {
                     end_i = Lex.numberEnd(self.src, dp);
                     const tag_n: Tag = if (end_i > dp and self.src[end_i - 1] == 'n') .bigint_literal else .number_literal;
-                    if (end_i < n) {
-                        const next_b = self.src[end_i];
-                        if ((next_b >= 'a' and next_b <= 'z') or (next_b >= 'A' and next_b <= 'Z') or
-                            (next_b >= '0' and next_b <= '9') or next_b == '_' or next_b == '$' or next_b >= 0x80)
-                        {
-                            self.pending_drain_pos = end_i;
-                        }
-                    }
                     self.skip_until = end_i;
                     self.prev_kind = tag_n;
                     self.last_emitted_nl = self.saw_nl;
                     self.saw_nl = false;
                     self.at_line_start = false;
+                    self.maybeScheduleDrainAfter(end_i, n);
                     return Token{ .tag = tag_n, .start = dp, .len = end_i - dp };
                 }
                 end_i = dp + 1;
@@ -298,6 +291,7 @@ pub const LexIter = struct {
                 self.last_emitted_nl = self.saw_nl;
                 self.saw_nl = false;
                 self.at_line_start = false;
+                self.maybeScheduleDrainAfter(end_i, n);
                 return Token{ .tag = t_tag, .start = dp, .len = end_i - dp };
             }
         }
@@ -492,6 +486,7 @@ pub const LexIter = struct {
                 self.last_emitted_nl = self.saw_nl;
                 self.saw_nl = false;
                 self.at_line_start = false;
+                if (self.pending_drain_pos == 0) self.maybeScheduleDrainAfter(end_n, n);
                 return tok;
             }
 
@@ -743,6 +738,7 @@ pub const LexIter = struct {
                     .identifier
                 else
                     t_tag;
+                if (self.pending_drain_pos == 0) self.maybeScheduleDrainAfter(end, n);
                 return Token{ .tag = t_tag, .start = p, .len = end - p };
             }
 
