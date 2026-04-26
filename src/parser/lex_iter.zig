@@ -72,16 +72,20 @@ pub const SLOTS: usize = 4;
 /// Stateful Phase-2 walker that produces tokens into a 4-slot inline
 /// lookahead window. Parser methods inline; slots stay register-resident.
 pub const LexIter = struct {
-    // ── 4-slot lookahead window ───────────────────────────────────────────
-    // Layout: separate arrays per field so a compiler can hoist any subset
-    // (just tags for the hot peek/advance path; starts/lens only on demand).
+    // ── 4-slot rotating lookahead window ─────────────────────────────────
+    // Layout: separate arrays per field. `head` rotates 0→1→2→3→0 on each
+    // advance() — no per-advance shifts. peekAt(n) reads slots[(head+n)&3].
+    // valid bitmask is rotated alongside (>>1 on advance after rotating into
+    // bit-3 the freshly-pulled slot's bit).
     tags: [SLOTS]Tag = [_]Tag{.eof} ** SLOTS,
     starts: [SLOTS]u32 = [_]u32{0} ** SLOTS,
     lens: [SLOTS]u32 = [_]u32{0} ** SLOTS,
     nls: [SLOTS]bool = [_]bool{false} ** SLOTS,
-    /// Bitmask of filled slots. Bit i set ⇒ slots[i] holds a real token.
-    /// Cleared bits past EOF are .eof tags but the bit stays clear so
-    /// peekAt() can distinguish "not yet pulled" from "EOF reached".
+    /// Rotating head pointer (0..SLOTS-1). slots[head] = current token.
+    head: u8 = 0,
+    /// Per-slot validity bitmask (bit i ⇒ slots[i] holds a real token).
+    /// Slot indices are absolute (not rotated); valid is checked via
+    /// `(valid >> ((head + n) & MASK)) & 1`.
     valid: u8 = 0,
 
     // ── Walker state (preserved across `walkerNext` calls) ───────────────
@@ -134,85 +138,86 @@ pub const LexIter = struct {
 
     pub fn initOpts(src: []const u8, bm: *const Bitmaps, opts: InitOptions) LexIter {
         var self = LexIter{ .src = src, .bm = bm, .is_ts = opts.is_ts };
-        self.fillUpTo(SLOTS - 1);
+        // Prime current slot only — others lazy-filled on peekAt demand.
+        // This lets parsers that only do peek/advance (no lookahead) skip
+        // the cost of pre-filling 3 unused slots per init.
+        self.fillSlot(0);
         return self;
     }
 
-    /// Ensure slots[0..=n] are filled. After this call, peekAt(0..=n) returns
-    /// real tags (or .eof if past stream end with the bit cleared).
+    const MASK: u8 = SLOTS - 1;
+
+    /// Fill the slot at absolute index `slot_idx` from the walker.
+    /// Used by both init priming and lazy peekAt fills.
+    inline fn fillSlot(self: *LexIter, slot_idx: u8) void {
+        if (self.eof) return;
+        if ((self.valid >> @intCast(slot_idx)) & 1 != 0) return;
+        if (self.walkerNext()) |t| {
+            self.tags[slot_idx] = t.tag;
+            self.starts[slot_idx] = t.start;
+            self.lens[slot_idx] = t.len;
+            self.nls[slot_idx] = false;
+            self.valid |= @as(u8, 1) << @intCast(slot_idx);
+        }
+    }
+
+    /// Ensure slots [head .. head+n] are filled (lazy on-demand).
     inline fn fillUpTo(self: *LexIter, n: usize) void {
-        var i: usize = 0;
-        while (i <= n) : (i += 1) {
-            const bit: u8 = @as(u8, 1) << @intCast(i);
-            if ((self.valid & bit) != 0) continue;
+        var i: u8 = 0;
+        while (i <= @as(u8, @intCast(n))) : (i += 1) {
+            const slot = (self.head + i) & MASK;
+            if ((self.valid >> @intCast(slot)) & 1 != 0) continue;
             if (self.eof) break;
-            if (self.walkerNext()) |t| {
-                self.tags[i] = t.tag;
-                self.starts[i] = t.start;
-                self.lens[i] = t.len;
-                // newline-before propagates from saw_nl at emission time;
-                // walkerNext() will set this when implemented.
-                self.nls[i] = false;
-                self.valid |= bit;
-            } else break;
+            self.fillSlot(slot);
         }
     }
 
     /// Current token's Tag. Returns .eof past stream end.
-    pub inline fn peek(self: *const LexIter) Tag {
-        return if ((self.valid & 1) != 0) self.tags[0] else .eof;
+    pub inline fn peek(self: *LexIter) Tag {
+        const slot = self.head;
+        if ((self.valid >> @intCast(slot)) & 1 == 0) self.fillSlot(slot);
+        return if ((self.valid >> @intCast(slot)) & 1 != 0) self.tags[slot] else .eof;
     }
 
     /// Tag at +n lookahead. Returns .eof past stream end.
     pub inline fn peekAt(self: *LexIter, n: usize) Tag {
         std.debug.assert(n < SLOTS);
-        const bit: u8 = @as(u8, 1) << @intCast(n);
-        if ((self.valid & bit) == 0) self.fillUpTo(n);
-        return if ((self.valid & bit) != 0) self.tags[n] else .eof;
+        const slot = (self.head + @as(u8, @intCast(n))) & MASK;
+        if ((self.valid >> @intCast(slot)) & 1 == 0) self.fillUpTo(n);
+        return if ((self.valid >> @intCast(slot)) & 1 != 0) self.tags[slot] else .eof;
     }
 
     /// Full token at +n. Caller must have validated peekAt(n) != .eof.
     pub inline fn peekToken(self: *const LexIter, n: usize) Token {
         std.debug.assert(n < SLOTS);
-        return .{ .tag = self.tags[n], .start = self.starts[n], .len = self.lens[n] };
+        const slot = (self.head + @as(u8, @intCast(n))) & MASK;
+        return .{ .tag = self.tags[slot], .start = self.starts[slot], .len = self.lens[slot] };
     }
 
     /// Newline-before flag at +n.
     pub inline fn hasNewlineBefore(self: *const LexIter, n: usize) bool {
         std.debug.assert(n < SLOTS);
-        return self.nls[n];
+        const slot = (self.head + @as(u8, @intCast(n))) & MASK;
+        return self.nls[slot];
     }
 
     /// Advance one position. Returns the just-consumed Tag (.eof past end).
-    /// Shifts the window forward and refills the last slot from the walker.
+    /// Rotates head. Next slot is lazy-filled by peek() on demand.
     pub inline fn advance(self: *LexIter) Tag {
-        const t = if ((self.valid & 1) != 0) self.tags[0] else .eof;
-        // Shift slots [1..] → [0..]
-        comptime var i: usize = 0;
-        inline while (i < SLOTS - 1) : (i += 1) {
-            self.tags[i] = self.tags[i + 1];
-            self.starts[i] = self.starts[i + 1];
-            self.lens[i] = self.lens[i + 1];
-            self.nls[i] = self.nls[i + 1];
-        }
-        // Last slot becomes invalid; refill from walker.
-        self.valid >>= 1;
-        if (!self.eof) {
-            if (self.walkerNext()) |tok| {
-                const last = SLOTS - 1;
-                self.tags[last] = tok.tag;
-                self.starts[last] = tok.start;
-                self.lens[last] = tok.len;
-                self.nls[last] = false;
-                self.valid |= @as(u8, 1) << @intCast(last);
-            }
-        }
-        if (t != .eof) self.consumed += 1;
+        const slot = self.head;
+        if ((self.valid >> @intCast(slot)) & 1 == 0) self.fillSlot(slot);
+        const t = if ((self.valid >> @intCast(slot)) & 1 != 0) self.tags[slot] else .eof;
+        if (t == .eof) return .eof;
+        // Mark current slot empty; rotate head. Lookahead slots that were
+        // pre-filled stay filled (their valid bits are at other indices).
+        self.valid &= ~(@as(u8, 1) << @intCast(slot));
+        self.head = (self.head + 1) & MASK;
+        self.consumed += 1;
         return t;
     }
 
-    pub inline fn isAtEnd(self: *const LexIter) bool {
-        return (self.valid & 1) == 0;
+    pub inline fn isAtEnd(self: *LexIter) bool {
+        return self.peek() == .eof;
     }
 
     pub inline fn position(self: *const LexIter) u32 {
