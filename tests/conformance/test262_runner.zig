@@ -1,6 +1,13 @@
 const std = @import("std");
 const ez = @import("ez");
 const Lexer = ez.Lexer;
+const lex_iter = ez.lex_iter;
+
+var g_use_fused: bool = false;
+fn tokenizeMaybe(alloc: std.mem.Allocator, source: []const u8, lang: ez.parser_root.token.Language, is_module: bool) !Lexer.TokenizeResult {
+    if (g_use_fused) return lex_iter.tokenizeViaIter(alloc, source, lang);
+    return Lexer.tokenizeWithOptions(alloc, source, lang, is_module);
+}
 const Parser = ez.Parser;
 const Io = std.Io;
 
@@ -15,6 +22,11 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
+
+    if (std.c.getenv("EZ_USE_FUSED")) |s| {
+        const slice = std.mem.sliceTo(s, 0);
+        if (slice.len > 0 and slice[0] == '1') g_use_fused = true;
+    }
 
     var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
@@ -197,7 +209,7 @@ const ErrorDetail = struct {
 };
 
 fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module: bool, run_lint: bool) struct { has_error: bool, detail: ErrorDetail } {
-    var tokens = (Lexer.tokenizeWithOptions(allocator, source, .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } }).tokens;
+    var tokens = (tokenizeMaybe(allocator, source, .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } }).tokens;
     defer tokens.deinit(allocator);
 
     var tree = Parser.parseWithLanguage(allocator, source, tokens.slice(), .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } };

@@ -115,6 +115,11 @@ pub const LexIter = struct {
     /// has_newline_before for the most-recently-emitted token (captured
     /// inside walkerNext just before saw_nl is cleared).
     last_emitted_nl: bool = false,
+    /// Pending trailing-ident-run byte position. When numberEnd lands
+    /// inside an ident-bitmap-run (e.g. `0b1a`), we emit the number first
+    /// and stash the start of the trailing run here so the next walkerNext
+    /// call emits it as an ident token (without depending on visit bits).
+    pending_drain_pos: u32 = 0,
     /// TypeScript mode — affects keyword recognition (e.g. `type`, `as`,
     /// `satisfies` etc are keywords in TS, identifiers in JS).
     is_ts: bool = false,
@@ -191,17 +196,19 @@ pub const LexIter = struct {
         return if ((self.valid >> @intCast(slot)) & 1 != 0) self.tags[slot] else .eof;
     }
 
-    /// Full token at +n. Caller must have validated peekAt(n) != .eof.
-    pub inline fn peekToken(self: *const LexIter, n: usize) Token {
+    /// Full token at +n. Lazy-fills if needed.
+    pub inline fn peekToken(self: *LexIter, n: usize) Token {
         std.debug.assert(n < SLOTS);
         const slot = (self.head + @as(u8, @intCast(n))) & MASK;
+        if ((self.valid >> @intCast(slot)) & 1 == 0) self.fillUpTo(n);
         return .{ .tag = self.tags[slot], .start = self.starts[slot], .len = self.lens[slot] };
     }
 
-    /// Newline-before flag at +n.
-    pub inline fn hasNewlineBefore(self: *const LexIter, n: usize) bool {
+    /// Newline-before flag at +n. Lazy-fills if needed.
+    pub inline fn hasNewlineBefore(self: *LexIter, n: usize) bool {
         std.debug.assert(n < SLOTS);
         const slot = (self.head + @as(u8, @intCast(n))) & MASK;
+        if ((self.valid >> @intCast(slot)) & 1 == 0) self.fillUpTo(n);
         return self.nls[slot];
     }
 
@@ -239,6 +246,49 @@ pub const LexIter = struct {
     fn walkerNext(self: *LexIter) ?Token {
         const n: u32 = @intCast(self.src.len);
         const bm = self.bm;
+
+        // Drain pending trailing-ident-run from prior number emit.
+        if (self.pending_drain_pos != 0) {
+            const dp = self.pending_drain_pos;
+            self.pending_drain_pos = 0;
+            if (dp < n) {
+                const byte = self.src[dp];
+                var end_i: u32 = dp;
+                if (byte >= '0' and byte <= '9') {
+                    end_i = Lex.numberEnd(self.src, dp);
+                    const tag_n: Tag = if (end_i > dp and self.src[end_i - 1] == 'n') .bigint_literal else .number_literal;
+                    if (end_i < n) {
+                        const next_b = self.src[end_i];
+                        if ((next_b >= 'a' and next_b <= 'z') or (next_b >= 'A' and next_b <= 'Z') or
+                            (next_b >= '0' and next_b <= '9') or next_b == '_' or next_b == '$' or next_b >= 0x80)
+                        {
+                            self.pending_drain_pos = end_i;
+                        }
+                    }
+                    self.skip_until = end_i;
+                    self.prev_kind = tag_n;
+                    self.last_emitted_nl = self.saw_nl;
+                    self.saw_nl = false;
+                    self.at_line_start = false;
+                    return Token{ .tag = tag_n, .start = dp, .len = end_i - dp };
+                }
+                end_i = dp + 1;
+                while (end_i < n) : (end_i += 1) {
+                    const c = self.src[end_i];
+                    if (!((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                          (c >= '0' and c <= '9') or c == '_' or c == '$' or c >= 0x80)) break;
+                }
+                self.skip_until = end_i;
+                const text = self.src[dp..end_i];
+                const t_tag = keywordLookup(text, self.is_ts);
+                self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot) .identifier else t_tag;
+                self.last_emitted_nl = self.saw_nl;
+                self.saw_nl = false;
+                self.at_line_start = false;
+                return Token{ .tag = t_tag, .start = dp, .len = end_i - dp };
+            }
+        }
+
         // Outer loop: advance through bitmap words; inner loop: pop visit bits.
         while (true) {
             // Need to refill visit bits?
@@ -349,9 +399,57 @@ pub const LexIter = struct {
                 else
                     .number_literal;
                 self.skip_until = end_n;
+                if (end_n < n) {
+                    const next_b = self.src[end_n];
+                    if ((next_b >= 'a' and next_b <= 'z') or (next_b >= 'A' and next_b <= 'Z') or
+                        (next_b >= '0' and next_b <= '9') or next_b == '_' or next_b == '$' or next_b >= 0x80)
+                    {
+                        self.pending_drain_pos = end_n;
+                    }
+                }
                 self.prev_kind = tag_n;
                 const tok = Token{ .tag = tag_n, .start = p, .len = end_n - p };
                 self.last_emitted_nl = self.saw_nl;
+                self.saw_nl = false;
+                self.at_line_start = false;
+                return tok;
+            }
+
+            // `\u` escape opening an identifier (a or \u{...}).
+            if (byte == '\\' and p + 1 < n and self.src[p + 1] == 'u') {
+                var end_i: u32 = p + 2;
+                if (end_i < n and self.src[end_i] == '{') {
+                    end_i += 1;
+                    while (end_i < n and self.src[end_i] != '}') end_i += 1;
+                    if (end_i < n) end_i += 1; // include }
+                } else {
+                    // \uXXXX — 4 hex digits.
+                    var hex_count: u32 = 0;
+                    while (end_i < n and hex_count < 4) : (hex_count += 1) end_i += 1;
+                }
+                // Continue consuming ident-continuation chars + further \u escapes.
+                while (end_i < n) {
+                    const c = self.src[end_i];
+                    if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                        (c >= '0' and c <= '9') or c == '_' or c == '$' or c >= 0x80)
+                    {
+                        end_i += 1;
+                    } else if (c == '\\' and end_i + 1 < n and self.src[end_i + 1] == 'u') {
+                        end_i += 2;
+                        if (end_i < n and self.src[end_i] == '{') {
+                            end_i += 1;
+                            while (end_i < n and self.src[end_i] != '}') end_i += 1;
+                            if (end_i < n) end_i += 1;
+                        } else {
+                            var hex2: u32 = 0;
+                            while (end_i < n and hex2 < 4) : (hex2 += 1) end_i += 1;
+                        }
+                    } else break;
+                }
+                self.skip_until = end_i;
+                self.last_emitted_nl = self.saw_nl;
+                self.prev_kind = .identifier;
+                const tok = Token{ .tag = .identifier, .start = p, .len = end_i - p };
                 self.saw_nl = false;
                 self.at_line_start = false;
                 return tok;
@@ -423,6 +521,10 @@ pub const LexIter = struct {
                 '#' => tag = .hash,
                 '.' => {
                     if (p + 2 < n and self.src[p + 1] == '.' and self.src[p + 2] == '.') { tag = .ellipsis; end = p + 3; }
+                    else if (p + 1 < n and self.src[p + 1] >= '0' and self.src[p + 1] <= '9') {
+                        end = Lex.numberEnd(self.src, p);
+                        tag = .number_literal;
+                    }
                     else { tag = .dot; }
                 },
                 '?' => {
