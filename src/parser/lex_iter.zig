@@ -1190,6 +1190,7 @@ fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
         }
     }
     var prev_is_us: bool = false;
+    var prev_char: u8 = 0;
     while (i < end) : (i += 1) {
         const c = src[i];
         if (c == '_') {
@@ -1200,6 +1201,9 @@ fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
             // bigint suffix `n`, signs of exponent, or another `_`.
             if (next == '.' or next == 'n' or next == '+' or next == '-' or next == '_') return false;
             if (!is_hex and (next == 'e' or next == 'E')) return false;
+            // Forbid `_` right after `.`, exponent marker, or sign.
+            if (prev_char == '.' or prev_char == '+' or prev_char == '-') return false;
+            if (!is_hex and (prev_char == 'e' or prev_char == 'E')) return false;
             prev_is_us = true;
         } else {
             if (prev_is_us) {
@@ -1208,6 +1212,7 @@ fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
             }
             prev_is_us = false;
         }
+        prev_char = c;
     }
     if (prev_is_us) return false; // trailing _
     return true;
