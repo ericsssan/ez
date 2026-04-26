@@ -366,8 +366,15 @@ pub const LexIter = struct {
             }
 
             // Hashbang `#!` at file start: treat as line comment to EOL.
+            // Spec says LineTerminator includes LF/CR/LS/PS, so stop at any.
             if (byte == '#' and p == 0 and p + 1 < n and self.src[p + 1] == '!') {
-                const ce = Lex.lineCommentEnd(self.src, p + 2);
+                var ce: u32 = p + 2;
+                while (ce < n) : (ce += 1) {
+                    const cb = self.src[ce];
+                    if (cb == '\n' or cb == '\r') break;
+                    if (cb == 0xE2 and ce + 2 < n and self.src[ce + 1] == 0x80 and
+                        (self.src[ce + 2] == 0xA8 or self.src[ce + 2] == 0xA9)) break;
+                }
                 self.skip_until = ce;
                 continue;
             }
@@ -387,7 +394,17 @@ pub const LexIter = struct {
             if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and (self.src[p + 2] == 0xA8 or self.src[p + 2] == 0xA9)) {
                 self.saw_nl = true;
                 self.at_line_start = true;
-                self.skip_until = p + 3;
+                const after_ws = self.skipZsAndLs(p + 3, n);
+                self.skip_until = after_ws;
+                if (after_ws < n) {
+                    const nb = self.src[after_ws];
+                    if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                        nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
+                    {
+                        self.pending_drain_pos = after_ws;
+                        return self.walkerNext();
+                    }
+                }
                 continue;
             }
 
@@ -608,6 +625,12 @@ pub const LexIter = struct {
                     break;
                 }
                 self.skip_until = end;
+                // Capture nl-before for THIS token before any post-emit
+                // saw_nl mutation (e.g. LS-after-ident sets saw_nl=true
+                // for the NEXT token, not this one).
+                self.last_emitted_nl = self.saw_nl;
+                self.saw_nl = false;
+                self.at_line_start = false;
                 // If ident contained any \u escape, decode it and re-check
                 // against keywords — `null` is the keyword `null`,
                 // which is reserved (parser rejects as identifier reference).
@@ -681,11 +704,7 @@ pub const LexIter = struct {
                         };
                         if (promote) {
                             self.prev_kind = if (self.prev_kind == .dot) .identifier else t_tag2;
-                            const tok = Token{ .tag = t_tag2, .start = p, .len = end - p };
-                            self.last_emitted_nl = self.saw_nl;
-                            self.saw_nl = false;
-                            self.at_line_start = false;
-                            return tok;
+                            return Token{ .tag = t_tag2, .start = p, .len = end - p };
                         }
                     }
                 }
@@ -724,11 +743,7 @@ pub const LexIter = struct {
                     .identifier
                 else
                     t_tag;
-                const tok = Token{ .tag = t_tag, .start = p, .len = end - p };
-                self.last_emitted_nl = self.saw_nl;
-                self.saw_nl = false;
-                self.at_line_start = false;
-                return tok;
+                return Token{ .tag = t_tag, .start = p, .len = end - p };
             }
 
             // Operator + punct dispatch (largely a port of the structural
@@ -810,7 +825,13 @@ pub const LexIter = struct {
                 },
                 '/' => {
                     if (p + 1 < n and self.src[p + 1] == '/') {
-                        end = Lex.lineCommentEnd(self.src, p + 2);
+                        end = p + 2;
+                        while (end < n) : (end += 1) {
+                            const cb = self.src[end];
+                            if (cb == '\n' or cb == '\r') break;
+                            if (cb == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                                (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9)) break;
+                        }
                         if (self.cm_starts) |cs| {
                             const a = self.cm_line_alloc.?;
                             cs.append(a, p) catch {};
@@ -937,7 +958,60 @@ pub const LexIter = struct {
             self.last_emitted_nl = self.saw_nl;
             self.saw_nl = false;
             self.at_line_start = false;
+            // Post-emit: if next byte starts a Zs/LS/PS/BOM sequence that
+            // lands inside an ident-bitmap-run, schedule pending_drain so
+            // subsequent ident is not lost when the visit-bit walker skips it.
+            self.maybeScheduleDrainAfter(end, n);
             return tok;
+        }
+    }
+
+    /// Skip whitespace + line terminators starting at `pos`, return new pos.
+    /// Sets saw_nl when LF/CR/LS/PS encountered. Used by post-emit drain.
+    inline fn skipZsAndLs(self: *LexIter, pos: u32, n: u32) u32 {
+        var q = pos;
+        while (q < n) {
+            const c = self.src[q];
+            // ASCII whitespace
+            if (c == ' ' or c == '\t' or c == 0x0B or c == 0x0C) { q += 1; continue; }
+            if (c == '\n') { self.saw_nl = true; self.at_line_start = true; q += 1; continue; }
+            if (c == '\r') { self.saw_nl = true; self.at_line_start = true; q += 1; continue; }
+            // High-byte: Zs / LS / PS / BOM
+            if (c == 0xC2 and q + 1 < n and self.src[q + 1] == 0xA0) { q += 2; continue; }
+            if (c == 0xE1 and q + 2 < n and self.src[q + 1] == 0x9A and self.src[q + 2] == 0x80) { q += 3; continue; }
+            if (c == 0xE2 and q + 2 < n and self.src[q + 1] == 0x80) {
+                const t = self.src[q + 2];
+                if ((t >= 0x80 and t <= 0x8A) or t == 0xAF) { q += 3; continue; }
+                if (t == 0xA8 or t == 0xA9) { self.saw_nl = true; self.at_line_start = true; q += 3; continue; }
+                break;
+            }
+            if (c == 0xE2 and q + 2 < n and self.src[q + 1] == 0x81 and self.src[q + 2] == 0x9F) { q += 3; continue; }
+            if (c == 0xE3 and q + 2 < n and self.src[q + 1] == 0x80 and self.src[q + 2] == 0x80) { q += 3; continue; }
+            if (c == 0xEF and q + 2 < n and self.src[q + 1] == 0xBB and self.src[q + 2] == 0xBF) { q += 3; continue; }
+            break;
+        }
+        return q;
+    }
+
+    /// After a token emit, check if the bytes immediately following start
+    /// with a HIGH-BYTE whitespace (Zs/LS/PS/BOM) sequence that lands inside
+    /// an ident-bitmap-run. If so, advance skip_until and set pending_drain_pos
+    /// so the next walker call emits the trailing ident the visit walker
+    /// would otherwise miss. ASCII ws (' ', '\t', '\n', etc) breaks the
+    /// ident bitmap on the producer side — id_starts will fire for the
+    /// next ident, no drain needed.
+    inline fn maybeScheduleDrainAfter(self: *LexIter, end: u32, n: u32) void {
+        if (end >= n) return;
+        const c0 = self.src[end];
+        if (c0 < 0x80) return;
+        const after_ws = self.skipZsAndLs(end, n);
+        if (after_ws == end or after_ws >= n) return;
+        const nb = self.src[after_ws];
+        const is_cont = (nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+            nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80;
+        if (is_cont) {
+            self.skip_until = after_ws;
+            self.pending_drain_pos = after_ws;
         }
     }
 };
