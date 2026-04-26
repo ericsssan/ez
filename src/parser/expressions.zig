@@ -3439,6 +3439,13 @@ fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex
         if (part_tag == .template_tail) {
             // Tail — last text part.
             const tok = p.advance();
+            // Detect unterminated template (must end with backtick).
+            const ts = p.tok_starts_ptr[tok];
+            const tl = p.tok_lens_ptr[tok];
+            if (tl < 1 or ts + tl > p.source.len or p.source[ts + tl - 1] != '`') {
+                try p.emitError("Unterminated template literal");
+                return error.ParseError;
+            }
             if (validate_escapes) {
                 const tok_start = p.tokenStart(tok);
                 const next_start = if (tok + 1 < p.tokens.len) p.tokenStart(tok + 1) else @as(u32, @intCast(p.source.len));
