@@ -3615,6 +3615,45 @@ pub const Parser = struct {
         }
 
         const members = self.scratch.items[scratch_top..];
+
+        // PrivateBoundNames: duplicates are SyntaxError (getter+setter pair allowed).
+        {
+            var seen = std.StringHashMap(u32).init(self.gpa);
+            defer seen.deinit();
+            for (members) |idx_int| {
+                const m = NodeIndex.fromInt(idx_int);
+                if (m == .none) continue;
+                const m_tag = self.node_tags_ptr[m.toInt()];
+                if (m_tag != .property_def and m_tag != .method_def and
+                    m_tag != .getter_def and m_tag != .setter_def) continue;
+                const m_data = self.node_data_ptr[m.toInt()];
+                const key = m_data.lhs;
+                if (key == .none) continue;
+                const key_tag = self.node_tags_ptr[key.toInt()];
+                if (key_tag != .identifier) continue;
+                const key_tok = self.node_main_token_ptr[key.toInt()];
+                if (self.tokenTagAt(key_tok) != .hash) continue;
+                if (key_tok + 1 >= self.tokens.len) continue;
+                const name_text = self.tokenText(key_tok + 1);
+                const bit: u32 = switch (m_tag) {
+                    .getter_def => 1,
+                    .setter_def => 2,
+                    else => 4,
+                };
+                const gop = try seen.getOrPut(name_text);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = bit;
+                } else {
+                    const combined = gop.value_ptr.* | bit;
+                    if (combined != (1 | 2)) {
+                        try self.emitError("Duplicate private name in class body");
+                        return error.ParseError;
+                    }
+                    gop.value_ptr.* = combined;
+                }
+            }
+        }
+
         return self.listToSubRange(members);
     }
 
