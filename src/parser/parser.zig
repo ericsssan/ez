@@ -1598,6 +1598,46 @@ pub const Parser = struct {
             }
         }
 
+        // Duplicate __proto__ in object literals (not patterns) is a SyntaxError.
+        // Walk all nodes; reinterpretAsPattern has already retagged patterns.
+        {
+            var ni: u32 = 0;
+            while (ni < self.nodes.len) : (ni += 1) {
+                if (self.node_tags_ptr[ni] != .object_literal) continue;
+                const data = self.node_data_ptr[ni];
+                const start = data.lhs.toInt();
+                const end = data.rhs.toInt();
+                var seen_proto = false;
+                var i = start;
+                while (i < end) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    if (child == .none) continue;
+                    if (self.node_tags_ptr[child.toInt()] != .property) continue;
+                    const cd = self.node_data_ptr[child.toInt()];
+                    const key = cd.lhs;
+                    if (key == .none) continue;
+                    const key_tag = self.node_tags_ptr[key.toInt()];
+                    var is_proto = false;
+                    if (key_tag == .identifier) {
+                        const tok = self.node_main_token_ptr[key.toInt()];
+                        if (self.tokenTagAt(tok) != .hash and std.mem.eql(u8, self.tokenText(tok), "__proto__")) is_proto = true;
+                    } else if (key_tag == .string_literal) {
+                        const tok = self.node_main_token_ptr[key.toInt()];
+                        const tok_start = self.tok_starts_ptr[tok];
+                        const text = self.getStringContent(tok_start);
+                        if (std.mem.eql(u8, text, "__proto__")) is_proto = true;
+                    }
+                    if (is_proto) {
+                        if (seen_proto) {
+                            try self.emitDiagnostic(self.currentSpan(), "Duplicate __proto__ fields are not allowed in object literals", .{});
+                            break;
+                        }
+                        seen_proto = true;
+                    }
+                }
+            }
+        }
+
         // Close module/global scope for event stream.
         try self.emitScopeClose(.root);
     }
