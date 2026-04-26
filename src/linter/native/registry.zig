@@ -67,6 +67,7 @@ const guard_for_in = @import("correctness/guard_for_in.zig");
 const no_negated_in_lhs = @import("correctness/no_negated_in_lhs.zig");
 const no_new_statics = @import("correctness/no_new_statics.zig");
 const no_invalid_remove_event_listener = @import("correctness/no_invalid_remove_event_listener.zig");
+const no_useless_assignment = @import("correctness/no_useless_assignment.zig");
 
 // ── Suspicious rules (43) ─────────────────────────────────────
 // (count unchanged)
@@ -197,6 +198,7 @@ const max_lines = @import("style/max_lines.zig");
 const no_mixed_operators = @import("style/no_mixed_operators.zig");
 const consistent_this = @import("style/consistent_this.zig");
 // v0.8 style rules
+const no_empty_function = @import("style/no_empty_function.zig");
 const no_undef_init = @import("style/no_undef_init.zig");
 const new_cap = @import("style/new_cap.zig");
 const max_classes_per_file = @import("style/max_classes_per_file.zig");
@@ -265,132 +267,133 @@ pub const all_rules = .{
     no_debugger,
     no_empty,
     no_extra_semi,
-    no_dupe_keys,
+    // no_dupe_keys, // runner >> native (runner 50, native 43, 7 FN); fall back
     no_dupe_args,
     no_sparse_arrays,
-    no_unreachable,
-    no_unsafe_negation,
-    use_isnan,
+    // no_unreachable, // runner >> native (runner 57/67, native 42/67, 19 more FN); fall back to runner
+    // no_unsafe_negation, // runner >> native (runner 29, native 24, 5 FN); fall back
+    // use_isnan, // runner >> native (runner 214, native 176, gap 38); fall back to JS runner
     valid_typeof,
-    no_unused_vars,
-    no_undef,
+    // no_unused_vars, // runner >> native (runner 436, native 297, gap 139, 51 FP); fall back to JS runner
+    // no_undef, // runner >> native (runner 101, native 76, 5 FN 22 FP); fall back
     no_constant_condition,
     no_func_assign,
-    no_import_assign,
-    no_self_assign,
+    // no_import_assign, // runner >> native (runner 110, native 85, 31 FN); fall back
+    // no_self_assign, // native has 7 FP making hybrid worse (runner 85, native 74); fall back to JS runner
     no_self_compare,
-    no_unsafe_optional_chaining,
-    no_loss_of_precision,
+    // no_unsafe_optional_chaining, // runner >> native (runner 187, native 155, gap 32); fall back to JS runner
+    // no_loss_of_precision, // runner >> native (runner 125, native 114, 6 FN 5 FP); fall back
     no_const_assign,
-    for_direction,
-    getter_return,
+    // for_direction, // runner >> native (runner 72, native 47, gap 25, 6 FP); fall back to JS runner
+    // getter_return, // runner >> native (runner 60, native 47, 22 FN 1 FP); fall back
     no_async_promise_executor,
     no_compare_neg_zero,
-    no_dupe_class_members,
+    // no_dupe_class_members, // native has FP making hybrid worse (runner 78, native 72); fall back to JS runner
     no_dupe_else_if,
     no_duplicate_case,
-    no_empty_pattern,
+    // no_empty_pattern, // runner >> native (runner 31, native 25, 6 FP!!); fall back
     no_ex_assign,
     no_fallthrough,
-    no_global_assign,
-    no_inner_declarations,
-    no_irregular_whitespace,
+    // no_global_assign, // runner >> native (runner 18, native 9, gap 9, 1 FP); fall back to JS runner
+    // no_inner_declarations, // native has 6 FP making hybrid 61 vs runner 67; fall back to JS runner
+    // no_irregular_whitespace, // runner >> native (runner 280, native 275, 5 FN 2 FP); fall back
     no_new_symbol,
-    no_obj_calls,
+    // no_obj_calls, // runner >> native (runner 107, native 84, 23 FN); fall back
     no_prototype_builtins,
-    no_setter_return,
+    // no_setter_return, // runner >> native (runner 164, native 135, gap 29); fall back to JS runner
     no_template_curly_in_string,
-    no_this_before_super,
+    // no_this_before_super, // runner >> native (runner 58, native 44, 19 FN); fall back
     no_useless_catch,
     // Correctness v0.5 (3)
     no_class_assign,
-    no_unused_expressions,
+    // no_unused_expressions, // runner >> native (runner 124, native 107, 15 FN 3 FP); fall back
     no_useless_constructor,
     // Correctness v0.6 (8)
     require_await,
     no_constructor_return,
-    no_await_in_loop,
-    no_promise_executor_return,
+    // no_await_in_loop, // runner >> native (runner 37, native 28, 9 FN); fall back
+    // no_promise_executor_return, // runner >> native (runner 124/124, native 121/124, 3 more FN); fall back
     no_unreachable_loop,
     no_empty_static_block,
     no_constructor_new,
-    accessor_pairs,
+    // accessor_pairs, // runner >> native (50%, 7 FP); fall back to JS runner
     // Correctness v0.7 (5)
-    no_constant_binary_expression,
+    // no_constant_binary_expression, // runner >> native (21% correct); fall back to JS runner
     no_div_regex,
-    array_callback_return,
-    no_useless_backreference,
+    // array_callback_return, // runner >> native (39% correct); fall back to JS runner
+    // no_useless_backreference, // runner >> native (49%, has FP); fall back to JS runner
     no_new_native_nonconstructor,
     no_buffer_constructor,
     // Correctness v0.8 (2)
-    guard_for_in,
+    // guard_for_in, // native has 2 FP making hybrid 6 vs runner 12; fall back to JS runner
     no_negated_in_lhs,
     no_new_statics,
     no_invalid_remove_event_listener,
+    no_useless_assignment,
     // Suspicious (28)
     eqeqeq,
-    no_cond_assign,
-    no_control_regex,
+    // no_cond_assign, // runner >> native (runner 45, native 32, 13 FN); fall back
+    // no_control_regex, // runner >> native (runner 36, native 23, gap 13, 1 FP); fall back to JS runner
     no_delete_var,
     no_empty_character_class,
-    no_eval,
-    no_implied_eval,
+    // no_eval, // runner >> native (runner 102, native 64, gap 38); fall back to JS runner
+    // no_implied_eval, // runner >> native (runner 173, native 103, gap 70); fall back to JS runner
     no_label_var,
     no_lone_blocks,
-    no_misleading_character_class,
+    // no_misleading_character_class, // runner >> native (49%, 18 FP); fall back to JS runner
     no_mixed_spaces_and_tabs,
     no_multi_str,
     no_new_wrappers,
-    no_nonoctal_decimal_escape,
+    // no_nonoctal_decimal_escape, // native has 4 FP making hybrid worse (runner 83, native 79); fall back to JS runner
     no_octal,
-    no_redeclare,
+    // no_redeclare, // runner >> native (runner 67, native 28, gap 39); fall back to JS runner
     no_regex_spaces,
-    no_restricted_globals,
+    // no_restricted_globals, // runner >> native (46%); fall back to JS runner
     no_shadow_restricted_names,
     no_unsafe_finally,
     no_unused_labels,
-    no_useless_escape,
+    // no_useless_escape, // runner >> native (runner 288, native 215, gap 73, 5 FP); fall back to JS runner
     no_void,
     no_with,
     require_yield,
     no_case_declarations,
-    no_sequences,
+    // no_sequences, // runner >> native (runner 42, native 32, gap 10); fall back to JS runner
     no_throw_literal,
     // Suspicious v0.5 (6)
     no_console,
-    no_alert,
-    no_duplicate_imports,
+    // no_alert, // runner >> native (runner 41, native 34, 8 FN); fall back
+    // no_duplicate_imports, // runner >> native (runner 85, native 59, gap 26, 1 FP); fall back to JS runner
     default_case,
-    radix,
-    no_shadow,
+    // radix, // runner >> native (runner 54, native 31, 21 FN 2 FP); fall back
+    // no_shadow, // runner >> native (runner 314/368, native 305/368, 9 more FN); fall back to runner
     // Suspicious v0.6 (6)
-    no_loop_func,
-    no_implicit_globals,
+    // no_loop_func, // runner >> native (runner 96, native 41, gap 55, 54 FP!); fall back to JS runner
+    // no_implicit_globals, // runner >> native (runner 224, native 199, gap 25); fall back to JS runner
     no_process_exit,
-    consistent_return,
-    no_object_constructor,
-    prefer_promise_reject_errors,
+    // consistent_return, // runner >> native (runner 43, native 23, gap 20); fall back to JS runner
+    // no_object_constructor, // runner >> native (runner 56, native 6, gap 50, 3 FP); fall back to JS runner
+    // prefer_promise_reject_errors, // runner >> native (runner 64, native 31, gap 33); fall back to JS runner
     // Suspicious v0.7 (3)
-    no_return_await,
+    // no_return_await, // runner >> native (runner 71, native 47, gap 24); fall back to JS runner
     no_new_array,
-    require_unicode_regexp,
+    // require_unicode_regexp, // runner >> native (runner 79, native 48, gap 31, 2 FP); fall back to JS runner
     // Style (30)
     no_var,
     prefer_const,
     no_array_constructor,
-    no_bitwise,
+    // no_bitwise, // runner >> native (runner 26, native 16, gap 10, 4 FP); fall back to JS runner
     no_caller,
     no_continue,
     no_else_return,
     no_eq_null,
     no_extend_native,
     no_extra_bind,
-    no_extra_boolean_cast,
+    // no_extra_boolean_cast, // runner >> native (67%, missing enforceForLogicalOperands option); fall back
     no_floating_decimal,
     no_iterator,
     no_labels,
     no_lonely_if,
-    no_multi_assign,
+    // no_multi_assign, // native has 2 FP making hybrid 20 vs runner 31; fall back to JS runner
     no_negated_condition,
     no_nested_ternary,
     no_new,
@@ -399,64 +402,65 @@ pub const all_rules = .{
     no_new_require,
     no_process_env,
     no_octal_escape,
-    no_param_reassign,
+    // no_param_reassign, // runner >> native (runner 76, native 57, gap 21); fall back to JS runner
     no_plusplus,
     no_proto,
     no_path_concat,
-    no_return_assign,
+    // no_return_assign, // runner >> native (runner 30, native 25, 5 FN); fall back
     no_script_url,
     no_unneeded_ternary,
     no_useless_computed_key,
     prefer_template,
     // Style v0.5 (4)
-    object_shorthand,
-    prefer_exponentiation_operator,
+    // object_shorthand, // runner >> native (55%, 3 FP); fall back to JS runner
+    // prefer_exponentiation_operator, // native 4 FN (2 more than runner: dynamic computed keys); fall back to runner
     symbol_description,
-    no_useless_rename,
+    // no_useless_rename, // runner >> native (runner 163, native 78, gap 85, 13 FP); fall back to JS runner
     // Style v0.6 (13)
-    prefer_rest_params,
+    // prefer_rest_params, // native has 6 FP making hybrid 5 vs runner 11; fall back to JS runner
     prefer_spread,
-    no_useless_call,
-    max_params,
-    prefer_arrow_callback,
+    // no_useless_call, // runner >> native (runner 44, native 21, gap 23, 2 FP); fall back to JS runner
+    // max_params, // runner >> native (runner 52, native 25, gap 28); fall back to JS runner
+    // prefer_arrow_callback, // runner >> native (runner 105, native 63, gap 42, 14 FP); fall back to JS runner
     no_implicit_coercion,
-    no_useless_concat,
-    arrow_body_style,
-    default_param_last,
-    logical_assignment_operators,
-    prefer_object_spread,
-    no_warning_comments,
+    // no_useless_concat, // runner >> native (runner 20, native 14, gap 6, 2 FP); fall back to JS runner
+    // arrow_body_style, // runner >> native (runner 87, native 63, gap 24, 3 FP); fall back to JS runner
+    // default_param_last, // runner >> native (runner 96, native 81, gap 15, 3 FP); fall back to JS runner
+    // logical_assignment_operators, // runner >> native (48%, 3 FP); fall back to JS runner
+    // prefer_object_spread, // runner >> native (runner 85, native 77, gap 8, 2 FP); fall back to JS runner
+    // no_warning_comments, // runner >> native (runner 61, native 34, gap 27, 3 FP); fall back to JS runner
     // Style v0.7 extra (8)
-    sort_keys,
-    complexity,
-    max_statements,
-    dot_notation,
-    no_confusing_arrow,
+    // sort_keys, // runner >> native (runner 215, native 136, gap 79, 62 FP!); fall back to JS runner
+    // complexity, // runner >> native (42%); fall back to JS runner
+    // max_statements, // runner >> native (runner 42, native 20, gap 22); fall back to JS runner
+    // dot_notation, // runner >> native (runner 69, native 50, gap 19, 5 FP); fall back to JS runner
+    // no_confusing_arrow, // native has 6 FP making hybrid 24 vs runner 30; fall back to JS runner
     no_extra_label,
     vars_on_top,
-    prefer_destructuring,
+    // prefer_destructuring, // runner >> native (runner 103, native 80, gap 23, 5 FP); fall back to JS runner
     // Style v0.7 (12)
-    camelcase,
+    // camelcase, // runner >> native (runner 204, native 118, gap 86); fall back to JS runner
     prefer_numeric_literals,
     prefer_regex_literals,
-    no_useless_return,
-    func_style,
-    id_length,
-    operator_assignment,
+    // no_useless_return, // runner >> native (runner 46, native 33, gap 13); fall back to JS runner
+    // func_style, // runner >> native (runner 120, native 73, gap 47); fall back to JS runner
+    // id_length, // runner >> native (runner 181, native 96, gap 85, 1 FP); fall back to JS runner
+    // operator_assignment, // runner >> native (runner 119, native 66, gap 53, 2 FP); fall back to JS runner
     prefer_object_has_own,
-    no_underscore_dangle,
-    yoda,
+    // no_underscore_dangle, // runner >> native (runner 116, native 74, gap 42, 3 FP); fall back to JS runner
+    // yoda, // runner >> native (runner 156, native 132, gap 24, 3 FP); fall back to JS runner
     no_ternary,
-    prefer_named_capture_group,
-    max_depth,
-    // Style v0.8 (9)
+    // prefer_named_capture_group, // runner >> native (runner 57, native 36, gap 21); fall back to JS runner
+    // max_depth, // runner >> native (runner 25, native 13, gap 12); fall back to JS runner
+    // Style v0.8 (10)
+    // no_empty_function, // native has 2 FP on @typescript-eslint/no-empty-function making hybrid 14 vs runner 16; fall back to JS runner
     default_case_last,
-    max_lines,
-    no_mixed_operators,
-    consistent_this,
-    no_undef_init,
-    new_cap,
-    max_classes_per_file,
+    // max_lines, // runner >> native (runner 46, native 16, gap 30, 1 FP); fall back to JS runner
+    // no_mixed_operators, // runner >> native (runner 40, native 33, 7 FN); fall back
+    // consistent_this, // runner >> native (runner 23, native 14, 10 FN 2 FP); fall back
+    // no_undef_init, // native has 4 FP making hybrid 24 vs runner 28; fall back to JS runner
+    // new_cap, // runner >> native (runner 80, native 55, gap 25, 3 FP); fall back to JS runner
+    // max_classes_per_file, // native has 5 FP making hybrid 9 vs runner 17; fall back to JS runner
     prefer_while,
     no_useless_switch_case,
     class_methods_use_this,
@@ -472,43 +476,43 @@ pub const all_rules = .{
     // TypeScript (8)
     ts_no_explicit_any,
     ts_no_non_null_assertion,
-    ts_prefer_as_const,
-    ts_no_empty_interface,
+    // ts_prefer_as_const, // runner >> native (runner 46, native 38, gap 8); fall back to JS runner
+    // ts_no_empty_interface, // runner >> native (runner 15, native 5, gap 10); fall back to JS runner
     ts_no_namespace,
     ts_no_unnecessary_type_assertion,
     ts_prefer_interface,
     ts_no_require_imports,
     // TypeScript v0.5 (4)
-    ts_ban_ts_comment,
-    ts_no_this_alias,
-    ts_no_duplicate_enum_values,
+    // ts_ban_ts_comment, // runner >> native (runner 108, native 66, gap 42, 15 FP); fall back to JS runner
+    // ts_no_this_alias, // native has FP making hybrid worse (runner 10, native 6, 1 FP); fall back to JS runner
+    // ts_no_duplicate_enum_values, // runner >> native (runner 40, native 28, 12 FN); fall back
     ts_no_array_delete,
     // TypeScript v0.6 (5)
-    ts_no_useless_empty_export,
+    // ts_no_useless_empty_export, // native 5 FP (.d.ts not detectable natively); fall back
     ts_prefer_optional_chain,
-    ts_no_non_null_asserted_optional_chain,
-    ts_no_confusing_non_null_assertion,
+    // ts_no_non_null_asserted_optional_chain, // native has 3 FP making hybrid 13 vs runner 13 (worse quality); fall back to JS runner
+    // ts_no_confusing_non_null_assertion, // runner >> native (runner 18, native 8, gap 10); fall back to JS runner
     ts_no_non_null_asserted_nullish_coalescing,
     // TypeScript v0.7 (5)
     ts_prefer_enum_initializers,
     ts_ban_types,
     ts_prefer_literal_enum_member,
-    ts_no_duplicate_type_constituents,
-    ts_no_mixed_enums,
+    // ts_no_duplicate_type_constituents, // native has 16 FP making hybrid 48 vs runner 34 (worse); fall back to JS runner
+    // ts_no_mixed_enums, // native has 4 FP making hybrid worse than runner; fall back to JS runner
     // TypeScript v0.8 (9)
     ts_no_extra_non_null_assertion,
-    ts_no_empty_object_type,
-    ts_consistent_type_assertions,
-    ts_array_type,
+    // ts_no_empty_object_type, // runner >> native (runner 35, native 19, gap 16, 4 FP); fall back to JS runner
+    // ts_consistent_type_assertions, // runner >> native (runner 181, native 98, gap 83, 38 FP!); fall back to JS runner
+    // ts_array_type, // runner >> native (53%, 44 FP!); fall back to JS runner
     ts_prefer_namespace_keyword,
-    ts_triple_slash_reference,
-    ts_no_unnecessary_boolean_literal_compare,
+    // ts_triple_slash_reference, // native has 8 FP making hybrid 13 vs runner 21; fall back to JS runner
+    // ts_no_unnecessary_boolean_literal_compare, // native has 21 FP making hybrid 22 vs runner 21 (FP worse); fall back to JS runner
     ts_no_dynamic_delete,
     ts_prefer_ts_expect_error,
-    ts_no_inferrable_types,
+    // ts_no_inferrable_types, // runner >> native (runner 100, native 55, 47 FN); fall back
     ts_no_unsafe_declaration_merging,
     ts_explicit_function_return_type,
-    ts_explicit_module_boundary_types,
+    // ts_explicit_module_boundary_types, // runner >> native (runner 144, native 117, gap 27, 21 FP); fall back to JS runner
     // Unicorn plugin (2)
     unicorn_no_array_for_each,
     unicorn_no_zero_fractions,

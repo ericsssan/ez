@@ -132,26 +132,48 @@ if (!flags.isDeclared() and !s_is_ts_type) continue;
         if (!flags.isDeclared() and !is_ts_type) continue;
 
         const scope_id = symbols.getScope(id);
-        if (scopes.depth(scope_id) == 0) continue;
-
         const name = symbols.getName(id);
+
+        // At depth 0 (global/module scope): only check builtinGlobals for module scope.
+        // In script mode, global-scope vars ARE globals (no shadowing). In module mode,
+        // module-scope vars shadow built-in globals.
+        if (scopes.depth(scope_id) == 0) {
+            if (builtin_globals and scopes.kind(scope_id) == .module and
+                !std.mem.eql(u8, name, "this") and
+                (isBuiltinGlobal(name) or ctx.globalIsExplicitlyEnabled(name)))
+            {
+                ctx.report(symbols.getDeclNode(id));
+            }
+            continue;
+        }
 
         // TypeScript 'this' parameter is a fake type-annotation binding, not a real variable.
         if (std.mem.eql(u8, name, "this")) continue;
 
         // ignoreFunctionTypeParameterNameValueShadow: skip parameters that belong to a
-        // bodyless method (declare class / abstract class method), as ESLint treats them
-        // as "function type parameter names" rather than real runtime bindings.
+        // bodyless function (declare function / abstract method / TS function type).
         if (ignore_fn_type_param and bk == .parameter) {
             const fn_scope = scopes.nearestFunctionScope(scope_id);
             if (fn_scope.isValid()) {
                 const fn_node = scopes.nodeId(fn_scope);
                 if (fn_node != .none) {
                     switch (ctx.nodeTag(fn_node)) {
-                        .method_def, .computed_method_def => {
+                        .method_def, .computed_method_def,
+                        .getter_def, .setter_def,
+                        .computed_getter_def, .computed_setter_def,
+                        .constructor_def,
+                        => {
                             const fn_node_data = ctx.nodeData(fn_node);
                             const method_d = ctx.extraData(MethodData, @intFromEnum(fn_node_data.rhs));
                             if (method_d.body == .none) continue;
+                        },
+                        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+                        .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+                        .ts_declare_function,
+                        => {
+                            const fn_node_data = ctx.nodeData(fn_node);
+                            const fn_d = ctx.extraData(FnData, @intFromEnum(fn_node_data.lhs));
+                            if (fn_d.body == .none) continue;
                         },
                         else => {},
                     }
@@ -218,28 +240,20 @@ if (!flags.isDeclared() and !s_is_ts_type) continue;
                             }
                         }
                     }
-                    // ignoreOnInitialization: mirrors ESLint's isInitPatternNode.
-                    // Skip the shadow only when:
-                    //   1. inner symbol's index falls within the outer symbol's init range, AND
-                    //   2. inner symbol's nearest function scope is a direct child of the outer
-                    //      symbol's scope (i.e. ancestor == inner_fn_scope.parent), AND
-                    //   3. the inner fn is a callback (its scope node differs from the outer
-                    //      variable's init node — i.e. the init is not itself that fn).
+                    // ignoreOnInitialization: skip when the inner function is in the
+                    // outer's initializer. Three patterns:
+                    //   (a) inner.id < outer.id: init parsed before declare (const a = INIT)
+                    //   (b) outer is .parameter: param declared before default (func(a = INIT))
+                    //   (c) ancestor is non-var scope: for-in/of binding (for(a in INIT))
                     if (ignore_on_init) {
-                        const init_range = symbols.getInitRange(outer_id);
-                        if (init_range.start > 0) {
-                            const inner_idx = id.toInt();
-                            if (inner_idx >= init_range.start and inner_idx < init_range.end) {
-                                const inner_fn_scope = scopes.nearestFunctionScope(scope_id);
-                                if (inner_fn_scope.isValid() and
-                                    scopes.parent(inner_fn_scope) == ancestor)
-                                {
-                                    const init_node = symbols.getInitNode(outer_id);
-                                    const inner_fn_node = scopes.nodeId(inner_fn_scope);
-                                    if (init_node != inner_fn_node) {
-                                        break; // Callback in init — skip shadow
-                                    }
-                                }
+                        const inner_fn_scope = scopes.nearestFunctionScope(scope_id);
+                        if (inner_fn_scope.isValid() and scopes.parent(inner_fn_scope) == ancestor) {
+                            const outer_bk = symbols.getBindingKind(outer_id);
+                            const inner_before_outer = id.toInt() < outer_id.toInt();
+                            const outer_is_param = outer_bk == .parameter;
+                            const ancestor_is_block = !scopes.getFlags(ancestor).is_var_scope;
+                            if (inner_before_outer or outer_is_param or ancestor_is_block) {
+                                break; // Callback parameter in outer's initializer — skip shadow
                             }
                         }
                     }
@@ -253,9 +267,13 @@ if (!flags.isDeclared() and !s_is_ts_type) continue;
         // Require depth > 1 because semantic analysis always creates a module scope
         // at depth 1; top-level (module-scope) declarations at depth 1 correspond to
         // global-scope in script mode and should not be reported.
-        if (!reported and builtin_globals and scopes.depth(scope_id) > 1 and isBuiltinGlobal(name)) {
-            ctx.report(symbols.getDeclNode(id));
-            reported = true;
+        // builtinGlobals: flag when symbol shadows a built-in or configured global.
+        // Flag at any depth (including global/module scope — builtins can be redeclared there too).
+        if (!reported and builtin_globals) {
+            if (isBuiltinGlobal(name) or ctx.globalIsExplicitlyEnabled(name)) {
+                ctx.report(symbols.getDeclNode(id));
+                reported = true;
+            }
         }
 
         // fn-expression-name shadow: ESLint creates a virtual fn-expression-name scope

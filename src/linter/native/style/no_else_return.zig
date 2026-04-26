@@ -85,6 +85,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     // Only process if this is the top of an if-else chain in a statement list
     if (!isTopLevelIfInStatementList(node, ctx)) return;
 
+    const allow_else_if = ctx.getOptionBool("allowElseIf", true);
+
     // Walk the else-if chain: collect all consequents until we reach a non-if alternate
     var current = node;
     while (true) {
@@ -97,8 +99,12 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         // If the alternate is itself an if statement, continue the chain
         const alt_tag = ctx.nodeTag(alternate);
         if (alt_tag == .if_stmt or alt_tag == .if_else_stmt) {
-            // Check if current consequent always returns; if not, the chain isn't clean
             if (!alwaysReturns(if_data.consequent, ctx)) return;
+            if (!allow_else_if) {
+                // Report the else-if when allowElseIf is false
+                ctx.report(alternate);
+                return;
+            }
             current = alternate;
         } else {
             // This is the final else block

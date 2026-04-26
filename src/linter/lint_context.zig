@@ -87,6 +87,8 @@ pub const LintContext = struct {
     /// null when no options are configured for the current rule.
     /// Points into the config's retained JSON parse tree.
     rule_options: ?*const std.json.Value = null,
+    /// Second rule option (ESLint config items[2]). null when absent.
+    rule_options2: ?*const std.json.Value = null,
     /// ESLint `settings` object from config. Points into the config's retained JSON parse tree.
     settings: ?*const std.json.Value = null,
     /// ESLint `languageOptions` object from config. Points into the config's retained JSON parse tree.
@@ -340,6 +342,11 @@ pub const LintContext = struct {
     /// Get the rule's JSON options value, or null if none configured.
     pub fn getOptions(self: *const LintContext) ?*const std.json.Value {
         return self.rule_options;
+    }
+
+    /// Get the second rule option (items[2] in ESLint config), or null if absent.
+    pub fn getOptions2(self: *const LintContext) ?*const std.json.Value {
+        return self.rule_options2;
     }
 
     /// Get the ESLint settings object, or null if not configured.

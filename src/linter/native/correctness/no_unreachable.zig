@@ -17,6 +17,19 @@ pub const needs_cfg = true;
 
 pub const relevant_tags = [_]Node.Tag{.block_stmt};
 
+/// Check if a var_decl has any initializer (var x = ...).
+fn varDeclHasInitializer(node: NodeIndex, ctx: *const LintContext) bool {
+    const data = ctx.nodeData(node);
+    const declarators = ctx.extraSlice(.{ .start = @intFromEnum(data.lhs), .end = @intFromEnum(data.rhs) });
+    for (declarators) |d| {
+        const decl: NodeIndex = @enumFromInt(d);
+        if (decl == .none) continue;
+        const decl_data = ctx.nodeData(decl);
+        if (decl_data.rhs != .none) return true; // has initializer
+    }
+    return false;
+}
+
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
     const range = SubRange{
@@ -41,6 +54,9 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             {
                 continue;
             }
+            // Skip var declarations without initializer — hoisted, not truly unreachable.
+            // var with initializer (var x = 5) IS unreachable (the assignment part).
+            if (tag == .var_decl and !varDeclHasInitializer(stmt, ctx)) continue;
             // Only report the first unreachable statement in a consecutive run
             if (!reported_start) {
                 ctx.report(stmt);

@@ -383,10 +383,10 @@ fn usesThis(node: NodeIndex, ctx: *const LintContext, depth: u8) bool {
         // block_stmt, var/let/const decls, sequence_expr: SubRange children
         .block_stmt, .var_decl, .let_decl, .const_decl, .sequence_expr => {
             if (data.lhs == .none or data.rhs == .none) return false;
-            const range = ast.SubRange{
-                .start = @intFromEnum(data.lhs),
-                .end = @intFromEnum(data.rhs),
-            };
+            const start = @intFromEnum(data.lhs);
+            const end = @intFromEnum(data.rhs);
+            if (start >= end) return false;
+            const range = ast.SubRange{ .start = start, .end = end };
             for (ctx.extraSlice(range)) |item| {
                 if (usesThis(@enumFromInt(item), ctx, depth + 1)) return true;
             }

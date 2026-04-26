@@ -102,6 +102,7 @@ fn checkBlock(block: NodeIndex, ctx: *const LintContext) void {
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
+    const allow_empty_catch = ctx.getOptionBool("allowEmptyCatch", false);
 
     switch (tag) {
         // if (cond) { } — check consequent only (no else)
@@ -144,8 +145,10 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         },
         // catch (e) { }
         .catch_clause => {
-            const body: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
-            checkBlock(body, ctx);
+            if (!allow_empty_catch) {
+                const body: NodeIndex = @enumFromInt(@intFromEnum(data.rhs));
+                checkBlock(body, ctx);
+            }
         },
         // with (expr) { }
         .with_stmt => {

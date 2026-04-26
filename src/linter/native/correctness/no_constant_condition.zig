@@ -21,6 +21,7 @@ pub const relevant_tags = [_]Node.Tag{
     .for_stmt,
     .conditional,
 };
+pub const needs_semantic = true;
 
 // ── Global reference check ─────────────────────────────────
 
@@ -29,6 +30,10 @@ pub const relevant_tags = [_]Node.Tag{
 /// and check whether the resolved symbol has `.implicit_global` binding kind,
 /// or the reference is unresolved (no local binding).
 fn isGlobalIdentifier(node: NodeIndex, ctx: *const LintContext) bool {
+    // Check if explicitly turned off via languageOptions.globals or inline directive.
+    const name = ctx.tokenText(ctx.nodeMainToken(node));
+    if (ctx.globalIsOff(name)) return false;
+
     const refs = ctx.references();
     const count = refs.count();
     var i: u32 = 0;
@@ -91,6 +96,15 @@ fn isLogicalIdentity(node: NodeIndex, op: Node.Tag, ctx: *const LintContext) boo
             const inner_op: Node.Tag = if (tag == .logical_or_assign) .logical_or else .logical_and;
             if (inner_op != op) return false;
             return isLogicalIdentity(ctx.nodeData(node).rhs, op, ctx);
+        },
+        .grouping_expr => return isLogicalIdentity(ctx.nodeData(node).lhs, op, ctx),
+        .bigint_literal => {
+            // BigInt 0n is falsy → identity for &&; non-zero truthy → identity for ||
+            const tok = ctx.tokenText(ctx.nodeMainToken(node));
+            const is_zero = tok.len == 2 and tok[0] == '0'; // "0n"
+            if (op == .logical_and) return is_zero;
+            if (op == .logical_or) return !is_zero;
+            return false;
         },
         else => return false,
     }
@@ -173,7 +187,24 @@ fn isConstant(node: NodeIndex, in_bool: bool, ctx: *const LintContext) bool {
 
         // ── Unary expressions ─────────────────────────────────
         .void_expr => return true,           // void <anything> = undefined
-        .typeof_expr => return in_bool,      // typeof x is always a string, truthy in bool pos
+        .typeof_expr => {
+            // typeof x is always a string → truthy in bool position
+            if (in_bool) return true;
+            // typeof LITERAL produces a known constant string → also constant out-of-bool
+            const operand = ctx.nodeData(node).lhs;
+            if (operand == .none) return false;
+            return switch (ctx.nodeTag(operand)) {
+                .string_literal, .template_literal => true,  // "string"
+                .number_literal, .bigint_literal => true,    // "number" or "bigint"
+                .boolean_literal => true,                    // "boolean"
+                .null_literal => true,                       // "object"
+                .regex_literal => true,                      // "object"
+                .fn_expr, .arrow_fn, .async_fn_expr,
+                .async_arrow_fn, .generator_fn_expr => true, // "function"
+                .object_literal, .array_literal => true,     // "object"
+                else => false,
+            };
+        },
         .logical_not => return isConstant(ctx.nodeData(node).lhs, true, ctx),
         .unary_plus, .unary_minus, .bitwise_not =>
             return isConstant(ctx.nodeData(node).lhs, false, ctx),
@@ -299,13 +330,64 @@ fn templateElementIsNonEmpty(elem: NodeIndex, ctx: *const LintContext) bool {
     return false;
 }
 
+/// checkLoops option:
+///   "all"               — check all constant loop conditions
+///   "allExceptWhileTrue" (default) — skip `while(true)` and generator loops
+///   "none" / false      — don't check any loop conditions
+fn getCheckLoops(ctx: *const LintContext) u8 {
+    if (ctx.getOptions()) |o| switch (o.*) {
+        .object => |obj| {
+            if (obj.get("checkLoops")) |v| {
+                if (v == .bool) return if (v.bool) 2 else 0;
+                if (v == .string) {
+                    if (std.mem.eql(u8, v.string, "none")) return 0;
+                    if (std.mem.eql(u8, v.string, "all")) return 2;
+                    if (std.mem.eql(u8, v.string, "allExceptWhileTrue")) return 1;
+                }
+            }
+        },
+        else => {},
+    };
+    return 1; // default: allExceptWhileTrue
+}
+
+/// Returns true if `body` node contains a yield expression (for generator loop exemption).
+fn bodyHasYield(body: NodeIndex, ctx: *const LintContext, depth: u8) bool {
+    if (body == .none or depth > 8) return false;
+    const tag = ctx.nodeTag(body);
+    if (tag == .yield_expr) return true;
+    // Don't descend into nested function/generator bodies
+    if (tag == .fn_expr or tag == .arrow_fn or tag == .generator_fn_expr or
+        tag == .async_fn_expr or tag == .async_arrow_fn or tag == .async_generator_fn_expr)
+        return false;
+    const d = ctx.nodeData(body);
+    if (bodyHasYield(d.lhs, ctx, depth + 1)) return true;
+    if (bodyHasYield(d.rhs, ctx, depth + 1)) return true;
+    return false;
+}
+
+/// True if the loop node is inside a generator function.
+fn isInGenerator(node: NodeIndex, ctx: *const LintContext) bool {
+    var current = ctx.parentOf(node);
+    var depth: u32 = 0;
+    while (current != .none and depth < 20) : (depth += 1) {
+        const tag = ctx.nodeTag(current);
+        if (tag == .generator_fn_expr or tag == .async_generator_fn_expr or
+            tag == .fn_decl or tag == .fn_expr or tag == .arrow_fn or
+            tag == .async_fn_expr or tag == .async_arrow_fn) return false;
+        if (tag == .generator_fn_decl) return true;
+        current = ctx.parentOf(current);
+    }
+    return false;
+}
+
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
+    const check_loops = getCheckLoops(ctx);
 
     switch (tag) {
         .if_stmt, .if_else_stmt => {
-            // lhs = condition, rhs = then-branch (or extra for if_else)
             const cond = data.lhs;
             if (cond == .none) return;
             if (isConstant(cond, true, ctx)) {
@@ -314,12 +396,15 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         },
 
         .while_stmt => {
-            // lhs = condition, rhs = body
+            if (check_loops == 0) return;
             const cond = data.lhs;
             if (cond == .none) return;
-            // ESLint default: checkLoops = "allExceptWhileTrue" — skip `while (true)`
-            if (ctx.nodeTag(cond) == .boolean_literal) {
-                if (std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(cond)), "true")) return;
+            if (check_loops == 1) {
+                // allExceptWhileTrue: skip while(true) unconditionally
+                if (ctx.nodeTag(cond) == .boolean_literal and
+                    std.mem.eql(u8, ctx.tokenText(ctx.nodeMainToken(cond)), "true")) return;
+                // Generator with yield in body is also exempt
+                if (isInGenerator(node, ctx) and bodyHasYield(data.rhs, ctx, 0)) return;
             }
             if (isConstant(cond, true, ctx)) {
                 ctx.report(cond);
@@ -327,26 +412,35 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
         },
 
         .do_while_stmt => {
-            // lhs = body, rhs = condition
+            if (check_loops == 0) return;
             const cond = data.rhs;
             if (cond == .none) return;
+            if (check_loops == 1) {
+                // allExceptWhileTrue: do-while NOT exempt for true literal
+                // Generator with yield in body is exempt
+                if (isInGenerator(node, ctx) and bodyHasYield(data.lhs, ctx, 0)) return;
+            }
             if (isConstant(cond, true, ctx)) {
                 ctx.report(cond);
             }
         },
 
         .for_stmt => {
-            // lhs = extra index to ForData, rhs = body
+            if (check_loops == 0) return;
             const fd = ctx.extraData(ast.ForData, @intFromEnum(data.lhs));
             const cond = fd.condition;
-            if (cond == .none) return; // `for(;;)` — no condition
+            if (cond == .none) return;
+            if (check_loops == 1) {
+                // allExceptWhileTrue: for-loop NOT exempt for true literal
+                // Generator with yield in body is exempt (not init/condition)
+                if (isInGenerator(node, ctx) and bodyHasYield(data.rhs, ctx, 0)) return;
+            }
             if (isConstant(cond, true, ctx)) {
                 ctx.report(cond);
             }
         },
 
         .conditional => {
-            // lhs = condition, rhs = extra index to Conditional
             const cond = data.lhs;
             if (cond == .none) return;
             if (isConstant(cond, true, ctx)) {

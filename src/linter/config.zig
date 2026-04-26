@@ -64,6 +64,11 @@ pub const Config = struct {
     /// Per-rule JSON options value. null = no options configured.
     /// Points into the retained json_parsed tree — valid for the config's lifetime.
     rule_options: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
+    /// Second rule option (items[2] when config has 3+ elements). null if absent.
+    rule_options2: [rule_count]?*const std.json.Value = [_]?*const std.json.Value{null} ** rule_count,
+    /// Synthetic JSON array values allocated for rules with 2+ options.
+    /// (reserved for future use — currently unused)
+    synthetic_options: std.ArrayListUnmanaged(*std.json.Value) = .empty,
     /// ESLint `settings` object. Points into the retained json_parsed tree.
     settings: ?*const std.json.Value = null,
     /// ESLint `languageOptions` object. Points into the retained json_parsed tree.
@@ -113,6 +118,12 @@ pub const Config = struct {
             }
             self.allocator.free(self.overrides);
         }
+
+        // Free synthetic option arrays (allocated for multi-option rules).
+        for (self.synthetic_options.items) |v| {
+            self.allocator.destroy(v);
+        }
+        self.synthetic_options.deinit(self.allocator);
 
         // Release the JSON parse tree (frees all JSON string memory).
         if (self.json_parsed) |*jp| {
@@ -245,11 +256,14 @@ pub fn parseConfigJson(allocator: std.mem.Allocator, json_source: []const u8) !C
                         sev = RuleSeverity.fromInt(items[0].integer);
                     } else continue;
                     // Store pointer to the first options value (after severity).
-                    // The pointer is into the retained json_parsed tree.
+                    // Also store the second option (if any) in rule_options2.
                     if (items.len > 1) {
                         for (linter.rule_names, 0..) |rn, ri| {
                             if (std.mem.eql(u8, rn, rule_name)) {
                                 config.rule_options[ri] = &items[1];
+                                if (items.len > 2) {
+                                    config.rule_options2[ri] = &items[2];
+                                }
                                 break;
                             }
                         }
@@ -534,8 +548,8 @@ test "parseConfigJson with categories" {
     try std.testing.expect(config.rule_severity_table[0] == .@"error");
 
     // Style rules should be off. no-var is the first style rule.
-    // Count: 58 correctness + 43 suspicious = 101
-    try std.testing.expect(config.rule_severity_table[101] == .off);
+    // Count: 62 correctness + 43 suspicious = 105
+    try std.testing.expect(config.rule_severity_table[105] == .off);
 }
 
 test "Config.shouldLintFile" {

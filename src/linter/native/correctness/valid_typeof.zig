@@ -28,11 +28,12 @@ const valid_typeof_values = [_][]const u8{
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const data = ctx.nodeData(node);
+    const require_string_literals = ctx.getOptionBool("requireStringLiterals", false);
 
     // Check both orientations: typeof on left or right
     const pairs = [_][2]NodeIndex{ .{ data.lhs, data.rhs }, .{ data.rhs, data.lhs } };
     for (pairs) |pair| {
-        if (isTypeofExpr(pair[0], ctx) and isInvalidComparisonValue(pair[1], ctx)) {
+        if (isTypeofExpr(pair[0], ctx) and isInvalidComparisonValue(pair[1], ctx, require_string_literals)) {
             ctx.report(node);
             return;
         }
@@ -45,7 +46,7 @@ fn isTypeofExpr(idx: NodeIndex, ctx: *const LintContext) bool {
 }
 
 /// Returns true if the node is an invalid value to compare typeof against.
-fn isInvalidComparisonValue(idx: NodeIndex, ctx: *const LintContext) bool {
+fn isInvalidComparisonValue(idx: NodeIndex, ctx: *const LintContext, require_string_literals: bool) bool {
     if (idx == .none) return false;
     const tag = ctx.nodeTag(idx);
 
@@ -60,16 +61,17 @@ fn isInvalidComparisonValue(idx: NodeIndex, ctx: *const LintContext) bool {
         return true;
     }
 
-    // Template literal: only flag static templates (no substitutions) with invalid values
+    // Template literal: check for static vs dynamic templates
     if (tag == .template_literal) {
         const tok = ctx.nodeMainToken(idx);
         const src = ctx.source();
         const start = ctx.tokenStart(tok);
-        if (start >= src.len or src[start] != '`') return false;
+        if (start >= src.len or src[start] != '`') return require_string_literals;
         var end = start + 1;
         while (end < src.len and src[end] != '`' and src[end] != '$') : (end += 1) {}
-        // If we hit '$' (substitution) or didn't find closing backtick → dynamic → don't flag
-        if (end >= src.len or src[end] != '`') return false;
+        // If we hit '$' (substitution) → dynamic template
+        if (end >= src.len or src[end] != '`') return require_string_literals;
+        // Static template: check if value is valid
         const inner = src[start + 1 .. end];
         for (valid_typeof_values) |valid| {
             if (std.mem.eql(u8, inner, valid)) return false;
@@ -80,21 +82,28 @@ fn isInvalidComparisonValue(idx: NodeIndex, ctx: *const LintContext) bool {
     // Identifier named 'undefined' that is the global undefined (not locally redefined)
     if (tag == .identifier) {
         const name = ctx.tokenText(ctx.nodeMainToken(idx));
-        if (!std.mem.eql(u8, name, "undefined")) return false;
-        // Check if it resolves to an implicit global (not declared in source)
-        const refs = ctx.references();
-        var i: u32 = 0;
-        while (i < refs.count()) : (i += 1) {
-            const ref_id = @import("../../../parser/reference.zig").ReferenceId.fromInt(i);
-            if (refs.getNode(ref_id) != idx) continue;
-            // If the reference is unresolved, it's the global undefined
-            if (!refs.isResolved(ref_id)) return true;
-            // Resolved = locally defined (e.g., function parameter named undefined)
-            return false;
+        if (std.mem.eql(u8, name, "undefined")) {
+            // Check if it resolves to an implicit global (not declared in source)
+            const refs = ctx.references();
+            var i: u32 = 0;
+            while (i < refs.count()) : (i += 1) {
+                const ref_id = @import("../../../parser/reference.zig").ReferenceId.fromInt(i);
+                if (refs.getNode(ref_id) != idx) continue;
+                // If the reference is unresolved, it's the global undefined
+                if (!refs.isResolved(ref_id)) return true;
+                // Resolved = locally defined
+                return false;
+            }
+            // No reference found → treat as implicit global
+            return true;
         }
-        // No reference found → treat as implicit global
-        return true;
+        // Any other identifier with requireStringLiterals: true should be flagged
+        return require_string_literals;
     }
 
-    return false;
+    // typeof expressions are valid to compare against (e.g. typeof foo === typeof bar)
+    if (tag == .typeof_expr) return false;
+
+    // Any other non-string value: flag if requireStringLiterals is true
+    return require_string_literals;
 }

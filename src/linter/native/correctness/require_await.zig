@@ -1,3 +1,4 @@
+const std = @import("std");
 const ast = @import("../../../parser/ast.zig");
 const NodeIndex = ast.NodeIndex;
 const Node = ast.Node;
@@ -15,16 +16,19 @@ pub const relevant_tags = [_]Node.Tag{
     .async_fn_decl,
     .async_fn_expr,
     .async_arrow_fn,
-    .async_generator_fn_decl,
-    .async_generator_fn_expr,
+    // async generators excluded: they use yield/yield* instead of await (ESLint spec)
+    .method_def,
+    .computed_method_def,
 };
+
+const ModifierBit = ast.ModifierBit;
 
 pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const tag = ctx.nodeTag(node);
     const data = ctx.nodeData(node);
 
     const body: NodeIndex = switch (tag) {
-        .async_fn_decl, .async_fn_expr, .async_generator_fn_decl, .async_generator_fn_expr => blk: {
+        .async_fn_decl, .async_fn_expr => blk: {
             const fn_data = ctx.extraData(ast.FnData, @intFromEnum(data.lhs));
             break :blk fn_data.body;
         },
@@ -32,14 +36,31 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
             const arrow_data = ctx.extraData(ast.ArrowData, @intFromEnum(data.lhs));
             break :blk arrow_data.body;
         },
+        .method_def, .computed_method_def => blk: {
+            const method_data = ctx.extraData(ast.MethodData, @intFromEnum(data.rhs));
+            // Only async non-generator methods
+            if (method_data.modifiers & ModifierBit.@"async" == 0) return;
+            if (method_data.modifiers & ModifierBit.generator != 0) return;
+            break :blk method_data.body;
+        },
         else => return,
     };
 
     if (body == .none) return;
 
+    // Empty body: no await possible, don't flag
+    if (isEmptyBody(body, ctx)) return;
+
     if (!hasAwait(body, ctx, 0)) {
         ctx.report(node);
     }
+}
+
+fn isEmptyBody(body: NodeIndex, ctx: *const LintContext) bool {
+    if (ctx.nodeTag(body) != .block_stmt) return false;
+    const d = ctx.nodeData(body);
+    if (d.lhs == .none) return true;
+    return @intFromEnum(d.lhs) >= @intFromEnum(d.rhs);
 }
 
 fn hasAwait(node: NodeIndex, ctx: *const LintContext, depth: u8) bool {
@@ -50,6 +71,12 @@ fn hasAwait(node: NodeIndex, ctx: *const LintContext, depth: u8) bool {
 
     // Both await expressions and for-await-of loops count as "using await"
     if (tag == .await_expr or tag == .for_await_of_stmt) return true;
+
+    // `await using x = ...` is parsed as const_decl with main_token = "await"
+    if (tag == .const_decl) {
+        const tok = ctx.nodeMainToken(node);
+        if (std.mem.eql(u8, ctx.tokenText(tok), "await")) return true;
+    }
 
     // Stop at nested async function boundaries
     switch (tag) {

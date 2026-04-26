@@ -20,12 +20,17 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     if (text.len < 2) return;
 
     var i: usize = 1;
-    while (i < text.len - 1) : (i += 1) {
+    while (i < text.len - 1) {
         if (text[i] == '\\' and i + 1 < text.len) {
-            if (text[i + 1] == '8' or text[i + 1] == '9') {
+            const next = text[i + 1];
+            if (next == '8' or next == '9') {
                 ctx.report(node);
                 return;
             }
+            // Skip this escape sequence (2 chars: backslash + escaped char).
+            i += 2;
+        } else {
+            i += 1;
         }
     }
 }

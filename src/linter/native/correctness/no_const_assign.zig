@@ -25,6 +25,8 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         const ref_id = ReferenceId.fromInt(i);
         const kind = refs.getKind(ref_id);
 
+        // write_init is the const/let declaration's own initializer — not a reassignment.
+        if (kind == .write_init) continue;
         if (!kind.isWrite()) continue;
 
         const sym_id = refs.getSymbol(ref_id);

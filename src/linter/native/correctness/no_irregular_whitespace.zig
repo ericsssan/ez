@@ -31,16 +31,37 @@ pub fn run(_: NodeIndex, ctx: *const LintContext) void {
 
     var pos: u32 = 0;
     var t: u32 = 0;
+    // Track JSX text context: after `>` (opening/closing tag) until `<` or `{`.
+    var in_jsx_text = false; // true when between JSX open-tag `>` and next `<` or `{`
+
     while (t < ntok) : (t += 1) {
         const ts = tok_starts[t];
         const tl = tok_lens[t];
         const te = ts + tl;
 
+        const tok_tag = tok_tags[t];
+
         // Scan the inter-token gap (whitespace + comments).
-        if (ts > pos) scanGap(source, pos, ts, skip_comments, ctx);
+        // Use current in_jsx_text (state from BEFORE this token).
+        if (ts > pos) {
+            if (skip_jsx_text and in_jsx_text) {
+                // Skip: inside JSX text content between tags.
+            } else {
+                scanGap(source, pos, ts, skip_comments, ctx);
+            }
+        }
+
+        // Update JSX text context AFTER gap scan: `>` enters, `<` or `{` exits.
+        if (skip_jsx_text) {
+            if (tok_tag == .greater_than) {
+                in_jsx_text = true;
+            } else if (tok_tag == .less_than or tok_tag == .l_brace) {
+                in_jsx_text = false;
+            }
+        }
 
         // Decide whether to skip this token's content.
-        const should_skip: bool = switch (tok_tags[t]) {
+        const should_skip: bool = switch (tok_tag) {
             .string_literal => skip_strings,
             // skipStrings does NOT affect templates; only skipTemplates does.
             .template_head, .template_middle, .template_tail, .template_no_sub => skip_templates,
@@ -49,7 +70,8 @@ pub fn run(_: NodeIndex, ctx: *const LintContext) void {
             else => false,
         };
 
-        if (!should_skip and tl > 0) scanRange(source, ts, te, ctx);
+        // Also skip token content when in_jsx_text (e.g., irregular chars tokenized as error tokens).
+        if ((!should_skip and !(skip_jsx_text and in_jsx_text)) and tl > 0) scanRange(source, ts, te, ctx);
 
         if (te > pos) pos = te;
     }

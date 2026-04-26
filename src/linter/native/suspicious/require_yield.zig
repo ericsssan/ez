@@ -54,11 +54,8 @@ pub fn run(node: NodeIndex, ctx: *const LintContext) void {
     const body_data = ctx.nodeData(body);
     const body_range = ast.SubRange{ .start = @intFromEnum(body_data.lhs), .end = @intFromEnum(body_data.rhs) };
 
-    // Empty body means no yield — report immediately.
-    if (ctx.extraSlice(body_range).len == 0) {
-        ctx.report(node);
-        return;
-    }
+    // Empty body: ESLint skips empty generators (no yield needed for empty body).
+    if (ctx.extraSlice(body_range).len == 0) return;
 
     // Instead of recursively walking children (which is unsafe because
     // data.rhs is not always a NodeIndex), scan all AST nodes between

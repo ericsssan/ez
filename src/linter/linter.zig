@@ -164,6 +164,14 @@ const needs_cfg_flags: [registry.count]bool = blk: {
     break :blk arr;
 };
 
+const needs_ref_ranges_flags: [registry.count]bool = blk: {
+    @setEvalBranchQuota(10_000);
+    var arr: [registry.count]bool = undefined;
+    for (registry.all_rules, 0..) |Rule, i|
+        arr[i] = @hasDecl(Rule, "needs_ref_ranges") and Rule.needs_ref_ranges;
+    break :blk arr;
+};
+
 /// Per-rule language filter — from RuleMeta.lang (defaults to .all).
 const lang_flags: [registry.count]RuleLang = blk: {
     @setEvalBranchQuota(10_000);
@@ -253,11 +261,13 @@ pub fn lint(
                 ctx.severity_override = sev.toSeverity();
                 ctx.current_rule_index = @intCast(rule_idx);
                 ctx.rule_options = if (config) |cfg| cfg.rule_options[rule_idx] else null;
+                ctx.rule_options2 = if (config) |cfg| cfg.rule_options2[rule_idx] else null;
                 run_fns[rule_idx](idx, &ctx);
             }
         }
         ctx.severity_override = null;
         ctx.rule_options = null;
+        ctx.rule_options2 = null;
     }
 
     // ── Phase 2: Symbol-phase rules ───────────────────────────
@@ -302,11 +312,11 @@ pub fn needsSemantic(config: ?*const Config) bool {
     return false;
 }
 
-/// Returns true when any active rule requires CodePathBuilder (CFG) output.
-/// When false, SemanticAnalyzer should be called with build_cfg=false.
-pub fn configNeedsCfg(config: ?*const Config) bool {
+/// Returns true when any active rule calls symbols.getRefRange().
+/// When false, the buildRefRanges counting sort can be skipped entirely.
+pub fn configNeedsRefRanges(config: ?*const Config) bool {
     for (0..registry.count) |rule_idx| {
-        if (!needs_cfg_flags[rule_idx]) continue;
+        if (!needs_ref_ranges_flags[rule_idx]) continue;
         const sev = if (config) |cfg|
             cfg.rule_severity_table[rule_idx]
         else
@@ -314,6 +324,15 @@ pub fn configNeedsCfg(config: ?*const Config) bool {
         if (sev != .off) return true;
     }
     return false;
+}
+
+/// Free a diagnostics slice and all fix texts it contains.
+/// Call instead of plain allocator.free(diags) to avoid leaking fix strings.
+pub fn freeDiagnostics(allocator: std.mem.Allocator, diagnostics: []const LintDiagnostic) void {
+    for (diagnostics) |d| {
+        if (d.fix) |fix| allocator.free(fix.text);
+    }
+    allocator.free(diagnostics);
 }
 
 /// Filter diagnostics by inline disable directives.

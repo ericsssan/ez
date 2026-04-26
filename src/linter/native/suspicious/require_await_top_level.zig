@@ -26,8 +26,8 @@ fn hasUnicodeFlag(text: []const u8) bool {
         }
         if (text[i] == '/') break;
     }
+    if (i >= text.len) return false; // no closing / found (malformed literal)
     i += 1; // move past closing /
-    // flags are now text[i..]
     const flags = text[i..];
     return std.mem.indexOfScalar(u8, flags, 'u') != null or
            std.mem.indexOfScalar(u8, flags, 'v') != null;
