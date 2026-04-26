@@ -611,6 +611,25 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     try p.emitError("Rest element must be last in destructuring pattern");
                     return error.ParseError;
                 }
+                // Object rest target: must be a simple assignment target.
+                const rest_data = p.node_data_ptr[prop.toInt()];
+                if (rest_data.lhs != .none) {
+                    const target_tag = p.node_tags_ptr[rest_data.lhs.toInt()];
+                    switch (target_tag) {
+                        .identifier, .member_expr, .computed_member_expr => {},
+                        .grouping_expr => {
+                            const inner = unwrapGroupingTag(p, rest_data.lhs);
+                            if (inner != .identifier and inner != .member_expr and inner != .computed_member_expr) {
+                                try p.emitError("Invalid rest element target in object pattern");
+                                return error.ParseError;
+                            }
+                        },
+                        else => {
+                            try p.emitError("Invalid rest element target in object pattern");
+                            return error.ParseError;
+                        },
+                    }
+                }
             }
             // Check property values for invalid targets
             if (prop_tag == .property) {
