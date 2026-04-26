@@ -265,6 +265,39 @@ pub const Parser = struct {
         return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null);
     }
 
+    /// Parse from a `LexIter` (per-call walker). Drains the iterator into a
+    /// TokenList then runs the standard parser. This is the FIRST integration
+    /// point — does not yet realize the fusion benefit (token buffer still
+    /// materialized) but proves the wiring works. Future iterations can
+    /// replace the drain-then-parse with on-demand consumption when the
+    /// parser's hot paths migrate to call iter methods directly.
+    pub fn parseFromIter(
+        allocator: std.mem.Allocator,
+        source: []const u8,
+        iter: *@import("lex_iter.zig").LexIter,
+        language: Language,
+        is_module_file: bool,
+    ) !Ast {
+        var tokens: Ast.TokenList = .{};
+        defer tokens.deinit(allocator);
+        try tokens.ensureTotalCapacity(allocator, source.len / 4 + 128);
+        while (true) {
+            const cur = iter.peekToken(0);
+            const t = iter.advance();
+            if (t == .eof) break;
+            try tokens.append(allocator, .{
+                .tag = t,
+                .start = cur.start,
+                .len = cur.len,
+                .has_newline_before = false,
+            });
+        }
+        try tokens.append(allocator, .{
+            .tag = .eof, .start = @intCast(source.len), .len = 0, .has_newline_before = false,
+        });
+        return parseInternal(allocator, source, tokens.slice(), language, is_module_file, null, true, null);
+    }
+
     fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool, streaming: ?StreamingHooks) !Ast {
         var p = Parser{
             .source = source,
