@@ -5,7 +5,7 @@ const lex_iter = ez.lex_iter;
 
 var g_use_fused: bool = false;
 fn tokenizeMaybe(alloc: std.mem.Allocator, source: []const u8, lang: ez.parser_root.token.Language, is_module: bool) !Lexer.TokenizeResult {
-    if (g_use_fused) return lex_iter.tokenizeViaIter(alloc, source, lang);
+    if (g_use_fused) return lex_iter.tokenizeViaIterOpts(alloc, source, lang, is_module);
     return Lexer.tokenizeWithOptions(alloc, source, lang, is_module);
 }
 const Parser = ez.Parser;
