@@ -3616,7 +3616,11 @@ pub const Parser = struct {
                 break :blk id;
             }
             if (next == .kw_await and !self.in_async and !self.is_module) break :blk try self.parseIdentifier();
-            if (next == .kw_yield and !self.in_generator and !self.in_strict) break :blk try self.parseIdentifier();
+            // Class is always strict mode — `yield` is never a valid class name.
+            if (next == .kw_yield) {
+                try self.emitDiagnostic(self.currentSpan(), "'yield' is not a valid class name in strict mode", .{});
+                return error.ParseError;
+            }
             if (self.is_ts and next == .kw_abstract and self.peekAt(1) == .l_brace) break :blk try self.parseIdentifier();
             break :blk .none;
         };
