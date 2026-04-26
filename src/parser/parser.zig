@@ -6120,22 +6120,54 @@ pub const Parser = struct {
 
     /// Check no duplicate identifier names in top-level simple params.
     /// Spec: methods, arrows, strict, or non-simple params reject duplicates.
+    /// Recursively collect binding identifier names from a parameter node
+    /// (handles patterns: object_pattern/array_pattern, defaults via assignment_pattern,
+    /// rest_element, property/shorthand_property, grouping_expr).
+    fn collectParamNames(self: *Parser, node: NodeIndex, names: *std.ArrayList([]const u8)) !void {
+        if (node == .none) return;
+        const tag = self.node_tags_ptr[node.toInt()];
+        const data = self.node_data_ptr[node.toInt()];
+        switch (tag) {
+            .identifier => {
+                const tok = self.node_main_token_ptr[node.toInt()];
+                try names.append(self.gpa, self.tokenText(tok));
+            },
+            .assignment_pattern, .assign => try self.collectParamNames(data.lhs, names),
+            .rest_element => try self.collectParamNames(data.lhs, names),
+            .grouping_expr => try self.collectParamNames(data.lhs, names),
+            .array_pattern, .array_literal => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    try self.collectParamNames(child, names);
+                }
+            },
+            .object_pattern, .object_literal => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    try self.collectParamNames(child, names);
+                }
+            },
+            .property, .computed_property => try self.collectParamNames(data.rhs, names),
+            .shorthand_property => try self.collectParamNames(data.lhs, names),
+            else => {},
+        }
+    }
+
     pub fn checkUniqueParams(self: *Parser, params: SubRange) !void {
+        var names: std.ArrayList([]const u8) = .empty;
+        defer names.deinit(self.gpa);
         var i = params.start;
         while (i < params.end) : (i += 1) {
-            const a = NodeIndex.fromInt(self.extra_data.items[i]);
-            if (a == .none) continue;
-            if (self.node_tags_ptr[a.toInt()] != .identifier) continue;
-            const a_tok = self.node_main_token_ptr[a.toInt()];
-            const a_name = self.tokenText(a_tok);
-            var j = i + 1;
-            while (j < params.end) : (j += 1) {
-                const b = NodeIndex.fromInt(self.extra_data.items[j]);
-                if (b == .none) continue;
-                if (self.node_tags_ptr[b.toInt()] != .identifier) continue;
-                const b_tok = self.node_main_token_ptr[b.toInt()];
-                const b_name = self.tokenText(b_tok);
-                if (std.mem.eql(u8, a_name, b_name)) {
+            const p = NodeIndex.fromInt(self.extra_data.items[i]);
+            try self.collectParamNames(p, &names);
+        }
+        var a: usize = 0;
+        while (a < names.items.len) : (a += 1) {
+            var b: usize = a + 1;
+            while (b < names.items.len) : (b += 1) {
+                if (std.mem.eql(u8, names.items[a], names.items[b])) {
                     try self.emitError("Duplicate parameter name not allowed in this context");
                     return error.ParseError;
                 }
