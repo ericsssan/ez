@@ -35,6 +35,7 @@ pub const gitignore = @import("linter/root.zig").gitignore;
 pub const file_discovery = @import("cli/file_discovery.zig");
 pub const parallel = @import("cli/parallel.zig");
 pub const parallel_pool = @import("cli/parallel_pool.zig");
+pub const parallel_stage_pool = @import("cli/parallel_stage_pool.zig");
 pub const diagnostic_formatter = @import("cli/diagnostic_formatter.zig");
 pub const napi = @import("cli/napi.zig");
 

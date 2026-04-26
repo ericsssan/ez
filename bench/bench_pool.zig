@@ -12,7 +12,7 @@ const FileDiscovery = ez.file_discovery.FileDiscovery;
 
 const RUNS: usize = 5;
 
-fn timeStrategy(io: std.Io, files: []const []const u8, comptime kind: enum { static, k, l, pool }, runner: *ParallelRunner) u64 {
+fn timeStrategy(io: std.Io, files: []const []const u8, comptime kind: enum { static, k, l, pool, staged }, runner: *ParallelRunner) u64 {
     for (runner.results.items) |r| {
         if (r.output.len > 0) std.heap.smp_allocator.free(r.output);
     }
@@ -24,6 +24,7 @@ fn timeStrategy(io: std.Io, files: []const []const u8, comptime kind: enum { sta
         .k => runner.lintFilesAioHybrid3Stage(io, files) catch {},
         .l => runner.lintFilesWsAio(io, files) catch {},
         .pool => ez.parallel_pool.lintFilesPooled(runner, io, files) catch {},
+        .staged => ez.parallel_stage_pool.lintFilesStaged(runner, io, files) catch {},
     }
     return @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
 }
@@ -59,27 +60,47 @@ pub fn main(init: std.process.Init) !void {
     var rk = ParallelRunner.init(gpa); defer rk.deinit();
     var rl = ParallelRunner.init(gpa); defer rl.deinit();
     var rp = ParallelRunner.init(gpa); defer rp.deinit();
+    var rstg = ParallelRunner.init(gpa); defer rstg.deinit();
     ra.bench_skip_lint = true;
     rk.bench_skip_lint = true;
     rl.bench_skip_lint = true;
     rp.bench_skip_lint = true;
+    rstg.bench_skip_lint = true;
+
+    // ── One-shot pool run with stage instrumentation ──
+    {
+        var rs = ParallelRunner.init(gpa); defer rs.deinit();
+        rs.bench_skip_lint = true;
+        rs.bench_stage_log = true;
+        std.debug.print("── stage decomposition (1 warmup, 1 measured) ──\n", .{});
+        // Warm caches
+        ez.parallel_pool.lintFilesPooled(&rs, io, files) catch {};
+        for (rs.results.items) |r| if (r.output.len > 0) std.heap.smp_allocator.free(r.output);
+        rs.results.clearRetainingCapacity();
+        // Measured run: prints per-file stage timings inside lintOneFile3Stage
+        ez.parallel_pool.lintFilesPooled(&rs, io, files) catch {};
+        std.debug.print("\n", .{});
+    }
 
     var times_a: [RUNS]u64 = undefined;
     var times_k: [RUNS]u64 = undefined;
     var times_l: [RUNS]u64 = undefined;
     var times_p: [RUNS]u64 = undefined;
+    var times_s: [RUNS]u64 = undefined;
 
     for (0..RUNS) |run| {
         times_a[run] = timeStrategy(io, files, .static, &ra);
         times_k[run] = timeStrategy(io, files, .k,      &rk);
         times_l[run] = timeStrategy(io, files, .l,      &rl);
         times_p[run] = timeStrategy(io, files, .pool,   &rp);
-        std.debug.print("  run {d}:  A_static={d}ms  K_aio_hybrid={d}ms  L_ws_aio={d}ms  P_pool={d}ms\n", .{
+        times_s[run] = timeStrategy(io, files, .staged, &rstg);
+        std.debug.print("  run {d}:  A={d}ms  K={d}ms  L={d}ms  P={d}ms  S_staged={d}ms\n", .{
             run + 1,
             times_a[run] / 1_000_000,
             times_k[run] / 1_000_000,
             times_l[run] / 1_000_000,
             times_p[run] / 1_000_000,
+            times_s[run] / 1_000_000,
         });
     }
 
@@ -87,8 +108,9 @@ pub fn main(init: std.process.Init) !void {
     const med_k = median(&times_k);
     const med_l = median(&times_l);
     const med_p = median(&times_p);
-    std.debug.print("\n  median: A={d}ms  K={d}ms  L={d}ms  P={d}ms\n", .{
-        med_a / 1_000_000, med_k / 1_000_000, med_l / 1_000_000, med_p / 1_000_000,
+    const med_s = median(&times_s);
+    std.debug.print("\n  median: A={d}ms  K={d}ms  L={d}ms  P={d}ms  S_staged={d}ms\n", .{
+        med_a / 1_000_000, med_k / 1_000_000, med_l / 1_000_000, med_p / 1_000_000, med_s / 1_000_000,
     });
     if (med_p < med_l) {
         std.debug.print("  pool beats L by {d}%\n", .{(med_l - med_p) * 100 / med_l});
