@@ -3851,6 +3851,15 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
 
     const rhs = try parseExpressionPrec(p, prec.next());
 
+    // CoalesceExpression: `a ?? b` requires b to be a BitwiseORExpression — `||`/`&&` not allowed.
+    if (!p.is_ts and op_tag == .question_question and rhs != .none) {
+        const rhs_tag = p.node_tags_ptr[rhs.toInt()];
+        if (rhs_tag == .logical_or or rhs_tag == .logical_and) {
+            try p.emitError("Cannot mix '??' with '||' or '&&' without parentheses");
+            return error.ParseError;
+        }
+    }
+
     const node_tag: Node.Tag = tokenToBinaryTag(op_tag);
     const node = try p.addNode(.{
         .tag = node_tag,
