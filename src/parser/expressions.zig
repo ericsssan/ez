@@ -3175,6 +3175,29 @@ fn isConstructorKey(p: *Parser, tok: TokenIndex) bool {
 // New expression
 // =====================================================================
 
+/// Walk an expression subtree looking for optional chain nodes.
+/// Used by `new`-expression validation. Stops at non-member/call boundaries.
+fn containsOptionalChain(p: *Parser, node: NodeIndex) bool {
+    if (node == .none) return false;
+    var cur = node;
+    while (true) {
+        const t = p.node_tags_ptr[cur.toInt()];
+        switch (t) {
+            .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => return true,
+            .member_expr, .computed_member_expr, .call_expr => {
+                cur = p.node_data_ptr[cur.toInt()].lhs;
+                if (cur == .none) return false;
+            },
+            .grouping_expr => {
+                // `new (foo?.bar)()` — Babel rejects this too.
+                cur = p.node_data_ptr[cur.toInt()].lhs;
+                if (cur == .none) return false;
+            },
+            else => return false,
+        }
+    }
+}
+
 fn parseNewExpression(p: *Parser) Error!NodeIndex {
     const new_tok = p.advance(); // consume `new`
 
@@ -3281,6 +3304,11 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
     // `new super()` is invalid but `new super.prop()` is valid
     if (is_bare_super and p.node_tags_ptr[callee.toInt()] == .super_expr) {
         try p.emitError("'super' is not valid as a new expression target");
+    }
+
+    // Optional chains in new target are SyntaxError: `new foo?.bar()` etc.
+    if (callee != .none and !p.is_ts and containsOptionalChain(p, callee)) {
+        try p.emitError("Optional chain not allowed as new expression target");
     }
 
     // Optional argument list.
