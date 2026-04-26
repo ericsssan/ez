@@ -985,18 +985,23 @@ pub const LexIter = struct {
                     if (p + 1 < n and self.src[p + 1] == '*') {
                         const r = Lex.blockCommentEnd(self.src, p);
                         end = r.end;
-                        if (self.cm_starts) |cs| {
-                            const a = self.cm_line_alloc.?;
-                            cs.append(a, p) catch {};
-                            self.cm_ends.?.append(a, end) catch {};
-                            self.cm_kinds.?.append(a, 1) catch {}; // 1 = block
+                        // Unterminated /* */ comment — emit .invalid for parser to flag.
+                        if (end >= n and !(end >= 2 and self.src[end - 2] == '*' and self.src[end - 1] == '/')) {
+                            tag = .invalid;
+                        } else {
+                            if (self.cm_starts) |cs| {
+                                const a = self.cm_line_alloc.?;
+                                cs.append(a, p) catch {};
+                                self.cm_ends.?.append(a, end) catch {};
+                                self.cm_kinds.?.append(a, 1) catch {}; // 1 = block
+                            }
+                            if (r.has_nl) {
+                                self.saw_nl = true;
+                                self.at_line_start = true;
+                            }
+                            self.skip_until = end;
+                            continue;
                         }
-                        if (r.has_nl) {
-                            self.saw_nl = true;
-                            self.at_line_start = true;
-                        }
-                        self.skip_until = end;
-                        continue;
                     }
                     // Regex vs divide: prev_kind disambiguates per spec.
                     if (Lex.regexAllowed(self.prev_kind)) {
