@@ -730,6 +730,72 @@ fn checkStrictOctalNumber(p: *Parser) !void {
 }
 
 /// Emit diagnostic for octal escape in string in strict mode (non-fatal).
+/// Validate \u and \x escape sequences in string content (any mode).
+/// Rejects `\u` followed by fewer than 4 hex digits, malformed `\u{...}`,
+/// and `\x` followed by fewer than 2 hex digits.
+fn checkStringEscapes(p: *Parser) !void {
+    const start = p.tok_starts_ptr[p.tok_i];
+    if (start >= p.source.len) return;
+    const quote = p.source[start];
+    var i = start + 1;
+    while (i < p.source.len and p.source[i] != quote) {
+        if (p.source[i] == '\\' and i + 1 < p.source.len) {
+            const esc = p.source[i + 1];
+            i += 2;
+            if (esc == 'u') {
+                if (i < p.source.len and p.source[i] == '{') {
+                    i += 1;
+                    const hex_start = i;
+                    while (i < p.source.len and p.source[i] != '}') : (i += 1) {
+                        const c = p.source[i];
+                        if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) {
+                            try p.emitError("Invalid unicode escape in string");
+                            return;
+                        }
+                    }
+                    if (i >= p.source.len or p.source[i] != '}') {
+                        try p.emitError("Unterminated \\u{...} escape in string");
+                        return;
+                    }
+                    if (i == hex_start) {
+                        try p.emitError("Empty \\u{} escape in string");
+                        return;
+                    }
+                    i += 1;
+                } else {
+                    var hc: u32 = 0;
+                    while (hc < 4 and i < p.source.len) : ({ hc += 1; i += 1; }) {
+                        const c = p.source[i];
+                        if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) {
+                            try p.emitError("Invalid \\u escape in string");
+                            return;
+                        }
+                    }
+                    if (hc < 4) {
+                        try p.emitError("\\u escape requires 4 hex digits");
+                        return;
+                    }
+                }
+            } else if (esc == 'x') {
+                var hc: u32 = 0;
+                while (hc < 2 and i < p.source.len) : ({ hc += 1; i += 1; }) {
+                    const c = p.source[i];
+                    if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) {
+                        try p.emitError("Invalid \\x escape in string");
+                        return;
+                    }
+                }
+                if (hc < 2) {
+                    try p.emitError("\\x escape requires 2 hex digits");
+                    return;
+                }
+            }
+            continue;
+        }
+        i += 1;
+    }
+}
+
 fn checkStrictOctalString(p: *Parser) !void {
     const start = p.tok_starts_ptr[p.tok_i];
     if (start >= p.source.len) return;
@@ -782,6 +848,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             break :blk try parseLiteral(p, .number_literal);
         },
         .string_literal => blk: {
+            try checkStringEscapes(p);
             if (p.in_strict) try checkStrictOctalString(p);
             break :blk try parseLiteral(p, .string_literal);
         },
