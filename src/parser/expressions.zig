@@ -97,7 +97,7 @@ pub fn parseExpression(p: *Parser) Error!NodeIndex {
 }
 
 /// Parse an assignment expression (no comma).
-pub fn parseAssignmentExpression(p: *Parser) Error!NodeIndex {
+pub inline fn parseAssignmentExpression(p: *Parser) Error!NodeIndex {
     const saved_arrow = p.allow_arrow;
     p.allow_arrow = true;
     defer p.allow_arrow = saved_arrow;
@@ -105,7 +105,7 @@ pub fn parseAssignmentExpression(p: *Parser) Error!NodeIndex {
 }
 
 /// Parse a conditional expression (ternary level, no assignment).
-pub fn parseConditionalExpression(p: *Parser) Error!NodeIndex {
+pub inline fn parseConditionalExpression(p: *Parser) Error!NodeIndex {
     return parseExpressionPrec(p, .conditional);
 }
 
@@ -1674,7 +1674,7 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
 
 // ── Parse assignment-level expression or spread ──────────────────
 
-fn parseAssignmentOrSpread(p: *Parser) Error!NodeIndex {
+inline fn parseAssignmentOrSpread(p: *Parser) Error!NodeIndex {
     if (p.peek() == .ellipsis) {
         const tok = p.advance();
         const arg = try parseAssignmentExpression(p);
