@@ -538,6 +538,11 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         }
                         // Recursively validate rest target (e.g. [...{a: 0}] where 0 is invalid)
                         try validatePattern(p, rest_data.lhs);
+                        // Strict mode: eval/arguments cannot be rest target.
+                        if (rest_target_tag == .identifier and p.in_strict) {
+                            const rt = p.node_main_token_ptr[rest_data.lhs.toInt()];
+                            try p.checkStrictAssignTarget(rt);
+                        }
                     }
                 }
                 // Parenthesized simple targets are valid: [(a)] = 1, [(a.b)] = 1
