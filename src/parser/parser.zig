@@ -3475,9 +3475,12 @@ pub const Parser = struct {
         const prev_in_function = self.in_function;
         const prev_in_async = self.in_async;
         const prev_in_generator = self.in_generator;
+        const prev_in_class_field = self.in_class_field;
         self.in_function = true;
         self.in_async = is_async;
         self.in_generator = is_generator;
+        // Function body has its own `arguments` binding — clears class-field restriction.
+        self.in_class_field = false;
 
         const fn_type_params = try self.parseOptionalTypeParameters();
         const params = try self.parseFormalParameters();
@@ -3486,6 +3489,7 @@ pub const Parser = struct {
             self.in_function = prev_in_function;
             self.in_async = prev_in_async;
             self.in_generator = prev_in_generator;
+            self.in_class_field = prev_in_class_field;
         }
 
         const prev_strict = self.in_strict;
@@ -4129,13 +4133,16 @@ pub const Parser = struct {
                 const prev_in_method = self.in_method;
                 const prev_in_generator = self.in_generator;
                 const prev_in_async = self.in_async;
+                const prev_in_cf = self.in_class_field;
                 self.in_function = true;
                 self.in_constructor = false;
                 self.in_method = true;
                 self.in_generator = is_generator_method;
+                self.in_class_field = false;
                 if (is_async_method) self.in_async = true;
                 defer self.in_function = prev_in_function;
                 defer self.in_constructor = prev_in_constructor;
+                defer self.in_class_field = prev_in_cf;
                 defer self.in_method = prev_in_method;
                 defer self.in_generator = prev_in_generator;
                 defer self.in_async = prev_in_async;
@@ -4317,16 +4324,19 @@ pub const Parser = struct {
             const prev_in_method = self.in_method;
             const prev_in_generator_m = self.in_generator;
             const prev_in_async_m = self.in_async;
+            const prev_in_cf_m = self.in_class_field;
             self.in_function = true;
             self.in_constructor = is_ctor;
             self.in_method = true;
             self.in_generator = is_generator_method;
+            self.in_class_field = false;
             if (is_async_method) self.in_async = true;
             defer self.in_function = prev_in_function;
             defer self.in_constructor = prev_in_constructor;
             defer self.in_method = prev_in_method;
             defer self.in_generator = prev_in_generator_m;
             defer self.in_async = prev_in_async_m;
+            defer self.in_class_field = prev_in_cf_m;
 
             // TS return type annotation: `): Type {`
             const method_return_type = try self.parseOptionalTypeAnnotation();

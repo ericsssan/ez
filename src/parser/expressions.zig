@@ -1161,6 +1161,11 @@ fn parseIdentifier(p: *Parser) Error!NodeIndex {
 /// `reference(.read)` semantic event.  Used from parsePrimaryExpression.
 fn parseIdentifierRef(p: *Parser) Error!NodeIndex {
     const tok = p.advance();
+    // Class field initializers cannot reference 'arguments'.
+    if (p.in_class_field and std.mem.eql(u8, p.tokenText(tok), "arguments")) {
+        try p.emitError("'arguments' is not allowed in class field initializer");
+        return error.ParseError;
+    }
     const node = try p.addNode(.{
         .tag = .identifier,
         .main_token = tok,
@@ -1175,6 +1180,11 @@ fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
     // identifier => body  (single-parameter arrow without parens)
     if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
         return parseArrowFunctionBody(p, tok, false);
+    }
+    // Class field initializers cannot reference 'arguments'.
+    if (p.in_class_field and std.mem.eql(u8, p.tokenText(tok), "arguments")) {
+        try p.emitError("'arguments' is not allowed in class field initializer");
+        return error.ParseError;
     }
     // Spec: IdentifierName decoded to a ReservedWord is SyntaxError as
     // IdentifierReference. Walker emits .identifier; check decoded form.
@@ -2638,6 +2648,10 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const saved_gen = p.in_generator;
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
+    // Function body has its own `arguments` — the class-field-init restriction stops here.
+    const saved_cf = p.in_class_field;
+    p.in_class_field = false;
+    defer p.in_class_field = saved_cf;
 
     // Named function expression: name binds only inside the function's own
     // scope.  We emit the declare AFTER emitting scope_open so the consumer
@@ -2999,12 +3013,15 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         const saved_fn = p.in_function;
         const saved_method_m = p.in_method;
         const saved_ctor = p.in_constructor;
+        const saved_cf_m = p.in_class_field;
         p.in_function = true;
         p.in_method = true;
         p.in_constructor = is_ctor;
+        p.in_class_field = false;
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method_m;
         defer p.in_constructor = saved_ctor;
+        defer p.in_class_field = saved_cf_m;
         const params_range = try parseFormalParameters(p);
         const method_return_type = try p.parseOptionalTypeAnnotation(); // TS return type
         // TS: method overload signature has no body (ends with `;` or newline).
