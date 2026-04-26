@@ -62,6 +62,7 @@ const Token = @import("token.zig").Token;
 const Tag = @import("token.zig").Tag;
 const Bitmaps = @import("lexer_simdjson.zig").Bitmaps;
 const keywordLookup = @import("lexer_simdjson.zig").keywordLookup;
+const Lex = @import("lexer.zig");
 
 /// Number of inline lookahead slots. Sized to parser's max `peekAt(N)`:
 /// today peekAt(3), so 4 slots = current + 3 ahead. Increase only if a
@@ -286,9 +287,22 @@ pub const LexIter = struct {
                 continue;
             }
 
-            // Identifier-start: scan run end, emit identifier token.
-            // (Keyword-vs-ident distinction deferred until full walker port —
-            // returns .identifier for everything that looks ident-like.)
+            // Number literal: digit-start.
+            if (byte >= '0' and byte <= '9') {
+                const end_n = Lex.numberEnd(self.src, p);
+                const tag_n: Tag = if (end_n > p and self.src[end_n - 1] == 'n')
+                    .bigint_literal
+                else
+                    .number_literal;
+                self.skip_until = end_n;
+                self.prev_kind = tag_n;
+                const tok = Token{ .tag = tag_n, .start = p, .len = end_n - p };
+                self.saw_nl = false;
+                self.at_line_start = false;
+                return tok;
+            }
+
+            // Identifier-start: scan run end, emit identifier or keyword.
             if ((byte >= 'a' and byte <= 'z') or
                 (byte >= 'A' and byte <= 'Z') or
                 byte == '_' or byte == '$')
@@ -358,9 +372,46 @@ pub const LexIter = struct {
                     else { tag = .asterisk; }
                 },
                 '/' => {
-                    // NOTE: regex/divide ambiguity NOT yet handled — always emits .slash.
+                    // Comments take precedence over /-operator. Regex disambiguation
+                    // (still TODO) would slot in here too, gated on prev_kind.
+                    if (p + 1 < n and self.src[p + 1] == '/') {
+                        // Line comment: scan to newline, no token emit.
+                        end = Lex.lineCommentEnd(self.src, p + 2);
+                        self.skip_until = end;
+                        continue;
+                    }
+                    if (p + 1 < n and self.src[p + 1] == '*') {
+                        // Block comment.
+                        const r = Lex.blockCommentEnd(self.src, p + 2);
+                        end = r.end;
+                        if (r.has_nl) {
+                            self.saw_nl = true;
+                            self.at_line_start = true;
+                        }
+                        self.skip_until = end;
+                        continue;
+                    }
                     if (p + 1 < n and self.src[p + 1] == '=') { tag = .slash_equal; end = p + 2; }
                     else { tag = .slash; }
+                },
+                '\'', '"' => {
+                    end = Lex.stringEnd(self.src, p);
+                    tag = .string_literal;
+                },
+                '`' => {
+                    // Template literal. Simplified: emits one .template_literal
+                    // token spanning to matching backtick. Full ${} interpolation
+                    // requires depth tracking + multiple sub-tokens (template_head,
+                    // template_middle, template_tail) — deferred.
+                    const r = Lex.templateChunkEnd(self.src, p);
+                    end = r.end;
+                    tag = if (r.has_expr) .template_head else .template_no_sub;
+                    if (r.has_expr) {
+                        if (self.tmpl_depth < self.brace_d.len) {
+                            self.brace_d[self.tmpl_depth] = 0;
+                            self.tmpl_depth += 1;
+                        }
+                    }
                 },
                 '%' => {
                     if (p + 1 < n and self.src[p + 1] == '=') { tag = .percent_equal; end = p + 2; }
@@ -523,6 +574,28 @@ test "LexIter walker: keyword recognition" {
     try std.testing.expectEqual(@as(Tag, .dot), iter.advance());
     // After dot, "if" is an identifier (property name), not the keyword.
     try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: numbers + strings + comments" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "var x = 42 + \"hi\"; // skip\n0xff /* block */ 1.5e3";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    try std.testing.expectEqual(@as(Tag, .kw_var), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .equal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .number_literal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .plus), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .string_literal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .semicolon), iter.advance());
+    // line comment skipped, block comment skipped
+    try std.testing.expectEqual(@as(Tag, .number_literal), iter.advance()); // 0xff
+    try std.testing.expectEqual(@as(Tag, .number_literal), iter.advance()); // 1.5e3
     try std.testing.expect(iter.isAtEnd());
 }
 
