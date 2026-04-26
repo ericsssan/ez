@@ -302,6 +302,45 @@ pub const LexIter = struct {
                 continue;
             }
 
+            // BOM / LS / PS — 3-byte UTF-8 sequences that are skipped (not
+            // tokens). LS/PS also act as line terminators for ASI.
+            if (byte == 0xEF and p + 2 < n and self.src[p + 1] == 0xBB and self.src[p + 2] == 0xBF) {
+                self.skip_until = p + 3;
+                continue;
+            }
+            if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and (self.src[p + 2] == 0xA8 or self.src[p + 2] == 0xA9)) {
+                self.saw_nl = true;
+                self.at_line_start = true;
+                self.skip_until = p + 3;
+                continue;
+            }
+
+            // High-byte (0x80+) identifier-start: scan to end of ident run via
+            // ident bitmap. Phase 1's ident bitmap includes all high bytes,
+            // so the run end is the next bit-clear position.
+            if (byte >= 0x80) {
+                var end_i: u32 = p + 1;
+                while (end_i < n) : (end_i += 1) {
+                    const c = self.src[end_i];
+                    if (c < 0x80) {
+                        if (!((c >= 'a' and c <= 'z') or
+                              (c >= 'A' and c <= 'Z') or
+                              (c >= '0' and c <= '9') or
+                              c == '_' or c == '$')) break;
+                    }
+                    // High bytes continue the ident.
+                }
+                self.skip_until = end_i;
+                const text = self.src[p..end_i];
+                const t_tag = keywordLookup(text, self.is_ts);
+                self.last_emitted_nl = self.saw_nl;
+                self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot) .identifier else t_tag;
+                const tok = Token{ .tag = t_tag, .start = p, .len = end_i - p };
+                self.saw_nl = false;
+                self.at_line_start = false;
+                return tok;
+            }
+
             // Number literal: digit-start.
             if (byte >= '0' and byte <= '9') {
                 const end_n = Lex.numberEnd(self.src, p);
@@ -399,6 +438,13 @@ pub const LexIter = struct {
                     else { tag = .plus; }
                 },
                 '-' => {
+                    // HTML-like close comment `-->` at line start: skip to EOL.
+                    if (self.at_line_start and p + 2 < n and self.src[p + 1] == '-' and self.src[p + 2] == '>') {
+                        end = Lex.lineCommentEnd(self.src, p + 3);
+                        self.saw_nl = true;
+                        self.skip_until = end;
+                        continue;
+                    }
                     if (p + 1 < n and self.src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
                     else if (p + 1 < n and self.src[p + 1] == '=') { tag = .minus_equal; end = p + 2; }
                     else { tag = .minus; }
@@ -503,6 +549,13 @@ pub const LexIter = struct {
                     else { tag = .equal; }
                 },
                 '<' => {
+                    // HTML-like open comment `<!--`: skip to EOL.
+                    if (p + 3 < n and self.src[p + 1] == '!' and self.src[p + 2] == '-' and self.src[p + 3] == '-') {
+                        end = Lex.lineCommentEnd(self.src, p + 4);
+                        self.saw_nl = true;
+                        self.skip_until = end;
+                        continue;
+                    }
                     if (p + 1 < n and self.src[p + 1] == '<') {
                         if (p + 2 < n and self.src[p + 2] == '=') { tag = .less_less_equal; end = p + 3; }
                         else { tag = .less_less; end = p + 2; }
