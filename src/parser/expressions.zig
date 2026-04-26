@@ -1870,7 +1870,7 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                     // Bare `yield` (no operand) can be a parameter name in sloppy mode:
                     // arrows are never generators, so `yield` is an identifier inside them.
                     const d = p.node_data_ptr[param_node.toInt()];
-                    if (!p.in_strict and d.lhs == .none) {
+                    if (!p.in_strict and !p.in_generator and d.lhs == .none) {
                         p.setNodeTag(param_node.toInt(), .identifier);
                     } else {
                         try p.emitError("Invalid arrow function parameter");
