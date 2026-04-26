@@ -352,6 +352,19 @@ pub const LexIter = struct {
                 continue;
             }
 
+            // Hashbang `#!` at file start: treat as line comment to EOL.
+            if (byte == '#' and p == 0 and p + 1 < n and self.src[p + 1] == '!') {
+                const ce = Lex.lineCommentEnd(self.src, p + 2);
+                self.skip_until = ce;
+                continue;
+            }
+
+            // Form feed (0x0C) and vertical tab (0x0B): whitespace, skip.
+            if (byte == 0x0C or byte == 0x0B) {
+                self.skip_until = p + 1;
+                continue;
+            }
+
             // BOM / LS / PS — 3-byte UTF-8 sequences that are skipped (not
             // tokens). LS/PS also act as line terminators for ASI.
             if (byte == 0xEF and p + 2 < n and self.src[p + 1] == 0xBB and self.src[p + 2] == 0xBF) {
@@ -478,11 +491,16 @@ pub const LexIter = struct {
                         cp = (cp << 4) | v;
                     }
                     if (hex_count < 4) valid = false;
-                    // Reject lone high-surrogates (D800-DBFF). For full spec
-                    // compliance we'd allow them when immediately followed by a
-                    // low-surrogate \uDCxx, but matching monolithic behavior:
-                    // reject all surrogates here.
                     if (cp >= 0xD800 and cp <= 0xDFFF) valid = false;
+                    // ASCII codepoints must be valid ID_Start chars at first
+                    // position (a-z, A-Z, _, $). Non-ASCII (>=0x80) is
+                    // permissively accepted (full ID_Start table not available).
+                    if (cp < 0x80) {
+                        const ok = (cp >= 'a' and cp <= 'z') or
+                                   (cp >= 'A' and cp <= 'Z') or
+                                   cp == '_' or cp == '$';
+                        if (!ok) valid = false;
+                    }
                 }
 
                 if (!valid) {
@@ -530,16 +548,54 @@ pub const LexIter = struct {
                 var end: u32 = p + 1;
                 while (end < n) : (end += 1) {
                     const c = self.src[end];
-                    if (!((c >= 'a' and c <= 'z') or
-                          (c >= 'A' and c <= 'Z') or
-                          (c >= '0' and c <= '9') or
-                          c == '_' or c == '$')) break;
+                    if ((c >= 'a' and c <= 'z') or
+                        (c >= 'A' and c <= 'Z') or
+                        (c >= '0' and c <= '9') or
+                        c == '_' or c == '$') continue;
+                    if (c >= 0x80) {
+                        // Distinguish LS/PS/BOM (terminators) from unicode
+                        // letters (continuation). LS=E2 80 A8, PS=E2 80 A9,
+                        // BOM=EF BB BF. Other high bytes continue the ident.
+                        if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                            (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9)) break;
+                        if (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and
+                            self.src[end + 2] == 0xBF) break;
+                        continue;
+                    }
+                    break;
                 }
                 self.skip_until = end;
+                // If we broke on LS/PS/BOM, set up a pending drain past it so
+                // next call resumes scanning the ident-bitmap continuation.
+                if (end < n) {
+                    const c = self.src[end];
+                    if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                        (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9))
+                    {
+                        if (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9) self.saw_nl = true;
+                        self.skip_until = end + 3;
+                        if (end + 3 < n) {
+                            const nb = self.src[end + 3];
+                            if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                                nb == '_' or nb == '$' or nb >= 0x80 or (nb >= '0' and nb <= '9'))
+                            {
+                                self.pending_drain_pos = end + 3;
+                            }
+                        }
+                    } else if (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and self.src[end + 2] == 0xBF) {
+                        self.skip_until = end + 3;
+                        if (end + 3 < n) {
+                            const nb = self.src[end + 3];
+                            if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                                nb == '_' or nb == '$' or nb >= 0x80 or (nb >= '0' and nb <= '9'))
+                            {
+                                self.pending_drain_pos = end + 3;
+                            }
+                        }
+                    }
+                }
                 const text = self.src[p..end];
                 const t_tag = keywordLookup(text, self.is_ts);
-                // Emit the keyword tag unchanged; the post-dot rule only
-                // affects `prev_kind` tracking (matches reference lexer).
                 self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot)
                     .identifier
                 else

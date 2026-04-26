@@ -83,9 +83,9 @@ pub fn main(init: std.process.Init) !void {
     var skipped: u32 = 0;
     var total: u32 = 0;
 
-    var fail_buf: [100][]const u8 = undefined;
+    var fail_buf: [10000][]const u8 = undefined;
     var fail_count: usize = 0;
-    var false_reject_buf: [500][]const u8 = undefined;
+    var false_reject_buf: [10000][]const u8 = undefined;
     var false_reject_count: usize = 0;
     for (file_list.items) |path| {
 
