@@ -540,6 +540,8 @@ pub const LexIter = struct {
                         (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
                         cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
                         cp == 0x2028 or cp == 0x2029) valid = false;
+                    // ZWNJ (200C) and ZWJ (200D) are ID_Continue only, not ID_Start.
+                    if (cp == 0x200C or cp == 0x200D) valid = false;
                     // ASCII codepoints must be valid ID_Start chars at first
                     // position (a-z, A-Z, _, $). Non-ASCII (>=0x80) is
                     // permissively accepted (full ID_Start table not available).
