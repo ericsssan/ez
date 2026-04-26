@@ -47,22 +47,37 @@
 
 const std = @import("std");
 const ParallelRunner = @import("parallel.zig").ParallelRunner;
+const FileResult = @import("parallel.zig").FileResult;
 const Io = std.Io;
+const parser_root = @import("../parser/root.zig");
+const Lexer = parser_root.Lexer;
+const Parser = parser_root.Parser;
+const Ast = parser_root.ast.Ast;
+const Language = parser_root.token.Language;
+const semantic_mod = parser_root.semantic;
+const linter_mod = @import("../linter/linter.zig");
+const InlineDisables = @import("../linter/inline_disable.zig").InlineDisables;
+const LintDiagnostic = parser_root.diagnostic.Diagnostic;
 
-/// Per-file state carried forward across stages. Phase1 fills `source` and
-/// `bitmaps`; Phase2+parse fills `ast`; Sem reads ast and writes result.
-/// Stages signal completion to the next stage by enqueueing the next job.
+/// Per-file state carried forward across stages. Each file owns a long-lived
+/// arena allocated by the phase1_load handler and freed by the sem_and_rules
+/// handler. Stage handoffs are signalled by enqueueing the next job; data
+/// passed through these fields.
 pub const FileState = struct {
     file_path: []const u8,
-    /// Allocator for this file's lifetime. Reset between batches when reusing
-    /// a worker's arena. Currently each file gets its own arena.
+    /// Per-file arena (heap-allocated so workers can pass &arena across
+    /// stages without stack-lifetime issues). Allocated by phase1_load,
+    /// deinit'd by sem_and_rules.
     arena: ?*std.heap.ArenaAllocator = null,
 
-    // Stage handoffs (heap-allocated, kept alive across stages).
-    // Currently unused — handlers go straight through `lintOneFile`. Will be
-    // populated as we split stages.
-    source: ?[]const u8 = null,
-    // bitmaps, ast, sem_result — added when stage split lands.
+    // Stage 1 → Stage 2 handoff
+    source: []const u8 = "",
+
+    // Stage 2 → Stage 3 handoff
+    lex_result: ?Lexer.TokenizeResult = null,
+    tree: ?Ast = null,
+    /// Set if any stage failed; sem_and_rules will write an error result and skip work.
+    failure_msg: ?[]const u8 = null,
 };
 
 /// Job kinds. The shared queue holds packed (tag, file_idx) pairs.
@@ -145,39 +160,166 @@ const PoolCtx = struct {
 };
 
 fn workerLoop(ctx: *PoolCtx) void {
-    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena.deinit();
-
     while (true) {
         const total: u32 = @intCast(ctx.states.len);
         if (ctx.completed.load(.acquire) >= total) return;
 
         const item = ctx.queue.pop() orelse {
-            // Queue empty but not all files done — spin briefly waiting for
-            // upstream stages to enqueue more work.
             std.atomic.spinLoopHint();
             continue;
         };
 
         switch (item.job) {
-            .phase1_load => {
-                // Skeleton: no real Phase1 split yet. Enqueue phase2_parse
-                // directly so the file flows through.
-                ctx.queue.push(.phase2_parse, item.file_idx);
-            },
-            .phase2_parse => {
-                // Skeleton: no parse split yet. Enqueue sem_and_rules.
-                ctx.queue.push(.sem_and_rules, item.file_idx);
-            },
-            .sem_and_rules => {
-                // Real work: full lintOneFile (does I/O + lex + parse + sem + rules).
-                // Once we split stages, this handler shrinks to just sem+rules.
-                ctx.runner.lintOneFile(ctx.io, ctx.states[item.file_idx].file_path, &arena);
-                _ = arena.reset(.retain_capacity);
-                _ = ctx.completed.fetchAdd(1, .release);
-            },
+            .phase1_load => handlePhase1Load(ctx, item.file_idx),
+            .phase2_parse => handlePhase2Parse(ctx, item.file_idx),
+            .sem_and_rules => handleSemAndRules(ctx, item.file_idx),
         }
     }
+}
+
+/// Stage 1: AIO load source. Cheap (~us per file). Allocates per-file arena.
+/// On failure: stash failure_msg and short-circuit to sem_and_rules to write
+/// the error result and free the arena.
+fn handlePhase1Load(ctx: *PoolCtx, file_idx: u32) void {
+    const state = &ctx.states[file_idx];
+    const arena_impl = ctx.runner.allocator.create(std.heap.ArenaAllocator) catch {
+        state.failure_msg = "arena alloc failed";
+        ctx.queue.push(.sem_and_rules, file_idx);
+        return;
+    };
+    arena_impl.* = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    state.arena = arena_impl;
+
+    const arena = arena_impl.allocator();
+    state.source = Io.Dir.cwd().readFileAlloc(
+        ctx.io, state.file_path, arena, Io.Limit.limited(10 * 1024 * 1024),
+    ) catch {
+        state.failure_msg = "could not read file";
+        ctx.queue.push(.sem_and_rules, file_idx);
+        return;
+    };
+    ctx.queue.push(.phase2_parse, file_idx);
+}
+
+/// Stage 2: lex (Phase 1 + Phase 2) + parse → AST. The bulk of CPU work.
+/// Output stored in FileState; passed to sem_and_rules.
+fn handlePhase2Parse(ctx: *PoolCtx, file_idx: u32) void {
+    const state = &ctx.states[file_idx];
+    const arena = state.arena.?.allocator();
+    const lang = Language.fromExtension(state.file_path) orelse .js;
+
+    state.lex_result = Lexer.tokenizeWithLanguage(arena, state.source, lang) catch {
+        state.failure_msg = "tokenization failed";
+        ctx.queue.push(.sem_and_rules, file_idx);
+        return;
+    };
+
+    const is_module = std.mem.endsWith(u8, state.file_path, ".mjs") or
+                      std.mem.endsWith(u8, state.file_path, ".mts");
+    state.tree = Parser.parseWithLanguage(
+        arena, state.source, state.lex_result.?.tokens.slice(), lang, is_module,
+    ) catch {
+        state.failure_msg = "parsing failed";
+        ctx.queue.push(.sem_and_rules, file_idx);
+        return;
+    };
+    ctx.queue.push(.sem_and_rules, file_idx);
+}
+
+/// Stage 3: sem + lint rules + format output. Final stage; frees per-file arena.
+fn handleSemAndRules(ctx: *PoolCtx, file_idx: u32) void {
+    const state = &ctx.states[file_idx];
+    defer {
+        if (state.arena) |a| {
+            a.deinit();
+            ctx.runner.allocator.destroy(a);
+        }
+        _ = ctx.completed.fetchAdd(1, .release);
+    }
+
+    if (state.failure_msg) |msg| {
+        const out = std.fmt.allocPrint(
+            ctx.runner.allocator, "{s}: error: {s}\n", .{ state.file_path, msg },
+        ) catch "";
+        ctx.runner.appendResult(.{
+            .file_path = state.file_path, .output = out,
+            .error_count = 1, .warning_count = 0, .had_error = true,
+        });
+        return;
+    }
+
+    const arena = state.arena.?.allocator();
+    const lang = Language.fromExtension(state.file_path) orelse .js;
+    var tree = state.tree.?;
+
+    var sem_result = if (linter_mod.needsSemantic(ctx.runner.config))
+        semantic_mod.SemanticAnalyzer.analyzeWithOptions(arena, &tree, .{
+            .build_parents = true,
+            .build_ref_ranges = linter_mod.configNeedsRefRanges(ctx.runner.config),
+        }) catch {
+            const out = std.fmt.allocPrint(
+                ctx.runner.allocator, "{s}: error: semantic analysis failed\n", .{state.file_path},
+            ) catch "";
+            ctx.runner.appendResult(.{
+                .file_path = state.file_path, .output = out,
+                .error_count = 1, .warning_count = 0, .had_error = true,
+            });
+            return;
+        }
+    else
+        semantic_mod.SemanticResult.initEmpty(arena);
+
+    if (ctx.runner.bench_skip_lint) {
+        ctx.runner.appendResult(.{
+            .file_path = state.file_path, .output = "",
+            .error_count = 0, .warning_count = 0, .had_error = false,
+        });
+        return;
+    }
+
+    // Full lint + diagnostic-formatting path is monolithic in lintSource.
+    // To avoid duplicating ~300 lines of formatting code, delegate to a helper
+    // exposed from parallel.zig. For now: re-lex via lintSource (cheap fallback
+    // — bench mode skips this path). Real production split lands in next pass.
+    const lex = state.lex_result.?;
+    const raw_diagnostics = linter_mod.lint(arena, &tree, &sem_result, ctx.runner.config, lang) catch {
+        const out = std.fmt.allocPrint(
+            ctx.runner.allocator, "{s}: error: linting failed\n", .{state.file_path},
+        ) catch "";
+        ctx.runner.appendResult(.{
+            .file_path = state.file_path, .output = out,
+            .error_count = 1, .warning_count = 0, .had_error = true,
+        });
+        return;
+    };
+
+    var disables = InlineDisables.parseFromComments(
+        arena, state.source, lex.comment_starts, lex.comment_ends, lex.comment_kinds,
+    ) catch InlineDisables.empty();
+    const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, state.source) catch raw_diagnostics;
+
+    const total_count = tree.errors.len + diagnostics.len;
+    if (total_count == 0) {
+        ctx.runner.appendResult(.{
+            .file_path = state.file_path, .output = "",
+            .error_count = 0, .warning_count = 0, .had_error = false,
+        });
+        return;
+    }
+
+    // Diagnostics formatting deferred to a follow-up pass that exposes
+    // ParallelRunner.formatDiagnostics. For now report counts but no formatted output.
+    var error_count: u32 = 0;
+    var warning_count: u32 = 0;
+    for (tree.errors) |_| error_count += 1;
+    for (diagnostics) |*d| {
+        if (d.severity == .@"error") error_count += 1 else warning_count += 1;
+    }
+    ctx.runner.appendResult(.{
+        .file_path = state.file_path, .output = "",
+        .error_count = error_count, .warning_count = warning_count,
+        .had_error = error_count > 0,
+    });
 }
 
 /// Public entry. CI-mode multi-file pipeline. Currently routes everything
