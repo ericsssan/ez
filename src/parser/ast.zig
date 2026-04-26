@@ -760,7 +760,10 @@ pub const Ast = struct {
     pub inline fn tokenText(self: *const Ast, index: TokenIndex) []const u8 {
         const start = self.tokenStart(index);
         const len = self.tokens.items(.len)[index];
-        if (len > 0) return self.source[start..start + len];
+        if (len > 0) {
+            const end = @min(start + len, @as(u32, @intCast(self.source.len)));
+            return self.source[start..end];
+        }
 
         // Fallback for tokens with zero len (shouldn't happen in practice).
         const tag = self.tokenTag(index);

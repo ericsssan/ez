@@ -551,6 +551,7 @@ pub const Parser = struct {
     /// (source.len/2 is a provable upper bound on JS token count).
     fn advanceFromIter(self: *Parser, it: *@import("lex_iter.zig").LexIter) TokenIndex {
         const cur = it.peekToken(0);
+        const nl = it.hasNewlineBefore(0);
         const tag = it.advance();
         const result = self.tok_i;
         if (self.tokens_owned) |*owned| {
@@ -558,7 +559,7 @@ pub const Parser = struct {
                 .tag = tag,
                 .start = cur.start,
                 .len = cur.len,
-                .has_newline_before = false, // TODO: thread through iter
+                .has_newline_before = nl,
             });
             // Mirror length on the Slice view (same underlying buffer).
             self.tokens.len = owned.len;
@@ -2317,6 +2318,9 @@ pub const Parser = struct {
             if (self.source[end] == '\\') end += 1;
             end += 1;
         }
+        // Cap at source.len — escape sequence at EOF can run end past it,
+        // and the closing quote is missing for unterminated string literals.
+        if (end > self.source.len) end = @intCast(self.source.len);
         return self.source[start + 1 .. end];
     }
 

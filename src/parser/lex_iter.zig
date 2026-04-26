@@ -112,6 +112,9 @@ pub const LexIter = struct {
     brace_d: [16]u32 = [_]u32{0} ** 16,
     /// EOF marker — once true, walker yields no more tokens.
     eof: bool = false,
+    /// has_newline_before for the most-recently-emitted token (captured
+    /// inside walkerNext just before saw_nl is cleared).
+    last_emitted_nl: bool = false,
     /// TypeScript mode — affects keyword recognition (e.g. `type`, `as`,
     /// `satisfies` etc are keywords in TS, identifiers in JS).
     is_ts: bool = false,
@@ -156,7 +159,8 @@ pub const LexIter = struct {
             self.tags[slot_idx] = t.tag;
             self.starts[slot_idx] = t.start;
             self.lens[slot_idx] = t.len;
-            self.nls[slot_idx] = false;
+            // walker captured saw_nl into last_emitted_nl right before clearing.
+            self.nls[slot_idx] = self.last_emitted_nl;
             self.valid |= @as(u8, 1) << @intCast(slot_idx);
         }
     }
@@ -308,6 +312,7 @@ pub const LexIter = struct {
                 self.skip_until = end_n;
                 self.prev_kind = tag_n;
                 const tok = Token{ .tag = tag_n, .start = p, .len = end_n - p };
+                self.last_emitted_nl = self.saw_nl;
                 self.saw_nl = false;
                 self.at_line_start = false;
                 return tok;
@@ -336,6 +341,7 @@ pub const LexIter = struct {
                 else
                     t_tag;
                 const tok = Token{ .tag = t_tag, .start = p, .len = end - p };
+                self.last_emitted_nl = self.saw_nl;
                 self.saw_nl = false;
                 self.at_line_start = false;
                 return tok;
@@ -523,6 +529,7 @@ pub const LexIter = struct {
             self.skip_until = end;
             self.prev_kind = tag;
             const tok = Token{ .tag = tag, .start = p, .len = end - p };
+            self.last_emitted_nl = self.saw_nl;
             self.saw_nl = false;
             self.at_line_start = false;
             return tok;
@@ -584,16 +591,16 @@ pub fn tokenizeViaIter(
 
     while (true) {
         const cur = iter.peekToken(0);
+        const nl = iter.hasNewlineBefore(0);
         const t = iter.advance();
         if (t == .eof) break;
         try tokens.append(alloc, .{
             .tag = t,
             .start = cur.start,
             .len = cur.len,
-            .has_newline_before = false,
+            .has_newline_before = nl,
         });
     }
-    // EOF sentinel
     try tokens.append(alloc, .{
         .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false,
     });
