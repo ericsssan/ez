@@ -341,6 +341,20 @@ pub fn build(b: *std.Build) void {
     const sjp_step = b.step("test-sj-profile", "Long-running profile harness for sampling");
     sjp_step.dependOn(&sjp_cmd.step);
 
+    // ── Parser profile harness ──
+    const pp_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_parse_profile.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    pp_mod.addImport("ez", test_mod);
+    const pp_exe = b.addExecutable(.{ .name = "test_parse_profile", .root_module = pp_mod });
+    b.installArtifact(pp_exe);
+    const pp_cmd = b.addRunArtifact(pp_exe);
+    pp_cmd.step.dependOn(b.getInstallStep());
+    const pp_step = b.step("test-parse-profile", "Long-running parser profile harness");
+    pp_step.dependOn(&pp_cmd.step);
+
     // ── Real lex-parse pipeline (with shared token buffer) ──
     const real_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_pipeline_real.zig"),
