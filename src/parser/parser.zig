@@ -5711,6 +5711,14 @@ pub const Parser = struct {
                 while (self.peek() != .r_brace and !self.isAtEnd()) {
                     if (self.eat(.ellipsis)) |rest_tok| {
                         const rest_binding = try self.parseBindingPattern();
+                        // Object binding rest target must be a single identifier (BindingIdentifier).
+                        if (rest_binding != .none and !self.is_ts) {
+                            const rb_tag = self.node_tags_ptr[rest_binding.toInt()];
+                            if (rb_tag != .identifier) {
+                                try self.emitError("Object rest binding must be a simple identifier");
+                                return error.ParseError;
+                            }
+                        }
                         const rest = try self.addNode(.{
                             .tag = .rest_element,
                             .main_token = rest_tok,
