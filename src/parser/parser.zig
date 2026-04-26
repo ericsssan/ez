@@ -1812,22 +1812,21 @@ pub const Parser = struct {
         if (self.emit_scope_events) {
             var depth: i32 = 0;
             const evs = self.scope_events.events.items[scope_ev + 1 ..];
-            // Use a tiny inline buffer; scan O(N²) over local declares (small n).
             var names_buf: [64][]const u8 = undefined;
             var names_n: usize = 0;
             for (evs) |ev| {
                 switch (ev.kind) {
-                    .scope_open => depth += 1,
+                    // Elided scope_opens have no matching scope_close — skip
+                    // them in depth tracking. ScopeKind.elided = 10.
+                    .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
                     .scope_close => depth -= 1,
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                        // Only check non-hoisted (let/const/class/function in block).
-                        // var hoists out — skip. function_decl in block IS lexically
-                        // declared per ES2015+.
-                        if (bk == .@"var") continue;
+                        if (bk == .@"var" or bk == .parameter) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
+                        if (tok_start + tok_len > self.source.len) continue;
                         const name = self.source[tok_start..tok_start + tok_len];
                         var dup = false;
                         for (names_buf[0..names_n]) |existing| {
