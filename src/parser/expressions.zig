@@ -4359,6 +4359,12 @@ fn parseBlockBodyWithStrictChecks(p: *Parser, params: ?SubRange, name: NodeIndex
         }
     }
 
+    // Methods always reject duplicate params; functions reject if strict or non-simple.
+    if (params) |pr| {
+        const must_unique = p.in_method or p.in_strict or p.hasNonSimpleParams(pr);
+        if (must_unique) try p.checkUniqueParams(pr);
+    }
+
     // If body made us newly strict, check additional restrictions retroactively
     if (became_strict) {
         if (params) |pr| {

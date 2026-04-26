@@ -5907,6 +5907,31 @@ pub const Parser = struct {
         return false;
     }
 
+    /// Check no duplicate identifier names in top-level simple params.
+    /// Spec: methods, arrows, strict, or non-simple params reject duplicates.
+    pub fn checkUniqueParams(self: *Parser, params: SubRange) !void {
+        var i = params.start;
+        while (i < params.end) : (i += 1) {
+            const a = NodeIndex.fromInt(self.extra_data.items[i]);
+            if (a == .none) continue;
+            if (self.node_tags_ptr[a.toInt()] != .identifier) continue;
+            const a_tok = self.node_main_token_ptr[a.toInt()];
+            const a_name = self.tokenText(a_tok);
+            var j = i + 1;
+            while (j < params.end) : (j += 1) {
+                const b = NodeIndex.fromInt(self.extra_data.items[j]);
+                if (b == .none) continue;
+                if (self.node_tags_ptr[b.toInt()] != .identifier) continue;
+                const b_tok = self.node_main_token_ptr[b.toInt()];
+                const b_name = self.tokenText(b_tok);
+                if (std.mem.eql(u8, a_name, b_name)) {
+                    try self.emitError("Duplicate parameter name not allowed in this context");
+                    return error.ParseError;
+                }
+            }
+        }
+    }
+
     pub fn checkParamsStrictMode(self: *Parser, params: SubRange) !void {
         var i = params.start;
         while (i < params.end) : (i += 1) {
