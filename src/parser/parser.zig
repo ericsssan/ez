@@ -3668,7 +3668,7 @@ pub const Parser = struct {
                 break :blk expr;
             }
             const expr = try self.parseAssignmentExpression();
-            // Reject binary/unary expressions — extends only allows LHS expressions
+            // Reject binary/unary expressions and arrow functions in extends
             const expr_tag = self.node_tags_ptr[expr.toInt()];
             switch (expr_tag) {
                 .add, .subtract, .multiply, .divide, .modulo, .exponentiate,
@@ -3679,6 +3679,7 @@ pub const Parser = struct {
                 .shift_left, .shift_right, .unsigned_shift_right,
                 .logical_not, .bitwise_not, .unary_plus, .unary_minus,
                 .instanceof_expr, .in_expr,
+                .arrow_fn, .async_arrow_fn,
                 => try self.emitDiagnostic(self.currentSpan(), "extends requires a constructor, not an expression", .{}),
                 else => {},
             }

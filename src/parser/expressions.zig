@@ -582,7 +582,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     child_tag == .fn_expr or
                     child_tag == .optional_member_expr or
                     child_tag == .optional_computed_member_expr or
-                    child_tag == .optional_call_expr)
+                    child_tag == .optional_call_expr or
+                    child_tag == .import_meta or
+                    child_tag == .import_expr)
                 {
                     try p.emitError("Invalid destructuring target");
                     return error.ParseError;
@@ -2698,6 +2700,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
 
     const fn_expr_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
+    p.in_fn_params = false; // body: yield/await valid in generator/async fn
     const fn_expr_return_type = try p.parseOptionalTypeAnnotation();
 
     // TS ambient function expressions can be bodyless in certain contexts
@@ -2818,6 +2821,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         switch (et) {
             .logical_not, .bitwise_not, .unary_plus, .unary_minus,
             .typeof_expr, .void_expr, .delete_expr,
+            .arrow_fn, .async_arrow_fn,
             => try p.emitError("extends requires a constructor, not an expression"),
             else => {},
         }
