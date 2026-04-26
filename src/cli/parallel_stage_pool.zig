@@ -89,6 +89,24 @@ pub const Job = enum(u8) {
     phase2_parse,
     /// Stage 3: scope/refs resolution + CFG (parallel internal) + lint rules.
     sem_and_rules,
+    /// LSP big-file mode (NOT YET IMPLEMENTED): split a single huge file
+    /// into N byte-range chunks. Each chunk lex+parses independently into
+    /// a sub-AST; merged afterwards. Reuses the same worker pool as the
+    /// CI-throughput jobs.
+    ///
+    /// Implementation requires (not done this session):
+    ///   1. Parser entry `parseTokenRange(tokens, [start, end))` that
+    ///      parses statements within a window without wrapping in a
+    ///      module/global scope. Today's parseProgram is monolithic.
+    ///   2. Sub-AST merge: concat nodes/extra_data with NodeIndex offset
+    ///      rebasing; concat scope_events; merge diagnostics.
+    ///   3. Speculation: each chunk assumes default state at entry; the
+    ///      merge pass validates that the actual state at chunk N's start
+    ///      matches what chunk N-1 ended in. Recover wrong-state chunks
+    ///      by re-tokenizing the prefix from the next safe boundary.
+    /// Today this tag exists only as a placeholder so the dispatch shape
+    /// is fixed; the handler asserts unreachable.
+    phase2_parse_chunk,
 };
 
 /// 64-bit packed job: tag in high 8 bits, file_idx in low 32 bits.
@@ -173,6 +191,7 @@ fn workerLoop(ctx: *PoolCtx) void {
             .phase1_load => handlePhase1Load(ctx, item.file_idx),
             .phase2_parse => handlePhase2Parse(ctx, item.file_idx),
             .sem_and_rules => handleSemAndRules(ctx, item.file_idx),
+            .phase2_parse_chunk => unreachable, // not yet implemented
         }
     }
 }
@@ -322,14 +341,32 @@ fn handleSemAndRules(ctx: *PoolCtx, file_idx: u32) void {
     });
 }
 
-/// Public entry. CI-mode multi-file pipeline. Currently routes everything
-/// through the existing `lintOneFile` via the sem_and_rules handler — proves
-/// the dispatch wiring works. Real per-stage handlers land incrementally.
+/// Worker-count tuning. Current shared-MPMC design has a single pool that
+/// drains any job type — workers self-balance via FIFO. Setting this to a
+/// non-default value is for benchmark exploration only. Future stage-
+/// partitioned design (separate pools per stage) would expose per-stage
+/// counts here.
+pub const StagePoolOptions = struct {
+    /// 0 = use `std.Thread.getCpuCount()`. >0 = override. Capped to file count.
+    worker_count: u32 = 0,
+};
+
+/// Public entry. CI-mode multi-file pipeline. Long-lived workers drain a
+/// shared queue of staged jobs. Each file flows phase1_load → phase2_parse
+/// → sem_and_rules. All three stages compete for the same workers; the
+/// design wins on per-file thread-spawn cost vs `lintFilesPooled`.
 pub fn lintFilesStaged(runner: *ParallelRunner, io: Io, files: []const []const u8) !void {
+    return lintFilesStagedOpts(runner, io, files, .{});
+}
+
+pub fn lintFilesStagedOpts(
+    runner: *ParallelRunner, io: Io, files: []const []const u8, opts: StagePoolOptions,
+) !void {
     if (files.len == 0) return;
 
-    const cpu_count = std.Thread.getCpuCount() catch 1;
-    const worker_count = @min(files.len, cpu_count);
+    const cpu_count: u32 = @intCast(std.Thread.getCpuCount() catch 1);
+    const target = if (opts.worker_count == 0) cpu_count else opts.worker_count;
+    const worker_count = @min(@as(u32, @intCast(files.len)), target);
 
     try runner.results.ensureTotalCapacity(runner.allocator, runner.results.items.len + files.len);
 
