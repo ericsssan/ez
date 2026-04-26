@@ -5662,6 +5662,16 @@ pub const Parser = struct {
                         if (key_tag == .kw_await and (self.in_async or self.is_module)) {
                             try self.emitDiagnostic(self.currentSpan(), "'await' is not allowed as a binding name in async/module", .{});
                         }
+                        // 'enum' is a future-reserved word in any mode — never valid as a binding.
+                        if (key_tag == .kw_enum) {
+                            try self.emitDiagnostic(self.currentSpan(), "'enum' is not allowed as a binding name", .{});
+                            return error.ParseError;
+                        }
+                        // Strict reserved words rejected in strict-mode bindings.
+                        if (self.in_strict and self.isStrictReservedWord(key_tok)) {
+                            try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(key_tok)});
+                            return error.ParseError;
+                        }
                         if (self.eat(.equal) != null) {
                             // Set decl_name_text so named fn/class expressions in the
                             // default get fn_expr_name binding (ESLint fn_expr_exceptions).
