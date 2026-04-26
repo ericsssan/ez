@@ -4335,6 +4335,23 @@ pub const Parser = struct {
             const body = try self.parseBlockStatement();
             try self.emitScopeClose(.none); // close method scope
 
+            // Static method named 'prototype' is invalid (any flavor).
+            if (is_static and key != .none) {
+                const key_tag = self.node_tags_ptr[key.toInt()];
+                const key_tok = self.node_main_token_ptr[key.toInt()];
+                var name_text: []const u8 = "";
+                if (key_tag == .identifier and self.tokenTagAt(key_tok) != .hash) {
+                    name_text = self.tokenText(key_tok);
+                } else if (key_tag == .string_literal) {
+                    const tok_start = self.tok_starts_ptr[key_tok];
+                    name_text = self.getStringContent(tok_start);
+                }
+                if (std.mem.eql(u8, name_text, "prototype")) {
+                    try self.emitError("Static class method cannot be named 'prototype'");
+                    return error.ParseError;
+                }
+            }
+
             const method_extra = try self.addExtra(ast.MethodData, .{
                 .params_start = params.start,
                 .params_end = params.end,
