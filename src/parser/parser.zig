@@ -3493,11 +3493,15 @@ pub const Parser = struct {
         defer self.in_strict = prev_strict;
 
         if (self.in_strict and !prev_strict) {
-            // Function name must not be eval/arguments in strict mode
+            // Function name must not be eval/arguments or strict-reserved in strict mode
             if (name != .none) {
                 const fn_name_tok = self.node_main_token_ptr[name.toInt()];
                 const fn_name_text = self.tokenText(fn_name_tok);
                 if (std.mem.eql(u8, fn_name_text, "eval") or std.mem.eql(u8, fn_name_text, "arguments")) {
+                    try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a function name in strict mode", .{fn_name_text});
+                    return error.ParseError;
+                }
+                if (!self.is_ts and self.isStrictReservedWord(fn_name_tok)) {
                     try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a function name in strict mode", .{fn_name_text});
                     return error.ParseError;
                 }
@@ -6219,6 +6223,10 @@ pub const Parser = struct {
                 const ptok = self.node_main_token_ptr[param.toInt()];
                 const ptext = self.tokenText(ptok);
                 if (std.mem.eql(u8, ptext, "eval") or std.mem.eql(u8, ptext, "arguments")) {
+                    try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a parameter name in strict mode", .{ptext});
+                    return error.ParseError;
+                }
+                if (!self.is_ts and self.isStrictReservedWord(ptok)) {
                     try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a parameter name in strict mode", .{ptext});
                     return error.ParseError;
                 }
