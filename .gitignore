@@ -34,3 +34,30 @@ sanz.node
 
 # Scratch / ad-hoc output
 tmp/
+
+# Dated session logs / conversation captures
+2025-*.txt
+2026-*.txt
+latest-convo.txt
+
+# Xcode Instruments traces
+*.trace/
+
+# Throwaway debug / repro files
+debug_*.js
+test_case*_tmp.js
+test_*_tmp.js
+
+# Compiled debug / scratch binaries (no extension)
+bench_parallel_debug
+test_evented
+test_evented_type
+root
+
+# Profiling artifacts (extension)
+profile.json.gz
+*.profraw
+*.profdata
+
+# Ad-hoc debug capture dir
+debug/
