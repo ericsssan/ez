@@ -924,14 +924,27 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 const tok = p.tok_i;
                 const ts = p.tok_starts_ptr[tok];
                 const tl = p.tok_lens_ptr[tok];
-                if (tl >= 2 and ts + tl <= p.source.len) {
-                    const open = p.source[ts];
-                    const last = p.source[ts + tl - 1];
-                    if (last != open) {
-                        try p.emitError("Unterminated string literal");
-                        return error.ParseError;
+                if (tl < 2 or ts + tl > p.source.len) {
+                    try p.emitError("Unterminated string literal");
+                    return error.ParseError;
+                }
+                const open = p.source[ts];
+                // Walk the string body to verify the closing quote is unescaped.
+                var ix: u32 = ts + 1;
+                const stop = ts + tl;
+                var terminated = false;
+                while (ix < stop) : (ix += 1) {
+                    const c = p.source[ix];
+                    if (c == '\\') {
+                        if (ix + 1 < stop) ix += 1; // skip next char
+                        continue;
                     }
-                } else if (tl < 2 or ts + tl > p.source.len) {
+                    if (c == open) {
+                        if (ix + 1 == stop) terminated = true;
+                        break;
+                    }
+                }
+                if (!terminated) {
                     try p.emitError("Unterminated string literal");
                     return error.ParseError;
                 }
