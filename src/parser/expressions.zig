@@ -2999,6 +2999,9 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         _ = p.advance(); // consume `.`
         if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "target"))) {
             const target_tok = p.advance(); // consume `target`
+            if (!p.in_function and !p.in_class_field and !p.in_class and !p.is_ts) {
+                try p.emitError("'new.target' is only valid inside functions or class members");
+            }
             const meta_node = try p.addNode(.{
                 .tag = .property_ident,
                 .main_token = new_tok,
