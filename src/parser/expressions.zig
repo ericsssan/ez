@@ -1024,6 +1024,41 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 try p.emitError("Invalid line terminator in regular expression literal");
                 return error.ParseError;
             }
+            // Validate regex flags: no duplicates, `u` and `v` mutually exclusive.
+            // Find flags region: after closing `/` to token end.
+            {
+                var ci: u32 = ts + 1;
+                var ic = false;
+                const stop2 = ts + tl;
+                var close: u32 = stop2;
+                while (ci < stop2) : (ci += 1) {
+                    const c = p.source[ci];
+                    if (c == '\\' and ci + 1 < stop2) { ci += 1; continue; }
+                    if (c == '[') ic = true
+                    else if (c == ']') ic = false
+                    else if (c == '/' and !ic) { close = ci + 1; break; }
+                }
+                var seen: [128]bool = @splat(false);
+                var has_u = false;
+                var has_v = false;
+                var fi: u32 = close;
+                while (fi < stop2) : (fi += 1) {
+                    const c = p.source[fi];
+                    if (c < 128) {
+                        if (seen[c]) {
+                            try p.emitError("Duplicate regular expression flag");
+                            return error.ParseError;
+                        }
+                        seen[c] = true;
+                        if (c == 'u') has_u = true;
+                        if (c == 'v') has_v = true;
+                    }
+                }
+                if (has_u and has_v) {
+                    try p.emitError("Regex flags 'u' and 'v' are mutually exclusive");
+                    return error.ParseError;
+                }
+            }
             break :blk try parseLiteral(p, .regex_literal);
         },
         .kw_true, .kw_false => try parseLiteral(p, .boolean_literal),
