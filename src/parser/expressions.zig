@@ -1042,9 +1042,14 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
         .kw_async => try parseAsyncExpressionOrIdentifier(p),
         .kw_import => try parseImportExpression(p),
         .hash => blk: {
-            // #identifier — private brand check (used with `in`: `#x in obj`)
+            // #identifier — private brand check (used with `in`: `#x in obj`).
+            // Only valid inside a class body.
+            if (!p.in_class and !p.is_ts) {
+                try p.emitError("Private name '#...' is not allowed outside a class body");
+                return error.ParseError;
+            }
             const hash_tok = p.advance();
-            if (p.peek() == .identifier) _ = p.advance();
+            if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
             break :blk try p.addNode(.{
                 .tag = .identifier,
                 .main_token = hash_tok,
