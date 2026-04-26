@@ -3360,10 +3360,6 @@ pub const Parser = struct {
         if (self.peek() == .l_brace) self.checkDirectivePrologueAt(self.tok_i + 1);
         defer self.in_strict = prev_strict;
 
-        // If the function body has "use strict", check restrictions retroactively:
-        // Note: non-simple params + "use strict" is only a SyntaxError in ES2016+ (ES7+).
-        // We don't track ecmaVersion in the parser, so we skip that check here to avoid
-        // rejecting valid ES6 code. (Acorn/Espree gates this on ecmaVersion >= 7.)
         if (self.in_strict and !prev_strict) {
             // Function name must not be eval/arguments in strict mode
             if (name != .none) {
@@ -3374,8 +3370,12 @@ pub const Parser = struct {
                     return error.ParseError;
                 }
             }
-            // Check params for eval/arguments
             try self.checkParamsStrictMode(params);
+            // ES2016+: 'use strict' directive forbidden when params are non-simple
+            // (destructuring / default values / rest).
+            if (hasNonSimpleParam(self, params)) {
+                try self.emitError("Illegal 'use strict' directive in function with non-simple parameter list");
+            }
         }
 
         // TS ambient/declare functions and overload signatures have no body.
@@ -5889,6 +5889,22 @@ pub const Parser = struct {
     }
 
     /// Check parameters for strict-mode eval/arguments restrictions.
+    /// Returns true if any parameter is non-simple (destructuring, default
+    /// value, rest). Used to gate ES2016+ 'use strict' directive validation.
+    pub fn hasNonSimpleParam(self: *Parser, params: SubRange) bool {
+        var i = params.start;
+        while (i < params.end) : (i += 1) {
+            const param = NodeIndex.fromInt(self.extra_data.items[i]);
+            if (param == .none) continue;
+            const param_tag = self.node_tags_ptr[param.toInt()];
+            switch (param_tag) {
+                .identifier => {},
+                else => return true,
+            }
+        }
+        return false;
+    }
+
     pub fn checkParamsStrictMode(self: *Parser, params: SubRange) !void {
         var i = params.start;
         while (i < params.end) : (i += 1) {
