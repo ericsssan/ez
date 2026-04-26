@@ -222,13 +222,19 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
         .kw_void => try parseUnaryOp(p, .void_expr),
         .kw_delete => blk: {
             const del_node = try parseUnaryOp(p, .delete_expr);
-            // In strict mode, `delete identifier` is a syntax error
-            if (p.in_strict and del_node != .none) {
+            if (del_node != .none) {
                 const del_data = p.node_data_ptr[del_node.toInt()];
                 if (del_data.lhs != .none) {
-                    const operand_tag = p.node_tags_ptr[del_data.lhs.toInt()];
-                    if (operand_tag == .identifier) {
-                        try p.emitError("'delete' of unqualified identifier in strict mode");
+                    // Strict mode: `delete identifier` invalid.
+                    if (p.in_strict) {
+                        const operand_tag = p.node_tags_ptr[del_data.lhs.toInt()];
+                        if (operand_tag == .identifier) {
+                            try p.emitError("'delete' of unqualified identifier in strict mode");
+                        }
+                    }
+                    // `delete obj.#priv` / `delete obj?.#priv` — invalid in any mode.
+                    if (containsPrivateMember(p, del_data.lhs)) {
+                        try p.emitError("'delete' of private name is not allowed");
                     }
                 }
             }
@@ -250,6 +256,27 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
 }
 
 // ── Unary helper ─────────────────────────────────────────────────
+
+/// True if `node` (or any sub-expression reached through paren grouping or
+/// member access chain) ultimately accesses a private name (`obj.#x`,
+/// `obj?.#x`, etc).
+fn containsPrivateMember(p: *Parser, node: NodeIndex) bool {
+    if (node == .none) return false;
+    const tag = p.node_tags_ptr[node.toInt()];
+    const data = p.node_data_ptr[node.toInt()];
+    return switch (tag) {
+        .grouping_expr => containsPrivateMember(p, data.lhs),
+        .member_expr, .optional_member_expr => blk: {
+            // rhs holds the property name (property_ident or identifier).
+            // Private if its main_token starts with `#`.
+            if (data.rhs == .none) break :blk false;
+            const main_tok = p.node_main_token_ptr[data.rhs.toInt()];
+            const tt = p.tokenTagAt(main_tok);
+            break :blk tt == .hash;
+        },
+        else => false,
+    };
+}
 
 fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
     const tok = p.advance();
