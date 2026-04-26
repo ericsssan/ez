@@ -4356,9 +4356,25 @@ pub const Parser = struct {
                 return no_body_node;
             }
 
+            // 'use strict' directive in method body with non-simple params is SyntaxError.
+            if (self.peek() == .l_brace) {
+                const peek_pos = self.tok_i + 1;
+                if (peek_pos < self.tokens.len and self.tokenTagAt(peek_pos) == .string_literal) {
+                    const ts_pos = self.tok_starts_ptr[peek_pos];
+                    const text = self.getStringContent(ts_pos);
+                    if (std.mem.eql(u8, text, "use strict") and hasNonSimpleParam(self, params)) {
+                        try self.emitError("Illegal 'use strict' directive in method with non-simple parameter list");
+                        return error.ParseError;
+                    }
+                }
+            }
+
             self.is_fn_body_block = true;
             const body = try self.parseBlockStatement();
             try self.emitScopeClose(.none); // close method scope
+
+            // Methods always reject duplicate params.
+            try self.checkUniqueParams(params);
 
             // Static method named 'prototype' is invalid (any flavor).
             if (is_static and key != .none) {
