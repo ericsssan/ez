@@ -1299,6 +1299,87 @@ pub const ParallelRunner = struct {
         std.debug.print("  Total:     {d:6}ms\n",         .{total_ms});
     }
 
+    /// Format parse-errors + lint-diagnostics into a single output string,
+    /// with line/column resolved via one forward pass over `source`.
+    /// Returns smp_allocator-owned slice (caller frees) + diagnostic counts.
+    /// Used by `lintSource` and the stage-based pool's `sem_and_rules` handler.
+    pub fn formatDiagnostics(
+        self: *ParallelRunner,
+        arena: std.mem.Allocator,
+        file_path: []const u8,
+        source: []const u8,
+        tree: *const ast_mod,
+        diagnostics: []const LintDiagnostic,
+    ) struct { output: []const u8, error_count: u32, warning_count: u32 } {
+        _ = self;
+        var error_count: u32 = 0;
+        var warning_count: u32 = 0;
+        const total_count = tree.errors.len + diagnostics.len;
+        if (total_count == 0) {
+            return .{ .output = "", .error_count = 0, .warning_count = 0 };
+        }
+
+        const DiagKind = enum(u1) { parse_error, lint };
+        const DiagRef = struct { offset: u32, kind: DiagKind, idx: u32 };
+        var empty_refs: [0]DiagRef = .{};
+        const diag_refs: []DiagRef = arena.alloc(DiagRef, total_count) catch empty_refs[0..];
+        var dr: u32 = 0;
+        for (tree.errors, 0..) |*err, i| {
+            if (dr < total_count) { diag_refs[dr] = .{ .offset = err.span.start, .kind = .parse_error, .idx = @intCast(i) }; dr += 1; }
+        }
+        for (diagnostics, 0..) |*diag, i| {
+            if (dr < total_count) { diag_refs[dr] = .{ .offset = diag.span.start, .kind = .lint, .idx = @intCast(i) }; dr += 1; }
+        }
+        std.sort.pdq(DiagRef, diag_refs[0..dr], {}, struct {
+            fn lt(_: void, a: DiagRef, b: DiagRef) bool { return a.offset < b.offset; }
+        }.lt);
+
+        var output_buf: std.ArrayList(u8) = .empty;
+        var cur_pos: u32 = 0;
+        var cur_line: u32 = 0;
+        var cur_line_start: u32 = 0;
+
+        for (diag_refs[0..dr]) |ref| {
+            while (cur_pos < ref.offset and cur_pos < source.len) : (cur_pos += 1) {
+                if (source[cur_pos] == '\n') {
+                    cur_line += 1;
+                    cur_line_start = cur_pos + 1;
+                }
+            }
+            const column = ref.offset - cur_line_start;
+
+            switch (ref.kind) {
+                .parse_error => {
+                    const err = &tree.errors[ref.idx];
+                    const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}: {s}\n", .{
+                        file_path, cur_line + 1, column + 1, err.severity.symbol(), err.message,
+                    }) catch continue;
+                    output_buf.appendSlice(arena, out) catch {};
+                    error_count += 1;
+                },
+                .lint => {
+                    const diag = &diagnostics[ref.idx];
+                    switch (diag.severity) {
+                        .@"error" => error_count += 1,
+                        .warning => warning_count += 1,
+                        else => {},
+                    }
+                    const rn = if (diag.rule_index < linter_mod.rule_names.len) linter_mod.rule_names[diag.rule_index] else "unknown";
+                    const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s})\n", .{
+                        file_path, cur_line + 1, column + 1, diag.severity.symbol(), rn,
+                    }) catch continue;
+                    output_buf.appendSlice(arena, out) catch {};
+                },
+            }
+        }
+
+        const owned = if (output_buf.items.len > 0)
+            std.heap.smp_allocator.dupe(u8, output_buf.items) catch ""
+        else
+            @as([]const u8, "");
+        return .{ .output = owned, .error_count = error_count, .warning_count = warning_count };
+    }
+
     pub fn appendResult(self: *ParallelRunner, result: FileResult) void {
         self.mutex.lock();
         defer self.mutex.unlock();

@@ -317,27 +317,16 @@ fn handleSemAndRules(ctx: *PoolCtx, file_idx: u32) void {
     ) catch InlineDisables.empty();
     const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, state.source) catch raw_diagnostics;
 
-    const total_count = tree.errors.len + diagnostics.len;
-    if (total_count == 0) {
-        ctx.runner.appendResult(.{
-            .file_path = state.file_path, .output = "",
-            .error_count = 0, .warning_count = 0, .had_error = false,
-        });
-        return;
-    }
-
-    // Diagnostics formatting deferred to a follow-up pass that exposes
-    // ParallelRunner.formatDiagnostics. For now report counts but no formatted output.
-    var error_count: u32 = 0;
-    var warning_count: u32 = 0;
-    for (tree.errors) |_| error_count += 1;
-    for (diagnostics) |*d| {
-        if (d.severity == .@"error") error_count += 1 else warning_count += 1;
-    }
+    // Format diagnostics into output string via shared ParallelRunner helper.
+    const formatted = ctx.runner.formatDiagnostics(
+        arena, state.file_path, state.source, &tree, diagnostics,
+    );
     ctx.runner.appendResult(.{
-        .file_path = state.file_path, .output = "",
-        .error_count = error_count, .warning_count = warning_count,
-        .had_error = error_count > 0,
+        .file_path = state.file_path,
+        .output = formatted.output,
+        .error_count = formatted.error_count,
+        .warning_count = formatted.warning_count,
+        .had_error = formatted.error_count > 0,
     });
 }
 
