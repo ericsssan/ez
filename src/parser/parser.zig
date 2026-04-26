@@ -221,6 +221,9 @@ pub const Parser = struct {
     /// Set when the lexically-enclosing class has an `extends` clause.
     /// Required for `super(...)` calls in the constructor.
     class_has_heritage: bool = false,
+    /// Set while parsing the binding pattern of a `let`/`const` declaration.
+    /// `let` as a binding name is forbidden anywhere in the pattern.
+    in_lexical_decl: bool = false,
     in_method: bool,
     in_conditional_extends: bool,
     language: Language,
@@ -3266,6 +3269,10 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+        const prev_lex = self.in_lexical_decl;
+        self.in_lexical_decl = (decl_tag == .kw_let or decl_tag == .kw_const);
+        defer self.in_lexical_decl = prev_lex;
+
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
         try self.scratch.append(self.gpa, @intFromEnum(first));
@@ -3322,6 +3329,10 @@ pub const Parser = struct {
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        const prev_lex = self.in_lexical_decl;
+        self.in_lexical_decl = (decl_tag == .kw_let or decl_tag == .kw_const);
+        defer self.in_lexical_decl = prev_lex;
 
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
@@ -5593,6 +5604,10 @@ pub const Parser = struct {
         switch (self.peek()) {
             .identifier => {
                 try self.checkStrictBinding(self.tok_i);
+                if (self.in_lexical_decl and std.mem.eql(u8, self.tokenText(self.tok_i), "let")) {
+                    try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a variable name in lexical declarations", .{});
+                    return error.ParseError;
+                }
                 return self.parseIdentifier();
             },
             // await can be binding name when not in async/module context (relaxed in TS)
@@ -5734,6 +5749,11 @@ pub const Parser = struct {
                             try self.emitDiagnostic(self.currentSpan(), "'enum' is not allowed as a binding name", .{});
                             return error.ParseError;
                         }
+                        // 'let' is forbidden as binding name in let/const decl patterns.
+                        if (self.in_lexical_decl and key_tag == .kw_let) {
+                            try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a variable name in lexical declarations", .{});
+                            return error.ParseError;
+                        }
                         // Strict reserved words rejected in strict-mode bindings.
                         if (self.in_strict and self.isStrictReservedWord(key_tok)) {
                             try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(key_tok)});
@@ -5807,6 +5827,10 @@ pub const Parser = struct {
             .kw_let => {
                 if (self.in_strict) {
                     try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a binding name in strict mode", .{});
+                    return error.ParseError;
+                }
+                if (self.in_lexical_decl) {
+                    try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a variable name in lexical declarations", .{});
                     return error.ParseError;
                 }
                 return self.parseIdentifier();
