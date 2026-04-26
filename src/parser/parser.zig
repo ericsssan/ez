@@ -3498,6 +3498,10 @@ pub const Parser = struct {
                 try self.emitError("Illegal 'use strict' directive in function with non-simple parameter list");
             }
         }
+        // Duplicate params: rejected when strict OR params are non-simple.
+        if (self.in_strict or hasNonSimpleParam(self, params)) {
+            try self.checkUniqueParams(params);
+        }
 
         // TS ambient/declare functions and overload signatures have no body.
         if (self.is_ts and self.peek() != .l_brace) {
