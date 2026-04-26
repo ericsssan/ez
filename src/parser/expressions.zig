@@ -772,11 +772,21 @@ fn checkStringEscapes(p: *Parser) !void {
                 if (i < p.source.len and p.source[i] == '{') {
                     i += 1;
                     const hex_start = i;
+                    var cp: u32 = 0;
+                    var overflow = false;
                     while (i < p.source.len and p.source[i] != '}') : (i += 1) {
                         const c = p.source[i];
-                        if (!((c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F'))) {
+                        const dv: u32 = if (c >= '0' and c <= '9') c - '0'
+                            else if (c >= 'a' and c <= 'f') c - 'a' + 10
+                            else if (c >= 'A' and c <= 'F') c - 'A' + 10
+                            else 0xff;
+                        if (dv == 0xff) {
                             try p.emitError("Invalid unicode escape in string");
                             return;
+                        }
+                        if (!overflow) {
+                            cp = (cp << 4) | dv;
+                            if (cp > 0x10FFFF) overflow = true;
                         }
                     }
                     if (i >= p.source.len or p.source[i] != '}') {
@@ -785,6 +795,10 @@ fn checkStringEscapes(p: *Parser) !void {
                     }
                     if (i == hex_start) {
                         try p.emitError("Empty \\u{} escape in string");
+                        return;
+                    }
+                    if (overflow) {
+                        try p.emitError("Unicode codepoint must not be greater than 0x10FFFF");
                         return;
                     }
                     i += 1;
