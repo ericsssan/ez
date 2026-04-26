@@ -61,6 +61,7 @@ const std = @import("std");
 const Token = @import("token.zig").Token;
 const Tag = @import("token.zig").Tag;
 const Bitmaps = @import("lexer_simdjson.zig").Bitmaps;
+const keywordLookup = @import("lexer_simdjson.zig").keywordLookup;
 
 /// Number of inline lookahead slots. Sized to parser's max `peekAt(N)`:
 /// today peekAt(3), so 4 slots = current + 3 ahead. Increase only if a
@@ -106,6 +107,9 @@ pub const LexIter = struct {
     brace_d: [16]u32 = [_]u32{0} ** 16,
     /// EOF marker — once true, walker yields no more tokens.
     eof: bool = false,
+    /// TypeScript mode — affects keyword recognition (e.g. `type`, `as`,
+    /// `satisfies` etc are keywords in TS, identifiers in JS).
+    is_ts: bool = false,
 
     // ── Out-of-band diagnostic outputs ───────────────────────────────────
     // Comments / line starts still flow through caller-provided ArrayLists.
@@ -120,8 +124,15 @@ pub const LexIter = struct {
     consumed: u32 = 0,
 
     pub fn init(src: []const u8, bm: *const Bitmaps) LexIter {
-        var self = LexIter{ .src = src, .bm = bm };
-        // Prime the window with the first SLOTS tokens (or up to EOF).
+        return initOpts(src, bm, .{});
+    }
+
+    pub const InitOptions = struct {
+        is_ts: bool = false,
+    };
+
+    pub fn initOpts(src: []const u8, bm: *const Bitmaps, opts: InitOptions) LexIter {
+        var self = LexIter{ .src = src, .bm = bm, .is_ts = opts.is_ts };
         self.fillUpTo(SLOTS - 1);
         return self;
     }
@@ -291,8 +302,12 @@ pub const LexIter = struct {
                           c == '_' or c == '$')) break;
                 }
                 self.skip_until = end;
-                self.prev_kind = .identifier;
-                const tok = Token{ .tag = .identifier, .start = p, .len = end - p };
+                const text = self.src[p..end];
+                var t_tag = keywordLookup(text, self.is_ts);
+                // After dot: keywords become idents (`x.if` is property access).
+                if (t_tag.isKeyword() and self.prev_kind == .dot) t_tag = .identifier;
+                self.prev_kind = t_tag;
+                const tok = Token{ .tag = t_tag, .start = p, .len = end - p };
                 self.saw_nl = false;
                 self.at_line_start = false;
                 return tok;
@@ -487,6 +502,26 @@ test "LexIter walker: arrow / equality / spread" {
     try std.testing.expectEqual(@as(Tag, .ellipsis), iter.advance());
     try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
     try std.testing.expectEqual(@as(Tag, .equal_equal_equal), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
+    try std.testing.expect(iter.isAtEnd());
+}
+
+test "LexIter walker: keyword recognition" {
+    const buildBitmaps = @import("lexer_simdjson.zig").buildBitmaps;
+    const alloc = std.testing.allocator;
+    const src = "if while function return foo.if";
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    buildBitmaps(src, &bm);
+    var iter = LexIter.init(src, &bm);
+
+    try std.testing.expectEqual(@as(Tag, .kw_if), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .kw_while), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .kw_function), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .kw_return), iter.advance());
+    try std.testing.expectEqual(@as(Tag, .identifier), iter.advance()); // foo
+    try std.testing.expectEqual(@as(Tag, .dot), iter.advance());
+    // After dot, "if" is an identifier (property name), not the keyword.
     try std.testing.expectEqual(@as(Tag, .identifier), iter.advance());
     try std.testing.expect(iter.isAtEnd());
 }

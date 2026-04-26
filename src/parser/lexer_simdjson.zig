@@ -333,7 +333,7 @@ inline fn matchKW(comptime tbl: []const KW, v: u64) ?Tag {
     return null;
 }
 
-inline fn keywordLookup(text: []const u8, ts: bool) Tag {
+pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
     const result = switch (text.len) {
         2 => blk: {
             const v = loadU64(text, 2);
