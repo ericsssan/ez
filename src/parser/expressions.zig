@@ -742,6 +742,10 @@ fn checkStrictOctalString(p: *Parser) !void {
                 try p.emitError("Octal escape sequences are not allowed in strict mode");
                 return;
             }
+            if (esc == '8' or esc == '9') {
+                try p.emitError("\\8 and \\9 are not allowed in strict mode");
+                return;
+            }
             if (esc == '0' and i + 2 < p.source.len and p.source[i + 2] >= '0' and p.source[i + 2] <= '9') {
                 try p.emitError("Octal escape sequences are not allowed in strict mode");
                 return;
