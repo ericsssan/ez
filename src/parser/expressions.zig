@@ -396,6 +396,12 @@ fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
             try p.emitError("'await' is not allowed as an identifier in module mode");
             return error.ParseError;
         }
+        // Inside a class static initialization block (not nested in a fn within),
+        // `await` is reserved.
+        if (p.in_static_block and !p.in_function) {
+            try p.emitError("'await' is not allowed as an identifier in static initialization block");
+            return error.ParseError;
+        }
         // `await` used outside async context — treat as identifier reference.
         return parseIdentifierRef(p);
     }

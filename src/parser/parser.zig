@@ -202,6 +202,9 @@ pub const Parser = struct {
     in_async: bool,
     in_generator: bool,
     in_class: bool,
+    /// True inside a class static initialization block. `await` is reserved
+    /// even though no enclosing function is async.
+    in_static_block: bool,
     in_loop: bool,
     in_switch: bool,
     allow_in: bool,
@@ -383,6 +386,7 @@ pub const Parser = struct {
             .in_async = is_module_file, // top-level await in modules (ES2022)
             .in_generator = false,
             .in_class = false,
+            .in_static_block = false,
             .in_loop = false,
             .in_switch = false,
             .allow_in = true,
@@ -3998,10 +4002,12 @@ pub const Parser = struct {
             const prev_in_switch = self.in_switch;
             const prev_in_function = self.in_function;
             const prev_cf_sb = self.in_class_field;
+            const prev_in_static_block = self.in_static_block;
             self.in_loop = false;
             self.in_switch = false;
             self.in_function = false;
             self.in_class_field = true;
+            self.in_static_block = true;
             const static_scope_ev = try self.emitScopeOpen(.static_block, .none);
             const range = try self.parseStatementList(.r_brace);
             try self.emitScopeClose(.none);
@@ -4009,6 +4015,7 @@ pub const Parser = struct {
             self.in_switch = prev_in_switch;
             self.in_function = prev_in_function;
             self.in_class_field = prev_cf_sb;
+            self.in_static_block = prev_in_static_block;
             _ = try self.expect(.r_brace);
             const static_node = try self.addNode(.{
                 .tag = .static_block,
