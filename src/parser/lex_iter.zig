@@ -458,7 +458,17 @@ pub const LexIter = struct {
             // Number literal: digit-start.
             if (byte >= '0' and byte <= '9') {
                 const end_n = Lex.numberEnd(self.src, p);
-                const num_valid = validateNumericLiteral(self.src, p, end_n);
+                var num_valid = validateNumericLiteral(self.src, p, end_n);
+                // Reject incomplete decimal exponent: `3e`, `3e+`, `3e-`.
+                // (Hex prefix uses `e/E` as digits, not exponent — guard with `0x/0X` check.)
+                if (num_valid and end_n > p) {
+                    const last = self.src[end_n - 1];
+                    const is_hex = (end_n - p) >= 2 and self.src[p] == '0' and
+                        (self.src[p + 1] == 'x' or self.src[p + 1] == 'X');
+                    if (!is_hex and (last == 'e' or last == 'E' or last == '+' or last == '-')) {
+                        num_valid = false;
+                    }
+                }
                 const tag_n: Tag = if (!num_valid)
                     .invalid
                 else if (end_n > p and self.src[end_n - 1] == 'n')
