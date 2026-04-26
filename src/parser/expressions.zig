@@ -234,10 +234,10 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
             if (del_node != .none) {
                 const del_data = p.node_data_ptr[del_node.toInt()];
                 if (del_data.lhs != .none) {
-                    // Strict mode: `delete identifier` invalid.
+                    // Strict mode: `delete identifier` invalid (also through grouping).
                     if (p.in_strict) {
-                        const operand_tag = p.node_tags_ptr[del_data.lhs.toInt()];
-                        if (operand_tag == .identifier) {
+                        const inner_tag = unwrapGroupingTag(p, del_data.lhs);
+                        if (inner_tag == .identifier) {
                             try p.emitError("'delete' of unqualified identifier in strict mode");
                         }
                     }
@@ -2674,6 +2674,15 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
             .main_token = key_tok,
             .data = .{ .lhs = key, .rhs = default_val },
         });
+    }
+
+    // Shorthand requires an IdentifierReference key — literal/computed keys are invalid.
+    switch (key_tag) {
+        .number_literal, .string_literal, .bigint_literal, .l_bracket => {
+            try p.emitError("Invalid shorthand property: missing value for non-identifier key");
+            return error.ParseError;
+        },
+        else => {},
     }
 
     // Plain shorthand: { x } — emit a read reference so scope analysis can see
