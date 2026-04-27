@@ -5191,8 +5191,9 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
             }
         },
         .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
-            // Parenthesized optional chain is valid: (a?.b) = c
-            if (left_tag != .grouping_expr and !p.is_ts) {
+            // Optional chain has AssignmentTargetType=invalid per spec —
+            // parens don't change this. Closes parenthesized-optionalexpression.
+            if (!p.is_ts) {
                 try p.emitError("Invalid left-hand side in assignment: optional chain");
                 return error.ParseError;
             }
