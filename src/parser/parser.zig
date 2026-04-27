@@ -3539,11 +3539,14 @@ pub const Parser = struct {
             self.peek() == .kw_async) and !self.in_strict)
         blk: {
             break :blk try self.parseIdentifier();
-        } else if (self.is_ts and (self.peek().isTsContextualKeyword() or self.peek() == .kw_is or
-            self.peek() == .kw_as or self.peek() == .kw_from or self.peek() == .kw_of or
-            self.peek() == .kw_get or self.peek() == .kw_set))
+        } else if (self.peek() == .kw_get or self.peek() == .kw_set or
+            self.peek() == .kw_of or self.peek() == .kw_from or self.peek() == .kw_as or
+            self.peek() == .kw_target or self.peek() == .kw_meta)
         blk: {
-            // TS contextual keywords can be used as function names
+            // Contextual keywords are valid binding names in any mode.
+            break :blk try self.parseIdentifier();
+        } else if (self.is_ts and (self.peek().isTsContextualKeyword() or self.peek() == .kw_is))
+        blk: {
             break :blk try self.parseIdentifier();
         } else .none;
 
