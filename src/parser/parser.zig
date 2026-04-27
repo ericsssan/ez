@@ -2081,6 +2081,9 @@ pub const Parser = struct {
         // event_resolver recognises .elided scope_open and skips creating a ScopeId.
         const keep_scope = blk: {
             if (!self.emit_scope_events) break :blk true;
+            // In strict/module mode, function_decl is lexically scoped (not
+            // hoisted) — keep the scope so refs don't bind to outer scope.
+            const fn_decl_is_lexical = self.in_strict;
             var depth: i32 = 0;
             for (self.scope_events.events.items[scope_ev + 1 ..]) |ev| {
                 switch (ev.kind) {
@@ -2089,6 +2092,7 @@ pub const Parser = struct {
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
                         if (!bk.isHoisted()) break :blk true;
+                        if (fn_decl_is_lexical and bk == .function_decl) break :blk true;
                     },
                     else => {},
                 }
