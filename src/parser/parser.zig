@@ -5001,6 +5001,7 @@ pub const Parser = struct {
             const imported_tok = self.tok_i;
             const imported_is_string = self.peek() == .string_literal;
             if (imported_is_string) {
+                try self.validateModuleExportName(imported_tok);
                 _ = self.advance();
             } else {
                 _ = try self.expectIdentifierOrKeyword();
@@ -5417,6 +5418,7 @@ pub const Parser = struct {
             const local_tok = self.tok_i;
             const local_is_string = self.peek() == .string_literal;
             if (local_is_string) {
+                try self.validateModuleExportName(local_tok);
                 _ = self.advance();
             } else {
                 _ = try self.expectIdentifierOrKeyword();
@@ -5429,6 +5431,7 @@ pub const Parser = struct {
                 exported_tok = self.tok_i;
                 exported_is_string = self.peek() == .string_literal;
                 if (exported_is_string) {
+                    try self.validateModuleExportName(exported_tok);
                     _ = self.advance();
                 } else {
                     _ = try self.expectIdentifierOrKeyword();
@@ -5556,6 +5559,7 @@ pub const Parser = struct {
         if (self.eat(.kw_as) != null) {
             const name_tok = self.tok_i;
             if (self.peek() == .string_literal) {
+                try self.validateModuleExportName(name_tok);
                 _ = self.advance();
                 exported_node = try self.addNode(.{
                     .tag = .property_literal,
@@ -5772,6 +5776,84 @@ pub const Parser = struct {
                 const n = std.unicode.utf8Encode(cp, &buf) catch 0;
                 try out.appendSlice(buf[0..n]);
             }
+        }
+    }
+
+    /// Validate that a string literal used as ModuleExportName has well-formed
+    /// Unicode (no unpaired surrogates after escape resolution). Spec: it is a
+    /// SyntaxError if IsStringWellFormedUnicode of StringValue is false.
+    fn validateModuleExportName(self: *Parser, tok: TokenIndex) !void {
+        const text = self.tokenText(tok);
+        if (text.len < 2) return;
+        const body = text[1 .. text.len - 1];
+        var i: usize = 0;
+        var pending_high: ?u21 = null;
+        while (i < body.len) {
+            var cp: u21 = 0;
+            if (body[i] == '\\') {
+                i += 1;
+                if (i >= body.len) break;
+                const esc = body[i];
+                i += 1;
+                switch (esc) {
+                    'u' => {
+                        if (i < body.len and body[i] == '{') {
+                            i += 1;
+                            const start = i;
+                            while (i < body.len and body[i] != '}') : (i += 1) {}
+                            cp = std.fmt.parseInt(u21, body[start..i], 16) catch 0;
+                            if (i < body.len) i += 1;
+                        } else if (i + 4 <= body.len) {
+                            cp = std.fmt.parseInt(u21, body[i .. i + 4], 16) catch 0;
+                            i += 4;
+                        } else continue;
+                    },
+                    'x' => {
+                        if (i + 2 <= body.len) {
+                            cp = std.fmt.parseInt(u21, body[i .. i + 2], 16) catch 0;
+                            i += 2;
+                        } else continue;
+                    },
+                    else => continue,
+                }
+            } else {
+                // UTF-8 byte → codepoint. UTF-8 cannot encode surrogates, so safe.
+                const b = body[i];
+                if (b < 0x80) {
+                    cp = b;
+                    i += 1;
+                } else {
+                    const len = std.unicode.utf8ByteSequenceLength(b) catch {
+                        i += 1;
+                        continue;
+                    };
+                    if (i + len > body.len) break;
+                    cp = std.unicode.utf8Decode(body[i .. i + len]) catch 0;
+                    i += len;
+                }
+            }
+            if (cp >= 0xD800 and cp <= 0xDBFF) {
+                if (pending_high != null) {
+                    try self.emitDiagnostic(self.currentSpan(), "Module export name has unpaired surrogate", .{});
+                    return error.ParseError;
+                }
+                pending_high = cp;
+            } else if (cp >= 0xDC00 and cp <= 0xDFFF) {
+                if (pending_high == null) {
+                    try self.emitDiagnostic(self.currentSpan(), "Module export name has unpaired surrogate", .{});
+                    return error.ParseError;
+                }
+                pending_high = null;
+            } else {
+                if (pending_high != null) {
+                    try self.emitDiagnostic(self.currentSpan(), "Module export name has unpaired surrogate", .{});
+                    return error.ParseError;
+                }
+            }
+        }
+        if (pending_high != null) {
+            try self.emitDiagnostic(self.currentSpan(), "Module export name has unpaired surrogate", .{});
+            return error.ParseError;
         }
     }
 
