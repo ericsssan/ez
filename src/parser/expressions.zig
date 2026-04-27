@@ -772,6 +772,47 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
 // ── Strict mode checks ───────────────────────────────────────────────
 
 /// Recursively validate arrow parameter — reject member expressions, literals, etc. deep in patterns.
+/// Recursively check if any node in the subtree refers to `await` as an
+/// identifier. Used to reject `await` inside async-arrow parameter defaults
+/// (where the cover grammar parses await as an identifier ref).
+fn containsAwaitIdentifier(p: *Parser, node: NodeIndex) bool {
+    if (node == .none) return false;
+    const idx = node.toInt();
+    const tag = p.node_tags_ptr[idx];
+    const data = p.node_data_ptr[idx];
+    if (tag == .identifier) {
+        const tok = p.node_main_token_ptr[idx];
+        if (p.tokenTagAt(tok) == .kw_await) return true;
+    }
+    // Stop at function/class boundaries — those create their own scopes.
+    switch (tag) {
+        .fn_expr, .async_fn_expr, .generator_fn_expr,
+        .class_expr, .arrow_fn, .async_arrow_fn,
+        .method_def, .getter_def, .setter_def,
+        => return false,
+        else => {},
+    }
+    // Children via lhs / rhs.
+    if (data.lhs != .none and containsAwaitIdentifier(p, data.lhs)) return true;
+    // For nodes whose data.{lhs,rhs} is a SubRange (start/end indices into extra_data),
+    // walk the range. We detect by tag.
+    switch (tag) {
+        .array_literal, .array_pattern, .object_literal, .object_pattern,
+        .var_decl, .let_decl, .const_decl, .sequence_expr,
+        => {
+            var i = data.lhs.toInt();
+            while (i < data.rhs.toInt()) : (i += 1) {
+                const child = NodeIndex.fromInt(p.extra_data.items[i]);
+                if (containsAwaitIdentifier(p, child)) return true;
+            }
+            return false;
+        },
+        else => {},
+    }
+    if (data.rhs != .none and containsAwaitIdentifier(p, data.rhs)) return true;
+    return false;
+}
+
 fn validateArrowParam(p: *Parser, node: NodeIndex) !void {
     if (node == .none) return;
     const tag = p.node_tags_ptr[node.toInt()];
@@ -1610,6 +1651,11 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
                 validateArrowParam(p, param_node) catch {
                     return error.ParseError;
                 };
+            }
+            // Async arrow params cannot reference 'await' anywhere in defaults.
+            if (!p.is_ts and containsAwaitIdentifier(p, param_node)) {
+                try p.emitError("'await' is not allowed in async arrow parameter list");
+                return error.ParseError;
             }
         }
 
