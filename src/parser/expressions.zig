@@ -1436,10 +1436,13 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     const saved_gen = p.in_generator;
     const saved_cf_afe = p.in_class_field;
     const saved_ic_afe = p.in_class;
+    const saved_nta_afe = p.new_target_allowed;
     p.in_function = true;
     p.in_async = true;
     p.in_generator = is_generator;
     p.in_class_field = false;
+    p.new_target_allowed = true;
+    defer p.new_target_allowed = saved_nta_afe;
     p.in_class = false;
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
@@ -2295,6 +2298,9 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     const saved_cf_gs = p.in_class_field;
     p.in_function = true;
     p.in_method = true;
+    const _saved_nta_x = p.new_target_allowed;
+    p.new_target_allowed = true;
+    defer p.new_target_allowed = _saved_nta_x;
     p.in_generator = false;
     p.in_async = false;
     p.in_class_field = false;
@@ -2440,6 +2446,9 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     p.in_async = true;
     p.in_generator = is_generator;
     p.in_method = true;
+    const _saved_nta_x = p.new_target_allowed;
+    p.new_target_allowed = true;
+    defer p.new_target_allowed = _saved_nta_x;
     p.in_class_field = false;
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
@@ -2484,6 +2493,9 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     p.in_function = true;
     p.in_generator = true;
     p.in_method = true;
+    const _saved_nta_x = p.new_target_allowed;
+    p.new_target_allowed = true;
+    defer p.new_target_allowed = _saved_nta_x;
     p.in_class_field = false;
     defer p.in_function = saved_fn;
     defer p.in_generator = saved_gen;
@@ -2533,6 +2545,9 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         const saved_method = p.in_method;
         p.in_function = true;
         p.in_method = true;
+        const _saved_nta_x = p.new_target_allowed;
+        p.new_target_allowed = true;
+        defer p.new_target_allowed = _saved_nta_x;
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method;
         const comp_method_scope_ev = try p.emitScopeOpen(.function, .none);
@@ -2616,6 +2631,9 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         const saved_method = p.in_method;
         p.in_function = true;
         p.in_method = true;
+        const _saved_nta_x = p.new_target_allowed;
+        p.new_target_allowed = true;
+        defer p.new_target_allowed = _saved_nta_x;
         defer p.in_function = saved_fn;
         defer p.in_method = saved_method;
         const method_scope_ev = try p.emitScopeOpen(.function, .none);
@@ -2833,6 +2851,9 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const saved_fn = p.in_function;
     p.in_function = true;
     defer p.in_function = saved_fn;
+    const saved_nta_fe = p.new_target_allowed;
+    p.new_target_allowed = true;
+    defer p.new_target_allowed = saved_nta_fe;
     const saved_gen = p.in_generator;
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
@@ -3214,6 +3235,9 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         const saved_cf_m = p.in_class_field;
         p.in_function = true;
         p.in_method = true;
+        const _saved_nta_x = p.new_target_allowed;
+        p.new_target_allowed = true;
+        defer p.new_target_allowed = _saved_nta_x;
         p.in_constructor = is_ctor;
         p.in_class_field = false;
         defer p.in_function = saved_fn;
@@ -3320,7 +3344,7 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         _ = p.advance(); // consume `.`
         if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "target"))) {
             const target_tok = p.advance(); // consume `target`
-            if (!p.in_function and !p.in_class_field and !p.in_class and !p.is_ts) {
+            if (!p.new_target_allowed and !p.in_class and !p.is_ts) {
                 try p.emitError("'new.target' is only valid inside functions or class members");
             }
             const meta_node = try p.addNode(.{

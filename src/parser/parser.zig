@@ -205,6 +205,10 @@ pub const Parser = struct {
     /// True inside a class static initialization block. `await` is reserved
     /// even though no enclosing function is async.
     in_static_block: bool,
+    /// True if `new.target` is allowed at the current position. Set on entry
+    /// to non-arrow function, method, class field initializer, or static block.
+    /// Arrow functions inherit this from the enclosing context.
+    new_target_allowed: bool,
     in_loop: bool,
     in_switch: bool,
     allow_in: bool,
@@ -387,6 +391,7 @@ pub const Parser = struct {
             .in_generator = false,
             .in_class = false,
             .in_static_block = false,
+            .new_target_allowed = false,
             .in_loop = false,
             .in_switch = false,
             .allow_in = true,
@@ -3483,11 +3488,13 @@ pub const Parser = struct {
         const prev_in_async = self.in_async;
         const prev_in_generator = self.in_generator;
         const prev_in_class_field = self.in_class_field;
+        const prev_nta_fd = self.new_target_allowed;
         self.in_function = true;
         self.in_async = is_async;
         self.in_generator = is_generator;
         // Function body has its own `arguments` binding — clears class-field restriction.
         self.in_class_field = false;
+        self.new_target_allowed = true;
 
         const fn_type_params = try self.parseOptionalTypeParameters();
         const params = try self.parseFormalParameters();
@@ -3497,6 +3504,7 @@ pub const Parser = struct {
             self.in_async = prev_in_async;
             self.in_generator = prev_in_generator;
             self.in_class_field = prev_in_class_field;
+            self.new_target_allowed = prev_nta_fd;
         }
 
         const prev_strict = self.in_strict;
@@ -4003,11 +4011,13 @@ pub const Parser = struct {
             const prev_in_function = self.in_function;
             const prev_cf_sb = self.in_class_field;
             const prev_in_static_block = self.in_static_block;
+            const prev_nta_sb = self.new_target_allowed;
             self.in_loop = false;
             self.in_switch = false;
             self.in_function = false;
             self.in_class_field = true;
             self.in_static_block = true;
+            self.new_target_allowed = true;
             const static_scope_ev = try self.emitScopeOpen(.static_block, .none);
             const range = try self.parseStatementList(.r_brace);
             try self.emitScopeClose(.none);
@@ -4016,6 +4026,7 @@ pub const Parser = struct {
             self.in_function = prev_in_function;
             self.in_class_field = prev_cf_sb;
             self.in_static_block = prev_in_static_block;
+            self.new_target_allowed = prev_nta_sb;
             _ = try self.expect(.r_brace);
             const static_node = try self.addNode(.{
                 .tag = .static_block,
@@ -4155,6 +4166,9 @@ pub const Parser = struct {
                 self.in_function = true;
                 self.in_constructor = false;
                 self.in_method = true;
+                const _saved_nta_x = self.new_target_allowed;
+                self.new_target_allowed = true;
+                defer self.new_target_allowed = _saved_nta_x;
                 self.in_generator = is_generator_method;
                 self.in_class_field = false;
                 if (is_async_method) self.in_async = true;
@@ -4217,8 +4231,11 @@ pub const Parser = struct {
             // Computed property
             const comp_value: NodeIndex = if (self.eat(.equal) != null) blk: {
                 const prev_in_class_field = self.in_class_field;
+                const prev_nta_cf = self.new_target_allowed;
                 self.in_class_field = true;
+                self.new_target_allowed = true;
                 defer self.in_class_field = prev_in_class_field;
+                defer self.new_target_allowed = prev_nta_cf;
                 break :blk try self.parseAssignmentExpression();
             } else .none;
 
@@ -4346,6 +4363,9 @@ pub const Parser = struct {
             self.in_function = true;
             self.in_constructor = is_ctor;
             self.in_method = true;
+            const _saved_nta_x = self.new_target_allowed;
+            self.new_target_allowed = true;
+            defer self.new_target_allowed = _saved_nta_x;
             self.in_generator = is_generator_method;
             self.in_class_field = false;
             if (is_async_method) self.in_async = true;
@@ -4466,8 +4486,11 @@ pub const Parser = struct {
         const field_has_init = self.peek() == .equal;
         const value: NodeIndex = if (self.eat(.equal) != null) blk: {
             const prev_in_class_field = self.in_class_field;
+            const prev_nta_cf2 = self.new_target_allowed;
             self.in_class_field = true;
+            self.new_target_allowed = true;
             defer self.in_class_field = prev_in_class_field;
+            defer self.new_target_allowed = prev_nta_cf2;
             break :blk try self.parseAssignmentExpression();
         } else .none;
         if (field_has_init) try self.emitScopeClose(.none);
