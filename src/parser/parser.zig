@@ -1785,6 +1785,12 @@ pub const Parser = struct {
                     if (next == .l_brace and self.looksLikeLetDestructuring()) {
                         return self.parseVariableDeclaration();
                     }
+                    // Per spec: `let\nlet`, `let\nyield` (in generator), `let\nawait`
+                    // (in async) match LexicalDeclaration; ASI does not apply. These
+                    // produce SyntaxError via static-semantics early errors.
+                    if (next == .kw_let) return self.parseVariableDeclaration();
+                    if (next == .kw_yield and self.in_generator) return self.parseVariableDeclaration();
+                    if (next == .kw_await and (self.in_async or self.is_module)) return self.parseVariableDeclaration();
                 }
                 return self.parseExprOrLabeledStatement();
             },
