@@ -269,23 +269,22 @@ pub const LexIter = struct {
                     return Token{ .tag = tag_n, .start = dp, .len = end_i - dp };
                 }
                 end_i = dp + 1;
-                while (end_i < n) {
-                    const c = self.src[end_i];
-                    if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
-                        (c >= '0' and c <= '9') or c == '_' or c == '$') { end_i += 1; continue; }
-                    if (c >= 0x80) {
-                        if (c == 0xE2 and end_i + 2 < n and self.src[end_i + 1] == 0x80 and
-                            (self.src[end_i + 2] == 0xA8 or self.src[end_i + 2] == 0xA9)) break;
-                        if (c == 0xEF and end_i + 2 < n and self.src[end_i + 1] == 0xBB and self.src[end_i + 2] == 0xBF) break;
-                        if (c == 0xC2 and end_i + 1 < n and self.src[end_i + 1] == 0xA0) break;
-                        if (c == 0xE1 and end_i + 2 < n and self.src[end_i + 1] == 0x9A and self.src[end_i + 2] == 0x80) break;
-                        if (c == 0xE2 and end_i + 2 < n and self.src[end_i + 1] == 0x80 and
-                            ((self.src[end_i + 2] >= 0x80 and self.src[end_i + 2] <= 0x8A) or self.src[end_i + 2] == 0xAF)) break;
-                        if (c == 0xE2 and end_i + 2 < n and self.src[end_i + 1] == 0x81 and self.src[end_i + 2] == 0x9F) break;
-                        if (c == 0xE3 and end_i + 2 < n and self.src[end_i + 1] == 0x80 and self.src[end_i + 2] == 0x80) break;
-                        end_i += 1; continue;
+                {
+                    const uid = @import("unicode_id.zig");
+                    while (end_i < n) {
+                        const c = self.src[end_i];
+                        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                            (c >= '0' and c <= '9') or c == '_' or c == '$') { end_i += 1; continue; }
+                        if (c >= 0x80) {
+                            const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                            if (end_i + cont_len > n) break;
+                            const cont_cp = std.unicode.utf8Decode(self.src[end_i .. end_i + cont_len]) catch 0;
+                            if (!uid.isIdContinueJS(@intCast(cont_cp))) break;
+                            end_i += cont_len;
+                            continue;
+                        }
+                        break;
                     }
-                    break;
                 }
                 self.skip_until = end_i;
                 const text = self.src[dp..end_i];
@@ -432,20 +431,41 @@ pub const LexIter = struct {
                 continue;
             }
 
-            // High-byte (0x80+) identifier-start: scan to end of ident run via
-            // ident bitmap. Phase 1's ident bitmap includes all high bytes,
-            // so the run end is the next bit-clear position.
+            // High-byte (0x80+) identifier-start: validate against Unicode
+            // ID_Start, then scan continuation against ID_Continue (+ZWNJ/ZWJ).
             if (byte >= 0x80) {
-                var end_i: u32 = p + 1;
-                while (end_i < n) : (end_i += 1) {
+                const uid = @import("unicode_id.zig");
+                // Decode leading codepoint and validate ID_Start.
+                const start_len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+                if (p + start_len > n) {
+                    // Truncated UTF-8 — treat as invalid.
+                    self.skip_until = p + 1;
+                    self.prev_kind = .invalid;
+                    return Token{ .tag = .invalid, .start = p, .len = 1 };
+                }
+                const start_cp = std.unicode.utf8Decode(self.src[p .. p + start_len]) catch 0;
+                if (!uid.isIdStart(@intCast(start_cp))) {
+                    self.skip_until = p + start_len;
+                    self.prev_kind = .invalid;
+                    return Token{ .tag = .invalid, .start = p, .len = start_len };
+                }
+                var end_i: u32 = p + start_len;
+                while (end_i < n) {
                     const c = self.src[end_i];
                     if (c < 0x80) {
                         if (!((c >= 'a' and c <= 'z') or
                               (c >= 'A' and c <= 'Z') or
                               (c >= '0' and c <= '9') or
                               c == '_' or c == '$')) break;
+                        end_i += 1;
+                        continue;
                     }
-                    // High bytes continue the ident.
+                    // High byte — decode and validate ID_Continue (incl. ZWNJ/ZWJ).
+                    const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                    if (end_i + cont_len > n) break;
+                    const cont_cp = std.unicode.utf8Decode(self.src[end_i .. end_i + cont_len]) catch 0;
+                    if (!uid.isIdContinueJS(@intCast(cont_cp))) break;
+                    end_i += cont_len;
                 }
                 self.skip_until = end_i;
                 const text = self.src[p..end_i];
@@ -664,6 +684,7 @@ pub const LexIter = struct {
                 (byte >= 'A' and byte <= 'Z') or
                 byte == '_' or byte == '$')
             {
+                const uid = @import("unicode_id.zig");
                 var end: u32 = p + 1;
                 while (end < n) {
                     const c = self.src[end];
@@ -672,19 +693,12 @@ pub const LexIter = struct {
                         (c >= '0' and c <= '9') or
                         c == '_' or c == '$') { end += 1; continue; }
                     if (c >= 0x80) {
-                        // LS / PS / BOM terminators
-                        if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
-                            (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9)) break;
-                        if (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and
-                            self.src[end + 2] == 0xBF) break;
-                        // Zs whitespace terminators (NBSP, OGHAM, En..Hair, etc).
-                        if (c == 0xC2 and end + 1 < n and self.src[end + 1] == 0xA0) break;
-                        if (c == 0xE1 and end + 2 < n and self.src[end + 1] == 0x9A and self.src[end + 2] == 0x80) break;
-                        if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
-                            ((self.src[end + 2] >= 0x80 and self.src[end + 2] <= 0x8A) or self.src[end + 2] == 0xAF)) break;
-                        if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x81 and self.src[end + 2] == 0x9F) break;
-                        if (c == 0xE3 and end + 2 < n and self.src[end + 1] == 0x80 and self.src[end + 2] == 0x80) break;
-                        end += 1; continue;
+                        const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                        if (end + cont_len > n) break;
+                        const cont_cp = std.unicode.utf8Decode(self.src[end .. end + cont_len]) catch 0;
+                        if (!uid.isIdContinueJS(@intCast(cont_cp))) break;
+                        end += cont_len;
+                        continue;
                     }
                     // \u escape continuation: \uXXXX or \u{...}.
                     if (c == '\\' and end + 1 < n and self.src[end + 1] == 'u') {
