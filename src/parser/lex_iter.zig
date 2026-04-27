@@ -453,12 +453,51 @@ pub const LexIter = struct {
                 while (end_i < n) {
                     const c = self.src[end_i];
                     if (c < 0x80) {
-                        if (!((c >= 'a' and c <= 'z') or
-                              (c >= 'A' and c <= 'Z') or
-                              (c >= '0' and c <= '9') or
-                              c == '_' or c == '$')) break;
-                        end_i += 1;
-                        continue;
+                        if ((c >= 'a' and c <= 'z') or
+                            (c >= 'A' and c <= 'Z') or
+                            (c >= '0' and c <= '9') or
+                            c == '_' or c == '$')
+                        {
+                            end_i += 1;
+                            continue;
+                        }
+                        // \u escape continuation: \uXXXX or \u{...}.
+                        if (c == '\\' and end_i + 1 < n and self.src[end_i + 1] == 'u') {
+                            var ec_end: u32 = end_i + 2;
+                            var ec_cp: u32 = 0;
+                            if (ec_end < n and self.src[ec_end] == '{') {
+                                ec_end += 1;
+                                while (ec_end < n and self.src[ec_end] != '}') : (ec_end += 1) {
+                                    const h = self.src[ec_end];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => break,
+                                    };
+                                    ec_cp = (ec_cp << 4) | v;
+                                }
+                                if (ec_end >= n or self.src[ec_end] != '}') break;
+                                ec_end += 1;
+                            } else if (ec_end + 4 <= n) {
+                                var k: u32 = 0;
+                                while (k < 4) : (k += 1) {
+                                    const h = self.src[ec_end + k];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => break,
+                                    };
+                                    ec_cp = (ec_cp << 4) | v;
+                                }
+                                ec_end += 4;
+                            } else break;
+                            if (!uid.isIdContinueJS(ec_cp)) break;
+                            end_i = ec_end;
+                            continue;
+                        }
+                        break;
                     }
                     // High byte — decode and validate ID_Continue (incl. ZWNJ/ZWJ).
                     const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
@@ -562,6 +601,18 @@ pub const LexIter = struct {
                         (codepoint >= 0x2000 and codepoint <= 0x200A) or codepoint == 0x202F or
                         codepoint == 0x205F or codepoint == 0x3000 or codepoint == 0xFEFF or
                         codepoint == 0x2028 or codepoint == 0x2029) valid = false;
+                    // ID_Start validation for \u{N} form.
+                    if (valid) {
+                        if (codepoint < 0x80) {
+                            const ok = (codepoint >= 'a' and codepoint <= 'z') or
+                                       (codepoint >= 'A' and codepoint <= 'Z') or
+                                       codepoint == '_' or codepoint == '$';
+                            if (!ok) valid = false;
+                        } else {
+                            const uid_es = @import("unicode_id.zig");
+                            if (!uid_es.isIdStart(codepoint)) valid = false;
+                        }
+                    }
                     if (end_i < n) end_i += 1; // include }
                 } else {
                     // \uXXXX — exactly 4 hex digits.
@@ -583,16 +634,16 @@ pub const LexIter = struct {
                         (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
                         cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
                         cp == 0x2028 or cp == 0x2029) valid = false;
-                    // ZWNJ (200C) and ZWJ (200D) are ID_Continue only, not ID_Start.
-                    if (cp == 0x200C or cp == 0x200D) valid = false;
-                    // ASCII codepoints must be valid ID_Start chars at first
-                    // position (a-z, A-Z, _, $). Non-ASCII (>=0x80) is
-                    // permissively accepted (full ID_Start table not available).
+                    // ID_Start validation. ASCII fast-path: a-z, A-Z, _, $.
+                    // Non-ASCII: consult Unicode 17.0 ID_Start table.
                     if (cp < 0x80) {
                         const ok = (cp >= 'a' and cp <= 'z') or
                                    (cp >= 'A' and cp <= 'Z') or
                                    cp == '_' or cp == '$';
                         if (!ok) valid = false;
+                    } else {
+                        const uid_es = @import("unicode_id.zig");
+                        if (!uid_es.isIdStart(cp)) valid = false;
                     }
                 }
 
