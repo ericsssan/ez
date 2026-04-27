@@ -983,7 +983,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
         .kw_let, .kw_static, .kw_implements, .kw_interface,
         => try parseIdentifierOrArrow(p),
         // await/yield as identifiers when not in their reserved contexts
-        .kw_await => if (!p.in_async and !p.is_module) try parseIdentifierOrArrow(p) else {
+        .kw_await => if (!p.in_async and !p.is_module and !(p.in_static_block and !p.in_function)) try parseIdentifierOrArrow(p) else {
             try p.emitError("Expected expression");
             return p.makeErrorNode();
         },
@@ -2677,7 +2677,7 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         const is_contextual = isContextualKeyword(key_tag);
         // yield is reserved in generators, await is reserved in async/module
         const yield_reserved = key_tag == .kw_yield and p.in_generator;
-        const await_reserved = key_tag == .kw_await and (p.in_async or p.is_module);
+        const await_reserved = key_tag == .kw_await and (p.in_async or p.is_module or (p.in_static_block and !p.in_function));
         // let/static are reserved as binding names in strict mode
         const let_reserved = (key_tag == .kw_let or key_tag == .kw_static) and p.in_strict;
         if (!is_contextual or yield_reserved or await_reserved or let_reserved) {
