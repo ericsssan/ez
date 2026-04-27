@@ -125,6 +125,8 @@ pub const LexIter = struct {
     is_ts: bool = false,
     /// Module mode — disables HTML-like comments (<!-- and -->).
     is_module: bool = false,
+    /// AnnexB enabled (default true). When false, HTML-like comments are SyntaxErrors.
+    annex_b: bool = true,
 
     // ── Out-of-band diagnostic outputs ───────────────────────────────────
     // Comments / line starts still flow through caller-provided ArrayLists.
@@ -145,10 +147,11 @@ pub const LexIter = struct {
     pub const InitOptions = struct {
         is_ts: bool = false,
         is_module: bool = false,
+        annex_b: bool = true,
     };
 
     pub fn initOpts(src: []const u8, bm: *const Bitmaps, opts: InitOptions) LexIter {
-        var self = LexIter{ .src = src, .bm = bm, .is_ts = opts.is_ts, .is_module = opts.is_module };
+        var self = LexIter{ .src = src, .bm = bm, .is_ts = opts.is_ts, .is_module = opts.is_module, .annex_b = opts.annex_b };
         self.fillSlot(0);
         return self;
     }
@@ -943,7 +946,7 @@ pub const LexIter = struct {
                     // HTML-like close comment `-->` at line start: skip to EOL
                     // (forbidden in module mode — emit .invalid).
                     if (self.at_line_start and p + 2 < n and self.src[p + 1] == '-' and self.src[p + 2] == '>') {
-                        if (self.is_module) {
+                        if (self.is_module or !self.annex_b) {
                             tag = .invalid;
                             end = p + 3;
                         } else {
@@ -1072,7 +1075,7 @@ pub const LexIter = struct {
                 '<' => {
                     // HTML-like open comment `<!--` is only recognized in Script goal.
                     // In Module goal, `<!--` is just `<`, `!`, `--` per the standard tokeniser.
-                    if (!self.is_module and p + 3 < n and self.src[p + 1] == '!' and self.src[p + 2] == '-' and self.src[p + 3] == '-') {
+                    if (!self.is_module and self.annex_b and p + 3 < n and self.src[p + 1] == '!' and self.src[p + 2] == '-' and self.src[p + 3] == '-') {
                         end = Lex.lineCommentEnd(self.src, p + 4);
                         self.saw_nl = true;
                         self.skip_until = end;
@@ -1278,6 +1281,16 @@ pub fn tokenizeViaIterOpts(
     lang: @import("token.zig").Language,
     is_module: bool,
 ) !@import("lexer_simdjson.zig").TokenizeResult {
+    return tokenizeViaIterOpts2(alloc, src, lang, is_module, true);
+}
+
+pub fn tokenizeViaIterOpts2(
+    alloc: std.mem.Allocator,
+    src: []const u8,
+    lang: @import("token.zig").Language,
+    is_module: bool,
+    annex_b: bool,
+) !@import("lexer_simdjson.zig").TokenizeResult {
     const Lexer = @import("lexer_simdjson.zig");
     const TokenList = @import("ast.zig").Ast.TokenList;
 
@@ -1299,7 +1312,7 @@ pub fn tokenizeViaIterOpts(
     errdefer line_starts.deinit(alloc);
     try line_starts.append(alloc, 0);
 
-    var iter = LexIter.initOpts(src, &bm, .{ .is_ts = lang.isTs(), .is_module = is_module });
+    var iter = LexIter.initOpts(src, &bm, .{ .is_ts = lang.isTs(), .is_module = is_module, .annex_b = annex_b });
     iter.cm_starts = &cm_starts;
     iter.cm_ends = &cm_ends;
     iter.cm_kinds = &cm_kinds;

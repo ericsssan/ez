@@ -10,7 +10,7 @@ const Io = std.Io;
 
 var g_use_fused: bool = false;
 fn tokenizeMaybe(alloc: std.mem.Allocator, source: []const u8, lang: ez.parser_root.token.Language, is_module: bool, annex_b: bool) !Lexer.TokenizeResult {
-    if (g_use_fused) return lex_iter.tokenizeViaIterOpts(alloc, source, lang, is_module);
+    if (g_use_fused) return lex_iter.tokenizeViaIterOpts2(alloc, source, lang, is_module, annex_b);
     return Lexer.tokenizeWithAllOptions(alloc, source, lang, .{ .is_module = is_module, .annex_b = annex_b });
 }
 
