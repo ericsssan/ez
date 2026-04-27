@@ -5492,12 +5492,13 @@ pub const Parser = struct {
         const specs = self.scratch.items[local_toks_start..];
 
         // Without `from`, local specifier names must be valid identifiers
+        // (default is reserved and cannot be a binding without `from`).
         if (!has_from) {
             for (local_token_list.items) |local_token| {
                 const tag = self.tokenTagAt(local_token);
                 if (tag != .identifier and !tag.isTsContextualKeyword() and tag != .kw_as and
                     tag != .kw_from and tag != .kw_of and tag != .kw_let and tag != .kw_async and
-                    tag != .kw_get and tag != .kw_set and tag != .kw_static and tag != .kw_default)
+                    tag != .kw_get and tag != .kw_set and tag != .kw_static)
                 {
                     const span = @import("span.zig").Span{ .start = self.tok_starts_ptr[local_token], .end = self.tok_starts_ptr[local_token] };
                     try self.emitDiagnostic(span, "reserved word cannot be used as local name in export", .{});
