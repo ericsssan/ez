@@ -4021,6 +4021,42 @@ pub const Parser = struct {
             const static_scope_ev = try self.emitScopeOpen(.static_block, .none);
             const range = try self.parseStatementList(.r_brace);
             try self.emitScopeClose(.none);
+
+            // Detect duplicate lexical declarations at static block's top level.
+            if (self.emit_scope_events) {
+                var sb_depth: i32 = 0;
+                const sb_evs = self.scope_events.events.items[static_scope_ev + 1 ..];
+                const SbEntry = struct { name: []const u8 };
+                var sb_names: [64]SbEntry = undefined;
+                var sb_names_n: usize = 0;
+                for (sb_evs) |ev| {
+                    switch (ev.kind) {
+                        .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { sb_depth += 1; },
+                        .scope_close => sb_depth -= 1,
+                        .declare => if (sb_depth == 0) {
+                            const bk: BindingKindU8 = @enumFromInt(ev.aux);
+                            if (bk == .@"var" or bk == .parameter or bk == .function_decl) continue;
+                            const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
+                            const tok_start = self.tok_starts_ptr[main_tok_idx];
+                            const tok_len = self.tok_lens_ptr[main_tok_idx];
+                            if (tok_start + tok_len > self.source.len) continue;
+                            const name = self.source[tok_start..tok_start + tok_len];
+                            var dup = false;
+                            for (sb_names[0..sb_names_n]) |existing| {
+                                if (std.mem.eql(u8, existing.name, name)) { dup = true; break; }
+                            }
+                            if (dup) {
+                                try self.emitDiagnostic(self.currentSpan(),
+                                    "Identifier '{s}' has already been declared", .{name});
+                            } else if (sb_names_n < sb_names.len) {
+                                sb_names[sb_names_n] = .{ .name = name };
+                                sb_names_n += 1;
+                            }
+                        },
+                        else => {},
+                    }
+                }
+            }
             self.in_loop = prev_in_loop;
             self.in_switch = prev_in_switch;
             self.in_function = prev_in_function;
