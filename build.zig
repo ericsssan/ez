@@ -125,6 +125,22 @@ pub fn build(b: *std.Build) void {
     const bench_step = b.step("bench", "Run parser benchmarks");
     bench_step.dependOn(&bench_cmd.step);
 
+    // ── Single-thread pipeline bench (Lexer vs LexIter, lex+parse+sem) ──
+    const bench_st_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_pipeline_st.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_st_mod.addImport("ez", test_mod);
+    const bench_st = b.addExecutable(.{
+        .name = "bench_pipeline_st",
+        .root_module = bench_st_mod,
+    });
+    const bench_st_cmd = b.addRunArtifact(bench_st);
+    bench_st_cmd.step.dependOn(b.getInstallStep());
+    const bench_st_step = b.step("bench-pipeline-st", "Single-thread lex+parse+sem (Lexer vs LexIter)");
+    bench_st_step.dependOn(&bench_st_cmd.step);
+
     // ── Events bench ─────────────────────────────────────────
     const bench_evt_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_events.zig"),

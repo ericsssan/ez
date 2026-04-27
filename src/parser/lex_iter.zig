@@ -112,6 +112,8 @@ pub const LexIter = struct {
     brace_d: [16]u32 = [_]u32{0} ** 16,
     /// EOF marker — once true, walker yields no more tokens.
     eof: bool = false,
+    /// Whether `pullOneIntoBuf` has already appended the .eof sentinel.
+    eof_sentinel_emitted: bool = false,
     /// has_newline_before for the most-recently-emitted token (captured
     /// inside walkerNext just before saw_nl is cleared).
     last_emitted_nl: bool = false,
@@ -142,6 +144,14 @@ pub const LexIter = struct {
     line_starts: ?*std.ArrayListUnmanaged(u32) = null,
     cm_line_alloc: ?std.mem.Allocator = null,
 
+    /// Optional write-through token buffer. When set, every token produced
+    /// by the walker is also appended here (not just when consumed via
+    /// advance). This lets the parser read the full materialized
+    /// {tag,start,len,nl} arrays for any index up to the iter's current
+    /// lookahead high-water mark, without making every parser ptr-read
+    /// iter-aware. Caller must reserve capacity (no realloc allowed).
+    tokens_buf: ?*@import("ast.zig").Ast.TokenList = null,
+
     /// Token index (count of tokens consumed via `advance()`).
     consumed: u32 = 0,
 
@@ -161,6 +171,57 @@ pub const LexIter = struct {
         return self;
     }
 
+    /// Attach a write-through token buffer AFTER init. Re-emits any tokens
+    /// already pulled by init priming so the buffer matches the iter window.
+    pub fn attachTokensBuf(self: *LexIter, buf: *@import("ast.zig").Ast.TokenList) void {
+        self.tokens_buf = buf;
+        // If init primed slot 0, mirror it into the buffer now so the
+        // buffer's len matches "tokens emitted so far" (1).
+        if ((self.valid & 1) != 0 and buf.len == 0) {
+            buf.appendAssumeCapacity(.{
+                .tag = self.tags[0],
+                .start = self.starts[0],
+                .len = self.lens[0],
+                .has_newline_before = self.nls[0],
+            });
+        }
+    }
+
+    /// Emit one more token from the walker into the write-through buffer.
+    /// Bypasses the 4-slot window — used by the parser when its high-water
+    /// mark catches up to the iter's emit position. Returns true if a
+    /// token was emitted, false at EOF.
+    ///
+    /// On the FIRST call after the walker hits EOF, appends a final `.eof`
+    /// sentinel to the buffer (matching the monolithic Lexer's tail) so
+    /// callers can use `tags_ptr[parsed_len-1] == .eof` for end detection.
+    /// Subsequent calls return false without re-appending.
+    pub fn pullOneIntoBuf(self: *LexIter) bool {
+        if (self.eof_sentinel_emitted) return false;
+        if (self.walkerNext()) |t| {
+            if (self.tokens_buf) |buf| {
+                buf.appendAssumeCapacity(.{
+                    .tag = t.tag,
+                    .start = t.start,
+                    .len = t.len,
+                    .has_newline_before = self.last_emitted_nl,
+                });
+            }
+            return true;
+        }
+        // Walker exhausted — emit one .eof sentinel.
+        self.eof_sentinel_emitted = true;
+        if (self.tokens_buf) |buf| {
+            buf.appendAssumeCapacity(.{
+                .tag = .eof,
+                .start = @intCast(self.src.len),
+                .len = 0,
+                .has_newline_before = false,
+            });
+        }
+        return true;
+    }
+
     const MASK: u8 = SLOTS - 1;
 
     /// Fill the slot at absolute index `slot_idx` from the walker.
@@ -175,6 +236,16 @@ pub const LexIter = struct {
             // walker captured saw_nl into last_emitted_nl right before clearing.
             self.nls[slot_idx] = self.last_emitted_nl;
             self.valid |= @as(u8, 1) << @intCast(slot_idx);
+            // Write-through: mirror the freshly-produced token into the
+            // optional materialized buffer so parser ptr-reads see it.
+            if (self.tokens_buf) |buf| {
+                buf.appendAssumeCapacity(.{
+                    .tag = t.tag,
+                    .start = t.start,
+                    .len = t.len,
+                    .has_newline_before = self.last_emitted_nl,
+                });
+            }
         }
     }
 
