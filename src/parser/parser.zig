@@ -2104,16 +2104,14 @@ pub const Parser = struct {
         // event_resolver recognises .elided scope_open and skips creating a ScopeId.
         const keep_scope = blk: {
             if (!self.emit_scope_events) break :blk true;
-            // Keep the block scope whenever it contains any binding that
-            // could be block-scoped (let/const/class) OR a function_decl.
-            // function_decl elision was an optimization for the no-conflict
-            // case, but introduces false dup-detection when an outer block
-            // has a let with the same name (AnnexB B.3.2.1 expects the fn
-            // to stay block-scoped in that case).
+            // Skip elided scope_opens in depth tracking (they have no matching
+            // scope_close). Without this guard, elided nested scopes inflate
+            // depth, causing top-level declares to appear at depth>0 and
+            // wrongly elide the enclosing block.
             var depth: i32 = 0;
             for (self.scope_events.events.items[scope_ev + 1 ..]) |ev| {
                 switch (ev.kind) {
-                    .scope_open => depth += 1,
+                    .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
                     .scope_close => depth -= 1,
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);

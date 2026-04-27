@@ -3915,7 +3915,7 @@ fn isContextualKeyword(tag: TokenTag) bool {
 
 fn isPropertyNameStart(tag: TokenTag) bool {
     return switch (tag) {
-        .identifier, .escaped_keyword, .string_literal, .number_literal, .l_bracket, .hash,
+        .identifier, .escaped_keyword, .string_literal, .number_literal, .bigint_literal, .l_bracket, .hash,
         => true,
         else => tag.isKeyword(),
     };
