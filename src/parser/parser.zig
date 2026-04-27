@@ -1666,7 +1666,7 @@ pub const Parser = struct {
             const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
             var names_buf: [128]Entry = undefined;
             var names_n: usize = 0;
-            const allow_fn_dup = !self.is_module and !self.in_strict;
+            const allow_fn_dup = !self.is_module and !self.in_strict and self.annex_b;
             for (evs) |ev| {
                 switch (ev.kind) {
                     .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
@@ -2034,7 +2034,7 @@ pub const Parser = struct {
             const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
             var names_buf: [64]Entry = undefined;
             var names_n: usize = 0;
-            const allow_fn_dup = !self.is_module and !self.in_strict;
+            const allow_fn_dup = !self.is_module and !self.in_strict and self.annex_b;
             for (evs) |ev| {
                 switch (ev.kind) {
                     // Elided scope_opens have no matching scope_close — skip
