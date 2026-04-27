@@ -4122,6 +4122,13 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     p.in_strict = true;
     defer p.in_class = prev_in_class;
     defer p.in_strict = prev_strict;
+
+    // AllPrivateNamesValid: snapshot stacks for this class expression body.
+    const private_decls_start_ce = p.private_decls.items.len;
+    const private_refs_start_ce = p.private_refs.items.len;
+    p.class_body_depth += 1;
+    defer p.class_body_depth -= 1;
+
     const scratch_top = p.scratchLen();
 
     while (p.peek() != .r_brace and p.peek() != .eof and p.peek() != .r_paren) {
@@ -4146,6 +4153,55 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.r_brace);
 
     const members = p.scratchSlice(scratch_top);
+
+    // Collect this class's private decls into private_decls (for AllPrivateNamesValid).
+    for (members) |idx_int| {
+        const m = NodeIndex.fromInt(idx_int);
+        if (m == .none) continue;
+        const m_tag = p.node_tags_ptr[m.toInt()];
+        if (m_tag != .property_def and m_tag != .method_def and
+            m_tag != .getter_def and m_tag != .setter_def) continue;
+        const m_data = p.node_data_ptr[m.toInt()];
+        const key = m_data.lhs;
+        if (key == .none) continue;
+        const key_tag = p.node_tags_ptr[key.toInt()];
+        if (key_tag != .identifier) continue;
+        const key_tok = p.node_main_token_ptr[key.toInt()];
+        if (p.tokenTag(key_tok) != .hash) continue;
+        if (key_tok + 1 >= p.tokens.len) continue;
+        try p.private_decls.append(p.gpa, p.tokenText(key_tok + 1));
+    }
+
+    // Validate refs accumulated in this class expression body.
+    {
+        const refs_slice = p.private_refs.items[private_refs_start_ce..];
+        const decls_in_scope = p.private_decls.items;
+        var ref_buf: [128]u8 = undefined;
+        var decl_buf: [128]u8 = undefined;
+        var write: usize = private_refs_start_ce;
+        const outermost = (p.class_body_depth == 1);
+        for (refs_slice) |hash_tok| {
+            if (hash_tok + 1 >= p.tokens.len) continue;
+            const name = p.tokenText(hash_tok + 1);
+            const ref_len = Parser.decodeIdentForCompare(name, &ref_buf);
+            const ref_norm = ref_buf[0..ref_len];
+            var found = false;
+            for (decls_in_scope) |d| {
+                const dl = Parser.decodeIdentForCompare(d, &decl_buf);
+                if (std.mem.eql(u8, decl_buf[0..dl], ref_norm)) { found = true; break; }
+            }
+            if (!found) {
+                if (outermost) {
+                    try p.emitError("Reference to undeclared private name");
+                    return error.ParseError;
+                }
+                p.private_refs.items[write] = hash_tok;
+                write += 1;
+            }
+        }
+        p.private_refs.shrinkRetainingCapacity(write);
+        p.private_decls.shrinkRetainingCapacity(private_decls_start_ce);
+    }
     const range = try p.addSlice(members);
     p.scratchPop(scratch_top);
 

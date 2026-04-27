@@ -6019,7 +6019,7 @@ pub const Parser = struct {
     /// Decode \\uHHHH / \\u{N} escapes in an identifier-text byte sequence into
     /// the provided buffer. Returns the decoded length. Used to canonicalize
     /// private-name identifiers (`#\\u0061` and `#a` must compare equal).
-    fn decodeIdentForCompare(text: []const u8, out: []u8) usize {
+    pub fn decodeIdentForCompare(text: []const u8, out: []u8) usize {
         var i: usize = 0;
         var w: usize = 0;
         while (i < text.len and w < out.len) {
