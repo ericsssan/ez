@@ -1032,6 +1032,102 @@ fn validateRegexNamedGroups(p: *Parser, body: []const u8, is_unicode: bool) Erro
     }
 }
 
+/// In u/v mode, class ranges X-Y cannot have class-escape (\\d, \\D, \\s, \\S,
+/// \\w, \\W) or property-escape (\\p{...}) on either side.
+fn validateRegexClassRangesUnicode(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    while (i < body.len) {
+        if (body[i] == '\\' and i + 1 < body.len) { i += 2; continue; }
+        if (body[i] != '[') { i += 1; continue; }
+        i += 1;
+        // Walk character class. Track each "atom" — single char or class-escape.
+        // ClassEscape := \d \D \s \S \w \W \p{...} \P{...}
+        // When we see `atom1 - atom2`, if either is class-escape, error.
+        // We track is_class_escape flag for the most recent atom.
+        var prev_is_class_escape = false;
+        var pending_dash = false;
+        while (i < body.len and body[i] != ']') {
+            const ch = body[i];
+            var atom_is_class_escape = false;
+            if (ch == '\\' and i + 1 < body.len) {
+                const e = body[i + 1];
+                switch (e) {
+                    'd', 'D', 's', 'S', 'w', 'W' => atom_is_class_escape = true,
+                    'p', 'P' => {
+                        atom_is_class_escape = true;
+                        // skip `\p{...}` body
+                        i += 2;
+                        if (i < body.len and body[i] == '{') {
+                            i += 1;
+                            while (i < body.len and body[i] != '}') : (i += 1) {}
+                            if (i < body.len) i += 1;
+                        }
+                        if (pending_dash) {
+                            try p.emitError("Invalid character class range in regular expression with u/v flag");
+                            return error.ParseError;
+                        }
+                        prev_is_class_escape = atom_is_class_escape;
+                        pending_dash = false;
+                        continue;
+                    },
+                    'q' => {
+                        // \q{...} v-flag string literal
+                        i += 2;
+                        if (i < body.len and body[i] == '{') {
+                            i += 1;
+                            var qd: u32 = 1;
+                            while (i < body.len and qd > 0) : (i += 1) {
+                                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                                if (body[i] == '{') qd += 1
+                                else if (body[i] == '}') qd -= 1;
+                            }
+                        }
+                        prev_is_class_escape = false;
+                        pending_dash = false;
+                        continue;
+                    },
+                    else => {},
+                }
+                if (pending_dash and atom_is_class_escape) {
+                    try p.emitError("Invalid character class range in regular expression with u/v flag");
+                    return error.ParseError;
+                }
+                i += 2;
+                prev_is_class_escape = atom_is_class_escape;
+                pending_dash = false;
+                continue;
+            }
+            if (ch == '[') {
+                // Nested class (v-flag). Recurse-like: find matching ]. Skip.
+                var depth: u32 = 1;
+                i += 1;
+                while (i < body.len and depth > 0) : (i += 1) {
+                    if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                    if (body[i] == '[') depth += 1
+                    else if (body[i] == ']') depth -= 1;
+                }
+                prev_is_class_escape = false;
+                pending_dash = false;
+                continue;
+            }
+            if (ch == '-') {
+                if (prev_is_class_escape) {
+                    try p.emitError("Invalid character class range in regular expression with u/v flag");
+                    return error.ParseError;
+                }
+                pending_dash = true;
+                i += 1;
+                continue;
+            }
+            // Plain char.
+            if (pending_dash) pending_dash = false;
+            prev_is_class_escape = false;
+            i += 1;
+        }
+        if (i < body.len) i += 1; // consume ]
+    }
+}
+
 /// In u/v mode, lookahead/lookbehind groups cannot be quantified. Find each
 /// `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` and ensure no quantifier
 /// follows the closing `)`.
@@ -1150,7 +1246,11 @@ fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
             'b', 'B' => i += 1,
             'c' => {
                 i += 1;
-                if (i < body.len) i += 1;
+                if (i >= body.len or !((body[i] >= 'a' and body[i] <= 'z') or (body[i] >= 'A' and body[i] <= 'Z'))) {
+                    try p.emitError("Invalid control letter escape in regular expression with u/v flag");
+                    return error.ParseError;
+                }
+                i += 1;
             },
             'x' => {
                 i += 1;
@@ -1173,6 +1273,12 @@ fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
                     }
                     if (start == i or i >= body.len) {
                         try p.emitError("Invalid unicode escape in regular expression");
+                        return error.ParseError;
+                    }
+                    // Codepoint must be <= 0x10FFFF.
+                    const cp = std.fmt.parseInt(u32, body[start..i], 16) catch 0xFFFFFFFF;
+                    if (cp > 0x10FFFF) {
+                        try p.emitError("Unicode code point out of range in regular expression");
                         return error.ParseError;
                     }
                     i += 1;
@@ -1198,13 +1304,18 @@ fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
                     return error.ParseError;
                 }
             },
-            '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+            '1', '2', '3', '4', '5', '6', '7' => {
                 if (class_depth > 0) {
                     try p.emitError("Invalid decimal escape in character class");
                     return error.ParseError;
                 }
                 i += 1;
                 while (i < body.len and body[i] >= '0' and body[i] <= '9') : (i += 1) {}
+            },
+            '8', '9' => {
+                // \8 and \9 are not back-references and not octal; invalid in u/v mode.
+                try p.emitError("Invalid decimal escape '\\8' or '\\9' in regular expression with u/v flag");
+                return error.ParseError;
             },
             else => {
                 // IdentityEscape in u-mode requires SyntaxCharacter or `/` or `-` (in class).
@@ -1639,6 +1750,9 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 if (has_u or has_v) {
                     try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
                     try validateRegexLookaroundUnicode(p, p.source[ts + 1 .. close - 1]);
+                    if (has_u and !has_v) {
+                        try validateRegexClassRangesUnicode(p, p.source[ts + 1 .. close - 1]);
+                    }
                 }
             }
             break :blk try parseLiteral(p, .regex_literal);
