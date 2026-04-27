@@ -787,56 +787,109 @@ fn validateRegexVFlagClassExtras(p: *Parser, body: []const u8) Error!void {
         const c = body[i];
         if (c == '\\' and i + 1 < body.len) { i += 2; continue; }
         if (c != '[') { i += 1; continue; }
-        // Inside character class. Parse atoms.
-        i += 1;
-        // Skip optional leading `^`.
-        if (i < body.len and body[i] == '^') i += 1;
-        var prev_punct: u8 = 0;
-        while (i < body.len and body[i] != ']') {
-            const ch = body[i];
-            if (ch == '\\' and i + 1 < body.len) {
-                const e = body[i + 1];
-                i += 2;
-                // For \p{...}, \P{...}, \q{...}, \k<...> skip past the brace/angle body.
-                if ((e == 'p' or e == 'P' or e == 'q') and i < body.len and body[i] == '{') {
-                    i += 1;
-                    while (i < body.len and body[i] != '}') : (i += 1) {}
-                    if (i < body.len) i += 1;
-                } else if (e == 'k' and i < body.len and body[i] == '<') {
-                    i += 1;
-                    while (i < body.len and body[i] != '>') : (i += 1) {}
-                    if (i < body.len) i += 1;
+        try validateRegexVFlagClass(p, body, &i);
+    }
+}
+
+fn validateRegexVFlagClass(p: *Parser, body: []const u8, i_ptr: *usize) Error!void {
+    var i = i_ptr.*;
+    i += 1; // consume '['
+    const negated = (i < body.len and body[i] == '^');
+    if (negated) i += 1;
+    var prev_punct: u8 = 0;
+    var atom_count: u32 = 0; // count of atoms seen at this nesting level
+    while (i < body.len and body[i] != ']') {
+        const ch = body[i];
+        if (ch == '\\' and i + 1 < body.len) {
+            const e = body[i + 1];
+            // Property-of-strings inside negated class is invalid.
+            if (negated and (e == 'p' or e == 'P') and i + 2 < body.len and body[i + 2] == '{') {
+                const upro = @import("unicode_props.zig");
+                const name_start = i + 3;
+                var k = name_start;
+                var has_eq = false;
+                while (k < body.len and body[k] != '}') : (k += 1) {
+                    if (body[k] == '=') has_eq = true;
                 }
-                prev_punct = 0;
-                continue;
+                if (k < body.len and !has_eq) {
+                    if (upro.isBinaryPropertyOfStrings(body[name_start..k])) {
+                        try p.emitError("Property-of-strings cannot appear in negated v-mode character class");
+                        return error.ParseError;
+                    }
+                }
             }
-            if (ch == '[') {
-                // Nested class — recursively validated by outer scan via i++.
+            i += 2;
+            // For \p{...}, \P{...}, \q{...}, \k<...> skip past the brace/angle body.
+            if ((e == 'p' or e == 'P' or e == 'q') and i < body.len and body[i] == '{') {
                 i += 1;
-                prev_punct = 0;
-                continue;
+                while (i < body.len and body[i] != '}') : (i += 1) {}
+                if (i < body.len) i += 1;
+            } else if (e == 'k' and i < body.len and body[i] == '<') {
+                i += 1;
+                while (i < body.len and body[i] != '>') : (i += 1) {}
+                if (i < body.len) i += 1;
             }
-            // Reserved double punctuator check. Note: `&&` and `||` are set
-            // operators and have specific positional semantics; we still
-            // flag bare `&&` if the atoms around it are empty. For simplicity
-            // we flag all reserved double-punct doublings.
-            if (ch == prev_punct and isReservedDoublePunctuator(ch)) {
-                try p.emitError("Reserved double-punctuator in v-mode character class");
+            prev_punct = 0;
+            atom_count += 1;
+            continue;
+        }
+        if (ch == '[') {
+            try validateRegexVFlagClass(p, body, &i);
+            prev_punct = 0;
+            atom_count += 1;
+            continue;
+        }
+        // Reserved double punctuator check (excludes && and --).
+        if (ch == prev_punct and isReservedDoublePunctuator(ch)) {
+            try p.emitError("Reserved double-punctuator in v-mode character class");
+            return error.ParseError;
+        }
+        // && and -- are set operators. They must have non-empty operands
+        // on both sides. `[&&...]` (empty left) or `[...&&]` (empty right)
+        // is invalid.
+        if (ch == prev_punct and (ch == '&' or ch == '-')) {
+            // Check left operand: there must have been at least one atom
+            // before the operator. atom_count is incremented after each
+            // atom; the previous char (the first &/-) was just punct.
+            // We require atom_count >= 1 here.
+            if (atom_count == 0) {
+                try p.emitError("Set operator at start of v-mode character class");
                 return error.ParseError;
             }
-            prev_punct = ch;
-            // Class syntax characters that must be escaped in v-mode.
-            switch (ch) {
-                '(', ')', '[', '{', '}', '/', '|' => {
-                    try p.emitError("Unescaped class syntax character in v-mode character class");
-                    return error.ParseError;
-                },
-                else => {},
-            }
+            // Check right operand by peeking past the operator.
             i += 1;
+            var rp = i;
+            while (rp < body.len and (body[rp] == ' ' or body[rp] == '\t')) : (rp += 1) {}
+            if (rp >= body.len or body[rp] == ']') {
+                try p.emitError("Set operator with empty right operand in v-mode character class");
+                return error.ParseError;
+            }
+            prev_punct = 0;
+            continue;
         }
-        if (i < body.len) i += 1; // consume ]
+        prev_punct = ch;
+        // Class syntax characters that must be escaped in v-mode.
+        switch (ch) {
+            '(', ')', '{', '}', '/', '|' => {
+                try p.emitError("Unescaped class syntax character in v-mode character class");
+                return error.ParseError;
+            },
+            '-' => {
+                // `-` between two ClassSetCharacters is a range; standalone is invalid.
+                // Heuristic: if no atom preceded OR next char is `]`, error.
+                const next_idx = i + 1;
+                if (atom_count == 0 or (next_idx < body.len and body[next_idx] == ']')) {
+                    try p.emitError("Unescaped '-' must form a range in v-mode character class");
+                    return error.ParseError;
+                }
+            },
+            else => {},
+        }
+        i += 1;
+        atom_count += 1;
     }
+    if (i < body.len) i += 1; // consume ]
+    i_ptr.* = i;
 }
 
 fn isReservedDoublePunctuator(c: u8) bool {
