@@ -4434,6 +4434,17 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     // Field with initializer
     if (p.peek() == .equal) {
         _ = p.advance();
+        // Class field initializer has its own [Await]=false and class-field
+        // binding context — match parser.zig:parseClassMember.
+        const prev_in_class_field = p.in_class_field;
+        const prev_nta = p.new_target_allowed;
+        const prev_in_async = p.in_async;
+        p.in_class_field = true;
+        p.new_target_allowed = true;
+        p.in_async = false;
+        defer p.in_class_field = prev_in_class_field;
+        defer p.new_target_allowed = prev_nta;
+        defer p.in_async = prev_in_async;
         const value = try parseAssignmentExpression(p);
         // Require ; or ASI after field
         if (p.eat(.semicolon) == null and p.peek() != .r_brace and !p.isOnNewLine()) {
