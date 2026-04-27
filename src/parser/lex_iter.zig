@@ -1398,6 +1398,1032 @@ pub const LexIter = struct {
       } // restart loop
     }
 
+    /// Hand-inlined drain variant of `walkerNext`. Same logic but each
+    /// emit site appends directly to `tokens` and continues the outer
+    /// `restart:` loop instead of yielding a Token to the caller.
+    /// Eliminates the per-token return + re-enter pattern.
+    fn walkerDrainTo(self: *LexIter, tokens: *@import("ast.zig").Ast.TokenList) void {
+        @setEvalBranchQuota(100_000);
+        const n: u32 = @intCast(self.src.len);
+        const bm = self.bm;
+
+      restart: while (true) {
+        // Drain pending trailing-ident-run from prior number emit.
+        if (self.pending_drain_pos != 0) {
+            const dp = self.pending_drain_pos;
+            self.pending_drain_pos = 0;
+            if (dp < n) {
+                const byte = self.src[dp];
+                var end_i: u32 = dp;
+                if (byte >= '0' and byte <= '9') {
+                    end_i = Lex.numberEnd(self.src, dp);
+                    const tag_n: Tag = if (end_i > dp and self.src[end_i - 1] == 'n') .bigint_literal else .number_literal;
+                    self.skip_until = end_i;
+                    self.prev_kind = tag_n;
+                    self.last_emitted_nl = self.saw_nl;
+                    self.saw_nl = false;
+                    self.at_line_start = false;
+                    self.maybeScheduleDrainAfter(end_i, n);
+                    tokens.appendAssumeCapacity(.{  .tag = tag_n, .start = dp, .len = end_i - dp , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                }
+                end_i = dp + 1;
+                {
+                    const uid = @import("unicode_id.zig");
+                    // High-byte ident-start: validate ID_Start.
+                    if (byte >= 0x80) {
+                        const sl = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+                        if (dp + sl <= n) {
+                            const cp = std.unicode.utf8Decode(self.src[dp .. dp + sl]) catch 0;
+                            if (!uid.isIdStart(@intCast(cp))) {
+                                self.skip_until = dp + sl;
+                                self.prev_kind = .invalid;
+                                self.last_emitted_nl = self.saw_nl;
+                                self.saw_nl = false;
+                                self.at_line_start = false;
+                                tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = dp, .len = sl , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                            }
+                            end_i = dp + sl;
+                        }
+                    }
+                    while (end_i < n) {
+                        const c = self.src[end_i];
+                        if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                            (c >= '0' and c <= '9') or c == '_' or c == '$') { end_i += 1; continue; }
+                        if (c >= 0x80) {
+                            const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                            if (end_i + cont_len > n) break;
+                            const cont_cp = std.unicode.utf8Decode(self.src[end_i .. end_i + cont_len]) catch 0;
+                            if (!uid.isIdContinueJS(@intCast(cont_cp))) break;
+                            end_i += cont_len;
+                            continue;
+                        }
+                        break;
+                    }
+                }
+                self.skip_until = end_i;
+                const text = self.src[dp..end_i];
+                const t_tag = keywordLookup(text, self.is_ts);
+                self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot) .identifier else t_tag;
+                self.last_emitted_nl = self.saw_nl;
+                self.saw_nl = false;
+                self.at_line_start = false;
+                self.maybeScheduleDrainAfter(end_i, n);
+                tokens.appendAssumeCapacity(.{  .tag = t_tag, .start = dp, .len = end_i - dp , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+            }
+        }
+
+        // Outer loop: advance through bitmap words; inner loop: pop visit bits.
+        while (true) {
+            // Need to refill visit bits?
+            if (self.visit == 0) {
+                // Advance to next word.
+                while (true) {
+                    if (self.wi >= bm.ident.len) {
+                        self.eof = true;
+                        return;
+                    }
+                    const w_id = bm.ident[self.wi];
+                    const w_nl = bm.newline[self.wi];
+                    const w_st = bm.structural[self.wi];
+                    // ident_starts: bit set where a new ident run begins.
+                    const id_starts = w_id & ~((w_id << 1) | self.prev_ident_last_bit);
+                    self.prev_ident_last_bit = (w_id >> 63) & 1;
+                    const word_off: u32 = @intCast(self.wi * 64);
+                    self.wi += 1;
+                    // Fast-forward whole words covered by skip_until.
+                    if (self.skip_until >= word_off + 64) continue;
+                    var visit = w_nl | w_st | id_starts;
+                    if (self.skip_until > word_off) {
+                        const shift: u6 = @intCast(self.skip_until - word_off);
+                        visit &= ~((@as(u64, 1) << shift) - 1);
+                    }
+                    if (visit != 0) {
+                        self.visit = visit;
+                        break;
+                    }
+                }
+            }
+
+            // Pop one visit bit.
+            const b: u32 = @ctz(self.visit);
+            self.visit &= self.visit - 1;
+            const word_off: u32 = @intCast((self.wi - 1) * 64);
+            const p: u32 = word_off + b;
+            if (p >= n) {
+                self.eof = true;
+                return;
+            }
+            if (p < self.skip_until) continue;
+            const byte = self.src[p];
+
+            // Newline: state update, no emit.
+            if (byte == '\n') {
+                self.saw_nl = true;
+                self.at_line_start = true;
+                if (self.line_starts) |ls| ls.append(self.cm_line_alloc.?, p + 1) catch {};
+                continue;
+            }
+            if (byte == '\r') {
+                self.saw_nl = true;
+                self.at_line_start = true;
+                if (p + 1 < n and self.src[p + 1] == '\n') {
+                    self.skip_until = p + 2;
+                    if (self.line_starts) |ls| ls.append(self.cm_line_alloc.?, p + 2) catch {};
+                } else {
+                    if (self.line_starts) |ls| ls.append(self.cm_line_alloc.?, p + 1) catch {};
+                }
+                continue;
+            }
+
+            // Hashbang `#!` at file start: treat as line comment to EOL.
+            // Spec says LineTerminator includes LF/CR/LS/PS, so stop at any.
+            if (byte == '#' and p == 0 and p + 1 < n and self.src[p + 1] == '!') {
+                var ce: u32 = p + 2;
+                while (ce < n) : (ce += 1) {
+                    const cb = self.src[ce];
+                    if (cb == '\n' or cb == '\r') break;
+                    if (cb == 0xE2 and ce + 2 < n and self.src[ce + 1] == 0x80 and
+                        (self.src[ce + 2] == 0xA8 or self.src[ce + 2] == 0xA9)) break;
+                }
+                self.skip_until = ce;
+                continue;
+            }
+
+            // Form feed (0x0C) and vertical tab (0x0B): whitespace, skip.
+            if (byte == 0x0C or byte == 0x0B) {
+                self.skip_until = p + 1;
+                continue;
+            }
+
+            // BOM / LS / PS — 3-byte UTF-8 sequences that are skipped (not
+            // tokens). LS/PS also act as line terminators for ASI.
+            if (byte == 0xEF and p + 2 < n and self.src[p + 1] == 0xBB and self.src[p + 2] == 0xBF) {
+                self.skip_until = p + 3;
+                continue;
+            }
+            if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and (self.src[p + 2] == 0xA8 or self.src[p + 2] == 0xA9)) {
+                self.saw_nl = true;
+                self.at_line_start = true;
+                const r = self.skipZsAndLs(p + 3, n);
+                self.skip_until = r.end;
+                if (r.end < n) {
+                    const nb = self.src[r.end];
+                    if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                        nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
+                    {
+                        self.pending_drain_pos = r.end;
+                        continue :restart;
+                    }
+                }
+                continue;
+            }
+
+            // Unicode whitespace (Zs category). When ws lands inside an
+            // ident-bitmap-run, the visit-bit walker won't fire for the
+            // ident-continuation position after the ws, so we set
+            // pending_drain_pos and recurse so this call emits the trailing
+            // token directly.
+            const ws_skip2: u32 = blk: {
+                if (byte == 0xC2 and p + 1 < n and self.src[p + 1] == 0xA0) break :blk 2;
+                if (byte == 0xE1 and p + 2 < n and self.src[p + 1] == 0x9A and self.src[p + 2] == 0x80) break :blk 3;
+                if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and ((self.src[p + 2] >= 0x80 and self.src[p + 2] <= 0x8A) or self.src[p + 2] == 0xAF)) break :blk 3;
+                if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x81 and self.src[p + 2] == 0x9F) break :blk 3;
+                if (byte == 0xE3 and p + 2 < n and self.src[p + 1] == 0x80 and self.src[p + 2] == 0x80) break :blk 3;
+                break :blk 0;
+            };
+            if (ws_skip2 != 0) {
+                self.skip_until = p + ws_skip2;
+                if (p + ws_skip2 < n) {
+                    const nb = self.src[p + ws_skip2];
+                    if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                        nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
+                    {
+                        self.pending_drain_pos = p + ws_skip2;
+                        continue :restart;
+                    }
+                }
+                continue;
+            }
+
+            // High-byte (0x80+) identifier-start: validate against Unicode
+            // ID_Start, then scan continuation against ID_Continue (+ZWNJ/ZWJ).
+            if (byte >= 0x80) {
+                const uid = @import("unicode_id.zig");
+                // Decode leading codepoint and validate ID_Start.
+                const start_len = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+                if (p + start_len > n) {
+                    // Truncated UTF-8 — treat as invalid.
+                    self.skip_until = p + 1;
+                    self.prev_kind = .invalid;
+                    tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = 1 , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                }
+                const start_cp = std.unicode.utf8Decode(self.src[p .. p + start_len]) catch 0;
+                if (!uid.isIdStart(@intCast(start_cp))) {
+                    self.skip_until = p + start_len;
+                    self.prev_kind = .invalid;
+                    tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = start_len , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                }
+                var end_i: u32 = p + start_len;
+                while (end_i < n) {
+                    const c = self.src[end_i];
+                    if (c < 0x80) {
+                        if ((c >= 'a' and c <= 'z') or
+                            (c >= 'A' and c <= 'Z') or
+                            (c >= '0' and c <= '9') or
+                            c == '_' or c == '$')
+                        {
+                            end_i += 1;
+                            continue;
+                        }
+                        // \u escape continuation: \uXXXX or \u{...}.
+                        if (c == '\\' and end_i + 1 < n and self.src[end_i + 1] == 'u') {
+                            var ec_end: u32 = end_i + 2;
+                            var ec_cp: u32 = 0;
+                            if (ec_end < n and self.src[ec_end] == '{') {
+                                ec_end += 1;
+                                while (ec_end < n and self.src[ec_end] != '}') : (ec_end += 1) {
+                                    const h = self.src[ec_end];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => break,
+                                    };
+                                    ec_cp = (ec_cp << 4) | v;
+                                }
+                                if (ec_end >= n or self.src[ec_end] != '}') break;
+                                ec_end += 1;
+                            } else if (ec_end + 4 <= n) {
+                                var k: u32 = 0;
+                                while (k < 4) : (k += 1) {
+                                    const h = self.src[ec_end + k];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => break,
+                                    };
+                                    ec_cp = (ec_cp << 4) | v;
+                                }
+                                ec_end += 4;
+                            } else break;
+                            if (!uid.isIdContinueJS(ec_cp)) break;
+                            end_i = ec_end;
+                            continue;
+                        }
+                        break;
+                    }
+                    // High byte — decode and validate ID_Continue (incl. ZWNJ/ZWJ).
+                    const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                    if (end_i + cont_len > n) break;
+                    const cont_cp = std.unicode.utf8Decode(self.src[end_i .. end_i + cont_len]) catch 0;
+                    if (!uid.isIdContinueJS(@intCast(cont_cp))) break;
+                    end_i += cont_len;
+                }
+                self.skip_until = end_i;
+                const text = self.src[p..end_i];
+                const t_tag = keywordLookup(text, self.is_ts);
+                self.last_emitted_nl = self.saw_nl;
+                self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot) .identifier else t_tag;
+                const tok = Token{ .tag = t_tag, .start = p, .len = end_i - p };
+                self.saw_nl = false;
+                self.at_line_start = false;
+                tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+            continue :restart;
+            }
+
+            // Number literal: digit-start.
+            if (byte >= '0' and byte <= '9') {
+                const end_n = Lex.numberEnd(self.src, p);
+                var num_valid = validateNumericLiteral(self.src, p, end_n);
+                // Reject incomplete decimal exponent: `3e`, `3e+`, `3e-`.
+                // (Hex prefix uses `e/E` as digits, not exponent — guard with `0x/0X` check.)
+                if (num_valid and end_n > p) {
+                    const last = self.src[end_n - 1];
+                    const is_hex = (end_n - p) >= 2 and self.src[p] == '0' and
+                        (self.src[p + 1] == 'x' or self.src[p + 1] == 'X');
+                    if (!is_hex and (last == 'e' or last == 'E' or last == '+' or last == '-')) {
+                        num_valid = false;
+                    }
+                }
+                // Numeric literal cannot be immediately followed by IdentifierStart
+                // or a decimal digit (per spec 12.9.3). ASCII range only.
+                if (num_valid and end_n < n) {
+                    const nb = self.src[end_n];
+                    if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                        nb == '_' or nb == '$')
+                    {
+                        num_valid = false;
+                    }
+                }
+                const tag_n: Tag = if (!num_valid)
+                    .invalid
+                else if (end_n > p and self.src[end_n - 1] == 'n')
+                    .bigint_literal
+                else
+                    .number_literal;
+                self.skip_until = end_n;
+                if (end_n < n) {
+                    const next_b = self.src[end_n];
+                    var is_cont: bool = (next_b >= 'a' and next_b <= 'z') or (next_b >= 'A' and next_b <= 'Z') or
+                        (next_b >= '0' and next_b <= '9') or next_b == '_' or next_b == '$';
+                    if (next_b >= 0x80) {
+                        // High byte — distinguish ident-cont from Zs/LS/PS/BOM.
+                        is_cont = true;
+                        if (next_b == 0xC2 and end_n + 1 < n and self.src[end_n + 1] == 0xA0) is_cont = false;
+                        if (next_b == 0xE1 and end_n + 2 < n and self.src[end_n + 1] == 0x9A and self.src[end_n + 2] == 0x80) is_cont = false;
+                        if (next_b == 0xE2 and end_n + 2 < n and self.src[end_n + 1] == 0x80 and
+                            ((self.src[end_n + 2] >= 0x80 and self.src[end_n + 2] <= 0x8A) or self.src[end_n + 2] == 0xA8 or
+                             self.src[end_n + 2] == 0xA9 or self.src[end_n + 2] == 0xAF)) is_cont = false;
+                        if (next_b == 0xE2 and end_n + 2 < n and self.src[end_n + 1] == 0x81 and self.src[end_n + 2] == 0x9F) is_cont = false;
+                        if (next_b == 0xE3 and end_n + 2 < n and self.src[end_n + 1] == 0x80 and self.src[end_n + 2] == 0x80) is_cont = false;
+                        if (next_b == 0xEF and end_n + 2 < n and self.src[end_n + 1] == 0xBB and self.src[end_n + 2] == 0xBF) is_cont = false;
+                    }
+                    if (is_cont) self.pending_drain_pos = end_n;
+                }
+                self.prev_kind = tag_n;
+                const tok = Token{ .tag = tag_n, .start = p, .len = end_n - p };
+                self.last_emitted_nl = self.saw_nl;
+                self.saw_nl = false;
+                self.at_line_start = false;
+                if (self.pending_drain_pos == 0) self.maybeScheduleDrainAfter(end_n, n);
+                tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+            continue :restart;
+            }
+
+            // `\u` escape opening an identifier (\uXXXX or \u{HHHH}).
+            if (byte == '\\' and p + 1 < n and self.src[p + 1] == 'u') {
+                var end_i: u32 = p + 2;
+                var valid = true;
+                if (end_i < n and self.src[end_i] == '{') {
+                    end_i += 1;
+                    const hex_start = end_i;
+                    var codepoint: u32 = 0;
+                    while (end_i < n and self.src[end_i] != '}') : (end_i += 1) {
+                        const c = self.src[end_i];
+                        const v: u32 = switch (c) {
+                            '0'...'9' => c - '0',
+                            'a'...'f' => c - 'a' + 10,
+                            'A'...'F' => c - 'A' + 10,
+                            else => { valid = false; break; },
+                        };
+                        codepoint = (codepoint << 4) | v;
+                        if (codepoint > 0x10FFFF) { valid = false; }
+                    }
+                    if (end_i >= n or self.src[end_i] != '}') valid = false; // unterminated
+                    if (end_i == hex_start) valid = false; // empty \u{}
+                    if (codepoint >= 0xD800 and codepoint <= 0xDFFF) valid = false; // lone surrogate
+                    if (codepoint == 0x00A0 or codepoint == 0x1680 or
+                        (codepoint >= 0x2000 and codepoint <= 0x200A) or codepoint == 0x202F or
+                        codepoint == 0x205F or codepoint == 0x3000 or codepoint == 0xFEFF or
+                        codepoint == 0x2028 or codepoint == 0x2029) valid = false;
+                    // ID_Start validation for \u{N} form.
+                    if (valid) {
+                        if (codepoint < 0x80) {
+                            const ok = (codepoint >= 'a' and codepoint <= 'z') or
+                                       (codepoint >= 'A' and codepoint <= 'Z') or
+                                       codepoint == '_' or codepoint == '$';
+                            if (!ok) valid = false;
+                        } else {
+                            const uid_es = @import("unicode_id.zig");
+                            if (!uid_es.isIdStart(codepoint)) valid = false;
+                        }
+                    }
+                    if (end_i < n) end_i += 1; // include }
+                } else {
+                    // \uXXXX — exactly 4 hex digits.
+                    var hex_count: u32 = 0;
+                    var cp: u32 = 0;
+                    while (end_i < n and hex_count < 4) : ({ end_i += 1; hex_count += 1; }) {
+                        const c = self.src[end_i];
+                        const v: u32 = switch (c) {
+                            '0'...'9' => c - '0',
+                            'a'...'f' => c - 'a' + 10,
+                            'A'...'F' => c - 'A' + 10,
+                            else => { valid = false; break; },
+                        };
+                        cp = (cp << 4) | v;
+                    }
+                    if (hex_count < 4) valid = false;
+                    if (cp >= 0xD800 and cp <= 0xDFFF) valid = false;
+                    if (cp == 0x00A0 or cp == 0x1680 or
+                        (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
+                        cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
+                        cp == 0x2028 or cp == 0x2029) valid = false;
+                    // ID_Start validation. ASCII fast-path: a-z, A-Z, _, $.
+                    // Non-ASCII: consult Unicode 17.0 ID_Start table.
+                    if (cp < 0x80) {
+                        const ok = (cp >= 'a' and cp <= 'z') or
+                                   (cp >= 'A' and cp <= 'Z') or
+                                   cp == '_' or cp == '$';
+                        if (!ok) valid = false;
+                    } else {
+                        const uid_es = @import("unicode_id.zig");
+                        if (!uid_es.isIdStart(cp)) valid = false;
+                    }
+                }
+
+                if (!valid) {
+                    self.skip_until = end_i;
+                    self.prev_kind = .invalid;
+                    self.last_emitted_nl = self.saw_nl;
+                    self.saw_nl = false;
+                    self.at_line_start = false;
+                    tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end_i - p , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                }
+
+                // Continue consuming ident-continuation chars + further \u escapes
+                // (with validation: invalid escape → emit .invalid).
+                while (end_i < n) {
+                    const c = self.src[end_i];
+                    if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                        (c >= '0' and c <= '9') or c == '_' or c == '$' or c >= 0x80)
+                    {
+                        end_i += 1;
+                    } else if (c == '\\' and end_i + 1 < n and self.src[end_i + 1] == 'u') {
+                        end_i += 2;
+                        var cp_c: u32 = 0;
+                        var ok_c = true;
+                        if (end_i < n and self.src[end_i] == '{') {
+                            end_i += 1;
+                            const hs = end_i;
+                            while (end_i < n and self.src[end_i] != '}') : (end_i += 1) {
+                                const h = self.src[end_i];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { ok_c = false; break; },
+                                };
+                                cp_c = (cp_c << 4) | v;
+                                if (cp_c > 0x10FFFF) ok_c = false;
+                            }
+                            if (end_i >= n or self.src[end_i] != '}') ok_c = false;
+                            if (end_i == hs) ok_c = false;
+                            if (end_i < n) end_i += 1;
+                        } else {
+                            var hex2: u32 = 0;
+                            while (end_i < n and hex2 < 4) : ({ end_i += 1; hex2 += 1; }) {
+                                const h = self.src[end_i];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { ok_c = false; break; },
+                                };
+                                cp_c = (cp_c << 4) | v;
+                            }
+                            if (hex2 < 4) ok_c = false;
+                        }
+                        if (cp_c >= 0xD800 and cp_c <= 0xDFFF) ok_c = false;
+                        if (cp_c == 0x00A0 or cp_c == 0x1680 or
+                            (cp_c >= 0x2000 and cp_c <= 0x200A) or cp_c == 0x202F or
+                            cp_c == 0x205F or cp_c == 0x3000 or cp_c == 0xFEFF or
+                            cp_c == 0x2028 or cp_c == 0x2029) ok_c = false;
+                        if (cp_c < 0x80) {
+                            const cont_ok = (cp_c >= 'a' and cp_c <= 'z') or
+                                            (cp_c >= 'A' and cp_c <= 'Z') or
+                                            (cp_c >= '0' and cp_c <= '9') or
+                                            cp_c == '_' or cp_c == '$';
+                            if (!cont_ok) ok_c = false;
+                        }
+                        if (!ok_c) {
+                            self.skip_until = end_i;
+                            self.last_emitted_nl = self.saw_nl;
+                            self.saw_nl = false;
+                            self.at_line_start = false;
+                            self.prev_kind = .invalid;
+                            tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end_i - p , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                        }
+                    } else break;
+                }
+                self.skip_until = end_i;
+                self.last_emitted_nl = self.saw_nl;
+                self.prev_kind = .identifier;
+                const tok = Token{ .tag = .identifier, .start = p, .len = end_i - p };
+                self.saw_nl = false;
+                self.at_line_start = false;
+                tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+            continue :restart;
+            }
+
+            // Identifier-start: scan run end, emit identifier or keyword.
+            if ((byte >= 'a' and byte <= 'z') or
+                (byte >= 'A' and byte <= 'Z') or
+                byte == '_' or byte == '$')
+            {
+                const uid = @import("unicode_id.zig");
+                // Fast path: use the ident bitmap to find the end of the
+                // contiguous ident-byte run via @ctz on inverted bitmap.
+                // O(64) bytes per cycle vs the byte-by-byte scan which was
+                // 33% of walker samples on typescript.js. Falls through to
+                // the byte loop only when we encounter `\u` escape or
+                // high-byte non-ID_Continue (whitespace etc.) at the run
+                // boundary.
+                const LexerSj = @import("lexer_simdjson.zig");
+                var end: u32 = LexerSj.identEndFromBitmap(bm.ident, self.wi - 1, b, @intCast((self.wi - 1) * 64), n);
+                // Validate the byte at `end`: if high-byte non-ID_Continue,
+                // back off; if `\u` escape, switch to byte-scan to handle.
+                var had_escape: bool = false;
+                if (end < n) {
+                    const ec = self.src[end];
+                    if (ec >= 0x80) {
+                        // High-byte at run boundary may be ws/BOM/LS/PS
+                        // (which the ident bitmap includes but isn't a
+                        // valid ID_Continue). Byte-validate via Unicode.
+                        const cont_len = std.unicode.utf8ByteSequenceLength(ec) catch 1;
+                        if (end + cont_len <= n) {
+                            const cp = std.unicode.utf8Decode(self.src[end .. end + cont_len]) catch 0;
+                            if (!uid.isIdContinueJS(@intCast(cp))) {
+                                // bitmap over-included this byte — back off.
+                                // (rare; shouldn't trigger in practice)
+                            } else {
+                                end += cont_len;
+                            }
+                        }
+                    }
+                }
+                // Tail loop: handles `\u` escapes and post-bitmap high-byte
+                // continuations. Common case (no escapes): does nothing.
+                while (end < n) {
+                    const c = self.src[end];
+                    if ((c >= 'a' and c <= 'z') or
+                        (c >= 'A' and c <= 'Z') or
+                        (c >= '0' and c <= '9') or
+                        c == '_' or c == '$') { end += 1; continue; }
+                    if (c >= 0x80) {
+                        const cont_len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+                        if (end + cont_len > n) break;
+                        const cont_cp = std.unicode.utf8Decode(self.src[end .. end + cont_len]) catch 0;
+                        if (!uid.isIdContinueJS(@intCast(cont_cp))) break;
+                        end += cont_len;
+                        continue;
+                    }
+                    // \u escape continuation: \uXXXX or \u{...}.
+                    if (c == '\\' and end + 1 < n and self.src[end + 1] == 'u') {
+                        had_escape = true;
+                        const esc_start = end;
+                        end += 2;
+                        var esc_valid = true;
+                        var cp: u32 = 0;
+                        if (end < n and self.src[end] == '{') {
+                            end += 1;
+                            const hex_start = end;
+                            while (end < n and self.src[end] != '}') : (end += 1) {
+                                const h = self.src[end];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { esc_valid = false; break; },
+                                };
+                                cp = (cp << 4) | v;
+                                if (cp > 0x10FFFF) esc_valid = false;
+                            }
+                            if (end >= n or self.src[end] != '}') esc_valid = false;
+                            if (end == hex_start) esc_valid = false;
+                            if (cp >= 0xD800 and cp <= 0xDFFF) esc_valid = false;
+                        // Zs (whitespace) codepoints — not valid ID_Continue.
+                        if (cp == 0x00A0 or cp == 0x1680 or
+                            (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
+                            cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
+                            cp == 0x2028 or cp == 0x2029) esc_valid = false;
+                            if (end < n) end += 1;
+                        } else {
+                            var hc: u32 = 0;
+                            while (end < n and hc < 4) : ({ end += 1; hc += 1; }) {
+                                const h = self.src[end];
+                                const v: u32 = switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => { esc_valid = false; break; },
+                                };
+                                cp = (cp << 4) | v;
+                            }
+                            if (hc < 4) esc_valid = false;
+                            if (cp >= 0xD800 and cp <= 0xDFFF) esc_valid = false;
+                        // Zs (whitespace) codepoints — not valid ID_Continue.
+                        if (cp == 0x00A0 or cp == 0x1680 or
+                            (cp >= 0x2000 and cp <= 0x200A) or cp == 0x202F or
+                            cp == 0x205F or cp == 0x3000 or cp == 0xFEFF or
+                            cp == 0x2028 or cp == 0x2029) esc_valid = false;
+                        }
+                        // ASCII codepoints must be valid ID_Continue (a-z A-Z 0-9 _ $).
+                        if (esc_valid and cp < 0x80) {
+                            const ok = (cp >= 'a' and cp <= 'z') or
+                                       (cp >= 'A' and cp <= 'Z') or
+                                       (cp >= '0' and cp <= '9') or
+                                       cp == '_' or cp == '$';
+                            if (!ok) esc_valid = false;
+                        }
+                        if (!esc_valid) {
+                            // Invalid escape — emit .invalid for the entire span
+                            // from ident-start to end of attempted escape.
+                            self.skip_until = end;
+                            self.last_emitted_nl = self.saw_nl;
+                            self.saw_nl = false;
+                            self.at_line_start = false;
+                            self.prev_kind = .invalid;
+                            tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end - p , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                        }
+                        _ = esc_start;
+                        continue;
+                    }
+                    break;
+                }
+                self.skip_until = end;
+                // If we stopped on a high byte that isn't a known whitespace
+                // and isn't ID_Continue, the bitmap walker may silently skip
+                // it. Schedule a drain so the next call dispatches and emits
+                // .invalid via the high-byte ident-start path.
+                if (end < n and self.src[end] >= 0x80) {
+                    const c = self.src[end];
+                    const is_ws =
+                        (c == 0xC2 and end + 1 < n and self.src[end + 1] == 0xA0) or
+                        (c == 0xE1 and end + 2 < n and self.src[end + 1] == 0x9A and self.src[end + 2] == 0x80) or
+                        (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                            ((self.src[end + 2] >= 0x80 and self.src[end + 2] <= 0x8A) or
+                             self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9 or self.src[end + 2] == 0xAF)) or
+                        (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x81 and self.src[end + 2] == 0x9F) or
+                        (c == 0xE3 and end + 2 < n and self.src[end + 1] == 0x80 and self.src[end + 2] == 0x80) or
+                        (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and self.src[end + 2] == 0xBF);
+                    if (!is_ws) self.pending_drain_pos = end;
+                }
+                // Capture nl-before for THIS token before any post-emit
+                // saw_nl mutation (e.g. LS-after-ident sets saw_nl=true
+                // for the NEXT token, not this one).
+                self.last_emitted_nl = self.saw_nl;
+                self.saw_nl = false;
+                self.at_line_start = false;
+                // If ident contained any \u escape, decode it and re-check
+                // against keywords — `null` is the keyword `null`,
+                // which is reserved (parser rejects as identifier reference).
+                if (had_escape) {
+                    var decoded_buf: [128]u8 = undefined;
+                    var dl: usize = 0;
+                    var i: u32 = p;
+                    var decoded_ok = true;
+                    while (i < end and dl < decoded_buf.len) {
+                        const c = self.src[i];
+                        if (c == '\\' and i + 1 < end and self.src[i + 1] == 'u') {
+                            i += 2;
+                            var cp: u32 = 0;
+                            if (i < end and self.src[i] == '{') {
+                                i += 1;
+                                while (i < end and self.src[i] != '}') : (i += 1) {
+                                    const h = self.src[i];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => { decoded_ok = false; break; },
+                                    };
+                                    cp = (cp << 4) | v;
+                                }
+                                if (i < end) i += 1;
+                            } else {
+                                var k: u32 = 0;
+                                while (k < 4 and i < end) : ({ i += 1; k += 1; }) {
+                                    const h = self.src[i];
+                                    const v: u32 = switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => { decoded_ok = false; break; },
+                                    };
+                                    cp = (cp << 4) | v;
+                                }
+                            }
+                            // Encode codepoint as UTF-8 into decoded_buf.
+                            if (cp < 0x80 and dl < decoded_buf.len) {
+                                decoded_buf[dl] = @intCast(cp);
+                                dl += 1;
+                            } else {
+                                decoded_ok = false;
+                                break;
+                            }
+                        } else {
+                            decoded_buf[dl] = c;
+                            dl += 1;
+                            i += 1;
+                        }
+                    }
+                    if (decoded_ok and dl > 0) {
+                        const t_tag2 = keywordLookup(decoded_buf[0..dl], self.is_ts);
+                        // Only promote to keyword for "true" reserved words.
+                        // Contextual keywords (get/set/static/async/yield/let/
+                        // of/as/from/etc) remain .identifier when escaped —
+                        // spec says contextual keywords spelled with escapes
+                        // are NOT keywords in their special positions.
+                        const promote = switch (t_tag2) {
+                            .kw_null, .kw_true, .kw_false, .kw_if, .kw_else, .kw_for,
+                            .kw_while, .kw_do, .kw_function, .kw_return, .kw_break,
+                            .kw_continue, .kw_switch, .kw_case, .kw_default, .kw_try,
+                            .kw_catch, .kw_finally, .kw_throw, .kw_new, .kw_delete,
+                            .kw_typeof, .kw_void, .kw_instanceof, .kw_in, .kw_var,
+                            .kw_const, .kw_class, .kw_extends, .kw_super, .kw_this,
+                            .kw_import, .kw_export, .kw_debugger, .kw_with => true,
+                            else => false,
+                        };
+                        // NOTE: Escape-spelled reserved words are context-
+                        // dependent: SyntaxError as identifier reference,
+                        // OK as property name (`{new(){}}`). Walker
+                        // emits .identifier; parser is responsible for
+                        // checking decoded text against reserved words in
+                        // the appropriate contexts.
+                        _ = promote;
+                    }
+                }
+                // If we broke on LS/PS/BOM, set up a pending drain past it so
+                // next call resumes scanning the ident-bitmap continuation.
+                if (end < n) {
+                    const c = self.src[end];
+                    if (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                        (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9))
+                    {
+                        if (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9) self.saw_nl = true;
+                        self.skip_until = end + 3;
+                        if (end + 3 < n) {
+                            const nb = self.src[end + 3];
+                            if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                                nb == '_' or nb == '$' or nb >= 0x80 or (nb >= '0' and nb <= '9'))
+                            {
+                                self.pending_drain_pos = end + 3;
+                            }
+                        }
+                    } else if (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and self.src[end + 2] == 0xBF) {
+                        self.skip_until = end + 3;
+                        if (end + 3 < n) {
+                            const nb = self.src[end + 3];
+                            if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
+                                nb == '_' or nb == '$' or nb >= 0x80 or (nb >= '0' and nb <= '9'))
+                            {
+                                self.pending_drain_pos = end + 3;
+                            }
+                        }
+                    }
+                }
+                const text = self.src[p..end];
+                const t_tag = keywordLookup(text, self.is_ts);
+                self.prev_kind = if (t_tag.isKeyword() and self.prev_kind == .dot)
+                    .identifier
+                else
+                    t_tag;
+                if (self.pending_drain_pos == 0) self.maybeScheduleDrainAfter(end, n);
+                tokens.appendAssumeCapacity(.{  .tag = t_tag, .start = p, .len = end - p , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+            }
+
+            // Operator + punct dispatch (largely a port of the structural
+            // switch in `lexer_simdjson.tokenizeWithBuf`).
+            var tag: Tag = .invalid;
+            var end: u32 = p + 1;
+            switch (byte) {
+                '(' => tag = .l_paren,
+                ')' => tag = .r_paren,
+                '[' => tag = .l_bracket,
+                ']' => tag = .r_bracket,
+                '{' => {
+                    if (self.tmpl_depth > 0) self.brace_d[self.tmpl_depth - 1] += 1;
+                    tag = .l_brace;
+                },
+                '}' => {
+                    // Inside a template interpolation? Resume template scanning.
+                    if (self.tmpl_depth > 0 and self.brace_d[self.tmpl_depth - 1] == 0) {
+                        const r = Lex.templateChunkEnd(self.src, p);
+                        end = r.end;
+                        if (r.has_expr) {
+                            tag = .template_middle;
+                        } else {
+                            tag = .template_tail;
+                            self.tmpl_depth -= 1;
+                        }
+                    } else {
+                        if (self.tmpl_depth > 0) self.brace_d[self.tmpl_depth - 1] -= 1;
+                        tag = .r_brace;
+                    }
+                },
+                ',' => tag = .comma,
+                ';' => tag = .semicolon,
+                ':' => tag = .colon,
+                '~' => tag = .tilde,
+                '@' => tag = .at_sign,
+                '#' => tag = .hash,
+                '.' => {
+                    if (p + 2 < n and self.src[p + 1] == '.' and self.src[p + 2] == '.') { tag = .ellipsis; end = p + 3; }
+                    else if (p + 1 < n and self.src[p + 1] >= '0' and self.src[p + 1] <= '9') {
+                        end = Lex.numberEnd(self.src, p);
+                        tag = .number_literal;
+                    }
+                    else { tag = .dot; }
+                },
+                '?' => {
+                    if (p + 1 < n and self.src[p + 1] == '?') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .question_question_equal; end = p + 3; }
+                        else { tag = .question_question; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '.' and
+                               !(p + 2 < n and self.src[p + 2] >= '0' and self.src[p + 2] <= '9'))
+                    {
+                        tag = .question_dot; end = p + 2;
+                    } else { tag = .question; }
+                },
+                '+' => {
+                    if (p + 1 < n and self.src[p + 1] == '+') { tag = .plus_plus; end = p + 2; }
+                    else if (p + 1 < n and self.src[p + 1] == '=') { tag = .plus_equal; end = p + 2; }
+                    else { tag = .plus; }
+                },
+                '-' => {
+                    // HTML-like close comment `-->` at line start: skip to EOL
+                    // (forbidden in module mode — emit .invalid).
+                    if (self.at_line_start and p + 2 < n and self.src[p + 1] == '-' and self.src[p + 2] == '>') {
+                        if (self.is_module or !self.annex_b) {
+                            tag = .invalid;
+                            end = p + 3;
+                        } else {
+                            end = Lex.lineCommentEnd(self.src, p + 3);
+                            self.saw_nl = true;
+                            self.skip_until = end;
+                            continue;
+                        }
+                    } else
+                    if (p + 1 < n and self.src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
+                    else if (p + 1 < n and self.src[p + 1] == '=') { tag = .minus_equal; end = p + 2; }
+                    else { tag = .minus; }
+                },
+                '*' => {
+                    if (p + 1 < n and self.src[p + 1] == '*') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .asterisk_asterisk_equal; end = p + 3; }
+                        else { tag = .asterisk_asterisk; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .asterisk_equal; end = p + 2; }
+                    else { tag = .asterisk; }
+                },
+                '/' => {
+                    if (p + 1 < n and self.src[p + 1] == '/') {
+                        end = p + 2;
+                        while (end < n) : (end += 1) {
+                            const cb = self.src[end];
+                            if (cb == '\n' or cb == '\r') break;
+                            if (cb == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                                (self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9)) break;
+                        }
+                        if (self.cm_starts) |cs| {
+                            const a = self.cm_line_alloc.?;
+                            cs.append(a, p) catch {};
+                            self.cm_ends.?.append(a, end) catch {};
+                            self.cm_kinds.?.append(a, 0) catch {}; // 0 = line
+                        }
+                        self.skip_until = end;
+                        continue;
+                    }
+                    if (p + 1 < n and self.src[p + 1] == '*') {
+                        const LexerSj = @import("lexer_simdjson.zig");
+                        const r = LexerSj.blockCommentEndBM(self.src, bm.structural, bm.newline, p, n);
+                        end = r.end;
+                        // Unterminated /* */ comment — emit .invalid for parser to flag.
+                        if (end >= n and !(end >= 2 and self.src[end - 2] == '*' and self.src[end - 1] == '/')) {
+                            self.skip_until = end;
+                            self.prev_kind = .invalid;
+                            tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end - p , .has_newline_before = self.last_emitted_nl });
+                continue :restart;
+                        } else {
+                            if (self.cm_starts) |cs| {
+                                const a = self.cm_line_alloc.?;
+                                cs.append(a, p) catch {};
+                                self.cm_ends.?.append(a, end) catch {};
+                                self.cm_kinds.?.append(a, 1) catch {}; // 1 = block
+                            }
+                            if (r.has_nl) {
+                                self.saw_nl = true;
+                                self.at_line_start = true;
+                            }
+                            self.skip_until = end;
+                            continue;
+                        }
+                    }
+                    // Regex vs divide: prev_kind disambiguates per spec.
+                    // When yield is acting as an identifier (non-generator,
+                    // non-strict, or arrow inside generator), `/` is divide.
+                    const yield_as_ident = self.prev_kind == .kw_yield and self.yield_is_ident;
+                    if (!yield_as_ident and Lex.regexAllowed(self.prev_kind)) {
+                        end = Lex.regexEnd(self.src, p);
+                        tag = .regex_literal;
+                    } else if (p + 1 < n and self.src[p + 1] == '=') {
+                        tag = .slash_equal; end = p + 2;
+                    } else {
+                        tag = .slash;
+                    }
+                },
+                '\'', '"' => {
+                    const LexerSj = @import("lexer_simdjson.zig");
+                    end = LexerSj.stringEndBM(self.src, bm.structural, bm.newline, p, n);
+                    tag = .string_literal;
+                },
+                '`' => {
+                    // Template literal. Simplified: emits one .template_literal
+                    // token spanning to matching backtick. Full ${} interpolation
+                    // requires depth tracking + multiple sub-tokens (template_head,
+                    // template_middle, template_tail) — deferred.
+                    const r = Lex.templateChunkEnd(self.src, p);
+                    end = r.end;
+                    tag = if (r.has_expr) .template_head else .template_no_sub;
+                    if (r.has_expr) {
+                        if (self.tmpl_depth < self.brace_d.len) {
+                            self.brace_d[self.tmpl_depth] = 0;
+                            self.tmpl_depth += 1;
+                        }
+                    }
+                },
+                '%' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .percent_equal; end = p + 2; }
+                    else { tag = .percent; }
+                },
+                '&' => {
+                    if (p + 1 < n and self.src[p + 1] == '&') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .ampersand_ampersand_equal; end = p + 3; }
+                        else { tag = .ampersand_ampersand; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .ampersand_equal; end = p + 2; }
+                    else { tag = .ampersand; }
+                },
+                '|' => {
+                    if (p + 1 < n and self.src[p + 1] == '|') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .pipe_pipe_equal; end = p + 3; }
+                        else { tag = .pipe_pipe; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .pipe_equal; end = p + 2; }
+                    else { tag = .pipe; }
+                },
+                '^' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') { tag = .caret_equal; end = p + 2; }
+                    else { tag = .caret; }
+                },
+                '!' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .bang_equal_equal; end = p + 3; }
+                        else { tag = .bang_equal; end = p + 2; }
+                    } else { tag = .bang; }
+                },
+                '=' => {
+                    if (p + 1 < n and self.src[p + 1] == '=') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .equal_equal_equal; end = p + 3; }
+                        else { tag = .equal_equal; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '>') { tag = .arrow; end = p + 2; }
+                    else { tag = .equal; }
+                },
+                '<' => {
+                    // HTML-like open comment `<!--` is only recognized in Script goal.
+                    // In Module goal, `<!--` is just `<`, `!`, `--` per the standard tokeniser.
+                    if (!self.is_module and self.annex_b and p + 3 < n and self.src[p + 1] == '!' and self.src[p + 2] == '-' and self.src[p + 3] == '-') {
+                        end = Lex.lineCommentEnd(self.src, p + 4);
+                        self.saw_nl = true;
+                        self.skip_until = end;
+                        continue;
+                    } else if (p + 1 < n and self.src[p + 1] == '<') {
+                        if (p + 2 < n and self.src[p + 2] == '=') { tag = .less_less_equal; end = p + 3; }
+                        else { tag = .less_less; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .less_equal; end = p + 2; }
+                    else { tag = .less_than;}
+                },
+                '>' => {
+                    if (p + 1 < n and self.src[p + 1] == '>') {
+                        if (p + 2 < n and self.src[p + 2] == '>') {
+                            if (p + 3 < n and self.src[p + 3] == '=') { tag = .greater_greater_greater_equal; end = p + 4; }
+                            else { tag = .greater_greater_greater; end = p + 3; }
+                        } else if (p + 2 < n and self.src[p + 2] == '=') { tag = .greater_greater_equal; end = p + 3; }
+                        else { tag = .greater_greater; end = p + 2; }
+                    } else if (p + 1 < n and self.src[p + 1] == '=') { tag = .greater_equal; end = p + 2; }
+                    else { tag = .greater_than; }
+                },
+                else => {
+                    // Unsupported byte (string/regex/comment/template/digit/
+                    // BOM/high-byte). Emit .invalid placeholder + skip 1 byte.
+                    tag = .invalid;
+                },
+            }
+
+            self.skip_until = end;
+            self.prev_kind = tag;
+            const tok = Token{ .tag = tag, .start = p, .len = end - p };
+            self.last_emitted_nl = self.saw_nl;
+            self.saw_nl = false;
+            self.at_line_start = false;
+            // Post-emit: if next byte starts a Zs/LS/PS/BOM sequence that
+            // lands inside an ident-bitmap-run, schedule pending_drain so
+            // subsequent ident is not lost when the visit-bit walker skips it.
+            self.maybeScheduleDrainAfter(end, n);
+            tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+            continue :restart;
+        }
+      } // restart loop
+    }
+
     /// Skip whitespace + line terminators starting at `pos`, return new pos
     /// and whether any HIGH-byte (≥ 0x80) ws was crossed. Sets saw_nl when
     /// LF/CR/LS/PS encountered. Used by post-emit drain — the caller only
@@ -1628,15 +2654,8 @@ pub fn tokenizeViaWalkerDirect(
     iter.valid = 0;
     iter.head = 0;
 
-    while (iter.walkerNext()) |tok| {
-        try tokens.append(alloc, .{
-            .tag = tok.tag,
-            .start = tok.start,
-            .len = tok.len,
-            .has_newline_before = iter.last_emitted_nl,
-        });
-    }
-    try tokens.append(alloc, .{ .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false });
+    iter.walkerDrainTo(&tokens);
+    tokens.appendAssumeCapacity(.{ .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false });
 
     return .{
         .tokens = tokens,
@@ -1676,28 +2695,25 @@ pub fn tokenizeViaIterOpts2(
     errdefer line_starts.deinit(alloc);
     try line_starts.append(alloc, 0);
 
-    var iter = LexIter.initOpts(src, &bm, .{ .is_ts = lang.isTs(), .is_module = is_module, .annex_b = annex_b });
+    // Construct iter WITHOUT init priming — walkerDrainTo will start
+    // walker state from byte 0 and emit straight into tokens, no slot
+    // round-trip. This is the "fully inlined" iter walker path: no
+    // per-token return + re-enter overhead.
+    var iter = LexIter{
+        .src = src,
+        .bm = &bm,
+        .is_ts = lang.isTs(),
+        .is_module = is_module,
+        .annex_b = annex_b,
+    };
     iter.cm_starts = &cm_starts;
     iter.cm_ends = &cm_ends;
     iter.cm_kinds = &cm_kinds;
     iter.line_starts = &line_starts;
     iter.cm_line_alloc = alloc;
 
-    while (true) {
-        const cur = iter.peekToken(0);
-        const nl = iter.hasNewlineBefore(0);
-        const t = iter.advance();
-        if (t == .eof) break;
-        try tokens.append(alloc, .{
-            .tag = t,
-            .start = cur.start,
-            .len = cur.len,
-            .has_newline_before = nl,
-        });
-    }
-    try tokens.append(alloc, .{
-        .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false,
-    });
+    iter.walkerDrainTo(&tokens);
+    tokens.appendAssumeCapacity(.{ .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false });
 
     return .{
         .tokens = tokens,
