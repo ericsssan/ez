@@ -2958,7 +2958,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         break :blk nx == .l_brace or nx == .less_than or nx == .kw_extends or nx == .kw_implements;
     };
     const can_name = (p.peek() == .identifier or p.peek() == .escaped_keyword or
-        (p.peek() == .kw_await and !p.in_async and !p.is_module) or
+        (p.peek() == .kw_await and !p.in_async and !p.is_module and !(p.in_static_block and !p.in_function)) or
         (p.peek() == .kw_yield and !p.in_generator and !p.in_strict)) and
         (!peek_is_ts_modifier or next_is_class_continuation);
     const name_node: NodeIndex = if (can_name) blk: {

@@ -3464,7 +3464,7 @@ pub const Parser = struct {
             break :blk try self.parseIdentifier();
         } else if (self.peek() == .kw_yield and !self.in_generator and !self.in_strict) blk: {
             break :blk try self.parseIdentifier();
-        } else if (self.peek() == .kw_await and !self.in_async and !self.is_module) blk: {
+        } else if (self.peek() == .kw_await and !self.in_async and !self.is_module and !(self.in_static_block and !self.in_function)) blk: {
             break :blk try self.parseIdentifier();
         } else if ((self.peek() == .kw_let or self.peek() == .kw_static or
             self.peek() == .kw_implements or self.peek() == .kw_interface or
@@ -3643,7 +3643,7 @@ pub const Parser = struct {
                 }
                 break :blk id;
             }
-            if (next == .kw_await and !self.in_async and !self.is_module) break :blk try self.parseIdentifier();
+            if (next == .kw_await and !self.in_async and !self.is_module and !(self.in_static_block and !self.in_function)) break :blk try self.parseIdentifier();
             // Class is always strict mode — `yield` is never a valid class name.
             if (next == .kw_yield) {
                 try self.emitDiagnostic(self.currentSpan(), "'yield' is not a valid class name in strict mode", .{});
@@ -5863,7 +5863,7 @@ pub const Parser = struct {
             },
             // await can be binding name when not in async/module context (relaxed in TS)
             .kw_await => {
-                if (!self.is_ts and (self.in_async or self.is_module)) {
+                if (!self.is_ts and (self.in_async or self.is_module or (self.in_static_block and !self.in_function))) {
                     try self.emitDiagnostic(self.currentSpan(), "'await' cannot be used as binding name in this context", .{});
                     return error.ParseError;
                 }
