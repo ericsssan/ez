@@ -4234,6 +4234,10 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
         if (!p.in_class) {
             try p.emitError("Private field access is only allowed inside a class");
         }
+        // Spec: super.#x is invalid — private fields cannot be accessed via super.
+        if (object != .none and p.node_tags_ptr[object.toInt()] == .super_expr) {
+            try p.emitError("Private fields cannot be accessed via 'super'");
+        }
         const hash = p.advance();
         // Spec: no whitespace between `#` and identifier — token must be
         // contiguous (start of ident == hash.start + 1).
