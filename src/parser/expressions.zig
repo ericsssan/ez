@@ -549,7 +549,16 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     const rest_data = p.node_data_ptr[child.toInt()];
                     if (rest_data.lhs != .none) {
                         const rest_target_tag = p.node_tags_ptr[rest_data.lhs.toInt()];
-                        if (rest_target_tag == .assign or rest_target_tag == .assignment_pattern) {
+                        if (rest_target_tag == .assign or rest_target_tag == .assignment_pattern or
+                            rest_target_tag == .import_meta or rest_target_tag == .import_expr or
+                            rest_target_tag == .this_expr or rest_target_tag == .number_literal or
+                            rest_target_tag == .string_literal or rest_target_tag == .boolean_literal or
+                            rest_target_tag == .null_literal or rest_target_tag == .super_expr or
+                            rest_target_tag == .call_expr or rest_target_tag == .new_expr or
+                            rest_target_tag == .optional_member_expr or
+                            rest_target_tag == .optional_computed_member_expr or
+                            rest_target_tag == .optional_call_expr)
+                        {
                             try p.emitError("Invalid rest element target in destructuring");
                             return error.ParseError;
                         }
@@ -705,6 +714,8 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         val_tag == .optional_member_expr or
                         val_tag == .optional_computed_member_expr or
                         val_tag == .optional_call_expr or
+                        val_tag == .import_meta or
+                        val_tag == .import_expr or
                         val_tag == .sequence_expr)
                     {
                         try p.emitError("Invalid destructuring target");
