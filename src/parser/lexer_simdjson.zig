@@ -70,6 +70,10 @@ pub const Bitmaps = struct {
     /// high bytes (0x80+, for unicode line separators / ident continuation).
     /// Whitespace and pure ident-body bytes are NOT included.
     structural: []u64,
+    /// Whole-source flag: true if any byte ≥ 0x80 was seen. Lets the
+    /// walker fast-skip the per-emit pending_drain check for ASCII-only
+    /// sources (the common case for JS/TS source).
+    has_high: bool = false,
 
     pub fn init(alloc: std.mem.Allocator, n_bytes: usize) !Bitmaps {
         const n_words = (n_bytes + 63) / 64 + 1; // +1 sentinel for cross-word carry
@@ -122,6 +126,7 @@ pub fn buildBitmaps(src: []const u8, bm: *Bitmaps) void {
     const n = src.len;
     var pos: usize = 0;
     var word_idx: usize = 0;
+    var any_high: u16 = 0;
 
     while (pos + 64 <= n) : ({ pos += 64; word_idx += 1; }) {
         const c0: V16 = src[pos      ..][0..16].*;
@@ -139,6 +144,13 @@ pub fn buildBitmaps(src: []const u8, bm: *Bitmaps) void {
         bm.ident[word_idx]      = @as(u64, m0.ident)      | (@as(u64, m1.ident)      << 16) | (@as(u64, m2.ident)      << 32) | (@as(u64, m3.ident)      << 48);
         bm.newline[word_idx]    = @as(u64, m0.newline)    | (@as(u64, m1.newline)    << 16) | (@as(u64, m2.newline)    << 32) | (@as(u64, m3.newline)    << 48);
         bm.structural[word_idx] = @as(u64, m0.structural) | (@as(u64, m1.structural) << 16) | (@as(u64, m2.structural) << 32) | (@as(u64, m3.structural) << 48);
+        // Accumulate has-any-high flag from each chunk in 4× ILP. The
+        // compares are independent and run in parallel with the bitmap
+        // emit; net Phase 1 cost is one OR per word at the end.
+        any_high |= @as(u16, @bitCast(c0 >= @as(V16, @splat(@as(u8, 0x80))))) |
+                    @as(u16, @bitCast(c1 >= @as(V16, @splat(@as(u8, 0x80))))) |
+                    @as(u16, @bitCast(c2 >= @as(V16, @splat(@as(u8, 0x80))))) |
+                    @as(u16, @bitCast(c3 >= @as(V16, @splat(@as(u8, 0x80)))));
     }
 
     // Tail — process remaining bytes with 16-byte chunks then scalar.
@@ -148,6 +160,7 @@ pub fn buildBitmaps(src: []const u8, bm: *Bitmaps) void {
     var bit: u6 = 0;
     while (pos < n) : (pos += 1) {
         const b = src[pos];
+        if (b >= 0x80) any_high |= 1;
         const is_id =
             (b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or
             (b >= '0' and b <= '9') or b == '_' or b == '$' or b >= 0x80;
@@ -176,6 +189,7 @@ pub fn buildBitmaps(src: []const u8, bm: *Bitmaps) void {
         bm.newline[word_idx]    = 0;
         bm.structural[word_idx] = 0;
     }
+    bm.has_high = any_high != 0;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -376,12 +390,28 @@ pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
             if (ts) if (matchKW(&KW8_TS, v)) |t| break :blk t;
             break :blk .identifier;
         },
-        9, 10 => blk: {
-            if (Token.keywords.get(text)) |kw| break :blk kw;
+        9 => blk: {
+            const v8 = loadU64(text, 8);
+            const c9 = text[8];
+            const KW9_SATISFIE: u64 = pK("satisfie");
+            const KW9_NAMESPAC: u64 = pK("namespac");
+            const KW9_INTERFAC: u64 = pK("interfac");
             if (ts) {
-                if (Token.ts_keywords.get(text)) |kw| break :blk kw;
+                if (v8 == KW9_SATISFIE and c9 == 's') break :blk Tag.kw_satisfies;
+                if (v8 == KW9_NAMESPAC and c9 == 'e') break :blk Tag.kw_namespace;
+                if (v8 == KW9_INTERFAC and c9 == 'e') break :blk Tag.kw_interface;
             }
-            break :blk .identifier;
+            break :blk Tag.identifier;
+        },
+        10 => blk: {
+            const v8 = loadU64(text, 8);
+            const c9 = text[8];
+            const c10 = text[9];
+            const KW10_INSTANCE: u64 = pK("instance");
+            const KW10_IMPLEMEN: u64 = pK("implemen");
+            if (v8 == KW10_INSTANCE and c9 == 'o' and c10 == 'f') break :blk Tag.kw_instanceof;
+            if (ts and v8 == KW10_IMPLEMEN and c9 == 't' and c10 == 's') break :blk Tag.kw_implements;
+            break :blk Tag.identifier;
         },
         else => .identifier,
     };

@@ -1406,6 +1406,18 @@ pub const LexIter = struct {
         @setEvalBranchQuota(100_000);
         const n: u32 = @intCast(self.src.len);
         const bm = self.bm;
+        // Hoist MultiArrayList field pointers + counter into locals so
+        // emits compile to 4 raw stores + 1 increment — no per-emit
+        // reload of tokens.bytes/.len/etc. Matches the monolithic
+        // walker's `tag_ptr[tok_n] = X` pattern. tokens.len synced back
+        // at function exit via `defer`.
+        var slice0 = tokens.slice();
+        const tag_ptr = slice0.items(.tag).ptr;
+        const start_ptr = slice0.items(.start).ptr;
+        const len_ptr = slice0.items(.len).ptr;
+        const nl_ptr = slice0.items(.has_newline_before).ptr;
+        var tok_n: usize = tokens.len;
+        defer tokens.len = tok_n;
 
       restart: while (true) {
         // Drain pending trailing-ident-run from prior number emit.
@@ -1424,7 +1436,7 @@ pub const LexIter = struct {
                     self.saw_nl = false;
                     self.at_line_start = false;
                     self.maybeScheduleDrainAfter(end_i, n);
-                    tokens.appendAssumeCapacity(.{  .tag = tag_n, .start = dp, .len = end_i - dp , .has_newline_before = self.last_emitted_nl });
+                    tag_ptr[tok_n] = tag_n; start_ptr[tok_n] = dp; len_ptr[tok_n] = end_i - dp; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                 }
                 end_i = dp + 1;
@@ -1441,7 +1453,7 @@ pub const LexIter = struct {
                                 self.last_emitted_nl = self.saw_nl;
                                 self.saw_nl = false;
                                 self.at_line_start = false;
-                                tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = dp, .len = sl , .has_newline_before = self.last_emitted_nl });
+                                tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = dp; len_ptr[tok_n] = sl; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                             }
                             end_i = dp + sl;
@@ -1470,7 +1482,7 @@ pub const LexIter = struct {
                 self.saw_nl = false;
                 self.at_line_start = false;
                 self.maybeScheduleDrainAfter(end_i, n);
-                tokens.appendAssumeCapacity(.{  .tag = t_tag, .start = dp, .len = end_i - dp , .has_newline_before = self.last_emitted_nl });
+                tag_ptr[tok_n] = t_tag; start_ptr[tok_n] = dp; len_ptr[tok_n] = end_i - dp; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
             }
         }
@@ -1618,14 +1630,14 @@ pub const LexIter = struct {
                     // Truncated UTF-8 — treat as invalid.
                     self.skip_until = p + 1;
                     self.prev_kind = .invalid;
-                    tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = 1 , .has_newline_before = self.last_emitted_nl });
+                    tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = 1; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                 }
                 const start_cp = std.unicode.utf8Decode(self.src[p .. p + start_len]) catch 0;
                 if (!uid.isIdStart(@intCast(start_cp))) {
                     self.skip_until = p + start_len;
                     self.prev_kind = .invalid;
-                    tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = start_len , .has_newline_before = self.last_emitted_nl });
+                    tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = start_len; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                 }
                 var end_i: u32 = p + start_len;
@@ -1693,7 +1705,7 @@ pub const LexIter = struct {
                 const tok = Token{ .tag = t_tag, .start = p, .len = end_i - p };
                 self.saw_nl = false;
                 self.at_line_start = false;
-                tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+                tag_ptr[tok_n] = tok.tag; start_ptr[tok_n] = tok.start; len_ptr[tok_n] = tok.len; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
             continue :restart;
             }
 
@@ -1752,7 +1764,7 @@ pub const LexIter = struct {
                 self.saw_nl = false;
                 self.at_line_start = false;
                 if (self.pending_drain_pos == 0) self.maybeScheduleDrainAfter(end_n, n);
-                tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+                tag_ptr[tok_n] = tok.tag; start_ptr[tok_n] = tok.start; len_ptr[tok_n] = tok.len; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
             continue :restart;
             }
 
@@ -1834,7 +1846,7 @@ pub const LexIter = struct {
                     self.last_emitted_nl = self.saw_nl;
                     self.saw_nl = false;
                     self.at_line_start = false;
-                    tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end_i - p , .has_newline_before = self.last_emitted_nl });
+                    tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = end_i - p; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                 }
 
@@ -1899,7 +1911,7 @@ pub const LexIter = struct {
                             self.saw_nl = false;
                             self.at_line_start = false;
                             self.prev_kind = .invalid;
-                            tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end_i - p , .has_newline_before = self.last_emitted_nl });
+                            tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = end_i - p; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                         }
                     } else break;
@@ -1910,7 +1922,7 @@ pub const LexIter = struct {
                 const tok = Token{ .tag = .identifier, .start = p, .len = end_i - p };
                 self.saw_nl = false;
                 self.at_line_start = false;
-                tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+                tag_ptr[tok_n] = tok.tag; start_ptr[tok_n] = tok.start; len_ptr[tok_n] = tok.len; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
             continue :restart;
             }
 
@@ -2032,7 +2044,7 @@ pub const LexIter = struct {
                             self.saw_nl = false;
                             self.at_line_start = false;
                             self.prev_kind = .invalid;
-                            tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end - p , .has_newline_before = self.last_emitted_nl });
+                            tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = end - p; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                         }
                         _ = esc_start;
@@ -2179,7 +2191,7 @@ pub const LexIter = struct {
                 else
                     t_tag;
                 if (self.pending_drain_pos == 0) self.maybeScheduleDrainAfter(end, n);
-                tokens.appendAssumeCapacity(.{  .tag = t_tag, .start = p, .len = end - p , .has_newline_before = self.last_emitted_nl });
+                tag_ptr[tok_n] = t_tag; start_ptr[tok_n] = p; len_ptr[tok_n] = end - p; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
             }
 
@@ -2292,7 +2304,7 @@ pub const LexIter = struct {
                         if (end >= n and !(end >= 2 and self.src[end - 2] == '*' and self.src[end - 1] == '/')) {
                             self.skip_until = end;
                             self.prev_kind = .invalid;
-                            tokens.appendAssumeCapacity(.{  .tag = .invalid, .start = p, .len = end - p , .has_newline_before = self.last_emitted_nl });
+                            tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = end - p; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
                 continue :restart;
                         } else {
                             if (self.cm_starts) |cs| {
@@ -2418,7 +2430,7 @@ pub const LexIter = struct {
             // lands inside an ident-bitmap-run, schedule pending_drain so
             // subsequent ident is not lost when the visit-bit walker skips it.
             self.maybeScheduleDrainAfter(end, n);
-            tokens.appendAssumeCapacity(.{ .tag = tok.tag, .start = tok.start, .len = tok.len, .has_newline_before = self.last_emitted_nl });
+            tag_ptr[tok_n] = tok.tag; start_ptr[tok_n] = tok.start; len_ptr[tok_n] = tok.len; nl_ptr[tok_n] = self.last_emitted_nl; tok_n += 1;
             continue :restart;
         }
       } // restart loop
