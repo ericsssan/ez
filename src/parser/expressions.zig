@@ -1445,29 +1445,37 @@ fn validateRegexBodyUnicode(p: *Parser, body: []const u8, v_mode: bool) Error!vo
             '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/', '-' => i += 1,
             'd', 'D', 's', 'S', 'w', 'W' => i += 1,
             'p', 'P' => {
+                const is_negated = (esc == 'P');
                 i += 1;
-                if (i < body.len and body[i] == '{') {
-                    i += 1;
-                    const name_start = i;
-                    var eq_pos: ?usize = null;
-                    while (i < body.len and body[i] != '}') : (i += 1) {
-                        if (body[i] == '=' and eq_pos == null) eq_pos = i;
-                    }
-                    if (i >= body.len) {
-                        try p.emitError("Unterminated property escape in regular expression");
-                        return error.ParseError;
-                    }
-                    const upro = @import("unicode_props.zig");
-                    const ok = if (eq_pos) |ep|
-                        upro.isValidPropertyRef(body[name_start..ep], body[ep + 1 .. i], v_mode)
-                    else
-                        upro.isValidPropertyRef(body[name_start..i], null, v_mode);
-                    if (!ok) {
-                        try p.emitError("Invalid property name in regular expression");
-                        return error.ParseError;
-                    }
-                    i += 1; // consume '}'
+                if (i >= body.len or body[i] != '{') {
+                    try p.emitError("Property escape '\\p' must be followed by '{'");
+                    return error.ParseError;
                 }
+                i += 1;
+                const name_start = i;
+                var eq_pos: ?usize = null;
+                while (i < body.len and body[i] != '}') : (i += 1) {
+                    if (body[i] == '=' and eq_pos == null) eq_pos = i;
+                }
+                if (i >= body.len) {
+                    try p.emitError("Unterminated property escape in regular expression");
+                    return error.ParseError;
+                }
+                const upro = @import("unicode_props.zig");
+                const name = if (eq_pos) |ep| body[name_start..ep] else body[name_start..i];
+                const value: ?[]const u8 = if (eq_pos) |ep| body[ep + 1 .. i] else null;
+                if (!upro.isValidPropertyRef(name, value, v_mode)) {
+                    try p.emitError("Invalid property name in regular expression");
+                    return error.ParseError;
+                }
+                // Property-of-strings can only be used with \p (positive), not \P.
+                if (is_negated and v_mode and value == null and
+                    upro.isBinaryPropertyOfStrings(name))
+                {
+                    try p.emitError("Property-of-strings cannot be negated with '\\P'");
+                    return error.ParseError;
+                }
+                i += 1; // consume '}'
             },
             'k' => {
                 i += 1;
