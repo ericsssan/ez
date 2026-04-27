@@ -94,7 +94,7 @@ pub fn main(init: std.process.Init) !void {
         const parse_result = blk: {
             var tokens = (tokenizeMaybe(file_alloc, source, .js, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" }).tokens;
             defer tokens.deinit(file_alloc);
-            var tree = Parser.parseWithLanguage(file_alloc, source, tokens.slice(), .js, is_module) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
+            var tree = Parser.parseWithLanguageOpts(file_alloc, source, tokens.slice(), .js, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
             defer tree.deinit(file_alloc);
             if (tree.errors.len > 0) break :blk ParseResult{ .has_error = true, .first_error = tree.errors[0].message };
 

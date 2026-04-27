@@ -237,6 +237,8 @@ pub const Parser = struct {
     /// Arrow functions are only valid as AssignmentExpressions, not as binary operands.
     allow_arrow: bool,
     is_module: bool,
+    /// AnnexB web-compat extensions enabled. Default true (matches V8/JSC/SM).
+    annex_b: bool = true,
     in_export_default: bool,
     in_strict: bool,
     in_block: bool,
@@ -282,6 +284,10 @@ pub const Parser = struct {
     pub const ParseOptions = struct {
         language: Language = .js,
         is_module: bool = false,
+        /// AnnexB web-compat extensions (default ON). When false, parser-level
+        /// AnnexB rules are disabled (call-as-assignment-target rejected,
+        /// function-in-block redecl checked strictly, etc).
+        annex_b: bool = true,
         /// If non-null, parser emits a linear stream of scope/declare/reference
         /// events into this buffer.  Used by the event-driven semantic analyzer.
         events_out: ?*ScopeEventStream = null,
@@ -321,14 +327,19 @@ pub const Parser = struct {
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
-        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out, opts.emit_events, opts.streaming);
+        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out, opts.emit_events, opts.streaming, opts.annex_b);
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
     /// Always emits scope events — the event-driven semantic analyzer is the
-    /// sole path (tree walker was removed).
+    /// sole path (tree walker was removed). AnnexB extensions are ON by default.
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null);
+        return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null, true);
+    }
+
+    /// Same as parseWithLanguage but with an explicit AnnexB flag.
+    pub fn parseWithLanguageOpts(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, annex_b: bool) !Ast {
+        return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null, annex_b);
     }
 
     /// Parse from a `LexIter` (per-call walker). Drains the iterator into a
@@ -353,7 +364,7 @@ pub const Parser = struct {
         // appends, so reading past that returns whatever's there).
         return parseInternalWithIterOpt(
             allocator, source, tokens_owned.slice(), language, is_module_file,
-            null, true, null, iter, tokens_owned,
+            null, true, null, iter, tokens_owned, iter.annex_b,
         );
     }
 
@@ -365,11 +376,11 @@ pub const Parser = struct {
         is_module_file: bool,
         iter: *@import("lex_iter.zig").LexIter,
     ) !Ast {
-        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, null, true, null, iter, null);
+        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, null, true, null, iter, null, iter.annex_b);
     }
 
-    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool, streaming: ?StreamingHooks) !Ast {
-        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, events_out, emit_events, streaming, null, null);
+    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool, streaming: ?StreamingHooks, annex_b: bool) !Ast {
+        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, events_out, emit_events, streaming, null, null, annex_b);
     }
 
     fn parseInternalWithIterOpt(
@@ -383,6 +394,7 @@ pub const Parser = struct {
         streaming: ?StreamingHooks,
         iter_opt: ?*@import("lex_iter.zig").LexIter,
         tokens_owned_in: ?Ast.TokenList,
+        annex_b: bool,
     ) !Ast {
         var p = Parser{
             .source = source,
@@ -418,6 +430,7 @@ pub const Parser = struct {
             .allow_in = true,
             .allow_arrow = true,
             .is_module = is_module_file,
+            .annex_b = annex_b,
             .in_export_default = false,
             .in_strict = is_module_file,
             .in_block = false,
@@ -2707,9 +2720,18 @@ pub const Parser = struct {
                     try self.emitDiagnostic(self.currentSpan(), "for-in/of must have a single binding", .{});
                 }
             },
+            .call_expr => {
+                // AnnexB: f() as for-in/of LHS permitted in non-strict Script.
+                if (self.in_strict or !self.annex_b) {
+                    if (!self.is_ts) {
+                        try self.emitDiagnostic(self.currentSpan(), "Invalid left-hand side in for-in/of: function call", .{});
+                        return error.ParseError;
+                    }
+                }
+            },
             .this_expr, .number_literal, .string_literal, .boolean_literal,
             .null_literal, .add, .subtract, .multiply,
-            .call_expr, .new_expr, .unary_plus, .unary_minus,
+            .new_expr, .unary_plus, .unary_minus,
             .prefix_inc, .prefix_dec, .postfix_inc, .postfix_dec,
             .logical_not, .bitwise_not, .typeof_expr, .void_expr, .delete_expr,
             .conditional, .assign,

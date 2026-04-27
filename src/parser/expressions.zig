@@ -296,6 +296,15 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
         const op_tag = unwrapGroupingTag(p, operand);
         switch (op_tag) {
             .identifier, .member_expr, .computed_member_expr => {},
+            .call_expr => {
+                // AnnexB: ++f() permitted in non-strict Script.
+                if (p.in_strict or !p.annex_b) {
+                    if (!p.is_ts) {
+                        try p.emitError("Invalid left-hand side in prefix operation: function call");
+                        return error.ParseError;
+                    }
+                }
+            },
             .optional_member_expr, .optional_computed_member_expr => {
                 if (!p.is_ts) {
                     try p.emitError("Invalid left-hand side in prefix operation: optional chain");
@@ -355,6 +364,15 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
     const op_tag = unwrapGroupingTag(p, operand);
     switch (op_tag) {
         .identifier, .member_expr, .computed_member_expr => {},
+        .call_expr => {
+            // AnnexB: f()++ permitted in non-strict Script.
+            if (p.in_strict or !p.annex_b) {
+                if (!p.is_ts) {
+                    try p.emitError("Invalid left-hand side in postfix operation: function call");
+                    return error.ParseError;
+                }
+            }
+        },
         .optional_member_expr, .optional_computed_member_expr => {
             if (!p.is_ts) {
                 try p.emitError("Invalid left-hand side in postfix operation: optional chain");
@@ -5087,6 +5105,16 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
         .array_literal, .array_pattern, .object_literal, .object_pattern,
         .assignment_pattern, .spread_element, .rest_element,
         => {},
+        .call_expr => {
+            // AnnexB: f() = 1 permitted in non-strict Script (web-compat).
+            // Compound/logical assignment ops do NOT get this relaxation.
+            if (op_tag != .equal or p.in_strict or !p.annex_b) {
+                if (!p.is_ts) {
+                    try p.emitError("Invalid left-hand side in assignment: function call");
+                    return error.ParseError;
+                }
+            }
+        },
         .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
             // Parenthesized optional chain is valid: (a?.b) = c
             if (left_tag != .grouping_expr and !p.is_ts) {

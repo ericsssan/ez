@@ -24,6 +24,7 @@ const known_stale = [_][]const u8{
     "92b6af54adef3624.js", // "\9" — valid Annex B
     "98204d734f8c72b3.js", // (class {a}) — valid ES2022
     "ef81b93cf9bdb4ec.js", // (class {a=0}) — valid ES2022
+    "a8beb1480f385441.js", // func() = 4 — valid Annex B (call-as-target)
 };
 
 fn isKnownStale(path: []const u8) bool {
