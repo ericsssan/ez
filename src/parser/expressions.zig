@@ -781,6 +781,102 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
 /// - Invalid `\u{...}`: must contain only hex digits.
 /// - Legacy octal escape: `\1` etc. (unless valid back-reference, deferred).
 /// - `\u` followed by non-hex.
+/// Scan a regex body for modifier-group syntax `(?<flags>:...)` and
+/// `(?<add>-<remove>:...)`. Validate per spec:
+/// - Flags must be from {i, m, s}
+/// - No duplicates within add or remove
+/// - No overlap between add and remove
+/// - Must end with `:`
+/// - Add and remove cannot both be empty
+/// Distinguishes from other `(?...)` constructs (lookarounds, named groups).
+fn validateRegexModifierGroups(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\' and i + 1 < body.len) { i += 2; continue; }
+        if (c == '[') {
+            // Skip character class — no groups inside.
+            i += 1;
+            while (i < body.len) : (i += 1) {
+                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                if (body[i] == ']') { i += 1; break; }
+            }
+            continue;
+        }
+        if (c != '(' or i + 1 >= body.len or body[i + 1] != '?') {
+            i += 1;
+            continue;
+        }
+        // `(?` — what follows determines kind.
+        const k = i + 2;
+        if (k >= body.len) { i += 1; continue; }
+        const k0 = body[k];
+        // Skip non-modifier group kinds.
+        if (k0 == ':' or k0 == '=' or k0 == '!' or k0 == '<') {
+            i += 1;
+            continue;
+        }
+        // Otherwise treat as modifier group: scan flags, optional `-flags`, expect `:`.
+        var add_seen: [128]bool = @splat(false);
+        var rem_seen: [128]bool = @splat(false);
+        var add_count: u32 = 0;
+        var rem_count: u32 = 0;
+        var j = k;
+        while (j < body.len) : (j += 1) {
+            const ch = body[j];
+            if (ch == '-' or ch == ':' or ch == ')') break;
+            switch (ch) {
+                'i', 'm', 's' => {},
+                else => {
+                    try p.emitError("Invalid flag in regex modifier group");
+                    return error.ParseError;
+                },
+            }
+            if (add_seen[ch]) {
+                try p.emitError("Duplicate flag in regex modifier group");
+                return error.ParseError;
+            }
+            add_seen[ch] = true;
+            add_count += 1;
+        }
+        if (j < body.len and body[j] == '-') {
+            j += 1;
+            while (j < body.len) : (j += 1) {
+                const ch = body[j];
+                if (ch == ':' or ch == ')') break;
+                switch (ch) {
+                    'i', 'm', 's' => {},
+                    else => {
+                        try p.emitError("Invalid flag in regex modifier group");
+                        return error.ParseError;
+                    },
+                }
+                if (rem_seen[ch]) {
+                    try p.emitError("Duplicate flag in regex modifier group");
+                    return error.ParseError;
+                }
+                if (add_seen[ch]) {
+                    try p.emitError("Flag appears in both add and remove of regex modifier");
+                    return error.ParseError;
+                }
+                rem_seen[ch] = true;
+                rem_count += 1;
+            }
+        }
+        // Must be followed by `:`
+        if (j >= body.len or body[j] != ':') {
+            try p.emitError("Regex modifier group must be followed by ':'");
+            return error.ParseError;
+        }
+        // Spec: both add and remove cannot be empty.
+        if (add_count == 0 and rem_count == 0) {
+            try p.emitError("Regex modifier group must have at least one flag");
+            return error.ParseError;
+        }
+        i = j + 1;
+    }
+}
+
 fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
     var i: usize = 0;
     var class_depth: u32 = 0; // v-flag allows nested `[[ ... ]]`
@@ -1299,6 +1395,8 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                     try p.emitError("Regex flags 'u' and 'v' are mutually exclusive");
                     return error.ParseError;
                 }
+                // Validate regex modifier-group syntax: `(?<flags>:...)` etc.
+                try validateRegexModifierGroups(p, p.source[ts + 1 .. close - 1]);
                 // With u or v flag, validate body for u-mode requirements.
                 if (has_u or has_v) {
                     try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
