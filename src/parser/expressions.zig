@@ -784,12 +784,34 @@ fn containsAwaitIdentifier(p: *Parser, node: NodeIndex) bool {
         const tok = p.node_main_token_ptr[idx];
         if (p.tokenTagAt(tok) == .kw_await) return true;
     }
-    // Stop at function/class boundaries — those create their own scopes.
+    // Stop at function boundaries — those have their own [Await] context.
+    // Class member methods stop (own [Await]). Arrow functions inherit
+    // [Await] from parent, so we descend into their params (but NOT body —
+    // body inherits but is parsed in its own scope). Async arrows stop
+    // because their body has [Await]=true regardless and any await there
+    // would be an await_expr, not an identifier.
     switch (tag) {
         .fn_expr, .async_fn_expr, .generator_fn_expr,
-        .class_expr, .arrow_fn, .async_arrow_fn,
         .method_def, .getter_def, .setter_def,
+        .async_arrow_fn,
         => return false,
+        .arrow_fn => {
+            // data.lhs is an extra-data index to ArrowData; decode it and
+            // walk only params, skipping body.
+            const ed_idx = data.lhs.toInt();
+            if (ed_idx + 2 >= p.extra_data.items.len) return false;
+            const params_start = p.extra_data.items[ed_idx];
+            const params_end = p.extra_data.items[ed_idx + 1];
+            var i: u32 = params_start;
+            while (i < params_end) : (i += 1) {
+                const child = NodeIndex.fromInt(p.extra_data.items[i]);
+                if (containsAwaitIdentifier(p, child)) return true;
+            }
+            return false;
+        },
+        // For property nodes the key (data.lhs) is just a name — reserved
+        // words allowed there. Only the value (data.rhs) is an expression.
+        .property, .computed_property => return containsAwaitIdentifier(p, data.rhs),
         else => {},
     }
     // Children via lhs / rhs.
