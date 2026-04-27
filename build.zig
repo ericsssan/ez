@@ -141,6 +141,22 @@ pub fn build(b: *std.Build) void {
     const bench_st_step = b.step("bench-pipeline-st", "Single-thread lex+parse+sem (Lexer vs LexIter)");
     bench_st_step.dependOn(&bench_st_cmd.step);
 
+    // ── Walker profiling target (for samply) ──
+    const prof_walker_mod = b.createModule(.{
+        .root_source_file = b.path("bench/profile_walker.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
+    });
+    prof_walker_mod.addImport("ez", test_mod);
+    const prof_walker = b.addExecutable(.{
+        .name = "profile_walker",
+        .root_module = prof_walker_mod,
+    });
+    b.installArtifact(prof_walker);
+    const prof_walker_step = b.step("profile-walker", "Build walker profiling exe (samply record ./zig-out/bin/profile_walker {iter,mono})");
+    prof_walker_step.dependOn(&prof_walker.step);
+
     // ── Events bench ─────────────────────────────────────────
     const bench_evt_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_events.zig"),

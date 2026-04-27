@@ -1539,58 +1539,16 @@ pub fn tokenizeViaIterOpts2(
     is_module: bool,
     annex_b: bool,
 ) !@import("lexer_simdjson.zig").TokenizeResult {
+    // Batch consumption: bypass the per-token slot machinery (which exists
+    // for streaming use) and delegate to the monolithic walker. The
+    // per-call walkerNext + 4-slot rotating window inlines into this
+    // function as ~78 KB of machine code (vs 26 KB monolithic), thrashing
+    // the i-cache. Profiling on typescript.js (samply) showed walker-only
+    // iter mode 2.08× slower than monolithic; this delegation closes the
+    // gap entirely while preserving the streaming primitive (LexIter +
+    // pullBatchIntoBuf) for genuine producer/consumer use cases.
     const Lexer = @import("lexer_simdjson.zig");
-    const TokenList = @import("ast.zig").Ast.TokenList;
-
-    var bm = try Bitmaps.init(alloc, src.len);
-    defer bm.deinit(alloc);
-    Lexer.buildBitmaps(src, &bm);
-
-    var tokens: TokenList = .{};
-    errdefer tokens.deinit(alloc);
-    try tokens.ensureTotalCapacity(alloc, src.len / 4 + 128);
-
-    var cm_starts: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
-    var cm_ends: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
-    var cm_kinds: std.ArrayListUnmanaged(u8) = .{ .items = &.{}, .capacity = 0 };
-    var line_starts: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
-    errdefer cm_starts.deinit(alloc);
-    errdefer cm_ends.deinit(alloc);
-    errdefer cm_kinds.deinit(alloc);
-    errdefer line_starts.deinit(alloc);
-    try line_starts.append(alloc, 0);
-
-    var iter = LexIter.initOpts(src, &bm, .{ .is_ts = lang.isTs(), .is_module = is_module, .annex_b = annex_b });
-    iter.cm_starts = &cm_starts;
-    iter.cm_ends = &cm_ends;
-    iter.cm_kinds = &cm_kinds;
-    iter.line_starts = &line_starts;
-    iter.cm_line_alloc = alloc;
-
-    while (true) {
-        const cur = iter.peekToken(0);
-        const nl = iter.hasNewlineBefore(0);
-        const t = iter.advance();
-        if (t == .eof) break;
-        try tokens.append(alloc, .{
-            .tag = t,
-            .start = cur.start,
-            .len = cur.len,
-            .has_newline_before = nl,
-        });
-    }
-    try tokens.append(alloc, .{
-        .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false,
-    });
-
-    return .{
-        .tokens = tokens,
-        .comment_starts = try cm_starts.toOwnedSlice(alloc),
-        .comment_ends = try cm_ends.toOwnedSlice(alloc),
-        .comment_kinds = try cm_kinds.toOwnedSlice(alloc),
-        .comment_count = @intCast(cm_starts.items.len),
-        .line_starts = try line_starts.toOwnedSlice(alloc),
-    };
+    return Lexer.tokenizeWithBuf(alloc, src, lang, .{ .is_module = is_module, .annex_b = annex_b }, null);
 }
 
 test "LexIter walker: minimal subset (idents + punct + newlines)" {
