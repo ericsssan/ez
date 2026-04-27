@@ -877,6 +877,159 @@ fn validateRegexModifierGroups(p: *Parser, body: []const u8) Error!void {
     }
 }
 
+/// Validate a single regex group name — content between `<` and `>` of
+/// `(?<NAME>...)` or `\k<NAME>`. Returns the index past the closing `>`.
+/// Errors if the name is empty, malformed, or unterminated.
+fn validateRegexGroupName(p: *Parser, body: []const u8, start: usize) Error!usize {
+    var i = start;
+    var first = true;
+    var saw_any = false;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        if (c == '>') {
+            if (!saw_any) {
+                try p.emitError("Empty regex group name");
+                return error.ParseError;
+            }
+            return i + 1;
+        }
+        // Escape sequence: only `\u` or `\u{...}` allowed in identifier.
+        if (c == '\\') {
+            if (i + 1 >= body.len or body[i + 1] != 'u') {
+                try p.emitError("Invalid character in regex group name");
+                return error.ParseError;
+            }
+            i += 1; // consume 'u' on next iter
+            saw_any = true;
+            first = false;
+            // Skip hex digits (4) or `{...}`. We don't fully validate.
+            if (i + 1 < body.len and body[i + 1] == '{') {
+                i += 1;
+                while (i < body.len and body[i] != '}') : (i += 1) {}
+                if (i >= body.len) {
+                    try p.emitError("Unterminated regex group name");
+                    return error.ParseError;
+                }
+            } else {
+                if (i + 4 < body.len) i += 4 else {
+                    try p.emitError("Unterminated regex group name");
+                    return error.ParseError;
+                }
+            }
+            continue;
+        }
+        if (c >= 0x80) {
+            // Non-ASCII byte — accept as Unicode identifier char (may produce
+            // false negatives for invalid Unicode IDs, but avoids false positives).
+            saw_any = true;
+            first = false;
+            continue;
+        }
+        const is_letter = (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z');
+        const is_digit = (c >= '0' and c <= '9');
+        const is_id_start = is_letter or c == '$' or c == '_';
+        const is_id_continue = is_id_start or is_digit;
+        if (first) {
+            if (!is_id_start) {
+                try p.emitError("Invalid first character in regex group name");
+                return error.ParseError;
+            }
+        } else {
+            if (!is_id_continue) {
+                try p.emitError("Invalid character in regex group name");
+                return error.ParseError;
+            }
+        }
+        saw_any = true;
+        first = false;
+    }
+    try p.emitError("Unterminated regex group name");
+    return error.ParseError;
+}
+
+fn validateRegexNamedGroups(p: *Parser, body: []const u8) Error!void {
+    // Pass 1: validate (?<NAME>...) syntax and collect names.
+    // Per ES2025: duplicate names ARE allowed if in different alternation
+    // branches. Without full pattern parsing, we only flag duplicates when
+    // no `|` exists in the pattern.
+    var names_buf: [256][]const u8 = undefined;
+    var names_count: usize = 0;
+    var has_alternation = false;
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\' and i + 1 < body.len) { i += 2; continue; }
+        if (c == '[') {
+            i += 1;
+            while (i < body.len) : (i += 1) {
+                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                if (body[i] == ']') { i += 1; break; }
+            }
+            continue;
+        }
+        if (c == '|') { has_alternation = true; i += 1; continue; }
+        if (c != '(' or i + 2 >= body.len or body[i + 1] != '?' or body[i + 2] != '<') {
+            i += 1;
+            continue;
+        }
+        if (i + 3 < body.len and (body[i + 3] == '=' or body[i + 3] == '!')) {
+            i += 4;
+            continue;
+        }
+        const name_start = i + 3;
+        const name_end = try validateRegexGroupName(p, body, name_start);
+        const name = body[name_start .. name_end - 1];
+        if (!has_alternation) {
+            var d: usize = 0;
+            while (d < names_count) : (d += 1) {
+                if (std.mem.eql(u8, names_buf[d], name)) {
+                    try p.emitError("Duplicate regex group name");
+                    return error.ParseError;
+                }
+            }
+        }
+        if (names_count < names_buf.len) {
+            names_buf[names_count] = name;
+            names_count += 1;
+        }
+        i = name_end;
+    }
+    // Pass 2: validate \k<NAME> references — only if pattern has named groups.
+    // Otherwise (non-u mode AnnexB), `\k` is treated as literal escape sequence.
+    if (names_count == 0) return;
+    i = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '[') {
+            i += 1;
+            while (i < body.len) : (i += 1) {
+                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                if (body[i] == ']') { i += 1; break; }
+            }
+            continue;
+        }
+        if (c != '\\' or i + 1 >= body.len) { i += 1; continue; }
+        if (body[i + 1] != 'k') { i += 2; continue; }
+        if (i + 2 >= body.len or body[i + 2] != '<') {
+            try p.emitError("Invalid named back-reference: '\\k' must be followed by '<NAME>'");
+            return error.ParseError;
+        }
+        const ref_start = i + 3;
+        const ref_end = try validateRegexGroupName(p, body, ref_start);
+        const ref_name = body[ref_start .. ref_end - 1];
+        var found = false;
+        var n: usize = 0;
+        while (n < names_count) : (n += 1) {
+            if (std.mem.eql(u8, names_buf[n], ref_name)) { found = true; break; }
+        }
+        if (!found) {
+            try p.emitError("Reference to undefined regex group name");
+            return error.ParseError;
+        }
+        i = ref_end;
+    }
+}
+
 fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
     var i: usize = 0;
     var class_depth: u32 = 0; // v-flag allows nested `[[ ... ]]`
@@ -1397,6 +1550,8 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 }
                 // Validate regex modifier-group syntax: `(?<flags>:...)` etc.
                 try validateRegexModifierGroups(p, p.source[ts + 1 .. close - 1]);
+                // Validate named groups: collect names, validate format, check refs.
+                try validateRegexNamedGroups(p, p.source[ts + 1 .. close - 1]);
                 // With u or v flag, validate body for u-mode requirements.
                 if (has_u or has_v) {
                     try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
