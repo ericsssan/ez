@@ -98,12 +98,18 @@ const ChunkMasks = struct {
 
 inline fn classifyChunk(chunk: V16, m: *ChunkMasks) void {
     // Ident: a-z, A-Z, 0-9, _, $, 0x80+
-    const is_lower = (chunk >= @as(V16, @splat(@as(u8, 'a')))) & (chunk <= @as(V16, @splat(@as(u8, 'z'))));
-    const is_upper = (chunk >= @as(V16, @splat(@as(u8, 'A')))) & (chunk <= @as(V16, @splat(@as(u8, 'Z'))));
+    //
+    // Compress upper-or-lower-letter check into a single range test: ORing
+    // with 0x20 maps 'A'..'Z' (0x41..0x5A) → 0x61..0x7A = 'a'..'z'. Then
+    // a single 'a'..'z' range catches both cases. Saves 2 SIMD compares
+    // (and 1 OR) per chunk.
+    const lower_chunk = chunk | @as(V16, @splat(@as(u8, 0x20)));
+    const is_letter = (lower_chunk >= @as(V16, @splat(@as(u8, 'a')))) &
+                      (lower_chunk <= @as(V16, @splat(@as(u8, 'z'))));
     const is_digit = (chunk >= @as(V16, @splat(@as(u8, '0')))) & (chunk <= @as(V16, @splat(@as(u8, '9'))));
     const is_us_dl: B16 = (chunk == @as(V16, @splat(@as(u8, '_')))) | (chunk == @as(V16, @splat(@as(u8, '$'))));
     const is_high: B16 = chunk >= @as(V16, @splat(@as(u8, 0x80)));
-    m.ident = @bitCast(is_lower | is_upper | is_digit | is_us_dl | is_high);
+    m.ident = @bitCast(is_letter | is_digit | is_us_dl | is_high);
 
     // Newline: \n \r (LS/PS handled via 0x80+ bytes elsewhere)
     m.newline = @bitCast(
