@@ -5106,13 +5106,15 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
         .assignment_pattern, .spread_element, .rest_element,
         => {},
         .call_expr => {
-            // AnnexB: f() = 1 permitted in non-strict Script (web-compat).
-            // Compound/logical assignment ops do NOT get this relaxation.
-            if (op_tag != .equal or p.in_strict or !p.annex_b) {
-                if (!p.is_ts) {
-                    try p.emitError("Invalid left-hand side in assignment: function call");
-                    return error.ParseError;
-                }
+            // AnnexB: f() = 1 / f() += 1 etc permitted in non-strict Script.
+            // Logical assignment ops (&&=, ||=, ??=) added in ES2021 do NOT
+            // get this relaxation per spec.
+            const is_logical_assign = (op_tag == .ampersand_ampersand_equal or
+                op_tag == .pipe_pipe_equal or op_tag == .question_question_equal);
+            const allow = p.annex_b and !p.in_strict and !is_logical_assign;
+            if (!allow and !p.is_ts) {
+                try p.emitError("Invalid left-hand side in assignment: function call");
+                return error.ParseError;
             }
         },
         .optional_member_expr, .optional_computed_member_expr, .optional_call_expr => {
