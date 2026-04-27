@@ -3480,7 +3480,11 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         });
     }
 
-    // `new Foo` (without parens).
+    // `new Foo` (without parens). Optional chain immediately after new
+    // (`new X?.y` or `new X?.()`) is a SyntaxError per spec.
+    if (!p.is_ts and p.peek() == .question_dot) {
+        try p.emitError("Optional chain is not allowed immediately after 'new' expression");
+    }
     return p.addNode(.{
         .tag = .new_expr,
         .main_token = new_tok,
