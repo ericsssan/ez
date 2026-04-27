@@ -531,7 +531,7 @@ pub fn blockCommentEndBM(
 /// pre-built ident bitmap. Avoids re-scanning bytes — `@ctz(~tail)` over
 /// 64-bit words is essentially free (no SIMD). Falls back to scalar scan
 /// only if the run reaches end of bitmap.
-inline fn identEndFromBitmap(
+pub inline fn identEndFromBitmap(
     ident_bm: []const u64,
     wi_in: usize,
     start_bit: u32,

@@ -898,15 +898,38 @@ pub const LexIter = struct {
                 byte == '_' or byte == '$')
             {
                 const uid = @import("unicode_id.zig");
-                var end: u32 = p + 1;
-                // Track whether the ident contained any `\` escape. The
-                // post-scan keyword recheck previously did a fresh
-                // indexOfScalar(\\) over the ident text — ~7% of walker
-                // time on typescript.js because most idents are
-                // escape-free yet we still scanned the full slice. Setting
-                // this flag inside the rare escape branch eliminates the
-                // scan for the hot path.
+                // Fast path: use the ident bitmap to find the end of the
+                // contiguous ident-byte run via @ctz on inverted bitmap.
+                // O(64) bytes per cycle vs the byte-by-byte scan which was
+                // 33% of walker samples on typescript.js. Falls through to
+                // the byte loop only when we encounter `\u` escape or
+                // high-byte non-ID_Continue (whitespace etc.) at the run
+                // boundary.
+                const LexerSj = @import("lexer_simdjson.zig");
+                var end: u32 = LexerSj.identEndFromBitmap(bm.ident, self.wi - 1, b, @intCast((self.wi - 1) * 64), n);
+                // Validate the byte at `end`: if high-byte non-ID_Continue,
+                // back off; if `\u` escape, switch to byte-scan to handle.
                 var had_escape: bool = false;
+                if (end < n) {
+                    const ec = self.src[end];
+                    if (ec >= 0x80) {
+                        // High-byte at run boundary may be ws/BOM/LS/PS
+                        // (which the ident bitmap includes but isn't a
+                        // valid ID_Continue). Byte-validate via Unicode.
+                        const cont_len = std.unicode.utf8ByteSequenceLength(ec) catch 1;
+                        if (end + cont_len <= n) {
+                            const cp = std.unicode.utf8Decode(self.src[end .. end + cont_len]) catch 0;
+                            if (!uid.isIdContinueJS(@intCast(cp))) {
+                                // bitmap over-included this byte — back off.
+                                // (rare; shouldn't trigger in practice)
+                            } else {
+                                end += cont_len;
+                            }
+                        }
+                    }
+                }
+                // Tail loop: handles `\u` escapes and post-bitmap high-byte
+                // continuations. Common case (no escapes): does nothing.
                 while (end < n) {
                     const c = self.src[end];
                     if ((c >= 'a' and c <= 'z') or
