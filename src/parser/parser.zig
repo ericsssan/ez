@@ -552,6 +552,7 @@ pub const Parser = struct {
             }
         }
 
+        p.syncYieldLex();
         try p.parseProgram();
 
         const extra_data = try p.extra_data.toOwnedSlice(allocator);
@@ -613,6 +614,13 @@ pub const Parser = struct {
     // ────────────────────────────────────────────────────────────
     // Token helpers
     // ────────────────────────────────────────────────────────────
+
+    /// Sync the lexer's yield_is_ident flag from current parser state.
+    /// Must be called whenever in_generator or in_strict transitions, so
+    /// `yield/x` after a kw_yield token is lexed as divide-vs-regex correctly.
+    pub inline fn syncYieldLex(self: *Parser) void {
+        if (self.iter) |it| it.yield_is_ident = !self.in_strict and !self.in_generator;
+    }
 
     /// Consume the current token and return its index.
     pub inline fn advance(self: *Parser) TokenIndex {
@@ -2612,6 +2620,7 @@ pub const Parser = struct {
             const text = self.getStringContent(start);
             if (std.mem.eql(u8, text, "use strict")) {
                 self.in_strict = true;
+                self.syncYieldLex();
                 return;
             }
 
@@ -3640,6 +3649,7 @@ pub const Parser = struct {
         // Function body has its own `arguments` binding — clears class-field restriction.
         self.in_class_field = false;
         self.new_target_allowed = true;
+        self.syncYieldLex();
 
         const fn_type_params = try self.parseOptionalTypeParameters();
         const params = try self.parseFormalParameters();
@@ -3650,11 +3660,13 @@ pub const Parser = struct {
             self.in_generator = prev_in_generator;
             self.in_class_field = prev_in_class_field;
             self.new_target_allowed = prev_nta_fd;
+            self.syncYieldLex();
         }
 
         const prev_strict = self.in_strict;
         if (self.peek() == .l_brace) self.checkDirectivePrologueAt(self.tok_i + 1);
-        defer self.in_strict = prev_strict;
+        if (self.in_strict != prev_strict) self.syncYieldLex();
+        defer { self.in_strict = prev_strict; self.syncYieldLex(); }
 
         if (self.in_strict and !prev_strict) {
             // Function name must not be eval/arguments or strict-reserved in strict mode
@@ -3906,8 +3918,9 @@ pub const Parser = struct {
         const prev_strict = self.in_strict;
         self.in_class = true;
         self.in_strict = true; // class bodies are always strict
+        self.syncYieldLex();
         defer self.in_class = prev_in_class;
-        defer self.in_strict = prev_strict;
+        defer { self.in_strict = prev_strict; self.syncYieldLex(); }
 
         // AllPrivateNamesValid: snapshot stack lengths to scope private decls
         // and refs to this class body. On exit, validate refs against decls.
@@ -4405,6 +4418,8 @@ pub const Parser = struct {
                 self.in_generator = is_generator_method;
                 self.in_class_field = false;
                 if (is_async_method) self.in_async = true;
+                self.syncYieldLex();
+                defer self.syncYieldLex();
                 defer self.in_function = prev_in_function;
                 defer self.in_constructor = prev_in_constructor;
                 defer self.in_class_field = prev_in_cf;
@@ -4605,6 +4620,8 @@ pub const Parser = struct {
             self.in_generator = is_generator_method;
             self.in_class_field = false;
             if (is_async_method) self.in_async = true;
+            self.syncYieldLex();
+            defer self.syncYieldLex();
             defer self.in_function = prev_in_function;
             defer self.in_constructor = prev_in_constructor;
             defer self.in_method = prev_in_method;

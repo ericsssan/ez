@@ -127,6 +127,11 @@ pub const LexIter = struct {
     is_module: bool = false,
     /// AnnexB enabled (default true). When false, HTML-like comments are SyntaxErrors.
     annex_b: bool = true,
+    /// True when `yield` is parsed as an identifier (non-generator, non-strict
+    /// context, including arrow functions nested inside generators). The
+    /// parser maintains this flag; lexer consults it to disambiguate `yield/x`
+    /// as divide rather than regex when yield is acting as an identifier.
+    yield_is_ident: bool = true,
 
     // ── Out-of-band diagnostic outputs ───────────────────────────────────
     // Comments / line starts still flow through caller-provided ArrayLists.
@@ -1107,7 +1112,10 @@ pub const LexIter = struct {
                         }
                     }
                     // Regex vs divide: prev_kind disambiguates per spec.
-                    if (Lex.regexAllowed(self.prev_kind)) {
+                    // When yield is acting as an identifier (non-generator,
+                    // non-strict, or arrow inside generator), `/` is divide.
+                    const yield_as_ident = self.prev_kind == .kw_yield and self.yield_is_ident;
+                    if (!yield_as_ident and Lex.regexAllowed(self.prev_kind)) {
                         end = Lex.regexEnd(self.src, p);
                         tag = .regex_literal;
                     } else if (p + 1 < n and self.src[p + 1] == '=') {

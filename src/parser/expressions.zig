@@ -2526,11 +2526,12 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     p.in_generator = is_generator;
     p.in_class_field = false;
     p.new_target_allowed = true;
+    p.syncYieldLex();
     defer p.new_target_allowed = saved_nta_afe;
     p.in_class = false;
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
-    defer p.in_generator = saved_gen;
+    defer { p.in_generator = saved_gen; p.syncYieldLex(); }
     defer p.in_class_field = saved_cf_afe;
     defer p.in_class = saved_ic_afe;
 
@@ -2714,9 +2715,10 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         p.in_function = true;
         p.in_generator = false;
         p.in_fn_params = false;
+        p.syncYieldLex();
         defer p.in_async = saved_async;
         defer p.in_function = saved_fn4;
-        defer p.in_generator = saved_gen4;
+        defer { p.in_generator = saved_gen4; p.syncYieldLex(); }
         defer p.in_fn_params = saved_fp4;
         const body = if (p.peek() == .l_brace)
             try parseBlockBodyWithStrictChecks(p, params_range, .none)
@@ -2890,8 +2892,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             const saved_gen5 = p.in_generator;
             p.in_function = true;
             p.in_generator = false;
+            p.syncYieldLex();
             defer p.in_function = saved_fn5;
-            defer p.in_generator = saved_gen5;
+            defer { p.in_generator = saved_gen5; p.syncYieldLex(); }
             const body = if (p.peek() == .l_brace)
                 try parseBlockBodyWithStrictChecks(p, params_range, .none)
             else
@@ -3035,8 +3038,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         p.in_function = true;
         p.in_generator = false;
         p.in_async = false;
+        p.syncYieldLex();
         defer p.in_function = saved_fn3;
-        defer p.in_generator = saved_gen3;
+        defer { p.in_generator = saved_gen3; p.syncYieldLex(); }
         defer p.in_async = saved_async3;
 
         // Arrow scope — params were parsed as expression identifiers and
@@ -3134,7 +3138,8 @@ fn parseArrowBody(p: *Parser) Error!NodeIndex {
     // `yield` is treated as an identifier inside the arrow body.
     const saved_gen = p.in_generator;
     p.in_generator = false;
-    defer p.in_generator = saved_gen;
+    p.syncYieldLex();
+    defer { p.in_generator = saved_gen; p.syncYieldLex(); }
     // Arrow body clears the outer fn-param context.
     const saved_fp_ab = p.in_fn_params;
     p.in_fn_params = false;
@@ -3409,9 +3414,10 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     p.in_generator = false;
     p.in_async = false;
     p.in_class_field = false;
+    p.syncYieldLex();
     defer p.in_function = saved_fn;
     defer p.in_method = saved_method;
-    defer p.in_generator = saved_gen_gs;
+    defer { p.in_generator = saved_gen_gs; p.syncYieldLex(); }
     defer p.in_async = saved_async_gs;
     defer p.in_class_field = saved_cf_gs;
 
@@ -3555,9 +3561,10 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     p.new_target_allowed = true;
     defer p.new_target_allowed = _saved_nta_x;
     p.in_class_field = false;
+    p.syncYieldLex();
     defer p.in_function = saved_fn;
     defer p.in_async = saved_async;
-    defer p.in_generator = saved_gen;
+    defer { p.in_generator = saved_gen; p.syncYieldLex(); }
     defer p.in_method = saved_method;
     defer p.in_class_field = saved_cf_am;
 
@@ -3602,8 +3609,9 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     p.new_target_allowed = true;
     defer p.new_target_allowed = _saved_nta_x;
     p.in_class_field = false;
+    p.syncYieldLex();
     defer p.in_function = saved_fn;
-    defer p.in_generator = saved_gen;
+    defer { p.in_generator = saved_gen; p.syncYieldLex(); }
     defer p.in_method = saved_method;
     defer p.in_class_field = saved_cf_gm;
 
@@ -3961,7 +3969,8 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     defer p.new_target_allowed = saved_nta_fe;
     const saved_gen = p.in_generator;
     p.in_generator = is_generator;
-    defer p.in_generator = saved_gen;
+    p.syncYieldLex();
+    defer { p.in_generator = saved_gen; p.syncYieldLex(); }
     // Non-async function expression body has its own [~Await] flag.
     const saved_async_fe = p.in_async;
     p.in_async = false;
@@ -4137,8 +4146,9 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     defer p.class_has_heritage = prev_heritage;
     p.in_class = true;
     p.in_strict = true;
+    p.syncYieldLex();
     defer p.in_class = prev_in_class;
-    defer p.in_strict = prev_strict;
+    defer { p.in_strict = prev_strict; p.syncYieldLex(); }
 
     // AllPrivateNamesValid: snapshot stacks for this class expression body.
     const private_decls_start_ce = p.private_decls.items.len;
