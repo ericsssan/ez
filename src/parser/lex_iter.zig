@@ -1205,6 +1205,20 @@ fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
     {
         return false;
     }
+    // BigInt cannot have a decimal point or exponent.
+    if (end > start and src[end - 1] == 'n') {
+        var bi_i = start;
+        while (bi_i < end) : (bi_i += 1) {
+            const bc = src[bi_i];
+            if (bc == '.') return false;
+            if (bc == 'e' or bc == 'E') {
+                // Allow `e`/`E` only inside hex literals (0xabcEf), not as exponent marker.
+                if (!(end > start + 1 and src[start] == '0' and (src[start + 1] == 'x' or src[start + 1] == 'X'))) {
+                    return false;
+                }
+            }
+        }
+    }
     var i = start;
     var is_hex: bool = false;
     if (i + 1 < end and src[i] == '0') {
