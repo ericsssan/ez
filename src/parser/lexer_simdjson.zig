@@ -420,7 +420,7 @@ inline fn lineCommentEndBM(newline_bm: []const u64, start: u32, n: u32) u32 {
 /// Bitmap-driven string scan. Walks structural|newline (both contain quote
 /// and backslash; newline terminates an unterminated string). Returns
 /// `end` such that the string token spans [open .. end).
-fn stringEndBM(
+pub fn stringEndBM(
     src: []const u8,
     structural_bm: []const u64,
     newline_bm: []const u64,
@@ -477,7 +477,7 @@ fn stringEndBM(
 /// Bitmap-driven block comment scan. Walks structural for `*` candidates,
 /// newline for has_nl tracking. Returns end (after `*/`) and whether a
 /// newline lies within the comment body.
-fn blockCommentEndBM(
+pub fn blockCommentEndBM(
     src: []const u8,
     structural_bm: []const u64,
     newline_bm: []const u64,

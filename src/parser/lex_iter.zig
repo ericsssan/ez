@@ -899,6 +899,14 @@ pub const LexIter = struct {
             {
                 const uid = @import("unicode_id.zig");
                 var end: u32 = p + 1;
+                // Track whether the ident contained any `\` escape. The
+                // post-scan keyword recheck previously did a fresh
+                // indexOfScalar(\\) over the ident text — ~7% of walker
+                // time on typescript.js because most idents are
+                // escape-free yet we still scanned the full slice. Setting
+                // this flag inside the rare escape branch eliminates the
+                // scan for the hot path.
+                var had_escape: bool = false;
                 while (end < n) {
                     const c = self.src[end];
                     if ((c >= 'a' and c <= 'z') or
@@ -915,6 +923,7 @@ pub const LexIter = struct {
                     }
                     // \u escape continuation: \uXXXX or \u{...}.
                     if (c == '\\' and end + 1 < n and self.src[end + 1] == 'u') {
+                        had_escape = true;
                         const esc_start = end;
                         end += 2;
                         var esc_valid = true;
@@ -1012,8 +1021,7 @@ pub const LexIter = struct {
                 // If ident contained any \u escape, decode it and re-check
                 // against keywords — `null` is the keyword `null`,
                 // which is reserved (parser rejects as identifier reference).
-                const has_escape = std.mem.indexOfScalar(u8, self.src[p..end], '\\') != null;
-                if (has_escape) {
+                if (had_escape) {
                     var decoded_buf: [128]u8 = undefined;
                     var dl: usize = 0;
                     var i: u32 = p;
@@ -1230,7 +1238,8 @@ pub const LexIter = struct {
                         continue;
                     }
                     if (p + 1 < n and self.src[p + 1] == '*') {
-                        const r = Lex.blockCommentEnd(self.src, p);
+                        const LexerSj = @import("lexer_simdjson.zig");
+                        const r = LexerSj.blockCommentEndBM(self.src, bm.structural, bm.newline, p, n);
                         end = r.end;
                         // Unterminated /* */ comment — emit .invalid for parser to flag.
                         if (end >= n and !(end >= 2 and self.src[end - 2] == '*' and self.src[end - 1] == '/')) {
@@ -1266,7 +1275,8 @@ pub const LexIter = struct {
                     }
                 },
                 '\'', '"' => {
-                    end = Lex.stringEnd(self.src, p);
+                    const LexerSj = @import("lexer_simdjson.zig");
+                    end = LexerSj.stringEndBM(self.src, bm.structural, bm.newline, p, n);
                     tag = .string_literal;
                 },
                 '`' => {
@@ -1530,6 +1540,69 @@ pub fn tokenizeViaIterOpts(
     is_module: bool,
 ) !@import("lexer_simdjson.zig").TokenizeResult {
     return tokenizeViaIterOpts2(alloc, src, lang, is_module, true);
+}
+
+/// Diagnostic: drives the walker WITHOUT slot machinery — calls
+/// walkerNext directly in a tight loop. Same correctness as
+/// tokenizeViaIter; isolates "walker logic cost" from "slot API cost"
+/// in profiling.
+pub fn tokenizeViaWalkerDirect(
+    alloc: std.mem.Allocator,
+    src: []const u8,
+    lang: @import("token.zig").Language,
+) !@import("lexer_simdjson.zig").TokenizeResult {
+    const Lexer = @import("lexer_simdjson.zig");
+    const TokenList = @import("ast.zig").Ast.TokenList;
+
+    var bm = try Bitmaps.init(alloc, src.len);
+    defer bm.deinit(alloc);
+    Lexer.buildBitmaps(src, &bm);
+
+    var tokens: TokenList = .{};
+    errdefer tokens.deinit(alloc);
+    try tokens.ensureTotalCapacity(alloc, src.len / 4 + 128);
+
+    var ls: std.ArrayListUnmanaged(u32) = .{ .items = &.{}, .capacity = 0 };
+    errdefer ls.deinit(alloc);
+    try ls.append(alloc, 0);
+
+    var iter = LexIter.init(src, &bm);
+    iter.is_ts = lang.isTs();
+    iter.line_starts = &ls;
+    iter.cm_line_alloc = alloc;
+    // Reset state — LexIter.init already calls fillSlot once. Undo it.
+    iter.wi = 0;
+    iter.visit = 0;
+    iter.skip_until = 0;
+    iter.prev_kind = .eof;
+    iter.tmpl_depth = 0;
+    iter.brace_d = [_]u32{0} ** 16;
+    iter.prev_ident_last_bit = 0;
+    iter.saw_nl = false;
+    iter.at_line_start = true;
+    iter.last_emitted_nl = false;
+    iter.pending_drain_pos = 0;
+    iter.valid = 0;
+    iter.head = 0;
+
+    while (iter.walkerNext()) |tok| {
+        try tokens.append(alloc, .{
+            .tag = tok.tag,
+            .start = tok.start,
+            .len = tok.len,
+            .has_newline_before = iter.last_emitted_nl,
+        });
+    }
+    try tokens.append(alloc, .{ .tag = .eof, .start = @intCast(src.len), .len = 0, .has_newline_before = false });
+
+    return .{
+        .tokens = tokens,
+        .comment_starts = &.{},
+        .comment_ends = &.{},
+        .comment_kinds = &.{},
+        .comment_count = 0,
+        .line_starts = try ls.toOwnedSlice(alloc),
+    };
 }
 
 pub fn tokenizeViaIterOpts2(

@@ -22,8 +22,12 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
 
-    const mode: enum { mono, iter } = blk: {
-        if (args.len > 1 and std.mem.eql(u8, args[1], "iter")) break :blk .iter;
+    const Mode = enum { mono, iter, direct };
+    const mode: Mode = blk: {
+        if (args.len > 1) {
+            if (std.mem.eql(u8, args[1], "iter")) break :blk .iter;
+            if (std.mem.eql(u8, args[1], "direct")) break :blk .direct;
+        }
         break :blk .mono;
     };
 
@@ -49,6 +53,10 @@ pub fn main(init: std.process.Init) !void {
                 var t = lex_iter.tokenizeViaIter(fba_w.allocator(), source, .js) catch continue;
                 t.deinit(fba_w.allocator());
             },
+            .direct => {
+                var t = lex_iter.tokenizeViaWalkerDirect(fba_w.allocator(), source, .js) catch continue;
+                t.deinit(fba_w.allocator());
+            },
         }
     }
 
@@ -65,6 +73,10 @@ pub fn main(init: std.process.Init) !void {
             },
             .iter => {
                 var t = lex_iter.tokenizeViaIter(fba.allocator(), source, .js) catch continue;
+                t.deinit(fba.allocator());
+            },
+            .direct => {
+                var t = lex_iter.tokenizeViaWalkerDirect(fba.allocator(), source, .js) catch continue;
                 t.deinit(fba.allocator());
             },
         }
