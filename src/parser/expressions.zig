@@ -2857,6 +2857,10 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const saved_gen = p.in_generator;
     p.in_generator = is_generator;
     defer p.in_generator = saved_gen;
+    // Non-async function expression body has its own [~Await] flag.
+    const saved_async_fe = p.in_async;
+    p.in_async = false;
+    defer p.in_async = saved_async_fe;
     // Function body has its own `arguments` — the class-field-init restriction stops here.
     const saved_cf = p.in_class_field;
     p.in_class_field = false;
