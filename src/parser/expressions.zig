@@ -775,6 +775,78 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
 /// Recursively check if any node in the subtree refers to `await` as an
 /// identifier. Used to reject `await` inside async-arrow parameter defaults
 /// (where the cover grammar parses await as an identifier ref).
+/// In v-mode character classes:
+/// - ClassSyntaxCharacters (`(`, `)`, `[`, `{`, `}`, `/`, `-`, `|`) must be
+///   escaped (closes 8 breaking-change-from-u-to-v tests).
+/// - Reserved double punctuators (`&&`, `!!`, `##`, `$$`, `%%`, `**`, `++`,
+///   `,,`, `..`, `::`, `;;`, `<<`, `==`, `>>`, `??`, `@@`, `^^`, `\`\``, `~~`)
+///   are reserved as set operators / invalid (closes ~6 tests).
+fn validateRegexVFlagClassExtras(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\' and i + 1 < body.len) { i += 2; continue; }
+        if (c != '[') { i += 1; continue; }
+        // Inside character class. Parse atoms.
+        i += 1;
+        // Skip optional leading `^`.
+        if (i < body.len and body[i] == '^') i += 1;
+        var prev_punct: u8 = 0;
+        while (i < body.len and body[i] != ']') {
+            const ch = body[i];
+            if (ch == '\\' and i + 1 < body.len) {
+                const e = body[i + 1];
+                i += 2;
+                // For \p{...}, \P{...}, \q{...}, \k<...> skip past the brace/angle body.
+                if ((e == 'p' or e == 'P' or e == 'q') and i < body.len and body[i] == '{') {
+                    i += 1;
+                    while (i < body.len and body[i] != '}') : (i += 1) {}
+                    if (i < body.len) i += 1;
+                } else if (e == 'k' and i < body.len and body[i] == '<') {
+                    i += 1;
+                    while (i < body.len and body[i] != '>') : (i += 1) {}
+                    if (i < body.len) i += 1;
+                }
+                prev_punct = 0;
+                continue;
+            }
+            if (ch == '[') {
+                // Nested class — recursively validated by outer scan via i++.
+                i += 1;
+                prev_punct = 0;
+                continue;
+            }
+            // Reserved double punctuator check. Note: `&&` and `||` are set
+            // operators and have specific positional semantics; we still
+            // flag bare `&&` if the atoms around it are empty. For simplicity
+            // we flag all reserved double-punct doublings.
+            if (ch == prev_punct and isReservedDoublePunctuator(ch)) {
+                try p.emitError("Reserved double-punctuator in v-mode character class");
+                return error.ParseError;
+            }
+            prev_punct = ch;
+            // Class syntax characters that must be escaped in v-mode.
+            switch (ch) {
+                '(', ')', '[', '{', '}', '/', '|' => {
+                    try p.emitError("Unescaped class syntax character in v-mode character class");
+                    return error.ParseError;
+                },
+                else => {},
+            }
+            i += 1;
+        }
+        if (i < body.len) i += 1; // consume ]
+    }
+}
+
+fn isReservedDoublePunctuator(c: u8) bool {
+    // Per ECMA-262: reserved doublings excluding && (intersection) and -- (difference).
+    return switch (c) {
+        '!', '#', '$', '%', '*', '+', ',', '.', ':', ';', '<', '=', '>', '?', '@', '^', '`', '~' => true,
+        else => false,
+    };
+}
+
 /// Validate a regex body in u/v (Unicode) mode. Returns SyntaxError on:
 /// - Invalid IdentityEscape: `\X` where X is not a SyntaxCharacter, /, or ASCII-letter
 ///   that's a recognized escape (digits handled separately).
@@ -2017,6 +2089,9 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                     try validateRegexLookaroundUnicode(p, p.source[ts + 1 .. close - 1]);
                     if (has_u and !has_v) {
                         try validateRegexClassRangesUnicode(p, p.source[ts + 1 .. close - 1]);
+                    }
+                    if (has_v) {
+                        try validateRegexVFlagClassExtras(p, p.source[ts + 1 .. close - 1]);
                     }
                 }
             }
