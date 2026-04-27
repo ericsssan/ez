@@ -114,7 +114,16 @@ pub inline fn parseConditionalExpression(p: *Parser) Error!NodeIndex {
 // =====================================================================
 
 fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
+    // `#x` as primary is only valid at relational precedence (LHS of `in`).
+    // Set a one-shot flag so parsePrimary's .hash branch can validate.
+    const saved_priv_lhs = p.private_in_lhs_allowed;
+    p.private_in_lhs_allowed = (@intFromEnum(min_prec) <= @intFromEnum(Precedence.relational));
+    defer p.private_in_lhs_allowed = saved_priv_lhs;
     var left = try parsePrefixExpression(p);
+    // After consuming the LHS, nested operands (e.g. RHS of `in`) are not
+    // valid `#x` positions at this same level — but they go through their
+    // own parseExpressionPrec recursion which sets its own flag.
+    p.private_in_lhs_allowed = saved_priv_lhs;
     // Hoist: language is set once per parse call. Save the field load on
     // every iter of the Pratt loop (millions of times across a large file).
     const is_ts = p.is_ts;
@@ -2203,15 +2212,23 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
         .kw_async => try parseAsyncExpressionOrIdentifier(p),
         .kw_import => try parseImportExpression(p),
         .hash => blk: {
-            // #identifier — private brand check (used with `in`: `#x in obj`).
-            // Only valid inside a class body.
+            // #identifier — private brand check. Only valid as LHS of `in`,
+            // which means: caller is at relational precedence (or below) AND
+            // `#x` is followed immediately by `in`.
             if (!p.in_class and !p.is_ts) {
                 try p.emitError("Private name '#...' is not allowed outside a class body");
                 return error.ParseError;
             }
+            if (!p.is_ts and !p.private_in_lhs_allowed) {
+                try p.emitError("Private name '#...' must be the left operand of 'in'");
+                return error.ParseError;
+            }
             const hash_tok = p.advance();
             if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
-            // Track for AllPrivateNamesValid check at end of class body.
+            if (!p.is_ts and (p.peek() != .kw_in or !p.allow_in)) {
+                try p.emitError("Private name '#...' must be the left operand of 'in'");
+                return error.ParseError;
+            }
             try p.private_refs.append(p.gpa, hash_tok);
             break :blk try p.addNode(.{
                 .tag = .identifier,

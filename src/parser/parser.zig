@@ -169,6 +169,10 @@ pub const Parser = struct {
     /// Depth of currently-open class bodies. When we close the outermost
     /// (depth goes from 1 to 0) any unresolved private refs are SyntaxErrors.
     class_body_depth: u32 = 0,
+    /// Set true by parseExpressionPrec when entering at relational precedence
+    /// or lower, so parsePrimary's `.hash` branch knows we're in a position
+    /// where `#x` could form `#x in expr`.
+    private_in_lhs_allowed: bool = false,
     /// Local names referenced by named exports without `from` — must resolve
     /// to a declared module-level binding by end of parsing.
     pending_export_local_toks: std.ArrayListUnmanaged(TokenIndex) = .{ .items = &.{}, .capacity = 0 },
@@ -1615,7 +1619,6 @@ pub const Parser = struct {
             for (self.pending_export_local_toks.items) |tok_idx| {
                 const want = self.tokenText(tok_idx);
                 var found = false;
-                // Stack of open scope kinds (true = function-like boundary).
                 var fn_stack: [128]bool = undefined;
                 var stack_n: usize = 0;
                 var fn_d: i32 = 0;
@@ -1636,7 +1639,6 @@ pub const Parser = struct {
                         },
                         .declare => {
                             const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                            // var hoists to nearest function — at module top, fn_d == 0.
                             const is_var_at_module = (bk == .@"var" and fn_d == 0);
                             if (stack_n == 0 or is_var_at_module) {
                                 const dn_tok = self.node_main_token_ptr[@intCast(ev.node)];
