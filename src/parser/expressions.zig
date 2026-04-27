@@ -1032,6 +1032,73 @@ fn validateRegexNamedGroups(p: *Parser, body: []const u8, is_unicode: bool) Erro
     }
 }
 
+/// In u/v mode, lookahead/lookbehind groups cannot be quantified. Find each
+/// `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` and ensure no quantifier
+/// follows the closing `)`.
+fn validateRegexLookaroundUnicode(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\' and i + 1 < body.len) { i += 2; continue; }
+        if (c == '[') {
+            i += 1;
+            while (i < body.len) : (i += 1) {
+                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                if (body[i] == ']') { i += 1; break; }
+            }
+            continue;
+        }
+        if (c != '(' or i + 2 >= body.len or body[i + 1] != '?') {
+            i += 1;
+            continue;
+        }
+        const k = body[i + 2];
+        var is_lookaround = false;
+        var skip: usize = 3;
+        if (k == '=' or k == '!') {
+            is_lookaround = true;
+        } else if (k == '<' and i + 3 < body.len and (body[i + 3] == '=' or body[i + 3] == '!')) {
+            is_lookaround = true;
+            skip = 4;
+        }
+        if (!is_lookaround) {
+            i += 1;
+            continue;
+        }
+        // Find matching close paren.
+        var depth: u32 = 1;
+        var j = i + skip;
+        while (j < body.len) : (j += 1) {
+            const ch = body[j];
+            if (ch == '\\' and j + 1 < body.len) { j += 1; continue; }
+            if (ch == '[') {
+                j += 1;
+                while (j < body.len) : (j += 1) {
+                    if (body[j] == '\\' and j + 1 < body.len) { j += 1; continue; }
+                    if (body[j] == ']') break;
+                }
+                continue;
+            }
+            if (ch == '(') depth += 1
+            else if (ch == ')') {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+        }
+        if (j >= body.len) { i += 1; continue; }
+        // Check next char.
+        const next_idx = j + 1;
+        if (next_idx < body.len) {
+            const nc = body[next_idx];
+            if (nc == '?' or nc == '*' or nc == '+' or nc == '{') {
+                try p.emitError("Lookaround group cannot be quantified in u/v-mode regex");
+                return error.ParseError;
+            }
+        }
+        i = next_idx;
+    }
+}
+
 fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
     var i: usize = 0;
     var class_depth: u32 = 0; // v-flag allows nested `[[ ... ]]`
@@ -1571,6 +1638,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 // With u or v flag, validate body for u-mode requirements.
                 if (has_u or has_v) {
                     try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
+                    try validateRegexLookaroundUnicode(p, p.source[ts + 1 .. close - 1]);
                 }
             }
             break :blk try parseLiteral(p, .regex_literal);
