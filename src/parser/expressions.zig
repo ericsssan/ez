@@ -1249,9 +1249,59 @@ fn validateRegexLookaroundUnicode(p: *Parser, body: []const u8) Error!void {
 }
 
 fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
+    // First count the number of capturing groups (ignoring (?:...), (?=...) etc.).
+    var group_count: u32 = 0;
+    {
+        var j: usize = 0;
+        var class_d2: u32 = 0;
+        while (j < body.len) : (j += 1) {
+            const ch = body[j];
+            if (ch == '\\' and j + 1 < body.len) { j += 1; continue; }
+            if (ch == '[') { class_d2 += 1; continue; }
+            if (ch == ']') { if (class_d2 > 0) class_d2 -= 1; continue; }
+            if (class_d2 > 0) continue;
+            if (ch != '(') continue;
+            // Capturing group unless followed by `?` (any non-capture form except (?<NAME>...)).
+            if (j + 1 < body.len and body[j + 1] == '?') {
+                if (j + 2 < body.len and body[j + 2] == '<' and
+                    j + 3 < body.len and body[j + 3] != '=' and body[j + 3] != '!')
+                {
+                    group_count += 1; // named capturing group
+                }
+                continue;
+            }
+            group_count += 1;
+        }
+    }
     var i: usize = 0;
     var class_depth: u32 = 0; // v-flag allows nested `[[ ... ]]`
     while (i < body.len) {
+        // Outside character class, validate `{` quantifier syntax.
+        if (class_depth == 0 and body[i] == '{') {
+            // Quantifier: {N}, {N,}, {N,M}
+            var k = i + 1;
+            const start_k = k;
+            while (k < body.len and body[k] >= '0' and body[k] <= '9') : (k += 1) {}
+            const ok_first = (k > start_k);
+            if (ok_first and k < body.len and body[k] == '}') {
+                i = k + 1;
+                continue;
+            }
+            if (ok_first and k < body.len and body[k] == ',') {
+                k += 1;
+                while (k < body.len and body[k] >= '0' and body[k] <= '9') : (k += 1) {}
+                if (k < body.len and body[k] == '}') {
+                    i = k + 1;
+                    continue;
+                }
+            }
+            try p.emitError("Invalid '{' in regular expression with u/v flag");
+            return error.ParseError;
+        }
+        if (class_depth == 0 and body[i] == '}') {
+            try p.emitError("Invalid '}' in regular expression with u/v flag");
+            return error.ParseError;
+        }
         const c = body[i];
         if (c == '[') { class_depth += 1; i += 1; continue; }
         if (c == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
@@ -1362,8 +1412,14 @@ fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
                     try p.emitError("Invalid decimal escape in character class");
                     return error.ParseError;
                 }
+                const num_start = i;
                 i += 1;
                 while (i < body.len and body[i] >= '0' and body[i] <= '9') : (i += 1) {}
+                const ref_n = std.fmt.parseInt(u32, body[num_start..i], 10) catch group_count + 1;
+                if (ref_n > group_count) {
+                    try p.emitError("Back-reference to non-existent group in regular expression with u/v flag");
+                    return error.ParseError;
+                }
             },
             '8', '9' => {
                 // \8 and \9 are not back-references and not octal; invalid in u/v mode.
