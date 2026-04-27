@@ -189,12 +189,79 @@ pub const LexIter = struct {
 
     /// Emit up to `count` tokens from the walker into the write-through
     /// buffer. Used by the parser slow path; batching amortizes the
-    /// per-call walkerNext function-call overhead. Stops early at EOF
-    /// (after appending the .eof sentinel exactly once). Returns the
-    /// number of tokens actually appended.
+    /// per-call walkerNext function-call overhead.
+    ///
+    /// FAST PATH: on the first call (walker untouched apart from at most
+    /// one init-priming emit), delegate to the monolithic
+    /// `Lexer.tokenizeWithBuf` to drain the entire source in one tight
+    /// loop. This matches monolithic single-thread perf while preserving
+    /// the LexIter primitive shape for streaming consumers.
+    ///
+    /// SLOW PATH: per-token walkerNext for true streaming use cases
+    /// (e.g., concurrent producer/consumer with bounded buffers).
     pub fn pullBatchIntoBuf(self: *LexIter, count: u32) u32 {
         if (self.eof_sentinel_emitted) return 0;
         const buf = self.tokens_buf orelse return 0;
+
+        // Bulk-drain fast path: the parser has consumed at most the
+        // init-primed first token. Reset the walker, run the monolithic
+        // walker into the buffer, mark iter exhausted. This matches
+        // monolithic single-thread perf while preserving the LexIter
+        // primitive shape for streaming consumers.
+        const Lexer = @import("lexer_simdjson.zig");
+        const can_bulk = buf.len <= 1 and !self.eof and count >= SLOTS;
+        if (can_bulk) {
+            // Reset walker to byte 0; monolithic re-emits canonical stream.
+            self.wi = 0;
+            self.visit = 0;
+            self.skip_until = 0;
+            self.prev_kind = .eof;
+            self.tmpl_depth = 0;
+            self.brace_d = [_]u32{0} ** 16;
+            self.prev_ident_last_bit = 0;
+            self.saw_nl = false;
+            self.at_line_start = true;
+            self.last_emitted_nl = false;
+            self.pending_drain_pos = 0;
+            self.valid = 0;
+            self.head = 0;
+            self.consumed = 0;
+            buf.len = 0;
+            const Language = @import("token.zig").Language;
+            const result = Lexer.tokenizeWithBufAndBitmaps(
+                self.cm_line_alloc orelse std.heap.page_allocator,
+                self.src,
+                if (self.is_ts) Language.ts else Language.js,
+                .{ .is_module = self.is_module },
+                buf,
+                self.bm,
+            ) catch {
+                // Fall through to per-token path on error
+                self.skip_until = 0;
+                self.wi = 0;
+                return self.pullPerToken(count, buf);
+            };
+            // Drain side-channels into the iter's caller-provided lists.
+            if (self.cm_starts) |dst| dst.appendSlice(self.cm_line_alloc.?, result.comment_starts) catch {};
+            if (self.cm_ends) |dst| dst.appendSlice(self.cm_line_alloc.?, result.comment_ends) catch {};
+            if (self.cm_kinds) |dst| dst.appendSlice(self.cm_line_alloc.?, result.comment_kinds) catch {};
+            if (self.line_starts) |dst| dst.appendSlice(self.cm_line_alloc.?, result.line_starts) catch {};
+            // Free the side-channel slices owned by the result.
+            const a = self.cm_line_alloc orelse std.heap.page_allocator;
+            a.free(result.comment_starts);
+            a.free(result.comment_ends);
+            a.free(result.comment_kinds);
+            a.free(result.line_starts);
+            // Mark iter exhausted — buf already contains .eof sentinel.
+            self.eof_sentinel_emitted = true;
+            self.eof = true;
+            return @intCast(buf.len);
+        }
+
+        return self.pullPerToken(count, buf);
+    }
+
+    fn pullPerToken(self: *LexIter, count: u32, buf: *@import("ast.zig").Ast.TokenList) u32 {
         var n: u32 = 0;
         while (n < count) : (n += 1) {
             if (@call(.always_inline, walkerNext, .{self})) |t| {
@@ -323,7 +390,8 @@ pub const LexIter = struct {
     /// receives a token (preventing infinite advance loops). Subsequent
     /// commits extend to strings/comments/regex/templates/numbers/operators
     /// /keywords-vs-ident/BOM/LS-PS until the full Phase 2 walker is ported.
-    fn walkerNext(self: *LexIter) ?Token {
+    inline fn walkerNext(self: *LexIter) ?Token {
+        @setEvalBranchQuota(100_000);
         const n: u32 = @intCast(self.src.len);
         const bm = self.bm;
 

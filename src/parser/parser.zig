@@ -535,6 +535,10 @@ pub const Parser = struct {
         if (iter_opt) |it| {
             if (p.tokens_owned) |owned_ptr| {
                 it.attachTokensBuf(owned_ptr);
+                // Plumb the parser's allocator so the iter's bulk-drain
+                // fast path doesn't fall back to std.heap.page_allocator
+                // for its side-channel ArrayLists (comments, line starts).
+                if (it.cm_line_alloc == null) it.cm_line_alloc = allocator;
                 if (owned_ptr.len > 0) {
                     p.tokens.len = owned_ptr.len;
                     p.parsed_len = owned_ptr.len;

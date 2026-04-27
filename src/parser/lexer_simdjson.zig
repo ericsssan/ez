@@ -569,6 +569,21 @@ pub fn tokenizeWithBuf(
     opts: TokenizeOptions,
     tokens_buf: ?*TokenList,
 ) !TokenizeResult {
+    return tokenizeWithBufAndBitmaps(alloc, source, language, opts, tokens_buf, null);
+}
+
+/// Variant that accepts a caller-provided pre-built bitmap. When non-null,
+/// skips Phase 1 (bitmap construction) — useful when the bitmap was already
+/// built upstream (e.g., for the LexIter primitive that hands its bm to the
+/// monolithic walker on the bulk-drain fast path).
+pub fn tokenizeWithBufAndBitmaps(
+    alloc: std.mem.Allocator,
+    source: []const u8,
+    language: Language,
+    opts: TokenizeOptions,
+    tokens_buf: ?*TokenList,
+    pre_bm: ?*const Bitmaps,
+) !TokenizeResult {
     _ = opts.annex_b;
     const src = source;
     const n: u32 = @intCast(src.len);
@@ -592,10 +607,17 @@ pub fn tokenizeWithBuf(
     var ls = try std.ArrayListUnmanaged(u32).initCapacity(alloc, @max(n / 30 + 16, 16));
     try ls.append(alloc, 0);
 
-    // ── Phase 1: build bitmaps ─────────────────────────────────────────────
-    var bm = try Bitmaps.init(alloc, n);
-    defer bm.deinit(alloc);
-    buildBitmaps(src, &bm);
+    // ── Phase 1: build bitmaps (or use caller's) ────────────────────────────
+    var owned_bm: Bitmaps = undefined;
+    var bm_owned = false;
+    const bm: *const Bitmaps = blk: {
+        if (pre_bm) |existing| break :blk existing;
+        owned_bm = try Bitmaps.init(alloc, n);
+        bm_owned = true;
+        buildBitmaps(src, &owned_bm);
+        break :blk &owned_bm;
+    };
+    defer if (bm_owned) owned_bm.deinit(alloc);
 
     // ── Phase 2: walk visit bitmap = newline | structural | ident_starts ──
     var prev_kind: Tag  = .eof;
@@ -1084,6 +1106,10 @@ pub fn tokenizeWithBuf(
     nl_ptr[tok_n]    = saw_nl;
     tok_n += 1;
     tokens.len = tok_n;
+    // Caller provided buffer: sync the new len back. The shared `bytes`
+    // pointer means writes via tag_ptr/etc. already landed in the
+    // caller's storage; only the `len` field needs propagation.
+    if (tokens_buf) |b| b.len = tok_n;
 
     const comment_count: u32 = @intCast(cm_s.items.len);
     return .{
