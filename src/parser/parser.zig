@@ -4939,6 +4939,9 @@ pub const Parser = struct {
                 } else if (self.peek() == .asterisk) {
                     const ns_spec = try self.parseNamespaceImportSpecifier();
                     try self.scratch.append(self.gpa, @intFromEnum(ns_spec));
+                } else {
+                    try self.emitDiagnostic(self.currentSpan(), "expected '{{' or '*' after default import name and ','", .{});
+                    return error.ParseError;
                 }
             }
         } else if (self.peek() == .l_brace) {
