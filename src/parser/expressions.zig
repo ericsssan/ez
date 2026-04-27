@@ -775,6 +775,136 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
 /// Recursively check if any node in the subtree refers to `await` as an
 /// identifier. Used to reject `await` inside async-arrow parameter defaults
 /// (where the cover grammar parses await as an identifier ref).
+/// Validate a regex body in u/v (Unicode) mode. Returns SyntaxError on:
+/// - Invalid IdentityEscape: `\X` where X is not a SyntaxCharacter, /, or ASCII-letter
+///   that's a recognized escape (digits handled separately).
+/// - Invalid `\u{...}`: must contain only hex digits.
+/// - Legacy octal escape: `\1` etc. (unless valid back-reference, deferred).
+/// - `\u` followed by non-hex.
+fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    var class_depth: u32 = 0; // v-flag allows nested `[[ ... ]]`
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '[') { class_depth += 1; i += 1; continue; }
+        if (c == ']') { if (class_depth > 0) class_depth -= 1; i += 1; continue; }
+        if (c != '\\') { i += 1; continue; }
+        // Backslash escape.
+        i += 1;
+        if (i >= body.len) {
+            try p.emitError("Invalid regular expression: trailing backslash");
+            return error.ParseError;
+        }
+        const esc = body[i];
+        switch (esc) {
+            'f', 'n', 'r', 't', 'v' => i += 1,
+            '^', '$', '\\', '.', '*', '+', '?', '(', ')', '[', ']', '{', '}', '|', '/', '-' => i += 1,
+            'd', 'D', 's', 'S', 'w', 'W' => i += 1,
+            'p', 'P' => {
+                i += 1;
+                if (i < body.len and body[i] == '{') {
+                    i += 1;
+                    while (i < body.len and body[i] != '}') : (i += 1) {}
+                    if (i < body.len) i += 1;
+                }
+            },
+            'k' => {
+                i += 1;
+                if (i < body.len and body[i] == '<') {
+                    i += 1;
+                    while (i < body.len and body[i] != '>') : (i += 1) {}
+                    if (i < body.len) i += 1;
+                }
+            },
+            // \q{...} — v-flag string literal (only inside character class)
+            'q' => {
+                i += 1;
+                if (i < body.len and body[i] == '{') {
+                    i += 1;
+                    var qd: u32 = 1;
+                    while (i < body.len and qd > 0) : (i += 1) {
+                        if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                        if (body[i] == '{') qd += 1
+                        else if (body[i] == '}') qd -= 1;
+                    }
+                }
+            },
+            'b', 'B' => i += 1,
+            'c' => {
+                i += 1;
+                if (i < body.len) i += 1;
+            },
+            'x' => {
+                i += 1;
+                if (i + 2 > body.len or !isHexDigit(body[i]) or !isHexDigit(body[i + 1])) {
+                    try p.emitError("Invalid hex escape in regular expression");
+                    return error.ParseError;
+                }
+                i += 2;
+            },
+            'u' => {
+                i += 1;
+                if (i < body.len and body[i] == '{') {
+                    i += 1;
+                    const start = i;
+                    while (i < body.len and body[i] != '}') : (i += 1) {
+                        if (!isHexDigit(body[i])) {
+                            try p.emitError("Invalid unicode escape in regular expression");
+                            return error.ParseError;
+                        }
+                    }
+                    if (start == i or i >= body.len) {
+                        try p.emitError("Invalid unicode escape in regular expression");
+                        return error.ParseError;
+                    }
+                    i += 1;
+                } else {
+                    if (i + 4 > body.len) {
+                        try p.emitError("Invalid unicode escape in regular expression");
+                        return error.ParseError;
+                    }
+                    var k: usize = 0;
+                    while (k < 4) : (k += 1) {
+                        if (!isHexDigit(body[i + k])) {
+                            try p.emitError("Invalid unicode escape in regular expression");
+                            return error.ParseError;
+                        }
+                    }
+                    i += 4;
+                }
+            },
+            '0' => {
+                i += 1;
+                if (i < body.len and body[i] >= '0' and body[i] <= '9') {
+                    try p.emitError("Invalid decimal escape in regular expression with u/v flag");
+                    return error.ParseError;
+                }
+            },
+            '1', '2', '3', '4', '5', '6', '7', '8', '9' => {
+                if (class_depth > 0) {
+                    try p.emitError("Invalid decimal escape in character class");
+                    return error.ParseError;
+                }
+                i += 1;
+                while (i < body.len and body[i] >= '0' and body[i] <= '9') : (i += 1) {}
+            },
+            else => {
+                // IdentityEscape in u-mode requires SyntaxCharacter or `/` or `-` (in class).
+                // ASCII letters/digits/_ are invalid identity escapes outside class.
+                if (class_depth == 0 and ((esc >= 'a' and esc <= 'z') or (esc >= 'A' and esc <= 'Z') or esc == '_')) {
+                    try p.emitError("Invalid identity escape in regular expression with u/v flag");
+                    return error.ParseError;
+                }
+                i += 1;
+            },
+        }
+    }
+}
+
+fn isHexDigit(c: u8) bool {
+    return (c >= '0' and c <= '9') or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
+
 fn containsAwaitIdentifier(p: *Parser, node: NodeIndex) bool {
     if (node == .none) return false;
     const idx = node.toInt();
@@ -1149,19 +1279,29 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 var fi: u32 = close;
                 while (fi < stop2) : (fi += 1) {
                     const c = p.source[fi];
-                    if (c < 128) {
-                        if (seen[c]) {
-                            try p.emitError("Duplicate regular expression flag");
+                    // Spec valid flags: g i m s u y d v
+                    switch (c) {
+                        'g', 'i', 'm', 's', 'u', 'y', 'd', 'v' => {},
+                        else => {
+                            try p.emitError("Invalid regular expression flag");
                             return error.ParseError;
-                        }
-                        seen[c] = true;
-                        if (c == 'u') has_u = true;
-                        if (c == 'v') has_v = true;
+                        },
                     }
+                    if (seen[c]) {
+                        try p.emitError("Duplicate regular expression flag");
+                        return error.ParseError;
+                    }
+                    seen[c] = true;
+                    if (c == 'u') has_u = true;
+                    if (c == 'v') has_v = true;
                 }
                 if (has_u and has_v) {
                     try p.emitError("Regex flags 'u' and 'v' are mutually exclusive");
                     return error.ParseError;
+                }
+                // With u or v flag, validate body for u-mode requirements.
+                if (has_u or has_v) {
+                    try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
                 }
             }
             break :blk try parseLiteral(p, .regex_literal);
