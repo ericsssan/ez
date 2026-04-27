@@ -2193,6 +2193,8 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             }
             const hash_tok = p.advance();
             if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+            // Track for AllPrivateNamesValid check at end of class body.
+            try p.private_refs.append(p.gpa, hash_tok);
             break :blk try p.addNode(.{
                 .tag = .identifier,
                 .main_token = hash_tok,
@@ -4467,6 +4469,7 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                     hash_tok = p.advance(); // save '#', don't discard
                     // keywords are valid private names: obj.#await, obj.#static, etc.
                     if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
+                    try p.private_refs.append(p.gpa, hash_tok.?);
                 }
                 // Accept identifier, keyword, or escaped keyword after `.`
                 const prop_tok = if (hash_tok) |ht| ht else if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword)
@@ -5306,6 +5309,8 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
         } else {
             try p.emitError("Expected identifier after `#`");
         }
+        // Track for AllPrivateNamesValid validation.
+        try p.private_refs.append(p.gpa, hash);
         break :blk hash;
     } else blk: {
         try p.emitError("Expected property name after '.'");
@@ -5381,6 +5386,7 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
             if (p.peek() == .hash) {
                 const hash_tok = p.advance();
                 if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
+                try p.private_refs.append(p.gpa, hash_tok);
                 const prop_node = try p.addNode(.{
                     .tag = .identifier,
                     .main_token = hash_tok,

@@ -160,6 +160,15 @@ pub const Parser = struct {
     /// List of exported names — used to detect duplicate ExportedBindings
     /// per spec early errors. Tracks bare names like "foo" or "default".
     exported_names: std.ArrayListUnmanaged([]const u8) = .{ .items = &.{}, .capacity = 0 },
+    /// Flat stack of declared private names across all open classes.
+    /// AllPrivateNamesValid: every #x reference must resolve to a #x decl
+    /// in the lexically-enclosing class chain.
+    private_decls: std.ArrayListUnmanaged([]const u8) = .{ .items = &.{}, .capacity = 0 },
+    /// Flat stack of pending #x references (token of the `#` punctuator).
+    private_refs: std.ArrayListUnmanaged(TokenIndex) = .{ .items = &.{}, .capacity = 0 },
+    /// Depth of currently-open class bodies. When we close the outermost
+    /// (depth goes from 1 to 0) any unresolved private refs are SyntaxErrors.
+    class_body_depth: u32 = 0,
     /// Local names referenced by named exports without `from` — must resolve
     /// to a declared module-level binding by end of parsing.
     pending_export_local_toks: std.ArrayListUnmanaged(TokenIndex) = .{ .items = &.{}, .capacity = 0 },
@@ -3841,6 +3850,13 @@ pub const Parser = struct {
         defer self.in_class = prev_in_class;
         defer self.in_strict = prev_strict;
 
+        // AllPrivateNamesValid: snapshot stack lengths to scope private decls
+        // and refs to this class body. On exit, validate refs against decls.
+        const private_decls_start = self.private_decls.items.len;
+        const private_refs_start = self.private_refs.items.len;
+        self.class_body_depth += 1;
+        defer self.class_body_depth -= 1;
+
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
@@ -3863,6 +3879,8 @@ pub const Parser = struct {
         const members = self.scratch.items[scratch_top..];
 
         // PrivateBoundNames: duplicates are SyntaxError (getter+setter pair allowed).
+        // Also collects this class's private decls into self.private_decls so
+        // AllPrivateNamesValid can resolve references.
         {
             var seen = std.StringHashMap(u32).init(self.gpa);
             defer seen.deinit();
@@ -3889,6 +3907,7 @@ pub const Parser = struct {
                 const gop = try seen.getOrPut(name_text);
                 if (!gop.found_existing) {
                     gop.value_ptr.* = bit;
+                    try self.private_decls.append(self.gpa, name_text);
                 } else {
                     const combined = gop.value_ptr.* | bit;
                     if (combined != (1 | 2)) {
@@ -3898,6 +3917,45 @@ pub const Parser = struct {
                     gop.value_ptr.* = combined;
                 }
             }
+        }
+
+        // AllPrivateNamesValid: refs accumulated in this class body that don't
+        // match a decl in scope are propagated to the parent class's pending
+        // list (a decl in an enclosing class may still resolve them). When
+        // the OUTERMOST class closes (depth was 1), any unresolved refs are
+        // SyntaxErrors.
+        {
+            const refs_slice = self.private_refs.items[private_refs_start..];
+            const decls_in_scope = self.private_decls.items;
+            var ref_buf: [128]u8 = undefined;
+            var decl_buf: [128]u8 = undefined;
+            var write: usize = private_refs_start;
+            const outermost = (self.class_body_depth == 1);
+            for (refs_slice) |hash_tok| {
+                if (hash_tok + 1 >= self.tokens.len) continue;
+                const name = self.tokenText(hash_tok + 1);
+                const ref_len = decodeIdentForCompare(name, &ref_buf);
+                const ref_norm = ref_buf[0..ref_len];
+                var found = false;
+                for (decls_in_scope) |d| {
+                    const dl = decodeIdentForCompare(d, &decl_buf);
+                    if (std.mem.eql(u8, decl_buf[0..dl], ref_norm)) { found = true; break; }
+                }
+                if (!found) {
+                    if (outermost) {
+                        const span = Span{
+                            .start = self.tok_starts_ptr[hash_tok],
+                            .end = self.tok_starts_ptr[hash_tok],
+                        };
+                        try self.emitDiagnostic(span, "Reference to undeclared private name '#{s}'", .{name});
+                        return error.ParseError;
+                    }
+                    self.private_refs.items[write] = hash_tok;
+                    write += 1;
+                }
+            }
+            self.private_refs.shrinkRetainingCapacity(write);
+            self.private_decls.shrinkRetainingCapacity(private_decls_start);
         }
 
         return self.listToSubRange(members);
@@ -5934,6 +5992,75 @@ pub const Parser = struct {
             .grouping_expr => try self.validateNoCoverInitName(data.lhs),
             else => {},
         }
+    }
+
+    /// Decode \\uHHHH / \\u{N} escapes in an identifier-text byte sequence into
+    /// the provided buffer. Returns the decoded length. Used to canonicalize
+    /// private-name identifiers (`#\\u0061` and `#a` must compare equal).
+    fn decodeIdentForCompare(text: []const u8, out: []u8) usize {
+        var i: usize = 0;
+        var w: usize = 0;
+        while (i < text.len and w < out.len) {
+            if (text[i] != '\\' or i + 1 >= text.len or text[i + 1] != 'u') {
+                out[w] = text[i];
+                w += 1;
+                i += 1;
+                continue;
+            }
+            i += 2; // past \u
+            var cp: u32 = 0;
+            if (i < text.len and text[i] == '{') {
+                i += 1;
+                while (i < text.len and text[i] != '}') : (i += 1) {
+                    const c = text[i];
+                    const d: u32 = if (c >= '0' and c <= '9') c - '0'
+                        else if (c >= 'a' and c <= 'f') c - 'a' + 10
+                        else if (c >= 'A' and c <= 'F') c - 'A' + 10
+                        else 0;
+                    cp = cp * 16 + d;
+                }
+                if (i < text.len) i += 1;
+            } else if (i + 4 <= text.len) {
+                var k: usize = 0;
+                while (k < 4) : (k += 1) {
+                    const c = text[i + k];
+                    const d: u32 = if (c >= '0' and c <= '9') c - '0'
+                        else if (c >= 'a' and c <= 'f') c - 'a' + 10
+                        else if (c >= 'A' and c <= 'F') c - 'A' + 10
+                        else 0;
+                    cp = cp * 16 + d;
+                }
+                i += 4;
+            } else {
+                continue;
+            }
+            // UTF-8 encode the codepoint into out.
+            if (cp < 0x80) {
+                if (w < out.len) { out[w] = @intCast(cp); w += 1; }
+            } else if (cp < 0x800) {
+                if (w + 2 <= out.len) {
+                    out[w] = @intCast(0xC0 | (cp >> 6));
+                    out[w + 1] = @intCast(0x80 | (cp & 0x3F));
+                    w += 2;
+                }
+            } else if (cp < 0x10000) {
+                if (w + 3 <= out.len) {
+                    out[w] = @intCast(0xE0 | (cp >> 12));
+                    out[w + 1] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+                    out[w + 2] = @intCast(0x80 | (cp & 0x3F));
+                    w += 3;
+                }
+            } else {
+                if (w + 4 <= out.len) {
+                    out[w] = @intCast(0xF0 | (cp >> 18));
+                    out[w + 1] = @intCast(0x80 | ((cp >> 12) & 0x3F));
+                    out[w + 2] = @intCast(0x80 | ((cp >> 6) & 0x3F));
+                    out[w + 3] = @intCast(0x80 | (cp & 0x3F));
+                    w += 4;
+                }
+            }
+        }
+        return w;
     }
 
     /// Add `name` to the list of exported names; emit error and return on dup.
