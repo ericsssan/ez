@@ -87,6 +87,59 @@ pub export fn ez_parse(
     return parseImpl(buf_ptr, buf_len, source_start, source_len, lang, &.{}) catch 0;
 }
 
+/// Lean parse: lex + parse only — no semantic analysis, no parent
+/// indices, no traversal, no UTF-16 conversion, no node positions, no
+/// comment marshalling, no line_starts. Apples-to-apples vs other
+/// "parser-only" NAPI bindings (oxc-parser parseSync, etc.). Returns
+/// total bytes used, or 0 on error. The JS side gets a buffer with the
+/// AST nodes/tokens/extra_data populated and nothing else; downstream
+/// passes (sem, lint, line/col) must be invoked separately as needed.
+pub export fn ez_parse_lean(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang: u8,
+) u32 {
+    return parseLeanImpl(buf_ptr, buf_len, source_start, source_len, lang) catch 0;
+}
+
+fn parseLeanImpl(
+    buf_ptr: [*]u8,
+    buf_len: u32,
+    source_start: u32,
+    source_len: u32,
+    lang: u8,
+) !u32 {
+    if (source_start + source_len > buf_len) return 0;
+    if (source_start < js_buffer.HEADER_SIZE) return 0;
+
+    const raw_source = buf_ptr[source_start .. source_start + source_len];
+    const bom = js_buffer.stripBom(raw_source);
+    const source = bom.text;
+    const language: Language = @enumFromInt(lang);
+
+    var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
+    const alloc = backing.allocator();
+
+    const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
+    const tokens = lex_result.tokens;
+
+    const tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
+        .language = language,
+        .is_module = false,
+        .emit_events = false, // lean: no scope-event emission
+    }) catch |e| return e;
+    _ = tree; // emitted into bump
+
+    // Lean: no header populated — JS layer that calls this entry should
+    // not attempt to read the AST as a structured AstView. Used for raw
+    // throughput measurement vs other parse-only NAPI bindings.
+    @memset(buf_ptr[0..js_buffer.HEADER_SIZE], 0);
+
+    return backing.bytesUsed();
+}
+
 fn parseImpl(
     buf_ptr: [*]u8,
     buf_len: u32,
@@ -838,6 +891,7 @@ fn getOptionalConfigBytes(env: n.Env, val: n.Value) ?[]const u8 {
 /// Module initialization — called by Node.js when loading the .node addon.
 pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parse", napiParse);
+    registerFn(env, exports, "parseLean", napiParseLean);
     registerFn(env, exports, "parseFile", napiParseFile);
     registerFn(env, exports, "lint", napiLint);
     registerFn(env, exports, "parseAndLintFile", napiParseAndLintFile);
@@ -857,6 +911,38 @@ fn registerFn(env: n.Env, exports: n.Value, name: [*:0]const u8, cb: n.Callback)
 }
 
 // ── parse(buffer, sourceStart, sourceLen, lang) → bytesUsed ─────
+
+/// Lean parse: lex + parse only. Apples-to-apples vs oxc-parser parseSync.
+/// Args: (buf, source_start, source_len, lang) → bytes_used
+fn napiParseLean(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 4;
+    var argv: [4]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 4) {
+        _ = n.napi_throw_error(env, null, "parseLean(buffer, sourceStart, sourceLen, lang): 4 args required");
+        return null;
+    }
+    var buf_data: ?*anyopaque = null;
+    var buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len) != n.OK) {
+        _ = n.napi_throw_error(env, null, "first argument must be an ArrayBuffer");
+        return null;
+    }
+    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse {
+        _ = n.napi_throw_error(env, null, "ArrayBuffer data is null");
+        return null;
+    });
+    var source_start: u32 = 0;
+    var source_len: u32 = 0;
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[1], &source_start);
+    _ = n.napi_get_value_uint32(env, argv[2], &source_len);
+    _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
+    const result = parseLeanImpl(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val)) catch 0;
+    var js_result: n.Value = undefined;
+    if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
+    return js_result;
+}
 
 fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     var argc: usize = 5; // allow optional 5th globals arg

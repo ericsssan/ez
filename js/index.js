@@ -402,4 +402,19 @@ function discoverFiles(roots) {
   return _decodeFileList(buf);
 }
 
-module.exports = { parse, parseSource, parseAndLintNative, lintSourceNative, discoverFiles, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+/**
+ * Lean parse: lex + parse only. No semantic, no traversal arrays, no UTF-16
+ * conversion, no node positions. Apples-to-apples vs other parser-only NAPI
+ * bindings (oxc-parser parseSync, etc.). Returns the raw bytes-used count
+ * from the binding; the caller is responsible for treating the buffer as
+ * opaque (no AstView wrapping). For raw throughput measurement.
+ */
+function parseSourceLean(source, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang ? LANG[options.lang] ?? LANG.js
+    : options.filename ? detectLang(options.filename) : LANG.js;
+  const { buf, sourceStart, sourceLen } = _encodeSource(source);
+  return b.parseLean(buf, sourceStart, sourceLen, lang);
+}
+
+module.exports = { parse, parseSource, parseSourceLean, parseAndLintNative, lintSourceNative, discoverFiles, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
