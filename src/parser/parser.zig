@@ -5664,6 +5664,111 @@ pub const Parser = struct {
         return self.addNode(.{ .tag = .const_decl, .main_token = main_tok, .data = .{ .lhs = NodeIndex.fromInt(range.start), .rhs = NodeIndex.fromInt(range.end) } });
     }
 
+    /// Fixed-capacity buffer used for decoding import-attribute keys.
+    const KeyBuf = struct {
+        data: [4096]u8 = undefined,
+        len: usize = 0,
+        fn append(self: *KeyBuf, b: u8) !void {
+            if (self.len >= self.data.len) return error.OutOfMemory;
+            self.data[self.len] = b;
+            self.len += 1;
+        }
+        fn appendSlice(self: *KeyBuf, s: []const u8) !void {
+            if (self.len + s.len > self.data.len) return error.OutOfMemory;
+            @memcpy(self.data[self.len..][0..s.len], s);
+            self.len += s.len;
+        }
+    };
+
+    /// Decode a string literal body (without surrounding quotes) into out, resolving
+    /// common JS escape sequences (\u, \uXXXX, \u{X}, \x, \n, \t, \r, etc.).
+    fn decodeStringLiteralKey(out: *KeyBuf, body: []const u8) !void {
+        var i: usize = 0;
+        while (i < body.len) {
+            const c = body[i];
+            if (c != '\\') {
+                try out.append(c);
+                i += 1;
+                continue;
+            }
+            i += 1;
+            if (i >= body.len) break;
+            const esc = body[i];
+            i += 1;
+            switch (esc) {
+                'n' => try out.append('\n'),
+                't' => try out.append('\t'),
+                'r' => try out.append('\r'),
+                'b' => try out.append(0x08),
+                'f' => try out.append(0x0C),
+                'v' => try out.append(0x0B),
+                '0' => try out.append(0),
+                '\'', '"', '\\', '/' => try out.append(esc),
+                'x' => {
+                    if (i + 2 <= body.len) {
+                        const v = std.fmt.parseInt(u8, body[i .. i + 2], 16) catch 0;
+                        try out.append(v);
+                        i += 2;
+                    }
+                },
+                'u' => {
+                    if (i < body.len and body[i] == '{') {
+                        i += 1;
+                        const start = i;
+                        while (i < body.len and body[i] != '}') : (i += 1) {}
+                        const cp = std.fmt.parseInt(u21, body[start..i], 16) catch 0;
+                        if (i < body.len) i += 1; // }
+                        var buf: [4]u8 = undefined;
+                        const n = std.unicode.utf8Encode(cp, &buf) catch 0;
+                        try out.appendSlice(buf[0..n]);
+                    } else if (i + 4 <= body.len) {
+                        const cp = std.fmt.parseInt(u21, body[i .. i + 4], 16) catch 0;
+                        i += 4;
+                        var buf: [4]u8 = undefined;
+                        const n = std.unicode.utf8Encode(cp, &buf) catch 0;
+                        try out.appendSlice(buf[0..n]);
+                    }
+                },
+                else => try out.append(esc),
+            }
+        }
+    }
+
+    /// Decode identifier text, resolving \uXXXX / \u{X} escapes.
+    fn decodeIdentifierKey(out: *KeyBuf, text: []const u8) !void {
+        var i: usize = 0;
+        while (i < text.len) {
+            const c = text[i];
+            if (c != '\\') {
+                try out.append(c);
+                i += 1;
+                continue;
+            }
+            i += 1;
+            if (i >= text.len or text[i] != 'u') {
+                try out.append('\\');
+                continue;
+            }
+            i += 1;
+            if (i < text.len and text[i] == '{') {
+                i += 1;
+                const start = i;
+                while (i < text.len and text[i] != '}') : (i += 1) {}
+                const cp = std.fmt.parseInt(u21, text[start..i], 16) catch 0;
+                if (i < text.len) i += 1;
+                var buf: [4]u8 = undefined;
+                const n = std.unicode.utf8Encode(cp, &buf) catch 0;
+                try out.appendSlice(buf[0..n]);
+            } else if (i + 4 <= text.len) {
+                const cp = std.fmt.parseInt(u21, text[i .. i + 4], 16) catch 0;
+                i += 4;
+                var buf: [4]u8 = undefined;
+                const n = std.unicode.utf8Encode(cp, &buf) catch 0;
+                try out.appendSlice(buf[0..n]);
+            }
+        }
+    }
+
     /// Skip import attributes: `with { key: "value", ... }` or `assert { ... }`.
     /// ES2025 import attributes proposal. Just skip the tokens without building AST.
     fn skipImportAttributes(self: *Parser) !void {
@@ -5675,22 +5780,47 @@ pub const Parser = struct {
         {
             _ = self.advance(); // eat 'with' / 'assert'
             _ = self.advance(); // eat '{'
+            // Track decoded keys to detect duplicates. Spec: WithClause may not have
+            // duplicate keys. String keys decode escapes (e.g. 'type' == 'type').
+            var key_storage: KeyBuf = .{};
+            var key_offsets: [32]struct { start: u32, len: u32 } = undefined;
+            var keys_len: usize = 0;
             while (self.peek() != .r_brace and !self.isAtEnd()) {
-                // key: identifier or string literal
-                if (self.peek() == .string_literal or self.peek() == .identifier or self.peek().isKeyword()) {
+                const key_tok = self.tok_i;
+                const key_tag = self.peek();
+                const key_span_start = self.tok_starts_ptr[key_tok];
+                if (key_tag == .string_literal or key_tag == .identifier or key_tag.isKeyword()) {
                     _ = self.advance();
                 } else {
                     break;
                 }
-                // colon
+                const key_text = self.tokenText(key_tok);
+                const ks = key_storage.len;
+                if (key_tag == .string_literal and key_text.len >= 2) {
+                    decodeStringLiteralKey(&key_storage, key_text[1 .. key_text.len - 1]) catch {};
+                } else {
+                    decodeIdentifierKey(&key_storage, key_text) catch {};
+                }
+                const kl = key_storage.len - ks;
+                const decoded = key_storage.data[ks..][0..kl];
+                var i: usize = 0;
+                while (i < keys_len) : (i += 1) {
+                    const prev = key_storage.data[key_offsets[i].start..][0..key_offsets[i].len];
+                    if (std.mem.eql(u8, prev, decoded)) {
+                        try self.emitDiagnostic(.{ .start = key_span_start, .end = key_span_start }, "Duplicate import attribute key", .{});
+                        return error.ParseError;
+                    }
+                }
+                if (keys_len < key_offsets.len) {
+                    key_offsets[keys_len] = .{ .start = @intCast(ks), .len = @intCast(kl) };
+                    keys_len += 1;
+                }
                 if (self.eat(.colon) == null) break;
-                // value: string literal
                 if (self.peek() == .string_literal) {
                     _ = self.advance();
                 } else {
                     break;
                 }
-                // optional comma
                 if (self.eat(.comma) == null) break;
             }
             _ = try self.expect(.r_brace);
