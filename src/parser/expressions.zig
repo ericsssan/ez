@@ -881,6 +881,7 @@ fn validateRegexModifierGroups(p: *Parser, body: []const u8) Error!void {
 /// `(?<NAME>...)` or `\k<NAME>`. Returns the index past the closing `>`.
 /// Errors if the name is empty, malformed, or unterminated.
 fn validateRegexGroupName(p: *Parser, body: []const u8, start: usize) Error!usize {
+    const uid = @import("unicode_id.zig");
     var i = start;
     var first = true;
     var saw_any = false;
@@ -899,28 +900,70 @@ fn validateRegexGroupName(p: *Parser, body: []const u8, start: usize) Error!usiz
                 try p.emitError("Invalid character in regex group name");
                 return error.ParseError;
             }
-            i += 1; // consume 'u' on next iter
-            saw_any = true;
-            first = false;
-            // Skip hex digits (4) or `{...}`. We don't fully validate.
+            i += 1; // 'u'
+            // Read codepoint to validate ID_Start / ID_Continue.
+            var cp: u32 = 0;
             if (i + 1 < body.len and body[i + 1] == '{') {
-                i += 1;
+                i += 2;
+                const cp_start = i;
                 while (i < body.len and body[i] != '}') : (i += 1) {}
                 if (i >= body.len) {
                     try p.emitError("Unterminated regex group name");
                     return error.ParseError;
                 }
+                cp = std.fmt.parseInt(u32, body[cp_start..i], 16) catch 0xFFFFFFFF;
+                // i now points at '}'; loop's i+=1 advances past it.
             } else {
-                if (i + 4 < body.len) i += 4 else {
+                if (i + 4 >= body.len) {
                     try p.emitError("Unterminated regex group name");
                     return error.ParseError;
                 }
+                cp = std.fmt.parseInt(u32, body[i + 1 .. i + 5], 16) catch 0xFFFFFFFF;
+                i += 4;
+                // Surrogate pair: \uHHHH\uLLLL — combine into single codepoint.
+                if (cp >= 0xD800 and cp <= 0xDBFF and i + 6 < body.len and
+                    body[i + 1] == '\\' and body[i + 2] == 'u' and body[i + 3] != '{')
+                {
+                    const lo = std.fmt.parseInt(u32, body[i + 3 .. i + 7], 16) catch 0;
+                    if (lo >= 0xDC00 and lo <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                        i += 6;
+                    }
+                }
             }
+            const ok = if (first) uid.isIdStart(cp) or cp == '$' or cp == '_'
+                else uid.isIdContinueJS(cp) or cp == '$';
+            if (!ok) {
+                try p.emitError(if (first)
+                    "Invalid first character in regex group name"
+                else
+                    "Invalid character in regex group name");
+                return error.ParseError;
+            }
+            saw_any = true;
+            first = false;
             continue;
         }
         if (c >= 0x80) {
-            // Non-ASCII byte — accept as Unicode identifier char (may produce
-            // false negatives for invalid Unicode IDs, but avoids false positives).
+            // Decode UTF-8 codepoint and validate against ID tables.
+            const len = std.unicode.utf8ByteSequenceLength(c) catch 1;
+            if (i + len > body.len) {
+                try p.emitError("Unterminated regex group name");
+                return error.ParseError;
+            }
+            const cp_u21 = std.unicode.utf8Decode(body[i .. i + len]) catch 0;
+            const cp: u32 = @intCast(cp_u21);
+            const ok = if (first) uid.isIdStart(cp)
+                else uid.isIdContinueJS(cp);
+            if (!ok) {
+                try p.emitError(if (first)
+                    "Invalid first character in regex group name"
+                else
+                    "Invalid character in regex group name");
+                return error.ParseError;
+            }
+            // Advance past full UTF-8 sequence; loop's i+=1 advances by 1 more, so adjust.
+            i += len - 1;
             saw_any = true;
             first = false;
             continue;
