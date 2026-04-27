@@ -1128,6 +1128,90 @@ fn validateRegexClassRangesUnicode(p: *Parser, body: []const u8) Error!void {
     }
 }
 
+/// Reject quantifier (?, *, +, {N,M}) as the first atom of a Disjunction
+/// alternative — i.e. at the start of the regex, immediately after `(`,
+/// or immediately after `|`. There's no atom to quantify in those positions.
+fn validateRegexNoLeadingQuantifier(p: *Parser, body: []const u8) Error!void {
+    if (body.len == 0) return;
+    var i: usize = 0;
+    var prev_is_atom_start = true; // start of pattern
+    while (i < body.len) {
+        const c = body[i];
+        if (prev_is_atom_start) {
+            if (c == '?' or c == '*' or c == '+' or c == '{') {
+                // For `{`, only reject if it forms a valid quantifier syntax.
+                // Otherwise the `{` may be a literal (Annex B extension).
+                if (c == '{') {
+                    var k = i + 1;
+                    const sk = k;
+                    while (k < body.len and body[k] >= '0' and body[k] <= '9') : (k += 1) {}
+                    var is_quant = false;
+                    if (k > sk and k < body.len) {
+                        if (body[k] == '}') is_quant = true
+                        else if (body[k] == ',') {
+                            k += 1;
+                            while (k < body.len and body[k] >= '0' and body[k] <= '9') : (k += 1) {}
+                            if (k < body.len and body[k] == '}') is_quant = true;
+                        }
+                    }
+                    if (!is_quant) {
+                        prev_is_atom_start = false;
+                        i += 1;
+                        continue;
+                    }
+                }
+                try p.emitError("Nothing to repeat in regular expression");
+                return error.ParseError;
+            }
+        }
+        if (c == '\\' and i + 1 < body.len) {
+            i += 2;
+            prev_is_atom_start = false;
+            continue;
+        }
+        if (c == '[') {
+            i += 1;
+            while (i < body.len) : (i += 1) {
+                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                if (body[i] == ']') { i += 1; break; }
+            }
+            prev_is_atom_start = false;
+            continue;
+        }
+        if (c == '(') {
+            i += 1;
+            // Skip past `(?...` group prefixes so they don't look like quantifiers.
+            if (i < body.len and body[i] == '?') {
+                i += 1;
+                if (i < body.len) {
+                    const k0 = body[i];
+                    if (k0 == ':' or k0 == '=' or k0 == '!') {
+                        i += 1;
+                    } else if (k0 == '<') {
+                        i += 1;
+                        if (i < body.len and (body[i] == '=' or body[i] == '!')) {
+                            i += 1;
+                        } else {
+                            // Named group: skip until `>` (or end).
+                            while (i < body.len and body[i] != '>') : (i += 1) {}
+                            if (i < body.len) i += 1;
+                        }
+                    } else {
+                        // Modifier group: skip until `:` (or `)` for empty).
+                        while (i < body.len and body[i] != ':' and body[i] != ')') : (i += 1) {}
+                        if (i < body.len and body[i] == ':') i += 1;
+                    }
+                }
+            }
+            prev_is_atom_start = true;
+            continue;
+        }
+        if (c == '|') { prev_is_atom_start = true; i += 1; continue; }
+        prev_is_atom_start = false;
+        i += 1;
+    }
+}
+
 /// Lookbehind groups (?<=...) (?<!...) cannot be quantified in any mode.
 fn validateRegexLookbehindQuant(p: *Parser, body: []const u8) Error!void {
     var i: usize = 0;
@@ -1851,6 +1935,8 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                     try p.emitError("Regex flags 'u' and 'v' are mutually exclusive");
                     return error.ParseError;
                 }
+                // Validate quantifier-without-atom (e.g. /?/, /{2}/).
+                try validateRegexNoLeadingQuantifier(p, p.source[ts + 1 .. close - 1]);
                 // Validate regex modifier-group syntax: `(?<flags>:...)` etc.
                 try validateRegexModifierGroups(p, p.source[ts + 1 .. close - 1]);
                 // Validate named groups: collect names, validate format, check refs.
