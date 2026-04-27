@@ -1128,6 +1128,59 @@ fn validateRegexClassRangesUnicode(p: *Parser, body: []const u8) Error!void {
     }
 }
 
+/// Lookbehind groups (?<=...) (?<!...) cannot be quantified in any mode.
+fn validateRegexLookbehindQuant(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\' and i + 1 < body.len) { i += 2; continue; }
+        if (c == '[') {
+            i += 1;
+            while (i < body.len) : (i += 1) {
+                if (body[i] == '\\' and i + 1 < body.len) { i += 1; continue; }
+                if (body[i] == ']') { i += 1; break; }
+            }
+            continue;
+        }
+        if (c != '(' or i + 3 >= body.len or body[i + 1] != '?' or
+            body[i + 2] != '<' or (body[i + 3] != '=' and body[i + 3] != '!'))
+        {
+            i += 1;
+            continue;
+        }
+        // Lookbehind: find matching ).
+        var depth: u32 = 1;
+        var j = i + 4;
+        while (j < body.len) : (j += 1) {
+            const ch = body[j];
+            if (ch == '\\' and j + 1 < body.len) { j += 1; continue; }
+            if (ch == '[') {
+                j += 1;
+                while (j < body.len) : (j += 1) {
+                    if (body[j] == '\\' and j + 1 < body.len) { j += 1; continue; }
+                    if (body[j] == ']') break;
+                }
+                continue;
+            }
+            if (ch == '(') depth += 1
+            else if (ch == ')') {
+                depth -= 1;
+                if (depth == 0) break;
+            }
+        }
+        if (j >= body.len) { i += 1; continue; }
+        const next_idx = j + 1;
+        if (next_idx < body.len) {
+            const nc = body[next_idx];
+            if (nc == '?' or nc == '*' or nc == '+' or nc == '{') {
+                try p.emitError("Lookbehind group cannot be quantified");
+                return error.ParseError;
+            }
+        }
+        i = next_idx;
+    }
+}
+
 /// In u/v mode, lookahead/lookbehind groups cannot be quantified. Find each
 /// `(?=...)`, `(?!...)`, `(?<=...)`, `(?<!...)` and ensure no quantifier
 /// follows the closing `)`.
@@ -1746,6 +1799,8 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 try validateRegexModifierGroups(p, p.source[ts + 1 .. close - 1]);
                 // Validate named groups: collect names, validate format, check refs.
                 try validateRegexNamedGroups(p, p.source[ts + 1 .. close - 1], has_u or has_v);
+                // Lookbehind cannot be quantified in any mode.
+                try validateRegexLookbehindQuant(p, p.source[ts + 1 .. close - 1]);
                 // With u or v flag, validate body for u-mode requirements.
                 if (has_u or has_v) {
                     try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
