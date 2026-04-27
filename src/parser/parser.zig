@@ -660,13 +660,17 @@ pub const Parser = struct {
         return self.advanceSlow(result);
     }
 
+    /// Tokens to pull from the walker per slow-path round trip. Larger =
+    /// fewer cross-function dispatches at the cost of slightly more eager
+    /// emission. 64 was empirically a sweet spot vs the monolithic Lexer.
+    const ITER_BATCH: u32 = 64;
+
     fn advanceSlow(self: *Parser, result: TokenIndex) TokenIndex {
         @branchHint(.cold);
         if (self.iter) |it| {
-            // Drain one more token from the walker into tokens_owned.
-            // Repeats if the next read still needs lookahead; bounded by
-            // iter's EOF.
-            if (it.pullOneIntoBuf()) {
+            // Drain a batch of tokens from the walker. Amortizes the
+            // walkerNext function-call overhead across many tokens.
+            if (it.pullBatchIntoBuf(ITER_BATCH) > 0) {
                 if (self.tokens_owned) |owned_ptr| {
                     self.tokens.len = owned_ptr.len;
                     self.parsed_len = owned_ptr.len;
@@ -683,11 +687,13 @@ pub const Parser = struct {
     }
 
     /// Iter mode: ensure tokens_owned has at least `up_to` tokens.
-    /// Pulls from the walker until satisfied or EOF.
+    /// Pulls batches from the walker until satisfied or EOF.
     inline fn ensureIterReachable(self: *Parser, up_to: u32) void {
         if (self.iter) |it| {
             while (self.parsed_len <= up_to) {
-                if (!it.pullOneIntoBuf()) break;
+                const need: u32 = @intCast(up_to - self.parsed_len + 1);
+                const batch: u32 = if (need < ITER_BATCH) ITER_BATCH else need;
+                if (it.pullBatchIntoBuf(batch) == 0) break;
                 if (self.tokens_owned) |owned_ptr| {
                     self.tokens.len = owned_ptr.len;
                     self.parsed_len = owned_ptr.len;

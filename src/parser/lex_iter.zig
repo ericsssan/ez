@@ -187,39 +187,40 @@ pub const LexIter = struct {
         }
     }
 
-    /// Emit one more token from the walker into the write-through buffer.
-    /// Bypasses the 4-slot window — used by the parser when its high-water
-    /// mark catches up to the iter's emit position. Returns true if a
-    /// token was emitted, false at EOF.
-    ///
-    /// On the FIRST call after the walker hits EOF, appends a final `.eof`
-    /// sentinel to the buffer (matching the monolithic Lexer's tail) so
-    /// callers can use `tags_ptr[parsed_len-1] == .eof` for end detection.
-    /// Subsequent calls return false without re-appending.
-    pub fn pullOneIntoBuf(self: *LexIter) bool {
-        if (self.eof_sentinel_emitted) return false;
-        if (self.walkerNext()) |t| {
-            if (self.tokens_buf) |buf| {
+    /// Emit up to `count` tokens from the walker into the write-through
+    /// buffer. Used by the parser slow path; batching amortizes the
+    /// per-call walkerNext function-call overhead. Stops early at EOF
+    /// (after appending the .eof sentinel exactly once). Returns the
+    /// number of tokens actually appended.
+    pub fn pullBatchIntoBuf(self: *LexIter, count: u32) u32 {
+        if (self.eof_sentinel_emitted) return 0;
+        const buf = self.tokens_buf orelse return 0;
+        var n: u32 = 0;
+        while (n < count) : (n += 1) {
+            if (@call(.always_inline, walkerNext, .{self})) |t| {
                 buf.appendAssumeCapacity(.{
                     .tag = t.tag,
                     .start = t.start,
                     .len = t.len,
                     .has_newline_before = self.last_emitted_nl,
                 });
+            } else {
+                self.eof_sentinel_emitted = true;
+                buf.appendAssumeCapacity(.{
+                    .tag = .eof,
+                    .start = @intCast(self.src.len),
+                    .len = 0,
+                    .has_newline_before = false,
+                });
+                return n + 1;
             }
-            return true;
         }
-        // Walker exhausted — emit one .eof sentinel.
-        self.eof_sentinel_emitted = true;
-        if (self.tokens_buf) |buf| {
-            buf.appendAssumeCapacity(.{
-                .tag = .eof,
-                .start = @intCast(self.src.len),
-                .len = 0,
-                .has_newline_before = false,
-            });
-        }
-        return true;
+        return n;
+    }
+
+    /// Single-token convenience wrapper. Same semantics as pullBatchIntoBuf(1).
+    pub fn pullOneIntoBuf(self: *LexIter) bool {
+        return self.pullBatchIntoBuf(1) > 0;
     }
 
     const MASK: u8 = SLOTS - 1;
@@ -326,6 +327,7 @@ pub const LexIter = struct {
         const n: u32 = @intCast(self.src.len);
         const bm = self.bm;
 
+      restart: while (true) {
         // Drain pending trailing-ident-run from prior number emit.
         if (self.pending_drain_pos != 0) {
             const dp = self.pending_drain_pos;
@@ -490,7 +492,7 @@ pub const LexIter = struct {
                         nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
                     {
                         self.pending_drain_pos = after_ws;
-                        return self.walkerNext();
+                        continue :restart;
                     }
                 }
                 continue;
@@ -517,7 +519,7 @@ pub const LexIter = struct {
                         nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
                     {
                         self.pending_drain_pos = p + ws_skip2;
-                        return self.walkerNext();
+                        continue :restart;
                     }
                 }
                 continue;
@@ -1292,6 +1294,7 @@ pub const LexIter = struct {
             self.maybeScheduleDrainAfter(end, n);
             return tok;
         }
+      } // restart loop
     }
 
     /// Skip whitespace + line terminators starting at `pos`, return new pos.

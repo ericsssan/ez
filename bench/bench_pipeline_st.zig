@@ -97,8 +97,57 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("  warmup: {d}    iters: {d}    work-buf: {d} MB\n\n",
         .{ WARMUP, ITERATIONS, WORKING_BUF_BYTES / (1024 * 1024) });
 
-    std.debug.print("{s:<20}  {s:>9}  {s:>9}  {s:>9}  {s:>9}\n",
-        .{ "fixture", "size KB", "Lexer ms", "Iter ms", "Iter MB/s" });
+    // Walker-only timings: no parse, no sem. Pure tokenize cost.
+    std.debug.print("Walker-only (no parse/sem):\n", .{});
+    std.debug.print("{s:<20}  {s:>8}  {s:>9}  {s:>9}\n",
+        .{ "fixture", "size KB", "mono ms", "iter ms" });
+    for (fixtures) |path| {
+        const source = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch continue;
+        defer gpa.free(source);
+        const lang: Language = .js;
+
+        // Monolithic walker
+        var fba1 = std.heap.FixedBufferAllocator.init(working);
+        for (0..WARMUP) |_| {
+            fba1.reset();
+            var t = Lexer.tokenizeWithLanguage(fba1.allocator(), source, lang) catch continue;
+            t.deinit(fba1.allocator());
+        }
+        for (times) |*tt| {
+            fba1.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var t = Lexer.tokenizeWithLanguage(fba1.allocator(), source, lang) catch { tt.* = 0; continue; };
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            t.deinit(fba1.allocator());
+            tt.* = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        const mono_stats = computeStats(times);
+
+        // LexIter walker (drain via tokenizeViaIter)
+        var fba2 = std.heap.FixedBufferAllocator.init(working);
+        for (0..WARMUP) |_| {
+            fba2.reset();
+            var t = lex_iter.tokenizeViaIter(fba2.allocator(), source, lang) catch continue;
+            t.deinit(fba2.allocator());
+        }
+        for (times) |*tt| {
+            fba2.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var t = lex_iter.tokenizeViaIter(fba2.allocator(), source, lang) catch { tt.* = 0; continue; };
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            t.deinit(fba2.allocator());
+            tt.* = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        const iter_stats = computeStats(times);
+
+        std.debug.print("{s:<20}  {d:>8.0}  {d:>9.3}  {d:>9.3}\n",
+            .{ std.fs.path.basename(path), @as(f64, @floatFromInt(source.len)) / 1024.0,
+               nsToMs(mono_stats.p50_ns), nsToMs(iter_stats.p50_ns) });
+    }
+    std.debug.print("\n", .{});
+
+    std.debug.print("{s:<20}  {s:>8}  {s:>9}  {s:>9}  {s:>9}\n",
+        .{ "fixture", "size KB", "Lexer ms", "Drain ms", "Pull ms" });
     std.debug.print("{s}\n", .{"-" ** 70});
 
     var total_bytes: u64 = 0;
@@ -117,20 +166,17 @@ pub fn main(init: std.process.Init) !void {
         // use .js for honest comparable single-thread numbers.
         const lang: Language = .js;
         const stats_lex = bench(io, source, lang, working, times, .lexer);
+        const stats_drain = bench(io, source, lang, working, times, .lex_iter_drain);
         const stats_iter = bench(io, source, lang, working, times, .lex_iter);
 
         const size_kb = @as(f64, @floatFromInt(source.len)) / 1024.0;
         const lex_ms = nsToMs(stats_lex.p50_ns);
+        const drain_ms = nsToMs(stats_drain.p50_ns);
         const iter_ms = nsToMs(stats_iter.p50_ns);
-        const iter_mbs = mbPerSec(source.len, stats_iter.p50_ns);
 
-        var name_buf: [64]u8 = undefined;
         const name = std.fs.path.basename(path);
-        const name_show = if (name.len > 19) name[0..19] else name;
-        @memcpy(name_buf[0..name_show.len], name_show);
-
-        std.debug.print("{s:<20}  {d:>9.0}  {d:>9.3}  {d:>9.3}  {d:>9.0}\n",
-            .{ name_show, size_kb, lex_ms, iter_ms, iter_mbs });
+        std.debug.print("{s:<20}  {d:>8.0}  {d:>9.3}  {d:>9.3}  {d:>9.3}\n",
+            .{ name, size_kb, lex_ms, drain_ms, iter_ms });
 
         total_bytes += source.len;
         total_lex_ns += stats_lex.p50_ns;
@@ -149,7 +195,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("LexIter speedup:                       {d:.2}x\n\n", .{ratio});
 }
 
-const Variant = enum { lexer, lex_iter };
+const Variant = enum { lexer, lex_iter, lex_iter_drain };
 
 fn bench(
     io: std.Io,
@@ -192,6 +238,21 @@ fn runOnce(alloc: std.mem.Allocator, source: []const u8, lang: Language, variant
                 .language = lang,
                 .is_module = false,
                 .emit_events = false,
+            });
+            defer tree.deinit(alloc);
+            if (semantic_mod.SemanticAnalyzer.analyze(alloc, &tree)) |sem_result| {
+                var sem = sem_result;
+                sem.deinit(alloc);
+            } else |_| {}
+        },
+        .lex_iter_drain => {
+            // Drain all tokens from LexIter walker upfront (tokenizeViaIter),
+            // then run standard parser. Isolates "walker per-token cost" from
+            // "pull-on-demand cost".
+            var tok = try lex_iter.tokenizeViaIter(alloc, source, lang);
+            defer tok.deinit(alloc);
+            var tree = try Parser.parseWithOptions(alloc, source, tok.tokens.slice(), .{
+                .language = lang, .is_module = false, .emit_events = false,
             });
             defer tree.deinit(alloc);
             if (semantic_mod.SemanticAnalyzer.analyze(alloc, &tree)) |sem_result| {
