@@ -5599,6 +5599,12 @@ pub const Parser = struct {
     /// Parse `using x = expr` or `await using x = expr` (ES2025 Explicit Resource Management).
     fn parseUsingDeclaration(self: *Parser, is_await: bool) Error!NodeIndex {
         const main_tok = self.tok_i;
+        // Spec: in Script goal, UsingDeclaration must be contained in Block,
+        // ForStatement, ForInOfStatement, FunctionBody, ClassStaticBlock, etc.
+        if (!self.is_module and !self.in_block and !self.in_function and !self.in_loop and !self.in_static_block) {
+            try self.emitDiagnostic(self.currentSpan(), "'using' declaration not allowed at top level of a Script", .{});
+            return error.ParseError;
+        }
         if (is_await) _ = self.advance(); // eat 'await'
         _ = self.advance(); // eat 'using'
 
