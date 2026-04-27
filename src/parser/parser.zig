@@ -4300,10 +4300,13 @@ pub const Parser = struct {
             _ = self.advance(); // eat 'set'
         }
 
-        // `accessor` field modifier (ES2024 auto-accessors)
+        // `accessor` field modifier (ES2024 auto-accessors). Only treat
+        // `accessor` as modifier when followed by a member-name token on
+        // the SAME line (no ASI). On newline, `accessor` is the field name.
         if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "accessor") and
             self.peekAt(1) != .l_paren and self.peekAt(1) != .equal and
-            self.peekAt(1) != .semicolon and self.peekAt(1) != .r_brace)
+            self.peekAt(1) != .semicolon and self.peekAt(1) != .r_brace and
+            !self.hasNewLineBetween(self.tok_i, self.tok_i + 1))
         {
             _ = self.advance(); // eat 'accessor'
         }
