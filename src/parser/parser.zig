@@ -160,6 +160,15 @@ pub const Parser = struct {
     /// List of exported names — used to detect duplicate ExportedBindings
     /// per spec early errors. Tracks bare names like "foo" or "default".
     exported_names: std.ArrayListUnmanaged([]const u8) = .{ .items = &.{}, .capacity = 0 },
+    /// Local names referenced by named exports without `from` — must resolve
+    /// to a declared module-level binding by end of parsing.
+    pending_export_local_toks: std.ArrayListUnmanaged(TokenIndex) = .{ .items = &.{}, .capacity = 0 },
+    /// Module-level declared names (var/let/const/function/class/import).
+    /// Used to validate exported locals refer to declared bindings.
+    module_decl_names: std.ArrayListUnmanaged([]const u8) = .{ .items = &.{}, .capacity = 0 },
+    /// True while parsing at module top level (decrements when entering
+    /// function/class/block bodies). Used to scope module_decl_names tracking.
+    at_module_top: bool = true,
     diagnostics: std.ArrayList(Diagnostic),
     /// Semantic events emitted during parse.  Enabled when `emit_scope_events`
     /// is true — zero-cost otherwise (all `emitScope*` helpers become dead code
@@ -1573,6 +1582,58 @@ pub const Parser = struct {
             .lhs = NodeIndex.fromInt(range.start),
             .rhs = NodeIndex.fromInt(range.end),
         };
+
+        // Validate that named exports without 'from' refer to declared bindings.
+        // Spec: It is a SyntaxError if any element of ExportedBindings does
+        // not also occur in either VarDeclaredNames or LexicallyDeclaredNames.
+        if (self.is_module and self.pending_export_local_toks.items.len > 0 and
+            self.emit_scope_events)
+        {
+            const evs_ee = self.scope_events.events.items[program_scope_ev + 1 ..];
+            for (self.pending_export_local_toks.items) |tok_idx| {
+                const want = self.tokenText(tok_idx);
+                var found = false;
+                // Stack of open scope kinds (true = function-like boundary).
+                var fn_stack: [128]bool = undefined;
+                var stack_n: usize = 0;
+                var fn_d: i32 = 0;
+                for (evs_ee) |ev| {
+                    switch (ev.kind) {
+                        .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) {
+                            const sk: ScopeKindU8 = @enumFromInt(ev.aux);
+                            const is_fn = (sk == .function or sk == .class_field_initializer or sk == .static_block);
+                            if (stack_n < fn_stack.len) fn_stack[stack_n] = is_fn;
+                            stack_n += 1;
+                            if (is_fn) fn_d += 1;
+                        },
+                        .scope_close => {
+                            if (stack_n > 0) {
+                                stack_n -= 1;
+                                if (stack_n < fn_stack.len and fn_stack[stack_n]) fn_d -= 1;
+                            }
+                        },
+                        .declare => {
+                            const bk: BindingKindU8 = @enumFromInt(ev.aux);
+                            // var hoists to nearest function — at module top, fn_d == 0.
+                            const is_var_at_module = (bk == .@"var" and fn_d == 0);
+                            if (stack_n == 0 or is_var_at_module) {
+                                const dn_tok = self.node_main_token_ptr[@intCast(ev.node)];
+                                if (std.mem.eql(u8, self.tokenText(dn_tok), want)) {
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                if (!found) {
+                    const span = Span{ .start = self.tok_starts_ptr[tok_idx], .end = self.tok_starts_ptr[tok_idx] };
+                    try self.emitDiagnostic(span, "Export '{s}' is not declared in the module", .{want});
+                    return;
+                }
+            }
+        }
 
         // Top-level lexical redeclaration check (mirror of block-scope logic).
         if (self.emit_scope_events) {
@@ -5538,6 +5599,8 @@ pub const Parser = struct {
                     try self.emitDiagnostic(span, "reserved word cannot be used as local name in export", .{});
                     return error.ParseError;
                 }
+                // Track for end-of-program declaration check.
+                try self.pending_export_local_toks.append(self.gpa, local_token);
             }
         }
 
