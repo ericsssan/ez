@@ -1956,6 +1956,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         const paren_arrow_ev = try p.emitScopeOpen(.function, .none);
         try p.emitParamDeclaresFromRange(params_range);
 
+        // Arrow params: spec rejects duplicate parameter names always.
+        try p.checkUniqueParams(params_range);
+
         // Arrow body: block { } with strict checks, or concise expression
         const body = if (p.peek() == .l_brace)
             try parseBlockBodyWithStrictChecks(p, params_range, .none)
