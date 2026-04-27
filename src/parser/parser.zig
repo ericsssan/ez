@@ -4274,10 +4274,13 @@ pub const Parser = struct {
             const comp_value: NodeIndex = if (self.eat(.equal) != null) blk: {
                 const prev_in_class_field = self.in_class_field;
                 const prev_nta_cf = self.new_target_allowed;
+                const prev_in_async_cf2 = self.in_async;
                 self.in_class_field = true;
                 self.new_target_allowed = true;
+                self.in_async = false;
                 defer self.in_class_field = prev_in_class_field;
                 defer self.new_target_allowed = prev_nta_cf;
+                defer self.in_async = prev_in_async_cf2;
                 break :blk try self.parseAssignmentExpression();
             } else .none;
 
@@ -4529,10 +4532,13 @@ pub const Parser = struct {
         const value: NodeIndex = if (self.eat(.equal) != null) blk: {
             const prev_in_class_field = self.in_class_field;
             const prev_nta_cf2 = self.new_target_allowed;
+            const prev_in_async_cf = self.in_async;
             self.in_class_field = true;
             self.new_target_allowed = true;
+            self.in_async = false;
             defer self.in_class_field = prev_in_class_field;
             defer self.new_target_allowed = prev_nta_cf2;
+            defer self.in_async = prev_in_async_cf;
             break :blk try self.parseAssignmentExpression();
         } else .none;
         if (field_has_init) try self.emitScopeClose(.none);
