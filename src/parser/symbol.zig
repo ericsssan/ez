@@ -88,6 +88,11 @@ pub const BindingKind = enum {
     let,
     @"const",
     function_decl,
+    /// Function declaration nested directly in an IfStatement body or
+    /// LabelledStatement — Annex B B.3.2.1 eligible. Same semantics as
+    /// function_decl in non-AnnexB contexts; differs only in dup-check
+    /// (sloppy + AnnexB skips the conflict with let/const/class).
+    function_decl_annex_b,
     class_decl,
     parameter,
     catch_param,
@@ -123,7 +128,7 @@ pub const BindingKind = enum {
     /// Returns true if the binding is hoisted to function/global scope.
     pub fn isHoisted(self: BindingKind) bool {
         return switch (self) {
-            .@"var", .function_decl => true,
+            .@"var", .function_decl, .function_decl_annex_b => true,
             else => false,
         };
     }
@@ -135,7 +140,7 @@ pub const BindingKind = enum {
     /// diagnostics — ESLint rules handle redeclaration checking themselves.
     pub fn canRedeclare(self: BindingKind) bool {
         return switch (self) {
-            .@"var", .function_decl, .parameter => true,
+            .@"var", .function_decl, .function_decl_annex_b, .parameter => true,
             .type_decl, .interface_decl, .enum_decl, .namespace_decl, .type_param => true,
             else => false,
         };
@@ -417,7 +422,7 @@ pub fn flagsFromBindingKind(kind: BindingKind) SymbolFlags {
         .@"const" => {
             f.is_const = true;
         },
-        .function_decl => {
+        .function_decl, .function_decl_annex_b => {
             f.is_function = true;
             f.is_hoisted = true;
         },

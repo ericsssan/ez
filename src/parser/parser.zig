@@ -173,6 +173,11 @@ pub const Parser = struct {
     /// or lower, so parsePrimary's `.hash` branch knows we're in a position
     /// where `#x` could form `#x in expr`.
     private_in_lhs_allowed: bool = false,
+    /// Set true while parsing the body of an IfStatement or LabelledStatement
+    /// (NOT a Block). Annex B B.3.2.1 makes function-decls in these positions
+    /// eligible for the "skip when conflict" extension — the dup-check uses
+    /// this to choose `function_decl_annex_b` vs `function_decl`.
+    in_annexb_fn_position: bool = false,
     /// Local names referenced by named exports without `from` — must resolve
     /// to a declared module-level binding by end of parsing.
     pending_export_local_toks: std.ArrayListUnmanaged(TokenIndex) = .{ .items = &.{}, .capacity = 0 },
@@ -1676,17 +1681,19 @@ pub const Parser = struct {
                         if (bk == .@"var" or bk == .parameter) continue;
                         // Sloppy script top-level: function decls hoist as var-bindings;
                         // any flavor pair coexists. Module: strict lexical check applies.
-                        if (!self.is_module and bk == .function_decl) continue;
+                        if (!self.is_module and (bk == .function_decl or bk == .function_decl_annex_b)) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
                         if (tok_start + tok_len > self.source.len) continue;
                         const name = self.source[tok_start..tok_start + tok_len];
-                        const flavor: u32 = if (bk == .function_decl) self.classifyFnDeclFlavor(main_tok_idx) else 0;
+                        const is_fn_decl = bk == .function_decl or bk == .function_decl_annex_b;
+                        const flavor: u32 = if (is_fn_decl) self.classifyFnDeclFlavor(main_tok_idx) else 0;
                         var dup = false;
                         for (names_buf[0..names_n]) |existing| {
                             if (!std.mem.eql(u8, existing.name, name)) continue;
-                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl
+                            const ex_is_fn = existing.kind == .function_decl or existing.kind == .function_decl_annex_b;
+                            if (allow_fn_dup and ex_is_fn and is_fn_decl
                                 and existing.fn_flavor == 0 and flavor == 0) continue;
                             dup = true;
                             break;
@@ -2046,19 +2053,35 @@ pub const Parser = struct {
                         // var/parameter never participate in lexical-redecl checks here.
                         if (bk == .@"var" or bk == .parameter) continue;
                         // FunctionBody: function decls skip redecl check (TopLevelLexicallyDeclaredNames).
-                        if (is_fn_body and bk == .function_decl) continue;
+                        if (is_fn_body and (bk == .function_decl or bk == .function_decl_annex_b)) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
                         if (tok_start + tok_len > self.source.len) continue;
                         const name = self.source[tok_start..tok_start + tok_len];
-                        const flavor: u32 = if (bk == .function_decl) self.classifyFnDeclFlavor(main_tok_idx) else 0;
+                        const flavor: u32 = if (bk == .function_decl or bk == .function_decl_annex_b) self.classifyFnDeclFlavor(main_tok_idx) else 0;
                         var dup = false;
                         for (names_buf[0..names_n]) |existing| {
                             if (!std.mem.eql(u8, existing.name, name)) continue;
                             // B.3.3: in sloppy script, only plain FunctionDeclaration pairs are allowed.
-                            if (allow_fn_dup and existing.kind == .function_decl and bk == .function_decl
+                            if (allow_fn_dup and (existing.kind == .function_decl or existing.kind == .function_decl_annex_b) and
+                                (bk == .function_decl or bk == .function_decl_annex_b)
                                 and existing.fn_flavor == 0 and flavor == 0) continue;
+                            // AnnexB B.3.2.1: in sloppy mode, when fn-decl
+                            // nested in IfStatement/LabelledStatement body
+                            // conflicts with prior let/const/class at the
+                            // same enclosing block scope, the AnnexB
+                            // extension is "not applied" — no early error.
+                            if (allow_fn_dup and bk == .function_decl_annex_b and
+                                (existing.kind == .let or existing.kind == .@"const" or existing.kind == .class_decl))
+                            {
+                                continue;
+                            }
+                            if (allow_fn_dup and existing.kind == .function_decl_annex_b and
+                                (bk == .let or bk == .@"const" or bk == .class_decl))
+                            {
+                                continue;
+                            }
                             dup = true;
                             break;
                         }
@@ -2092,7 +2115,7 @@ pub const Parser = struct {
                     .declare => if (depth == 0) {
                         const bk: BindingKindU8 = @enumFromInt(ev.aux);
                         if (!bk.isHoisted()) break :blk true;
-                        if (fn_decl_is_lexical and bk == .function_decl) break :blk true;
+                        if (fn_decl_is_lexical and (bk == .function_decl or bk == .function_decl_annex_b)) break :blk true;
                     },
                     else => {},
                 }
@@ -2255,6 +2278,10 @@ pub const Parser = struct {
                     try self.emitDiagnostic(self.currentSpan(), "generator function declaration not allowed in single-statement context", .{});
                     return error.ParseError;
                 }
+                // Mark this fn-decl as Annex B B.3.2.1 eligible.
+                const prev = self.in_annexb_fn_position;
+                self.in_annexb_fn_position = true;
+                defer self.in_annexb_fn_position = prev;
                 return self.parseStatement();
             },
             .kw_class => {
@@ -3593,7 +3620,10 @@ pub const Parser = struct {
 
         // Function declaration binds its name in the enclosing scope, then
         // opens a function scope for params + body.
-        if (name != .none) try self.emitDeclare(.function_decl, name);
+        if (name != .none) {
+            const fn_kind: BindingKindU8 = if (self.in_annexb_fn_position) .function_decl_annex_b else .function_decl;
+            try self.emitDeclare(fn_kind, name);
+        }
         const fn_scope_ev = try self.emitScopeOpen(.function, .none);
 
         // Set generator/async flags BEFORE parsing params — yield/await are
@@ -4198,7 +4228,7 @@ pub const Parser = struct {
                         .scope_close => sb_depth -= 1,
                         .declare => if (sb_depth == 0) {
                             const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                            if (bk == .@"var" or bk == .parameter or bk == .function_decl) continue;
+                            if (bk == .@"var" or bk == .parameter or bk == .function_decl or bk == .function_decl_annex_b) continue;
                             const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                             const tok_start = self.tok_starts_ptr[main_tok_idx];
                             const tok_len = self.tok_lens_ptr[main_tok_idx];
