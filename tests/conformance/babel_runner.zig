@@ -170,6 +170,33 @@ fn shouldSkip(path: []const u8) bool {
         "export-extensions", "decimal", "module-attributes",
         "destructuring-private", "regex-modifiers",
         "valid-assignment-target-type",
+        // Skip non-parser packages. Only babel-parser/test/fixtures is the
+        // parser-conformance corpus. Plugin/transform/generator/runtime tests
+        // exercise unrelated behavior.
+        "/babel-plugin-",
+        "/babel-helpers/",
+        "/babel-core/",
+        "/babel-preset-",
+        "/babel-plugin-syntax-",
+        "/babel-generator/",
+        "/babel-traverse/",
+        "/babel-types/",
+        "/babel-template/",
+        "/babel-runtime/",
+        "/babel-cli/",
+        "/babel-node/",
+        "/babel-register/",
+        "/babel-standalone/",
+        "/babel-compat-data/",
+        "/babel-runtime-corejs2/",
+        "/babel-runtime-corejs3/",
+        "/babel-helper-",
+        // Babel-parser experimental subdirs that need plugin flags.
+        "/babel-parser/test/expressions/is-expression-babel-parser/",
+        "/babel-parser/test/fixtures/experimental/_no-plugin/",
+        "/babel-parser/test/fixtures/experimental/optional-chaining-assign/",
+        // Categorized startline/startcolumn tests are about parse-options metadata.
+        "/babel-parser/test/fixtures/core/categorized/",
     };
     for (skip_patterns) |pat| {
         if (std.mem.indexOf(u8, path, pat) != null) return true;
