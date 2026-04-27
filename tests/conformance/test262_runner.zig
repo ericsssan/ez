@@ -260,12 +260,23 @@ fn isModuleTest(source: []const u8) bool {
     const fm_start = std.mem.indexOf(u8, source, "/*---") orelse return false;
     const fm_end = std.mem.indexOfPos(u8, source, fm_start, "---*/") orelse return false;
     const fm = source[fm_start..fm_end];
-    // Find "flags:" line and check if it contains "module"
+    // Find "flags:" — accepts both inline form `flags: [module]` and
+    // YAML list form `flags:\n  - module`.
     const flags_start = std.mem.indexOf(u8, fm, "flags:") orelse return false;
-    // Find end of flags line (next newline)
-    const flags_line_end = std.mem.indexOfPos(u8, fm, flags_start, "\n") orelse fm.len;
-    const flags_line = fm[flags_start..flags_line_end];
-    return std.mem.indexOf(u8, flags_line, "module") != null;
+    // Inline form: same line.
+    const inline_end = std.mem.indexOfPos(u8, fm, flags_start, "\n") orelse fm.len;
+    if (std.mem.indexOf(u8, fm[flags_start..inline_end], "module") != null) return true;
+    // YAML list form: scan continuation lines (start with whitespace).
+    var pos = inline_end + 1;
+    while (pos < fm.len) {
+        const line_end = std.mem.indexOfPos(u8, fm, pos, "\n") orelse fm.len;
+        const line = fm[pos..line_end];
+        // Continuation lines are indented (start with space/tab).
+        if (line.len == 0 or (line[0] != ' ' and line[0] != '\t')) break;
+        if (std.mem.indexOf(u8, line, "module") != null) return true;
+        pos = line_end + 1;
+    }
+    return false;
 }
 
 /// Recursively walk a directory collecting .js file paths.
