@@ -1375,7 +1375,7 @@ fn validateRegexLookaroundUnicode(p: *Parser, body: []const u8) Error!void {
     }
 }
 
-fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
+fn validateRegexBodyUnicode(p: *Parser, body: []const u8, v_mode: bool) Error!void {
     // First count the number of capturing groups (ignoring (?:...), (?=...) etc.).
     var group_count: u32 = 0;
     {
@@ -1448,8 +1448,25 @@ fn validateRegexBodyUnicode(p: *Parser, body: []const u8) Error!void {
                 i += 1;
                 if (i < body.len and body[i] == '{') {
                     i += 1;
-                    while (i < body.len and body[i] != '}') : (i += 1) {}
-                    if (i < body.len) i += 1;
+                    const name_start = i;
+                    var eq_pos: ?usize = null;
+                    while (i < body.len and body[i] != '}') : (i += 1) {
+                        if (body[i] == '=' and eq_pos == null) eq_pos = i;
+                    }
+                    if (i >= body.len) {
+                        try p.emitError("Unterminated property escape in regular expression");
+                        return error.ParseError;
+                    }
+                    const upro = @import("unicode_props.zig");
+                    const ok = if (eq_pos) |ep|
+                        upro.isValidPropertyRef(body[name_start..ep], body[ep + 1 .. i], v_mode)
+                    else
+                        upro.isValidPropertyRef(body[name_start..i], null, v_mode);
+                    if (!ok) {
+                        try p.emitError("Invalid property name in regular expression");
+                        return error.ParseError;
+                    }
+                    i += 1; // consume '}'
                 }
             },
             'k' => {
@@ -1988,7 +2005,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 try validateRegexLookbehindQuant(p, p.source[ts + 1 .. close - 1]);
                 // With u or v flag, validate body for u-mode requirements.
                 if (has_u or has_v) {
-                    try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
+                    try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1], has_v);
                     try validateRegexLookaroundUnicode(p, p.source[ts + 1 .. close - 1]);
                     if (has_u and !has_v) {
                         try validateRegexClassRangesUnicode(p, p.source[ts + 1 .. close - 1]);
