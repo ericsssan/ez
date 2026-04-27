@@ -2215,7 +2215,20 @@ fn parseObjectLiteral(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.r_brace);
 
     const props = p.scratchSlice(scratch_top);
-    const range = try p.addSlice(props);
+    // Trailing comma after rest is valid in object literal but invalid as destructuring
+    // pattern. Push a .none sentinel so reinterpretAsPattern can detect it.
+    if (props.len > 0) {
+        const last_prop = NodeIndex.fromInt(props[props.len - 1]);
+        if (last_prop != .none and p.node_tags_ptr[last_prop.toInt()] == .spread_element) {
+            if (p.tok_i > 1 and p.tokenTagAt(p.tok_i - 1) == .r_brace and
+                p.tokenTagAt(p.tok_i - 2) == .comma)
+            {
+                try p.scratchPush(NodeIndex.none);
+            }
+        }
+    }
+
+    const range = try p.addSlice(p.scratchSlice(scratch_top));
     p.scratchPop(scratch_top);
 
     return p.addNode(.{
