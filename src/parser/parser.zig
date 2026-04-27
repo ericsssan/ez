@@ -157,6 +157,9 @@ pub const Parser = struct {
     node_main_token_ptr: [*]TokenIndex,
     extra_data: std.ArrayList(u32),
     scratch: std.ArrayList(u32),
+    /// List of exported names — used to detect duplicate ExportedBindings
+    /// per spec early errors. Tracks bare names like "foo" or "default".
+    exported_names: std.ArrayListUnmanaged([]const u8) = .{ .items = &.{}, .capacity = 0 },
     diagnostics: std.ArrayList(Diagnostic),
     /// Semantic events emitted during parse.  Enabled when `emit_scope_events`
     /// is true — zero-cost otherwise (all `emitScope*` helpers become dead code
@@ -5128,6 +5131,7 @@ pub const Parser = struct {
             .asterisk => return self.parseExportAll(export_tok),
             .kw_var, .kw_let => {
                 const decl = try self.parseVariableDeclaration();
+                try self.registerExportBindings(decl);
                 return self.addNode(.{
                     .tag = .export_named,
                     .main_token = export_tok,
@@ -5146,6 +5150,7 @@ pub const Parser = struct {
                     });
                 }
                 const decl = try self.parseVariableDeclaration();
+                try self.registerExportBindings(decl);
                 return self.addNode(.{
                     .tag = .export_named,
                     .main_token = export_tok,
@@ -5154,6 +5159,14 @@ pub const Parser = struct {
             },
             .kw_function => {
                 const decl = try self.parseFunctionDeclaration();
+                // Function declaration: data.lhs is the function-name identifier node.
+                if (decl != .none) {
+                    const fn_data = self.node_data_ptr[decl.toInt()];
+                    if (fn_data.lhs != .none and self.node_tags_ptr[fn_data.lhs.toInt()] == .identifier) {
+                        const ntok = self.node_main_token_ptr[fn_data.lhs.toInt()];
+                        try self.addExportedName(self.tokenText(ntok));
+                    }
+                }
                 return self.addNode(.{
                     .tag = .export_named,
                     .main_token = export_tok,
@@ -5165,6 +5178,13 @@ pub const Parser = struct {
             },
             .kw_class => {
                 const decl = try self.parseClassDeclaration();
+                if (decl != .none) {
+                    const cls_data = self.node_data_ptr[decl.toInt()];
+                    if (cls_data.lhs != .none and self.node_tags_ptr[cls_data.lhs.toInt()] == .identifier) {
+                        const ntok = self.node_main_token_ptr[cls_data.lhs.toInt()];
+                        try self.addExportedName(self.tokenText(ntok));
+                    }
+                }
                 return self.addNode(.{
                     .tag = .export_named,
                     .main_token = export_tok,
@@ -5311,6 +5331,7 @@ pub const Parser = struct {
     /// Parse `export default ...`.
     pub fn parseExportDefault(self: *Parser, export_tok: TokenIndex) Error!NodeIndex {
         _ = self.advance(); // eat 'default'
+        try self.addExportedName("default");
 
         switch (self.peek()) {
             .kw_function => {
@@ -5549,6 +5570,20 @@ pub const Parser = struct {
                 try self.emitReference(.read, spec_lhs);
             }
         }
+        // Register exported names for duplicate-export detection. The exported
+        // name is the spec node's rhs (the name after `as`, or the local name
+        // when no alias). String-literal names are skipped (they're well-formed
+        // but harder to compare with escape decoding — and re-exports use them).
+        for (specs) |spec_raw| {
+            const spec_data = self.nodeData(spec_raw);
+            const exported_node = if (spec_data.rhs != .none) spec_data.rhs else spec_data.lhs;
+            if (exported_node == .none) continue;
+            const exp_tag = self.nodeTag(@intFromEnum(exported_node));
+            if (exp_tag != .property_ident and exp_tag != .identifier) continue;
+            const exp_tok = self.node_main_token_ptr[exported_node.toInt()];
+            if (self.tokenTagAt(exp_tok) == .string_literal) continue;
+            try self.addExportedName(self.tokenText(exp_tok));
+        }
 
         return self.addNode(.{
             .tag = .export_named,
@@ -5583,6 +5618,7 @@ pub const Parser = struct {
                     .main_token = name_tok,
                     .data = .{ .lhs = .none, .rhs = .none },
                 });
+                try self.addExportedName(self.tokenText(name_tok));
             }
         }
 
@@ -5792,6 +5828,59 @@ pub const Parser = struct {
                 const n = std.unicode.utf8Encode(cp, &buf) catch 0;
                 try out.appendSlice(buf[0..n]);
             }
+        }
+    }
+
+    /// Add `name` to the list of exported names; emit error and return on dup.
+    fn addExportedName(self: *Parser, name: []const u8) !void {
+        for (self.exported_names.items) |existing| {
+            if (std.mem.eql(u8, existing, name)) {
+                try self.emitDiagnostic(self.currentSpan(), "Duplicate export '{s}'", .{name});
+                return error.ParseError;
+            }
+        }
+        try self.exported_names.append(self.gpa, name);
+    }
+
+    /// Walk a binding pattern (identifier / array_pattern / object_pattern /
+    /// rest_element / assignment_pattern / property / shorthand_property) and
+    /// register every binding identifier as an exported name.
+    fn registerExportBindings(self: *Parser, node: NodeIndex) !void {
+        if (node == .none) return;
+        const tag = self.node_tags_ptr[node.toInt()];
+        const data = self.node_data_ptr[node.toInt()];
+        switch (tag) {
+            .identifier => {
+                const tok = self.node_main_token_ptr[node.toInt()];
+                try self.addExportedName(self.tokenText(tok));
+            },
+            .declarator => try self.registerExportBindings(data.lhs),
+            .var_decl, .let_decl, .const_decl => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    try self.registerExportBindings(child);
+                }
+            },
+            .assignment_pattern => try self.registerExportBindings(data.lhs),
+            .rest_element => try self.registerExportBindings(data.lhs),
+            .array_pattern => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    try self.registerExportBindings(child);
+                }
+            },
+            .object_pattern => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    try self.registerExportBindings(child);
+                }
+            },
+            .property, .computed_property => try self.registerExportBindings(data.rhs),
+            .shorthand_property => try self.registerExportBindings(data.lhs),
+            else => {},
         }
     }
 
