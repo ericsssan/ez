@@ -3418,6 +3418,10 @@ pub const Parser = struct {
         else
             .none;
 
+        // Cover-grammar: `{x = 1}` shorthand-with-default is only valid as
+        // destructuring pattern. As an initializer expression it's invalid.
+        if (init != .none) try self.validateNoCoverInitName(init);
+
         // Destructuring patterns require an initializer — UNLESS in for-in/of context
         // where the value comes from the iterable (e.g., `for (const [a, b] of iter)`)
         if (init == .none and self.peek() != .kw_in and self.peek() != .kw_of) {
@@ -5828,6 +5832,41 @@ pub const Parser = struct {
                 const n = std.unicode.utf8Encode(cp, &buf) catch 0;
                 try out.appendSlice(buf[0..n]);
             }
+        }
+    }
+
+    /// Walk an expression tree and emit error if any object_literal or
+    /// array_literal contains a CoverInitName (assignment_pattern shorthand).
+    /// Such forms are only valid as destructuring patterns.
+    fn validateNoCoverInitName(self: *Parser, node: NodeIndex) Error!void {
+        if (node == .none) return;
+        const tag = self.node_tags_ptr[node.toInt()];
+        const data = self.node_data_ptr[node.toInt()];
+        switch (tag) {
+            .object_literal => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    if (child == .none) continue;
+                    const ct = self.node_tags_ptr[child.toInt()];
+                    if (ct == .assignment_pattern) {
+                        try self.emitDiagnostic(self.currentSpan(), "Shorthand property with default is only allowed in destructuring patterns", .{});
+                        return error.ParseError;
+                    }
+                    try self.validateNoCoverInitName(child);
+                }
+            },
+            .array_literal => {
+                var i = data.lhs.toInt();
+                while (i < data.rhs.toInt()) : (i += 1) {
+                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                    try self.validateNoCoverInitName(child);
+                }
+            },
+            .property, .computed_property => try self.validateNoCoverInitName(data.rhs),
+            .spread_element => try self.validateNoCoverInitName(data.lhs),
+            .grouping_expr => try self.validateNoCoverInitName(data.lhs),
+            else => {},
         }
     }
 
