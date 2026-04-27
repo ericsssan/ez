@@ -987,7 +987,9 @@ pub const LexIter = struct {
                         end = r.end;
                         // Unterminated /* */ comment — emit .invalid for parser to flag.
                         if (end >= n and !(end >= 2 and self.src[end - 2] == '*' and self.src[end - 1] == '/')) {
-                            tag = .invalid;
+                            self.skip_until = end;
+                            self.prev_kind = .invalid;
+                            return Token{ .tag = .invalid, .start = p, .len = end - p };
                         } else {
                             if (self.cm_starts) |cs| {
                                 const a = self.cm_line_alloc.?;
