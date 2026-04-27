@@ -947,7 +947,7 @@ fn validateRegexGroupName(p: *Parser, body: []const u8, start: usize) Error!usiz
     return error.ParseError;
 }
 
-fn validateRegexNamedGroups(p: *Parser, body: []const u8) Error!void {
+fn validateRegexNamedGroups(p: *Parser, body: []const u8, is_unicode: bool) Error!void {
     // Pass 1: validate (?<NAME>...) syntax and collect names.
     // Per ES2025: duplicate names ARE allowed if in different alternation
     // branches. Without full pattern parsing, we only flag duplicates when
@@ -994,9 +994,11 @@ fn validateRegexNamedGroups(p: *Parser, body: []const u8) Error!void {
         }
         i = name_end;
     }
-    // Pass 2: validate \k<NAME> references — only if pattern has named groups.
-    // Otherwise (non-u mode AnnexB), `\k` is treated as literal escape sequence.
-    if (names_count == 0) return;
+    // Pass 2: validate \k<NAME> references.
+    // In u/v mode, \k followed by `<` is always a named back-reference,
+    // and the referenced name must exist. In non-u mode, when no named
+    // groups exist, `\k` is treated as literal escape sequence (AnnexB).
+    if (names_count == 0 and !is_unicode) return;
     i = 0;
     while (i < body.len) {
         const c = body[i];
@@ -1508,6 +1510,20 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 try p.emitError("Invalid line terminator in regular expression literal");
                 return error.ParseError;
             }
+            // Check for U+2028 (LS) / U+2029 (PS) inside body — invalid line
+            // terminators per spec.
+            {
+                var li: u32 = ts;
+                const stop3 = ts + tl;
+                while (li + 2 < stop3) : (li += 1) {
+                    if (p.source[li] == 0xE2 and p.source[li + 1] == 0x80 and
+                        (p.source[li + 2] == 0xA8 or p.source[li + 2] == 0xA9))
+                    {
+                        try p.emitError("Line terminator in regular expression literal");
+                        return error.ParseError;
+                    }
+                }
+            }
             // Validate regex flags: no duplicates, `u` and `v` mutually exclusive.
             // Find flags region: after closing `/` to token end.
             {
@@ -1551,7 +1567,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                 // Validate regex modifier-group syntax: `(?<flags>:...)` etc.
                 try validateRegexModifierGroups(p, p.source[ts + 1 .. close - 1]);
                 // Validate named groups: collect names, validate format, check refs.
-                try validateRegexNamedGroups(p, p.source[ts + 1 .. close - 1]);
+                try validateRegexNamedGroups(p, p.source[ts + 1 .. close - 1], has_u or has_v);
                 // With u or v flag, validate body for u-mode requirements.
                 if (has_u or has_v) {
                     try validateRegexBodyUnicode(p, p.source[ts + 1 .. close - 1]);
