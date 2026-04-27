@@ -552,14 +552,14 @@ pub const LexIter = struct {
             if (byte == 0xE2 and p + 2 < n and self.src[p + 1] == 0x80 and (self.src[p + 2] == 0xA8 or self.src[p + 2] == 0xA9)) {
                 self.saw_nl = true;
                 self.at_line_start = true;
-                const after_ws = self.skipZsAndLs(p + 3, n);
-                self.skip_until = after_ws;
-                if (after_ws < n) {
-                    const nb = self.src[after_ws];
+                const r = self.skipZsAndLs(p + 3, n);
+                self.skip_until = r.end;
+                if (r.end < n) {
+                    const nb = self.src[r.end];
                     if ((nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
                         nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80)
                     {
-                        self.pending_drain_pos = after_ws;
+                        self.pending_drain_pos = r.end;
                         continue :restart;
                     }
                 }
@@ -1398,10 +1398,15 @@ pub const LexIter = struct {
       } // restart loop
     }
 
-    /// Skip whitespace + line terminators starting at `pos`, return new pos.
-    /// Sets saw_nl when LF/CR/LS/PS encountered. Used by post-emit drain.
-    inline fn skipZsAndLs(self: *LexIter, pos: u32, n: u32) u32 {
+    /// Skip whitespace + line terminators starting at `pos`, return new pos
+    /// and whether any HIGH-byte (≥ 0x80) ws was crossed. Sets saw_nl when
+    /// LF/CR/LS/PS encountered. Used by post-emit drain — the caller only
+    /// schedules a drain when high-byte ws is present, so returning the
+    /// flag here saves a redundant byte-scan in maybeScheduleDrainAfter
+    /// (was 4.7% of walker samples on typescript.js).
+    inline fn skipZsAndLs(self: *LexIter, pos: u32, n: u32) struct { end: u32, has_high: bool } {
         var q = pos;
+        var has_high = false;
         while (q < n) {
             const c = self.src[q];
             // ASCII whitespace
@@ -1409,20 +1414,20 @@ pub const LexIter = struct {
             if (c == '\n') { self.saw_nl = true; self.at_line_start = true; q += 1; continue; }
             if (c == '\r') { self.saw_nl = true; self.at_line_start = true; q += 1; continue; }
             // High-byte: Zs / LS / PS / BOM
-            if (c == 0xC2 and q + 1 < n and self.src[q + 1] == 0xA0) { q += 2; continue; }
-            if (c == 0xE1 and q + 2 < n and self.src[q + 1] == 0x9A and self.src[q + 2] == 0x80) { q += 3; continue; }
+            if (c == 0xC2 and q + 1 < n and self.src[q + 1] == 0xA0) { q += 2; has_high = true; continue; }
+            if (c == 0xE1 and q + 2 < n and self.src[q + 1] == 0x9A and self.src[q + 2] == 0x80) { q += 3; has_high = true; continue; }
             if (c == 0xE2 and q + 2 < n and self.src[q + 1] == 0x80) {
                 const t = self.src[q + 2];
-                if ((t >= 0x80 and t <= 0x8A) or t == 0xAF) { q += 3; continue; }
-                if (t == 0xA8 or t == 0xA9) { self.saw_nl = true; self.at_line_start = true; q += 3; continue; }
+                if ((t >= 0x80 and t <= 0x8A) or t == 0xAF) { q += 3; has_high = true; continue; }
+                if (t == 0xA8 or t == 0xA9) { self.saw_nl = true; self.at_line_start = true; q += 3; has_high = true; continue; }
                 break;
             }
-            if (c == 0xE2 and q + 2 < n and self.src[q + 1] == 0x81 and self.src[q + 2] == 0x9F) { q += 3; continue; }
-            if (c == 0xE3 and q + 2 < n and self.src[q + 1] == 0x80 and self.src[q + 2] == 0x80) { q += 3; continue; }
-            if (c == 0xEF and q + 2 < n and self.src[q + 1] == 0xBB and self.src[q + 2] == 0xBF) { q += 3; continue; }
+            if (c == 0xE2 and q + 2 < n and self.src[q + 1] == 0x81 and self.src[q + 2] == 0x9F) { q += 3; has_high = true; continue; }
+            if (c == 0xE3 and q + 2 < n and self.src[q + 1] == 0x80 and self.src[q + 2] == 0x80) { q += 3; has_high = true; continue; }
+            if (c == 0xEF and q + 2 < n and self.src[q + 1] == 0xBB and self.src[q + 2] == 0xBF) { q += 3; has_high = true; continue; }
             break;
         }
-        return q;
+        return .{ .end = q, .has_high = has_high };
     }
 
     /// After a token emit, check if the bytes immediately following start
@@ -1432,30 +1437,45 @@ pub const LexIter = struct {
     /// would otherwise miss. ASCII ws (' ', '\t', '\n', etc) breaks the
     /// ident bitmap on the producer side — id_starts will fire for the
     /// next ident, no drain needed.
+    /// Hot-path inline check: only the per-emit fast path. Most tokens are
+    /// followed by either no whitespace, ASCII whitespace only, or EOF —
+    /// in all those cases we return without any further work. The rare
+    /// high-byte-ws case escapes to the slow path (non-inline) so it
+    /// doesn't bloat the walker's machine code.
     inline fn maybeScheduleDrainAfter(self: *LexIter, end: u32, n: u32) void {
         if (end >= n) return;
-        // Skip ALL whitespace (ASCII + Zs/LS/PS/BOM). If the run contains
-        // any high-byte ws AND the trailing char is an ident-cont position
-        // that the visit walker won't fire for (because the ident-bitmap
-        // run starts with a high-byte ws), schedule a drain.
-        const after_ws = self.skipZsAndLs(end, n);
-        if (after_ws == end or after_ws >= n) return;
-        // Did we cross any high-byte ws? If only ASCII ws was crossed, the
-        // visit walker handles the next token via id_starts (ASCII ws breaks
-        // the ident bitmap). High-byte ws (NBSP, etc) does NOT break the
-        // bitmap, hence the need for a drain.
-        var saw_high: bool = false;
-        var k: u32 = end;
-        while (k < after_ws) : (k += 1) {
-            if (self.src[k] >= 0x80) { saw_high = true; break; }
+        const first = self.src[end];
+        if (first < 0x80) {
+            // ASCII byte. Either non-ws (return) or ASCII ws — either way,
+            // ASCII ws breaks the ident bitmap so the visit walker handles
+            // the next ident on its own. Skip to slow path only if a
+            // possible high-byte ws sequence FOLLOWS some ASCII ws. The
+            // uncommon path: peek for high-byte after possible ASCII ws.
+            const k = end + 1;
+            if (k < n and self.src[k] >= 0x80) {
+                self.maybeScheduleDrainAfterSlow(end, n);
+            }
+            return;
         }
-        if (!saw_high) return;
-        const nb = self.src[after_ws];
+        // First byte is high — call the slow path.
+        self.maybeScheduleDrainAfterSlow(end, n);
+    }
+
+    /// Out-of-line slow path. High-byte whitespace sequences (NBSP, OGHAM
+    /// SPACE, MMSP, NNBSP, IDEOGRAPHIC SPACE, BOM, LS/PS) followed by
+    /// an ident-continuation char need a drain because the ident bitmap
+    /// over-includes the high ws bytes — the visit walker would skip
+    /// past the would-be ident-start.
+    fn maybeScheduleDrainAfterSlow(self: *LexIter, end: u32, n: u32) void {
+        @branchHint(.cold);
+        const r = self.skipZsAndLs(end, n);
+        if (!r.has_high or r.end >= n) return;
+        const nb = self.src[r.end];
         const is_cont = (nb >= 'a' and nb <= 'z') or (nb >= 'A' and nb <= 'Z') or
             nb == '_' or nb == '$' or (nb >= '0' and nb <= '9') or nb >= 0x80;
         if (is_cont) {
-            self.skip_until = after_ws;
-            self.pending_drain_pos = after_ws;
+            self.skip_until = r.end;
+            self.pending_drain_pos = r.end;
         }
     }
 };
