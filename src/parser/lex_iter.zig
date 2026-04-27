@@ -271,6 +271,22 @@ pub const LexIter = struct {
                 end_i = dp + 1;
                 {
                     const uid = @import("unicode_id.zig");
+                    // High-byte ident-start: validate ID_Start.
+                    if (byte >= 0x80) {
+                        const sl = std.unicode.utf8ByteSequenceLength(byte) catch 1;
+                        if (dp + sl <= n) {
+                            const cp = std.unicode.utf8Decode(self.src[dp .. dp + sl]) catch 0;
+                            if (!uid.isIdStart(@intCast(cp))) {
+                                self.skip_until = dp + sl;
+                                self.prev_kind = .invalid;
+                                self.last_emitted_nl = self.saw_nl;
+                                self.saw_nl = false;
+                                self.at_line_start = false;
+                                return Token{ .tag = .invalid, .start = dp, .len = sl };
+                            }
+                            end_i = dp + sl;
+                        }
+                    }
                     while (end_i < n) {
                         const c = self.src[end_i];
                         if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
@@ -824,6 +840,23 @@ pub const LexIter = struct {
                     break;
                 }
                 self.skip_until = end;
+                // If we stopped on a high byte that isn't a known whitespace
+                // and isn't ID_Continue, the bitmap walker may silently skip
+                // it. Schedule a drain so the next call dispatches and emits
+                // .invalid via the high-byte ident-start path.
+                if (end < n and self.src[end] >= 0x80) {
+                    const c = self.src[end];
+                    const is_ws =
+                        (c == 0xC2 and end + 1 < n and self.src[end + 1] == 0xA0) or
+                        (c == 0xE1 and end + 2 < n and self.src[end + 1] == 0x9A and self.src[end + 2] == 0x80) or
+                        (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x80 and
+                            ((self.src[end + 2] >= 0x80 and self.src[end + 2] <= 0x8A) or
+                             self.src[end + 2] == 0xA8 or self.src[end + 2] == 0xA9 or self.src[end + 2] == 0xAF)) or
+                        (c == 0xE2 and end + 2 < n and self.src[end + 1] == 0x81 and self.src[end + 2] == 0x9F) or
+                        (c == 0xE3 and end + 2 < n and self.src[end + 1] == 0x80 and self.src[end + 2] == 0x80) or
+                        (c == 0xEF and end + 2 < n and self.src[end + 1] == 0xBB and self.src[end + 2] == 0xBF);
+                    if (!is_ws) self.pending_drain_pos = end;
+                }
                 // Capture nl-before for THIS token before any post-emit
                 // saw_nl mutation (e.g. LS-after-ident sets saw_nl=true
                 // for the NEXT token, not this one).
