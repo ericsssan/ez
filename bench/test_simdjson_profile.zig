@@ -15,14 +15,14 @@ pub fn main(init: std.process.Init) !void {
 
     // Warm
     for (0..3) |_| {
-        var r = try ez.LexerSimdjson.tokenize(gpa, src);
+        var r = try ez.Lexer.tokenize(gpa, src);
         r.deinit(gpa);
     }
 
     // Long-running loop. Each iter ~15ms, so 1000 iters = ~15s.
     var iter: usize = 0;
     while (iter < 1000) : (iter += 1) {
-        var r = try ez.LexerSimdjson.tokenize(gpa, src);
+        var r = try ez.Lexer.tokenize(gpa, src);
         r.deinit(gpa);
     }
     std.debug.print("done {d} iters\n", .{iter});

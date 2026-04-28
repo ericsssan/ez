@@ -339,20 +339,6 @@ pub fn build(b: *std.Build) void {
     const sj_step = b.step("test-sj", "Phase 1 bitmap-construction PoC (simdjson-style)");
     sj_step.dependOn(&sj_cmd.step);
 
-    // ── Differential test: lexer.zig vs lexer_simdjson.zig ──
-    const sjd_mod = b.createModule(.{
-        .root_source_file = b.path("bench/test_simdjson_diff.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-    });
-    sjd_mod.addImport("ez", test_mod);
-    const sjd_exe = b.addExecutable(.{ .name = "test_simdjson_diff", .root_module = sjd_mod });
-    const sjd_cmd = b.addRunArtifact(sjd_exe);
-    sjd_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| sjd_cmd.addArgs(args);
-    const sjd_step = b.step("test-sj-diff", "Differential lex parity check");
-    sjd_step.dependOn(&sjd_cmd.step);
-
     // ── Pool strategy bench ──
     const pool_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_pool.zig"),

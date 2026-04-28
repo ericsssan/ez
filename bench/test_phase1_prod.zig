@@ -1,4 +1,4 @@
-/// Measure PRODUCTION Phase 1 (lexer_simdjson.buildBitmaps) on typescript.js.
+/// Measure PRODUCTION Phase 1 (Lexer.buildBitmaps) on typescript.js.
 const std = @import("std");
 const ez = @import("ez");
 
@@ -8,18 +8,18 @@ pub fn main(init: std.process.Init) !void {
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "bench/fixtures/typescript.js", gpa, .unlimited);
     defer gpa.free(src);
 
-    var bm = try ez.LexerSimdjson.Bitmaps.init(gpa, src.len);
+    var bm = try ez.Lexer.Bitmaps.init(gpa, src.len);
     defer bm.deinit(gpa);
 
     // Warm
-    for (0..5) |_| ez.LexerSimdjson.buildBitmaps(src, &bm);
+    for (0..5) |_| ez.Lexer.buildBitmaps(src, &bm);
 
     const N = 20;
     var min_ns: u64 = std.math.maxInt(u64);
     var sum_ns: u64 = 0;
     for (0..N) |_| {
         const t0 = std.Io.Timestamp.now(io, .boot);
-        ez.LexerSimdjson.buildBitmaps(src, &bm);
+        ez.Lexer.buildBitmaps(src, &bm);
         const dt: u64 = @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
         if (dt < min_ns) min_ns = dt;
         sum_ns += dt;
@@ -33,7 +33,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Full tokenize (Phase 1 + 2 + buffer alloc)
     for (0..3) |_| {
-        var t = try ez.LexerSimdjson.tokenize(gpa, src);
+        var t = try ez.Lexer.tokenize(gpa, src);
         t.deinit(gpa);
     }
     var min_tok: u64 = std.math.maxInt(u64);
@@ -41,7 +41,7 @@ pub fn main(init: std.process.Init) !void {
     var tok_count: usize = 0;
     for (0..N) |_| {
         const t0 = std.Io.Timestamp.now(io, .boot);
-        var t = try ez.LexerSimdjson.tokenize(gpa, src);
+        var t = try ez.Lexer.tokenize(gpa, src);
         const dt: u64 = @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
         tok_count = t.tokens.len;
         t.deinit(gpa);

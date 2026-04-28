@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "bench/fixtures/typescript.js", gpa, .unlimited);
     defer gpa.free(src);
 
-    var t = try ez.LexerSimdjson.tokenize(gpa, src);
+    var t = try ez.Lexer.tokenize(gpa, src);
     defer t.deinit(gpa);
 
     for (0..3) |_| {
