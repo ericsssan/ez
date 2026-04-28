@@ -353,8 +353,41 @@ inline fn matchKW(comptime tbl: []const KW, v: u64) ?Tag {
     return null;
 }
 
+// Precomputed: for each keyword length 2..10, which lowercase first-chars
+// map to at least one keyword? Bit i = ('a'+i). Keywords always start with
+// lowercase; any other first char → immediate identifier return.
+const KW_FC_MASK: [11]u32 = m: {
+    var m = [_]u32{0} ** 11;
+    const lists = .{
+        .{ 2, KW2_JS }, .{ 2, KW2_TS },
+        .{ 3, KW3_JS },
+        .{ 4, KW4_JS }, .{ 4, KW4_TS },
+        .{ 5, KW5_JS }, .{ 5, KW5_TS },
+        .{ 6, KW6_JS }, .{ 6, KW6_TS },
+        .{ 7, KW7_JS }, .{ 7, KW7_TS },
+        .{ 8, KW8_JS }, .{ 8, KW8_TS },
+    };
+    for (lists) |entry| {
+        const l = entry.@"0";
+        for (entry.@"1") |kw| {
+            const fc: u8 = @truncate(kw.bytes);
+            m[l] |= @as(u32, 1) << @as(u5, fc - 'a');
+        }
+    }
+    // len=9: satisfies(s), namespace(n), interface(i)
+    m[9] |= (@as(u32, 1) << @as(u5, 's' - 'a')) | (@as(u32, 1) << @as(u5, 'n' - 'a')) | (@as(u32, 1) << @as(u5, 'i' - 'a'));
+    // len=10: instanceof(i), implements(i)
+    m[10] |= @as(u32, 1) << @as(u5, 'i' - 'a');
+    break :m m;
+};
+
 pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
-    const result = switch (text.len) {
+    const len = text.len;
+    if (len < 2 or len > 10) return .identifier;
+    const fc = text[0];
+    if (fc < 'a' or fc > 'z') return .identifier;
+    if ((KW_FC_MASK[len] >> @as(u5, @intCast(fc - 'a'))) & 1 == 0) return .identifier;
+    const result = switch (len) {
         2 => blk: {
             const v = loadU64(text, 2);
             if (matchKW(&KW2_JS, v)) |t| break :blk t;
@@ -423,6 +456,7 @@ pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
     };
     return result;
 }
+
 
 /// Position of the next set bit at index ≥ `from`, or `n` if none.
 /// Used to scan strings / comments / templates against pre-built bitmaps
@@ -574,7 +608,19 @@ pub inline fn identEndFromBitmap(
     word_off_in: u32,
     n: u32,
 ) u32 {
-    const w0 = ident_bm[wi_in];
+    return identEndFromBitmapW(ident_bm, ident_bm[wi_in], wi_in, start_bit, word_off_in, n);
+}
+
+// Hot variant: caller passes the already-loaded ident_bm[wi_in] to avoid
+// a redundant memory load when the caller has it in a register.
+pub inline fn identEndFromBitmapW(
+    ident_bm: []const u64,
+    w0: u64,
+    wi_in: usize,
+    start_bit: u32,
+    word_off_in: u32,
+    n: u32,
+) u32 {
     const max_in_word: u32 = 64 - start_bit;
     const tail = w0 >> @intCast(start_bit);
     const ctz_inv: u32 = @ctz(~tail);
@@ -658,7 +704,7 @@ pub fn tokenizeWithBufAndBitmaps(
     // ── Phase 2: walk visit bitmap = newline | structural | ident_starts ──
     var prev_kind: Tag  = .eof;
     var saw_nl:   bool  = false;
-    var at_line_start: bool = true;
+    
     var tmpl_depth: u32 = 0;
     var brace_d = [_]u32{0} ** 16;
 
@@ -712,13 +758,13 @@ pub fn tokenizeWithBufAndBitmaps(
             // Profile: ~30K newlines vs 1.5M visits = 2% — predict not-taken.
             if (byte == '\n') {
                 @branchHint(.unlikely);
-                saw_nl = true; at_line_start = true;
+                saw_nl = true;
                 try ls.append(alloc, p + 1);
                 continue;
             }
             if (byte == '\r') {
                 @branchHint(.unlikely);
-                saw_nl = true; at_line_start = true;
+                saw_nl = true;
                 if (p + 1 < n and src[p + 1] == '\n') {
                     try ls.append(alloc, p + 2);
                 } else {
@@ -742,7 +788,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     0x80...0xFF => {
                         var skip_to: u32 = 0;
                         if (byte == 0xE2 and p + 2 < n and src[p + 1] == 0x80 and (src[p + 2] == 0xA8 or src[p + 2] == 0xA9)) {
-                            saw_nl = true; at_line_start = true;
+                            saw_nl = true;
                             skip_to = p + 3;
                         } else if (byte == 0xEF and p + 2 < n and src[p + 1] == 0xBB and src[p + 2] == 0xBF) {
                             skip_to = p + 3;
@@ -761,7 +807,7 @@ pub fn tokenizeWithBufAndBitmaps(
                                 var tt: Tag = undefined;
                                 var te: u32 = undefined;
                                 if (tail_byte == 0xE2 and skip_until + 2 < n and src[skip_until + 1] == 0x80 and (src[skip_until + 2] == 0xA8 or src[skip_until + 2] == 0xA9)) {
-                                    saw_nl = true; at_line_start = true;
+                                    saw_nl = true;
                                     skip_until = skip_until + 3;
                                     continue;
                                 }
@@ -789,17 +835,17 @@ pub fn tokenizeWithBufAndBitmaps(
                                 nl_ptr[tok_n] = saw_nl;
                                 tok_n += 1;
                                 saw_nl = false;
-                                at_line_start = false;
+                                
                                 prev_kind = if (tt.isKeyword() and prev_kind == .dot) .identifier else tt;
                                 skip_until = te;
                             }
                             continue;
                         }
-                        end = identEndFromBitmap(bm.ident, wi, b, word_off, n);
+                        end = identEndFromBitmapW(bm.ident, w_id, wi, b, word_off, n);
                         tag = .identifier;
                     },
                     else => {
-                        end = identEndFromBitmap(bm.ident, wi, b, word_off, n);
+                        end = identEndFromBitmapW(bm.ident, w_id, wi, b, word_off, n);
                         const text = src[p..end];
                         tag = keywordLookup(text, language.isTs());
                     },
@@ -810,8 +856,8 @@ pub fn tokenizeWithBufAndBitmaps(
                 nl_ptr[tok_n]    = saw_nl;
                 tok_n += 1;
                 saw_nl = false;
-                at_line_start = false;
-                prev_kind = if (tag.isKeyword() and prev_kind == .dot) .identifier else tag;
+                
+                prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
                 if (opts.publish_to) |pp| {
                     if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
                 }
@@ -830,7 +876,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     // ident-class bytes per Phase 1 but mean "line break"
                     // or "skip" rather than "ident character".
                     if (tail_byte == 0xE2 and end + 2 < n and src[end + 1] == 0x80 and (src[end + 2] == 0xA8 or src[end + 2] == 0xA9)) {
-                        saw_nl = true; at_line_start = true;
+                        saw_nl = true;
                         end = end + 3;
                         skip_until = end;
                         continue;
@@ -859,7 +905,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     len_ptr[tok_n]   = t_end - end;
                     nl_ptr[tok_n]    = false;
                     tok_n += 1;
-                    prev_kind = if (t_tag.isKeyword() and prev_kind == .dot) .identifier else t_tag;
+                    prev_kind = if (prev_kind == .dot and t_tag.isKeyword()) .identifier else t_tag;
                     if (opts.publish_to) |pp| {
                         if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
                     }
@@ -912,7 +958,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     else { tag = .plus; end = p + 1; }
                 },
                 '-' => {
-                    if (at_line_start and p + 2 < n and src[p + 1] == '-' and src[p + 2] == '>') {
+                    if ((saw_nl or tok_n == 0) and p + 2 < n and src[p + 1] == '-' and src[p + 2] == '>') {
                         const ce = lineCommentEndBM(bm.newline, p + 3, n);
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, ce);
@@ -1014,7 +1060,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, res.end);
                         try cm_k.append(alloc, 1);
-                        if (res.has_nl) { saw_nl = true; at_line_start = true; }
+                        if (res.has_nl) { saw_nl = true; }
                         skip_until = res.end;
                         continue;
                     }
@@ -1046,7 +1092,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 },
                 0x80...0xFF => {
                     if (byte == 0xE2 and p + 2 < n and src[p + 1] == 0x80 and (src[p + 2] == 0xA8 or src[p + 2] == 0xA9)) {
-                        saw_nl = true; at_line_start = true;
+                        saw_nl = true;
                         const skip_to: u32 = p + 3;
                         skip_until = skip_to;
                         continue;
@@ -1068,15 +1114,22 @@ pub fn tokenizeWithBufAndBitmaps(
             nl_ptr[tok_n]    = saw_nl;
             tok_n += 1;
             saw_nl = false;
-            at_line_start = false;
-            prev_kind = if (tag.isKeyword() and prev_kind == .dot) .identifier else tag;
+            
+            prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
             if (opts.publish_to) |pp| {
                 if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
             }
 
-            // Skip visit bits in [p+1 .. end).
+            // Skip visit bits in [p+1 .. end). Bulk-clear covered bits in
+            // the current visit word to avoid per-bit `p < skip_until` checks.
             if (end > p + 1) {
                 skip_until = end;
+                if (end < word_off + 64) {
+                    const shift: u6 = @intCast(end - word_off);
+                    visit &= ~((@as(u64, 1) << shift) - 1);
+                } else {
+                    visit = 0;
+                }
             }
 
             // ── Drain trailing ident-bitmap-run ────────────────────────
@@ -1096,7 +1149,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 var t_tag: Tag = undefined;
                 var t_end: u32 = undefined;
                 if (tail_byte == 0xE2 and end + 2 < n and src[end + 1] == 0x80 and (src[end + 2] == 0xA8 or src[end + 2] == 0xA9)) {
-                    saw_nl = true; at_line_start = true;
+                    saw_nl = true;
                     end = end + 3;
                     skip_until = end;
                     continue;
@@ -1125,7 +1178,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 len_ptr[tok_n]   = t_end - end;
                 nl_ptr[tok_n]    = saw_nl; // may be set by LS skip above
                 tok_n += 1;
-                prev_kind = if (t_tag.isKeyword() and prev_kind == .dot) .identifier else t_tag;
+                prev_kind = if (prev_kind == .dot and t_tag.isKeyword()) .identifier else t_tag;
                 if (opts.publish_to) |pp| {
                     if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
                 }

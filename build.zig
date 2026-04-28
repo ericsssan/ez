@@ -157,6 +157,19 @@ pub fn build(b: *std.Build) void {
     const prof_walker_step = b.step("profile-walker", "Build walker profiling exe (samply record ./zig-out/bin/profile_walker {iter,mono})");
     prof_walker_step.dependOn(&prof_walker.step);
 
+    const prof_p1_mod = b.createModule(.{
+        .root_source_file = b.path("bench/profile_phase1.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+        .strip = false,
+    });
+    prof_p1_mod.addImport("ez", test_mod);
+    const prof_p1 = b.addExecutable(.{ .name = "profile_phase1", .root_module = prof_p1_mod });
+    const prof_p1_run = b.addRunArtifact(prof_p1);
+    prof_p1_run.step.dependOn(b.getInstallStep());
+    const prof_p1_step = b.step("profile-phase1", "Time buildBitmaps in isolation");
+    prof_p1_step.dependOn(&prof_p1_run.step);
+
     // ── Events bench ─────────────────────────────────────────
     const bench_evt_mod = b.createModule(.{
         .root_source_file = b.path("bench/bench_events.zig"),
@@ -204,6 +217,18 @@ pub fn build(b: *std.Build) void {
     bench_lex_cmd.step.dependOn(b.getInstallStep());
     const bench_lex_step = b.step("bench-lexer", "Lexer throughput bench");
     bench_lex_step.dependOn(&bench_lex_cmd.step);
+
+    // ── Sections bench (per-phase breakdown) ─────────────────
+    const bench_sec_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_sections.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_sec_mod.addImport("ez", test_mod);
+    const bench_sec = b.addExecutable(.{ .name = "bench_sections", .root_module = bench_sec_mod });
+    const bench_sec_cmd = b.addRunArtifact(bench_sec);
+    bench_sec_cmd.step.dependOn(b.getInstallStep());
+    b.step("bench-sections", "Per-phase lexer breakdown").dependOn(&bench_sec_cmd.step);
 
     // ── Profile bench ────────────────────────────────────────
     const bench_prof_mod = b.createModule(.{
