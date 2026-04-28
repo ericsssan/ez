@@ -1567,7 +1567,8 @@ pub const Parser = struct {
         if (self.eat(.semicolon)) |_| return;
 
         // ASI: automatic semicolon insertion
-        if (self.peek() == .r_brace or self.peek() == .eof) return;
+        const asi_t = self.peek();
+        if (asi_t == .r_brace or asi_t == .eof) return;
         if (self.isOnNewLine()) return;
 
         try self.emitDiagnostic(
@@ -3125,9 +3126,9 @@ pub const Parser = struct {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-            while (self.peek() != .kw_case and self.peek() != .kw_default and
-                self.peek() != .r_brace and !self.isAtEnd())
-            {
+            while (true) {
+                const tsc = self.peek();
+                if (tsc == .kw_case or tsc == .kw_default or tsc == .r_brace or tsc == .eof) break;
                 const stmt = self.parseStatement() catch |err| switch (err) {
                     error.ParseError => {
                         self.synchronize();
@@ -3167,9 +3168,9 @@ pub const Parser = struct {
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
-        while (self.peek() != .kw_case and self.peek() != .kw_default and
-            self.peek() != .r_brace and !self.isAtEnd())
-        {
+        while (true) {
+            const tsc2 = self.peek();
+            if (tsc2 == .kw_case or tsc2 == .kw_default or tsc2 == .r_brace or tsc2 == .eof) break;
             const stmt = self.parseStatement() catch |err| switch (err) {
                 error.ParseError => {
                     self.synchronize();
@@ -3237,7 +3238,8 @@ pub const Parser = struct {
             try self.emitDiagnosticAtToken(throw_tok, "no line break is allowed between 'throw' and its expression", .{});
         }
 
-        if (self.peek() == .semicolon or self.peek() == .r_brace or self.peek() == .eof) {
+        const throw_next = self.peek();
+        if (throw_next == .semicolon or throw_next == .r_brace or throw_next == .eof) {
             try self.emitDiagnosticAtToken(throw_tok, "'throw' must be followed by an expression", .{});
             try self.expectSemicolon();
             const node = try self.addNode(.{
@@ -3693,7 +3695,8 @@ pub const Parser = struct {
 
         // Destructuring patterns require an initializer — UNLESS in for-in/of context
         // where the value comes from the iterable (e.g., `for (const [a, b] of iter)`)
-        if (init == .none and self.peek() != .kw_in and self.peek() != .kw_of) {
+        const for_next = self.peek();
+        if (init == .none and for_next != .kw_in and for_next != .kw_of) {
             const binding_tag = self.node_tags_ptr[binding.toInt()];
             if (!self.is_ts and (binding_tag == .array_pattern or binding_tag == .object_pattern)) {
                 try self.emitDiagnostic(self.currentSpan(), "Missing initializer in destructuring declaration", .{});
@@ -3733,27 +3736,29 @@ pub const Parser = struct {
         // Check for generator: `function*`
         const is_generator = self.eat(.asterisk) != null;
 
-        // Function name (required unless export default)
-        const name: NodeIndex = if (self.peek() == .identifier) blk: {
+        // Function name (required unless export default) — hoist peek to avoid
+        // re-reading the tag on every branch of this if-else chain.
+        const fn_name_tag = self.peek();
+        const name: NodeIndex = if (fn_name_tag == .identifier) blk: {
             // Check strict-mode restrictions on function name
             try self.checkStrictBinding(self.tok_i);
             break :blk try self.parseIdentifier();
-        } else if (self.peek() == .kw_yield and !self.in_generator and !self.in_strict) blk: {
+        } else if (fn_name_tag == .kw_yield and !self.in_generator and !self.in_strict) blk: {
             break :blk try self.parseIdentifier();
-        } else if (self.peek() == .kw_await and !self.in_async and !self.is_module and !(self.in_static_block and !self.in_function)) blk: {
+        } else if (fn_name_tag == .kw_await and !self.in_async and !self.is_module and !(self.in_static_block and !self.in_function)) blk: {
             break :blk try self.parseIdentifier();
-        } else if ((self.peek() == .kw_let or self.peek() == .kw_static or
-            self.peek() == .kw_implements or self.peek() == .kw_interface or
-            self.peek() == .kw_async) and !self.in_strict)
+        } else if ((fn_name_tag == .kw_let or fn_name_tag == .kw_static or
+            fn_name_tag == .kw_implements or fn_name_tag == .kw_interface or
+            fn_name_tag == .kw_async) and !self.in_strict)
         blk: {
             break :blk try self.parseIdentifier();
-        } else if (self.peek() == .kw_get or self.peek() == .kw_set or
-            self.peek() == .kw_of or self.peek() == .kw_from or self.peek() == .kw_as or
-            self.peek() == .kw_target or self.peek() == .kw_meta)
+        } else if (fn_name_tag == .kw_get or fn_name_tag == .kw_set or
+            fn_name_tag == .kw_of or fn_name_tag == .kw_from or fn_name_tag == .kw_as or
+            fn_name_tag == .kw_target or fn_name_tag == .kw_meta)
         blk: {
             // Contextual keywords are valid binding names in any mode.
             break :blk try self.parseIdentifier();
-        } else if (self.is_ts and (self.peek().isTsContextualKeyword() or self.peek() == .kw_is))
+        } else if (self.is_ts and (fn_name_tag.isTsContextualKeyword() or fn_name_tag == .kw_is))
         blk: {
             break :blk try self.parseIdentifier();
         } else .none;
@@ -5371,10 +5376,11 @@ pub const Parser = struct {
             var has_alias = false;
             if (self.eat(.kw_as) != null) {
                 has_alias = true;
-                if (self.peek() == .identifier or self.peek() == .kw_as or self.peek() == .kw_of or
-                    self.peek() == .kw_from or self.peek() == .kw_let or self.peek() == .kw_get or
-                    self.peek() == .kw_set or self.peek() == .kw_static or self.peek() == .kw_async or
-                    self.peek() == .kw_yield or self.peek() == .kw_await or self.peek() == .kw_default)
+                const alias_t = self.peek();
+                if (alias_t == .identifier or alias_t == .kw_as or alias_t == .kw_of or
+                    alias_t == .kw_from or alias_t == .kw_let or alias_t == .kw_get or
+                    alias_t == .kw_set or alias_t == .kw_static or alias_t == .kw_async or
+                    alias_t == .kw_yield or alias_t == .kw_await or alias_t == .kw_default)
                 {
                     local_tok = self.advance();
                 } else {

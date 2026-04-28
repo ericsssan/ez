@@ -3854,7 +3854,7 @@ fn parsePropertyName(p: *Parser) Error!NodeIndex {
         .hash => {
             // Private name: #field (keywords valid: #await in `#await in obj`)
             const hash_tok = p.advance();
-            if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
+            { const phk = p.peek(); if (phk == .identifier or phk.isKeyword() or phk == .escaped_keyword) _ = p.advance(); }
             return p.addNode(.{
                 .tag = .identifier,
                 .main_token = hash_tok,
@@ -4161,8 +4161,10 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
 
     const scratch_top = p.scratchLen();
 
-    while (p.peek() != .r_brace and p.peek() != .eof and p.peek() != .r_paren) {
-        if (p.peek() == .semicolon) {
+    while (true) {
+        const tc = p.peek();
+        if (tc == .r_brace or tc == .eof or tc == .r_paren) break;
+        if (tc == .semicolon) {
             _ = p.advance();
             continue;
         }
@@ -4583,11 +4585,12 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                 if (p.peek() == .hash) {
                     hash_tok = p.advance(); // save '#', don't discard
                     // keywords are valid private names: obj.#await, obj.#static, etc.
-                    if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
+                    { const ppr = p.peek(); if (ppr == .identifier or ppr.isKeyword() or ppr == .escaped_keyword) _ = p.advance(); }
                     try p.private_refs.append(p.gpa, hash_tok.?);
                 }
                 // Accept identifier, keyword, or escaped keyword after `.`
-                const prop_tok = if (hash_tok) |ht| ht else if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword)
+                const ppt = p.peek();
+                const prop_tok = if (hash_tok) |ht| ht else if (ppt == .identifier or ppt.isKeyword() or ppt == .escaped_keyword)
                     p.advance()
                 else
                     try p.expect(.identifier); // will emit error
@@ -5414,9 +5417,10 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
     _ = p.advance(); // consume `.`
 
     // Allow keywords and private names as property names.
-    const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier or p.peek() == .escaped_keyword)
+    const pt = p.peek();
+    const prop_tok = if (pt.isKeyword() or pt == .identifier or pt == .escaped_keyword)
         p.advance()
-    else if (p.peek() == .hash) blk: {
+    else if (pt == .hash) blk: {
         if (!p.in_class) {
             try p.emitError("Private field access is only allowed inside a class");
         }
@@ -5428,7 +5432,8 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
         // Spec: no whitespace between `#` and identifier — token must be
         // contiguous (start of ident == hash.start + 1).
         const hash_start = p.tok_starts_ptr[hash];
-        if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) {
+        const pi = p.peek();
+        if (pi == .identifier or pi.isKeyword() or pi == .escaped_keyword) {
             const ident_start = p.tok_starts_ptr[p.tok_i];
             if (ident_start != hash_start + 1) {
                 try p.emitError("No whitespace allowed between `#` and identifier");
@@ -5513,7 +5518,7 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
             // Accept private identifier: obj?.#field (keywords valid: obj?.#await)
             if (p.peek() == .hash) {
                 const hash_tok = p.advance();
-                if (p.peek() == .identifier or p.peek().isKeyword() or p.peek() == .escaped_keyword) _ = p.advance();
+                { const ph5 = p.peek(); if (ph5 == .identifier or ph5.isKeyword() or ph5 == .escaped_keyword) _ = p.advance(); }
                 try p.private_refs.append(p.gpa, hash_tok);
                 const prop_node = try p.addNode(.{
                     .tag = .identifier,
@@ -5526,7 +5531,8 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
                     .data = .{ .lhs = object, .rhs = prop_node },
                 });
             }
-            const prop_tok = if (p.peek().isKeyword() or p.peek() == .identifier or p.peek() == .escaped_keyword)
+            const pq = p.peek();
+            const prop_tok = if (pq.isKeyword() or pq == .identifier or pq == .escaped_keyword)
                 p.advance()
             else blk: {
                 try p.emitError("Expected property name after '?.'");
