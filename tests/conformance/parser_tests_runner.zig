@@ -2,12 +2,9 @@ const std = @import("std");
 const ez = @import("ez");
 const Lexer = ez.Lexer;
 const Parser = ez.Parser;
-const lex_iter = ez.lex_iter;
 const Io = std.Io;
 
-var g_use_fused: bool = false;
 fn tokenizeMaybe(alloc: std.mem.Allocator, source: []const u8, lang: ez.parser_root.token.Language, is_module: bool) !Lexer.TokenizeResult {
-    if (g_use_fused) return lex_iter.tokenizeViaIterOpts(alloc, source, lang, is_module);
     return Lexer.tokenizeWithOptions(alloc, source, lang, is_module);
 }
 
@@ -39,11 +36,6 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-
-    if (std.c.getenv("EZ_USE_FUSED")) |s| {
-        const slice = std.mem.sliceTo(s, 0);
-        if (slice.len > 0 and slice[0] == '1') g_use_fused = true;
-    }
 
     var stdout_buf: [8192]u8 = undefined;
     var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);

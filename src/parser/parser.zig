@@ -1591,13 +1591,13 @@ pub const Parser = struct {
                     // skip one token to avoid infinite loop on unrecoverable input.
                     if (self.tok_i == before) _ = self.advance();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
+                    try self.scratchPush(err_node);
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
             consecutive_errors = 0; // reset on successful parse
-            self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
+            try self.scratchPush(stmt);
             // 3-stage pipeline: publish current event count so the sem thread
             // can consume up to here. Coarse-grained (per top-level statement)
             // — the consumer's hot path doesn't pay any per-event sync cost.
@@ -1990,13 +1990,13 @@ pub const Parser = struct {
                     self.synchronize();
                     if (self.tok_i == before) _ = self.advance();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
+                    try self.scratchPush(err_node);
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
             consecutive_errors = 0;
-            self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
+            try self.scratchPush(stmt);
         }
 
         const stmts = self.scratch.items[scratch_top..];
@@ -2967,7 +2967,7 @@ pub const Parser = struct {
                 has_default = true;
             }
             const case_node = try self.parseSwitchCase();
-            self.scratch.appendAssumeCapacity(@intFromEnum(case_node));
+            try self.scratchPush(case_node);
         }
         if (self.emit_scope_events and has_default)
             self.ev_ptr[switch_ev].aux = 1;
@@ -3012,12 +3012,12 @@ pub const Parser = struct {
                     error.ParseError => {
                         self.synchronize();
                         const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                        self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
+                        try self.scratchPush(err_node);
                         continue;
                     },
                     error.OutOfMemory => return error.OutOfMemory,
                 };
-                self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
+                try self.scratchPush(stmt);
             }
 
             const stmts = self.scratch.items[scratch_top..];
@@ -3054,12 +3054,12 @@ pub const Parser = struct {
                 error.ParseError => {
                     self.synchronize();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
+                    try self.scratchPush(err_node);
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
-            self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
+            try self.scratchPush(stmt);
         }
 
         const stmts = self.scratch.items[scratch_top..];
@@ -3446,13 +3446,13 @@ pub const Parser = struct {
 
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
-        self.scratch.appendAssumeCapacity(@intFromEnum(first));
+        try self.scratchPush(first);
         try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
             const decl = try self.parseDeclaratorConst(is_const);
-            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
+            try self.scratchPush(decl);
             try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
 
@@ -3507,13 +3507,13 @@ pub const Parser = struct {
 
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
-        self.scratch.appendAssumeCapacity(@intFromEnum(first));
+        try self.scratchPush(first);
         try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
             const decl = try self.parseDeclaratorConst(is_const);
-            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
+            try self.scratchPush(decl);
             try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
 
@@ -3881,11 +3881,11 @@ pub const Parser = struct {
             _ = self.advance(); // eat 'implements'
             const scratch_top = self.scratch.items.len;
             const first_impl = try typescript.parseType(self);
-            self.scratch.appendAssumeCapacity(self.node_main_token_ptr[@intFromEnum(first_impl)]);
+            try self.scratchPush(self.node_main_token_ptr[@intFromEnum(first_impl)]);
             while (self.peek() == .comma) {
                 _ = self.advance();
                 const impl = try typescript.parseType(self);
-                self.scratch.appendAssumeCapacity(self.node_main_token_ptr[@intFromEnum(impl)]);
+                try self.scratchPush(self.node_main_token_ptr[@intFromEnum(impl)]);
             }
             impls_range = try self.listToSubRange(self.scratch.items[scratch_top..]);
             self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3958,12 +3958,12 @@ pub const Parser = struct {
                 error.ParseError => {
                     self.synchronize();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
+                    try self.scratchPush(err_node);
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
-            self.scratch.appendAssumeCapacity(@intFromEnum(member));
+            try self.scratchPush(member);
         }
 
         const members = self.scratch.items[scratch_top..];
@@ -4898,7 +4898,7 @@ pub const Parser = struct {
 
         if (self.peek() != .r_paren) {
             const first = try self.parseFormalParameter();
-            self.scratch.appendAssumeCapacity(@intFromEnum(first));
+            try self.scratchPush(first);
 
             // Check: rest parameter cannot have trailing comma
             const first_tag = self.node_tags_ptr[@intFromEnum(first)];
@@ -4910,7 +4910,7 @@ pub const Parser = struct {
             while (self.eat(.comma) != null) {
                 if (self.peek() == .r_paren) break; // trailing comma
                 const param = try self.parseFormalParameter();
-                self.scratch.appendAssumeCapacity(@intFromEnum(param));
+                try self.scratchPush(param);
 
                 // Check: rest parameter cannot have trailing comma
                 const ptag = self.node_tags_ptr[@intFromEnum(param)];
@@ -5169,7 +5169,7 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
-            self.scratch.appendAssumeCapacity(@intFromEnum(spec));
+            try self.scratchPush(spec);
             try self.emitDeclare(if (is_type_import) .type_import_binding else .import_binding, local_node);
 
             // May be followed by `, { ... }` or `, * as ns`
@@ -5178,7 +5178,7 @@ pub const Parser = struct {
                     try self.parseNamedImportSpecifiers(is_type_import);
                 } else if (self.peek() == .asterisk) {
                     const ns_spec = try self.parseNamespaceImportSpecifier();
-                    self.scratch.appendAssumeCapacity(@intFromEnum(ns_spec));
+                    try self.scratchPush(ns_spec);
                 } else {
                     try self.emitDiagnostic(self.currentSpan(), "expected '{{' or '*' after default import name and ','", .{});
                     return error.ParseError;
@@ -5188,7 +5188,7 @@ pub const Parser = struct {
             try self.parseNamedImportSpecifiers(is_type_import);
         } else if (self.peek() == .asterisk) {
             const ns_spec = try self.parseNamespaceImportSpecifier();
-            self.scratch.appendAssumeCapacity(@intFromEnum(ns_spec));
+            try self.scratchPush(ns_spec);
         } else {
             try self.emitDiagnostic(self.currentSpan(), "expected import specifiers", .{});
             return error.ParseError;
@@ -5319,7 +5319,7 @@ pub const Parser = struct {
                     .rhs = local_node,
                 },
             });
-            self.scratch.appendAssumeCapacity(@intFromEnum(spec));
+            try self.scratchPush(spec);
             try self.emitDeclare(if (specifier_is_type) .type_import_binding else .import_binding, local_node);
 
             if (self.eat(.comma) == null) break;
@@ -5733,7 +5733,7 @@ pub const Parser = struct {
                     .rhs = exported_node,
                 },
             });
-            self.scratch.appendAssumeCapacity(@intFromEnum(spec));
+            try self.scratchPush(spec);
 
             if (self.eat(.comma) == null) break;
         }
@@ -5921,7 +5921,7 @@ pub const Parser = struct {
                 .main_token = decl_tok,
                 .data = .{ .lhs = binding, .rhs = init },
             });
-            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
+            try self.scratchPush(decl);
             if (self.eat(.comma) == null) break;
         }
 
@@ -5951,7 +5951,7 @@ pub const Parser = struct {
             }
             const init: NodeIndex = if (self.eat(.equal) != null) try self.parseAssignmentExpression() else .none;
             const decl = try self.addNode(.{ .tag = .declarator, .main_token = main_tok, .data = .{ .lhs = binding, .rhs = init } });
-            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
+            try self.scratchPush(decl);
             if (self.eat(.comma) == null) break;
         }
 
@@ -6416,7 +6416,7 @@ pub const Parser = struct {
                 while (self.peek() != .r_bracket and !self.isAtEnd()) {
                     if (self.eat(.comma) != null) {
                         // Elision (hole)
-                        self.scratch.appendAssumeCapacity(@intFromEnum(NodeIndex.none));
+                        try self.scratchPush(NodeIndex.none);
                         continue;
                     }
                     if (self.eat(.ellipsis)) |rest_tok| {
@@ -6426,7 +6426,7 @@ pub const Parser = struct {
                             .main_token = rest_tok,
                             .data = .{ .lhs = rest_binding, .rhs = .none },
                         });
-                        self.scratch.appendAssumeCapacity(@intFromEnum(rest));
+                        try self.scratchPush(rest);
                         if (!self.is_ts) break;
                         if (self.peek() == .comma) {
                             _ = self.advance();
@@ -6434,7 +6434,7 @@ pub const Parser = struct {
                         continue;
                     }
                     const elem = try self.parseBindingElement();
-                    self.scratch.appendAssumeCapacity(@intFromEnum(elem));
+                    try self.scratchPush(elem);
                     if (self.peek() != .r_bracket) {
                         _ = try self.expect(.comma);
                     }
@@ -6480,7 +6480,7 @@ pub const Parser = struct {
                             .main_token = rest_tok,
                             .data = .{ .lhs = rest_binding, .rhs = .none },
                         });
-                        self.scratch.appendAssumeCapacity(@intFromEnum(rest));
+                        try self.scratchPush(rest);
                         if (!self.is_ts) break;
                         if (self.peek() == .comma) {
                             _ = self.advance();
@@ -6502,7 +6502,7 @@ pub const Parser = struct {
                             .main_token = key_tok,
                             .data = .{ .lhs = key_expr, .rhs = value },
                         });
-                        self.scratch.appendAssumeCapacity(@intFromEnum(prop));
+                        try self.scratchPush(prop);
                         if (self.eat(.comma) == null) break;
                         continue;
                     }
@@ -6517,7 +6517,7 @@ pub const Parser = struct {
                             .main_token = key_tok,
                             .data = .{ .lhs = key, .rhs = value },
                         });
-                        self.scratch.appendAssumeCapacity(@intFromEnum(prop));
+                        try self.scratchPush(prop);
                     } else {
                         // Shorthand: { x } or { x = default }
                         // yield/await can't be binding names in generator/async/module context
@@ -6560,14 +6560,14 @@ pub const Parser = struct {
                                 .main_token = key_tok,
                                 .data = .{ .lhs = pattern, .rhs = .none },
                             });
-                            self.scratch.appendAssumeCapacity(@intFromEnum(prop));
+                            try self.scratchPush(prop);
                         } else {
                             const prop = try self.addNode(.{
                                 .tag = .shorthand_property,
                                 .main_token = key_tok,
                                 .data = .{ .lhs = key, .rhs = .none },
                             });
-                            self.scratch.appendAssumeCapacity(@intFromEnum(prop));
+                            try self.scratchPush(prop);
                         }
                     }
 
