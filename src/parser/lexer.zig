@@ -715,6 +715,158 @@ pub inline fn identEndFromBitmapW(
     return n;
 }
 
+/// Validate a numeric literal token [start..end) in src.
+/// Returns true if valid, false if it's a syntax error.
+/// Checks:
+///  - 0x/0b/0o/0X/0B/0O must have at least one digit after the prefix
+///  - No trailing _ separator (last digit before optional 'n' cannot be '_')
+///  - No leading _ after prefix
+///  - No double __ separator
+///  - Exponent part (e/E) must have at least one digit after optional sign
+///  - Number literal immediately followed by IdentifierStart is a syntax error
+///    (caller checks this separately via next-byte inspection)
+fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
+    if (start >= end) return false;
+    var i = start;
+    // BigInt suffix: strip trailing 'n' for validation.
+    const is_bigint = end > start and src[end - 1] == 'n';
+    const val_end: u32 = if (is_bigint) end - 1 else end;
+
+    if (src[i] == '0' and i + 1 < val_end) {
+        switch (src[i + 1]) {
+            'x', 'X', 'b', 'B', 'o', 'O' => {
+                const prefix_end = i + 2;
+                if (prefix_end >= val_end) return false; // 0x/0b/0o with no digits
+                // No leading _ after prefix.
+                if (src[prefix_end] == '_') return false;
+                // No trailing _ before optional 'n'.
+                if (src[val_end - 1] == '_') return false;
+                // No double __.
+                var j = prefix_end;
+                while (j < val_end) : (j += 1) {
+                    if (src[j] == '_' and j + 1 < val_end and src[j + 1] == '_') return false;
+                }
+                return true;
+            },
+            '0'...'9' => {
+                // Legacy-octal-like or non-octal-decimal: `0` followed by more digits.
+                // Numeric separators NOT allowed in these contexts.
+                // BigInt `n` suffix NOT allowed on legacy-octal-like numbers.
+                if (is_bigint) return false;
+                // No separator `_` allowed anywhere in legacy-octal-like form.
+                var j = start;
+                while (j < val_end) : (j += 1) {
+                    if (src[j] == '_') return false;
+                }
+                return true;
+            },
+            '_' => {
+                // `0_...` — leading separator after `0` not allowed.
+                return false;
+            },
+            else => {},
+        }
+    }
+
+    // BigInt cannot have decimal point or exponent.
+    if (is_bigint) {
+        // Already stripped 'n'. Check val_end chars for '.' or 'e'/'E'.
+        var j = start;
+        while (j < val_end) : (j += 1) {
+            if (src[j] == '.' or src[j] == 'e' or src[j] == 'E') return false;
+        }
+    }
+
+    // Decimal literal validation.
+    // Check for leading _ (separator cannot be first digit).
+    if (i < val_end and src[i] == '_') return false;
+    // Scan integer part.
+    while (i < val_end and src[i] != '.' and src[i] != 'e' and src[i] != 'E') : (i += 1) {}
+    // Check no trailing _ in integer part.
+    if (i > start and src[i - 1] == '_') return false;
+    // Decimal point.
+    if (i < val_end and src[i] == '.') {
+        i += 1; // skip '.'
+        if (i < val_end and src[i] == '_') return false; // leading _ after .
+        while (i < val_end and src[i] != 'e' and src[i] != 'E') : (i += 1) {}
+        if (i > start + 1 and src[i - 1] == '_') return false; // trailing _ before exponent
+    }
+    // Exponent.
+    if (i < val_end and (src[i] == 'e' or src[i] == 'E')) {
+        i += 1;
+        if (i < val_end and (src[i] == '+' or src[i] == '-')) i += 1;
+        // Must have at least one digit after 'e' or 'e+/-'.
+        if (i >= val_end) return false;
+        if (src[i] < '0' or src[i] > '9') return false;
+        // No leading _.
+        if (src[i] == '_') return false;
+        while (i < val_end) : (i += 1) {}
+        if (val_end > start and src[val_end - 1] == '_') return false;
+    }
+    // Check for double __ anywhere.
+    var j = start;
+    while (j + 1 < val_end) : (j += 1) {
+        if (src[j] == '_' and src[j + 1] == '_') return false;
+    }
+    return true;
+}
+
+/// Returns true if byte `b` can be the start of an identifier (ASCII) or is a high byte
+/// that might start a Unicode identifier continuation. Used to detect "number followed by
+/// IdentifierStart" syntax errors.
+inline fn isIdentStart(b: u8) bool {
+    return switch (b) {
+        'a'...'z', 'A'...'Z', '_', '$', '\\', 0x80...0xFF => true,
+        else => false,
+    };
+}
+
+/// Returns true if the character at src[pos] is an ECMAScript IdentifierStart
+/// (properly decoding multi-byte UTF-8 sequences). Used to detect illegal
+/// numeric literal followed by IdentifierStart.
+fn isIdentStartAtPos(src: []const u8, pos: u32) bool {
+    if (pos >= src.len) return false;
+    const b = src[pos];
+    // ASCII identifier start characters.
+    if ((b >= 'a' and b <= 'z') or (b >= 'A' and b <= 'Z') or b == '_' or b == '$' or b == '\\') return true;
+    // Digit: not an id start.
+    if (b >= '0' and b <= '9') return false;
+    // High byte: decode and check ID_Start.
+    if (b >= 0x80) {
+        const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(b) catch return false);
+        const n: u32 = @intCast(src.len);
+        if (pos + cl > n) return false;
+        const cp = std.unicode.utf8Decode(src[pos..pos+cl]) catch return false;
+        // LS/PS are line terminators, not identifier starts.
+        if (cp == 0x2028 or cp == 0x2029) return false;
+        // BOM: not an identifier start.
+        if (cp == 0xFEFF) return false;
+        // Unicode whitespace (Zs): not identifier starts.
+        if (isUnicodeWhitespace(cp)) return false;
+        // Check ID_Start.
+        if (cp < 0x80) return true; // ASCII already handled
+        return @import("unicode_id.zig").isIdStart(cp);
+    }
+    return false;
+}
+
+/// Returns true for Unicode codepoints that ECMAScript treats as WhiteSpace
+/// but are not ASCII (so they slip through Phase 1 as ident-class bytes).
+/// Covers: NBSP (U+00A0), Zs category chars (U+1680, U+2000-U+200A, U+202F,
+/// U+205F, U+3000), and ZWNBSP (U+FEFF — already handled as BOM).
+inline fn isUnicodeWhitespace(cp: u32) bool {
+    return switch (cp) {
+        0x00A0 => true, // NO-BREAK SPACE
+        0x1680 => true, // OGHAM SPACE MARK
+        0x2000...0x200A => true, // EN QUAD .. HAIR SPACE
+        0x202F => true, // NARROW NO-BREAK SPACE
+        0x205F => true, // MEDIUM MATHEMATICAL SPACE
+        0x3000 => true, // IDEOGRAPHIC SPACE
+        0xFEFF => true, // ZERO WIDTH NO-BREAK SPACE (already handled but safe to include)
+        else => false,
+    };
+}
+
 pub fn tokenizeWithBuf(
     alloc: std.mem.Allocator,
     source: []const u8,
@@ -774,7 +926,10 @@ pub fn tokenizeWithBufAndBitmaps(
     // ── Phase 2: walk visit bitmap = newline | structural | ident_starts ──
     var prev_kind: Tag  = .eof;
     var saw_nl:   bool  = false;
-    
+    // Tracks whether we are at the logical start of a line (for Annex B --> comment).
+    // True at start of file; set true after any newline; cleared when a real token is emitted.
+    var at_line_start: bool = true;
+
     var tmpl_depth: u32 = 0;
     var brace_d = [_]u32{0} ** 16;
 
@@ -829,12 +984,14 @@ pub fn tokenizeWithBufAndBitmaps(
             if (byte == '\n') {
                 @branchHint(.unlikely);
                 saw_nl = true;
+                at_line_start = true;
                 try ls.append(alloc, p + 1);
                 continue;
             }
             if (byte == '\r') {
                 @branchHint(.unlikely);
                 saw_nl = true;
+                at_line_start = true;
                 if (p + 1 < n and src[p + 1] == '\n') {
                     try ls.append(alloc, p + 2);
                 } else {
@@ -853,7 +1010,16 @@ pub fn tokenizeWithBufAndBitmaps(
                 switch (byte) {
                     '0'...'9' => {
                         end = Lex.numberEnd(src, p);
-                        tag = if (end > p and src[end - 1] == 'n') .bigint_literal else .number_literal;
+                        const is_bn = end > p and src[end - 1] == 'n';
+                        // Validate numeric literal.
+                        if (!validateNumericLiteral(src, p, end)) {
+                            tag = .invalid;
+                        } else if (end < n and isIdentStartAtPos(src, end)) {
+                            // Number immediately followed by IdentifierStart or DecimalDigit → syntax error.
+                            tag = .invalid;
+                        } else {
+                            tag = if (is_bn) .bigint_literal else .number_literal;
+                        }
                     },
                     0x80...0xFF => {
                         var skip_to: u32 = 0;
@@ -888,7 +1054,12 @@ pub fn tokenizeWithBufAndBitmaps(
                                 switch (tail_byte) {
                                     '0'...'9' => {
                                         te = Lex.numberEnd(src, skip_until);
-                                        tt = if (te > skip_until and src[te - 1] == 'n') .bigint_literal else .number_literal;
+                                        const is_bn3 = te > skip_until and src[te - 1] == 'n';
+                                        if (!validateNumericLiteral(src, skip_until, te) or (te < n and isIdentStartAtPos(src, te))) {
+                                            tt = .invalid;
+                                        } else {
+                                            tt = if (is_bn3) .bigint_literal else .number_literal;
+                                        }
                                     },
                                     0x80...0xFF => {
                                         te = identEndFromBitmap(bm.ident, sw, sb, sw * 64, n);
@@ -911,13 +1082,295 @@ pub fn tokenizeWithBufAndBitmaps(
                             }
                             continue;
                         }
-                        end = identEndFromBitmapW(bm.ident, w_id, wi, b, word_off, n);
-                        tag = .identifier;
+                        // Validate ID_Start for the leading codepoint.
+                        const uid2 = @import("unicode_id.zig");
+                        const start_len: u32 = @intCast(std.unicode.utf8ByteSequenceLength(byte) catch 1);
+                        if (p + start_len > n) {
+                            // Truncated sequence at EOF: skip it.
+                            skip_until = p + 1;
+                            continue;
+                        } else {
+                            const start_cp = std.unicode.utf8Decode(src[p..p+start_len]) catch 0;
+                            if (!uid2.isIdStart(@intCast(start_cp))) {
+                                // Not an ID_Start. Check if it's a Unicode whitespace (Zs etc.)
+                                // — these should be silently skipped, not emitted as .invalid.
+                                if (isUnicodeWhitespace(@intCast(start_cp))) {
+                                    skip_until = p + start_len;
+                                    // Drain: the byte immediately after whitespace may have lost
+                                    // its id_start bit (because its predecessor byte was ident-class).
+                                    // Emit any immediately following ident tokens here.
+                                    while (skip_until < n) {
+                                        const sw = skip_until / 64;
+                                        if (sw >= bm.ident.len) break;
+                                        const sb: u32 = skip_until % 64;
+                                        if (((bm.ident[sw] >> @intCast(sb)) & 1) == 0) break;
+                                        const tail_byte = src[skip_until];
+                                        var tt: Tag = undefined;
+                                        var te: u32 = undefined;
+                                        if (tail_byte == 0xE2 and skip_until + 2 < n and src[skip_until + 1] == 0x80 and (src[skip_until + 2] == 0xA8 or src[skip_until + 2] == 0xA9)) {
+                                            saw_nl = true;
+                                            at_line_start = true;
+                                            skip_until = skip_until + 3;
+                                            continue;
+                                        }
+                                        if (tail_byte == 0xEF and skip_until + 2 < n and src[skip_until + 1] == 0xBB and src[skip_until + 2] == 0xBF) {
+                                            skip_until = skip_until + 3;
+                                            continue;
+                                        }
+                                        // Another Unicode high byte: check if whitespace (skip) or ident.
+                                        if (tail_byte >= 0x80) {
+                                            const t_cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(tail_byte) catch 1);
+                                            if (skip_until + t_cl <= n) {
+                                                const t_cp = std.unicode.utf8Decode(src[skip_until..skip_until+t_cl]) catch 0;
+                                                if (isUnicodeWhitespace(t_cp)) {
+                                                    skip_until += t_cl;
+                                                    continue;
+                                                }
+                                                if (!uid2.isIdStart(t_cp)) {
+                                                    // Not a valid ident start — stop draining.
+                                                    break;
+                                                }
+                                            }
+                                            te = identEndFromBitmap(bm.ident, sw, sb, sw * 64, n);
+                                            tt = .identifier;
+                                        } else {
+                                            switch (tail_byte) {
+                                                '0'...'9' => {
+                                                    te = Lex.numberEnd(src, skip_until);
+                                                    const is_bnd = te > skip_until and src[te - 1] == 'n';
+                                                    if (!validateNumericLiteral(src, skip_until, te) or (te < n and isIdentStartAtPos(src, te))) {
+                                                        tt = .invalid;
+                                                    } else {
+                                                        tt = if (is_bnd) .bigint_literal else .number_literal;
+                                                    }
+                                                },
+                                                else => {
+                                                    te = identEndFromBitmap(bm.ident, sw, sb, sw * 64, n);
+                                                    tt = keywordLookup(src[skip_until..te], language.isTs());
+                                                },
+                                            }
+                                        }
+                                        tag_ptr[tok_n] = tt;
+                                        start_ptr[tok_n] = skip_until;
+                                        len_ptr[tok_n] = te - skip_until;
+                                        nl_ptr[tok_n] = saw_nl;
+                                        tok_n += 1;
+                                        saw_nl = false;
+                                        at_line_start = false;
+                                        prev_kind = if (tt.isKeyword() and prev_kind == .dot) .identifier else tt;
+                                        skip_until = te;
+                                    }
+                                    continue;
+                                }
+                                end = p + start_len; tag = .invalid;
+                            } else {
+                                end = identEndFromBitmapW(bm.ident, w_id, wi, b, word_off, n);
+                                // Re-validate: strip trailing codepoints that are not ID_Continue.
+                                // ASCII chars (a-z, A-Z, 0-9, _, $) are always valid ident-continue;
+                                // only check non-ASCII chars via unicode_id tables.
+                                var trim_end = end;
+                                while (trim_end > p + start_len) {
+                                    var back = trim_end - 1;
+                                    while (back > p and src[back] & 0xC0 == 0x80) back -= 1;
+                                    const back_byte = src[back];
+                                    if (back_byte < 0x80) {
+                                        // ASCII ident char: always valid ID_Continue in JS.
+                                        break;
+                                    }
+                                    const bl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(back_byte) catch 1);
+                                    const bcp = std.unicode.utf8Decode(src[back..back+bl]) catch 0;
+                                    if (uid2.isIdContinueJS(@intCast(bcp))) break;
+                                    trim_end = back;
+                                }
+                                end = trim_end;
+                                // Extend: check for \u escape continuation after ident run.
+                                while (end < n and src[end] == '\\' and end + 1 < n and src[end + 1] == 'u') {
+                                    var ec_end: u32 = end + 2;
+                                    var ec_cp: u32 = 0;
+                                    var ok: bool = true;
+                                    if (ec_end < n and src[ec_end] == '{') {
+                                        ec_end += 1;
+                                        while (ec_end < n and src[ec_end] != '}') : (ec_end += 1) {
+                                            const h = src[ec_end];
+                                            ec_cp = (ec_cp << 4) | switch (h) {
+                                                '0'...'9' => h - '0',
+                                                'a'...'f' => h - 'a' + 10,
+                                                'A'...'F' => h - 'A' + 10,
+                                                else => blk: { ok = false; break :blk 0; },
+                                            };
+                                        }
+                                        if (ec_end >= n or src[ec_end] != '}') { ok = false; } else { ec_end += 1; }
+                                    } else if (ec_end + 4 <= n) {
+                                        for (0..4) |_| {
+                                            const h = src[ec_end];
+                                            ec_cp = (ec_cp << 4) | switch (h) {
+                                                '0'...'9' => h - '0',
+                                                'a'...'f' => h - 'a' + 10,
+                                                'A'...'F' => h - 'A' + 10,
+                                                else => blk: { ok = false; break :blk 0; },
+                                            };
+                                            ec_end += 1;
+                                        }
+                                    } else { ok = false; }
+                                    if (!ok or !uid2.isIdContinueJS(ec_cp)) break;
+                                    end = ec_end;
+                                    // Scan ASCII/high-byte continuation after escape.
+                                    while (end < n) {
+                                        const cc = src[end];
+                                        if ((cc >= 'a' and cc <= 'z') or (cc >= 'A' and cc <= 'Z') or (cc >= '0' and cc <= '9') or cc == '_' or cc == '$') { end += 1; continue; }
+                                        if (cc >= 0x80) {
+                                            const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(cc) catch 1);
+                                            if (end + cl <= n) {
+                                                const cont_cp = std.unicode.utf8Decode(src[end..end+cl]) catch 0;
+                                                if (uid2.isIdContinueJS(@intCast(cont_cp))) { end += cl; continue; }
+                                            }
+                                        }
+                                        break;
+                                    }
+                                }
+                                tag = .identifier;
+                            }
+                        }
                     },
                     else => {
                         end = identEndFromBitmapW(bm.ident, w_id, wi, b, word_off, n);
+                        // Extend identifier if followed by \u escape continuation.
+                        while (end < n and src[end] == '\\' and end + 1 < n and src[end + 1] == 'u') {
+                            const uid3 = @import("unicode_id.zig");
+                            var ec_end: u32 = end + 2;
+                            var ec_cp: u32 = 0;
+                            var ok: bool = true;
+                            if (ec_end < n and src[ec_end] == '{') {
+                                ec_end += 1;
+                                while (ec_end < n and src[ec_end] != '}') : (ec_end += 1) {
+                                    const h = src[ec_end];
+                                    ec_cp = (ec_cp << 4) | switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => blk: { ok = false; break :blk 0; },
+                                    };
+                                }
+                                if (ec_end >= n or src[ec_end] != '}') { ok = false; } else { ec_end += 1; }
+                            } else if (ec_end + 4 <= n) {
+                                for (0..4) |_| {
+                                    const h = src[ec_end];
+                                    ec_cp = (ec_cp << 4) | switch (h) {
+                                        '0'...'9' => h - '0',
+                                        'a'...'f' => h - 'a' + 10,
+                                        'A'...'F' => h - 'A' + 10,
+                                        else => blk: { ok = false; break :blk 0; },
+                                    };
+                                    ec_end += 1;
+                                }
+                            } else { ok = false; }
+                            if (!ok or !uid3.isIdContinueJS(ec_cp)) break;
+                            end = ec_end;
+                            // Scan continuation after escape.
+                            while (end < n) {
+                                const cc = src[end];
+                                if ((cc >= 'a' and cc <= 'z') or (cc >= 'A' and cc <= 'Z') or (cc >= '0' and cc <= '9') or cc == '_' or cc == '$') { end += 1; continue; }
+                                if (cc >= 0x80) {
+                                    const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(cc) catch 1);
+                                    if (end + cl <= n) {
+                                        const cont_cp = std.unicode.utf8Decode(src[end..end+cl]) catch 0;
+                                        if (uid3.isIdContinueJS(@intCast(cont_cp))) { end += cl; continue; }
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                        // Validate any high-byte continuation sequences in the identifier.
+                        // The bitmap includes all 0x80+ bytes as ident-class, but not all
+                        // are valid ID_Continue (e.g. Po chars, whitespace).
+                        var valid_end = end;
+                        var scan_i: u32 = p + 1;
+                        while (scan_i < valid_end) {
+                            const sc = src[scan_i];
+                            if (sc < 0x80) { scan_i += 1; continue; }
+                            // BOM inside ident → invalid.
+                            if (sc == 0xEF and scan_i + 2 < n and src[scan_i + 1] == 0xBB and src[scan_i + 2] == 0xBF) {
+                                valid_end = scan_i;
+                                break;
+                            }
+                            const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(sc) catch 1);
+                            if (scan_i + cl > n) { valid_end = scan_i; break; }
+                            const cc = std.unicode.utf8Decode(src[scan_i..scan_i+cl]) catch 0;
+                            // Check if it's a Unicode whitespace (should have been skipped) or invalid ID_Continue.
+                            if (isUnicodeWhitespace(cc) or !@import("unicode_id.zig").isIdContinueJS(@intCast(cc))) {
+                                valid_end = scan_i;
+                                break;
+                            }
+                            scan_i += cl;
+                        }
+                        end = valid_end;
                         const text = src[p..end];
-                        tag = keywordLookup(text, language.isTs());
+                        // Fast path: no backslash → no escape, raw text is the identifier.
+                        var has_escape = false;
+                        for (text) |tc| { if (tc == '\\') { has_escape = true; break; } }
+                        if (has_escape) {
+                            // Decode the raw escaped text and check if it's a reserved word.
+                            var dec_buf: [16]u8 = undefined;
+                            var dec_len: usize = 0;
+                            var raw_j: u32 = p;
+                            var dec_ok: bool = true;
+                            while (raw_j < end and dec_len < dec_buf.len) {
+                                const rc = src[raw_j];
+                                if (rc == '\\' and raw_j + 1 < end and src[raw_j + 1] == 'u') {
+                                    var dc_end2: u32 = raw_j + 2;
+                                    var dc_cp2: u32 = 0;
+                                    if (dc_end2 < end and src[dc_end2] == '{') {
+                                        dc_end2 += 1;
+                                        while (dc_end2 < end and src[dc_end2] != '}') : (dc_end2 += 1) {
+                                            const hh = src[dc_end2];
+                                            dc_cp2 = (dc_cp2 << 4) | switch (hh) {
+                                                '0'...'9' => hh - '0',
+                                                'a'...'f' => hh - 'a' + 10,
+                                                'A'...'F' => hh - 'A' + 10,
+                                                else => blk: { dec_ok = false; break :blk 0; },
+                                            };
+                                        }
+                                        if (dc_end2 < end) dc_end2 += 1; // skip '}'
+                                    } else if (dc_end2 + 4 <= end) {
+                                        for (0..4) |_| {
+                                            const hh = src[dc_end2];
+                                            dc_cp2 = (dc_cp2 << 4) | switch (hh) {
+                                                '0'...'9' => hh - '0',
+                                                'a'...'f' => hh - 'a' + 10,
+                                                'A'...'F' => hh - 'A' + 10,
+                                                else => blk: { dec_ok = false; break :blk 0; },
+                                            };
+                                            dc_end2 += 1;
+                                        }
+                                    } else { dec_ok = false; dc_end2 = raw_j + 2; }
+                                    if (dc_cp2 < 0x80) {
+                                        dec_buf[dec_len] = @intCast(dc_cp2);
+                                        dec_len += 1;
+                                    } else {
+                                        dec_ok = false; // non-ASCII in decoded → can't be a keyword
+                                    }
+                                    raw_j = dc_end2;
+                                } else if (rc < 0x80) {
+                                    dec_buf[dec_len] = rc;
+                                    dec_len += 1;
+                                    raw_j += 1;
+                                } else {
+                                    dec_ok = false;
+                                    raw_j += 1;
+                                }
+                            }
+                            if (dec_ok and dec_len <= 10 and raw_j >= end) {
+                                if (Token.keywords.get(dec_buf[0..dec_len]) != null) {
+                                    tag = .escaped_keyword;
+                                } else {
+                                    tag = .identifier;
+                                }
+                            } else {
+                                tag = .identifier;
+                            }
+                        } else {
+                            tag = keywordLookup(text, language.isTs());
+                        }
                     },
                 }
                 tag_ptr[tok_n]   = tag;
@@ -926,7 +1379,8 @@ pub fn tokenizeWithBufAndBitmaps(
                 nl_ptr[tok_n]    = saw_nl;
                 tok_n += 1;
                 saw_nl = false;
-                
+                at_line_start = false;
+
                 prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
                 if (opts.publish_to) |pp| {
                     if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
@@ -959,9 +1413,24 @@ pub fn tokenizeWithBufAndBitmaps(
                     switch (tail_byte) {
                         '0'...'9' => {
                             t_end = Lex.numberEnd(src, end);
-                            t_tag = if (t_end > end and src[t_end - 1] == 'n') .bigint_literal else .number_literal;
+                            const is_bn4 = t_end > end and src[t_end - 1] == 'n';
+                            if (!validateNumericLiteral(src, end, t_end) or (t_end < n and isIdentStartAtPos(src, t_end))) {
+                                t_tag = .invalid;
+                            } else {
+                                t_tag = if (is_bn4) .bigint_literal else .number_literal;
+                            }
                         },
                         0x80...0xFF => {
+                            // Check for Unicode whitespace (Zs) — silently skip.
+                            const t_cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(tail_byte) catch 1);
+                            if (end + t_cl <= n) {
+                                const t_cp = std.unicode.utf8Decode(src[end..end+t_cl]) catch 0;
+                                if (isUnicodeWhitespace(t_cp)) {
+                                    end += t_cl;
+                                    skip_until = end;
+                                    continue;
+                                }
+                            }
                             t_end = identEndFromBitmap(bm.ident, ew, eb, ew * 64, n);
                             t_tag = .identifier;
                         },
@@ -973,8 +1442,10 @@ pub fn tokenizeWithBufAndBitmaps(
                     tag_ptr[tok_n]   = t_tag;
                     start_ptr[tok_n] = end;
                     len_ptr[tok_n]   = t_end - end;
-                    nl_ptr[tok_n]    = false;
+                    nl_ptr[tok_n]    = saw_nl;
                     tok_n += 1;
+                    saw_nl = false;
+                    at_line_start = false;
                     prev_kind = if (prev_kind == .dot and t_tag.isKeyword()) .identifier else t_tag;
                     if (opts.publish_to) |pp| {
                         if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
@@ -1012,7 +1483,10 @@ pub fn tokenizeWithBufAndBitmaps(
                 },
                 '.' => {
                     if (p + 2 < n and src[p + 1] == '.' and src[p + 2] == '.') { tag = .ellipsis; end = p + 3; }
-                    else if (p + 1 < n and src[p + 1] >= '0' and src[p + 1] <= '9') { end = Lex.numberEnd(src, p); tag = .number_literal; }
+                    else if (p + 1 < n and src[p + 1] >= '0' and src[p + 1] <= '9') {
+                        end = Lex.numberEnd(src, p);
+                        tag = if (!validateNumericLiteral(src, p, end) or (end < n and isIdentStartAtPos(src, end))) .invalid else .number_literal;
+                    }
                     else { tag = .dot; end = p + 1; }
                 },
                 '?' => {
@@ -1028,17 +1502,20 @@ pub fn tokenizeWithBufAndBitmaps(
                     else { tag = .plus; end = p + 1; }
                 },
                 '-' => {
-                    if ((saw_nl or tok_n == 0) and p + 2 < n and src[p + 1] == '-' and src[p + 2] == '>') {
-                        const ce = lineCommentEndBM(bm.newline, p + 3, n);
-                        try cm_s.append(alloc, p);
-                        try cm_e.append(alloc, ce);
-                        try cm_k.append(alloc, 0);
-                        saw_nl = true;
-                        // Skip visited bits inside comment range.
-                        skip_until = ce;
-                        continue;
-                    }
-                    if (p + 1 < n and src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
+                    if (at_line_start and p + 2 < n and src[p + 1] == '-' and src[p + 2] == '>') {
+                        if (opts.is_module or !opts.annex_b) {
+                            tag = .invalid; end = p + 3;
+                        } else {
+                            const ce = lineCommentEndBM(bm.newline, p + 3, n);
+                            try cm_s.append(alloc, p);
+                            try cm_e.append(alloc, ce);
+                            try cm_k.append(alloc, 0);
+                            saw_nl = true;
+                            at_line_start = true;
+                            skip_until = ce;
+                            continue;
+                        }
+                    } else if (p + 1 < n and src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
                     else if (p + 1 < n and src[p + 1] == '=') { tag = .minus_equal; end = p + 2; }
                     else { tag = .minus; end = p + 1; }
                 },
@@ -1079,15 +1556,18 @@ pub fn tokenizeWithBufAndBitmaps(
                 },
                 '<' => {
                     if (p + 3 < n and src[p + 1] == '!' and src[p + 2] == '-' and src[p + 3] == '-') {
-                        const ce = lineCommentEndBM(bm.newline, p + 4, n);
-                        try cm_s.append(alloc, p);
-                        try cm_e.append(alloc, ce);
-                        try cm_k.append(alloc, 0);
-                        saw_nl = true;
-                        skip_until = ce;
-                        continue;
-                    }
-                    if (p + 1 < n and src[p + 1] == '=') { tag = .less_equal; end = p + 2; }
+                        if (opts.is_module or !opts.annex_b) {
+                            tag = .invalid; end = p + 4;
+                        } else {
+                            const ce = lineCommentEndBM(bm.newline, p + 4, n);
+                            try cm_s.append(alloc, p);
+                            try cm_e.append(alloc, ce);
+                            try cm_k.append(alloc, 0);
+                            saw_nl = true;
+                            skip_until = ce;
+                            continue;
+                        }
+                    } else if (p + 1 < n and src[p + 1] == '=') { tag = .less_equal; end = p + 2; }
                     else if (p + 1 < n and src[p + 1] == '<') {
                         if (p + 2 < n and src[p + 2] == '=') { tag = .less_less_equal; end = p + 3; }
                         else { tag = .less_less; end = p + 2; }
@@ -1127,15 +1607,23 @@ pub fn tokenizeWithBufAndBitmaps(
                     }
                     if (p + 1 < n and src[p + 1] == '*') {
                         const res = blockCommentEndBM(src, bm.structural, bm.newline, p, n);
+                        if (res.has_nl) { saw_nl = true; }
+                        // Unterminated block comment: emit .invalid, stop tokenizing.
+                        if (res.end >= n and !(n >= 2 and src[n-2] == '*' and src[n-1] == '/')) {
+                            tag_ptr[tok_n] = .invalid; start_ptr[tok_n] = p; len_ptr[tok_n] = res.end - p; nl_ptr[tok_n] = saw_nl;
+                            tok_n += 1;
+                            skip_until = n;
+                            wi = bm.ident.len; // terminate outer word loop
+                            break; // break inner visit loop
+                        }
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, res.end);
                         try cm_k.append(alloc, 1);
-                        if (res.has_nl) { saw_nl = true; }
                         skip_until = res.end;
                         continue;
                     }
-                    if (p + 1 < n and src[p + 1] == '=') { tag = .slash_equal; end = p + 2; }
-                    else if (Lex.regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = Lex.regexEnd(src, p); tag = .regex_literal; }
+                    if (Lex.regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = Lex.regexEnd(src, p); tag = .regex_literal; }
+                    else if (p + 1 < n and src[p + 1] == '=') { tag = .slash_equal; end = p + 2; }
                     else { tag = .slash; end = p + 1; }
                 },
                 '"', '\'' => { end = stringEndBM(src, bm.structural, bm.newline, p, n); tag = .string_literal; },
@@ -1152,17 +1640,184 @@ pub fn tokenizeWithBufAndBitmaps(
                 },
                 '0'...'9' => {
                     end = Lex.numberEnd(src, p);
-                    tag = if (end > p and src[end - 1] == 'n') .bigint_literal else .number_literal;
+                    const is_bn2 = end > p and src[end - 1] == 'n';
+                    if (!validateNumericLiteral(src, p, end)) {
+                        tag = .invalid;
+                    } else if (end < n and isIdentStartAtPos(src, end)) {
+                        tag = .invalid;
+                    } else {
+                        tag = if (is_bn2) .bigint_literal else .number_literal;
+                    }
                 },
                 '\\' => {
-                    end = Lex.identEnd(src, p);
-                    if (end == p) end = p + 1;
-                    const text = src[p..end];
-                    tag = if (Token.keywords.get(text) != null) .escaped_keyword else .identifier;
+                    // \uXXXX or \u{N} escaped identifier start.
+                    const uid = @import("unicode_id.zig");
+                    var valid: bool = true;
+                    var first_cp: u32 = 0;
+                    var ie: u32 = p; // end of first escape sequence
+                    if (p + 1 < n and src[p + 1] == 'u') {
+                        var ec_end: u32 = p + 2;
+                        var ec_cp: u32 = 0;
+                        if (ec_end < n and src[ec_end] == '{') {
+                            ec_end += 1;
+                            while (ec_end < n and src[ec_end] != '}') : (ec_end += 1) {
+                                const h = src[ec_end];
+                                ec_cp = (ec_cp << 4) | switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => blk: { valid = false; break :blk 0; },
+                                };
+                            }
+                            if (ec_end >= n or src[ec_end] != '}') { valid = false; }
+                            else { ec_end += 1; }
+                        } else if (ec_end + 4 <= n) {
+                            var hh: u32 = 0;
+                            for (0..4) |_| {
+                                const h = src[ec_end];
+                                hh = (hh << 4) | switch (h) {
+                                    '0'...'9' => h - '0',
+                                    'a'...'f' => h - 'a' + 10,
+                                    'A'...'F' => h - 'A' + 10,
+                                    else => blk: { valid = false; break :blk 0; },
+                                };
+                                ec_end += 1;
+                            }
+                            ec_cp = hh;
+                        } else { valid = false; ec_end = p + 2; }
+                        first_cp = ec_cp;
+                        ie = ec_end;
+                    } else { valid = false; ie = p + 1; }
+
+                    // Validate ID_Start for the first codepoint.
+                    if (valid) {
+                        if (first_cp < 0x80) {
+                            if (!((first_cp >= 'a' and first_cp <= 'z') or (first_cp >= 'A' and first_cp <= 'Z') or first_cp == '_' or first_cp == '$'))
+                                valid = false;
+                        } else {
+                            if (!uid.isIdStart(first_cp)) valid = false;
+                        }
+                    }
+
+                    if (!valid) {
+                        tag = .invalid;
+                        end = ie;
+                    } else {
+                        // Scan continuation: ASCII ident chars or \u escapes or high bytes.
+                        var j: u32 = ie;
+                        scan_cont: while (j < n) {
+                            const c = src[j];
+                            if ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or
+                                (c >= '0' and c <= '9') or c == '_' or c == '$') { j += 1; continue; }
+                            if (c >= 0x80) {
+                                const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(c) catch 1);
+                                if (j + cl <= n) {
+                                    const cont_cp = std.unicode.utf8Decode(src[j..j+cl]) catch 0;
+                                    if (uid.isIdContinueJS(cont_cp)) { j += cl; continue; }
+                                }
+                                break;
+                            }
+                            if (c == '\\' and j + 1 < n and src[j + 1] == 'u') {
+                                var ec_end2: u32 = j + 2;
+                                var ec_cp2: u32 = 0;
+                                var cont_valid: bool = true;
+                                if (ec_end2 < n and src[ec_end2] == '{') {
+                                    ec_end2 += 1;
+                                    while (ec_end2 < n and src[ec_end2] != '}') : (ec_end2 += 1) {
+                                        const h = src[ec_end2];
+                                        ec_cp2 = (ec_cp2 << 4) | switch (h) {
+                                            '0'...'9' => h - '0',
+                                            'a'...'f' => h - 'a' + 10,
+                                            'A'...'F' => h - 'A' + 10,
+                                            else => blk: { cont_valid = false; break :blk 0; },
+                                        };
+                                    }
+                                    if (ec_end2 >= n or src[ec_end2] != '}') { cont_valid = false; }
+                                    else { ec_end2 += 1; }
+                                } else if (ec_end2 + 4 <= n) {
+                                    for (0..4) |_| {
+                                        const h = src[ec_end2];
+                                        ec_cp2 = (ec_cp2 << 4) | switch (h) {
+                                            '0'...'9' => h - '0',
+                                            'a'...'f' => h - 'a' + 10,
+                                            'A'...'F' => h - 'A' + 10,
+                                            else => blk: { cont_valid = false; break :blk 0; },
+                                        };
+                                        ec_end2 += 1;
+                                    }
+                                } else { cont_valid = false; }
+                                if (!cont_valid) break :scan_cont;
+                                if (!uid.isIdContinueJS(ec_cp2)) break :scan_cont;
+                                j = ec_end2;
+                                continue;
+                            }
+                            break;
+                        }
+                        end = j;
+                        // Decode the raw escaped text into its string value to check keywords.
+                        // Build decoded chars into a stack buffer (keywords are max 10 ASCII chars).
+                        var decoded_buf: [16]u8 = undefined;
+                        var decoded_len: usize = 0;
+                        var is_kw: bool = false;
+                        var raw_i: u32 = p;
+                        var decode_ok: bool = true;
+                        while (raw_i < end and decoded_len < decoded_buf.len) {
+                            const rc = src[raw_i];
+                            if (rc == '\\' and raw_i + 1 < end and src[raw_i + 1] == 'u') {
+                                var dc_end: u32 = raw_i + 2;
+                                var dc_cp: u32 = 0;
+                                if (dc_end < end and src[dc_end] == '{') {
+                                    dc_end += 1;
+                                    while (dc_end < end and src[dc_end] != '}') : (dc_end += 1) {
+                                        const hh = src[dc_end];
+                                        dc_cp = (dc_cp << 4) | switch (hh) {
+                                            '0'...'9' => hh - '0',
+                                            'a'...'f' => hh - 'a' + 10,
+                                            'A'...'F' => hh - 'A' + 10,
+                                            else => blk: { decode_ok = false; break :blk 0; },
+                                        };
+                                    }
+                                    if (dc_end < end) dc_end += 1; // skip '}'
+                                } else if (dc_end + 4 <= end) {
+                                    for (0..4) |_| {
+                                        const hh = src[dc_end];
+                                        dc_cp = (dc_cp << 4) | switch (hh) {
+                                            '0'...'9' => hh - '0',
+                                            'a'...'f' => hh - 'a' + 10,
+                                            'A'...'F' => hh - 'A' + 10,
+                                            else => blk: { decode_ok = false; break :blk 0; },
+                                        };
+                                        dc_end += 1;
+                                    }
+                                } else { decode_ok = false; dc_end = raw_i + 2; }
+                                if (dc_cp < 0x80) {
+                                    decoded_buf[decoded_len] = @intCast(dc_cp);
+                                    decoded_len += 1;
+                                } else {
+                                    // Non-ASCII codepoint in decoded text — can't be a keyword.
+                                    decode_ok = false;
+                                }
+                                raw_i = dc_end;
+                            } else if (rc < 0x80) {
+                                decoded_buf[decoded_len] = rc;
+                                decoded_len += 1;
+                                raw_i += 1;
+                            } else {
+                                // High byte — not a keyword char.
+                                decode_ok = false;
+                                raw_i += 1;
+                            }
+                        }
+                        if (decode_ok and decoded_len <= 10 and raw_i >= end) {
+                            is_kw = Token.keywords.get(decoded_buf[0..decoded_len]) != null;
+                        }
+                        tag = if (is_kw) .escaped_keyword else .identifier;
+                    }
                 },
                 0x80...0xFF => {
                     if (byte == 0xE2 and p + 2 < n and src[p + 1] == 0x80 and (src[p + 2] == 0xA8 or src[p + 2] == 0xA9)) {
                         saw_nl = true;
+                        at_line_start = true;
                         const skip_to: u32 = p + 3;
                         skip_until = skip_to;
                         continue;
@@ -1184,7 +1839,8 @@ pub fn tokenizeWithBufAndBitmaps(
             nl_ptr[tok_n]    = saw_nl;
             tok_n += 1;
             saw_nl = false;
-            
+            at_line_start = false;
+
             prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
             if (opts.publish_to) |pp| {
                 if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
@@ -1232,9 +1888,24 @@ pub fn tokenizeWithBufAndBitmaps(
                 switch (tail_byte) {
                     '0'...'9' => {
                         t_end = Lex.numberEnd(src, end);
-                        t_tag = if (t_end > end and src[t_end - 1] == 'n') .bigint_literal else .number_literal;
+                        const is_bn5 = t_end > end and src[t_end - 1] == 'n';
+                        if (!validateNumericLiteral(src, end, t_end) or (t_end < n and isIdentStartAtPos(src, t_end))) {
+                            t_tag = .invalid;
+                        } else {
+                            t_tag = if (is_bn5) .bigint_literal else .number_literal;
+                        }
                     },
                     0x80...0xFF => {
+                        // Check for Unicode whitespace (Zs) — silently skip.
+                        const t_cl2: u32 = @intCast(std.unicode.utf8ByteSequenceLength(tail_byte) catch 1);
+                        if (end + t_cl2 <= n) {
+                            const t_cp2 = std.unicode.utf8Decode(src[end..end+t_cl2]) catch 0;
+                            if (isUnicodeWhitespace(t_cp2)) {
+                                end += t_cl2;
+                                skip_until = end;
+                                continue;
+                            }
+                        }
                         t_end = identEndFromBitmap(bm.ident, ew, eb, ew * 64, n);
                         t_tag = .identifier;
                     },
@@ -1248,6 +1919,8 @@ pub fn tokenizeWithBufAndBitmaps(
                 len_ptr[tok_n]   = t_end - end;
                 nl_ptr[tok_n]    = saw_nl; // may be set by LS skip above
                 tok_n += 1;
+                saw_nl = false;
+                at_line_start = false;
                 prev_kind = if (prev_kind == .dot and t_tag.isKeyword()) .identifier else t_tag;
                 if (opts.publish_to) |pp| {
                     if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
