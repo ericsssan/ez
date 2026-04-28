@@ -63,7 +63,7 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             var tok = try Lexer.tokenizeWithLanguage(a, source, .js);
             const t1 = std.Io.Timestamp.now(io, .boot);
             var tree = try Parser.parseWithOptions(a, source, tok.tokens.slice(), .{ .is_module = true, .emit_events = true });
-            tree.tok_hashes = tok.tok_hashes;
+            _ = &tree;
             const t2 = std.Io.Timestamp.now(io, .boot);
             const lex_ns: u64 = @intCast(t0.durationTo(t1).nanoseconds);
             const parse_ns: u64 = @intCast(t1.durationTo(t2).nanoseconds);

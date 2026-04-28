@@ -199,15 +199,6 @@ pub const Parser = struct {
     /// synced back to scope_events.events.items.len at end of parse.
     ev_ptr: [*]ScopeEvent = undefined,
     ev_len: u32 = 0,
-    /// LexIter token source — when non-null, peek/peekAt/advance pull from
-    /// the iter (which lazily walks the bitmap on demand). The parser still
-    /// maintains `tokens` (MultiArrayList) for AST back-references — every
-    /// advance appends the consumed token. Pre-allocated to source.len/2
-    /// (provably enough headroom) so append never grows; tags_ptr stays stable.
-    iter: ?*@import("lex_iter.zig").LexIter = null,
-    /// Owned token storage in iter mode. tokens (Slice) is a view; we bump
-    /// .len after appends. Null in pre-built-token mode.
-    tokens_owned: ?*Ast.TokenList = null,
 
     /// Direct-indexed cache of node-id → event-index for the most recent
     /// reference event for that node. Indexed by NodeIndex value; sentinel
@@ -357,46 +348,7 @@ pub const Parser = struct {
         return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null, annex_b);
     }
 
-    /// Parse from a `LexIter` (per-call walker). Drains the iterator into a
-    /// TokenList then runs the standard parser. This is the FIRST integration
-    /// point — does not yet realize the fusion benefit (token buffer still
-    /// materialized) but proves the wiring works. Future iterations can
-    /// replace the drain-then-parse with on-demand consumption when the
-    /// parser's hot paths migrate to call iter methods directly.
-    /// Caller-supplied tokens_owned: the caller pre-allocates with
-    /// ensureTotalCapacity(source.len/2 + 128) and frees after Ast.deinit.
-    /// The token buffer outlives the parser; Ast.tokens is a slice view
-    /// into it.
-    pub fn parseFromIter(
-        allocator: std.mem.Allocator,
-        source: []const u8,
-        iter: *@import("lex_iter.zig").LexIter,
-        tokens_owned: *Ast.TokenList,
-        language: Language,
-        is_module_file: bool,
-    ) !Ast {
-        return parseInternalWithIterOpt(
-            allocator, source, tokens_owned.slice(), language, is_module_file,
-            null, true, null, iter, tokens_owned, iter.annex_b,
-        );
-    }
-
-    fn parseInternalWithIter(
-        allocator: std.mem.Allocator,
-        source: []const u8,
-        tokens: TokenList.Slice,
-        language: Language,
-        is_module_file: bool,
-        iter: *@import("lex_iter.zig").LexIter,
-    ) !Ast {
-        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, null, true, null, iter, null, iter.annex_b);
-    }
-
-    fn parseInternal(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, events_out: ?*ScopeEventStream, emit_events: bool, streaming: ?StreamingHooks, annex_b: bool) !Ast {
-        return parseInternalWithIterOpt(allocator, source, tokens, language, is_module_file, events_out, emit_events, streaming, null, null, annex_b);
-    }
-
-    fn parseInternalWithIterOpt(
+    fn parseInternal(
         allocator: std.mem.Allocator,
         source: []const u8,
         tokens: TokenList.Slice,
@@ -405,8 +357,6 @@ pub const Parser = struct {
         events_out: ?*ScopeEventStream,
         emit_events: bool,
         streaming: ?StreamingHooks,
-        iter_opt: ?*@import("lex_iter.zig").LexIter,
-        tokens_owned_in: ?*Ast.TokenList,
         annex_b: bool,
     ) !Ast {
         var p = Parser{
@@ -417,8 +367,6 @@ pub const Parser = struct {
             .tok_starts_ptr = tokens.items(.start).ptr,
             .tok_lens_ptr = tokens.items(.len).ptr,
             .tok_i = 0,
-            .iter = iter_opt,
-            .tokens_owned = tokens_owned_in,
             .parsed_len = if (streaming != null) 0 else tokens.len,
             .published_len = if (streaming) |s| s.published_len else null,
             .lex_done = if (streaming) |s| s.lex_done else null,
@@ -431,11 +379,11 @@ pub const Parser = struct {
             .scratch = .empty,
             .diagnostics = .empty,
             .gpa = allocator,
-            // Iter mode: tokens.len is 0 at start (caller passes empty slice
-            // from tokens_owned with capacity reserved). Size by capacity so
-            // max_nodes / parsed_len behave as if all tokens were materialized.
+            // In streaming mode tokens.len is the pre-allocated buffer
+            // capacity, not the actual produced count — caller passes the
+            // tighter `capacity_hint`. Otherwise size by the materialized
+            // token count.
             .max_nodes = if (streaming) |s| s.capacity_hint * 16
-                else if (iter_opt != null and tokens_owned_in != null) tokens_owned_in.?.*.capacity * 16
                 else tokens.len * 16,
             .in_function = false,
             .in_async = is_module_file, // top-level await in modules (ES2022)
@@ -485,7 +433,6 @@ pub const Parser = struct {
         // plus memcpy). In streaming mode tokens.len is the buffer capacity,
         // not the actual produced count — caller passes a tighter hint.
         const sizing_count = if (streaming) |s| s.capacity_hint
-            else if (iter_opt != null and tokens_owned_in != null) tokens_owned_in.?.*.capacity
             else tokens.len;
         // Streaming mode: shared buffers must NEVER resize during parse,
         // because a sem thread holds raw pointers (node_tags_ptr, events.items)
@@ -535,26 +482,6 @@ pub const Parser = struct {
         // which is a raw tags_ptr load with no bounds check on the hot path —
         // could read an unwritten slot.
         if (streaming != null) p.refreshParsedLen();
-
-        // Iter mode: attach the parser's tokens_owned as the iter's
-        // write-through buffer. Each fillSlot in the iter walker now mirrors
-        // its produced token into tokens_owned, so peek-fill populates the
-        // materialized buffer ahead of advance(). This keeps every parser
-        // {tags,starts,lens,newlines}_ptr read valid up to the iter's
-        // current high-water mark without making each call site iter-aware.
-        if (iter_opt) |it| {
-            if (p.tokens_owned) |owned_ptr| {
-                it.attachTokensBuf(owned_ptr);
-                // Plumb the parser's allocator so the iter's bulk-drain
-                // fast path doesn't fall back to std.heap.page_allocator
-                // for its side-channel ArrayLists (comments, line starts).
-                if (it.cm_line_alloc == null) it.cm_line_alloc = allocator;
-                if (owned_ptr.len > 0) {
-                    p.tokens.len = owned_ptr.len;
-                    p.parsed_len = owned_ptr.len;
-                }
-            }
-        }
 
         // Streaming mode: publish an early Ast view so a concurrent sem thread
         // can start. Pointers into nodes/scope_events/extra_data are stable
@@ -645,9 +572,6 @@ pub const Parser = struct {
         return Ast{
             .source = source,
             .nodes = p.nodes.toOwnedSlice(),
-            // In iter mode p.tokens.len was grown by advanceFromIter; the
-            // function-arg `tokens` is the stale len=0 copy. Always return
-            // p.tokens so downstream sem/etc. see the populated token array.
             .tokens = p.tokens,
             .extra_data = extra_data,
             .errors = errors,
@@ -659,12 +583,10 @@ pub const Parser = struct {
     // Token helpers
     // ────────────────────────────────────────────────────────────
 
-    /// Sync the lexer's yield_is_ident flag from current parser state.
-    /// Must be called whenever in_generator or in_strict transitions, so
-    /// `yield/x` after a kw_yield token is lexed as divide-vs-regex correctly.
-    pub inline fn syncYieldLex(self: *Parser) void {
-        if (self.iter) |it| it.yield_is_ident = !self.in_strict and !self.in_generator;
-    }
+    /// No-op kept to avoid touching the many call sites in expressions.zig.
+    /// The monolithic lexer doesn't need this hook — yield/regex disambiguation
+    /// is handled at lex time via tokenizeWithLanguage's built-in flags.
+    pub inline fn syncYieldLex(_: *Parser) void {}
 
     /// Consume the current token and return its index.
     pub inline fn advance(self: *Parser) TokenIndex {
@@ -680,46 +602,13 @@ pub const Parser = struct {
         return self.advanceSlow(result);
     }
 
-    /// Tokens to pull from the walker per slow-path round trip. Larger =
-    /// fewer cross-function dispatches at the cost of slightly more eager
-    /// emission. 64 was empirically a sweet spot vs the monolithic Lexer.
-    const ITER_BATCH: u32 = 64;
-
     fn advanceSlow(self: *Parser, result: TokenIndex) TokenIndex {
         @branchHint(.cold);
-        if (self.iter) |it| {
-            // Drain a batch of tokens from the walker. Amortizes the
-            // walkerNext function-call overhead across many tokens.
-            if (it.pullBatchIntoBuf(ITER_BATCH) > 0) {
-                if (self.tokens_owned) |owned_ptr| {
-                    self.tokens.len = owned_ptr.len;
-                    self.parsed_len = owned_ptr.len;
-                }
-                if (self.tok_i < self.parsed_len - 1) self.tok_i += 1;
-            }
-            return result;
-        }
         if (self.published_len != null) {
             self.refreshParsedLen();
             if (self.tok_i < self.parsed_len - 1) self.tok_i += 1;
         }
         return result;
-    }
-
-    /// Iter mode: ensure tokens_owned has at least `up_to` tokens.
-    /// Pulls batches from the walker until satisfied or EOF.
-    inline fn ensureIterReachable(self: *Parser, up_to: u32) void {
-        if (self.iter) |it| {
-            while (self.parsed_len <= up_to) {
-                const need: u32 = @intCast(up_to - self.parsed_len + 1);
-                const batch: u32 = if (need < ITER_BATCH) ITER_BATCH else need;
-                if (it.pullBatchIntoBuf(batch) == 0) break;
-                if (self.tokens_owned) |owned_ptr| {
-                    self.tokens.len = owned_ptr.len;
-                    self.parsed_len = owned_ptr.len;
-                }
-            }
-        }
     }
 
     /// Streaming slow-path: refresh the visible token count from the lex
@@ -808,11 +697,6 @@ pub const Parser = struct {
 
     fn peekSlow(self: *Parser) TokenTag {
         @branchHint(.cold);
-        if (self.iter != null) {
-            self.ensureIterReachable(self.tok_i);
-            if (self.tok_i < self.parsed_len) return self.tags_ptr[self.tok_i];
-            return .eof;
-        }
         if (self.published_len != null) {
             self.refreshParsedLen();
             if (self.tok_i < self.parsed_len) return self.tags_ptr[self.tok_i];
@@ -832,11 +716,6 @@ pub const Parser = struct {
 
     fn peekAtSlow(self: *Parser, idx: u32) TokenTag {
         @branchHint(.cold);
-        if (self.iter != null) {
-            self.ensureIterReachable(idx);
-            if (idx < self.parsed_len) return self.tags_ptr[idx];
-            return .eof;
-        }
         if (self.published_len != null) {
             self.refreshParsedLen();
             if (idx < self.parsed_len) return self.tags_ptr[idx];

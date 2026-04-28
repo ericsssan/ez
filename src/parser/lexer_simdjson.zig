@@ -734,8 +734,7 @@ pub fn tokenizeWithBuf(
 
 /// Variant that accepts a caller-provided pre-built bitmap. When non-null,
 /// skips Phase 1 (bitmap construction) — useful when the bitmap was already
-/// built upstream (e.g., for the LexIter primitive that hands its bm to the
-/// monolithic walker on the bulk-drain fast path).
+/// built upstream by an out-of-band caller.
 pub fn tokenizeWithBufAndBitmaps(
     alloc: std.mem.Allocator,
     source: []const u8,

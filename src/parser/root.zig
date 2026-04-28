@@ -24,7 +24,6 @@ pub const layout = @import("layout.zig");
 pub const parent_builder = @import("parent_builder.zig");
 pub const scope_events = @import("scope_events.zig");
 pub const event_resolver = @import("event_resolver.zig");
-pub const lex_iter = @import("lex_iter.zig");
 
 test {
     _ = @import("ast.zig");

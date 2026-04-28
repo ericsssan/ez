@@ -53,36 +53,4 @@ pub fn main(init: std.process.Init) !void {
         mb / (@as(f64, @floatFromInt(min_tok)) / 1e9), tok_count,
     });
     std.debug.print("Phase 2 + buf alloc: ~{d}us (tokenize - phase1)\n", .{(min_tok - min_ns) / 1000});
-
-    // LexIter (per-call walker) drained into nothing — pure walker speed.
-    var bm2 = try ez.LexerSimdjson.Bitmaps.init(gpa, src.len);
-    defer bm2.deinit(gpa);
-    ez.LexerSimdjson.buildBitmaps(src, &bm2);
-
-    for (0..3) |_| {
-        var iter = ez.lex_iter.LexIter.init(src, &bm2);
-        var c: usize = 0;
-        while (iter.advance() != .eof) c += 1;
-    }
-    var min_iter: u64 = std.math.maxInt(u64);
-    var sum_iter: u64 = 0;
-    var iter_count: usize = 0;
-    for (0..N) |_| {
-        const t0 = std.Io.Timestamp.now(io, .boot);
-        var iter = ez.lex_iter.LexIter.init(src, &bm2);
-        var c: usize = 0;
-        while (iter.advance() != .eof) c += 1;
-        const dt: u64 = @intCast(t0.durationTo(std.Io.Timestamp.now(io, .boot)).nanoseconds);
-        iter_count = c;
-        if (dt < min_iter) min_iter = dt;
-        sum_iter += dt;
-    }
-    std.debug.print("LexIter drain only:  min={d}us avg={d}us ({d:.0} MB/s, {d} tokens) — Phase1 already built\n", .{
-        min_iter / 1000, sum_iter / N / 1000,
-        mb / (@as(f64, @floatFromInt(min_iter)) / 1e9), iter_count,
-    });
-    const phase2_mono = min_tok - min_ns;
-    std.debug.print("Phase 2 cost compare: monolithic={d}us  iter_drain={d}us  ({d}% of mono)\n", .{
-        phase2_mono / 1000, min_iter / 1000, min_iter * 100 / phase2_mono,
-    });
 }
