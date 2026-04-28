@@ -97,6 +97,49 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("  warmup: {d}    iters: {d}    work-buf: {d} MB\n\n",
         .{ WARMUP, ITERATIONS, WORKING_BUF_BYTES / (1024 * 1024) });
 
+    // Apples-to-apples vs OXC: Lex+Parse only (no sem). This is what
+    // oxc-parser.parseSync produces. Time the monolithic pipeline.
+    std.debug.print("Lex+Parse only (apples-to-apples vs oxc parseSync):\n", .{});
+    std.debug.print("{s:<20}  {s:>8}  {s:>9}  {s:>9}\n",
+        .{ "fixture", "size KB", "ez ms", "ez MB/s" });
+    var lp_total_bytes: u64 = 0;
+    var lp_total_ns: u64 = 0;
+    for (fixtures) |path| {
+        const source = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .unlimited) catch continue;
+        defer gpa.free(source);
+        const lang: Language = .js;
+        var fba = std.heap.FixedBufferAllocator.init(working);
+        for (0..WARMUP) |_| {
+            fba.reset();
+            var t = Lexer.tokenizeWithLanguage(fba.allocator(), source, lang) catch continue;
+            defer t.deinit(fba.allocator());
+            var tree = Parser.parseWithOptions(fba.allocator(), source, t.tokens.slice(), .{
+                .language = lang, .is_module = false, .emit_events = false,
+            }) catch continue;
+            tree.deinit(fba.allocator());
+        }
+        for (times) |*tt| {
+            fba.reset();
+            const t0 = std.Io.Timestamp.now(io, .boot);
+            var t = Lexer.tokenizeWithLanguage(fba.allocator(), source, lang) catch { tt.* = 0; continue; };
+            var tree = Parser.parseWithOptions(fba.allocator(), source, t.tokens.slice(), .{
+                .language = lang, .is_module = false, .emit_events = false,
+            }) catch { tt.* = 0; continue; };
+            const t1 = std.Io.Timestamp.now(io, .boot);
+            tree.deinit(fba.allocator());
+            t.deinit(fba.allocator());
+            tt.* = @intCast(t0.durationTo(t1).nanoseconds);
+        }
+        const s = computeStats(times);
+        lp_total_bytes += source.len;
+        lp_total_ns += s.p50_ns;
+        std.debug.print("{s:<20}  {d:>8.0}  {d:>9.3}  {d:>9.0}\n",
+            .{ std.fs.path.basename(path), @as(f64, @floatFromInt(source.len)) / 1024.0,
+               nsToMs(s.p50_ns), mbPerSec(source.len, s.p50_ns) });
+    }
+    std.debug.print("aggregate Lex+Parse: {d:.3} ms total, {d:.0} MB/s\n\n",
+        .{ nsToMs(lp_total_ns), mbPerSec(lp_total_bytes, lp_total_ns) });
+
     // Walker-only timings: no parse, no sem. Pure tokenize cost.
     std.debug.print("Walker-only (no parse/sem):\n", .{});
     std.debug.print("{s:<20}  {s:>8}  {s:>9}  {s:>9}\n",

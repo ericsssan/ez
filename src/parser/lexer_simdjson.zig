@@ -387,47 +387,126 @@ pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
     const fc = text[0];
     if (fc < 'a' or fc > 'z') return .identifier;
     if ((KW_FC_MASK[len] >> @as(u5, @intCast(fc - 'a'))) & 1 == 0) return .identifier;
-    const result = switch (len) {
-        2 => blk: {
+    // First-char dispatch: after FC_MASK the first char is known to appear in at
+    // least one keyword of this length. Use a switch (compiled to a jump table)
+    // instead of the old linear matchKW scan — at most 2 comparisons per lookup.
+    return switch (len) {
+        2 => {
             const v = loadU64(text, 2);
-            if (matchKW(&KW2_JS, v)) |t| break :blk t;
-            if (ts) if (matchKW(&KW2_TS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'a' => if (v == comptime pK("as")) Tag.kw_as else Tag.identifier,
+                'd' => if (v == comptime pK("do")) Tag.kw_do else Tag.identifier,
+                'i' => if (v == comptime pK("in")) Tag.kw_in
+                        else if (v == comptime pK("if")) Tag.kw_if
+                        else if (ts and v == comptime pK("is")) Tag.kw_is
+                        else Tag.identifier,
+                'o' => if (v == comptime pK("of")) Tag.kw_of else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
-        3 => blk: {
+        3 => {
             const v = loadU64(text, 3);
-            if (matchKW(&KW3_JS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'v' => if (v == comptime pK("var")) Tag.kw_var else Tag.identifier,
+                'l' => if (v == comptime pK("let")) Tag.kw_let else Tag.identifier,
+                'f' => if (v == comptime pK("for")) Tag.kw_for else Tag.identifier,
+                'n' => if (v == comptime pK("new")) Tag.kw_new else Tag.identifier,
+                't' => if (v == comptime pK("try")) Tag.kw_try else Tag.identifier,
+                'g' => if (v == comptime pK("get")) Tag.kw_get else Tag.identifier,
+                's' => if (v == comptime pK("set")) Tag.kw_set else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
-        4 => blk: {
+        4 => {
             const v = loadU64(text, 4);
-            if (matchKW(&KW4_JS, v)) |t| break :blk t;
-            if (ts) if (matchKW(&KW4_TS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'c' => if (v == comptime pK("case")) Tag.kw_case else Tag.identifier,
+                'e' => switch (text[1]) {
+                    'l' => if (v == comptime pK("else")) Tag.kw_else else Tag.identifier,
+                    'n' => if (v == comptime pK("enum")) Tag.kw_enum else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'f' => if (v == comptime pK("from")) Tag.kw_from else Tag.identifier,
+                'n' => if (v == comptime pK("null")) Tag.kw_null else Tag.identifier,
+                't' => switch (text[1]) {
+                    'h' => if (v == comptime pK("this")) Tag.kw_this else Tag.identifier,
+                    'r' => if (v == comptime pK("true")) Tag.kw_true else Tag.identifier,
+                    'y' => if (ts and v == comptime pK("type")) Tag.kw_type else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'v' => if (v == comptime pK("void")) Tag.kw_void else Tag.identifier,
+                'w' => if (v == comptime pK("with")) Tag.kw_with else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
-        5 => blk: {
+        5 => {
             const v = loadU64(text, 5);
-            if (matchKW(&KW5_JS, v)) |t| break :blk t;
-            if (ts) if (matchKW(&KW5_TS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'a' => switch (text[1]) {
+                    's' => if (v == comptime pK("async")) Tag.kw_async else Tag.identifier,
+                    'w' => if (v == comptime pK("await")) Tag.kw_await else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'b' => if (v == comptime pK("break")) Tag.kw_break else Tag.identifier,
+                'c' => switch (text[1]) {
+                    'a' => if (v == comptime pK("catch")) Tag.kw_catch else Tag.identifier,
+                    'l' => if (v == comptime pK("class")) Tag.kw_class else Tag.identifier,
+                    'o' => if (v == comptime pK("const")) Tag.kw_const else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'f' => if (v == comptime pK("false")) Tag.kw_false else Tag.identifier,
+                'i' => if (ts and v == comptime pK("infer")) Tag.kw_infer else Tag.identifier,
+                'k' => if (ts and v == comptime pK("keyof")) Tag.kw_keyof else Tag.identifier,
+                's' => if (v == comptime pK("super")) Tag.kw_super else Tag.identifier,
+                't' => if (v == comptime pK("throw")) Tag.kw_throw else Tag.identifier,
+                'w' => if (v == comptime pK("while")) Tag.kw_while else Tag.identifier,
+                'y' => if (v == comptime pK("yield")) Tag.kw_yield else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
-        6 => blk: {
+        6 => {
             const v = loadU64(text, 6);
-            if (matchKW(&KW6_JS, v)) |t| break :blk t;
-            if (ts) if (matchKW(&KW6_TS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'd' => if (v == comptime pK("delete")) Tag.kw_delete else Tag.identifier,
+                'e' => if (v == comptime pK("export")) Tag.kw_export else Tag.identifier,
+                'i' => if (v == comptime pK("import")) Tag.kw_import else Tag.identifier,
+                'm' => if (ts and v == comptime pK("module")) Tag.kw_module else Tag.identifier,
+                'r' => if (v == comptime pK("return")) Tag.kw_return else Tag.identifier,
+                's' => switch (text[1]) {
+                    'w' => if (v == comptime pK("switch")) Tag.kw_switch else Tag.identifier,
+                    't' => if (v == comptime pK("static")) Tag.kw_static else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                't' => if (v == comptime pK("typeof")) Tag.kw_typeof else Tag.identifier,
+                'u' => if (ts and v == comptime pK("unique")) Tag.kw_unique else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
-        7 => blk: {
+        7 => {
             const v = loadU64(text, 7);
-            if (matchKW(&KW7_JS, v)) |t| break :blk t;
-            if (ts) if (matchKW(&KW7_TS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'a' => if (ts and v == comptime pK("asserts")) Tag.kw_asserts else Tag.identifier,
+                'd' => switch (text[2]) {  // "default"[2]='f', "declare"[2]='c'
+                    'f' => if (v == comptime pK("default")) Tag.kw_default else Tag.identifier,
+                    'c' => if (ts and v == comptime pK("declare")) Tag.kw_declare else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'e' => if (v == comptime pK("extends")) Tag.kw_extends else Tag.identifier,
+                'f' => if (v == comptime pK("finally")) Tag.kw_finally else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
-        8 => blk: {
+        8 => {
             const v = loadU64(text, 8);
-            if (matchKW(&KW8_JS, v)) |t| break :blk t;
-            if (ts) if (matchKW(&KW8_TS, v)) |t| break :blk t;
-            break :blk .identifier;
+            return switch (fc) {
+                'a' => if (ts and v == comptime pK("abstract")) Tag.kw_abstract else Tag.identifier,
+                'c' => if (v == comptime pK("continue")) Tag.kw_continue else Tag.identifier,
+                'd' => if (v == comptime pK("debugger")) Tag.kw_debugger else Tag.identifier,
+                'f' => if (v == comptime pK("function")) Tag.kw_function else Tag.identifier,
+                'o' => if (ts and v == comptime pK("override")) Tag.kw_override else Tag.identifier,
+                'r' => if (ts and v == comptime pK("readonly")) Tag.kw_readonly else Tag.identifier,
+                else => Tag.identifier,
+            };
         },
         9 => blk: {
             const v8 = loadU64(text, 8);
@@ -452,9 +531,8 @@ pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
             if (ts and v8 == KW10_IMPLEMEN and c9 == 't' and c10 == 's') break :blk Tag.kw_implements;
             break :blk Tag.identifier;
         },
-        else => .identifier,
+        else => Tag.identifier,
     };
-    return result;
 }
 
 

@@ -115,7 +115,12 @@ pub const EventStream = struct {
     }
 
     pub inline fn push(self: *EventStream, alloc: std.mem.Allocator, ev: Event) !void {
-        try self.events.append(alloc, ev);
+        // Fast path: pre-ensured capacity — avoid loading the allocator vtable.
+        if (self.events.items.len < self.events.capacity) {
+            self.events.appendAssumeCapacity(ev);
+        } else {
+            try self.events.append(alloc, ev);
+        }
         if (self.publish_to) |p| {
             const n = self.events.items.len;
             if ((n & (PUBLISH_BATCH - 1)) == 0) p.store(n, .release);

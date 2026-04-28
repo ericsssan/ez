@@ -1904,11 +1904,13 @@ fn checkStrictOctalNumber(p: *Parser) !void {
 /// and `\x` followed by fewer than 2 hex digits.
 fn checkStringEscapes(p: *Parser) !void {
     const start = p.tok_starts_ptr[p.tok_i];
-    if (start >= p.source.len) return;
-    const quote = p.source[start];
+    const tok_len = p.tok_lens_ptr[p.tok_i];
+    if (tok_len < 2 or start + tok_len > p.source.len) return;
+    // Use token length to bound the scan — avoids per-byte quote comparison.
+    const content_end = start + tok_len - 1; // position of closing quote (not scanned)
     var i = start + 1;
-    while (i < p.source.len and p.source[i] != quote) {
-        if (p.source[i] == '\\' and i + 1 < p.source.len) {
+    while (i < content_end) {
+        if (p.source[i] == '\\' and i + 1 < content_end + 1) {
             const esc = p.source[i + 1];
             i += 2;
             if (esc == 'u') {
@@ -1981,11 +1983,12 @@ fn checkStringEscapes(p: *Parser) !void {
 
 fn checkStrictOctalString(p: *Parser) !void {
     const start = p.tok_starts_ptr[p.tok_i];
-    if (start >= p.source.len) return;
-    const quote = p.source[start];
+    const tok_len = p.tok_lens_ptr[p.tok_i];
+    if (tok_len < 2 or start + tok_len > p.source.len) return;
+    const content_end = start + tok_len - 1;
     var i = start + 1;
-    while (i < p.source.len and p.source[i] != quote) {
-        if (p.source[i] == '\\' and i + 1 < p.source.len) {
+    while (i < content_end) {
+        if (p.source[i] == '\\' and i + 1 < content_end + 1) {
             const esc = p.source[i + 1];
             if (esc >= '1' and esc <= '7') {
                 try p.emitError("Octal escape sequences are not allowed in strict mode");
@@ -2388,7 +2391,7 @@ fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
     const tok_tag = p.tokenTagAt(tok);
     if (tok_tag == .identifier) {
         const text = p.tokenText(tok);
-        if (std.mem.indexOfScalar(u8, text, '\\') != null) {
+        if (text.len > 0 and text[0] == '\\') {
             var resolved_buf: [256]u8 = undefined;
             if (parser_mod.resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
                 if (parser_mod.isAlwaysReservedStr(resolved)) {

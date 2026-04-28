@@ -193,6 +193,12 @@ pub const Parser = struct {
     /// that LLVM eliminates).
     scope_events: ScopeEventStream = .{},
     emit_scope_events: bool = false,
+    /// Hoisted write cursor into scope_events.events.items — avoids struct
+    /// indirections on the hot emitReference / emitScope* paths.
+    /// Initialized from scope_events.events.items.ptr after pre-allocation;
+    /// synced back to scope_events.events.items.len at end of parse.
+    ev_ptr: [*]ScopeEvent = undefined,
+    ev_len: u32 = 0,
     /// LexIter token source — when non-null, peek/peekAt/advance pull from
     /// the iter (which lazily walks the bitmap on demand). The parser still
     /// maintains `tokens` (MultiArrayList) for AST back-references — every
@@ -500,16 +506,20 @@ pub const Parser = struct {
         // of top-level statements). Pre-size generously to avoid growth.
         try p.scratch.ensureTotalCapacity(allocator, @max(1024, sizing_count / 16));
 
-        // Pre-size the event buffer. Sequential: ≈ tokens.len/3 (typical).
-        // Streaming: 2× tokens.len (safe upper bound — never realloc during parse).
+        // Pre-size the event buffer. TS/complex JS generates ~0.4× events per
+        // token; use 1× tokens as a safe margin for sequential mode (covers TS
+        // with headroom). Streaming uses 2× for the concurrent sem thread path.
         if (p.emit_scope_events) {
-            const event_cap = if (streaming != null) sizing_count * 2 else sizing_count / 3;
+            const event_cap = if (streaming != null) sizing_count * 2 else sizing_count;
             try p.scope_events.ensureCapacity(allocator, event_cap);
             // Streaming: wire EventStream's per-push publish to the same atomic.
             // This publishes every PUBLISH_BATCH events instead of only at
             // top-level statement boundaries — necessary for files with one
             // huge top-level IIFE (typescript.js etc.).
             if (streaming) |s| p.scope_events.publish_to = s.events_publish_to;
+            // Wire hoisted cursor — avoids struct traversal on every event emit.
+            p.ev_ptr = p.scope_events.events.items.ptr;
+            p.ev_len = 0;
         }
 
         // Pre-size ref_event_idx to estimated node count — direct array indexed
@@ -561,7 +571,7 @@ pub const Parser = struct {
                 nodes_slice.len = estimated_node_count;
                 const event_buf_cap = if (p.emit_scope_events) sizing_count * 2 else 0;
                 const events_full = if (p.emit_scope_events)
-                    p.scope_events.events.items.ptr[0..event_buf_cap]
+                    p.ev_ptr[0..event_buf_cap]
                 else
                     &[_]@import("scope_events.zig").Event{};
                 const extra_full = p.extra_data.items.ptr[0..estimated_extra_count];
@@ -597,20 +607,26 @@ pub const Parser = struct {
         // shifted/garbage events. Sem already treats .elided scope_open as
         // a regular (no-op) scope, so skipping compaction is correct.
         if (p.emit_scope_events and streaming == null) {
-            const evs = p.scope_events.events.items;
+            const evs = p.ev_ptr[0..p.ev_len];
             var wi: usize = 0;
             for (evs) |ev| {
                 if (ev.kind == .scope_open and
                     ev.aux == @intFromEnum(ScopeKindU8.elided)) continue;
-                evs[wi] = ev;
+                p.ev_ptr[wi] = ev;
                 wi += 1;
             }
+            p.ev_len = @intCast(wi);
             p.scope_events.events.items.len = wi;
         }
 
         // Hand the event stream back to the caller.  If `events_out` is given,
         // we transfer ownership there; otherwise if emission was on we also
         // copy the events into the Ast so downstream callers can find them.
+        // Sync hoisted cursor for any remaining events not yet reflected in items.len
+        // (streaming path skips compaction so this is the only sync point there).
+        if (p.emit_scope_events and streaming != null) {
+            p.scope_events.events.items.len = p.ev_len;
+        }
         const ast_events: []const scope_events_mod.Event = blk: {
             if (events_out) |out| {
                 out.* = p.scope_events;
@@ -762,10 +778,16 @@ pub const Parser = struct {
     }
 
     /// Consume a token of the given `tag` or emit a diagnostic and return error.
-    pub fn expect(self: *Parser, tag: TokenTag) Error!TokenIndex {
+    pub inline fn expect(self: *Parser, tag: TokenTag) Error!TokenIndex {
         if (self.eat(tag)) |tok| {
+            @branchHint(.likely);
             return tok;
         }
+        return self.expectFail(tag);
+    }
+
+    fn expectFail(self: *Parser, tag: TokenTag) Error!TokenIndex {
+        @branchHint(.cold);
         const lexeme = tag.lexeme() orelse "<token>";
         try self.emitDiagnostic(
             self.currentSpan(),
@@ -867,23 +889,50 @@ pub const Parser = struct {
 
     /// Append a node to the nodes list and return its index.
     pub inline fn addNode(self: *Parser, node: Node) !NodeIndex {
-        // Bound error recovery: prevent runaway node creation.
-        // Use 16x limit to accommodate TS files with heavy error recovery.
-        if (self.nodes.len > self.max_nodes) return error.OutOfMemory;
         const result: u32 = @intCast(self.nodes.len);
-        // Fast path: capacity pre-allocated via ensureTotalCapacity in parse().
-        if (self.nodes.len >= self.nodes.capacity) {
+        // Fast path: capacity and bound checks almost always pass (cold branches).
+        if (result > self.max_nodes) {
+            @branchHint(.cold);
+            return error.OutOfMemory;
+        }
+        if (result >= self.nodes.capacity) {
+            @branchHint(.cold);
             try self.nodes.ensureTotalCapacity(self.gpa, self.nodes.capacity * 2 + 16);
             self.refreshNodePtrs();
-            // Grow ref_event_idx in lockstep so direct-indexed lookups stay valid.
             if (self.ref_event_idx.len < self.nodes.capacity) {
                 const old_len = self.ref_event_idx.len;
                 self.ref_event_idx = try self.gpa.realloc(self.ref_event_idx, self.nodes.capacity);
                 @memset(self.ref_event_idx[old_len..], std.math.maxInt(u32));
             }
         }
-        self.nodes.appendAssumeCapacity(node);
+        // Write via hoisted raw pointers — skips MultiArrayList's internal
+        // pointer-chain lookups (fields[0], fields[1], fields[2]).
+        self.node_tags_ptr[result]       = node.tag;
+        self.node_main_token_ptr[result] = node.main_token;
+        self.node_data_ptr[result]       = node.data;
+        self.nodes.len += 1;
         return NodeIndex.fromInt(result);
+    }
+
+    // ── Event cursor helpers ───────────────────────────────────────
+
+    /// Write one event via hoisted cursor. Grows the EventStream on overflow
+    /// (rare — capacity is pre-sized to 1× token count). Sequential mode only;
+    /// streaming mode updates ev_ptr/ev_len the same way but also publishes.
+    inline fn evPush(self: *Parser, ev: ScopeEvent) !void {
+        const n = self.ev_len;
+        if (n >= self.scope_events.events.capacity) {
+            @branchHint(.cold);
+            try self.scope_events.events.ensureTotalCapacity(self.gpa, @max(self.scope_events.events.capacity * 2 + 16, n + 1));
+            self.ev_ptr = self.scope_events.events.items.ptr;
+        }
+        self.ev_ptr[n] = ev;
+        self.ev_len = n + 1;
+        if (self.scope_events.publish_to) |pp| {
+            const new_n = n + 1;
+            if ((new_n & (ScopeEventStream.PUBLISH_BATCH - 1)) == 0)
+                pp.store(new_n, .release);
+        }
     }
 
     // ── Semantic event emission (opt-in) ───────────────────────────
@@ -893,8 +942,8 @@ pub const Parser = struct {
 
     pub inline fn emitScopeOpen(self: *Parser, kind: ScopeKindU8, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .scope_open,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -908,12 +957,12 @@ pub const Parser = struct {
     /// `.none` and needs back-patching once the node index is known.
     pub inline fn patchScopeOpenNode(self: *Parser, event_idx: u32, node: NodeIndex) void {
         if (!self.emit_scope_events) return;
-        self.scope_events.events.items[event_idx].node = @intFromEnum(node);
+        self.ev_ptr[event_idx].node = @intFromEnum(node);
     }
 
     pub inline fn emitScopeClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .scope_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -922,7 +971,7 @@ pub const Parser = struct {
 
     pub inline fn emitDeclare(self: *Parser, kind: BindingKindU8, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .declare,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1031,8 +1080,8 @@ pub const Parser = struct {
 
     pub inline fn emitReference(self: *Parser, kind: ReferenceKindU8, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        const event_idx: u32 = @intCast(self.scope_events.events.items.len);
-        try self.scope_events.push(self.gpa, .{
+        const event_idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .reference,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1049,7 +1098,7 @@ pub const Parser = struct {
 
     pub inline fn emitTerminator(self: *Parser, kind: TerminatorKind, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .terminator,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1058,7 +1107,7 @@ pub const Parser = struct {
 
     pub inline fn emitBranchOpen(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .branch_open,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1067,7 +1116,7 @@ pub const Parser = struct {
 
     pub inline fn emitBranchElse(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .branch_else,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1076,7 +1125,7 @@ pub const Parser = struct {
 
     pub inline fn emitBranchClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .branch_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1087,8 +1136,8 @@ pub const Parser = struct {
 
     pub inline fn emitLoopOpen(self: *Parser, kind: LoopKind, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .loop_open,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1098,7 +1147,7 @@ pub const Parser = struct {
 
     pub inline fn emitLoopTestEnd(self: *Parser, kind: LoopKind, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .loop_test_end,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1107,7 +1156,7 @@ pub const Parser = struct {
 
     pub inline fn emitLoopBodyEnd(self: *Parser, kind: LoopKind, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .loop_body_end,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1116,7 +1165,7 @@ pub const Parser = struct {
 
     pub inline fn emitLoopClose(self: *Parser, kind: LoopKind, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .loop_close,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1125,8 +1174,8 @@ pub const Parser = struct {
 
     pub inline fn emitTryOpen(self: *Parser, has_finalizer: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .try_open,
             .aux = if (has_finalizer) 1 else 0,
             .node = @intFromEnum(node),
@@ -1136,7 +1185,7 @@ pub const Parser = struct {
 
     pub inline fn emitTryBodyEnd(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .try_body_end,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1145,8 +1194,8 @@ pub const Parser = struct {
 
     pub inline fn emitTryCatchStart(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .try_catch_start,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1156,7 +1205,7 @@ pub const Parser = struct {
 
     pub inline fn emitTryCatchEnd(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .try_catch_end,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1165,8 +1214,8 @@ pub const Parser = struct {
 
     pub inline fn emitTryFinallyStart(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .try_finally_start,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1176,7 +1225,7 @@ pub const Parser = struct {
 
     pub inline fn emitTryClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .try_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1185,8 +1234,8 @@ pub const Parser = struct {
 
     pub inline fn emitSwitchOpen(self: *Parser, has_default: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .switch_open,
             .aux = if (has_default) 1 else 0,
             .node = @intFromEnum(node),
@@ -1196,7 +1245,7 @@ pub const Parser = struct {
 
     pub inline fn emitSwitchCaseStart(self: *Parser, is_default: bool, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .switch_case_start,
             .aux = if (is_default) 1 else 0,
             .node = @intFromEnum(node),
@@ -1205,7 +1254,7 @@ pub const Parser = struct {
 
     pub inline fn emitSwitchCaseEnd(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .switch_case_end,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1214,7 +1263,7 @@ pub const Parser = struct {
 
     pub inline fn emitSwitchClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .switch_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1225,8 +1274,8 @@ pub const Parser = struct {
 
     pub inline fn emitLogicalOpen(self: *Parser, kind: LogicalKind, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .logical_open,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1236,7 +1285,7 @@ pub const Parser = struct {
 
     pub inline fn emitLogicalRight(self: *Parser, kind: LogicalKind, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .logical_right,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1245,7 +1294,7 @@ pub const Parser = struct {
 
     pub inline fn emitLogicalClose(self: *Parser, kind: LogicalKind, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .logical_close,
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
@@ -1254,8 +1303,8 @@ pub const Parser = struct {
 
     pub inline fn emitCondOpen(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .cond_open,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1265,7 +1314,7 @@ pub const Parser = struct {
 
     pub inline fn emitCondAlt(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .cond_alt,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1274,7 +1323,7 @@ pub const Parser = struct {
 
     pub inline fn emitCondClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .cond_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1283,8 +1332,8 @@ pub const Parser = struct {
 
     pub inline fn emitIfOpen(self: *Parser, has_else: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .if_open,
             .aux = if (has_else) 1 else 0,
             .node = @intFromEnum(node),
@@ -1294,8 +1343,8 @@ pub const Parser = struct {
 
     pub inline fn emitIfAlt(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .if_alt,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1305,7 +1354,7 @@ pub const Parser = struct {
 
     pub inline fn emitIfClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .if_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1314,8 +1363,8 @@ pub const Parser = struct {
 
     pub inline fn emitLabelOpen(self: *Parser, is_loop: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = @intCast(self.scope_events.len());
-        try self.scope_events.push(self.gpa, .{
+        const idx: u32 = self.ev_len;
+        try self.evPush(.{
             .kind = .label_open,
             .aux = if (is_loop) 1 else 0,
             .node = @intFromEnum(node),
@@ -1325,7 +1374,7 @@ pub const Parser = struct {
 
     pub inline fn emitLabelClose(self: *Parser, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        try self.scope_events.push(self.gpa, .{
+        try self.evPush(.{
             .kind = .label_close,
             .aux = 0,
             .node = @intFromEnum(node),
@@ -1334,7 +1383,7 @@ pub const Parser = struct {
 
     pub inline fn patchEventNode(self: *Parser, event_idx: u32, node: NodeIndex) void {
         if (!self.emit_scope_events) return;
-        self.scope_events.events.items[event_idx].node = @intFromEnum(node);
+        self.ev_ptr[event_idx].node = @intFromEnum(node);
     }
 
     /// Walk back through recently-emitted events to find the reference event
@@ -1346,15 +1395,15 @@ pub const Parser = struct {
     pub fn upgradeReferenceKind(self: *Parser, node: NodeIndex, new_kind: ReferenceKindU8) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
-        const events = self.scope_events.events.items;
+        const cur_len = self.ev_len;
         const max_back: usize = 8;
-        const start: usize = if (events.len > max_back) events.len - max_back else 0;
-        var i: usize = events.len;
+        const start: usize = if (cur_len > max_back) cur_len - max_back else 0;
+        var i: usize = cur_len;
         while (i > start) {
             i -= 1;
-            const e = events[i];
+            const e = self.ev_ptr[i];
             if (e.kind == .reference and e.node == node_u32) {
-                self.scope_events.events.items[i].aux = @intFromEnum(new_kind);
+                self.ev_ptr[i].aux = @intFromEnum(new_kind);
                 return;
             }
         }
@@ -1370,9 +1419,8 @@ pub const Parser = struct {
         if (node_u32 >= self.ref_event_idx.len) return false;
         const idx = self.ref_event_idx[node_u32];
         if (idx == std.math.maxInt(u32)) return false;
-        const events = self.scope_events.events.items;
-        if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
-            events[idx].aux = @intFromEnum(new_kind);
+        if (idx < self.ev_len and self.ev_ptr[idx].kind == .reference and self.ev_ptr[idx].node == node_u32) {
+            self.ev_ptr[idx].aux = @intFromEnum(new_kind);
             return true;
         }
         return false;
@@ -1440,27 +1488,20 @@ pub const Parser = struct {
         if (node_u32 >= self.ref_event_idx.len) return;
         const idx = self.ref_event_idx[node_u32];
         if (idx == std.math.maxInt(u32)) return;
-        const events = self.scope_events.events.items;
-        if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
-            events[idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
+        if (idx < self.ev_len and self.ev_ptr[idx].kind == .reference and self.ev_ptr[idx].node == node_u32) {
+            self.ev_ptr[idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
             self.ref_event_idx[node_u32] = std.math.maxInt(u32);
         }
     }
 
-    /// Neutralise a speculatively-emitted reference event for `node` by
-    /// converting it to a `.nop`.  Used when arrow function params were parsed
-    /// as expression identifiers (emitting `.reference`) before being
-    /// reinterpreted as bindings — the orphan reference would otherwise be
-    /// seen as an unresolved use by rules like `no-undef`.
     pub fn cancelReferenceForNode(self: *Parser, node: NodeIndex) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
         if (node_u32 >= self.ref_event_idx.len) return;
         const idx = self.ref_event_idx[node_u32];
         if (idx == std.math.maxInt(u32)) return;
-        const events = self.scope_events.events.items;
-        if (idx < events.len and events[idx].kind == .reference and events[idx].node == node_u32) {
-            events[idx].kind = .nop;
+        if (idx < self.ev_len and self.ev_ptr[idx].kind == .reference and self.ev_ptr[idx].node == node_u32) {
+            self.ev_ptr[idx].kind = .nop;
             self.ref_event_idx[node_u32] = std.math.maxInt(u32);
         }
     }
@@ -1477,9 +1518,15 @@ pub const Parser = struct {
     /// Serialize a struct to extra_data as sequential u32 fields, return the start index.
     pub inline fn addExtra(self: *Parser, comptime T: type, data: T) !ExtraIndex {
         const fields = std.meta.fields(T);
-        try self.extra_data.ensureUnusedCapacity(self.gpa, fields.len);
-        const result: ExtraIndex = @intCast(self.extra_data.items.len);
-        inline for (fields) |field| {
+        const cur_len = self.extra_data.items.len;
+        // Fast path: pre-allocated capacity covers the common case — avoid loading the allocator vtable.
+        if (cur_len + fields.len > self.extra_data.capacity) {
+            @branchHint(.cold);
+            try self.extra_data.ensureTotalCapacity(self.gpa, @max(self.extra_data.capacity * 2 + 16, cur_len + fields.len));
+        }
+        const result: ExtraIndex = @intCast(cur_len);
+        const ptr = self.extra_data.items.ptr;
+        inline for (fields, 0..) |field, i| {
             const val = @field(data, field.name);
             const as_u32: u32 = if (field.type == NodeIndex)
                 @intFromEnum(val)
@@ -1487,16 +1534,23 @@ pub const Parser = struct {
                 val
             else
                 @compileError("unexpected field type: " ++ @typeName(field.type));
-            self.extra_data.appendAssumeCapacity(as_u32);
+            ptr[cur_len + i] = as_u32;
         }
+        self.extra_data.items.len = cur_len + fields.len;
         return result;
     }
 
     /// Write items to extra_data and return a SubRange covering them.
     pub fn listToSubRange(self: *Parser, items: []const u32) !SubRange {
-        try self.extra_data.appendSlice(self.gpa, items);
+        const start: ExtraIndex = @intCast(self.extra_data.items.len);
+        // Fast path: pre-allocated capacity covers the common case — avoid loading the allocator vtable.
+        if (start + items.len > self.extra_data.capacity) {
+            @branchHint(.cold);
+            try self.extra_data.ensureTotalCapacity(self.gpa, @max(self.extra_data.capacity * 2 + 16, start + items.len));
+        }
+        self.extra_data.appendSliceAssumeCapacity(items);
         return SubRange{
-            .start = @intCast(self.extra_data.items.len - items.len),
+            .start = start,
             .end = @intCast(self.extra_data.items.len),
         };
     }
@@ -1636,7 +1690,7 @@ pub const Parser = struct {
         const program_scope_ev = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
         // Streaming: publish the initial scope_open immediately so a concurrent
         // sem thread sees the global code path before any other events.
-        if (self.events_publish_to) |p| p.store(self.scope_events.events.items.len, .release);
+        if (self.events_publish_to) |p| p.store(self.ev_len, .release);
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -1657,17 +1711,17 @@ pub const Parser = struct {
                     // skip one token to avoid infinite loop on unrecoverable input.
                     if (self.tok_i == before) _ = self.advance();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    try self.scratch.append(self.gpa, @intFromEnum(err_node));
+                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
             consecutive_errors = 0; // reset on successful parse
-            try self.scratch.append(self.gpa, @intFromEnum(stmt));
+            self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
             // 3-stage pipeline: publish current event count so the sem thread
             // can consume up to here. Coarse-grained (per top-level statement)
             // — the consumer's hot path doesn't pay any per-event sync cost.
-            if (self.events_publish_to) |p| p.store(self.scope_events.events.items.len, .release);
+            if (self.events_publish_to) |p| p.store(self.ev_len, .release);
         }
 
         const stmts = self.scratch.items[scratch_top..];
@@ -1685,7 +1739,7 @@ pub const Parser = struct {
         if (self.is_module and self.pending_export_local_toks.items.len > 0 and
             self.emit_scope_events)
         {
-            const evs_ee = self.scope_events.events.items[program_scope_ev + 1 ..];
+            const evs_ee = self.ev_ptr[0..self.ev_len][program_scope_ev + 1 ..];
             for (self.pending_export_local_toks.items) |tok_idx| {
                 const want = self.tokenText(tok_idx);
                 var found = false;
@@ -1731,7 +1785,7 @@ pub const Parser = struct {
 
         // Top-level lexical redeclaration check (mirror of block-scope logic).
         if (self.emit_scope_events) {
-            const evs = self.scope_events.events.items[program_scope_ev + 1 ..];
+            const evs = self.ev_ptr[0..self.ev_len][program_scope_ev + 1 ..];
             var depth: i32 = 0;
             const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
             var names_buf: [128]Entry = undefined;
@@ -2056,13 +2110,13 @@ pub const Parser = struct {
                     self.synchronize();
                     if (self.tok_i == before) _ = self.advance();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    try self.scratch.append(self.gpa, @intFromEnum(err_node));
+                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
             consecutive_errors = 0;
-            try self.scratch.append(self.gpa, @intFromEnum(stmt));
+            self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
         }
 
         const stmts = self.scratch.items[scratch_top..];
@@ -2102,7 +2156,7 @@ pub const Parser = struct {
         // when block-scoped). Diagnostic on duplicate name.
         if (self.emit_scope_events) {
             var depth: i32 = 0;
-            const evs = self.scope_events.events.items[scope_ev + 1 ..];
+            const evs = self.ev_ptr[0..self.ev_len][scope_ev + 1 ..];
             const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
             var names_buf: [64]Entry = undefined;
             var names_n: usize = 0;
@@ -2174,7 +2228,7 @@ pub const Parser = struct {
             // depth, causing top-level declares to appear at depth>0 and
             // wrongly elide the enclosing block.
             var depth: i32 = 0;
-            for (self.scope_events.events.items[scope_ev + 1 ..]) |ev| {
+            for (self.ev_ptr[0..self.ev_len][scope_ev + 1 ..]) |ev| {
                 switch (ev.kind) {
                     .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
                     .scope_close => depth -= 1,
@@ -2192,7 +2246,7 @@ pub const Parser = struct {
         if (keep_scope) {
             try self.emitScopeClose(.none);
         } else if (self.emit_scope_events) {
-            self.scope_events.events.items[scope_ev].aux = @intFromEnum(ScopeKindU8.elided);
+            self.ev_ptr[scope_ev].aux = @intFromEnum(ScopeKindU8.elided);
         }
 
         const node = try self.addNode(.{
@@ -2229,8 +2283,9 @@ pub const Parser = struct {
             if (expr_tag == .assign) {
                 // LHS is destructuring target (valid), check only RHS
                 const data = self.node_data_ptr[expr.toInt()];
-                self.checkCoverInitializedName(data.rhs);
-            } else {
+                self.checkCoverInitializedNameFast(data.rhs);
+            } else if (tagNeedsCoverCheck(expr_tag)) {
+                // Use already-loaded tag to skip redundant read in checkCoverInitializedNameFast
                 self.checkCoverInitializedName(expr);
             }
         }
@@ -2387,7 +2442,7 @@ pub const Parser = struct {
         const consequent = try self.parseIfBody();
 
         if (self.eat(.kw_else)) |_| {
-            if (self.emit_scope_events) self.scope_events.events.items[if_ev].aux = 1;
+            if (self.emit_scope_events) self.ev_ptr[if_ev].aux = 1;
             const if_alt_ev = try self.emitIfAlt(.none);
             const alternate = try self.parseIfBody();
             const extra = try self.addExtra(ast.IfData, .{
@@ -2642,7 +2697,8 @@ pub const Parser = struct {
         // Check CoverInitializedName in init (not destructured)
         if (init != .none) {
             const init_tag = self.node_tags_ptr[init.toInt()];
-            if (init_tag != .assign) self.checkCoverInitializedName(init);
+            if (init_tag != .assign and tagNeedsCoverCheck(init_tag))
+                self.checkCoverInitializedName(init);
         }
         _ = try self.expect(.semicolon);
         const result = try self.parseForRest(for_tok, init);
@@ -2702,6 +2758,27 @@ pub const Parser = struct {
         // and the closing quote is missing for unterminated string literals.
         if (end > self.source.len) end = @intCast(self.source.len);
         return self.source[start + 1 .. end];
+    }
+
+    /// Whether a node tag could contain a CoverInitializedName.
+    /// Used to gate calls to checkCoverInitializedName when the tag is already loaded.
+    pub inline fn tagNeedsCoverCheck(tag: Node.Tag) bool {
+        return switch (tag) {
+            .object_literal, .array_literal, .call_expr,
+            .expression_stmt, .grouping_expr,
+            .unary_plus, .unary_minus, .bitwise_not, .logical_not, .typeof_expr,
+            .void_expr, .delete_expr, .yield_expr, .yield_delegate, .spread_element,
+            .prefix_inc, .prefix_dec, .await_expr => true,
+            else => false,
+        };
+    }
+
+    /// Fast inline entry for checkCoverInitializedName — skips the function call
+    /// entirely for the common non-container cases (identifiers, member exprs, etc.).
+    pub inline fn checkCoverInitializedNameFast(self: *Parser, node: NodeIndex) void {
+        if (node == .none) return;
+        const tag = self.node_tags_ptr[node.toInt()];
+        if (tagNeedsCoverCheck(tag)) self.checkCoverInitializedName(node);
     }
 
     /// Check for CoverInitializedName ({a = 0}) in expression context.
@@ -3010,10 +3087,10 @@ pub const Parser = struct {
                 has_default = true;
             }
             const case_node = try self.parseSwitchCase();
-            try self.scratch.append(self.gpa, @intFromEnum(case_node));
+            self.scratch.appendAssumeCapacity(@intFromEnum(case_node));
         }
         if (self.emit_scope_events and has_default)
-            self.scope_events.events.items[switch_ev].aux = 1;
+            self.ev_ptr[switch_ev].aux = 1;
         try self.emitSwitchClose(.none);
         try self.emitScopeClose(.none);
 
@@ -3055,12 +3132,12 @@ pub const Parser = struct {
                     error.ParseError => {
                         self.synchronize();
                         const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                        try self.scratch.append(self.gpa, @intFromEnum(err_node));
+                        self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
                         continue;
                     },
                     error.OutOfMemory => return error.OutOfMemory,
                 };
-                try self.scratch.append(self.gpa, @intFromEnum(stmt));
+                self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
             }
 
             const stmts = self.scratch.items[scratch_top..];
@@ -3097,12 +3174,12 @@ pub const Parser = struct {
                 error.ParseError => {
                     self.synchronize();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    try self.scratch.append(self.gpa, @intFromEnum(err_node));
+                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
-            try self.scratch.append(self.gpa, @intFromEnum(stmt));
+            self.scratch.appendAssumeCapacity(@intFromEnum(stmt));
         }
 
         const stmts = self.scratch.items[scratch_top..];
@@ -3385,7 +3462,7 @@ pub const Parser = struct {
             const try_finally_ev = try self.emitTryFinallyStart(.none);
             // Mark has_finalizer retroactively on the try_open event.
             if (self.emit_scope_events)
-                self.scope_events.events.items[try_ev].aux = 1;
+                self.ev_ptr[try_ev].aux = 1;
             finally_body = try self.parseBlockStatement();
             self.patchEventNode(try_finally_ev, finally_body);
         }
@@ -3488,13 +3565,13 @@ pub const Parser = struct {
 
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
-        try self.scratch.append(self.gpa, @intFromEnum(first));
+        self.scratch.appendAssumeCapacity(@intFromEnum(first));
         try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
             const decl = try self.parseDeclaratorConst(is_const);
-            try self.scratch.append(self.gpa, @intFromEnum(decl));
+            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
             try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
 
@@ -3549,13 +3626,13 @@ pub const Parser = struct {
 
         // Parse first declarator (required)
         const first = try self.parseDeclaratorConst(is_const);
-        try self.scratch.append(self.gpa, @intFromEnum(first));
+        self.scratch.appendAssumeCapacity(@intFromEnum(first));
         try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
             const decl = try self.parseDeclaratorConst(is_const);
-            try self.scratch.append(self.gpa, @intFromEnum(decl));
+            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
             try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
 
@@ -3838,7 +3915,7 @@ pub const Parser = struct {
                 // `await` reserved in module / async function (escape form too).
                 if (self.is_module or self.in_async) {
                     const t = self.tokenText(tok_ix);
-                    if (std.mem.indexOfScalar(u8, t, '\\') != null) {
+                    if (t.len > 0 and t[0] == '\\') {
                         var rb: [256]u8 = undefined;
                         if (resolveUnicodeEscapesParser(t, &rb)) |r| {
                             if (std.mem.eql(u8, r, "await")) {
@@ -3920,11 +3997,11 @@ pub const Parser = struct {
             _ = self.advance(); // eat 'implements'
             const scratch_top = self.scratch.items.len;
             const first_impl = try typescript.parseType(self);
-            try self.scratch.append(self.gpa, self.node_main_token_ptr[@intFromEnum(first_impl)]);
+            self.scratch.appendAssumeCapacity(self.node_main_token_ptr[@intFromEnum(first_impl)]);
             while (self.peek() == .comma) {
                 _ = self.advance();
                 const impl = try typescript.parseType(self);
-                try self.scratch.append(self.gpa, self.node_main_token_ptr[@intFromEnum(impl)]);
+                self.scratch.appendAssumeCapacity(self.node_main_token_ptr[@intFromEnum(impl)]);
             }
             impls_range = try self.listToSubRange(self.scratch.items[scratch_top..]);
             self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3997,12 +4074,12 @@ pub const Parser = struct {
                 error.ParseError => {
                     self.synchronize();
                     const err_node = self.makeErrorNode() catch return error.OutOfMemory;
-                    try self.scratch.append(self.gpa, @intFromEnum(err_node));
+                    self.scratch.appendAssumeCapacity(@intFromEnum(err_node));
                     continue;
                 },
                 error.OutOfMemory => return error.OutOfMemory,
             };
-            try self.scratch.append(self.gpa, @intFromEnum(member));
+            self.scratch.appendAssumeCapacity(@intFromEnum(member));
         }
 
         const members = self.scratch.items[scratch_top..];
@@ -4126,15 +4203,23 @@ pub const Parser = struct {
             self.peek() == .kw_readonly or self.peek() == .kw_override or
             self.peek() == .kw_declare or self.peek() == .kw_export)
         {
-            const text = self.tokenText(self.tok_i);
+            const mod_tag = self.peek();
+            // Load token text only for .identifier (public/private/protected);
+            // keyword tags (abstract, override, readonly, declare, export) skip text entirely.
+            const text: []const u8 = if (mod_tag == .identifier) self.tokenText(self.tok_i) else "";
             const mod_kind: enum { access, abstract, override, readonly, declare, @"export", not_modifier } =
-                if (std.mem.eql(u8, text, "private") or std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "public")) .access
-                else if (std.mem.eql(u8, text, "abstract")) .abstract
-                else if (std.mem.eql(u8, text, "override")) .override
-                else if (std.mem.eql(u8, text, "readonly")) .readonly
-                else if (std.mem.eql(u8, text, "declare")) .declare
-                else if (std.mem.eql(u8, text, "export")) .@"export"
-                else .not_modifier;
+                switch (mod_tag) {
+                    .kw_abstract => .abstract,
+                    .kw_override => .override,
+                    .kw_readonly => .readonly,
+                    .kw_declare  => .declare,
+                    .kw_export   => .@"export",
+                    .identifier  => if (std.mem.eql(u8, text, "public") or
+                                       std.mem.eql(u8, text, "private") or
+                                       std.mem.eql(u8, text, "protected")) .access
+                                    else .not_modifier,
+                    else => .not_modifier,
+                };
 
             if (mod_kind == .not_modifier) break;
 
@@ -4289,7 +4374,7 @@ pub const Parser = struct {
             // Detect duplicate lexical declarations at static block's top level.
             if (self.emit_scope_events) {
                 var sb_depth: i32 = 0;
-                const sb_evs = self.scope_events.events.items[static_scope_ev + 1 ..];
+                const sb_evs = self.ev_ptr[0..self.ev_len][static_scope_ev + 1 ..];
                 const SbEntry = struct { name: []const u8 };
                 var sb_names: [64]SbEntry = undefined;
                 var sb_names_n: usize = 0;
@@ -4929,7 +5014,7 @@ pub const Parser = struct {
 
         if (self.peek() != .r_paren) {
             const first = try self.parseFormalParameter();
-            try self.scratch.append(self.gpa, @intFromEnum(first));
+            self.scratch.appendAssumeCapacity(@intFromEnum(first));
 
             // Check: rest parameter cannot have trailing comma
             const first_tag = self.node_tags_ptr[@intFromEnum(first)];
@@ -4941,7 +5026,7 @@ pub const Parser = struct {
             while (self.eat(.comma) != null) {
                 if (self.peek() == .r_paren) break; // trailing comma
                 const param = try self.parseFormalParameter();
-                try self.scratch.append(self.gpa, @intFromEnum(param));
+                self.scratch.appendAssumeCapacity(@intFromEnum(param));
 
                 // Check: rest parameter cannot have trailing comma
                 const ptag = self.node_tags_ptr[@intFromEnum(param)];
@@ -5200,7 +5285,7 @@ pub const Parser = struct {
                     .rhs = .none,
                 },
             });
-            try self.scratch.append(self.gpa, @intFromEnum(spec));
+            self.scratch.appendAssumeCapacity(@intFromEnum(spec));
             try self.emitDeclare(if (is_type_import) .type_import_binding else .import_binding, local_node);
 
             // May be followed by `, { ... }` or `, * as ns`
@@ -5209,7 +5294,7 @@ pub const Parser = struct {
                     try self.parseNamedImportSpecifiers(is_type_import);
                 } else if (self.peek() == .asterisk) {
                     const ns_spec = try self.parseNamespaceImportSpecifier();
-                    try self.scratch.append(self.gpa, @intFromEnum(ns_spec));
+                    self.scratch.appendAssumeCapacity(@intFromEnum(ns_spec));
                 } else {
                     try self.emitDiagnostic(self.currentSpan(), "expected '{{' or '*' after default import name and ','", .{});
                     return error.ParseError;
@@ -5219,7 +5304,7 @@ pub const Parser = struct {
             try self.parseNamedImportSpecifiers(is_type_import);
         } else if (self.peek() == .asterisk) {
             const ns_spec = try self.parseNamespaceImportSpecifier();
-            try self.scratch.append(self.gpa, @intFromEnum(ns_spec));
+            self.scratch.appendAssumeCapacity(@intFromEnum(ns_spec));
         } else {
             try self.emitDiagnostic(self.currentSpan(), "expected import specifiers", .{});
             return error.ParseError;
@@ -5349,7 +5434,7 @@ pub const Parser = struct {
                     .rhs = local_node,
                 },
             });
-            try self.scratch.append(self.gpa, @intFromEnum(spec));
+            self.scratch.appendAssumeCapacity(@intFromEnum(spec));
             try self.emitDeclare(if (specifier_is_type) .type_import_binding else .import_binding, local_node);
 
             if (self.eat(.comma) == null) break;
@@ -5763,7 +5848,7 @@ pub const Parser = struct {
                     .rhs = exported_node,
                 },
             });
-            try self.scratch.append(self.gpa, @intFromEnum(spec));
+            self.scratch.appendAssumeCapacity(@intFromEnum(spec));
 
             if (self.eat(.comma) == null) break;
         }
@@ -5951,7 +6036,7 @@ pub const Parser = struct {
                 .main_token = decl_tok,
                 .data = .{ .lhs = binding, .rhs = init },
             });
-            try self.scratch.append(self.gpa, @intFromEnum(decl));
+            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
             if (self.eat(.comma) == null) break;
         }
 
@@ -5981,7 +6066,7 @@ pub const Parser = struct {
             }
             const init: NodeIndex = if (self.eat(.equal) != null) try self.parseAssignmentExpression() else .none;
             const decl = try self.addNode(.{ .tag = .declarator, .main_token = main_tok, .data = .{ .lhs = binding, .rhs = init } });
-            try self.scratch.append(self.gpa, @intFromEnum(decl));
+            self.scratch.appendAssumeCapacity(@intFromEnum(decl));
             if (self.eat(.comma) == null) break;
         }
 
@@ -6446,7 +6531,7 @@ pub const Parser = struct {
                 while (self.peek() != .r_bracket and !self.isAtEnd()) {
                     if (self.eat(.comma) != null) {
                         // Elision (hole)
-                        try self.scratch.append(self.gpa, @intFromEnum(NodeIndex.none));
+                        self.scratch.appendAssumeCapacity(@intFromEnum(NodeIndex.none));
                         continue;
                     }
                     if (self.eat(.ellipsis)) |rest_tok| {
@@ -6456,7 +6541,7 @@ pub const Parser = struct {
                             .main_token = rest_tok,
                             .data = .{ .lhs = rest_binding, .rhs = .none },
                         });
-                        try self.scratch.append(self.gpa, @intFromEnum(rest));
+                        self.scratch.appendAssumeCapacity(@intFromEnum(rest));
                         if (!self.is_ts) break;
                         if (self.peek() == .comma) {
                             _ = self.advance();
@@ -6464,7 +6549,7 @@ pub const Parser = struct {
                         continue;
                     }
                     const elem = try self.parseBindingElement();
-                    try self.scratch.append(self.gpa, @intFromEnum(elem));
+                    self.scratch.appendAssumeCapacity(@intFromEnum(elem));
                     if (self.peek() != .r_bracket) {
                         _ = try self.expect(.comma);
                     }
@@ -6510,7 +6595,7 @@ pub const Parser = struct {
                             .main_token = rest_tok,
                             .data = .{ .lhs = rest_binding, .rhs = .none },
                         });
-                        try self.scratch.append(self.gpa, @intFromEnum(rest));
+                        self.scratch.appendAssumeCapacity(@intFromEnum(rest));
                         if (!self.is_ts) break;
                         if (self.peek() == .comma) {
                             _ = self.advance();
@@ -6532,7 +6617,7 @@ pub const Parser = struct {
                             .main_token = key_tok,
                             .data = .{ .lhs = key_expr, .rhs = value },
                         });
-                        try self.scratch.append(self.gpa, @intFromEnum(prop));
+                        self.scratch.appendAssumeCapacity(@intFromEnum(prop));
                         if (self.eat(.comma) == null) break;
                         continue;
                     }
@@ -6547,7 +6632,7 @@ pub const Parser = struct {
                             .main_token = key_tok,
                             .data = .{ .lhs = key, .rhs = value },
                         });
-                        try self.scratch.append(self.gpa, @intFromEnum(prop));
+                        self.scratch.appendAssumeCapacity(@intFromEnum(prop));
                     } else {
                         // Shorthand: { x } or { x = default }
                         // yield/await can't be binding names in generator/async/module context
@@ -6590,14 +6675,14 @@ pub const Parser = struct {
                                 .main_token = key_tok,
                                 .data = .{ .lhs = pattern, .rhs = .none },
                             });
-                            try self.scratch.append(self.gpa, @intFromEnum(prop));
+                            self.scratch.appendAssumeCapacity(@intFromEnum(prop));
                         } else {
                             const prop = try self.addNode(.{
                                 .tag = .shorthand_property,
                                 .main_token = key_tok,
                                 .data = .{ .lhs = key, .rhs = .none },
                             });
-                            try self.scratch.append(self.gpa, @intFromEnum(prop));
+                            self.scratch.appendAssumeCapacity(@intFromEnum(prop));
                         }
                     }
 
