@@ -49,8 +49,10 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         }
-        // Check for `x is Type` — only if next token after identifier is `is` on same line
-        if (p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
+        // Check for `x is Type` — only valid in return type position.
+        // When not in return type, fall through to parse as normal type reference;
+        // `is` then becomes an unexpected token (TS1005).
+        if (p.in_return_type and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
             const param_tok = p.tok_i;
             _ = p.advance(); // eat param name
             _ = p.advance(); // eat 'is'
@@ -67,9 +69,14 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
             });
         }
     }
-    // `this is Type` predicate — only on same line
+    // `this is Type` predicate — recognized everywhere but only valid in return type position.
+    // Emit TS1228 if not in return type context.
     if (p.peek() == .kw_this and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
         const param_tok = p.tok_i;
+        if (!p.in_return_type) {
+            // TS1228: type predicate not in return type position
+            try p.emitDiagnostic(p.currentSpan(), "A type predicate is only allowed in return type position for functions and methods", .{});
+        }
         _ = p.advance(); // eat 'this'
         _ = p.advance(); // eat 'is'
         const type_node = try parseType(p);
@@ -100,6 +107,12 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
         const prev_in_cond = p.in_conditional_extends;
         p.in_conditional_extends = true;
         defer p.in_conditional_extends = prev_in_cond;
+        // infer_allowed tracks whether `infer T` is valid. It is set here and
+        // propagates through nested parens/mapped-types without being reset,
+        // unlike in_conditional_extends which IS reset for disambiguation.
+        const prev_infer_allowed = p.infer_allowed;
+        p.infer_allowed = true;
+        defer p.infer_allowed = prev_infer_allowed;
         const check_type_result = parseNonConditionalType(p);
         const check_type = check_type_result catch {
             // Backtrack if extends clause fails to parse
@@ -271,8 +284,23 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         .kw_interface, .kw_implements, .kw_enum, .kw_as, .kw_satisfies,
         .kw_is, .kw_override, .kw_const,
         .kw_await, .kw_yield, .kw_async,
+        // Error recovery: TypeScript treats reserved keywords as identifier-like type references
+        // and emits a semantic error (TS2304) rather than a parse error. This lets the parser
+        // continue and allows downstream syntax to be checked normally.
+        // Note: kw_typeof, kw_keyof, kw_infer, kw_new, kw_extends, kw_import, kw_in have
+        // dedicated arms above and must NOT appear here.
+        .kw_break, .kw_case, .kw_catch, .kw_class, .kw_continue,
+        .kw_debugger, .kw_default, .kw_delete, .kw_do, .kw_else,
+        .kw_export, .kw_finally, .kw_for,
+        .kw_if, .kw_instanceof, .kw_let,
+        .kw_return, .kw_static, .kw_super, .kw_switch,
+        .kw_throw, .kw_try, .kw_var, .kw_while, .kw_with,
         => {
             const tok = p.advance();
+            // TS1212: `yield` used as a type name inside a generator is a parse error.
+            if (p.tokenTagAt(tok) == .kw_yield and p.in_generator) {
+                try p.emitDiagnosticAtToken(tok, "Identifier expected. 'yield' is a reserved word in strict mode", .{});
+            }
             return p.addNode(.{
                 .tag = .ts_type_reference,
                 .main_token = tok,
@@ -322,6 +350,12 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         // ── infer T ──────────────────────────────────────────────
         .kw_infer => {
             const tok = p.advance(); // consume `infer`
+            // TS1338: 'infer' only allowed in 'extends' clause of a conditional type.
+            // Use infer_allowed (not in_conditional_extends) — the latter is reset
+            // inside parens for disambiguation purposes, but infer_allowed is not.
+            if (!p.infer_allowed) {
+                try p.emitDiagnostic(p.currentSpan(), "'infer' declarations are only permitted in the 'extends' clause of a conditional type", .{});
+            }
             const type_param = try p.parseIdentifier();
             // Optional constraint: `infer T extends U`
             // Disambiguation: if `extends U` is followed by `?`, it's a
@@ -414,6 +448,12 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
             const tok = p.advance(); // consume `readonly`
             // Parse the type that follows — readonly applies to it
             const inner = try parsePrimaryType(p);
+            // TS1354: 'readonly' only permitted on array and tuple literal types.
+            // parsePrimaryType already consumed `[]`, so inner could be ts_array_type.
+            const inner_tag = p.node_tags_ptr[inner.toInt()];
+            if (inner_tag != .ts_tuple_type and inner_tag != .ts_array_type) {
+                try p.emitError("'readonly' type modifier is only permitted on array and tuple literal types");
+            }
             return p.addNode(.{
                 .tag = .ts_keyof_type,  // TSTypeOperator(operator='readonly')
                 .main_token = tok,
@@ -477,6 +517,68 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
             });
         },
 
+        // ── JSDoc wildcard type: `*` ────────────────────────────────
+        .asterisk => {
+            const tok = p.advance();
+            return p.addNode(.{
+                .tag = .ts_type_reference,
+                .main_token = tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        },
+
+        // ── JSDoc prefix nullable `?Type` / prefix non-null `!Type` ─
+        .question, .bang => {
+            const prefix_tok = p.advance(); // consume `?` or `!`
+            // Speculatively parse inner type; bare `?` or `!` is also valid JSDoc.
+            const saved_tok2 = p.tok_i;
+            const saved_diag2 = p.diagnostics.items.len;
+            const saved_nodes2 = p.nodes.len;
+            const saved_extra2 = p.extra_data.items.len;
+            const maybe_inner = parsePrimaryType(p) catch null;
+            // If parsing failed OR new diagnostics were added (parse emitted errors without Zig error),
+            // restore state and return a dummy node for the `?`/`!` token.
+            if (maybe_inner == null or p.diagnostics.items.len > saved_diag2) {
+                p.tok_i = saved_tok2;
+                p.diagnostics.shrinkRetainingCapacity(saved_diag2);
+                p.nodes.len = @intCast(saved_nodes2);
+                p.extra_data.shrinkRetainingCapacity(saved_extra2);
+                return p.addNode(.{
+                    .tag = .ts_type_reference,
+                    .main_token = prefix_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+            }
+            return maybe_inner.?;
+        },
+
+        // ── JSDoc `function(...)` type ──────────────────────────────
+        .kw_function => {
+            const fn_tok = p.advance(); // consume `function`
+            if (p.peek() == .l_paren) {
+                // Skip JSDoc function params: consume everything up to matching `)`
+                var depth: i32 = 1;
+                _ = p.advance(); // consume `(`
+                while (!p.isAtEnd() and depth > 0) {
+                    switch (p.peek()) {
+                        .l_paren => { depth += 1; _ = p.advance(); },
+                        .r_paren => { depth -= 1; _ = p.advance(); },
+                        else => { _ = p.advance(); },
+                    }
+                }
+                // Optional return type: `: Type`
+                if (p.peek() == .colon) {
+                    _ = p.advance(); // consume `:`
+                    _ = parsePrimaryType(p) catch {};
+                }
+            }
+            return p.addNode(.{
+                .tag = .ts_type_reference,
+                .main_token = fn_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
+        },
+
         // ── Fallback ─────────────────────────────────────────────
         else => {
             try p.emitError("Expected type");
@@ -489,6 +591,15 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
 /// and type arguments: `Foo`, `Foo.Bar`, `Foo<T, U>`, `Foo.Bar<T>`.
 fn parseTypeReference(p: *Parser) Error!NodeIndex {
     const name_tok = p.advance(); // consume identifier
+
+    // TS1213: access-modifier keywords are strict-reserved — illegal as type names in strict mode.
+    if (p.in_strict) {
+        const text = p.tokenText(name_tok);
+        if (std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "private")) {
+            try p.emitDiagnosticAtToken(name_tok,
+                "Identifier expected. '{s}' is a reserved word in strict mode. Class definitions are automatically in strict mode.", .{text});
+        }
+    }
 
     // Build a simple identifier node for the name.
     var name_node = try p.addNode(.{
@@ -512,14 +623,18 @@ fn parseTypeReference(p: *Parser) Error!NodeIndex {
                 .main_token = prop_tok,
                 .data = .{ .lhs = name_node, .rhs = prop_node },
             });
+        } else if (p.peek() != .less_than) {
+            // After `.`, if not followed by `<` (type args), emit TS1003
+            try p.emitError("Identifier expected");
+            break;
         } else {
             break;
         }
     }
 
-    // Type arguments: `<T, U>`
+    // Type arguments: `<T, U>` — do NOT consume `<` on a new line (ASI applies in type position).
     var type_args_rhs: NodeIndex = .none;
-    if (p.peek() == .less_than) {
+    if (p.peek() == .less_than and !p.isOnNewLine()) {
         const args_range = try parseTypeArguments(p);
         const range_extra = try p.addExtra(SubRange, .{
             .start = args_range.start,
@@ -567,7 +682,10 @@ fn parseParenthesizedOrFunctionType(p: *Parser) Error!NodeIndex {
     if (looks_like_fn) {
         // Empty parameter function type: () => ReturnType
         _ = p.advance(); // consume `=>`
+        const prev_in_rt = p.in_return_type;
+        p.in_return_type = true;
         const return_type = try parseType(p);
+        p.in_return_type = prev_in_rt;
         const params_range = try p.addSlice(&[_]u32{});
 
         const fn_extra = try p.addExtra(ast.FnData, .{
@@ -668,7 +786,9 @@ fn looksLikeFunctionTypeParams(p: *Parser) bool {
 /// Parse a simple parenthesized type: `(Type)`.
 fn parseParenthesizedTypeSimple(p: *Parser) Error!NodeIndex {
     const open_tok = p.advance(); // consume `(`
-    // Re-enable conditional types inside parens
+    // Reset in_conditional_extends for disambiguation: `(infer U extends T ? A : B)` must
+    // parse the inner `?` as a conditional, not as the outer conditional's operator.
+    // infer_allowed is NOT reset so `infer` remains valid inside parens within an extends clause.
     const prev_in_cond = p.in_conditional_extends;
     p.in_conditional_extends = false;
     defer p.in_conditional_extends = prev_in_cond;
@@ -733,7 +853,10 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
 
     _ = try p.expect(.arrow);
 
+    const prev_in_rt_fn = p.in_return_type;
+    p.in_return_type = true;
     const return_type = try parseType(p);
+    p.in_return_type = prev_in_rt_fn;
 
     const params = p.scratchSlice(scratch_top);
     const params_range = try p.addSlice(params);
@@ -889,16 +1012,32 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
     const scratch_top = p.scratchLen();
     defer p.scratchPop(scratch_top);
 
+    var seen_optional = false; // once we see Type?, next required is TS1257
+    var seen_concrete_rest = false; // ...T[] (concrete array) — limits what can follow
+
     while (p.peek() != .r_bracket and !p.isAtEnd()) {
         // Spread element in tuple: `...Type` or `...label: Type`
         if (p.peek() == .ellipsis) {
             const spread_tok = p.advance();
-            // Check for labeled spread: `...label: Type`
-            if ((p.peek() == .identifier or p.peek().isKeyword()) and p.peekAt(1) == .colon) {
+            // Check for labeled spread: `...label: Type` or `...label?: Type`
+            if ((p.peek() == .identifier or p.peek().isKeyword()) and
+                (p.peekAt(1) == .colon or (p.peekAt(1) == .question and p.peekAt(2) == .colon)))
+            {
                 _ = p.advance(); // skip label
+                _ = p.eat(.question); // skip optional `?`
                 _ = p.advance(); // skip ':'
             }
             const elem_type = try parseType(p);
+            // Determine if this is a concrete rest element (ts_array_type) or variadic (type ref).
+            const elem_tag = p.node_tags_ptr[elem_type.toInt()];
+            const is_concrete_rest = (elem_tag == .ts_array_type);
+            if (is_concrete_rest) {
+                // TS1265: A rest element cannot follow another rest element.
+                if (seen_concrete_rest) {
+                    try p.emitError("A rest element cannot follow another rest element");
+                }
+                seen_concrete_rest = true;
+            }
             // Optional `?` after spread type
             _ = p.eat(.question);
             const spread_node = try p.addNode(.{
@@ -930,14 +1069,34 @@ fn parseTupleType(p: *Parser) Error!NodeIndex {
             if (is_labeled) {
                 // Labeled tuple element: `name: Type` or `name?: Type`
                 _ = p.advance(); // skip label name
-                _ = p.eat(.question); // skip optional `?`
+                const is_optional_label = p.eat(.question) != null;
                 _ = try p.expect(.colon);
+                // Handle `...` before type for syntactically invalid `rest: ...Type`
+                _ = p.eat(.ellipsis); // skip '...' (syntactically invalid but parseable)
                 const elem_type = try parseType(p);
+                const has_trailing_q = p.eat(.question) != null; // trailing `?` on type
+                const is_opt = is_optional_label or has_trailing_q;
+                if (is_opt) {
+                    // TS1266: An optional element cannot follow a concrete rest element.
+                    if (seen_concrete_rest) try p.emitError("An optional element cannot follow a rest element");
+                    seen_optional = true;
+                } else {
+                    // TS1257: A required element cannot follow an optional element.
+                    if (seen_optional) try p.emitError("A required element cannot follow an optional element");
+                }
                 try p.scratchPush(elem_type);
             } else {
                 const elem_type = try parseType(p);
                 // Optional tuple element: `Type?`
-                _ = p.eat(.question);
+                const is_optional = p.eat(.question) != null;
+                if (is_optional) {
+                    // TS1266: An optional element cannot follow a concrete rest element.
+                    if (seen_concrete_rest) try p.emitError("An optional element cannot follow a rest element");
+                    seen_optional = true;
+                } else {
+                    // TS1257: A required element cannot follow an optional element.
+                    if (seen_optional) try p.emitError("A required element cannot follow an optional element");
+                }
                 try p.scratchPush(elem_type);
             }
         }
@@ -1027,7 +1186,9 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
 
     _ = try p.expect(.kw_in);
 
-    // Parse the constraint type (reset conditional extends context — fresh type scope)
+    // Reset in_conditional_extends for the mapped type constraint — it's a fresh type scope.
+    // infer_allowed is NOT reset, so `{ [P in infer E]: any }` inside an outer extends clause
+    // remains valid.
     const prev_in_cond_mapped = p.in_conditional_extends;
     p.in_conditional_extends = false;
     defer p.in_conditional_extends = prev_in_cond_mapped;
@@ -1053,14 +1214,23 @@ fn parseMappedType(p: *Parser, brace_tok: TokenIndex) Error!NodeIndex {
         _ = p.eat(.question);
     }
 
-    _ = try p.expect(.colon);
-
-    // Parse the value type
-    const value_type = try parseType(p);
+    // Optional `:` and value type (implicit void when absent, e.g. `[K in T]` or `[K in T]?`).
+    var value_type: NodeIndex = .none;
+    if (p.eat(.colon) != null) {
+        value_type = try parseType(p);
+    }
     try p.scratchPush(value_type);
 
     // Optional semicolon
     _ = p.eat(.semicolon);
+
+    // TypeScript permits (with TS7061) additional members after the mapped-type member.
+    // Skip them so we don't produce spurious parse errors.
+    while (p.peek() != .r_brace and !p.isAtEnd()) {
+        const before = p.tok_i;
+        _ = parseInterfaceMember(p) catch .none;
+        if (p.tok_i == before) _ = p.advance(); // safety: no infinite loop
+    }
 
     _ = try p.expect(.r_brace);
 
@@ -1108,7 +1278,10 @@ fn parseConstructorType(p: *Parser) Error!NodeIndex {
 
     _ = try p.expect(.arrow);
 
+    const prev_in_rt_ctor = p.in_return_type;
+    p.in_return_type = true;
     const return_type = try parseType(p);
+    p.in_return_type = prev_in_rt_ctor;
 
     const params = p.scratchSlice(scratch_top);
     const params_range = try p.addSlice(params);
@@ -1202,6 +1375,14 @@ fn parseTemplateLiteralType(p: *Parser) Error!NodeIndex {
 /// Parse a type parameter list: `<T, U extends V, W = Default>`.
 /// Returns a SubRange of type parameter nodes.
 pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
+    return parseTypeParameterListImpl(p, true);
+}
+
+pub fn parseTypeParameterListNoConst(p: *Parser) Error!SubRange {
+    return parseTypeParameterListImpl(p, false);
+}
+
+fn parseTypeParameterListImpl(p: *Parser, allow_const: bool) Error!SubRange {
     _ = try p.expect(.less_than);
 
     const scratch_top = p.scratchLen();
@@ -1210,6 +1391,9 @@ pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
     while (!isClosingAngleBracket(p.peek()) and !p.isAtEnd()) {
         // TS 5.0: `const` modifier on type parameter — `<const T>`
         if (p.peek() == .kw_const and p.peekAt(1) == .identifier) {
+            if (!allow_const) {
+                try p.emitError("'const' modifier can only appear on a type parameter of a function, method or class");
+            }
             _ = p.advance(); // skip 'const'
         }
         // `in` and `out` variance modifiers — `<in T>`, `<out T>`, `<in out T>`
@@ -1270,6 +1454,11 @@ pub fn parseTypeParameterList(p: *Parser) Error!SubRange {
 pub fn parseTypeArguments(p: *Parser) Error!SubRange {
     _ = try p.expect(.less_than);
 
+    // TS1099: Type argument list cannot be empty.
+    if (isClosingAngleBracket(p.peek())) {
+        try p.emitError("Type argument list cannot be empty");
+    }
+
     const scratch_top = p.scratchLen();
     defer p.scratchPop(scratch_top);
 
@@ -1306,10 +1495,10 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
     else
         try p.expect(.identifier);
 
-    // Optional type parameters: `<T, U>`
+    // Optional type parameters: `<T, U>` — `const` modifier not allowed on interface type params
     var type_params_range = SubRange{ .start = 0, .end = 0 };
     if (p.peek() == .less_than) {
-        type_params_range = try parseTypeParameterList(p);
+        type_params_range = try parseTypeParameterListNoConst(p);
     }
 
     // Optional extends clause: `extends A, B`
@@ -1377,10 +1566,10 @@ pub fn parseTypeAliasDeclaration(p: *Parser) Error!NodeIndex {
     // Type alias name
     const name_tok = try p.expect(.identifier);
 
-    // Optional type parameters: `<T, U>`
+    // Optional type parameters: `<T, U>` — `const` modifier not allowed on type alias type params
     var type_params_range = SubRange{ .start = 0, .end = 0 };
     if (p.peek() == .less_than) {
-        type_params_range = try parseTypeParameterList(p);
+        type_params_range = try parseTypeParameterListNoConst(p);
     }
 
     // Expect `=`
@@ -1439,6 +1628,8 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
             });
         } else if (p.peek() == .l_bracket) {
             // Computed member name: [expr]
+            // TS1164: Computed property names are not allowed in enums.
+            try p.emitDiagnostic(p.currentSpan(), "Computed property names are not allowed in enums", .{});
             _ = p.advance();
             member_name = try p.parseExpression();
             _ = try p.expect(.r_bracket);
@@ -1450,6 +1641,15 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
                 .main_token = num_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
+        } else if (p.peek() == .hash) {
+            // Private name in enum: semantic error (TS18024), not a parse error.
+            const hash_tok = p.advance();
+            if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+            member_name = try p.addNode(.{
+                .tag = .identifier,
+                .main_token = hash_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
         } else {
             try p.emitError("Expected enum member name");
             return p.makeErrorNode();
@@ -1459,6 +1659,18 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
         var init_value: NodeIndex = .none;
         if (p.peek() == .equal) {
             _ = p.advance(); // consume `=`
+            // Enum member initializers run outside async/generator context.
+            // TS1308: `await` not valid here; TS1163: `yield` not valid here.
+            const prev_in_async_em = p.in_async;
+            const prev_in_gen_em = p.in_generator;
+            p.in_async = false;
+            p.in_generator = false;
+            p.syncYieldLex();
+            defer {
+                p.in_async = prev_in_async_em;
+                p.in_generator = prev_in_gen_em;
+                p.syncYieldLex();
+            }
             init_value = try p.parseAssignmentExpression();
         }
 
@@ -1519,6 +1731,10 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
     // Name (identifier or string literal for ambient modules)
     var name_node: NodeIndex = undefined;
     if (p.peek() == .string_literal) {
+        // TS1035: Only ambient modules can use quoted names.
+        if (!p.in_ts_ambient) {
+            try p.emitDiagnostic(p.currentSpan(), "Only ambient modules can use quoted names", .{});
+        }
         const str_tok = p.advance();
         name_node = try p.addNode(.{
             .tag = .string_literal,
@@ -1557,16 +1773,24 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
     }
 
     // Module/namespace body allows export/import (module scope) at its top level.
+    // Ambient flag is inherited from the declare context that wraps this namespace.
     const prev_is_module = p.is_module;
     const prev_in_block = p.in_block;
     const prev_in_function = p.in_function;
+    const prev_in_ts_ambient = p.in_ts_ambient;
+    const prev_in_ts_namespace = p.in_ts_namespace;
     p.is_module = true;
     p.in_block = false;
     p.in_function = false;
+    p.in_ts_namespace = true;
+    // If we're already in an ambient context (e.g. `declare namespace`), keep it set.
+    // This allows `const x: T;` inside the body without initializer.
     const body = try p.parseBlockStatement();
     p.is_module = prev_is_module;
     p.in_block = prev_in_block;
     p.in_function = prev_in_function;
+    p.in_ts_ambient = prev_in_ts_ambient;
+    p.in_ts_namespace = prev_in_ts_namespace;
 
     return p.addNode(.{
         .tag = node_tag,
@@ -1592,10 +1816,31 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     const member_tok = p.tok_i;
 
+    // ── TS1071: 'static' modifier on index signature in interface ────
+    // `static` is a keyword token, handled before the identifier-modifier path.
+    if (p.peek() == .kw_static and !p.isOnNewLineAt(1)) {
+        const next = p.peekAt(1);
+        if (next == .l_bracket) {
+            try p.emitDiagnostic(p.currentSpan(), "'static' modifier cannot appear on an index signature", .{});
+        } else if (next != .l_paren and next != .colon and next != .semicolon and
+            next != .r_brace and next != .question and next != .comma and next != .eof)
+        {
+            try p.emitDiagnostic(p.currentSpan(), "Modifier cannot appear on a type member", .{});
+        }
+        if (next != .l_paren and next != .colon and next != .semicolon and
+            next != .r_brace and next != .question and next != .comma and next != .eof)
+        {
+            _ = p.advance(); // skip 'static'
+        }
+    }
+
     // ── Reject access/invalid modifiers on interface members ─────
-    if (p.peek() == .identifier and !p.isOnNewLineAt(1)) {
+    const is_override_kw = p.peek() == .kw_override and !p.isOnNewLineAt(1);
+    const is_ident_mod = p.peek() == .identifier and !p.isOnNewLineAt(1);
+    if (is_override_kw or is_ident_mod) {
         const mod_text = p.tokenText(p.tok_i);
-        const is_invalid_mod = std.mem.eql(u8, mod_text, "public") or
+        const is_invalid_mod = is_override_kw or
+            std.mem.eql(u8, mod_text, "public") or
             std.mem.eql(u8, mod_text, "private") or
             std.mem.eql(u8, mod_text, "protected") or
             std.mem.eql(u8, mod_text, "static") or
@@ -1649,6 +1894,32 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     {
         return parseIndexSignature(p);
     }
+    // TS1096: `[a, b]: Type` — multiple parameters in index signature.
+    // We detect `[identifier ,` as a malformed multi-param index signature.
+    if (p.peek() == .l_bracket and
+        p.peekAt(1) == .identifier and p.peekAt(2) == .comma)
+    {
+        const bracket_tok = p.advance(); // consume `[`
+        const param_ident = try p.parseIdentifier(); // consume first param
+        try p.emitDiagnostic(p.currentSpan(), "An index signature must have exactly one parameter", .{});
+        // Consume remaining params and closing bracket
+        var depth: i32 = 1;
+        while (p.peek() != .eof and depth > 0) {
+            const t = p.peek();
+            if (t == .l_bracket) depth += 1;
+            if (t == .r_bracket) { depth -= 1; if (depth == 0) break; }
+            _ = p.advance();
+        }
+        _ = try p.expect(.r_bracket);
+        _ = try p.expect(.colon);
+        const value_type = try parseType(p);
+        try consumeMemberSeparator(p);
+        return p.addNode(.{
+            .tag = .ts_index_signature,
+            .main_token = bracket_tok,
+            .data = .{ .lhs = param_ident, .rhs = value_type },
+        });
+    }
 
     // ── Skip `readonly` modifier ─────────────────────────────
     if (p.peek() == .kw_readonly) {
@@ -1682,6 +1953,15 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
         _ = p.advance(); // consume `[`
         name_node = try p.parseExpression();
         _ = try p.expect(.r_bracket);
+    } else if (p.peek() == .hash) {
+        // Private names in interface/type members are semantic errors (TS18016), not parse errors.
+        const hash_tok = p.advance();
+        if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
+        name_node = try p.addNode(.{
+            .tag = .identifier,
+            .main_token = hash_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
     } else {
         try p.emitError("Expected interface member name");
         // Advance past the unrecognized token to avoid infinite loops.
@@ -1717,9 +1997,12 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
         _ = try p.expect(.r_paren);
 
         // Optional return type annotation (wrapped in TSTypeAnnotation node)
+        const prev_in_rt_imem = p.in_return_type;
+        p.in_return_type = true;
         const return_type = try p.parseOptionalTypeAnnotation();
+        p.in_return_type = prev_in_rt_imem;
 
-        consumeMemberSeparator(p);
+        try consumeMemberSeparator(p);
 
         const params_slice = p.scratchSlice(scratch_top);
         const params_range = try p.addSlice(params_slice);
@@ -1740,7 +2023,7 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     // ── Property signature: `name: Type` ─────────────────────
     const type_node = try p.parseOptionalTypeAnnotation();
 
-    consumeMemberSeparator(p);
+    try consumeMemberSeparator(p);
 
     return p.addNode(.{
         .tag = .ts_property_signature,
@@ -1778,10 +2061,13 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex, is_construc
     var return_type: NodeIndex = .none;
     if (p.peek() == .colon) {
         _ = p.advance();
+        const prev_in_rt_sig = p.in_return_type;
+        p.in_return_type = true;
         return_type = try parseType(p);
+        p.in_return_type = prev_in_rt_sig;
     }
 
-    consumeMemberSeparator(p);
+    try consumeMemberSeparator(p);
 
     const params_slice = p.scratchSlice(scratch_top);
     const params_range = try p.addSlice(params_slice);
@@ -1808,7 +2094,25 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
 
     // Colon and key type
     _ = try p.expect(.colon);
+    // TS1268: index signature parameter type must be string, number, symbol, or a template literal type.
+    const key_type_tok = p.tok_i;
+    const key_type_first_tag = p.peek();
+    const valid_key_type = switch (key_type_first_tag) {
+        .identifier => blk: {
+            const name = p.tokenText(key_type_tok);
+            break :blk std.mem.eql(u8, name, "string") or
+                std.mem.eql(u8, name, "number") or
+                std.mem.eql(u8, name, "symbol") or
+                std.mem.eql(u8, name, "bigint");
+        },
+        .kw_unique => true, // `unique symbol`
+        .template_head, .template_no_sub => true, // template literal type
+        else => false,
+    };
     _ = try parseType(p);
+    if (!valid_key_type) {
+        try p.emitDiagnosticAtToken(key_type_tok, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type", .{});
+    }
 
     _ = try p.expect(.r_bracket);
 
@@ -1816,7 +2120,7 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
     _ = try p.expect(.colon);
     const value_type = try parseType(p);
 
-    consumeMemberSeparator(p);
+    try consumeMemberSeparator(p);
 
     return p.addNode(.{
         .tag = .ts_index_signature,
@@ -1826,11 +2130,17 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
 }
 
 /// Consume an interface member separator: `;`, `,`, or implicit via newline.
-fn consumeMemberSeparator(p: *Parser) void {
+/// Emits TS1005 if members appear on the same line with no separator.
+fn consumeMemberSeparator(p: *Parser) Error!void {
     if (p.peek() == .semicolon or p.peek() == .comma) {
         _ = p.advance();
+        return;
     }
-    // Otherwise, the member is implicitly terminated by a newline or `}`.
+    // Implicit termination: newline before next token, end of block, or eof.
+    const next = p.peek();
+    if (next == .r_brace or next == .eof or p.isOnNewLine()) return;
+    // Same line, no separator — TS1005 "';' expected".
+    try p.emitDiagnostic(p.currentSpan(), "';' expected", .{});
 }
 
 // =====================================================================

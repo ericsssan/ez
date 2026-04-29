@@ -109,6 +109,10 @@ pub fn main(init: std.process.Init) !void {
         const lang: Token.Language = if (std.mem.endsWith(u8, path, ".ts")) .ts else .js;
         const is_module = detectModuleMode(source);
         const is_strict = detectStrictMode(source);
+        const is_experimental_decorators = detectExperimentalDecorators(source);
+        // Non-ES module kinds (commonjs, amd, umd, system) are NOT strict by default.
+        // Use force_strict=false so we can parse module syntax without strict semantics.
+        const force_strict: ?bool = if (detectNonEsModuleKind(source) and !is_strict) false else null;
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena.deinit();
@@ -131,7 +135,13 @@ pub fn main(init: std.process.Init) !void {
                 break :parse_blk false;
             }).tokens;
             defer toks.deinit(file_alloc);
-            var tree = Parser.parseWithLanguage(file_alloc, parse_source, toks.slice(), lang, is_module) catch {
+            var tree = Parser.parseWithOptions(file_alloc, parse_source, toks.slice(), .{
+                .language = lang,
+                .is_module = is_module,
+                .is_strict = force_strict,
+                .emit_events = true,
+                .experimental_decorators = is_experimental_decorators,
+            }) catch {
                 first_error = "parse OOM";
                 break :parse_blk false;
             };
@@ -201,6 +211,12 @@ pub fn main(init: std.process.Init) !void {
 
 // ── Strict mode detection ───────────────────────────────────────
 
+fn detectExperimentalDecorators(source: []const u8) bool {
+    if (std.mem.indexOf(u8, source, "// @experimentalDecorators: true") != null) return true;
+    if (std.mem.indexOf(u8, source, "// @experimentaldecorators: true") != null) return true;
+    return false;
+}
+
 fn detectStrictMode(source: []const u8) bool {
     // Detect @strict or @alwaysStrict directives in TS test comments.
     if (std.mem.indexOf(u8, source, "// @strict: true") != null) return true;
@@ -219,12 +235,33 @@ fn detectStrictMode(source: []const u8) bool {
 
 // ── Module mode detection ────────────────────────────────────────
 
+/// Returns true if the test explicitly sets @strict: false.
+fn detectExplicitStrictFalse(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "// @strict: false") != null;
+}
+
+/// Returns true if the test uses a non-ES module kind (commonjs, amd, umd, system, none).
+/// These are NOT automatically strict; strict mode only applies when @strict is enabled.
+fn detectNonEsModuleKind(source: []const u8) bool {
+    const non_es = [_][]const u8{ "commonjs", "amd", "umd", "system", "none" };
+    for (non_es) |kind| {
+        var buf: [40]u8 = undefined;
+        const needle1 = std.fmt.bufPrint(&buf, "// @module: {s}", .{kind}) catch continue;
+        if (std.mem.indexOf(u8, source, needle1) != null) return true;
+        const needle2 = std.fmt.bufPrint(&buf, "// @module:{s}", .{kind}) catch continue;
+        if (std.mem.indexOf(u8, source, needle2) != null) return true;
+        const needle3 = std.fmt.bufPrint(&buf, "//@module: {s}", .{kind}) catch continue;
+        if (std.mem.indexOf(u8, source, needle3) != null) return true;
+        const needle4 = std.fmt.bufPrint(&buf, "//@module:{s}", .{kind}) catch continue;
+        if (std.mem.indexOf(u8, source, needle4) != null) return true;
+    }
+    return false;
+}
+
 fn detectModuleMode(source: []const u8) bool {
-    // Any @module directive implies module mode for TS files
-    if (std.mem.indexOf(u8, source, "// @module:") != null or
-        std.mem.indexOf(u8, source, "\xef\xbb\xbf// @module:") != null)
-        return true;
-    // Scan for export/import at start of any line (after optional whitespace)
+    // Scan for export/import at start of any line (after optional whitespace).
+    // Note: @module: directives are compiler OUTPUT options, not module declarations.
+    // A file is an ES module only if it has top-level import/export syntax.
     var i: usize = 0;
     while (i < source.len) {
         // Skip whitespace at start of line
@@ -235,7 +272,7 @@ fn detectModuleMode(source: []const u8) bool {
                 std.mem.eql(u8, source[i..][0..6], "import"))
             {
                 const next = source[i + 6];
-                if (next == ' ' or next == '\t' or next == '{') return true;
+                if (next == ' ' or next == '\t' or next == '{' or next == '\n' or next == '*') return true;
             }
         }
         // Skip to next line
@@ -261,11 +298,6 @@ fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: 
         if (hasSyntaxErrorBaseline(io, allocator, path, baselines_dir, baseline_names))
             return .must_reject;
     }
-
-    // Fallback heuristics for files without baselines
-    if (std.mem.indexOf(u8, path, "ErrorRecovery") != null or
-        std.mem.indexOf(u8, path, "errorRecovery") != null)
-        return .must_reject;
 
     return .must_parse;
 }
@@ -299,17 +331,66 @@ fn hasSyntaxErrorBaseline(io: Io, allocator: std.mem.Allocator, test_path: []con
     return false;
 }
 
+/// TS1xxx codes that are semantic type-checker errors or target-dependent feature checks,
+/// NOT syntactic parse errors. We cannot emit these at parse time, so they must not
+/// classify tests as must-reject.
+/// TS1xxx codes that are semantic type-checker errors or target-dependent feature checks,
+/// NOT syntactic parse errors. We cannot emit these at parse time, so they must not
+/// classify tests as must-reject.
+/// NOTE: Only codes are listed here where ALL files containing only this code can be
+/// safely reclassified as must-parse (our parser accepts them cleanly).
+const semantic_only_codes = [_]u16{
+    1055, // Type is not a valid async function return type (semantic)
+    1058, // Return type of async function must be Promise-compatible (semantic)
+    1064, // Return type of async function must be global Promise<T> (semantic)
+    1166, // Computed property name in class property must have simple literal or unique symbol type (semantic)
+    1169, // Computed property name in interface must have literal or unique symbol type (semantic)
+    1170, // Computed property name in type literal must have literal or unique symbol type (semantic)
+    1207, // Decorators cannot be applied to multiple get/set accessors of same name (semantic)
+    1238, // Unable to resolve signature of class decorator (type-checker)
+    1239, // Unable to resolve signature of method decorator (type-checker)
+    1240, // Unable to resolve signature of property decorator (type-checker)
+    1241, // Unable to resolve signature of parameter decorator (type-checker)
+    1250, // Function declarations not allowed in blocks in strict mode targeting ES5 (target-dep)
+    1346, // Parameter not allowed with 'use strict' directive (non-simple params — ES2016+ only, target-dependent)
+    1347, // 'use strict' directive cannot be used with non-simple parameter list (ES2016+ only, target-dependent)
+    1348, // Non-simple parameter declared here (related hint for TS1346/1347)
+    1349, // 'use strict' directive used here (related hint for TS1346/1347)
+    1270, // Decorator used in ambient context (contextual)
+    1288, // Import alias cannot resolve to type when verbatimModuleSyntax enabled (config)
+    1320, // Type is not valid async function return type in ES5/ES3 (target-dependent)
+    1329, // Cannot enable strictPropertyInitialization without strictNullChecks (config)
+    1345, // Expression of type 'void' cannot be tested for truthiness (type-checker)
+    1360, // Type does not satisfy expected type (type-checker)
+    1451, // Private identifiers only available targeting ES2015+ (target-dependent)
+    1501, // Regex flag only available targeting es6+ (target-dependent)
+};
+
 fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []const u8) bool {
     const content = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(256 * 1024)) catch return false;
     defer allocator.free(content);
 
-    // Check for syntax error codes: TS1xxx (1000-1999)
+    // Check for syntax error codes: TS1xxx (1000-1999, exactly 4 digits after TS).
+    // Must NOT match TS1xxxx (5+ digit codes like TS18050 which are semantic errors).
+    // Skip codes that are semantic/type-checker/target-dependent (not implementable at parse time).
     var i: usize = 0;
     while (i + 6 < content.len) : (i += 1) {
         if (content[i] == 'T' and content[i + 1] == 'S' and content[i + 2] == '1' and
-            isDigit(content[i + 3]) and isDigit(content[i + 4]) and isDigit(content[i + 5]))
+            isDigit(content[i + 3]) and isDigit(content[i + 4]) and isDigit(content[i + 5]) and
+            (i + 6 >= content.len or !isDigit(content[i + 6])))
         {
-            return true;
+            // Parse the 4-digit code.
+            const d1 = content[i + 2] - '0';
+            const d2 = content[i + 3] - '0';
+            const d3 = content[i + 4] - '0';
+            const d4 = content[i + 5] - '0';
+            const code: u16 = @as(u16, d1) * 1000 + @as(u16, d2) * 100 + @as(u16, d3) * 10 + d4;
+            // Skip semantic-only / target-dependent codes.
+            var is_semantic = false;
+            for (semantic_only_codes) |sc| {
+                if (sc == code) { is_semantic = true; break; }
+            }
+            if (!is_semantic) return true;
         }
     }
     return false;

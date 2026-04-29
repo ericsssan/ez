@@ -279,7 +279,7 @@ inline fn checkLsPs(src: []const u8, base: u32, mask: u16, n: u32) bool {
     return false;
 }
 
-pub fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr: bool } {
+pub fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr: bool, terminated: bool } {
     const n: u32 = @intCast(src.len);
     const vtick = @as(V16, @splat(@as(u8, '`')));
     const vbs   = @as(V16, @splat(@as(u8, '\\')));
@@ -293,19 +293,19 @@ pub fn templateChunkEnd(src: []const u8, open: u32) struct { end: u32, has_expr:
             const b: u32 = @ctz(hits);
             const p = i + b;
             const c = src[p];
-            if (c == '`') return .{ .end = p + 1, .has_expr = false };
+            if (c == '`') return .{ .end = p + 1, .has_expr = false, .terminated = true };
             if (c == '\\') { i = p + 2; continue; }
-            if (p + 1 < n and src[p + 1] == '{') return .{ .end = p + 2, .has_expr = true };
+            if (p + 1 < n and src[p + 1] == '{') return .{ .end = p + 2, .has_expr = true, .terminated = true };
             i = p + 1;
         } else {
             const c = src[i];
-            if (c == '`') return .{ .end = i + 1, .has_expr = false };
+            if (c == '`') return .{ .end = i + 1, .has_expr = false, .terminated = true };
             if (c == '\\') { i += 2; continue; }
-            if (c == '$' and i + 1 < n and src[i + 1] == '{') return .{ .end = i + 2, .has_expr = true };
+            if (c == '$' and i + 1 < n and src[i + 1] == '{') return .{ .end = i + 2, .has_expr = true, .terminated = true };
             i += 1;
         }
     }
-    return .{ .end = n, .has_expr = false };
+    return .{ .end = n, .has_expr = false, .terminated = false };
 }
 
 pub inline fn regexEnd(src: []const u8, open: u32) u32 {
@@ -398,7 +398,7 @@ pub inline fn regexAllowed(prev: Tag) bool {
         .less_equal, .greater_equal,
         .ampersand_ampersand, .pipe_pipe, .question_question,
         .kw_return, .kw_typeof, .kw_void, .kw_delete, .kw_throw,
-        .kw_new, .kw_in, .kw_instanceof, .kw_yield, .kw_await, .kw_case,
+        .kw_new, .kw_in, .kw_instanceof, .kw_await, .kw_case,
         => true,
         else => false,
     };
@@ -564,13 +564,14 @@ pub fn tokenizeWithBuf(
             '}' => {
                 if (tmpl_depth > 0 and brace_d[tmpl_depth - 1] == 0) {
                     const res = templateChunkEnd(src, pos);
-                    if (res.has_expr) {
-                        tag = .template_middle;
+                    if (!res.terminated) {
+                        tag = .invalid; end = res.end;
+                    } else if (res.has_expr) {
+                        tag = .template_middle; end = res.end;
                     } else {
-                        tag = .template_tail;
+                        tag = .template_tail; end = res.end;
                         tmpl_depth -= 1;
                     }
-                    end = res.end;
                 } else {
                     if (tmpl_depth > 0) brace_d[tmpl_depth - 1] -= 1;
                     tag = .r_brace; end = pos + 1;
@@ -766,16 +767,18 @@ pub fn tokenizeWithBuf(
             // ── Template literals ────────────────────────────────────────────
             '`' => {
                 const res = templateChunkEnd(src, pos);
-                if (res.has_expr) {
+                if (!res.terminated) {
+                    tag = .invalid; end = res.end;
+                } else if (res.has_expr) {
                     tag = .template_head;
                     if (tmpl_depth < brace_d.len) {
                         brace_d[tmpl_depth] = 0;
                         tmpl_depth += 1;
                     }
+                    end = res.end;
                 } else {
-                    tag = .template_no_sub;
+                    tag = .template_no_sub; end = res.end;
                 }
-                end = res.end;
             },
 
             // ── Numbers ─────────────────────────────────────────────────────
@@ -822,8 +825,13 @@ pub fn tokenizeWithBuf(
                 tag = if (Token.keywords.get(text) != null) .escaped_keyword else .identifier;
             },
 
-            // ── Anything else: skip ──────────────────────────────────────────
-            else => { pos += 1; continue :outer; },
+            // ── Anything else ────────────────────────────────────────────────
+            else => {
+                // VT (0x0B) and FF (0x0C) are ECMAScript WhiteSpace — skip silently.
+                if (byte == 0x0B or byte == 0x0C) { pos += 1; continue :outer; }
+                // All other unrecognized bytes are illegal tokens.
+                tag = .invalid; end = pos + 1;
+            },
         }
 
         // ── Emit token ──

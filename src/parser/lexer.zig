@@ -553,9 +553,18 @@ inline fn nextSetBit(bm: []const u64, from: u32, n: u32) u32 {
     }
 }
 
-/// Bitmap-driven line comment scan. Newline bitmap has every \n / \r set.
-inline fn lineCommentEndBM(newline_bm: []const u64, start: u32, n: u32) u32 {
-    return nextSetBit(newline_bm, start, n);
+/// Bitmap-driven line comment scan. Returns position of the LineTerminator
+/// that ends the comment (or n if none). Stops at \n, \r, LS (U+2028), or
+/// PS (U+2029) — all four are LineTerminators per the ECMAScript spec.
+inline fn lineCommentEndBM(newline_bm: []const u64, start: u32, src: []const u8) u32 {
+    const n: u32 = @intCast(src.len);
+    const nl = nextSetBit(newline_bm, start, n);
+    // Scan [start..nl) for LS (E2 80 A8) or PS (E2 80 A9).
+    var i = start;
+    while (i + 2 < nl) : (i += 1) {
+        if (src[i] == 0xE2 and src[i + 1] == 0x80 and (src[i + 2] == 0xA8 or src[i + 2] == 0xA9)) return i;
+    }
+    return nl;
 }
 
 /// Bitmap-driven string scan. Walks structural|newline (both contain quote
@@ -652,6 +661,14 @@ pub fn blockCommentEndBM(
                         const before_mask: u64 = (@as(u64, 1) << @intCast(p % 64)) - 1;
                         if ((nl_word & before_mask) != 0) has_nl = true;
                     }
+                    // Check for LS/PS in bytes [word_start..p).
+                    if (!has_nl) {
+                        const word_start2: u32 = @intCast(wi * 64);
+                        var scan2: u32 = if (word_start2 < i) i else word_start2;
+                        while (scan2 + 2 < p) : (scan2 += 1) {
+                            if (src[scan2] == 0xE2 and src[scan2 + 1] == 0x80 and (src[scan2 + 2] == 0xA8 or src[scan2 + 2] == 0xA9)) { has_nl = true; break; }
+                        }
+                    }
                     return .{ .end = p + 2, .has_nl = has_nl };
                 }
                 hits &= hits - 1;
@@ -659,6 +676,15 @@ pub fn blockCommentEndBM(
             }
             // No more candidates in this word. Check if newlines exist in remainder.
             if (nl_word != 0) has_nl = true;
+            // Also check for LS/PS in this word's bytes.
+            if (!has_nl) {
+                const ws: u32 = @intCast(wi * 64);
+                var sc: u32 = if (ws < i) i else ws;
+                const we: u32 = @min(ws + 64, n);
+                while (sc + 2 < we) : (sc += 1) {
+                    if (src[sc] == 0xE2 and src[sc + 1] == 0x80 and (src[sc + 2] == 0xA8 or src[sc + 2] == 0xA9)) { has_nl = true; break; }
+                }
+            }
             wi += 1;
             if (wi >= structural_bm.len) return .{ .end = n, .has_nl = has_nl };
             hits = structural_bm[wi];
@@ -750,15 +776,17 @@ fn validateNumericLiteral(src: []const u8, start: u32, end: u32) bool {
             },
             '0'...'9' => {
                 // Legacy-octal-like or non-octal-decimal: `0` followed by more digits.
-                // Numeric separators NOT allowed in these contexts.
-                // BigInt `n` suffix NOT allowed on legacy-octal-like numbers.
+                // BigInt `n` suffix NOT allowed.
                 if (is_bigint) return false;
-                // No separator `_` allowed anywhere in legacy-octal-like form.
+                // No separator `_` allowed in the integer part.
                 var j = start;
-                while (j < val_end) : (j += 1) {
+                while (j < val_end and src[j] != '.' and src[j] != 'e' and src[j] != 'E') : (j += 1) {
                     if (src[j] == '_') return false;
                 }
-                return true;
+                // Pure integer (no fractional/exponent): done.
+                if (j >= val_end) return true;
+                // Has fractional/exponent — validate those parts via decimal rules below.
+                i = j;
             },
             '_' => {
                 // `0_...` — leading separator after `0` not allowed.
@@ -1212,7 +1240,9 @@ pub fn tokenizeWithBufAndBitmaps(
                                             ec_end += 1;
                                         }
                                     } else { ok = false; }
-                                    if (!ok or !uid2.isIdContinueJS(ec_cp)) break;
+                                    if (!ok) break;
+                                    const ec_ok2 = if (ec_cp < 0x80) ((ec_cp >= 'a' and ec_cp <= 'z') or (ec_cp >= 'A' and ec_cp <= 'Z') or (ec_cp >= '0' and ec_cp <= '9') or ec_cp == '_' or ec_cp == '$') else uid2.isIdContinueJS(ec_cp);
+                                    if (!ec_ok2) break;
                                     end = ec_end;
                                     // Scan ASCII/high-byte continuation after escape.
                                     while (end < n) {
@@ -1264,7 +1294,9 @@ pub fn tokenizeWithBufAndBitmaps(
                                     ec_end += 1;
                                 }
                             } else { ok = false; }
-                            if (!ok or !uid3.isIdContinueJS(ec_cp)) break;
+                            if (!ok) break;
+                            const ec_ok3 = if (ec_cp < 0x80) ((ec_cp >= 'a' and ec_cp <= 'z') or (ec_cp >= 'A' and ec_cp <= 'Z') or (ec_cp >= '0' and ec_cp <= '9') or ec_cp == '_' or ec_cp == '$') else uid3.isIdContinueJS(ec_cp);
+                            if (!ec_ok3) break;
                             end = ec_end;
                             // Scan continuation after escape.
                             while (end < n) {
@@ -1474,8 +1506,10 @@ pub fn tokenizeWithBufAndBitmaps(
                 '}' => {
                     if (tmpl_depth > 0 and brace_d[tmpl_depth - 1] == 0) {
                         const res = Lex.templateChunkEnd(src, p);
-                        if (res.has_expr) tag = .template_middle else { tag = .template_tail; tmpl_depth -= 1; }
                         end = res.end;
+                        if (!res.terminated) { tag = .invalid; }
+                        else if (res.has_expr) { tag = .template_middle; }
+                        else { tag = .template_tail; tmpl_depth -= 1; }
                     } else {
                         if (tmpl_depth > 0) brace_d[tmpl_depth - 1] -= 1;
                         tag = .r_brace; end = p + 1;
@@ -1493,7 +1527,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     if (p + 1 < n and src[p + 1] == '?') {
                         if (p + 2 < n and src[p + 2] == '=') { tag = .question_question_equal; end = p + 3; }
                         else { tag = .question_question; end = p + 2; }
-                    } else if (p + 1 < n and src[p + 1] == '.') { tag = .question_dot; end = p + 2; }
+                    } else if (p + 1 < n and src[p + 1] == '.' and !(p + 2 < n and src[p + 2] >= '0' and src[p + 2] <= '9')) { tag = .question_dot; end = p + 2; }
                     else { tag = .question; end = p + 1; }
                 },
                 '+' => {
@@ -1506,7 +1540,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (opts.is_module or !opts.annex_b) {
                             tag = .invalid; end = p + 3;
                         } else {
-                            const ce = lineCommentEndBM(bm.newline, p + 3, n);
+                            const ce = lineCommentEndBM(bm.newline, p + 3, src);
                             try cm_s.append(alloc, p);
                             try cm_e.append(alloc, ce);
                             try cm_k.append(alloc, 0);
@@ -1557,9 +1591,9 @@ pub fn tokenizeWithBufAndBitmaps(
                 '<' => {
                     if (p + 3 < n and src[p + 1] == '!' and src[p + 2] == '-' and src[p + 3] == '-') {
                         if (opts.is_module or !opts.annex_b) {
-                            tag = .invalid; end = p + 4;
+                            tag = .less_than; end = p + 1;
                         } else {
-                            const ce = lineCommentEndBM(bm.newline, p + 4, n);
+                            const ce = lineCommentEndBM(bm.newline, p + 4, src);
                             try cm_s.append(alloc, p);
                             try cm_e.append(alloc, ce);
                             try cm_k.append(alloc, 0);
@@ -1592,12 +1626,12 @@ pub fn tokenizeWithBufAndBitmaps(
                 },
                 '#' => {
                     if (p == 0 and p + 1 < n and src[p + 1] == '!') {
-                        end = lineCommentEndBM(bm.newline, p + 2, n); tag = .hashbang;
+                        end = lineCommentEndBM(bm.newline, p + 2, src); tag = .hashbang;
                     } else { tag = .hash; end = p + 1; }
                 },
                 '/' => {
                     if (p + 1 < n and src[p + 1] == '/') {
-                        const ce = lineCommentEndBM(bm.newline, p + 2, n);
+                        const ce = lineCommentEndBM(bm.newline, p + 2, src);
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, ce);
                         try cm_k.append(alloc, 0);
@@ -1629,14 +1663,15 @@ pub fn tokenizeWithBufAndBitmaps(
                 '"', '\'' => { end = stringEndBM(src, bm.structural, bm.newline, p, n); tag = .string_literal; },
                 '`' => {
                     const res = Lex.templateChunkEnd(src, p);
-                    if (res.has_expr) {
+                    end = res.end;
+                    if (!res.terminated) { tag = .invalid; }
+                    else if (res.has_expr) {
                         tag = .template_head;
                         if (tmpl_depth < brace_d.len) {
                             brace_d[tmpl_depth] = 0;
                             tmpl_depth += 1;
                         }
                     } else { tag = .template_no_sub; }
-                    end = res.end;
                 },
                 '0'...'9' => {
                     end = Lex.numberEnd(src, p);
@@ -1747,7 +1782,8 @@ pub fn tokenizeWithBufAndBitmaps(
                                     }
                                 } else { cont_valid = false; }
                                 if (!cont_valid) break :scan_cont;
-                                if (!uid.isIdContinueJS(ec_cp2)) break :scan_cont;
+                                const ec_ok_cont = if (ec_cp2 < 0x80) ((ec_cp2 >= 'a' and ec_cp2 <= 'z') or (ec_cp2 >= 'A' and ec_cp2 <= 'Z') or (ec_cp2 >= '0' and ec_cp2 <= '9') or ec_cp2 == '_' or ec_cp2 == '$') else uid.isIdContinueJS(ec_cp2);
+                                if (!ec_ok_cont) break :scan_cont;
                                 j = ec_end2;
                                 continue;
                             }
@@ -1829,7 +1865,12 @@ pub fn tokenizeWithBufAndBitmaps(
                     }
                     end = Lex.identEnd(src, p); tag = .identifier;
                 },
-                else => continue, // skip unrecognised
+                else => {
+                    // VT (0x0B) and FF (0x0C) are ECMAScript WhiteSpace — skip silently.
+                    if (byte == 0x0B or byte == 0x0C) continue;
+                    // All other unrecognized bytes (control chars, etc.) are illegal tokens.
+                    tag = .invalid; end = p + 1;
+                },
             }
 
             // Emit token.
@@ -1871,6 +1912,14 @@ pub fn tokenizeWithBufAndBitmaps(
                 if (ew >= bm.ident.len) break;
                 const eb: u32 = end % 64;
                 if (((bm.ident[ew] >> @intCast(eb)) & 1) == 0) break;
+                // If the predecessor byte is non-ident, 'end' is an ident-start:
+                // the main visit loop will process it via the id_start dispatch
+                // (which handles \u continuations). Don't drain it here.
+                if (end > 0) {
+                    const pred_w = (end - 1) / 64;
+                    const pred_b: u6 = @intCast((end - 1) % 64);
+                    if (pred_w < bm.ident.len and ((bm.ident[pred_w] >> pred_b) & 1) == 0) break;
+                }
                 const tail_byte = src[end];
                 var t_tag: Tag = undefined;
                 var t_end: u32 = undefined;

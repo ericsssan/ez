@@ -265,6 +265,15 @@ pub const Parser = struct {
     in_fn_params: bool = false,
     in_method: bool,
     in_conditional_extends: bool,
+    /// True when `infer T` is syntactically valid — set when entering a
+    /// conditional-type extends clause, NOT reset inside nested parens or
+    /// mapped-type constraints (unlike in_conditional_extends which IS reset
+    /// for disambiguation purposes).
+    infer_allowed: bool,
+    /// True when parsing a function/method return type annotation.
+    /// Type predicates (`x is T`, `this is T`) are only valid in return type
+    /// position; when false, we emit TS1228.
+    in_return_type: bool,
     language: Language,
     /// Cached `language.isTs()` and `language.isJsx()` results. Parser
     /// methods test these on hot paths millions of times across a large
@@ -272,6 +281,25 @@ pub const Parser = struct {
     /// `language == .ts or language == .tsx` per call.
     is_ts: bool,
     is_jsx: bool,
+    /// True when parsing inside a `declare` ambient context (e.g. `declare namespace N { ... }`).
+    /// In ambient contexts, `const` declarations without initializers are valid.
+    in_ts_ambient: bool = false,
+    /// True when parsing inside an abstract class body.
+    in_abstract_class: bool = false,
+    /// True when using legacy TypeScript experimental decorators (TS1.x decorator semantics).
+    /// Affects which class member decorator placements are allowed.
+    experimental_decorators: bool = false,
+    /// True when parsing inside a TypeScript namespace/module body (even non-ambient).
+    /// Exports are valid in namespace bodies regardless of in_block.
+    in_ts_namespace: bool = false,
+    /// True when parsing statements directly inside a switch case/default clause
+    /// (not inside a nested block within the clause). Used to detect TS1547/TS1548.
+    in_case_clause: bool = false,
+    /// Stack of active label names for TS duplicate-label and cross-function-boundary checks.
+    ts_label_stack: [32]struct { name: []const u8, fn_depth: u16 } = undefined,
+    ts_label_count: u8 = 0,
+    /// Incremented each time we enter a non-arrow function body; used to detect TS1107.
+    ts_label_fn_depth: u16 = 0,
 
     // ────────────────────────────────────────────────────────────
     // Public API
@@ -290,10 +318,17 @@ pub const Parser = struct {
     pub const ParseOptions = struct {
         language: Language = .js,
         is_module: bool = false,
+        /// When non-null, overrides the strict mode that is otherwise implied by
+        /// `is_module`. Use `false` for CommonJS/AMD/System modules that allow
+        /// ES-module syntax but are NOT automatically strict.
+        is_strict: ?bool = null,
         /// AnnexB web-compat extensions (default ON). When false, parser-level
         /// AnnexB rules are disabled (call-as-assignment-target rejected,
         /// function-in-block redecl checked strictly, etc).
         annex_b: bool = true,
+        /// When true, enables legacy TypeScript experimental decorators mode.
+        /// Affects which decorator placements are allowed vs. rejected.
+        experimental_decorators: bool = false,
         /// If non-null, parser emits a linear stream of scope/declare/reference
         /// events into this buffer.  Used by the event-driven semantic analyzer.
         events_out: ?*ScopeEventStream = null,
@@ -333,19 +368,20 @@ pub const Parser = struct {
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
-        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.events_out, opts.emit_events, opts.streaming, opts.annex_b);
+        const is_strict = opts.is_strict orelse opts.is_module;
+        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, is_strict, opts.events_out, opts.emit_events, opts.streaming, opts.annex_b, opts.experimental_decorators);
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
     /// Always emits scope events — the event-driven semantic analyzer is the
     /// sole path (tree walker was removed). AnnexB extensions are ON by default.
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null, true);
+        return parseInternal(allocator, source, tokens, language, is_module_file, is_module_file, null, true, null, true, false);
     }
 
     /// Same as parseWithLanguage but with an explicit AnnexB flag.
     pub fn parseWithLanguageOpts(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, annex_b: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, null, true, null, annex_b);
+        return parseInternal(allocator, source, tokens, language, is_module_file, is_module_file, null, true, null, annex_b, false);
     }
 
     fn parseInternal(
@@ -354,10 +390,12 @@ pub const Parser = struct {
         tokens: TokenList.Slice,
         language: Language,
         is_module_file: bool,
+        is_strict_mode: bool,
         events_out: ?*ScopeEventStream,
         emit_events: bool,
         streaming: ?StreamingHooks,
         annex_b: bool,
+        experimental_decorators: bool,
     ) !Ast {
         var p = Parser{
             .source = source,
@@ -397,14 +435,17 @@ pub const Parser = struct {
             .allow_arrow = true,
             .is_module = is_module_file,
             .annex_b = annex_b,
+            .experimental_decorators = experimental_decorators,
             .in_export_default = false,
-            .in_strict = is_module_file,
+            .in_strict = is_strict_mode,
             .in_block = false,
             .in_class_field = false,
             .is_fn_body_block = false,
             .in_constructor = false,
             .in_method = false,
             .in_conditional_extends = false,
+            .infer_allowed = false,
+            .in_return_type = false,
             .language = language,
             .is_ts = language.isTs(),
             .is_jsx = language.isJsx(),
@@ -1655,7 +1696,7 @@ pub const Parser = struct {
                         else => {},
                     }
                 }
-                if (!found) {
+                if (!found and !self.is_ts) {
                     const span = Span{ .start = self.tok_starts_ptr[tok_idx], .end = self.tok_starts_ptr[tok_idx] };
                     try self.emitDiagnostic(span, "Export '{s}' is not declared in the module", .{want});
                     return;
@@ -1681,6 +1722,8 @@ pub const Parser = struct {
                         // Sloppy script top-level: function decls hoist as var-bindings;
                         // any flavor pair coexists. Module: strict lexical check applies.
                         if (!self.is_module and (bk == .function_decl or bk == .function_decl_annex_b)) continue;
+                        // TypeScript allows duplicate declarations (overloads, namespace merging).
+                        if (self.is_ts) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
@@ -1798,7 +1841,18 @@ pub const Parser = struct {
                         next == .kw_interface or next == .kw_type or next == .kw_namespace or
                         next == .kw_module or next == .kw_abstract)
                     {
+                        // TS1038: A 'declare' modifier cannot be used in an already ambient context.
+                        if (self.in_ts_ambient) {
+                            try self.emitDiagnostic(self.currentSpan(), "A 'declare' modifier cannot be used in an already ambient context", .{});
+                        }
+                        // TS1184: Modifiers cannot appear here (declare inside a non-namespace block).
+                        if (self.is_ts and (self.in_block or self.in_function or self.in_loop or self.in_switch) and !self.in_ts_namespace) {
+                            try self.emitDiagnostic(self.currentSpan(), "Modifiers cannot appear here", .{});
+                        }
                         _ = self.advance();
+                        const prev_ambient = self.in_ts_ambient;
+                        self.in_ts_ambient = true;
+                        defer self.in_ts_ambient = prev_ambient;
                         return self.parseStatement();
                     }
                     // `declare global { ... }` — global augmentation
@@ -1809,11 +1863,17 @@ pub const Parser = struct {
                         _ = self.advance(); // eat 'global'
                         const prev_is_module = self.is_module;
                         const prev_in_block = self.in_block;
+                        const prev_ambient = self.in_ts_ambient;
+                        const prev_ts_ns = self.in_ts_namespace;
                         self.is_module = true;
                         self.in_block = false;
+                        self.in_ts_ambient = true;
+                        self.in_ts_namespace = true;
                         const body = try self.parseBlockStatement();
                         self.is_module = prev_is_module;
                         self.in_block = prev_in_block;
+                        self.in_ts_ambient = prev_ambient;
+                        self.in_ts_namespace = prev_ts_ns;
                         return body;
                     }
                     // Not a valid declare target — fall through to expression statement
@@ -1856,7 +1916,8 @@ pub const Parser = struct {
                 // In non-strict mode, `let` is only a declaration keyword when followed
                 // (without a newline) by an identifier, `[`, or `{`.
                 // With a newline, ASI kicks in and `let` is an identifier expression.
-                if (self.in_strict) return self.parseVariableDeclaration();
+                // In strict mode or TypeScript mode, `let` is always a declaration keyword.
+                if (self.in_strict or self.is_ts) return self.parseVariableDeclaration();
                 const next = self.peekAt(1);
                 // Only check for binding start tokens; skip newline check for non-ambiguous tokens
                 const could_be_binding = next == .l_bracket or next == .l_brace or
@@ -1902,6 +1963,16 @@ pub const Parser = struct {
                 if (self.peek() == .kw_export) {
                     return self.parseExportDeclaration();
                 }
+                // TS1206: decorators are not valid on function declarations
+                if (self.is_ts and (self.peek() == .kw_function or
+                    (self.peek() == .kw_async and self.peekAt(1) == .kw_function)))
+                {
+                    try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here", .{});
+                }
+                if (self.peek() == .kw_abstract and self.peekAt(1) == .kw_class) {
+                    _ = self.advance(); // eat abstract
+                    return self.parseClassDeclaration();
+                }
                 return self.parseExpressionStatement();
             },
             .kw_import => {
@@ -1919,8 +1990,14 @@ pub const Parser = struct {
             .kw_export => {
                 if (!self.is_module) {
                     try self.emitDiagnostic(self.currentSpan(), "export declarations require module mode", .{});
-                } else if (!self.is_ts and (self.in_block or self.in_function or self.in_loop or self.in_switch)) {
-                    // In TS, export is valid inside namespace/module/enum blocks.
+                } else if (self.in_function) {
+                    // export inside a function body is always invalid (TS1184)
+                    try self.emitDiagnostic(self.currentSpan(), "export declarations must be at top level", .{});
+                } else if (self.is_ts and (self.in_block or self.in_loop or self.in_switch) and !self.in_ts_namespace) {
+                    // In TS mode, export inside a plain block (not a namespace body) is TS1184.
+                    try self.emitDiagnostic(self.currentSpan(), "export declarations must be at top level", .{});
+                } else if (!self.is_ts and (self.in_block or self.in_loop or self.in_switch)) {
+                    // In non-TS mode, export inside any non-module context is invalid.
                     try self.emitDiagnostic(self.currentSpan(), "export declarations must be at top level", .{});
                 }
                 return self.parseExportDeclaration();
@@ -1936,10 +2013,15 @@ pub const Parser = struct {
             .kw_await => {
                 // `await using x = ...` — Explicit Resource Management (ES2025)
                 if (self.peekAt(1) == .identifier and
-                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
-                    self.peekAt(2) == .identifier)
+                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using"))
                 {
-                    return self.parseUsingDeclaration(true);
+                    const tok2 = self.peekAt(2);
+                    if (tok2 == .identifier) {
+                        return self.parseUsingDeclaration(true);
+                    }
+                    // `await using [...]` / `await using {...}`: fall through to expression
+                    // parsing. `await using[x]` must parse as `await (using[x])` when
+                    // `using` is a variable name (explicit-resource-management spec).
                 }
                 // Outside async/module, `await` is a regular identifier (can be label)
                 if (!self.in_async and !self.is_module) {
@@ -2022,6 +2104,9 @@ pub const Parser = struct {
         const prev_in_block = self.in_block;
         self.in_block = true;
         defer self.in_block = prev_in_block;
+        const prev_in_case_clause = self.in_case_clause;
+        self.in_case_clause = false;
+        defer self.in_case_clause = prev_in_case_clause;
         const scope_ev = try self.emitScopeOpen(.block, .none);
         // Capture FunctionBody flag BEFORE parsing inner statements — nested
         // parseBlockStatement calls would otherwise consume it.
@@ -2053,6 +2138,8 @@ pub const Parser = struct {
                         if (bk == .@"var" or bk == .parameter) continue;
                         // FunctionBody: function decls skip redecl check (TopLevelLexicallyDeclaredNames).
                         if (is_fn_body and (bk == .function_decl or bk == .function_decl_annex_b)) continue;
+                        // TypeScript allows duplicate declarations (overloads, namespace merging).
+                        if (self.is_ts) continue;
                         const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
                         const tok_start = self.tok_starts_ptr[main_tok_idx];
                         const tok_len = self.tok_lens_ptr[main_tok_idx];
@@ -2144,6 +2231,10 @@ pub const Parser = struct {
     /// Parse `;`.
     pub fn parseEmptyStatement(self: *Parser) !NodeIndex {
         const semi = self.advance();
+        // TS1036: Statements are not allowed in ambient contexts.
+        if (self.is_ts and self.in_ts_ambient) {
+            try self.emitDiagnostic(self.currentSpan(), "Statements are not allowed in ambient contexts", .{});
+        }
         return self.addNode(.{
             .tag = .empty_stmt,
             .main_token = semi,
@@ -2245,6 +2336,26 @@ pub const Parser = struct {
                 }
                 return self.parseStatement();
             },
+            .identifier => {
+                if (std.mem.eql(u8, self.tokenText(self.tok_i), "using")) {
+                    const next = self.peekAt(1);
+                    if (next == .identifier or next == .kw_of or next == .kw_let or next == .kw_await) {
+                        try self.emitDiagnostic(self.currentSpan(), "'using' declarations can only be declared inside a block", .{});
+                        return error.ParseError;
+                    }
+                }
+                return self.parseStatement();
+            },
+            .kw_await => {
+                if (self.peekAt(1) == .identifier and
+                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
+                    self.peekAt(2) == .identifier)
+                {
+                    try self.emitDiagnostic(self.currentSpan(), "'await using' declarations can only be declared inside a block", .{});
+                    return error.ParseError;
+                }
+                return self.parseStatement();
+            },
             else => return self.parseStatement(),
         }
     }
@@ -2305,6 +2416,26 @@ pub const Parser = struct {
             .kw_export => {
                 try self.emitDiagnostic(self.currentSpan(), "import/export not allowed in single-statement context", .{});
                 return error.ParseError;
+            },
+            .identifier => {
+                if (std.mem.eql(u8, self.tokenText(self.tok_i), "using")) {
+                    const next = self.peekAt(1);
+                    if (next == .identifier or next == .kw_of or next == .kw_let or next == .kw_await) {
+                        try self.emitDiagnostic(self.currentSpan(), "'using' declarations can only be declared inside a block", .{});
+                        return error.ParseError;
+                    }
+                }
+                return self.parseStatement();
+            },
+            .kw_await => {
+                if (self.peekAt(1) == .identifier and
+                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
+                    self.peekAt(2) == .identifier)
+                {
+                    try self.emitDiagnostic(self.currentSpan(), "'await using' declarations can only be declared inside a block", .{});
+                    return error.ParseError;
+                }
+                return self.parseStatement();
             },
             else => return self.parseStatement(),
         }
@@ -2481,8 +2612,11 @@ pub const Parser = struct {
                 // Otherwise treat `let` as identifier expression (e.g. `for (let in obj)`)
             }
             // Check for `using x` or `await using x`
+            // Also allow `using of = ...` (for (using of = null;;)) — `of` is a valid binding
+            // identifier; the `of` lookahead restriction only applies to for-of/for-await-of.
             if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "using") and
-                (self.peekAt(1) == .identifier or self.peekAt(1) == .kw_of or self.peekAt(1) == .kw_let)) {
+                (self.peekAt(1) == .identifier or self.peekAt(1) == .kw_let or
+                 (self.peekAt(1) == .kw_of and self.peekAt(2) == .equal))) {
                 const main_tok = self.tok_i;
                 _ = self.advance(); // eat 'using'
                 break :init_blk try self.parseUsingDeclaratorList(main_tok);
@@ -2541,6 +2675,14 @@ pub const Parser = struct {
         }
 
         if (self.eat(.kw_of)) |_| {
+            // TS1106: The left-hand side of a 'for...of' statement may not be 'async'.
+            if (self.is_ts and !is_await and init != .none) {
+                const init_tag = self.node_tags_ptr[init.toInt()];
+                const init_tok = self.node_main_token_ptr[init.toInt()];
+                if (init_tag == .identifier and std.mem.eql(u8, self.tokenText(init_tok), "async")) {
+                    try self.emitDiagnostic(self.currentSpan(), "The left-hand side of a 'for...of' statement may not be 'async'", .{});
+                }
+            }
             try self.rejectForInOfInitializer(init, false);
             try self.validateForInOfBinding(init, true);
             const right = try self.parseAssignmentExpression();
@@ -2589,11 +2731,13 @@ pub const Parser = struct {
 
     /// Check for "use strict" directive at current position (without consuming tokens).
     fn checkDirectivePrologue(self: *Parser) void {
-        self.checkDirectivePrologueAt(self.tok_i);
+        _ = self.checkDirectivePrologueAt(self.tok_i);
     }
 
     /// Check for "use strict" starting at a specific token position.
-    fn checkDirectivePrologueAt(self: *Parser, start_pos: u32) void {
+    /// Returns true if a "use strict" directive was found (regardless of whether
+    /// strict mode changed — it may have already been active).
+    fn checkDirectivePrologueAt(self: *Parser, start_pos: u32) bool {
         var pos = start_pos;
         while (pos < self.parsed_len) {
             const tag = self.tags_ptr[pos];
@@ -2614,7 +2758,7 @@ pub const Parser = struct {
             if (std.mem.eql(u8, text, "use strict")) {
                 self.in_strict = true;
                 self.syncYieldLex();
-                return;
+                return true;
             }
 
             pos += 1;
@@ -2622,6 +2766,7 @@ pub const Parser = struct {
                 pos += 1;
             }
         }
+        return false;
     }
 
     /// Extract string content (without quotes) from a string literal at the given position.
@@ -2770,6 +2915,16 @@ pub const Parser = struct {
                 try self.validateAssignmentTargetObject(unwrapped.node);
             },
             .var_decl, .let_decl, .const_decl => {
+                // TS1493/TS1494: using/await using not allowed on for-in LHS
+                if (!is_for_of and self.is_ts and init_tag == .const_decl) {
+                    const decl_main = self.node_main_token_ptr[init.toInt()];
+                    const decl_tag = self.tokenTagAt(decl_main);
+                    if (decl_tag == .identifier and std.mem.eql(u8, self.tokenText(decl_main), "using")) {
+                        try self.emitDiagnostic(self.currentSpan(), "The left-hand side of a 'for...in' statement cannot be a 'using' declaration", .{});
+                    } else if (decl_tag == .kw_await) {
+                        try self.emitDiagnostic(self.currentSpan(), "The left-hand side of a 'for...in' statement cannot be an 'await using' declaration", .{});
+                    }
+                }
                 // Must have exactly one declarator
                 const d = self.node_data_ptr[init.toInt()];
                 const count = @intFromEnum(d.rhs) - @intFromEnum(d.lhs);
@@ -2879,8 +3034,8 @@ pub const Parser = struct {
         const init_tag = self.node_tags_ptr[init.toInt()];
         // Variable declarations with initializers
         if (init_tag == .var_decl or init_tag == .let_decl or init_tag == .const_decl) {
-            // Annex B: `for (var x = expr in y)` is allowed in non-strict for-in (not for-of)
-            if (is_for_in and init_tag == .var_decl and !self.in_strict) return;
+            // Annex B: `for (var x = expr in y)` is allowed in non-strict for-in (not for-of), but not in TS.
+            if (is_for_in and init_tag == .var_decl and !self.in_strict and !self.is_ts) return;
             const init_data = self.node_data_ptr[init.toInt()];
             const range = ast.SubRange{
                 .start = @intFromEnum(init_data.lhs),
@@ -3005,6 +3160,10 @@ pub const Parser = struct {
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
+            const prev_in_case_clause = self.in_case_clause;
+            self.in_case_clause = true;
+            defer self.in_case_clause = prev_in_case_clause;
+
             while (true) {
                 const tsc = self.peek();
                 if (tsc == .kw_case or tsc == .kw_default or tsc == .r_brace or tsc == .eof) break;
@@ -3046,6 +3205,10 @@ pub const Parser = struct {
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
+
+        const prev_in_case_clause2 = self.in_case_clause;
+        self.in_case_clause = true;
+        defer self.in_case_clause = prev_in_case_clause2;
 
         while (true) {
             const tsc2 = self.peek();
@@ -3157,6 +3320,24 @@ pub const Parser = struct {
         // Label must be on the same line (no ASI between break and label).
         if (self.peek() == .identifier and !self.isOnNewLine()) {
             const label_tok = self.advance();
+            const label_name = self.tokenText(label_tok);
+            // TS1107/TS1116: validate label target
+            if (self.is_ts) {
+                var found = false;
+                var i: u8 = 0;
+                while (i < self.ts_label_count) : (i += 1) {
+                    if (std.mem.eql(u8, self.ts_label_stack[i].name, label_name)) {
+                        if (self.ts_label_fn_depth > self.ts_label_stack[i].fn_depth) {
+                            try self.emitDiagnosticAtToken(label_tok, "Jump target cannot cross function boundary", .{});
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try self.emitDiagnosticAtToken(label_tok, "A 'break' statement can only jump to a label of an enclosing statement", .{});
+                }
+            }
             // Create a real identifier node for the label so rules can walk it.
             const label_node = try self.addNode(.{
                 .tag = .property_ident,
@@ -3197,6 +3378,24 @@ pub const Parser = struct {
         // Label must be on the same line (no ASI between continue and label).
         if (self.peek() == .identifier and !self.isOnNewLine()) {
             const label_tok = self.advance();
+            const label_name = self.tokenText(label_tok);
+            // TS1107/TS1115: validate label target
+            if (self.is_ts) {
+                var found = false;
+                var i: u8 = 0;
+                while (i < self.ts_label_count) : (i += 1) {
+                    if (std.mem.eql(u8, self.ts_label_stack[i].name, label_name)) {
+                        if (self.ts_label_fn_depth > self.ts_label_stack[i].fn_depth) {
+                            try self.emitDiagnosticAtToken(label_tok, "Jump target cannot cross function boundary", .{});
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    try self.emitDiagnosticAtToken(label_tok, "A 'continue' statement can only jump to a label of an enclosing iteration statement", .{});
+                }
+            }
             const label_node = try self.addNode(.{
                 .tag = .property_ident,
                 .main_token = label_tok,
@@ -3237,6 +3436,27 @@ pub const Parser = struct {
             .data = .{ .lhs = .none, .rhs = .none },
         });
 
+        const label_name = self.tokenText(label_tok);
+
+        // TS1114: Duplicate label check
+        if (self.is_ts) {
+            var i: u8 = 0;
+            while (i < self.ts_label_count) : (i += 1) {
+                if (std.mem.eql(u8, self.ts_label_stack[i].name, label_name)) {
+                    try self.emitDiagnostic(self.currentSpan(), "Duplicate label", .{});
+                    break;
+                }
+            }
+        }
+
+        // Push label onto stack for TS cross-function-boundary detection
+        const prev_label_count = self.ts_label_count;
+        if (self.is_ts and self.ts_label_count < self.ts_label_stack.len) {
+            self.ts_label_stack[self.ts_label_count] = .{ .name = label_name, .fn_depth = self.ts_label_fn_depth };
+            self.ts_label_count += 1;
+        }
+        defer self.ts_label_count = prev_label_count;
+
         // Labeled declarations are mostly forbidden
         switch (self.peek()) {
             .kw_class => {
@@ -3246,6 +3466,13 @@ pub const Parser = struct {
             .kw_const => {
                 try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed after label", .{});
                 return error.ParseError;
+            },
+            .kw_var => {
+                // TS1344: label on var declaration is not allowed in TypeScript.
+                if (self.is_ts) {
+                    try self.emitDiagnostic(self.currentSpan(), "A label is not allowed here", .{});
+                    return error.ParseError;
+                }
             },
             .kw_let => {
                 const is_decl = blk: {
@@ -3384,7 +3611,7 @@ pub const Parser = struct {
 
     /// Parse `with (expr) stmt`.
     pub fn parseWithStatement(self: *Parser) Error!NodeIndex {
-        if (self.in_strict and !self.is_ts) {
+        if (self.in_strict or (self.is_ts and !self.is_module)) {
             try self.emitDiagnostic(self.currentSpan(), "'with' statements are not allowed in strict mode", .{});
             // Continue parsing to avoid cascading failures
         }
@@ -3417,6 +3644,9 @@ pub const Parser = struct {
         const decl_tok = self.advance(); // eat var/let/const
         const decl_tag: TokenTag = self.tokenTagAt(decl_tok);
         const is_const = decl_tag == .kw_const;
+        // In TS mode, `const x;` is valid without initializer when in an ambient context
+        // (`declare const x;`, inside `declare namespace { ... }`, etc.)
+        const is_ts_ambient = self.is_ts and is_const and self.in_ts_ambient;
 
         const tag: Node.Tag = switch (decl_tag) {
             .kw_var => .var_decl,
@@ -3445,13 +3675,13 @@ pub const Parser = struct {
         defer self.in_lexical_decl = prev_lex;
 
         // Parse first declarator (required)
-        const first = try self.parseDeclaratorConst(is_const);
+        const first = try self.parseDeclaratorConst(is_const, is_ts_ambient);
         try self.scratchPush(first);
         try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
-            const decl = try self.parseDeclaratorConst(is_const);
+            const decl = try self.parseDeclaratorConst(is_const, is_ts_ambient);
             try self.scratchPush(decl);
             try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
@@ -3478,6 +3708,7 @@ pub const Parser = struct {
         const decl_tok = self.advance(); // eat var/let/const
         const decl_tag: TokenTag = self.tokenTagAt(decl_tok);
         const is_const = decl_tag == .kw_const;
+        const is_ts_ambient = self.is_ts and is_const and self.in_ts_ambient;
 
         const tag: Node.Tag = switch (decl_tag) {
             .kw_var => .var_decl,
@@ -3506,13 +3737,13 @@ pub const Parser = struct {
         defer self.in_lexical_decl = prev_lex;
 
         // Parse first declarator (required)
-        const first = try self.parseDeclaratorConst(is_const);
+        const first = try self.parseDeclaratorConst(is_const, is_ts_ambient);
         try self.scratchPush(first);
         try self.emitDeclareFromDeclarator(first, binding_kind);
 
         // Parse additional declarators separated by commas
         while (self.eat(.comma) != null) {
-            const decl = try self.parseDeclaratorConst(is_const);
+            const decl = try self.parseDeclaratorConst(is_const, is_ts_ambient);
             try self.scratchPush(decl);
             try self.emitDeclareFromDeclarator(decl, binding_kind);
         }
@@ -3532,16 +3763,16 @@ pub const Parser = struct {
 
     /// Parse `binding [: Type] = init`.
     pub fn parseDeclarator(self: *Parser) Error!NodeIndex {
-        return self.parseDeclaratorConst(false);
+        return self.parseDeclaratorConst(false, false);
     }
 
     /// Parse `binding [: Type] = init`, with optional const-requires-initializer check.
-    fn parseDeclaratorConst(self: *Parser, is_const: bool) Error!NodeIndex {
+    fn parseDeclaratorConst(self: *Parser, is_const: bool, is_ts_ambient: bool) Error!NodeIndex {
         const main_tok = self.tok_i;
         const binding = try self.parseBindingPattern();
 
         // TS definite assignment: `let x!;` or `let x!: Type;`
-        if (self.is_ts) _ = self.eat(.bang);
+        const had_definite_bang = self.is_ts and self.eat(.bang) != null;
         const type_annotation = try self.parseOptionalTypeAnnotation();
 
         // Attach type annotation to identifier binding (so parent_builder can reach it).
@@ -3563,6 +3794,11 @@ pub const Parser = struct {
         }
         defer self.decl_name_text = saved_decl_name;
 
+        // TS1263: `let x! = value` — definite assignment assertion with initializer is invalid.
+        if (had_definite_bang and self.peek() == .equal) {
+            try self.emitDiagnostic(self.currentSpan(), "Declarations with initializers cannot also have definite assignment assertions", .{});
+        }
+
         const init: NodeIndex = if (self.eat(.equal) != null)
             try self.parseAssignmentExpression()
         else
@@ -3577,11 +3813,16 @@ pub const Parser = struct {
         const for_next = self.peek();
         if (init == .none and for_next != .kw_in and for_next != .kw_of) {
             const binding_tag = self.node_tags_ptr[binding.toInt()];
-            if (!self.is_ts and (binding_tag == .array_pattern or binding_tag == .object_pattern)) {
-                try self.emitDiagnostic(self.currentSpan(), "Missing initializer in destructuring declaration", .{});
+            if (binding_tag == .array_pattern or binding_tag == .object_pattern) {
+                if (self.is_ts and self.in_ts_ambient) {
+                    // TS1182 in ambient context is a semantic error; parser accepts it
+                } else {
+                    try self.emitDiagnostic(self.currentSpan(), "Missing initializer in destructuring declaration", .{});
+                    if (!self.is_ts) return error.ParseError;
+                }
             }
             // const declarations always require an initializer (except in TS ambient contexts)
-            if (is_const and !self.is_ts) {
+            if (is_const and !(self.is_ts and is_ts_ambient)) {
                 try self.emitDiagnostic(self.currentSpan(), "Missing initializer in const declaration", .{});
                 return error.ParseError;
             }
@@ -3614,6 +3855,10 @@ pub const Parser = struct {
 
         // Check for generator: `function*`
         const is_generator = self.eat(.asterisk) != null;
+        // TS1221: Generators are not allowed in an ambient context.
+        if (is_generator and self.is_ts and self.in_ts_ambient) {
+            try self.emitDiagnostic(self.currentSpan(), "Generators are not allowed in an ambient context", .{});
+        }
 
         // Function name (required unless export default) — hoist peek to avoid
         // re-reading the tag on every branch of this if-else chain.
@@ -3622,13 +3867,13 @@ pub const Parser = struct {
             // Check strict-mode restrictions on function name
             try self.checkStrictBinding(self.tok_i);
             break :blk try self.parseIdentifier();
-        } else if (fn_name_tag == .kw_yield and !self.in_generator and !self.in_strict) blk: {
+        } else if (fn_name_tag == .kw_yield and !self.in_generator and !self.in_strict and !self.is_ts) blk: {
             break :blk try self.parseIdentifier();
         } else if (fn_name_tag == .kw_await and !self.in_async and !self.is_module and !(self.in_static_block and !self.in_function)) blk: {
             break :blk try self.parseIdentifier();
         } else if ((fn_name_tag == .kw_let or fn_name_tag == .kw_static or
             fn_name_tag == .kw_implements or fn_name_tag == .kw_interface or
-            fn_name_tag == .kw_async) and !self.in_strict)
+            fn_name_tag == .kw_async) and !self.in_strict and !self.is_ts)
         blk: {
             break :blk try self.parseIdentifier();
         } else if (fn_name_tag == .kw_get or fn_name_tag == .kw_set or
@@ -3661,28 +3906,43 @@ pub const Parser = struct {
         const prev_in_generator = self.in_generator;
         const prev_in_class_field = self.in_class_field;
         const prev_nta_fd = self.new_target_allowed;
+        const prev_ts_label_fn_depth = self.ts_label_fn_depth;
+        const prev_in_loop_fd = self.in_loop;
+        const prev_in_switch_fd = self.in_switch;
+        const prev_ts_label_count_fd = self.ts_label_count;
         self.in_function = true;
         self.in_async = is_async;
         self.in_generator = is_generator;
         // Function body has its own `arguments` binding — clears class-field restriction.
         self.in_class_field = false;
         self.new_target_allowed = true;
+        // Reset loop/switch/label context — they don't cross function boundaries.
+        self.in_loop = false;
+        self.in_switch = false;
+        self.ts_label_count = 0;
+        if (self.ts_label_fn_depth < std.math.maxInt(u16)) self.ts_label_fn_depth += 1;
         self.syncYieldLex();
 
         const fn_type_params = try self.parseOptionalTypeParameters();
         const params = try self.parseFormalParameters();
+        self.in_return_type = true;
         const fn_return_type = try self.parseOptionalTypeAnnotation();
+        self.in_return_type = false;
         defer {
             self.in_function = prev_in_function;
             self.in_async = prev_in_async;
             self.in_generator = prev_in_generator;
             self.in_class_field = prev_in_class_field;
             self.new_target_allowed = prev_nta_fd;
+            self.ts_label_fn_depth = prev_ts_label_fn_depth;
+            self.in_loop = prev_in_loop_fd;
+            self.in_switch = prev_in_switch_fd;
+            self.ts_label_count = prev_ts_label_count_fd;
             self.syncYieldLex();
         }
 
         const prev_strict = self.in_strict;
-        if (self.peek() == .l_brace) self.checkDirectivePrologueAt(self.tok_i + 1);
+        if (self.peek() == .l_brace) _ = self.checkDirectivePrologueAt(self.tok_i + 1);
         if (self.in_strict != prev_strict) self.syncYieldLex();
         defer { self.in_strict = prev_strict; self.syncYieldLex(); }
 
@@ -3714,6 +3974,10 @@ pub const Parser = struct {
 
         // TS ambient/declare functions and overload signatures have no body.
         if (self.is_ts and self.peek() != .l_brace) {
+            // TS1222: An overload signature cannot be declared as a generator.
+            if (is_generator and !self.in_ts_ambient) {
+                try self.emitDiagnostic(self.currentSpan(), "An overload signature cannot be declared as a generator", .{});
+            }
             _ = self.eat(.semicolon);
             try self.emitScopeClose(.none); // close function scope (no body)
             const decl_extra = try self.addExtra(ast.FnData, .{
@@ -3741,6 +4005,10 @@ pub const Parser = struct {
             return decl_node;
         }
 
+        // TS1183: An implementation cannot be declared in ambient contexts.
+        if (self.is_ts and self.in_ts_ambient) {
+            try self.emitDiagnostic(self.currentSpan(), "An implementation cannot be declared in ambient contexts", .{});
+        }
         self.is_fn_body_block = true;
         const prev_fp_body = self.in_fn_params;
         self.in_fn_params = false; // body is outside params — clear for nested await/yield
@@ -3799,7 +4067,7 @@ pub const Parser = struct {
                 // `await` reserved in module / async function (escape form too).
                 if (self.is_module or self.in_async) {
                     const t = self.tokenText(tok_ix);
-                    if (t.len > 0 and t[0] == '\\') {
+                    if (std.mem.indexOfScalar(u8, t, '\\') != null) {
                         var rb: [256]u8 = undefined;
                         if (resolveUnicodeEscapesParser(t, &rb)) |r| {
                             if (std.mem.eql(u8, r, "await")) {
@@ -3847,10 +4115,13 @@ pub const Parser = struct {
                 // so `class C extends React.Component<Props>` correctly produces a MemberExpression
                 // for React.Component and consumes the <Props> type args.
                 const expr = try self.parseAssignmentExpression();
-                // May have multiple: `extends A, B` (mixins) — consume extras as types
-                while (self.peek() == .comma) {
-                    _ = self.advance();
-                    _ = try typescript.parseType(self);
+                // TS1174: Classes can only extend a single class.
+                if (self.peek() == .comma) {
+                    try self.emitDiagnostic(self.currentSpan(), "Classes can only extend a single class", .{});
+                    while (self.peek() == .comma) {
+                        _ = self.advance();
+                        _ = try typescript.parseType(self);
+                    }
                 }
                 break :blk expr;
             }
@@ -3895,6 +4166,12 @@ pub const Parser = struct {
         const prev_heritage = self.class_has_heritage;
         self.class_has_heritage = (super_class != .none);
         defer self.class_has_heritage = prev_heritage;
+        // Track if this is an abstract class (so parseClassMember can check TS1244).
+        const is_abstract_class = self.is_ts and class_tok > 0 and
+            self.tokenTagAt(class_tok - 1) == .kw_abstract;
+        const prev_abstract = self.in_abstract_class;
+        self.in_abstract_class = is_abstract_class;
+        defer self.in_abstract_class = prev_abstract;
         const body_range = try self.parseClassBody();
         _ = try self.expect(.r_brace);
         try self.emitScopeClose(.none); // close class scope
@@ -4000,7 +4277,7 @@ pub const Parser = struct {
                     try self.private_decls.append(self.gpa, name_text);
                 } else {
                     const combined = gop.value_ptr.* | bit;
-                    if (combined != (1 | 2)) {
+                    if (combined != (1 | 2) and !self.is_ts) {
                         try self.emitError("Duplicate private name in class body");
                         return error.ParseError;
                     }
@@ -4032,7 +4309,7 @@ pub const Parser = struct {
                     if (std.mem.eql(u8, decl_buf[0..dl], ref_norm)) { found = true; break; }
                 }
                 if (!found) {
-                    if (outermost) {
+                    if (outermost and !self.is_ts) {
                         const span = Span{
                             .start = self.tok_starts_ptr[hash_tok],
                             .end = self.tok_starts_ptr[hash_tok],
@@ -4110,7 +4387,9 @@ pub const Parser = struct {
             // Only consume if followed by something that could be a member name
             const next = self.peekAt(1);
             if (next == .l_paren or next == .equal or next == .semicolon or
-                next == .r_brace or next == .colon)
+                next == .r_brace or next == .colon or
+                // `public<T>()` — `public` is a method name with type params, not a modifier
+                next == .less_than)
                 break;
 
             // Check for duplicate modifiers
@@ -4190,7 +4469,9 @@ pub const Parser = struct {
         // Parse decorator as: identifier (.identifier)* (args)?
         // Don't use parseAssignmentExpression — it's too greedy and consumes
         // computed member `[` which starts the next class member.
+        var had_member_decorator = false;
         while (self.peek() == .at_sign) {
+            had_member_decorator = true;
             _ = self.advance(); // eat @
             if (self.peek() == .l_paren) {
                 // @(expr) — parenthesized decorator expression
@@ -4235,6 +4516,10 @@ pub const Parser = struct {
 
         // Handle `static { ... }` (static block)
         if (self.peek() == .kw_static and self.peekAt(1) == .l_brace) {
+            // TS1206: Decorators are not valid on static blocks
+            if (self.is_ts and had_member_decorator) {
+                try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here", .{});
+            }
             const static_tok = self.advance(); // eat 'static'
             _ = self.advance(); // eat '{'
             // Static blocks isolate break/continue/return context;
@@ -4350,6 +4635,20 @@ pub const Parser = struct {
         if (self.is_ts and ts_mod_flags.has_export) {
             try self.emitDiagnostic(self.currentSpan(), "'export' modifier cannot appear on class elements", .{});
         }
+        // TS1243: 'private' modifier cannot be used with 'abstract' modifier.
+        if (self.is_ts and ts_mod_flags.has_private and ts_mod_flags.has_abstract) {
+            try self.emitDiagnostic(self.currentSpan(), "'private' modifier cannot be used with 'abstract' modifier", .{});
+        }
+        // TS1244: Abstract methods can only appear within an abstract class.
+        if (self.is_ts and ts_mod_flags.has_abstract and !self.in_abstract_class) {
+            try self.emitDiagnostic(self.currentSpan(), "Abstract methods can only appear within an abstract class", .{});
+        }
+        // TS1206: Decorators are not valid on abstract or declare class members (ES decorators only).
+        if (self.is_ts and had_member_decorator and !self.experimental_decorators and
+            (ts_mod_flags.has_abstract or ts_mod_flags.has_declare))
+        {
+            try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here", .{});
+        }
 
         // getter/setter detection
         // In TS, `get<T>()` is a generic method, not a getter — exclude `<`
@@ -4397,6 +4696,10 @@ pub const Parser = struct {
         if (self.peek() == .asterisk) {
             is_generator_method = true;
             _ = self.advance(); // eat '*'
+            // TS1221: Generators are not allowed in an ambient context.
+            if (self.is_ts and self.in_ts_ambient) {
+                try self.emitDiagnostic(self.currentSpan(), "Generators are not allowed in an ambient context", .{});
+            }
         }
 
         // TS index signature in class body: `[key: Type]: ValueType;`
@@ -4455,7 +4758,9 @@ pub const Parser = struct {
                 const params = try self.parseFormalParameters();
 
                 // TS return type annotation
+                self.in_return_type = true;
                 const computed_method_return_type = try self.parseOptionalTypeAnnotation();
+                self.in_return_type = false;
 
                 // TS abstract/declare computed methods may have no body
                 if (self.is_ts and self.peek() != .l_brace) {
@@ -4540,12 +4845,49 @@ pub const Parser = struct {
         const main_tok = self.tok_i;
         const key = try self.parseClassPropertyKey();
 
+        // TS1206: Decorators are not valid on private class members (#name) with experimental decorators.
+        // With modern ES decorators, private member decoration is allowed.
+        if (self.is_ts and had_member_decorator and self.experimental_decorators) {
+            const key_main = self.node_main_token_ptr[key.toInt()];
+            if (self.tokenTagAt(key_main) == .hash) {
+                try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here", .{});
+            }
+        }
+
         // Skip optional `?` marker (TS optional member)
         const member_is_optional: u32 = if (self.is_ts and self.eat(.question) != null) 1 else 0;
 
         // TS generic method: skip type parameters before `(`
         if (self.is_ts and self.peek() == .less_than) {
+            // TS1092: Type parameters cannot appear on a constructor declaration.
+            const key_tag_tp = self.node_tags_ptr[key.toInt()];
+            const key_tok_tp = self.node_main_token_ptr[key.toInt()];
+            const is_ctor_tp = !is_static and !is_getter and !is_setter and
+                ((key_tag_tp == .identifier and std.mem.eql(u8, self.tokenText(key_tok_tp), "constructor")) or
+                 (key_tag_tp == .string_literal and std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok_tp)), "constructor")));
             _ = try typescript.parseTypeParameterList(self);
+            if (is_ctor_tp) {
+                try self.emitDiagnostic(self.currentSpan(), "Type parameters cannot appear on a constructor declaration", .{});
+            }
+            // TS1094: An accessor cannot have type parameters.
+            if (is_getter or is_setter) {
+                try self.emitDiagnostic(self.currentSpan(), "An accessor cannot have type parameters", .{});
+            }
+        }
+
+        // Generator methods must have `(` — `*foo` without params is invalid.
+        if (is_generator_method and self.peek() != .l_paren) {
+            try self.emitDiagnostic(self.currentSpan(), "'(' expected", .{});
+        }
+
+        // TS: `constructor` in a class must always be followed by `(` — it cannot be a field.
+        if (self.is_ts and !is_static and !is_getter and !is_setter and self.peek() != .l_paren) {
+            const key_tag_ck = self.node_tags_ptr[key.toInt()];
+            const key_tok_ck = self.node_main_token_ptr[key.toInt()];
+            const is_ctor_key = key_tag_ck == .identifier and std.mem.eql(u8, self.tokenText(key_tok_ck), "constructor");
+            if (is_ctor_key) {
+                try self.emitDiagnostic(self.currentSpan(), "'(' expected", .{});
+            }
         }
 
         // Method
@@ -4559,6 +4901,10 @@ pub const Parser = struct {
                 if (key_tag_e == .string_literal) break :blk std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok_e)), "constructor");
                 break :blk false;
             };
+            // TS1206: Decorators are not valid on constructor
+            if (self.is_ts and had_member_decorator and early_is_ctor) {
+                try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here", .{});
+            }
             const prev_in_constructor_early = self.in_constructor;
             if (early_is_ctor) self.in_constructor = true;
             // Open method's function scope before params so declares land in it.
@@ -4566,17 +4912,31 @@ pub const Parser = struct {
             const params = try self.parseFormalParameters();
             self.in_constructor = prev_in_constructor_early;
 
-            // Validate getter/setter parameter counts (skip in TS — type error not syntax)
+            // Validate getter/setter parameter counts
             const param_count = params.end - params.start;
-            if (!self.is_ts) {
-                if (is_getter and param_count > 0) {
-                    try self.emitDiagnostic(self.currentSpan(), "Getter must have zero parameters", .{});
-                    return error.ParseError;
+            // In TS mode, exclude `this` parameters from count (they're type annotations, not real params).
+            const real_param_count = blk: {
+                if (!self.is_ts) break :blk param_count;
+                var count: usize = 0;
+                var i = params.start;
+                while (i < params.end) : (i += 1) {
+                    const pidx = self.extra_data.items[i];
+                    const ptag = self.node_tags_ptr[pidx];
+                    if (ptag == .identifier) {
+                        const ptok = self.node_main_token_ptr[pidx];
+                        if (std.mem.eql(u8, self.tokenText(ptok), "this")) continue;
+                    }
+                    count += 1;
                 }
-                if (is_setter and param_count != 1) {
-                    try self.emitDiagnostic(self.currentSpan(), "Setter must have exactly one parameter", .{});
-                    return error.ParseError;
-                }
+                break :blk count;
+            };
+            if (is_getter and real_param_count > 0) {
+                try self.emitDiagnostic(self.currentSpan(), "Getter must have zero parameters", .{});
+                if (!self.is_ts) return error.ParseError;
+            }
+            if (is_setter and real_param_count != 1) {
+                try self.emitDiagnostic(self.currentSpan(), "Setter must have exactly one parameter", .{});
+                if (!self.is_ts) return error.ParseError;
             }
             // Setter param must not be a rest parameter
             if (is_setter and param_count == 1) {
@@ -4584,6 +4944,32 @@ pub const Parser = struct {
                 if (param_tag == .rest_element) {
                     try self.emitDiagnostic(self.currentSpan(), "Setter parameter must not be a rest parameter", .{});
                     return error.ParseError;
+                }
+            }
+            // TS1051: A 'set' accessor cannot have an optional parameter.
+            // TS1052: A 'set' accessor parameter cannot have an initializer.
+            if (self.is_ts and is_setter and real_param_count == 1) {
+                const pidx = blk: {
+                    // Find the real (non-this) parameter
+                    var i = params.start;
+                    while (i < params.end) : (i += 1) {
+                        const idx = self.extra_data.items[i];
+                        const ptag = self.node_tags_ptr[idx];
+                        if (ptag == .identifier) {
+                            const ptok = self.node_main_token_ptr[idx];
+                            if (std.mem.eql(u8, self.tokenText(ptok), "this")) continue;
+                        }
+                        break :blk idx;
+                    }
+                    break :blk @as(u32, 0);
+                };
+                if (pidx > 0) {
+                    const ptag = self.node_tags_ptr[pidx];
+                    if (ptag == .assignment_pattern) {
+                        try self.emitDiagnostic(self.currentSpan(), "A 'set' accessor parameter cannot have an initializer", .{});
+                    } else if (ptag == .identifier and self.node_data_ptr[pidx].lhs == .root) {
+                        try self.emitDiagnostic(self.currentSpan(), "A 'set' accessor cannot have an optional parameter", .{});
+                    }
                 }
             }
 
@@ -4599,6 +4985,20 @@ pub const Parser = struct {
                     false;
                 if (is_ctor_name) {
                     try self.emitDiagnostic(self.currentSpan(), "'static' modifier cannot appear on a constructor declaration", .{});
+                }
+            }
+            // TS1341: Class constructor may not be an accessor.
+            if (self.is_ts and (is_getter or is_setter)) {
+                const key_tag = self.node_tags_ptr[key.toInt()];
+                const key_tok = self.node_main_token_ptr[key.toInt()];
+                const is_ctor_name = if (key_tag == .identifier)
+                    std.mem.eql(u8, self.tokenText(key_tok), "constructor")
+                else if (key_tag == .string_literal)
+                    std.mem.eql(u8, self.getStringContent(self.tokenStart(key_tok)), "constructor")
+                else
+                    false;
+                if (is_ctor_name) {
+                    try self.emitDiagnostic(self.currentSpan(), "Class constructor may not be an accessor", .{});
                 }
             }
 
@@ -4629,6 +5029,13 @@ pub const Parser = struct {
                 if (self.is_ts and ts_mod_flags.has_abstract) {
                     try self.emitDiagnostic(self.currentSpan(), "'abstract' modifier cannot appear on a constructor declaration", .{});
                 }
+                // TS1031: 'declare' modifier cannot appear on class elements of this kind.
+                if (self.is_ts and ts_mod_flags.has_declare) {
+                    try self.emitDiagnostic(self.currentSpan(), "'declare' modifier cannot appear on class elements of this kind", .{});
+                }
+            } else if (self.is_ts and ts_mod_flags.has_declare and self.peek() == .l_paren) {
+                // TS1031: 'declare' modifier cannot appear on method declarations.
+                try self.emitDiagnostic(self.currentSpan(), "'declare' modifier cannot appear on class elements of this kind", .{});
             }
 
             const prev_in_function = self.in_function;
@@ -4637,9 +5044,17 @@ pub const Parser = struct {
             const prev_in_generator_m = self.in_generator;
             const prev_in_async_m = self.in_async;
             const prev_in_cf_m = self.in_class_field;
+            const prev_in_loop_m = self.in_loop;
+            const prev_in_switch_m = self.in_switch;
+            const prev_ts_fn_depth_m = self.ts_label_fn_depth;
+            const prev_ts_label_count_m = self.ts_label_count;
             self.in_function = true;
             self.in_constructor = is_ctor;
             self.in_method = true;
+            self.in_loop = false;
+            self.in_switch = false;
+            self.ts_label_count = 0;
+            if (self.ts_label_fn_depth < std.math.maxInt(u16)) self.ts_label_fn_depth += 1;
             const _saved_nta_x = self.new_target_allowed;
             self.new_target_allowed = true;
             defer self.new_target_allowed = _saved_nta_x;
@@ -4654,13 +5069,35 @@ pub const Parser = struct {
             defer self.in_generator = prev_in_generator_m;
             defer self.in_async = prev_in_async_m;
             defer self.in_class_field = prev_in_cf_m;
+            defer self.in_loop = prev_in_loop_m;
+            defer self.in_switch = prev_in_switch_m;
+            defer self.ts_label_fn_depth = prev_ts_fn_depth_m;
+            defer self.ts_label_count = prev_ts_label_count_m;
 
             // TS return type annotation: `): Type {`
+            self.in_return_type = true;
             const method_return_type = try self.parseOptionalTypeAnnotation();
+            self.in_return_type = false;
+            // TS1093: Type annotation cannot appear on a constructor declaration.
+            if (self.is_ts and is_ctor and method_return_type != .none) {
+                try self.emitDiagnostic(self.currentSpan(), "Type annotation cannot appear on a constructor declaration", .{});
+            }
+            // TS1095: A 'set' accessor cannot have a return type annotation.
+            if (self.is_ts and is_setter and method_return_type != .none) {
+                try self.emitDiagnostic(self.currentSpan(), "A 'set' accessor cannot have a return type annotation", .{});
+            }
 
             // TS abstract/declare methods may have no body (semicolon instead).
             // Emit as method_def / constructor_def / getter_def / setter_def with body = .none.
             if (self.is_ts and self.peek() != .l_brace) {
+                // TS1222: An overload signature cannot be declared as a generator.
+                if (is_generator_method and !self.in_ts_ambient) {
+                    try self.emitDiagnostic(self.currentSpan(), "An overload signature cannot be declared as a generator", .{});
+                }
+                // TS1249: A decorator can only decorate a method implementation, not an overload.
+                if (had_member_decorator and !self.in_ts_ambient) {
+                    try self.emitDiagnostic(self.currentSpan(), "A decorator can only decorate a method implementation, not an overload", .{});
+                }
                 _ = self.eat(.semicolon);
                 const no_body_extra = try self.addExtra(ast.MethodData, .{
                     .params_start = params.start,
@@ -4697,6 +5134,14 @@ pub const Parser = struct {
                         try self.emitError("Illegal 'use strict' directive in method with non-simple parameter list");
                         return error.ParseError;
                     }
+                }
+                // TS1183: An implementation cannot be declared in ambient contexts.
+                if (self.is_ts and (self.in_ts_ambient or ts_mod_flags.has_declare)) {
+                    try self.emitDiagnostic(self.currentSpan(), "An implementation cannot be declared in ambient contexts", .{});
+                }
+                // TS1245: An abstract method cannot have an implementation body.
+                if (self.is_ts and ts_mod_flags.has_abstract) {
+                    try self.emitDiagnostic(self.currentSpan(), "Method cannot have an implementation because it is marked abstract", .{});
                 }
             }
 
@@ -4753,8 +5198,18 @@ pub const Parser = struct {
 
         // TS type annotation on field: `name: Type` or `name!: Type`
         // Eat definite assignment assertion `!` first (standalone or before `:`).
-        if (self.is_ts) _ = self.eat(.bang);
+        const had_definite_bang_cf = self.is_ts and self.eat(.bang) != null;
         const type_ann = try self.parseOptionalTypeAnnotation();
+
+        // TS1267: Abstract property cannot have an initializer.
+        if (self.is_ts and ts_mod_flags.has_abstract and self.peek() == .equal) {
+            try self.emitDiagnostic(self.currentSpan(), "Property cannot have an initializer because it is marked abstract", .{});
+        }
+
+        // TS1263: `field! = value` or `field!: Type = value` — definite assertion with initializer.
+        if (had_definite_bang_cf and self.peek() == .equal) {
+            try self.emitDiagnostic(self.currentSpan(), "Declarations with initializers cannot also have definite assignment assertions", .{});
+        }
 
         // Property (field definition).  If there's an initializer, it runs in
         // its own class_field_initializer scope (ESLint model: `this`/closure).
@@ -4767,12 +5222,19 @@ pub const Parser = struct {
             const prev_in_class_field = self.in_class_field;
             const prev_nta_cf2 = self.new_target_allowed;
             const prev_in_async_cf = self.in_async;
+            const prev_in_generator_cf = self.in_generator;
             self.in_class_field = true;
             self.new_target_allowed = true;
             self.in_async = false;
-            defer self.in_class_field = prev_in_class_field;
-            defer self.new_target_allowed = prev_nta_cf2;
-            defer self.in_async = prev_in_async_cf;
+            self.in_generator = false;
+            self.syncYieldLex();
+            defer {
+                self.in_class_field = prev_in_class_field;
+                self.new_target_allowed = prev_nta_cf2;
+                self.in_async = prev_in_async_cf;
+                self.in_generator = prev_in_generator_cf;
+                self.syncYieldLex();
+            }
             break :blk try self.parseAssignmentExpression();
         } else .none;
         if (field_has_init) try self.emitScopeClose(.none);
@@ -4798,11 +5260,11 @@ pub const Parser = struct {
                 name_text = self.getStringContent(tok_start);
             }
             if (name_text.len > 0) {
-                if (std.mem.eql(u8, name_text, "constructor")) {
+                if (!self.is_ts and std.mem.eql(u8, name_text, "constructor")) {
                     try self.emitError("Class field cannot be named 'constructor'");
                     return error.ParseError;
                 }
-                if (is_static and std.mem.eql(u8, name_text, "prototype")) {
+                if (!self.is_ts and is_static and std.mem.eql(u8, name_text, "prototype")) {
                     try self.emitError("Static class field cannot be named 'prototype'");
                     return error.ParseError;
                 }
@@ -4844,9 +5306,9 @@ pub const Parser = struct {
                     if (ident_start != hash_start + 1) {
                         try self.emitError("No whitespace allowed between `#` and identifier");
                     }
-                    // #constructor is forbidden as private name.
+                    // #constructor is forbidden as private name (TS gives TS18012, not a parse error).
                     const ident_text = self.tokenText(ident_tok);
-                    if (std.mem.eql(u8, ident_text, "constructor")) {
+                    if (!self.is_ts and std.mem.eql(u8, ident_text, "constructor")) {
                         try self.emitError("'#constructor' is not a valid private name");
                     }
                     _ = self.advance();
@@ -4907,6 +5369,9 @@ pub const Parser = struct {
                 return error.ParseError;
             }
 
+            // Track whether a previous parameter was optional (for TS1016 check).
+            var had_optional = self.is_ts and self.tsParamIsOptional(first);
+
             while (self.eat(.comma) != null) {
                 if (self.peek() == .r_paren) break; // trailing comma
                 const param = try self.parseFormalParameter();
@@ -4918,6 +5383,12 @@ pub const Parser = struct {
                     try self.emitDiagnostic(self.currentSpan(), "Rest parameter must not have a trailing comma", .{});
                     return error.ParseError;
                 }
+
+                // TS1016: A required parameter cannot follow an optional parameter.
+                if (had_optional and self.is_ts and !self.tsParamIsOptional(param) and ptag != .rest_element) {
+                    try self.emitDiagnostic(self.currentSpan(), "A required parameter cannot follow an optional parameter", .{});
+                }
+                if (self.is_ts and self.tsParamIsOptional(param)) had_optional = true;
             }
         }
 
@@ -4942,20 +5413,42 @@ pub const Parser = struct {
     /// Parse a single formal parameter (binding, possibly with type annotation and default or rest).
     pub fn parseFormalParameter(self: *Parser) Error!NodeIndex {
         // TS parameter decorators: @dec before parameter
+        var had_param_decorator = false;
         if (self.is_ts) {
             while (self.peek() == .at_sign) {
+                had_param_decorator = true;
+                // TS1206: parameter decorators are only valid with experimental decorators.
+                if (!self.experimental_decorators) {
+                    try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here.", .{});
+                }
                 _ = self.advance(); // skip '@'
                 if (self.peek() == .l_paren) {
-                    self.skipBalancedParens();
+                    // @(expr) — parse the expression so await/yield errors surface.
+                    _ = self.advance(); // eat '('
+                    _ = try self.parseAssignmentExpression();
+                    _ = try self.expect(.r_paren);
                 } else {
                     if (self.peek() == .identifier or self.peek().isKeyword()) _ = self.advance();
                     while (self.peek() == .dot) {
                         _ = self.advance();
                         if (self.peek() == .identifier or self.peek().isKeyword()) _ = self.advance();
                     }
-                    if (self.peek() == .l_paren) self.skipBalancedParens();
+                    if (self.peek() == .l_paren) {
+                        // @dec(args) — parse arguments to detect await/yield in wrong context.
+                        _ = self.advance(); // eat '('
+                        while (self.peek() != .r_paren and !self.isAtEnd()) {
+                            _ = try self.parseAssignmentExpression();
+                            if (self.peek() == .comma) _ = self.advance() else break;
+                        }
+                        _ = try self.expect(.r_paren);
+                    }
                 }
             }
+        }
+
+        // TS1433: decorator/modifier not allowed on `this` parameter
+        if (had_param_decorator and self.peek() == .kw_this) {
+            try self.emitDiagnostic(self.currentSpan(), "Neither decorators nor modifiers may be applied to 'this' parameters", .{});
         }
 
         // Rest parameter: `...binding`
@@ -4979,21 +5472,30 @@ pub const Parser = struct {
         if (self.is_ts) {
             const saved_tok = self.tok_i;
             var first_mod_tok: ?TokenIndex = null;
+            // Track modifier ordering: access(1) → override(2) → readonly(3)
+            var param_mod_last_phase: u8 = 0;
             while (self.peek() == .identifier or self.peek() == .kw_readonly or
                 self.peek() == .kw_override)
             {
                 const text = self.tokenText(self.tok_i);
-                const is_mod = std.mem.eql(u8, text, "public") or
+                const is_access = std.mem.eql(u8, text, "public") or
                     std.mem.eql(u8, text, "private") or
-                    std.mem.eql(u8, text, "protected") or
-                    std.mem.eql(u8, text, "readonly") or
-                    std.mem.eql(u8, text, "override");
+                    std.mem.eql(u8, text, "protected");
+                const is_override = self.peek() == .kw_override or std.mem.eql(u8, text, "override");
+                const is_readonly = self.peek() == .kw_readonly;
+                const is_mod = is_access or is_override or is_readonly;
                 if (!is_mod) break;
                 const next = self.peekAt(1);
                 if (next == .colon or next == .comma or next == .r_paren or
                     next == .equal or next == .question)
                     break;
                 if (first_mod_tok == null) first_mod_tok = self.tok_i;
+                // TS1029: check modifier ordering
+                const phase: u8 = if (is_access) 1 else if (is_override) 2 else 3;
+                if (phase < param_mod_last_phase) {
+                    try self.emitDiagnostic(self.currentSpan(), "Modifier order is incorrect", .{});
+                }
+                if (phase > param_mod_last_phase) param_mod_last_phase = phase;
                 _ = self.advance();
             }
             // Detect parameter property: modifier consumed AND next token is a binding identifier
@@ -5036,6 +5538,11 @@ pub const Parser = struct {
             }
         }
 
+        // TS1015: Parameter cannot have question mark and initializer.
+        if (self.is_ts and is_optional_ts and self.peek() == .equal) {
+            try self.emitDiagnostic(self.currentSpan(), "Parameter cannot have question mark and initializer", .{});
+        }
+
         // Default value: `param = defaultExpr`
         const inner_param: NodeIndex = if (self.eat(.equal) != null) blk: {
             // Set decl_name_text so named fn/class exprs in the default get fn_expr_name binding.
@@ -5057,6 +5564,10 @@ pub const Parser = struct {
 
         // Wrap in TSParameterProperty if access/readonly modifiers were present.
         if (param_prop_main_tok) |mod_tok| {
+            // TS1187: A parameter property may not be declared using a binding pattern.
+            if (binding_tag == .object_pattern or binding_tag == .array_pattern) {
+                try self.emitDiagnostic(self.currentSpan(), "A parameter property may not be declared using a binding pattern", .{});
+            }
             return self.addNode(.{
                 .tag = .ts_parameter_property,
                 .main_token = mod_tok,
@@ -5085,8 +5596,30 @@ pub const Parser = struct {
                 _ = self.advance(); // eat 'type'
             }
             if ((self.peek() == .identifier or self.peek().isKeyword()) and self.peekAt(1) == .equal) {
+                // TS1262: In module mode, `await` is reserved and cannot be used as an import alias name.
+                // Only applies when the file is a true ES module (has top-level export statements,
+                // not merely namespace aliases). Check source for export at line start.
+                if (self.is_module and self.peek() == .kw_await and hasEsModuleExport(self.source)) {
+                    try self.emitDiagnostic(self.currentSpan(), "Identifier expected. 'await' is a reserved word at the top-level of a module", .{});
+                    return error.ParseError;
+                }
                 _ = self.advance(); // eat name
                 _ = self.advance(); // eat '='
+                // TS1202: `import X = require("mod")` not allowed when targeting ECMAScript modules.
+                // Only apply to the CommonJS-style `require(...)` form, not namespace aliases like `import X = A.B`.
+                if (self.is_module and self.in_strict and
+                    self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "require") and
+                    self.peekAt(1) == .l_paren)
+                {
+                    try self.emitDiagnostic(self.currentSpan(), "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"' instead", .{});
+                }
+                // TS1005: `import X = module(...)` — old TS syntax; module cannot be called here.
+                // Only `require(...)` is valid as a call in import aliases.
+                if (self.peekAt(1) == .l_paren and (self.peek() == .kw_module or
+                    (self.peek() == .identifier and !std.mem.eql(u8, self.tokenText(self.tok_i), "require"))))
+                {
+                    try self.emitDiagnostic(self.currentSpan(), "';' expected", .{});
+                }
                 // `require('...')` or qualified name `A.B.C`
                 const module_ref = try self.parseAssignmentExpression();
                 _ = self.eat(.semicolon);
@@ -5358,7 +5891,14 @@ pub const Parser = struct {
         self.is_module = true;
 
         switch (self.peek()) {
-            .kw_default => return self.parseExportDefault(export_tok),
+            .kw_default => {
+                // TS1319: A default export can only be used in an ECMAScript-style module.
+                // Namespace bodies have is_module=true but are not ECMAScript modules.
+                if (self.is_ts and self.in_ts_namespace) {
+                    try self.emitDiagnostic(self.currentSpan(), "A default export can only be used in an ECMAScript-style module", .{});
+                }
+                return self.parseExportDefault(export_tok);
+            },
             .l_brace => return self.parseExportNamed(export_tok),
             .asterisk => return self.parseExportAll(export_tok),
             .kw_var, .kw_let => {
@@ -5458,6 +5998,14 @@ pub const Parser = struct {
     fn parseExportTs(self: *Parser, export_tok: TokenIndex) Error!NodeIndex {
         // export = expr; (TS CommonJS-style export)
         if (self.peek() == .equal) {
+            // TS1063: An export assignment cannot be used in a namespace.
+            if (self.in_ts_namespace and !self.in_ts_ambient) {
+                try self.emitDiagnostic(self.currentSpan(), "An export assignment cannot be used in a namespace", .{});
+            }
+            // TS1203: Export assignment cannot be used when targeting ECMAScript modules.
+            if (self.is_module and self.in_strict and !self.in_ts_namespace) {
+                try self.emitDiagnostic(self.currentSpan(), "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead", .{});
+            }
             _ = self.advance(); // eat '='
             const expr = try self.parseAssignmentExpression();
             _ = self.eat(.semicolon);
@@ -5483,6 +6031,9 @@ pub const Parser = struct {
         // export declare ...
         if (self.peek() == .kw_declare) {
             _ = self.advance(); // eat 'declare'
+            const prev_ambient_ed = self.in_ts_ambient;
+            self.in_ts_ambient = true;
+            defer self.in_ts_ambient = prev_ambient_ed;
             const decl = try self.parseStatement();
             return self.addNode(.{
                 .tag = .export_named,
@@ -5881,9 +6432,24 @@ pub const Parser = struct {
         const main_tok = self.tok_i;
         // Spec: in Script goal, UsingDeclaration must be contained in Block,
         // ForStatement, ForInOfStatement, FunctionBody, ClassStaticBlock, etc.
-        if (!self.is_module and !self.in_block and !self.in_function and !self.in_loop and !self.in_static_block) {
-            try self.emitDiagnostic(self.currentSpan(), "'using' declaration not allowed at top level of a Script", .{});
+        // Note: TypeScript allows `using` at the top level even in script mode (non-module),
+        // only emitting a type error (TS2853) for `await using` without module context.
+        // Spec: both `using` and `await using` are disallowed at Script top-level.
+        // TypeScript allows bare `using` at top-level script (only emits a type error TS2853),
+        // so we skip the check for `!is_await` when in TS mode.
+        const at_script_top_level = !self.is_module and !self.in_block and !self.in_function and !self.in_loop and !self.in_static_block;
+        if (at_script_top_level and (is_await or !self.is_ts)) {
+            const msg = if (is_await) "'await using' declaration not allowed at top level of a Script" else "'using' declaration not allowed at top level of a Script";
+            try self.emitDiagnostic(self.currentSpan(), "{s}", .{msg});
             return error.ParseError;
+        }
+        // TS1547/TS1548: using/await using not allowed directly in case/default clause
+        if (self.is_ts and self.in_case_clause) {
+            if (is_await) {
+                try self.emitDiagnostic(self.currentSpan(), "'await using' declarations are not allowed in 'case' or 'default' clauses unless contained within a block", .{});
+            } else {
+                try self.emitDiagnostic(self.currentSpan(), "'using' declarations are not allowed in 'case' or 'default' clauses unless contained within a block", .{});
+            }
         }
         if (is_await) _ = self.advance(); // eat 'await'
         _ = self.advance(); // eat 'using'
@@ -6173,6 +6739,8 @@ pub const Parser = struct {
     fn addExportedName(self: *Parser, name: []const u8) !void {
         for (self.exported_names.items) |existing| {
             if (std.mem.eql(u8, existing, name)) {
+                // TypeScript allows duplicate exports (e.g. function overloads, namespace merging)
+                if (self.is_ts) return;
                 try self.emitDiagnostic(self.currentSpan(), "Duplicate export '{s}'", .{name});
                 return error.ParseError;
             }
@@ -6386,9 +6954,10 @@ pub const Parser = struct {
                 }
                 return self.parseIdentifier();
             },
-            // await can be binding name when not in async/module context (relaxed in TS)
+            // await is reserved in async/module/static-block contexts.
+            // In TypeScript: same rule, but allow in ambient declarations (declare namespace etc.).
             .kw_await => {
-                if (!self.is_ts and (self.in_async or self.is_module or (self.in_static_block and !self.in_function))) {
+                if (!self.in_ts_ambient and (self.in_async or self.is_module or (self.in_static_block and !self.in_function))) {
                     try self.emitDiagnostic(self.currentSpan(), "'await' cannot be used as binding name in this context", .{});
                     return error.ParseError;
                 }
@@ -6430,6 +6999,11 @@ pub const Parser = struct {
                         if (!self.is_ts) break;
                         if (self.peek() == .comma) {
                             _ = self.advance();
+                            // TS1013: trailing comma after rest element is invalid.
+                            // Only emit when truly trailing (next is `]`, not another element).
+                            if (self.peek() == .r_bracket) {
+                                try self.emitError("A rest element may not have a trailing comma");
+                            }
                         } else break;
                         continue;
                     }
@@ -6484,6 +7058,11 @@ pub const Parser = struct {
                         if (!self.is_ts) break;
                         if (self.peek() == .comma) {
                             _ = self.advance();
+                            // TS1013: trailing comma after rest element is invalid.
+                            // Only emit when truly trailing (next is `}`, not another property).
+                            if (self.peek() == .r_brace) {
+                                try self.emitError("A rest element may not have a trailing comma");
+                            }
                         } else break;
                         continue;
                     }
@@ -6542,6 +7121,15 @@ pub const Parser = struct {
                         if (self.in_strict and self.isStrictReservedWord(key_tok)) {
                             try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(key_tok)});
                             return error.ParseError;
+                        }
+                        // String/number literals and always-reserved keywords cannot be
+                        // shorthand binding names — a `:` rename is required.
+                        // e.g. `var { "while" }` or `var { while }` are errors;
+                        // the correct form is `var { while: w }` or `var { "while": w }`.
+                        if (key_tag == .string_literal or key_tag == .number_literal or key_tag == .bigint_literal or
+                            self.isAlwaysReservedKeyword(key_tag))
+                        {
+                            try self.emitDiagnostic(self.currentSpan(), "expected ':'", .{});
                         }
                         if (self.eat(.equal) != null) {
                             // Set decl_name_text so named fn/class expressions in the
@@ -6602,14 +7190,14 @@ pub const Parser = struct {
                 return error.ParseError;
             },
             .kw_static => {
-                if (self.in_strict) {
+                if (self.in_strict or self.is_ts) {
                     try self.emitDiagnostic(self.currentSpan(), "'static' is not allowed as a binding name in strict mode", .{});
                     return error.ParseError;
                 }
                 return self.parseIdentifier();
             },
             .kw_let => {
-                if (self.in_strict) {
+                if (self.in_strict or self.is_ts) {
                     try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a binding name in strict mode", .{});
                     return error.ParseError;
                 }
@@ -6620,18 +7208,37 @@ pub const Parser = struct {
                 return self.parseIdentifier();
             },
             .kw_yield => {
-                if (self.in_strict or self.in_generator) {
+                if (self.in_strict or self.in_generator or self.is_ts) {
                     try self.emitDiagnostic(self.currentSpan(), "'yield' is not allowed as a binding name in this context", .{});
                     return error.ParseError;
                 }
                 return self.parseIdentifier();
             },
             .kw_implements, .kw_interface => {
-                if (self.in_strict) {
+                // In TS mode, `interface` is always reserved (TypeScript keyword).
+                // In JS strict mode, `implements`/`interface` are future reserved words.
+                if (self.is_ts or self.in_strict) {
                     try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(self.tok_i)});
                     return error.ParseError;
                 }
                 return self.parseIdentifier();
+            },
+            .hash => {
+                // TypeScript allows private names (#foo) in binding positions (param, const, etc.)
+                // These are semantic errors (TS18002 etc.), not parse errors.
+                if (self.is_ts) {
+                    const hash_tok = self.advance(); // consume '#'
+                    if (self.peek() == .identifier or self.peek().isKeyword() or self.peek() == .escaped_keyword) {
+                        _ = self.advance(); // consume identifier
+                    }
+                    return self.addNode(.{
+                        .tag = .identifier,
+                        .main_token = hash_tok,
+                        .data = .{ .lhs = .none, .rhs = .none },
+                    });
+                }
+                try self.emitDiagnostic(self.currentSpan(), "expected binding name or pattern", .{});
+                return error.ParseError;
             },
             else => {
                 if (self.peek().isTsContextualKeyword()) {
@@ -6741,6 +7348,25 @@ pub const Parser = struct {
     }
 
 
+    /// Check if a keyword tag is one of the "always reserved" keywords in JavaScript —
+    /// words that can never be used as identifiers regardless of strict mode.
+    /// These require an explicit `:` rename when used as keys in object binding patterns.
+    pub fn isAlwaysReservedKeyword(self: *const Parser, tag: TokenTag) bool {
+        _ = self;
+        return switch (tag) {
+            .kw_break, .kw_case, .kw_catch, .kw_continue, .kw_debugger,
+            .kw_default, .kw_delete, .kw_do, .kw_else, .kw_export,
+            .kw_extends, .kw_finally, .kw_for, .kw_function, .kw_if,
+            .kw_import, .kw_in, .kw_instanceof, .kw_new, .kw_return,
+            .kw_super, .kw_switch, .kw_this, .kw_throw, .kw_try,
+            .kw_typeof, .kw_var, .kw_void, .kw_while, .kw_with,
+            .kw_class, .kw_const,
+            .kw_null, .kw_true, .kw_false,
+            => true,
+            else => false,
+        };
+    }
+
     /// Check if the identifier at `tok` is a strict-mode future reserved word.
     /// Returns true if it IS a strict reserved word (and thus invalid in strict mode).
     /// Strict reserved: implements, interface, let, package, private, protected, public, static, yield
@@ -6753,12 +7379,12 @@ pub const Parser = struct {
         {
             return true;
         }
-        // For tokens lexed as identifier, check the source text (and resolved text if it has escapes)
-        if (tag == .identifier) {
+        // For tokens lexed as identifier or escaped_keyword
+        if (tag == .identifier or tag == .escaped_keyword) {
             const text = self.tokenText(tok);
             if (isStrictReservedStr(text)) return true;
             // Also check with unicode escapes resolved
-            if (std.mem.indexOf(u8, text, "\\u")) |_| {
+            if (std.mem.indexOfScalar(u8, text, '\\') != null) {
                 var resolved_buf: [256]u8 = undefined;
                 if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
                     return isStrictReservedStr(resolved);
@@ -6768,7 +7394,7 @@ pub const Parser = struct {
         return false;
     }
 
-    fn isStrictReservedStr(text: []const u8) bool {
+    pub fn isStrictReservedStr(text: []const u8) bool {
         return std.mem.eql(u8, text, "implements") or
             std.mem.eql(u8, text, "interface") or
             std.mem.eql(u8, text, "let") or
@@ -6792,8 +7418,9 @@ pub const Parser = struct {
     /// and no future reserved words as binding names.
     pub inline fn checkStrictBinding(self: *Parser, tok: TokenIndex) !void {
         if (!self.in_strict) return;
-        // Future reserved words (skip in TS — public/private/protected are valid identifiers)
-        if (!self.is_ts and self.isStrictReservedWord(tok)) {
+        // Future reserved words are invalid as binding names in strict mode.
+        // TypeScript still enforces this (TS1212) for public/private/protected/etc.
+        if (self.isStrictReservedWord(tok)) {
             try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(tok)});
             return error.ParseError;
         }
@@ -6810,7 +7437,7 @@ pub const Parser = struct {
 
     /// Check strict-mode assignment target: no eval/arguments as assignment targets.
     pub fn checkStrictAssignTarget(self: *Parser, tok: TokenIndex) !void {
-        if (!self.in_strict) return;
+        if (!self.in_strict and !self.is_ts) return;
         const tag = self.tokenTagAt(tok);
         if (tag == .identifier) {
             const text = self.tokenText(tok);
@@ -6865,6 +7492,20 @@ pub const Parser = struct {
     // ────────────────────────────────────────────────────────────
     // Strict mode helpers for function declarations
     // ────────────────────────────────────────────────────────────
+
+    /// Check if a single formal parameter node is optional (has the TS `?` marker).
+    /// An optional parameter has its binding identifier's lhs set to `.root`.
+    fn tsParamIsOptional(self: *Parser, param: NodeIndex) bool {
+        if (param == .none) return false;
+        const tag = self.node_tags_ptr[param.toInt()];
+        // assignment_pattern means it has a default value — treated as optional-like but not `?`
+        if (tag == .assignment_pattern) return false;
+        if (tag == .identifier) {
+            // Optional `?` is encoded as lhs = .root
+            return self.node_data_ptr[param.toInt()].lhs == .root;
+        }
+        return false;
+    }
 
     /// Check if a parameter list contains non-simple parameters
     /// (destructuring, default values, rest elements).
@@ -6974,6 +7615,8 @@ pub const Parser = struct {
     }
 
     pub fn checkUniqueParams(self: *Parser, params: SubRange) !void {
+        // TypeScript reports duplicate params as type errors (TS2440), not parse errors.
+        if (self.is_ts) return;
         var names: std.ArrayList([]const u8) = .empty;
         defer names.deinit(self.gpa);
         var i = params.start;
@@ -7110,6 +7753,10 @@ pub const Parser = struct {
         if (self.peek() != .colon) return .none;
         const colon_tok = self.advance(); // eat ':'
         const type_node = try typescript.parseType(self);
+        // JSDoc postfix `?` or `!` after type (e.g. `number?`, `string!`).
+        // These are semantic errors in TS but should parse without failing.
+        _ = self.eat(.question);
+        _ = self.eat(.bang);
         return self.addNode(.{
             .tag = .ts_type_annotation,
             .main_token = colon_tok,
@@ -7150,6 +7797,27 @@ pub const Parser = struct {
     const isIdentChar = Token.isIdentChar;
     const isNumericChar = Token.isNumericChar;
 };
+
+/// Check whether the source file has a top-level ES module export (e.g., `export {}`)
+/// which makes it a true ES module, as opposed to a file with only namespace aliases.
+/// Used to distinguish `import await = ...` (TS1262) in real modules vs non-modules.
+fn hasEsModuleExport(source: []const u8) bool {
+    var i: usize = 0;
+    while (i < source.len) {
+        // Skip to start of line
+        if (i == 0 or source[i - 1] == '\n') {
+            // Skip whitespace at line start
+            while (i < source.len and (source[i] == ' ' or source[i] == '\t')) i += 1;
+            if (i + 6 < source.len and std.mem.eql(u8, source[i..][0..6], "export")) {
+                const next = source[i + 6];
+                if (next == ' ' or next == '\t' or next == '{' or next == '*' or next == '\n') return true;
+            }
+        }
+        while (i < source.len and source[i] != '\n') i += 1;
+        if (i < source.len) i += 1;
+    }
+    return false;
+}
 
 // ────────────────────────────────────────────────────────────────
 // Tests

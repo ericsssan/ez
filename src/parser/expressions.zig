@@ -8,6 +8,7 @@
 // ───────────────────────────────────────────────────────────────────────
 
 const std = @import("std");
+const LexHelpers = @import("lexer_helpers.zig");
 const ast = @import("ast.zig");
 const Node = ast.Node;
 const NodeIndex = ast.NodeIndex;
@@ -139,6 +140,11 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             switch (tag) {
                 .kw_as => {
                     if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+                    // TS1355: `as const` can only be applied to literals, arrays, or objects.
+                    if (p.peekAt(1) == .kw_const and !isValidConstAssertionTarget(p, left)) {
+                        try p.emitError("A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals");
+                        return error.ParseError;
+                    }
                     left = try parseTsTypePostfix(p, left, .ts_as_expr);
                     continue;
                 },
@@ -154,7 +160,21 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
                     continue;
                 },
                 .less_than => {
-                    if (tryParseTsTypeArguments(p)) continue;
+                    if (tryParseTsTypeArguments(p)) {
+                        // TS1477: An instantiation expression cannot be followed by a property access.
+                        if (p.peek() == .dot or p.peek() == .question_dot) {
+                            try p.emitError("An instantiation expression cannot be followed by a property access");
+                            return error.ParseError;
+                        }
+                        // TS1034: `super<T>\`template\`` is invalid.
+                        if (left != .none and p.node_tags_ptr[left.toInt()] == .super_expr and
+                            (p.peek() == .template_head or p.peek() == .template_no_sub))
+                        {
+                            try p.emitError("'super' must be followed by an argument list or member access");
+                            return error.ParseError;
+                        }
+                        continue;
+                    }
                 },
                 else => {},
             }
@@ -165,6 +185,16 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             const post_prec = Precedence.postfix;
             if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
             left = try parsePostfixUpdate(p, left);
+            // TS: postfix result cannot be chained with member access or another postfix on same line.
+            if (is_ts and !p.isOnNewLine()) {
+                const next2 = p.peek();
+                if (next2 == .dot or next2 == .question_dot or
+                    next2 == .plus_plus or next2 == .minus_minus)
+                {
+                    try p.emitError("';' expected");
+                    return error.ParseError;
+                }
+            }
             continue;
         }
 
@@ -204,11 +234,23 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         }
 
         // Arrow function cannot be an operand of a binary operator (other than `,`/`=`).
-        if (left != .none and !is_ts and infix_prec != .comma and infix_prec != .assignment) {
+        if (left != .none and infix_prec != .comma and infix_prec != .assignment) {
             const left_tag = p.node_tags_ptr[left.toInt()];
             if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
-                try p.emitError("Arrow function not allowed as operand of binary operator (wrap in parens)");
-                break;
+                if (!is_ts) {
+                    try p.emitError("Arrow function not allowed as operand of binary operator (wrap in parens)");
+                    break;
+                }
+                // TS: block-body arrow functions cannot be used as a binary operand.
+                const d = p.node_data_ptr[left.toInt()];
+                const ed_idx = d.lhs.toInt();
+                if (ed_idx + 2 < p.extra_data.items.len) {
+                    const body = NodeIndex.fromInt(p.extra_data.items[ed_idx + 2]);
+                    if (body != .none and p.node_tags_ptr[body.toInt()] == .block_stmt) {
+                        try p.emitError("';' expected");
+                        break;
+                    }
+                }
             }
         }
 
@@ -243,15 +285,15 @@ fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
             if (del_node != .none) {
                 const del_data = p.node_data_ptr[del_node.toInt()];
                 if (del_data.lhs != .none) {
-                    // Strict mode: `delete identifier` invalid (also through grouping).
-                    if (p.in_strict) {
+                    // Strict mode / TypeScript: `delete identifier` invalid (also through grouping).
+                    if (p.in_strict or p.is_ts) {
                         const inner_tag = unwrapGroupingTag(p, del_data.lhs);
                         if (inner_tag == .identifier) {
                             try p.emitError("'delete' of unqualified identifier in strict mode");
                         }
                     }
                     // `delete obj.#priv` / `delete obj?.#priv` — invalid in any mode.
-                    if (containsPrivateMember(p, del_data.lhs)) {
+                    if (!p.is_ts and containsPrivateMember(p, del_data.lhs)) {
                         try p.emitError("'delete' of private name is not allowed");
                     }
                 }
@@ -298,6 +340,15 @@ fn containsPrivateMember(p: *Parser, node: NodeIndex) bool {
 
 fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
     const tok = p.advance();
+    // TS: prefix ++/-- followed by ++/-- on a new line — the second ++/-- is parsed
+    // as postfix with no operand, yielding TS1109 "Expression expected".
+    if (p.is_ts and (node_tag == .prefix_inc or node_tag == .prefix_dec) and p.isOnNewLine()) {
+        const next = p.peek();
+        if (next == .plus_plus or next == .minus_minus) {
+            try p.emitError("Expression expected");
+            return error.ParseError;
+        }
+    }
     const operand = try parseExpressionPrec(p, .unary);
 
     // Validate prefix ++/-- operand (parenthesized identifiers valid: ++(x), ++((x)))
@@ -322,16 +373,25 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
             },
             else => {
                 // TS type checker handles most invalid LHS cases, but clearly invalid
-                // operands like await/yield expressions are still syntax errors
+                // operands like await/yield/delete are still syntax errors.
+                // delete returns bool (not a reference), so ++delete is always invalid.
                 if (!p.is_ts or op_tag == .await_expr or op_tag == .yield_expr or
-                    op_tag == .yield_delegate)
+                    op_tag == .yield_delegate or op_tag == .delete_expr)
                 {
                     try p.emitError("Invalid left-hand side in prefix operation");
                 }
             },
         }
-        // Strict mode: cannot update eval/arguments
-        if (op_tag == .identifier and p.in_strict) {
+        // TS: prefix ++/-- whose direct operand is already postfix_inc/dec is TS1005.
+        if (p.is_ts) {
+            const raw_tag = p.node_tags_ptr[operand.toInt()];
+            if (raw_tag == .postfix_inc or raw_tag == .postfix_dec) {
+                try p.emitError("';' expected");
+                return error.ParseError;
+            }
+        }
+        // Strict mode / TypeScript: cannot update eval/arguments
+        if (op_tag == .identifier and (p.in_strict or p.is_ts)) {
             const op_tok = p.node_main_token_ptr[operand.toInt()];
             try p.checkStrictAssignTarget(op_tok);
         }
@@ -392,8 +452,8 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
             if (!p.is_ts) try p.emitError("Invalid left-hand side in postfix operation");
         },
     }
-    // Strict mode: cannot update eval/arguments
-    if (op_tag == .identifier and p.in_strict) {
+    // Strict mode / TypeScript: cannot update eval/arguments
+    if (op_tag == .identifier and (p.in_strict or p.is_ts)) {
         const op_tok = p.node_main_token_ptr[operand.toInt()];
         try p.checkStrictAssignTarget(op_tok);
     }
@@ -450,16 +510,17 @@ fn parseAwaitExpression(p: *Parser) Error!NodeIndex {
 
 fn parseYieldExpression(p: *Parser) Error!NodeIndex {
     if (!p.in_generator) {
-        // In strict mode / module, `yield` cannot be used as an identifier.
+        // In strict mode, module mode, or TypeScript mode, `yield` cannot be used as an identifier.
         // Emit diagnostic but continue parsing to avoid cascading failures.
-        if (p.in_strict or p.is_module) {
+        if (p.in_strict or p.is_module or p.is_ts) {
             try p.emitError("'yield' is not allowed as an identifier in strict mode");
         }
         // `yield` outside a generator — treat as identifier (may be arrow param).
         return parseIdentifierOrArrow(p);
     }
     // yield expressions are forbidden inside generator parameter lists.
-    if (p.in_fn_params) {
+    // TypeScript only reports this as TS2783 (type error), not a parse error.
+    if (p.in_fn_params and !p.is_ts) {
         try p.emitError("'yield' is not allowed in generator parameter list");
         return error.ParseError;
     }
@@ -482,6 +543,28 @@ fn parseYieldExpression(p: *Parser) Error!NodeIndex {
             .tag = .yield_expr,
             .main_token = tok,
             .data = .{ .lhs = .none, .rhs = .none },
+        });
+    }
+
+    // The lexer does not include kw_yield in regexAllowed, so '/' after yield is
+    // emitted as .slash or .slash_equal. In generator context, re-lex as regex.
+    const next = p.peek();
+    if (next == .slash or next == .slash_equal) blk: {
+        const slash_start: u32 = p.tokenStart(p.tok_i);
+        if (slash_start >= p.source.len) break :blk;
+        const regex_end = LexHelpers.regexEnd(p.source, slash_start);
+        if (regex_end <= slash_start + 1) break :blk;
+        const slash_tok = p.tok_i;
+        while (!p.isAtEnd() and p.tokenStart(p.tok_i) < regex_end) _ = p.advance();
+        const operand = try p.addNode(.{
+            .tag = .regex_literal,
+            .main_token = slash_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
+        return p.addNode(.{
+            .tag = .yield_expr,
+            .main_token = tok,
+            .data = .{ .lhs = operand, .rhs = .none },
         });
     }
 
@@ -567,8 +650,10 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         const next = NodeIndex.fromInt(p.extra_data.items[j]);
                         if (next != .none) has_after = true;
                     }
-                    // Even if only .none after (trailing comma), rest can't have trailing comma
-                    if (!p.is_ts and (i < end - 1 or has_after)) {
+                    // Rest element must be last. In TS mode, we still reject trailing commas
+                    // (which appear as .none sentinels), but allow actual elements after rest.
+                    const has_trailing_comma = i < end - 1 and !has_after;
+                    if (has_trailing_comma or (!p.is_ts and (i < end - 1 or has_after))) {
                         try p.emitError("Rest element must be last in destructuring pattern");
                         return error.ParseError;
                     }
@@ -582,9 +667,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                             rest_target_tag == .string_literal or rest_target_tag == .boolean_literal or
                             rest_target_tag == .null_literal or rest_target_tag == .super_expr or
                             rest_target_tag == .call_expr or rest_target_tag == .new_expr or
-                            rest_target_tag == .optional_member_expr or
+                            (!p.is_ts and (rest_target_tag == .optional_member_expr or
                             rest_target_tag == .optional_computed_member_expr or
-                            rest_target_tag == .optional_call_expr)
+                            rest_target_tag == .optional_call_expr)))
                         {
                             try p.emitError("Invalid rest element target in destructuring");
                             return error.ParseError;
@@ -631,9 +716,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     child_tag == .template_literal or child_tag == .tagged_template or
                     child_tag == .super_expr or child_tag == .class_expr or
                     child_tag == .fn_expr or
-                    child_tag == .optional_member_expr or
-                    child_tag == .optional_computed_member_expr or
-                    child_tag == .optional_call_expr or
+                    (!p.is_ts and child_tag == .optional_member_expr) or
+                    (!p.is_ts and child_tag == .optional_computed_member_expr) or
+                    (!p.is_ts and child_tag == .optional_call_expr) or
                     child_tag == .import_meta or
                     child_tag == .import_expr or
                     child_tag == .sequence_expr)
@@ -685,9 +770,19 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                 try p.emitError("Invalid destructuring target: method definition in pattern");
                 return error.ParseError;
             }
-            // Rest must be last in object pattern (skip in TS — semantic error)
+            // Rest must be last in object pattern. In TS, we still reject trailing
+            // commas (sentinel .none after rest), but allow actual elements after rest.
             if (prop_tag == .rest_element) {
-                if (!p.is_ts and i < end - 1) {
+                const obj_has_after = blk: {
+                    var has = false;
+                    var jj = i + 1;
+                    while (jj < end) : (jj += 1) {
+                        if (NodeIndex.fromInt(p.extra_data.items[jj]) != .none) has = true;
+                    }
+                    break :blk has;
+                };
+                const obj_trailing_comma = i < end - 1 and !obj_has_after;
+                if (obj_trailing_comma or (!p.is_ts and i < end - 1)) {
                     try p.emitError("Rest element must be last in destructuring pattern");
                     return error.ParseError;
                 }
@@ -697,16 +792,25 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     const target_tag = p.node_tags_ptr[rest_data.lhs.toInt()];
                     switch (target_tag) {
                         .identifier, .member_expr, .computed_member_expr => {},
+                        .optional_member_expr, .optional_computed_member_expr,
+                        .optional_call_expr => {
+                            if (!p.is_ts) {
+                                try p.emitError("Invalid rest element target in object pattern");
+                                return error.ParseError;
+                            }
+                        },
                         .grouping_expr => {
                             const inner = unwrapGroupingTag(p, rest_data.lhs);
-                            if (inner != .identifier and inner != .member_expr and inner != .computed_member_expr) {
+                            if (!p.is_ts and inner != .identifier and inner != .member_expr and inner != .computed_member_expr) {
                                 try p.emitError("Invalid rest element target in object pattern");
                                 return error.ParseError;
                             }
                         },
                         else => {
-                            try p.emitError("Invalid rest element target in object pattern");
-                            return error.ParseError;
+                            if (!p.is_ts) {
+                                try p.emitError("Invalid rest element target in object pattern");
+                                return error.ParseError;
+                            }
                         },
                     }
                 }
@@ -738,9 +842,9 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                         val_tag == .regex_literal or val_tag == .template_literal or
                         val_tag == .tagged_template or val_tag == .super_expr or
                         val_tag == .class_expr or val_tag == .fn_expr or
-                        val_tag == .optional_member_expr or
+                        (!p.is_ts and (val_tag == .optional_member_expr or
                         val_tag == .optional_computed_member_expr or
-                        val_tag == .optional_call_expr or
+                        val_tag == .optional_call_expr)) or
                         val_tag == .import_meta or
                         val_tag == .import_expr or
                         val_tag == .sequence_expr)
@@ -783,7 +887,7 @@ fn validatePattern(p: *Parser, node: NodeIndex) Error!void {
                     // Module/strict: `{yield}` is reserved.
                     if (sp_key_tag == .identifier) {
                         const sp_tok = p.node_main_token_ptr[sp_lhs.toInt()];
-                        if (p.in_strict) try p.checkStrictAssignTarget(sp_tok);
+                        if (p.in_strict or p.is_ts) try p.checkStrictAssignTarget(sp_tok);
                         const sp_text = p.tokenText(sp_tok);
                         if ((p.in_strict or p.is_module) and std.mem.eql(u8, sp_text, "yield")) {
                             try p.emitError("'yield' is reserved");
@@ -1326,6 +1430,37 @@ fn validateRegexClassRangesUnicode(p: *Parser, body: []const u8) Error!void {
 /// Reject quantifier (?, *, +, {N,M}) as the first atom of a Disjunction
 /// alternative — i.e. at the start of the regex, immediately after `(`,
 /// or immediately after `|`. There's no atom to quantify in those positions.
+fn validateRegexBalancedGroups(p: *Parser, body: []const u8) Error!void {
+    var i: usize = 0;
+    var depth: i32 = 0;
+    var in_class = false;
+    while (i < body.len) {
+        const c = body[i];
+        if (c == '\\') { i += 2; continue; }
+        if (in_class) {
+            if (c == ']') in_class = false;
+            i += 1;
+            continue;
+        }
+        if (c == '[') { in_class = true; i += 1; continue; }
+        if (c == '(') { depth += 1; i += 1; continue; }
+        if (c == ')') {
+            depth -= 1;
+            if (depth < 0) {
+                try p.emitError("Unmatched ')' in regular expression");
+                return error.ParseError;
+            }
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+    if (depth > 0) {
+        try p.emitError("Unterminated group in regular expression");
+        return error.ParseError;
+    }
+}
+
 fn validateRegexNoLeadingQuantifier(p: *Parser, body: []const u8) Error!void {
     if (body.len == 0) return;
     var i: usize = 0;
@@ -1898,6 +2033,35 @@ fn checkStrictOctalNumber(p: *Parser) !void {
     }
 }
 
+/// Emit TS1121/TS1489 for legacy octal/leading-zero literals in TypeScript mode.
+/// Only called when is_ts and NOT already in_strict (strict path already handles these).
+fn checkTsOctalNumber(p: *Parser) !void {
+    const start = p.tok_starts_ptr[p.tok_i];
+    if (start + 1 >= p.source.len) return;
+    if (p.source[start] != '0') return;
+    const next = p.source[start + 1];
+    // Skip modern prefix literals (0x, 0b, 0o, 0X, 0B, 0O) and floats (0., 0e).
+    if (next == 'x' or next == 'X' or next == 'b' or next == 'B' or
+        next == 'o' or next == 'O' or next == '.' or next == 'e' or
+        next == 'E' or next == 'n' or next == '_' or
+        next < '0' or next > '9') return;
+    // Scan integer digits of the token to decide TS1121 vs TS1489.
+    const tok_len = p.tok_lens_ptr[p.tok_i];
+    const tok_end = @min(start + tok_len, p.source.len);
+    var has_89 = false;
+    var i: usize = start + 1;
+    while (i < tok_end) : (i += 1) {
+        const c = p.source[i];
+        if (c < '0' or c > '9') break; // stop at '.', 'e', 'n', etc.
+        if (c == '8' or c == '9') has_89 = true;
+    }
+    if (has_89) {
+        try p.emitError("Decimals with leading zeros are not allowed");
+    } else {
+        try p.emitError("Octal literals are not allowed. Use the syntax '0o" ++ "...'.");
+    }
+}
+
 /// Emit diagnostic for octal escape in string in strict mode (non-fatal).
 /// Validate \u and \x escape sequences in string content (any mode).
 /// Rejects `\u` followed by fewer than 4 hex digits, malformed `\u{...}`,
@@ -2018,8 +2182,15 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
     return switch (tag) {
         .identifier, .escaped_keyword,
         .kw_get, .kw_set, .kw_of, .kw_from, .kw_as, .kw_target, .kw_meta,
-        .kw_let, .kw_static, .kw_implements, .kw_interface,
         => try parseIdentifierOrArrow(p),
+        // Strict-mode reserved words: valid identifiers in non-strict JS, always reserved in TS/strict mode
+        .kw_let, .kw_static, .kw_implements, .kw_interface, => {
+            if (p.in_strict or p.is_ts) {
+                try p.emitError("Expected expression");
+                return error.ParseError;
+            }
+            return try parseIdentifierOrArrow(p);
+        },
         // await/yield as identifiers when not in their reserved contexts
         .kw_await => if (!p.in_async and !p.is_module and !(p.in_static_block and !p.in_function)) try parseIdentifierOrArrow(p) else {
             try p.emitError("Expected expression");
@@ -2030,7 +2201,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             return p.makeErrorNode();
         },
         .number_literal => blk: {
-            if (p.in_strict) try checkStrictOctalNumber(p);
+            if (p.in_strict) try checkStrictOctalNumber(p) else if (p.is_ts) try checkTsOctalNumber(p);
             break :blk try parseLiteral(p, .number_literal);
         },
         .string_literal => blk: {
@@ -2158,6 +2329,8 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                     try p.emitError("Regex flags 'u' and 'v' are mutually exclusive");
                     return error.ParseError;
                 }
+                // Validate balanced groups (e.g. /fo(o/).
+                try validateRegexBalancedGroups(p, p.source[ts + 1 .. close - 1]);
                 // Validate quantifier-without-atom (e.g. /?/, /{2}/).
                 try validateRegexNoLeadingQuantifier(p, p.source[ts + 1 .. close - 1]);
                 // Validate regex modifier-group syntax: `(?<flags>:...)` etc.
@@ -2305,11 +2478,12 @@ fn rescanSlashAsRegex(p: *Parser) Error!NodeIndex {
         }
         if (c == '/' and !in_char_class) {
             idx += 1; // skip closing /
-            // Scan flags (lowercase ASCII letters)
+            const flags_start = idx;
+            // Scan flags (alphanumeric, but validate below)
             while (idx < source.len) {
                 const fc = source[idx];
                 if ((fc >= 'a' and fc <= 'z') or (fc >= 'A' and fc <= 'Z') or
-                    (fc >= '0' and fc <= '9') or fc == '_' or fc == '$')
+                    (fc >= '0' and fc <= '9'))
                 {
                     idx += 1;
                 } else break;
@@ -2317,6 +2491,32 @@ fn rescanSlashAsRegex(p: *Parser) Error!NodeIndex {
             // Advance tok_i past all tokens within the regex span
             while (p.tok_i < p.tokens.len - 1 and p.tokenStart(p.tok_i) < idx) {
                 p.tok_i += 1;
+            }
+            // Validate flags: only g i m s u y d v are valid; no duplicates; u/v exclusive
+            var seen: [128]bool = @splat(false);
+            var has_u = false;
+            var has_v = false;
+            var fi = flags_start;
+            while (fi < idx) : (fi += 1) {
+                const fc = source[fi];
+                switch (fc) {
+                    'g', 'i', 'm', 's', 'u', 'y', 'd', 'v' => {},
+                    else => {
+                        try p.emitError("Invalid regular expression flag");
+                        return error.ParseError;
+                    },
+                }
+                if (seen[fc]) {
+                    try p.emitError("Duplicate regular expression flag");
+                    return error.ParseError;
+                }
+                seen[fc] = true;
+                if (fc == 'u') has_u = true;
+                if (fc == 'v') has_v = true;
+            }
+            if (has_u and has_v) {
+                try p.emitError("Regex flags 'u' and 'v' are mutually exclusive");
+                return error.ParseError;
             }
             return p.addNode(.{
                 .tag = .regex_literal,
@@ -2389,9 +2589,17 @@ fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
     // Spec: IdentifierName decoded to a ReservedWord is SyntaxError as
     // IdentifierReference. Walker emits .identifier; check decoded form.
     const tok_tag = p.tokenTagAt(tok);
-    if (tok_tag == .identifier) {
+    if (tok_tag == .identifier or tok_tag == .escaped_keyword) {
         const text = p.tokenText(tok);
-        if (text.len > 0 and text[0] == '\\') {
+        // In strict mode or TypeScript mode, strict reserved words are invalid as identifier expressions.
+        if (p.in_strict or p.is_ts) {
+            if (Parser.isStrictReservedStr(text)) {
+                try p.emitDiagnostic(p.currentSpan(),
+                    "'{s}' is not allowed as an identifier in strict mode", .{text});
+                return error.ParseError;
+            }
+        }
+        if (std.mem.indexOfScalar(u8, text, '\\') != null) {
             var resolved_buf: [256]u8 = undefined;
             if (parser_mod.resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
                 if (parser_mod.isAlwaysReservedStr(resolved)) {
@@ -2543,7 +2751,9 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
     defer p.in_fn_params = saved_fp_afe;
     const params_range = try parseFormalParameters(p);
     p.in_fn_params = false; // body context: await/yield valid in async/generator body
+    p.in_return_type = true;
     const async_fn_expr_return_type = try p.parseOptionalTypeAnnotation();
+    p.in_return_type = false;
 
     // TS ambient async function expressions can be bodyless
     if (p.is_ts and p.peek() != .l_brace) {
@@ -2586,11 +2796,18 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
         // Params may go into the outer or the arrow's scope depending on `=>`.
         // Suppress declare emission during parse; we'll replay declares into
         // the arrow's scope once confirmed.
+        // Set in_async=true so `await` in parameter defaults is treated as a
+        // keyword (TS1109: "Expression expected" if no operand follows).
         const saved_suppress = p.suppress_param_declares;
+        const saved_async_pre = p.in_async;
         p.suppress_param_declares = true;
+        p.in_async = true;
         const params_range = try parseFormalParameters_inner(p, open_paren);
         p.suppress_param_declares = saved_suppress;
+        p.in_async = saved_async_pre;
+        p.in_return_type = true;
         const async_typed_arrow_return_type = try p.parseOptionalTypeAnnotation();
+        p.in_return_type = false;
 
         if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
             _ = p.advance(); // consume `=>`
@@ -2669,6 +2886,21 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
                     try p.emitError("'await' is not allowed as a parameter name in async arrow");
                     return error.ParseError;
                 }
+            }
+            // TS1109: `await` used as an expression without operand in a default value
+            // (e.g., `async (a = await) =>`). `await` is a keyword in async param defaults.
+            if (p.is_ts and pt == .assignment_pattern) {
+                const rhs = p.node_data_ptr[param_node.toInt()].rhs;
+                if (rhs != .none and p.node_tags_ptr[rhs.toInt()] == .identifier) {
+                    const rtok = p.node_main_token_ptr[rhs.toInt()];
+                    if (std.mem.eql(u8, p.tokenText(rtok), "await")) {
+                        try p.emitError("Expression expected");
+                        return error.ParseError;
+                    }
+                }
+            }
+            if (pt == .identifier) {
+                const ptok = p.node_main_token_ptr[param_node.toInt()];
                 if (p.in_strict) {
                     try p.checkStrictBinding(ptok);
                 }
@@ -2776,7 +3008,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     if (p.peek() == .r_paren) {
         _ = p.advance(); // consume `)`
         // TS return type annotation: `(): Type =>`
+        p.in_return_type = true;
         const empty_arrow_return_type = try p.parseOptionalTypeAnnotation();
+        p.in_return_type = false;
         if (p.peek() == .arrow and !p.isOnNewLine() and p.allow_arrow) {
             _ = p.advance(); // consume `=>`
             const saved_fn2 = p.in_function;
@@ -2815,7 +3049,9 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         p.suppress_param_declares = true;
         const params_range = try parseFormalParameters_inner(p, open_paren);
         p.suppress_param_declares = saved_suppress2;
+        p.in_return_type = true;
         const typed_arrow_return_type = try p.parseOptionalTypeAnnotation(); // return type
+        p.in_return_type = false;
         if (p.peek() == .arrow and !p.isOnNewLine()) {
             _ = p.advance(); // consume `=>`
             const saved_fn = p.in_function;
@@ -2878,10 +3114,13 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         const saved_extra_len = p.extra_data.items.len;
         _ = p.advance(); // eat ':'
         const typescript = @import("typescript.zig");
+        const prev_in_rt_spec = p.in_return_type;
+        p.in_return_type = true;
         const type_ok = blk: {
             _ = typescript.parseType(p) catch break :blk false;
             break :blk true;
         };
+        p.in_return_type = prev_in_rt_spec;
         if (type_ok and p.peek() == .arrow and !p.isOnNewLine()) {
             // It's an arrow with return type — reinterpret params and build arrow
             const params = p.scratchSlice(scratch_top);
@@ -3005,6 +3244,8 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
                 .number_literal, .string_literal, .boolean_literal,
                 .null_literal, .this_expr, .grouping_expr,
                 .yield_delegate, .await_expr,
+                // sequence_expr: `(a, (b, c)) =>` — nested comma expression is not a valid param.
+                .sequence_expr,
                 => {
                     try p.emitError("Invalid arrow function parameter");
                     return p.makeErrorNode();
@@ -3297,13 +3538,132 @@ fn parseObjectLiteral(p: *Parser) Error!NodeIndex {
     const open = p.advance(); // consume `{`
     const scratch_top = p.scratchLen();
 
+    // TS1117: track property names to detect duplicates.
+    // Getter+setter pair with same name is allowed; all other duplicates are errors.
+    const SeenProp = struct { key: []const u8, is_getter: bool, is_setter: bool };
+    var seen_buf: [64]SeenProp = undefined;
+    // Per-slot buffers to hold formatted numeric canonical keys (e.g. "1" for 1.0).
+    var seen_num_bufs: [64][32]u8 = undefined;
+    var seen_count: usize = 0;
+
     while (p.peek() != .r_brace and p.peek() != .eof) {
         const prop = try parseObjectProperty(p);
         try p.scratchPush(prop);
 
-        // Note: duplicate __proto__ is a syntax error in object literals but NOT in
-        // destructuring patterns. Since we can't distinguish at parse time (cover grammar),
-        // we defer this check to semantic analysis / lint rules.
+        // TS1117: duplicate key:value property names in TypeScript mode.
+        // Only checks .property nodes (colon syntax). Method shorthand and getter/setter
+        // pairs are NOT flagged here (they become TS2300 semantic errors or are allowed).
+        // Private names (#x) are skipped.
+        // Properties whose value is a plain identifier are skipped to avoid false rejects
+        // in cover grammar: `{ a: x, a: y }` might be a destructuring pattern LHS.
+        if (p.is_ts and p.node_tags_ptr[prop.toInt()] == .property) {
+            const pdata = p.node_data_ptr[prop.toInt()];
+            const key_node = pdata.lhs;
+            const val_node = pdata.rhs;
+            const val_is_ident = val_node != .none and p.node_tags_ptr[val_node.toInt()] == .identifier;
+            if (!val_is_ident and key_node != .none) {
+                // Compute canonical key: ident/string → text, number → normalized string.
+                const key_canonical: ?[]const u8 = blk: {
+                    const ktag = p.node_tags_ptr[key_node.toInt()];
+                    const ktok = p.node_main_token_ptr[key_node.toInt()];
+                    if (ktag == .identifier) {
+                        const name = p.tokenText(ktok);
+                        if (name.len > 0 and name[0] == '#') break :blk null;
+                        break :blk name;
+                    } else if (ktag == .string_literal) {
+                        const start = p.tok_starts_ptr[ktok];
+                        break :blk p.getStringContent(start);
+                    } else if (ktag == .number_literal) {
+                        const text = p.tokenText(ktok);
+                        const val = std.fmt.parseFloat(f64, text) catch break :blk null;
+                        if (std.math.isNan(val) or std.math.isInf(val)) break :blk null;
+                        if (seen_count >= seen_buf.len) break :blk null;
+                        // Normalize: if the value is a non-negative integer, use integer form.
+                        const canonical = if (val >= 0 and val == @trunc(val) and val < 1e15)
+                            std.fmt.bufPrint(&seen_num_bufs[seen_count], "{d}", .{@as(u64, @intFromFloat(val))}) catch break :blk null
+                        else
+                            std.fmt.bufPrint(&seen_num_bufs[seen_count], "{d}", .{val}) catch break :blk null;
+                        break :blk canonical;
+                    } else break :blk null;
+                };
+                if (key_canonical) |name| {
+                    for (seen_buf[0..seen_count]) |seen| {
+                        if (std.mem.eql(u8, seen.key, name)) {
+                            try p.emitDiagnostic(p.currentSpan(), "An object literal cannot have multiple properties with the same name", .{});
+                            break;
+                        }
+                    }
+                    if (seen_count < seen_buf.len) {
+                        seen_buf[seen_count] = .{ .key = name, .is_getter = false, .is_setter = false };
+                        seen_count += 1;
+                    }
+                }
+            }
+        }
+
+        // TS1117: duplicate computed property keys — compare source text of [key] spans.
+        if (p.is_ts and p.node_tags_ptr[prop.toInt()] == .computed_property) {
+            const open_bracket = p.node_main_token_ptr[prop.toInt()]; // `[` token
+            // Scan forward to find the matching `]`, tracking bracket depth.
+            var depth: u32 = 1;
+            var r_tok = open_bracket + 1;
+            while (r_tok < p.parsed_len and depth > 0) : (r_tok += 1) {
+                switch (p.tags_ptr[r_tok]) {
+                    .l_bracket => depth += 1,
+                    .r_bracket => depth -= 1,
+                    else => {},
+                }
+            }
+            // r_tok is now one past the `]`; r_tok-1 is the `]`.
+            const open_pos = p.tok_starts_ptr[open_bracket];
+            const r_pos = if (r_tok > 0 and r_tok - 1 < p.parsed_len)
+                p.tok_starts_ptr[r_tok - 1]
+            else
+                p.source.len;
+            if (open_pos + 1 <= r_pos) {
+                const key_text = std.mem.trim(u8, p.source[open_pos + 1 .. r_pos], " \t\r\n");
+                if (key_text.len > 0) {
+                    for (seen_buf[0..seen_count]) |seen| {
+                        if (std.mem.eql(u8, seen.key, key_text)) {
+                            try p.emitDiagnostic(p.currentSpan(), "An object literal cannot have multiple properties with the same name", .{});
+                            break;
+                        }
+                    }
+                    if (seen_count < seen_buf.len) {
+                        seen_buf[seen_count] = .{ .key = key_text, .is_getter = false, .is_setter = false };
+                        seen_count += 1;
+                    }
+                }
+            }
+        }
+
+        // TS1118: duplicate get/set accessors with same name in object literal.
+        if (p.is_ts) {
+            const prop_tag = p.node_tags_ptr[prop.toInt()];
+            if (prop_tag == .getter_def or prop_tag == .setter_def) {
+                const is_getter = prop_tag == .getter_def;
+                const key_node = p.node_data_ptr[prop.toInt()].lhs;
+                if (key_node != .none) {
+                    const key_tok = p.node_main_token_ptr[key_node.toInt()];
+                    const name = p.tokenText(key_tok);
+                    var gsfound = false;
+                    for (seen_buf[0..seen_count]) |*seen| {
+                        if (std.mem.eql(u8, seen.key, name)) {
+                            gsfound = true;
+                            if ((is_getter and seen.is_getter) or (!is_getter and seen.is_setter)) {
+                                try p.emitDiagnostic(p.currentSpan(), "An object literal cannot have multiple get/set accessors with the same name", .{});
+                            }
+                            if (is_getter) seen.is_getter = true else seen.is_setter = true;
+                            break;
+                        }
+                    }
+                    if (!gsfound and seen_count < seen_buf.len) {
+                        seen_buf[seen_count] = .{ .key = name, .is_getter = is_getter, .is_setter = !is_getter };
+                        seen_count += 1;
+                    }
+                }
+            }
+        }
 
         if (p.peek() == .comma) {
             _ = p.advance();
@@ -3344,19 +3704,21 @@ fn parseObjectProperty(p: *Parser) Error!NodeIndex {
     // Private names (#x) are only valid in class bodies, not object literals.
     // Catch direct `#x:` form here; methods (get/set/async/generator with #x)
     // are caught after the prefix consumption (e.g. `async * #x` → peek after async/* is .hash).
-    if (tag == .hash) {
-        try p.emitError("Private fields can only be declared in classes");
-    }
-    // Detect `get #x`, `set #x`, `* #x`, `async #x`, `async * #x` lookahead.
-    if ((tag == .kw_get or tag == .kw_set) and p.peekAt(1) == .hash) {
-        try p.emitError("Private fields can only be declared in classes");
-    }
-    if (tag == .asterisk and p.peekAt(1) == .hash) {
-        try p.emitError("Private fields can only be declared in classes");
-    }
-    if (tag == .kw_async) {
-        if (p.peekAt(1) == .hash) try p.emitError("Private fields can only be declared in classes");
-        if (p.peekAt(1) == .asterisk and p.peekAt(2) == .hash) try p.emitError("Private fields can only be declared in classes");
+    // TypeScript emits only type-level errors for these cases, so skip in TS mode.
+    if (!p.is_ts) {
+        if (tag == .hash) {
+            try p.emitError("Private fields can only be declared in classes");
+        }
+        if ((tag == .kw_get or tag == .kw_set) and p.peekAt(1) == .hash) {
+            try p.emitError("Private fields can only be declared in classes");
+        }
+        if (tag == .asterisk and p.peekAt(1) == .hash) {
+            try p.emitError("Private fields can only be declared in classes");
+        }
+        if (tag == .kw_async) {
+            if (p.peekAt(1) == .hash) try p.emitError("Private fields can only be declared in classes");
+            if (p.peekAt(1) == .asterisk and p.peekAt(2) == .hash) try p.emitError("Private fields can only be declared in classes");
+        }
     }
 
     // Spread: `...expr`
@@ -3474,6 +3836,14 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
                 return error.ParseError;
             }
         }
+        // TS1052: A 'set' accessor parameter cannot have an initializer.
+        if (p.is_ts and param_tag == .assignment_pattern) {
+            try p.emitError("A 'set' accessor parameter cannot have an initializer");
+        }
+        // TS1051: A 'set' accessor cannot have an optional parameter.
+        if (p.is_ts and param_tag == .identifier and p.node_data_ptr[param.toInt()].lhs == .root) {
+            try p.emitError("A 'set' accessor cannot have an optional parameter");
+        }
         try p.scratchPush(param);
         // Trailing comma after setter param is valid: `set x(a,) {}`
         if (p.peek() == .comma and p.peekAt(1) == .r_paren) {
@@ -3483,7 +3853,9 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
                 try p.emitError("Setter must have exactly one parameter");
                 return error.ParseError;
             }
-            // TS: skip extra params (semantic error, not syntax)
+            // TS1049: A 'set' accessor must have exactly one parameter.
+            try p.emitError("A 'set' accessor must have exactly one parameter");
+            // skip extra params to avoid cascading errors
             while (p.peek() == .comma) {
                 _ = p.advance();
                 if (p.peek() == .r_paren) break;
@@ -3517,7 +3889,13 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     };
 
     _ = try p.expect(.r_paren);
-    _ = try p.parseOptionalTypeAnnotation(); // TS return type
+    p.in_return_type = true;
+    const gs_return_type = try p.parseOptionalTypeAnnotation(); // TS return type
+    p.in_return_type = false;
+    // TS1095: A 'set' accessor cannot have a return type annotation.
+    if (p.is_ts and accessor_tag == .kw_set and gs_return_type != .none) {
+        try p.emitError("A 'set' accessor cannot have a return type annotation");
+    }
 
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
 
@@ -3621,7 +3999,9 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     _ = try p.parseOptionalTypeParameters();
     const gen_method_scope_ev = try p.emitScopeOpen(.function, .none);
     const params_range = try parseFormalParameters(p);
+    p.in_return_type = true;
     _ = try p.parseOptionalTypeAnnotation(); // TS return type
+    p.in_return_type = false;
     const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
     try p.emitScopeClose(.none);
 
@@ -3668,7 +4048,9 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
         defer p.in_method = saved_method;
         const comp_method_scope_ev = try p.emitScopeOpen(.function, .none);
         const params_range = try parseFormalParameters(p);
+        p.in_return_type = true;
         _ = try p.parseOptionalTypeAnnotation(); // TS return type
+        p.in_return_type = false;
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         try p.emitScopeClose(.none);
         const method_extra = try p.addExtra(ast.MethodData, .{
@@ -3754,7 +4136,9 @@ fn parseRegularProperty(p: *Parser) Error!NodeIndex {
         defer p.in_method = saved_method;
         const method_scope_ev = try p.emitScopeOpen(.function, .none);
         const params_range = try parseFormalParameters(p);
+        p.in_return_type = true;
         _ = try p.parseOptionalTypeAnnotation();
+        p.in_return_type = false;
         const body = try parseBlockBodyWithStrictChecks(p, params_range, .none);
         try p.emitScopeClose(.none);
         const method_extra = try p.addExtra(ast.MethodData, .{
@@ -4013,7 +4397,9 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     const fn_expr_type_params = try p.parseOptionalTypeParameters();
     const params_range = try parseFormalParameters(p);
     p.in_fn_params = false; // body: yield/await valid in generator/async fn
+    p.in_return_type = true;
     const fn_expr_return_type = try p.parseOptionalTypeAnnotation();
+    p.in_return_type = false;
 
     // TS ambient function expressions can be bodyless in certain contexts
     if (p.is_ts and p.peek() != .l_brace) {
@@ -4223,7 +4609,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
                 if (std.mem.eql(u8, decl_buf[0..dl], ref_norm)) { found = true; break; }
             }
             if (!found) {
-                if (outermost) {
+                if (outermost and !p.is_ts) {
                     try p.emitError("Reference to undeclared private name");
                     return error.ParseError;
                 }
@@ -4425,7 +4811,9 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         defer p.in_constructor = saved_ctor;
         defer p.in_class_field = saved_cf_m;
         const params_range = try parseFormalParameters(p);
+        p.in_return_type = true;
         const method_return_type = try p.parseOptionalTypeAnnotation(); // TS return type
+        p.in_return_type = false;
         // TS: method overload signature has no body (ends with `;` or newline).
         const body = if (p.is_ts and p.peek() != .l_brace) blk: {
             _ = p.eat(.semicolon);
@@ -4558,6 +4946,12 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
         return p.makeErrorNode();
     }
 
+    // TS: `new <T>Foo()` is invalid — angle bracket type assertion cannot be a new target.
+    if (p.is_ts and p.peek() == .less_than) {
+        try p.emitError("Expression expected");
+        return error.ParseError;
+    }
+
     // Recursive: `new new Foo()` is valid.
     var callee: NodeIndex = undefined;
     if (p.peek() == .kw_new) {
@@ -4606,8 +5000,6 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
                 });
             },
             .l_bracket => {
-                // In class field context, `[` on a new line starts a new member (ASI)
-                if (p.in_class_field and p.isOnNewLine()) break;
                 const bracket = p.advance();
                 const saved_allow_in_new = p.allow_in;
                 p.allow_in = true;
@@ -5036,8 +5428,12 @@ fn parseCallLevelInfix(p: *Parser, left: NodeIndex) Error!NodeIndex {
         .l_paren => try parseCallExpression(p, left),
         .dot => try parseMemberAccess(p, left),
         .l_bracket => {
-            // In class field context, `[` on a new line starts a new member (ASI)
-            if (p.in_class_field and p.isOnNewLine()) return left;
+            // TS: after postfix ++/--, a `[` on a new line applies ASI (new class member).
+            // For other expressions (e.g. literal `0`), no ASI — `0[e2]` is valid subscript.
+            if (p.in_class_field and p.isOnNewLine()) {
+                const left_tag = p.node_tags_ptr[left.toInt()];
+                if (left_tag == .postfix_inc or left_tag == .postfix_dec) return left;
+            }
             return try parseComputedMember(p, left);
         },
         .question_dot => try parseOptionalChain(p, left),
@@ -5073,7 +5469,9 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!No
 
     // Exponentiation: unary operators cannot be the base of **
     // (e.g., `delete x ** 2` is invalid — must use `(delete x) ** 2`)
-    if (op_tag == .asterisk_asterisk and left != .none) {
+    // TypeScript's parser accepts these with type-level errors only (TS2362), so only
+    // hard-fail in JavaScript mode.
+    if (!p.is_ts and op_tag == .asterisk_asterisk and left != .none) {
         const left_tag = p.node_tags_ptr[left.toInt()];
         switch (left_tag) {
             .delete_expr, .typeof_expr, .void_expr,
@@ -5225,6 +5623,13 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
                 return error.ParseError;
             }
         },
+        .in_expr, .instanceof_expr,
+        // `await x = y` and `yield x = y` are never valid LHS — not an lvalue.
+        .await_expr, .yield_expr, .yield_delegate,
+        => {
+            try p.emitError("';' expected");
+            return error.ParseError;
+        },
         else => {
             if (!p.is_ts) {
                 try p.emitError("Invalid left-hand side in assignment");
@@ -5233,8 +5638,8 @@ fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
         },
     }
 
-    // Strict mode: cannot assign to eval or arguments (also through parens).
-    if (effective_left_tag == .identifier and p.in_strict) {
+    // Strict mode / TypeScript: cannot assign to eval or arguments (also through parens).
+    if (effective_left_tag == .identifier and (p.in_strict or p.is_ts)) {
         const inner = if (left_tag == .grouping_expr) unwrapGrouping(p, left).node else left;
         const left_tok = p.node_main_token_ptr[inner.toInt()];
         try p.checkStrictAssignTarget(left_tok);
@@ -5421,7 +5826,7 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
     const prop_tok = if (pt.isKeyword() or pt == .identifier or pt == .escaped_keyword)
         p.advance()
     else if (pt == .hash) blk: {
-        if (!p.in_class) {
+        if (!p.in_class and !p.is_ts) {
             try p.emitError("Private field access is only allowed inside a class");
         }
         // Spec: super.#x is invalid — private fields cannot be accessed via super.
@@ -5468,6 +5873,10 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
 
 fn parseComputedMember(p: *Parser, object: NodeIndex) Error!NodeIndex {
     const bracket = p.advance(); // consume `[`
+    // TS1011: An element access expression should take an argument.
+    if (p.peek() == .r_bracket) {
+        try p.emitDiagnostic(p.currentSpan(), "An element access expression should take an argument", .{});
+    }
     // `in` is always allowed inside `[...]` (even in for-in init)
     const saved_allow_in = p.allow_in;
     p.allow_in = true;
@@ -5762,7 +6171,17 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
 
 fn parseBindingPattern(p: *Parser) Error!NodeIndex {
     return switch (p.peek()) {
-        .identifier => parseIdentifier(p),
+        .identifier => blk: {
+            // Strict mode / TypeScript: eval and arguments cannot be binding names.
+            if (p.in_strict or p.is_ts) {
+                const text = p.tokenText(p.tok_i);
+                if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
+                    try p.emitError("cannot use eval or arguments as a binding name in strict mode");
+                    return p.makeErrorNode();
+                }
+            }
+            break :blk parseIdentifier(p);
+        },
         .l_brace => parseObjectBindingPattern(p),
         .l_bracket => parseArrayBindingPattern(p),
         // yield can be binding name outside generators/strict
@@ -5773,9 +6192,10 @@ fn parseBindingPattern(p: *Parser) Error!NodeIndex {
             }
             return parseIdentifier(p);
         },
-        // await can be binding name outside async/module (relaxed in TS)
+        // await is reserved in async/module/static-block contexts.
+        // In TypeScript: same rule, but allow in ambient declarations.
         .kw_await => {
-            if (!p.is_ts and (p.in_async or p.is_module)) {
+            if (!p.in_ts_ambient and (p.in_async or p.is_module or (p.in_static_block and !p.in_function))) {
                 try p.emitError("'await' cannot be used as binding name in this context");
                 return p.makeErrorNode();
             }
@@ -6172,6 +6592,31 @@ pub fn reinterpretAsPattern(p: *Parser, node: NodeIndex) void {
 // TypeScript expression extensions
 // =====================================================================
 
+/// TS1355: Check whether a node is a valid target for `as const`.
+/// Valid targets: literals (string, number, bigint, boolean, template), array/object literals,
+/// parenthesized versions thereof, unary +/- on numeric literals, and member expressions (enum members).
+fn isValidConstAssertionTarget(p: *Parser, node: NodeIndex) bool {
+    if (node == .none) return false;
+    return switch (p.node_tags_ptr[node.toInt()]) {
+        .string_literal, .number_literal, .bigint_literal, .boolean_literal,
+        .template_literal, .array_literal, .object_literal => true,
+        .unary_plus, .unary_minus => blk: {
+            const inner = p.node_data_ptr[node.toInt()].lhs;
+            if (inner == .none) break :blk false;
+            const inner_tag = p.node_tags_ptr[inner.toInt()];
+            break :blk inner_tag == .number_literal or inner_tag == .bigint_literal;
+        },
+        .grouping_expr => blk: {
+            const inner = p.node_data_ptr[node.toInt()].lhs;
+            break :blk isValidConstAssertionTarget(p, inner);
+        },
+        // Enum member access (e.g., MyEnum.Value)
+        .member_expr, .computed_member_expr,
+        .optional_member_expr, .optional_computed_member_expr => true,
+        else => false,
+    };
+}
+
 /// Parse `expr as Type` or `expr satisfies Type`.
 fn parseTsTypePostfix(p: *Parser, left: NodeIndex, node_tag: Node.Tag) Error!NodeIndex {
     const op_tok = p.advance();
@@ -6434,7 +6879,8 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
         next == .ampersand_ampersand or next == .pipe_pipe or
         next == .question_question or next == .template_head or
         next == .template_no_sub or next == .eof or next == .r_brace or
-        next == .bang)
+        next == .bang or next == .l_brace or next == .kw_implements or
+        next == .kw_extends)
     {
         return true;
     }
@@ -6527,6 +6973,11 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
                     std.mem.eql(u8, txt, "protected") or std.mem.eql(u8, txt, "readonly")) and
                     (nt == .identifier or nt == .l_brace or nt == .l_bracket))
                     return true;
+            }
+            // At param start: `...ident:` — rest param with type in middle of list
+            if (at_param_start and t == .ellipsis and i + 2 < max_scan) {
+                const after_dot = p.peekAt(i + 1);
+                if (after_dot == .identifier and p.peekAt(i + 2) == .colon) return true;
             }
             at_param_start = false;
         }

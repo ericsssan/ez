@@ -76,7 +76,7 @@ pub fn main(init: std.process.Init) !void {
         const is_module = switch (opts.source_type) {
             .module => true,
             .unambiguous => sourceHasModuleSyntax(source),
-            .unspecified => false,
+            .unspecified, .script => false,
         };
 
         var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -196,7 +196,7 @@ fn shouldSkip(path: []const u8) bool {
     return false;
 }
 
-const SourceType = enum { unspecified, module, unambiguous };
+const SourceType = enum { unspecified, module, unambiguous, script };
 
 /// Result of walking options.json files up the directory tree (single pass).
 const OptionsResult = struct {
@@ -268,6 +268,10 @@ fn readOptionsHierarchy(io: std.Io, allocator: std.mem.Allocator, input_path: []
                     std.mem.indexOf(u8, content, "\"sourceType\":\"module\"") != null)
                 {
                     result.source_type = .module;
+                } else if (std.mem.indexOf(u8, content, "\"sourceType\": \"script\"") != null or
+                    std.mem.indexOf(u8, content, "\"sourceType\":\"script\"") != null)
+                {
+                    result.source_type = .script;
                 } else if (std.mem.indexOf(u8, content, "\"unambiguous\"") != null) {
                     result.source_type = .unambiguous;
                 }
