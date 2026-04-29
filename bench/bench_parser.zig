@@ -11,10 +11,13 @@ const event_resolver = ez.event_resolver;
 // Pre-allocated working buffer replaces per-iteration GPA allocations.
 // Reset between iterations is a single pointer store — no syscalls, no page faults.
 // After a few warmup iterations, all output arrays are L2-resident.
-const WORKING_BUF_BYTES = 6 * 1024 * 1024; // 6 MB: plenty for lex+parse+traversal+semantic
+// 256 MB: semantic on typescript.js (~9 MB source) peaks at ~240 MB total
+// (lex+parse=80 MB, ArenaAllocator-backed CPB adds ~28 MB of chunk overhead on
+// top of ~18 MB of actual segment/event data, plus scope/sym/ref tables).
+const WORKING_BUF_BYTES = 256 * 1024 * 1024;
 
-const WARMUP: u32 = 50;
-const ITERATIONS: u32 = 1000;
+const WARMUP: u32 = 5;
+const ITERATIONS: u32 = 100;
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -161,6 +164,7 @@ pub fn main(init: std.process.Init) !void {
     // ── Phase 5: + SemanticAnalysis ─────────────────────────────────
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var sem_oom_warmup: bool = false;
         for (0..WARMUP) |_| {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
@@ -169,11 +173,13 @@ pub fn main(init: std.process.Init) !void {
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
-            if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| { sem_oom_warmup = true; }
         }
+        if (sem_oom_warmup) std.debug.print("[WARN] Phase 5 warmup: semantic OOM (FBA {d} MB too small)\n", .{WORKING_BUF_BYTES / (1024 * 1024)});
+        var sem_oom_count: u32 = 0;
         for (0..ITERATIONS) |iter| {
             fba.reset();
             const t0 = std.Io.Timestamp.now(io, .boot);
@@ -192,19 +198,50 @@ pub fn main(init: std.process.Init) !void {
                 times[iter] = 0;
                 continue;
             };
-            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| {
+                sem_oom_count += 1;
+                times[iter] = 0;
+                continue;
+            }
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
+        if (sem_oom_count > 0) std.debug.print("[WARN] Phase 5: semantic OOM in {d}/{d} iterations\n", .{ sem_oom_count, ITERATIONS });
         printStats("+ Sem (no CFG)", &times, source.len);
+        {
+            // One-shot: measure peak FBA usage through the full pipeline.
+            fba.reset();
+            var tok = Lexer.tokenize(fba.allocator(), source) catch unreachable;
+            defer tok.deinit(fba.allocator());
+            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch unreachable;
+            defer tree.deinit(fba.allocator());
+            _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
+            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {};
+            const after_parse = fba.end_index;
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
+                var sem = sem_result;
+                std.debug.print("  FBA after parse: {d} MB, after sem: {d} MB (sem used {d} MB)\n", .{
+                    after_parse / (1024 * 1024),
+                    fba.end_index / (1024 * 1024),
+                    (fba.end_index - after_parse) / (1024 * 1024),
+                });
+                sem.deinit(fba.allocator());
+            } else |_| {
+                std.debug.print("  FBA after parse: {d} MB, sem OOM at ~{d} MB\n", .{
+                    after_parse / (1024 * 1024),
+                    fba.end_index / (1024 * 1024),
+                });
+            }
+        }
     }
 
-    // ── Phase 6 (was): full semantic with CFG ──────────────────────────────
+    // ── Phase 6: + Semantic (is_module=true) ───────────────────────────
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var sem_oom_warmup: bool = false;
         for (0..WARMUP) |_| {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
@@ -213,11 +250,13 @@ pub fn main(init: std.process.Init) !void {
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
             _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
-            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+            if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| { sem_oom_warmup = true; }
         }
+        if (sem_oom_warmup) std.debug.print("[WARN] Phase 6 warmup: semantic OOM (FBA {d} MB too small)\n", .{WORKING_BUF_BYTES / (1024 * 1024)});
+        var sem_oom_count: u32 = 0;
         for (0..ITERATIONS) |iter| {
             fba.reset();
             const t0 = std.Io.Timestamp.now(io, .boot);
@@ -239,11 +278,16 @@ pub fn main(init: std.process.Init) !void {
             if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| {
+                sem_oom_count += 1;
+                times[iter] = 0;
+                continue;
+            }
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
-        printStats("+ Sem (with CFG)", &times, source.len);
+        if (sem_oom_count > 0) std.debug.print("[WARN] Phase 6: semantic OOM in {d}/{d} iterations\n", .{ sem_oom_count, ITERATIONS });
+        printStats("+ Sem (module)", &times, source.len);
     }
 
     // ── Phase 7: Zig-only pipeline (Lex + Parse + Semantic, no UTF16/traversal) ──
@@ -251,6 +295,7 @@ pub fn main(init: std.process.Init) !void {
     // traversal pass are only needed when handing the AST to the JS runner.
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var sem_oom: u32 = 0;
         for (0..WARMUP) |_| {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
@@ -278,23 +323,29 @@ pub fn main(init: std.process.Init) !void {
             if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| {
+                sem_oom += 1;
+                times[iter] = 0;
+                continue;
+            }
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
+        if (sem_oom > 0) std.debug.print("[WARN] Phase 7: semantic OOM in {d}/{d} iterations\n", .{ sem_oom, ITERATIONS });
         printStats("Zig-only (Lex+Parse+Sem)", &times, source.len);
     }
 
     // ── Phase 8: Zig-only without CFG (native Zig rule flow) ──────────
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
+        var sem_oom: u32 = 0;
         for (0..WARMUP) |_| {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
             defer tok.deinit(fba.allocator());
             var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
-            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
             } else |_| {}
@@ -312,13 +363,18 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             defer tree.deinit(fba.allocator());
-            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |sem_result| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| {
+                sem_oom += 1;
+                times[iter] = 0;
+                continue;
+            }
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
+        if (sem_oom > 0) std.debug.print("[WARN] Phase 8: semantic OOM in {d}/{d} iterations\n", .{ sem_oom, ITERATIONS });
         printStats("Zig-only no-CFG", &times, source.len);
     }
 
@@ -501,6 +557,7 @@ pub fn main(init: std.process.Init) !void {
         var full_syms: u32 = 0;
         var full_refs: u32 = 0;
         var full_scopes: u32 = 0;
+        var sem_oom: u32 = 0;
         for (0..WARMUP) |_| {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
@@ -541,17 +598,22 @@ pub fn main(init: std.process.Init) !void {
                 full_refs = r.references.count();
                 full_scopes = @intCast(r.scopes.kinds.items.len);
                 r.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| {
+                sem_oom += 1;
+                times[iter] = 0;
+                continue;
+            }
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
+        if (sem_oom > 0) std.debug.print("[WARN] Phase 12: resolveFull OOM in {d}/{d} iterations\n", .{ sem_oom, ITERATIONS });
         printStats("Lex+Parse+ResolveFull", &times, source.len);
         std.debug.print("  scopes:{d} syms:{d} refs:{d}\n\n", .{ full_scopes, full_syms, full_refs });
     }
 
     // ── Phase 12b: Default-wired event path (parser emits events + analyzeWithOptions auto-dispatch) ──
     // This is what downstream callers see after the "pivot": they just call
-    // parse with emit_events=true and analyze with build_cfg=false.
+    // parse with emit_events=true.
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
         for (0..WARMUP) |_| {
@@ -563,11 +625,12 @@ pub fn main(init: std.process.Init) !void {
                 .emit_events = true,
             }) catch continue;
             defer tree.deinit(fba.allocator());
-            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |res| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |res| {
                 var r = res;
                 r.deinit(fba.allocator());
             } else |_| {}
         }
+        var sem_oom: u32 = 0;
         for (0..ITERATIONS) |iter| {
             fba.reset();
             const t0 = std.Io.Timestamp.now(io, .boot);
@@ -584,41 +647,60 @@ pub fn main(init: std.process.Init) !void {
                 continue;
             };
             defer tree.deinit(fba.allocator());
-            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{ .build_cfg = false })) |res| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |res| {
                 var r = res;
                 r.deinit(fba.allocator());
-            } else |_| {}
+            } else |_| {
+                sem_oom += 1;
+                times[iter] = 0;
+                continue;
+            }
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
-        printStats("Zig-only no-CFG (auto-dispatch)", &times, source.len);
+        if (sem_oom > 0) std.debug.print("[WARN] Phase 12b: semantic OOM in {d}/{d} iterations\n", .{ sem_oom, ITERATIONS });
+        printStats("Zig-only (auto-dispatch)", &times, source.len);
     }
 
     // ── Phase 13: Equivalence check (event-driven vs tree walker) ──────
     // Runs both paths on the same input and reports count divergence.
-    // Useful during migration to track coverage gaps in the event stream.
+    // Uses GPA (not FBA) — two full semantic passes on a large file exceed any
+    // single FBA budget.  This is a one-shot correctness check, not timed.
     {
-        var fba = std.heap.FixedBufferAllocator.init(working_buf);
-        fba.reset();
-        var tok_eq = Lexer.tokenize(fba.allocator(), source) catch return;
-        defer tok_eq.deinit(fba.allocator());
+        var tok_eq = Lexer.tokenize(gpa, source) catch {
+            std.debug.print("\n[SKIP] Phase 13: tokenize failed\n", .{});
+            return;
+        };
+        defer tok_eq.deinit(gpa);
 
         // Path 1: tree walker
-        var tree_a = Parser.parse(fba.allocator(), source, tok_eq.tokens.slice()) catch return;
-        defer tree_a.deinit(fba.allocator());
-        var sem_tree = semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree_a, .{ .build_cfg = false }) catch return;
-        defer sem_tree.deinit(fba.allocator());
+        var tree_a = Parser.parse(gpa, source, tok_eq.tokens.slice()) catch {
+            std.debug.print("\n[SKIP] Phase 13: parse (tree walker) failed\n", .{});
+            return;
+        };
+        defer tree_a.deinit(gpa);
+        var sem_tree = semantic_mod.SemanticAnalyzer.analyzeWithOptions(gpa, &tree_a, .{}) catch {
+            std.debug.print("\n[SKIP] Phase 13: semantic (tree walker) failed\n", .{});
+            return;
+        };
+        defer sem_tree.deinit(gpa);
 
-        // Path 2: event resolver
-        var events: scope_events.EventStream = .{};
-        defer events.deinit(fba.allocator());
-        var tree_b = Parser.parseWithOptions(fba.allocator(), source, tok_eq.tokens.slice(), .{
+        // Path 2: event resolver — parse with emit_events=true so tree.scope_events
+        // is populated for analyzeWithOptions (events_out routes to an external
+        // stream which analyzeWithOptions never reads).
+        var tree_b = Parser.parseWithOptions(gpa, source, tok_eq.tokens.slice(), .{
             .is_module = true,
-            .events_out = &events,
-        }) catch return;
-        defer tree_b.deinit(fba.allocator());
-        var sem_ev = semantic_mod.SemanticAnalyzer.analyzeFromEvents(fba.allocator(), &tree_b, events.items(), .{}) catch return;
-        defer sem_ev.deinit(fba.allocator());
+            .emit_events = true,
+        }) catch {
+            std.debug.print("\n[SKIP] Phase 13: parse (event resolver) failed\n", .{});
+            return;
+        };
+        defer tree_b.deinit(gpa);
+        var sem_ev = semantic_mod.SemanticAnalyzer.analyzeWithOptions(gpa, &tree_b, .{}) catch {
+            std.debug.print("\n[SKIP] Phase 13: semantic (event resolver) failed\n", .{});
+            return;
+        };
+        defer sem_ev.deinit(gpa);
 
         const scopes_tree = sem_tree.scopes.kinds.items.len;
         const scopes_ev   = sem_ev.scopes.kinds.items.len;
@@ -692,27 +774,9 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // ── Phase 9: Semantic sub-phase timings ──────────────────────────
-    // Accumulate per-sub-phase time over ITERATIONS and report averages.
+    // ── Phase 9: Semantic debug counters ─────────────────────────────
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
-        var acc = semantic_mod.SemanticAnalyzer.Timings{};
-        var acc_cfg = semantic_mod.SemanticAnalyzer.Timings{};
-        for (0..WARMUP) |_| {
-            fba.reset();
-            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
-            defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
-            defer tree.deinit(fba.allocator());
-            var t: semantic_mod.SemanticAnalyzer.Timings = .{};
-            if (semantic_mod.SemanticAnalyzer.analyzeWithTimings(fba.allocator(), &tree, .{ .build_cfg = false }, io, &t)) |sem_result| {
-                var sem = sem_result;
-                sem.deinit(fba.allocator());
-            } else |_| {}
-        }
-        var ran: u64 = 0;
-        var ran_cfg: u64 = 0;
-        // Reset counters before the pass.
         semantic_mod.debug_resolve_lookups = 0;
         semantic_mod.debug_resolve_calls = 0;
         semantic_mod.debug_resolve_hits = 0;
@@ -725,77 +789,36 @@ pub fn main(init: std.process.Init) !void {
         semantic_mod.debug_visit_sub_range_items = 0;
         for (&semantic_mod.debug_visit_tag_counts) |*c| c.* = 0;
 
-        // No-CFG pass
+        var ran: u64 = 0;
+        var sem_oom: u32 = 0;
         for (0..ITERATIONS) |_| {
             fba.reset();
             var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
             defer tok.deinit(fba.allocator());
             var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
-            var t: semantic_mod.SemanticAnalyzer.Timings = .{};
-            if (semantic_mod.SemanticAnalyzer.analyzeWithTimings(fba.allocator(), &tree, .{ .build_cfg = false }, io, &t)) |sem_result| {
+            if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
-                acc.presize_ns += t.presize_ns;
-                acc.visit_ns += t.visit_ns;
-                acc.resolve_unresolved_ns += t.resolve_unresolved_ns;
-                acc.build_ref_ranges_ns += t.build_ref_ranges_ns;
-                acc.build_scope_bindings_ns += t.build_scope_bindings_ns;
-                acc.validate_exports_ns += t.validate_exports_ns;
-                acc.cfg_finish_ns += t.cfg_finish_ns;
-                acc.total_ns += t.total_ns;
                 ran += 1;
-            } else |_| {}
+            } else |_| { sem_oom += 1; }
         }
-        // With-CFG pass (separate, so each iter has fresh FBA state)
-        for (0..ITERATIONS) |_| {
-            fba.reset();
-            var tok = Lexer.tokenize(fba.allocator(), source) catch continue;
-            defer tok.deinit(fba.allocator());
-            var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
-            defer tree.deinit(fba.allocator());
-            var t2: semantic_mod.SemanticAnalyzer.Timings = .{};
-            if (semantic_mod.SemanticAnalyzer.analyzeWithTimings(fba.allocator(), &tree, .{ .build_cfg = true }, io, &t2)) |sem_result| {
-                var sem = sem_result;
-                sem.deinit(fba.allocator());
-                acc_cfg.presize_ns += t2.presize_ns;
-                acc_cfg.visit_ns += t2.visit_ns;
-                acc_cfg.resolve_unresolved_ns += t2.resolve_unresolved_ns;
-                acc_cfg.build_ref_ranges_ns += t2.build_ref_ranges_ns;
-                acc_cfg.build_scope_bindings_ns += t2.build_scope_bindings_ns;
-                acc_cfg.validate_exports_ns += t2.validate_exports_ns;
-                acc_cfg.cfg_finish_ns += t2.cfg_finish_ns;
-                acc_cfg.total_ns += t2.total_ns;
-                ran_cfg += 1;
-            } else |err| {
-                if (ran_cfg == 0) std.debug.print("CFG analyze failed: {any}\n", .{err});
-            }
-        }
+        if (sem_oom > 0) std.debug.print("[WARN] Phase 9 debug: semantic OOM in {d}/{d} iterations\n", .{ sem_oom, ITERATIONS });
         if (ran > 0) {
             const total_calls = semantic_mod.debug_resolve_calls;
             const total_lookups = semantic_mod.debug_resolve_lookups;
             const total_hits = semantic_mod.debug_resolve_hits;
             const depth_sum = semantic_mod.debug_resolve_depth_sum;
             const total_misses = total_calls - total_hits;
-            const avg_lookups = @as(f64, @floatFromInt(total_lookups)) / @as(f64, @floatFromInt(total_calls));
+            const avg_lookups = @as(f64, @floatFromInt(total_lookups)) / @as(f64, @floatFromInt(@max(total_calls, 1)));
             const avg_hit_depth = if (total_hits > 0) @as(f64, @floatFromInt(depth_sum)) / @as(f64, @floatFromInt(total_hits)) else 0.0;
             std.debug.print("\nresolveReference stats (per iter):\n", .{});
             std.debug.print("  calls:            {d}\n", .{ total_calls / ran });
             std.debug.print("  lookups:          {d}  (avg {d:.2}/call)\n", .{ total_lookups / ran, avg_lookups });
             std.debug.print("  hits:             {d}\n", .{ total_hits / ran });
-            std.debug.print("  misses (global):  {d}  ({d:.1}%)\n", .{ total_misses / ran, 100.0 * @as(f64, @floatFromInt(total_misses)) / @as(f64, @floatFromInt(total_calls)) });
+            if (total_calls > 0) std.debug.print("  misses (global):  {d}  ({d:.1}%)\n", .{ total_misses / ran, 100.0 * @as(f64, @floatFromInt(total_misses)) / @as(f64, @floatFromInt(total_calls)) });
             std.debug.print("  avg hit depth:    {d:.2}  (0 = current scope)\n", .{ avg_hit_depth });
-            std.debug.print("\n=== Semantic sub-phases (no CFG, avg of {d} iters, µs) ===\n", .{ran});
-            std.debug.print("  presize:            {d:.2}\n", .{@as(f64, @floatFromInt(acc.presize_ns / ran)) / 1000.0});
-            std.debug.print("  visit (main walk):  {d:.2}\n", .{@as(f64, @floatFromInt(acc.visit_ns / ran)) / 1000.0});
-            std.debug.print("  resolveUnresolved:  {d:.2}\n", .{@as(f64, @floatFromInt(acc.resolve_unresolved_ns / ran)) / 1000.0});
-            std.debug.print("  buildRefRanges:     {d:.2}\n", .{@as(f64, @floatFromInt(acc.build_ref_ranges_ns / ran)) / 1000.0});
-            std.debug.print("  buildScopeBindings: {d:.2}\n", .{@as(f64, @floatFromInt(acc.build_scope_bindings_ns / ran)) / 1000.0});
-            std.debug.print("  validateExports:    {d:.2}\n", .{@as(f64, @floatFromInt(acc.validate_exports_ns / ran)) / 1000.0});
-            std.debug.print("  cfg_finish:         {d:.2}\n", .{@as(f64, @floatFromInt(acc.cfg_finish_ns / ran)) / 1000.0});
-            std.debug.print("  total:              {d:.2}\n", .{@as(f64, @floatFromInt(acc.total_ns / ran)) / 1000.0});
 
-            // Visit breakdown by operation
             std.debug.print("\n=== Visit-pass operation counts (per iter) ===\n", .{});
             std.debug.print("  nodes visited:          {d}\n", .{ semantic_mod.debug_visit_nodes / ran });
             std.debug.print("  enterScope calls:       {d}\n", .{ semantic_mod.debug_enter_scope / ran });
@@ -804,14 +827,12 @@ pub fn main(init: std.process.Init) !void {
             std.debug.print("  visitSubRange calls:    {d}\n", .{ semantic_mod.debug_visit_sub_range_calls / ran });
             std.debug.print("  visitSubRange items:    {d}\n", .{ semantic_mod.debug_visit_sub_range_items / ran });
 
-            // Top tags by visit count
             std.debug.print("\n=== Top 15 node tags visited (per iter) ===\n", .{});
             var top_tags: [16]struct { tag: usize, count: u64 } = undefined;
             for (&top_tags) |*t| t.* = .{ .tag = 0, .count = 0 };
             for (semantic_mod.debug_visit_tag_counts[0..], 0..) |cnt, i| {
                 const per_iter = cnt / ran;
                 if (per_iter == 0) continue;
-                // Insert in sorted order, drop smallest.
                 var ins_idx: usize = 15;
                 while (ins_idx > 0 and top_tags[ins_idx - 1].count < per_iter) : (ins_idx -= 1) {}
                 if (ins_idx < 15) {
@@ -822,21 +843,9 @@ pub fn main(init: std.process.Init) !void {
             }
             for (top_tags[0..15]) |t| {
                 if (t.count == 0) break;
-                // Look up tag name via @tagName on the enum.
                 const tag_enum: @import("ez").ast.Node.Tag = @enumFromInt(t.tag);
                 std.debug.print("  {d:>5}   {s}\n", .{ t.count, @tagName(tag_enum) });
             }
-        }
-        if (ran_cfg > 0) {
-            std.debug.print("\n=== Semantic sub-phases (WITH CFG, avg of {d} iters, µs) ===\n", .{ran_cfg});
-            std.debug.print("  presize:            {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.presize_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  visit (main walk):  {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.visit_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  resolveUnresolved:  {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.resolve_unresolved_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  buildRefRanges:     {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.build_ref_ranges_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  buildScopeBindings: {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.build_scope_bindings_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  validateExports:    {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.validate_exports_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  cfg_finish:         {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.cfg_finish_ns / ran_cfg)) / 1000.0});
-            std.debug.print("  total:              {d:.2}\n", .{@as(f64, @floatFromInt(acc_cfg.total_ns / ran_cfg)) / 1000.0});
         }
     }
 }

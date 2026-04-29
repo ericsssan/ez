@@ -89,11 +89,14 @@ fn lintWithLang(source: []const u8, lang: Language) ![]const LintDiagnostic {
     defer lex_result.deinit(allocator);
     var tokens = lex_result.tokens;
 
-    var tree = try Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, true);
+    // Use sloppy (script) mode so the parser does not reject code that would be
+    // valid input for linter rules — e.g. duplicate params are allowed in sloppy
+    // mode and should be caught by no-dupe-args, not the parser.
+    var tree = try Parser.parseWithLanguage(allocator, source, tokens.slice(), lang, false);
     defer tree.deinit(allocator);
 
     var sem = try SemanticAnalyzer.analyzeWithOptions(allocator, &tree, .{
-        .is_module = true,
+        .is_module = false,
         .build_parents = true,
     });
     defer sem.deinit(allocator);

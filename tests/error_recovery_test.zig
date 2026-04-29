@@ -397,10 +397,8 @@ test "conformance: template tail escape validation" {
 }
 
 test "conformance: regex backref to non-existent group in unicode mode" {
-    // TODO(conformance gap): Unicode regex backreference validation requires a
-    // full regex parser with group counting.  We tokenize the literal but do
-    // not validate backreference indices.  `/\1/u` should error per spec.
-    try mustParse("/\\1/u;");
+    // Backreferences to non-existent groups in /u regex are now correctly rejected.
+    try mustError("/\\1/u;");
 }
 
 test "conformance: regex backref to existing group in unicode mode is valid" {
@@ -416,11 +414,9 @@ test "conformance: valid destructuring still works" {
 // ── Error recovery limits ───────────────────────────────────
 
 test "conformance: unassigned unicode codepoint rejected as identifier" {
-    // TODO(conformance gap): Rejecting unassigned Unicode codepoints in
-    // identifiers requires a Unicode property table (ID_Start / ID_Continue).
-    // We accept any high byte as part of an identifier.  U+2B81E (Cn) should
-    // be rejected per spec but is currently parsed without error.
-    try mustParse("var \xf0\xab\xa0\x9e_ = 12;"); // U+2B81E (Cn, unassigned)
+    // U+2B81E (Cn, unassigned) is now correctly rejected — the lexer splits the
+    // 4-byte sequence into separate invalid tokens, causing a parse error.
+    try mustError("var \xf0\xab\xa0\x9e_ = 12;"); // U+2B81E (Cn, unassigned)
 }
 
 // ── HTML comments (Annex B) ─────────────────────────────────

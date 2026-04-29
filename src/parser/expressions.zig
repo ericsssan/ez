@@ -131,60 +131,95 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
 
     while (true) {
         const tag = p.peek();
-        if (tag == .eof) break;
 
-        // TS-specific postfix forms collapsed under a single is_ts gate.
-        // Predicted-not-taken for plain JS files (~50% of corpus); when
-        // taken, the inner tag dispatch is a tight switch.
-        if (is_ts) {
-            switch (tag) {
-                .kw_as => {
-                    if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
-                    // TS1355: `as const` can only be applied to literals, arrays, or objects.
-                    if (p.peekAt(1) == .kw_const and !isValidConstAssertionTarget(p, left)) {
-                        try p.emitError("A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals");
-                        return error.ParseError;
-                    }
-                    left = try parseTsTypePostfix(p, left, .ts_as_expr);
-                    continue;
-                },
-                .kw_satisfies => {
-                    if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
-                    left = try parseTsTypePostfix(p, left, .ts_satisfies_expr);
-                    continue;
-                },
-                .bang => if (!p.isOnNewLine()) {
-                    const post_prec = Precedence.postfix;
-                    if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
-                    left = try parseTsNonNullExpression(p, left);
-                    continue;
-                },
-                .less_than => {
-                    if (tryParseTsTypeArguments(p)) {
-                        // TS1477: An instantiation expression cannot be followed by a property access.
-                        if (p.peek() == .dot or p.peek() == .question_dot) {
-                            try p.emitError("An instantiation expression cannot be followed by a property access");
+        // Single table lookup covers eof (.none), call-level (.call), postfix
+        // ++/-- (.postfix), and all infix binary operators.
+        const prec_entry: u8 = @intFromEnum(prec_table[@intFromEnum(tag)]);
+
+        // Ultra-fast path: call/member/optional-chain (prec 18) is the most
+        // common infix token in real JS/TS code.  min_prec is at most .call
+        // (18, used only for class `extends`), and prec_entry == 18 here, so
+        // `prec_entry < min_prec` is always false — skip it.  .less_than and
+        // .kw_in have relational prec (11), never 18, so those guards are also
+        // irrelevant on this path.
+        if (prec_entry == @intFromEnum(Precedence.call)) {
+            // Arrow functions are not valid call/member targets without parens.
+            // In TS mode, skip this check (TypeScript handles it at type-check level).
+            if (!is_ts and tag == .l_paren and left != .none) {
+                const left_tag = p.node_tags_ptr[left.toInt()];
+                if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
+                    try p.emitError("Arrow function is not directly callable (wrap in parens)");
+                    break;
+                }
+            }
+            const before_call = p.tok_i;
+            left = try parseCallLevelInfix(p, left, tag);
+            if (p.tok_i == before_call) break; // no progress (e.g. ASI in class field)
+            continue;
+        }
+
+        if (prec_entry == 0) {
+            // Not a standard JS operator.  May be a TS-specific postfix form.
+            // .kw_as / .kw_satisfies / .bang all have prec_entry == 0, so they
+            // land here; .less_than (relational) is handled below.
+            if (is_ts) {
+                switch (tag) {
+                    .kw_as => {
+                        if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+                        // TS1355: `as const` can only be applied to literals, arrays, or objects.
+                        if (p.peekAt(1) == .kw_const and !isValidConstAssertionTarget(p, left)) {
+                            try p.emitError("A 'const' assertion can only be applied to references to enum members, or string, number, boolean, array, or object literals");
                             return error.ParseError;
                         }
-                        // TS1034: `super<T>\`template\`` is invalid.
-                        if (left != .none and p.node_tags_ptr[left.toInt()] == .super_expr and
-                            (p.peek() == .template_head or p.peek() == .template_no_sub))
-                        {
-                            try p.emitError("'super' must be followed by an argument list or member access");
-                            return error.ParseError;
-                        }
+                        left = try parseTsTypePostfix(p, left, .ts_as_expr);
                         continue;
-                    }
-                },
-                else => {},
+                    },
+                    .kw_satisfies => {
+                        if (@intFromEnum(Precedence.relational) < @intFromEnum(min_prec)) break;
+                        left = try parseTsTypePostfix(p, left, .ts_satisfies_expr);
+                        continue;
+                    },
+                    .bang => if (!p.isOnNewLine()) {
+                        const post_prec = Precedence.postfix;
+                        if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
+                        left = try parseTsNonNullExpression(p, left);
+                        continue;
+                    },
+                    else => {},
+                }
+            }
+            break;
+        }
+
+        // Standard operator (prec_entry > 0, != call).
+        // TS: `<` has relational prec in the table but may open a generic
+        // type-argument list — check before treating it as a binary operator.
+        if (is_ts and tag == .less_than) {
+            if (tryParseTsTypeArguments(p)) {
+                // TS1477: An instantiation expression cannot be followed by a property access.
+                if (p.peek() == .dot or p.peek() == .question_dot) {
+                    try p.emitError("An instantiation expression cannot be followed by a property access");
+                    return error.ParseError;
+                }
+                // TS1034: `super<T>\`template\`` is invalid.
+                if (left != .none and p.node_tags_ptr[left.toInt()] == .super_expr and
+                    (p.peek() == .template_head or p.peek() == .template_no_sub))
+                {
+                    try p.emitError("'super' must be followed by an argument list or member access");
+                    return error.ParseError;
+                }
+                continue;
             }
         }
 
-        // Postfix ++ / -- require no newline before the operator.
-        if ((tag == .plus_plus or tag == .minus_minus) and !p.isOnNewLine()) {
-            const post_prec = Precedence.postfix;
-            if (@intFromEnum(post_prec) < @intFromEnum(min_prec)) break;
-            left = try parsePostfixUpdate(p, left);
+        // kw_in is suppressed in for-init and similar no-in contexts.
+        if (tag == .kw_in and !p.allow_in) break;
+        if (prec_entry < @intFromEnum(min_prec)) break;
+
+        // Postfix ++ / -- require no newline before the operator (ASI).
+        if (prec_entry == @intFromEnum(Precedence.postfix)) {
+            if (p.isOnNewLine()) break;
+            left = try parsePostfixUpdate(p, left, tag);
             // TS: postfix result cannot be chained with member access or another postfix on same line.
             if (is_ts and !p.isOnNewLine()) {
                 const next2 = p.peek();
@@ -198,30 +233,8 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             continue;
         }
 
-        // Call / member / optional-chain / tagged-template precedence.
-        if (isCallPrec(tag)) {
-            if (@intFromEnum(Precedence.call) < @intFromEnum(min_prec)) break;
-            // Arrow functions are not valid call/member targets without parens
-            // In TS mode, skip this check (TypeScript handles it at type-check level)
-            if (!is_ts and tag == .l_paren and left != .none) {
-                const left_tag = p.node_tags_ptr[left.toInt()];
-                if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
-                    try p.emitError("Arrow function is not directly callable (wrap in parens)");
-                    break;
-                }
-            }
-            const before_call = p.tok_i;
-            left = try parseCallLevelInfix(p, left);
-            if (p.tok_i == before_call) break; // no progress (e.g. ASI in class field)
-            continue;
-        }
-
-        // (TS `<Type>` generic call handled in the consolidated `is_ts`
-        // switch above.)
-
-        const infix_prec = getInfixPrecedence(p, tag);
-        if (infix_prec == .none) break;
-        if (@intFromEnum(infix_prec) < @intFromEnum(min_prec)) break;
+        // Infix binary operator.
+        const infix_prec: Precedence = @enumFromInt(prec_entry);
 
         // yield [no LineTerminator here] — if yield returned with no operand
         // and next operator is on a new line, don't consume it
@@ -234,7 +247,9 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         }
 
         // Arrow function cannot be an operand of a binary operator (other than `,`/`=`).
-        if (left != .none and infix_prec != .comma and infix_prec != .assignment) {
+        if (left != .none and prec_entry != @intFromEnum(Precedence.comma) and
+            prec_entry != @intFromEnum(Precedence.assignment))
+        {
             const left_tag = p.node_tags_ptr[left.toInt()];
             if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
                 if (!is_ts) {
@@ -254,7 +269,7 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             }
         }
 
-        left = try parseInfixExpression(p, left, infix_prec);
+        left = try parseInfixExpression(p, left, infix_prec, tag);
     }
 
     return left;
@@ -266,6 +281,12 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
 
 fn parsePrefixExpression(p: *Parser) Error!NodeIndex {
     const tag = p.peek();
+    // Fast path: plain identifier is the most common primary expression.
+    // Skip the parsePrimaryExpression call and switch overhead for this case.
+    if (tag == .identifier) {
+        @branchHint(.likely);
+        return parseIdentifierOrArrow(p);
+    }
     return switch (tag) {
         // ── Unary operators ──────────────────────────────────
         .plus => try parseUnaryOp(p, .unary_plus),
@@ -428,7 +449,8 @@ fn parseUnaryOp(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 }
 
 
-fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
+// postfix_tag is the already-known ++ or -- tag from the Pratt loop.
+fn parsePostfixUpdate(p: *Parser, operand: NodeIndex, postfix_tag: TokenTag) Error!NodeIndex {
     // Operand must be assignable (parenthesized identifiers are valid: (x)++, ((x))++)
     const op_tag = unwrapGroupingTag(p, operand);
     switch (op_tag) {
@@ -457,8 +479,7 @@ fn parsePostfixUpdate(p: *Parser, operand: NodeIndex) Error!NodeIndex {
         const op_tok = p.node_main_token_ptr[operand.toInt()];
         try p.checkStrictAssignTarget(op_tok);
     }
-    const tag = p.peek();
-    const node_tag: Node.Tag = if (tag == .plus_plus) .postfix_inc else .postfix_dec;
+    const node_tag: Node.Tag = if (postfix_tag == .plus_plus) .postfix_inc else .postfix_dec;
     const tok = p.advance();
 
     // Postfix `x++` / `x--` reads and writes `x`.
@@ -2072,6 +2093,8 @@ fn checkStringEscapes(p: *Parser) !void {
     if (tok_len < 2 or start + tok_len > p.source.len) return;
     // Use token length to bound the scan — avoids per-byte quote comparison.
     const content_end = start + tok_len - 1; // position of closing quote (not scanned)
+    // Fast path: most strings have no escape sequences.
+    if (std.mem.indexOfScalar(u8, p.source[start + 1 .. content_end], '\\') == null) return;
     var i = start + 1;
     while (i < content_end) {
         if (p.source[i] == '\\' and i + 1 < content_end + 1) {
@@ -2150,6 +2173,8 @@ fn checkStrictOctalString(p: *Parser) !void {
     const tok_len = p.tok_lens_ptr[p.tok_i];
     if (tok_len < 2 or start + tok_len > p.source.len) return;
     const content_end = start + tok_len - 1;
+    // Fast path: most strings have no escape sequences.
+    if (std.mem.indexOfScalar(u8, p.source[start + 1 .. content_end], '\\') == null) return;
     var i = start + 1;
     while (i < content_end) {
         if (p.source[i] == '\\' and i + 1 < content_end + 1) {
@@ -2205,25 +2230,34 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             break :blk try parseLiteral(p, .number_literal);
         },
         .string_literal => blk: {
-            // Detect unterminated string (lexer emits string_literal up to a LF/CR/EOF
-            // when no closing quote is found).
-            {
-                const tok = p.tok_i;
-                const ts = p.tok_starts_ptr[tok];
-                const tl = p.tok_lens_ptr[tok];
-                if (tl < 2 or ts + tl > p.source.len) {
+            const tok = p.tok_i;
+            const ts = p.tok_starts_ptr[tok];
+            const tl = p.tok_lens_ptr[tok];
+            if (tl < 2 or ts + tl > p.source.len) {
+                try p.emitError("Unterminated string literal");
+                return error.ParseError;
+            }
+            const open = p.source[ts];
+            // Single SIMD scan for backslash in [ts+1..ts+tl).
+            // Common case (no escapes): verify termination in O(1) from lexer's
+            // token boundary — the closing quote must be the last byte.
+            // Backslash case: fall through to the careful walk + helper checks.
+            if (std.mem.indexOfScalar(u8, p.source[ts + 1 .. ts + tl], '\\') == null) {
+                if (p.source[ts + tl - 1] != open) {
                     try p.emitError("Unterminated string literal");
                     return error.ParseError;
                 }
-                const open = p.source[ts];
-                // Walk the string body to verify the closing quote is unescaped.
+                // No escape sequences — nothing for checkStringEscapes or
+                // checkStrictOctalString to flag.
+            } else {
+                // Has backslash — walk to verify termination then run escape checks.
                 var ix: u32 = ts + 1;
                 const stop = ts + tl;
                 var terminated = false;
                 while (ix < stop) : (ix += 1) {
                     const c = p.source[ix];
                     if (c == '\\') {
-                        if (ix + 1 < stop) ix += 1; // skip next char
+                        if (ix + 1 < stop) ix += 1;
                         continue;
                     }
                     if (c == open) {
@@ -2235,9 +2269,9 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
                     try p.emitError("Unterminated string literal");
                     return error.ParseError;
                 }
+                try checkStringEscapes(p);
+                if (p.in_strict) try checkStrictOctalString(p);
             }
-            try checkStringEscapes(p);
-            if (p.in_strict) try checkStrictOctalString(p);
             break :blk try parseLiteral(p, .string_literal);
         },
         .bigint_literal => try parseLiteral(p, .bigint_literal),
@@ -2586,27 +2620,44 @@ fn parseIdentifierOrArrow(p: *Parser) Error!NodeIndex {
         try p.emitError("'arguments' is not allowed in class field initializer");
         return error.ParseError;
     }
-    // Spec: IdentifierName decoded to a ReservedWord is SyntaxError as
-    // IdentifierReference. Walker emits .identifier; check decoded form.
+    // Spec: IdentifierName decoded to a ReservedWord is SyntaxError as IdentifierReference.
     const tok_tag = p.tokenTagAt(tok);
-    if (tok_tag == .identifier or tok_tag == .escaped_keyword) {
-        const text = p.tokenText(tok);
-        // In strict mode or TypeScript mode, strict reserved words are invalid as identifier expressions.
+    if (tok_tag == .identifier) {
+        // Only fetch tokenText when strict/TS checks are needed — saves two array loads
+        // on the common non-strict path.  Gate on raw length first: strict reserved
+        // words are 6+ chars, so short identifiers can't match even with \u escapes
+        // (decoded length ≤ raw length).
         if (p.in_strict or p.is_ts) {
-            if (Parser.isStrictReservedStr(text)) {
-                try p.emitDiagnostic(p.currentSpan(),
-                    "'{s}' is not allowed as an identifier in strict mode", .{text});
-                return error.ParseError;
-            }
-        }
-        if (std.mem.indexOfScalar(u8, text, '\\') != null) {
-            var resolved_buf: [256]u8 = undefined;
-            if (parser_mod.resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
-                if (parser_mod.isAlwaysReservedStr(resolved)) {
+            if (p.tok_lens_ptr[tok] >= 6) {
+                const text = p.tokenText(tok);
+                // For raw .identifier text in strict/TS mode: let/yield/static/interface are already
+                // keyword tags; implements is kw_implements in TS. Only public/package/private/protected
+                // (all start with 'p') can be strict-reserved .identifier tokens.
+                if (text[0] == 'p' and Parser.isStrictReservedAccessModifier(text)) {
                     try p.emitDiagnostic(p.currentSpan(),
-                        "'{s}' is a reserved word and cannot be used as an identifier", .{resolved});
+                        "'{s}' is not allowed as an identifier in strict mode", .{text});
                     return error.ParseError;
                 }
+                if (!p.is_ts and text[0] == 'i' and text.len == 10 and
+                    std.mem.eql(u8, text, "implements"))
+                {
+                    try p.emitDiagnostic(p.currentSpan(),
+                        "'{s}' is not allowed as an identifier in strict mode", .{text});
+                    return error.ParseError;
+                }
+            }
+        }
+    } else if (tok_tag == .escaped_keyword) {
+        // .escaped_keyword always has \u escapes and always decodes to a Token.keywords member,
+        // which is a superset of isAlwaysReservedStr. Raw text never matches isStrictReservedStr
+        // (backslashes cause length/content mismatch), so skip that check entirely.
+        const text = p.tokenText(tok);
+        var resolved_buf: [256]u8 = undefined;
+        if (parser_mod.resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
+            if (parser_mod.isAlwaysReservedStr(resolved)) {
+                try p.emitDiagnostic(p.currentSpan(),
+                    "'{s}' is a reserved word and cannot be used as an identifier", .{resolved});
+                return error.ParseError;
             }
         }
     }
@@ -3691,11 +3742,17 @@ fn parseObjectLiteral(p: *Parser) Error!NodeIndex {
     const range = try p.addSlice(p.scratchSlice(scratch_top));
     p.scratchPop(scratch_top);
 
-    return p.addNode(.{
+    const node = try p.addNode(.{
         .tag = .object_literal,
         .main_token = open,
         .data = .{ .lhs = NodeIndex.fromInt(range.start), .rhs = NodeIndex.fromInt(range.end) },
     });
+    // Register this node for the post-parse __proto__ duplicate scan (JS mode only).
+    // TS mode skips the scan; the TS type-checker handles duplicate property errors.
+    if (!p.is_ts) {
+        try p.proto_check_nodes.append(p.gpa, @intFromEnum(node));
+    }
+    return node;
 }
 
 fn parseObjectProperty(p: *Parser) Error!NodeIndex {
@@ -5342,9 +5399,13 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
 // Infix precedence table
 // =====================================================================
 
-// Comptime lookup: single array load replaces a 40-arm switch.
+// Unified Pratt precedence table: single array load covers infix ops,
+// call-level tokens, and postfix ++/--.  .none (0) means "break the loop".
 // kw_in is stored as .relational; the allow_in special case is handled at call time.
-const infix_prec_table: [256]Precedence = blk: {
+// Call-level tokens (.call = 18): l_paren, dot, l_bracket, question_dot,
+//   template_head, template_no_sub.
+// Postfix tokens (.postfix = 17): plus_plus, minus_minus.
+const prec_table: [256]Precedence = blk: {
     var tbl = [_]Precedence{.none} ** 256;
     tbl[@intFromEnum(TokenTag.comma)] = .comma;
     for ([_]TokenTag{
@@ -5377,30 +5438,30 @@ const infix_prec_table: [256]Precedence = blk: {
     tbl[@intFromEnum(TokenTag.slash)] = .multiplicative;
     tbl[@intFromEnum(TokenTag.percent)] = .multiplicative;
     tbl[@intFromEnum(TokenTag.asterisk_asterisk)] = .exponentiation;
+    // Postfix update operators (require !isOnNewLine check at call time).
+    tbl[@intFromEnum(TokenTag.plus_plus)] = .postfix;
+    tbl[@intFromEnum(TokenTag.minus_minus)] = .postfix;
+    // Call-level tokens (member access, calls, optional chain, tagged template).
+    tbl[@intFromEnum(TokenTag.l_paren)] = .call;
+    tbl[@intFromEnum(TokenTag.dot)] = .call;
+    tbl[@intFromEnum(TokenTag.l_bracket)] = .call;
+    tbl[@intFromEnum(TokenTag.question_dot)] = .call;
+    tbl[@intFromEnum(TokenTag.template_head)] = .call;
+    tbl[@intFromEnum(TokenTag.template_no_sub)] = .call;
     break :blk tbl;
 };
 
-fn getInfixPrecedence(p: *Parser, tag: TokenTag) Precedence {
-    const prec = infix_prec_table[@intFromEnum(tag)];
-    if (tag == .kw_in and !p.allow_in) return .none;
-    return prec;
-}
-
 /// Tokens that are parsed at call-level precedence (left-to-right).
 fn isCallPrec(tag: TokenTag) bool {
-    return switch (tag) {
-        .l_paren, .dot, .l_bracket, .question_dot, .template_head, .template_no_sub => true,
-        else => false,
-    };
+    return prec_table[@intFromEnum(tag)] == .call;
 }
 
 // =====================================================================
 // Infix expression dispatch
 // =====================================================================
 
-fn parseInfixExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!NodeIndex {
-    const tag = p.peek();
-
+// tag is passed from the Pratt loop where it was already peeked.
+fn parseInfixExpression(p: *Parser, left: NodeIndex, prec: Precedence, tag: TokenTag) Error!NodeIndex {
     // ── Conditional (ternary) ────────────────────────────────
     if (tag == .question) {
         return parseConditionalTail(p, left);
@@ -5417,13 +5478,13 @@ fn parseInfixExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!Nod
     }
 
     // ── Binary / logical ─────────────────────────────────────
-    return parseBinaryExpression(p, left, prec);
+    return parseBinaryExpression(p, left, prec, tag);
 }
 
 // ── Call-level infix (member access, calls, etc.) ────────────────
 
-fn parseCallLevelInfix(p: *Parser, left: NodeIndex) Error!NodeIndex {
-    const tag = p.peek();
+// tag is passed from the Pratt loop where it was already peeked.
+fn parseCallLevelInfix(p: *Parser, left: NodeIndex, tag: TokenTag) Error!NodeIndex {
     return switch (tag) {
         .l_paren => try parseCallExpression(p, left),
         .dot => try parseMemberAccess(p, left),
@@ -5444,9 +5505,9 @@ fn parseCallLevelInfix(p: *Parser, left: NodeIndex) Error!NodeIndex {
 
 // ── Binary expression ────────────────────────────────────────────
 
-fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence) Error!NodeIndex {
+// op_tag is the already-known current token tag, passed from parseInfixExpression.
+fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence, op_tag: TokenTag) Error!NodeIndex {
     const op_tok = p.advance();
-    const op_tag = p.tokenTag(op_tok);
 
     // Nullish coalescing cannot be mixed with || or && without parentheses
     // In TS mode, this is a type error, not syntax error
@@ -5795,8 +5856,15 @@ fn parseArgumentList(p: *Parser) Error!SubRange {
     defer p.allow_in = saved_allow_in_args;
     const scratch_top = p.scratchLen();
 
-    while (p.peek() != .r_paren and p.peek() != .eof) {
+    while (true) {
+        const cur = p.peek();
+        if (cur == .r_paren or cur == .eof) break;
         const arg = try parseAssignmentOrSpread(p);
+        // Check for CoverInitializedName ({a = 0}) immediately — call/new/optional-call
+        // args are never patterns, so {a=0} is always invalid.  Checking here covers all
+        // call contexts (not just statement-level calls) and lets us remove .call_expr from
+        // tagNeedsCoverCheck, eliminating the post-parse argument walk.
+        p.checkCoverInitializedNameFast(arg);
         try p.scratchPush(arg);
 
         if (p.peek() == .comma) {

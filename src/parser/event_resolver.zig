@@ -257,6 +257,9 @@ pub fn resolve(
 
     for (events) |e| switch (e.kind) {
         .scope_open => {
+            // Elided scopes have no matching scope_close — skip them.
+            const kind: ScopeKind = @enumFromInt(e.aux);
+            if (kind == .elided) continue;
             if (sp < builders.len) sp += 1;
             scope_count += 1;
         },

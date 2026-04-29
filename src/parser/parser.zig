@@ -199,6 +199,31 @@ pub const Parser = struct {
     /// synced back to scope_events.events.items.len at end of parse.
     ev_ptr: [*]ScopeEvent = undefined,
     ev_len: u32 = 0,
+    /// Count of elided scope_open events emitted during parse. Zero means the
+    /// compaction pass in parseInternal can be skipped entirely.
+    elided_scope_count: u32 = 0,
+    /// Set to true when any block-level declaration (let/const/class/function_decl)
+    /// is emitted directly inside the current parseBlockStatement call. Saved and
+    /// restored at each parseBlockStatement entry so it reflects only the current
+    /// block's direct children. When false after parsing a block, the scope_open
+    /// for that block can be elided and the expensive event-scan skipped.
+    block_has_lexical_decl: bool = false,
+    /// Nesting depth relative to the innermost parseBlockStatement, used for
+    /// incremental dup-detection (JS mode only). Set to -1 at parseBlockStatement
+    /// entry so the block's own scope_open increments it to 0. emitScopeOpen
+    /// increments, emitScopeClose decrements; parseBlockStatement saves/restores.
+    block_dup_depth: i32 = 0,
+    /// Flat buffer of block-level declares for the dup-detection scan. Each
+    /// entry encodes (main_tok_idx << 32) | bk. parseBlockStatement uses a
+    /// [saved_len..] window into this slice as its own set of depth-0 declares,
+    /// then shrinks back to saved_len on exit (stack-of-ranges pattern).
+    block_decl_scratch: std.ArrayListUnmanaged(u64) = .empty,
+    /// Indices of object_literal nodes created during parsing (JS mode only).
+    /// The post-parse duplicate-__proto__ scan iterates this list instead of
+    /// scanning ALL nodes — reduces an O(total_nodes) pass to O(object_literals).
+    proto_check_nodes: std.ArrayListUnmanaged(u32) = .empty,
+    /// Reusable scratch for checkUniqueParams — avoids a malloc/free per function.
+    param_names_scratch: std.ArrayListUnmanaged([]const u8) = .empty,
 
     /// Direct-indexed cache of node-id → event-index for the most recent
     /// reference event for that node. Indexed by NodeIndex value; sentinel
@@ -457,6 +482,14 @@ pub const Parser = struct {
         // If events were requested, hand the stream back; otherwise free it.
         defer if (events_out == null) p.scope_events.deinit(allocator);
         defer if (p.ref_event_idx.len > 0) allocator.free(p.ref_event_idx);
+        defer p.private_decls.deinit(allocator);
+        defer p.private_refs.deinit(allocator);
+        defer p.exported_names.deinit(allocator);
+        defer p.pending_export_local_toks.deinit(allocator);
+        defer p.module_decl_names.deinit(allocator);
+        defer p.block_decl_scratch.deinit(allocator);
+        defer p.proto_check_nodes.deinit(allocator);
+        defer p.param_names_scratch.deinit(allocator);
         // Note: diagnostics ownership transfers to the returned Ast,
         // but we need a defer in case of early error.
         var diag_transferred = false;
@@ -511,11 +544,18 @@ pub const Parser = struct {
         }
 
         // Pre-size ref_event_idx to estimated node count — direct array indexed
-        // by NodeIndex. Sentinel 0xFFFFFFFF = "no event recorded". Auto-grows
-        // alongside nodes (refreshRefEventIdx in addNode's grow path).
+        // by NodeIndex. Sentinel 0 = "no event recorded"; stored value is event_idx+1.
+        // Zero sentinel enables dc zva zero-fill on ARM64 (2x faster than scalar stores).
+        // When the parser struct is reused, nodes.capacity may already exceed the
+        // estimate, so allocate to the larger of the two to keep the invariant.
         if (p.emit_scope_events) {
-            p.ref_event_idx = try allocator.alloc(u32, estimated_node_count);
-            @memset(p.ref_event_idx, std.math.maxInt(u32));
+            const ref_idx_count = @max(estimated_node_count, p.nodes.capacity);
+            p.ref_event_idx = try allocator.alloc(u32, ref_idx_count);
+            @memset(p.ref_event_idx, 0);
+        }
+        // Pre-size the incremental dup-detection scratch (JS mode only).
+        if (p.emit_scope_events and !p.is_ts) {
+            try p.block_decl_scratch.ensureTotalCapacity(allocator, 64);
         }
 
         // Streaming mode: block until the producer publishes the first batch
@@ -564,35 +604,11 @@ pub const Parser = struct {
         errdefer allocator.free(errors);
         diag_transferred = true;
 
-        // Compact out elided scope_open events (empty block scopes with no
-        // block-scoped declarations).  One O(N) pass over the event stream;
-        // the savings compound across every resolveFull call on the same source.
-        //
-        // SKIPPED in streaming mode: a concurrent sem thread has already
-        // consumed events up to events_publish (which was set to the PRE-
-        // compaction count). Shrinking items.len here would leave the atomic
-        // pointing at indices beyond the now-shorter buffer; sem would read
-        // shifted/garbage events. Sem already treats .elided scope_open as
-        // a regular (no-op) scope, so skipping compaction is correct.
-        if (p.emit_scope_events and streaming == null) {
-            const evs = p.ev_ptr[0..p.ev_len];
-            var wi: usize = 0;
-            for (evs) |ev| {
-                if (ev.kind == .scope_open and
-                    ev.aux == @intFromEnum(ScopeKindU8.elided)) continue;
-                p.ev_ptr[wi] = ev;
-                wi += 1;
-            }
-            p.ev_len = @intCast(wi);
-            p.scope_events.events.items.len = wi;
-        }
-
-        // Hand the event stream back to the caller.  If `events_out` is given,
-        // we transfer ownership there; otherwise if emission was on we also
-        // copy the events into the Ast so downstream callers can find them.
-        // Sync hoisted cursor for any remaining events not yet reflected in items.len
-        // (streaming path skips compaction so this is the only sync point there).
-        if (p.emit_scope_events and streaming != null) {
+        // Sync the hoisted ev_len cursor back into the ArrayList so that
+        // toOwnedSlice / resizeTo see the correct length.  Elided scope_open
+        // events are kept in-stream; resolveFull already skips them with a
+        // `continue` (same handling as streaming mode, which never compacted).
+        if (p.emit_scope_events) {
             p.scope_events.events.items.len = p.ev_len;
         }
         const ast_events: []const scope_events_mod.Event = blk: {
@@ -767,12 +783,17 @@ pub const Parser = struct {
     /// Get the source text for the token at `index`.
     pub fn tokenText(self: *const Parser, index: TokenIndex) []const u8 {
         const tag = self.tags_ptr[index];
-        // Fixed-lexeme tokens (punctuation, keywords) return the canonical string.
-        if (tag.lexeme()) |lex| return lex;
-        // Variable-length tokens: use the pre-computed len stored at lex time (O(1)).
-        const start = self.tok_starts_ptr[index];
-        const len = self.tok_lens_ptr[index];
-        return self.source[start .. start + len];
+        // Variable-lexeme tokens (identifiers, literals, escaped_keyword, etc.) are the first
+        // 9 enum variants (0..identifier) plus the last 4 (escaped_keyword..jsx_text).
+        // A range check is cheaper than the 80-arm lexeme() switch for these common cases.
+        const ti = @intFromEnum(tag);
+        if (ti <= @intFromEnum(TokenTag.identifier) or ti >= @intFromEnum(TokenTag.escaped_keyword)) {
+            const start = self.tok_starts_ptr[index];
+            const len = self.tok_lens_ptr[index];
+            return self.source[start .. start + len];
+        }
+        // Fixed-lexeme tokens (keywords, punctuation) — return the canonical string.
+        return tag.lexeme().?;
     }
 
     /// Check whether we have reached the end of input.
@@ -822,7 +843,7 @@ pub const Parser = struct {
             if (self.ref_event_idx.len < self.nodes.capacity) {
                 const old_len = self.ref_event_idx.len;
                 self.ref_event_idx = try self.gpa.realloc(self.ref_event_idx, self.nodes.capacity);
-                @memset(self.ref_event_idx[old_len..], std.math.maxInt(u32));
+                @memset(self.ref_event_idx[old_len..], 0);
             }
         }
         // Write via hoisted raw pointers — skips MultiArrayList's internal
@@ -868,6 +889,7 @@ pub const Parser = struct {
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
         });
+        if (!self.is_ts) self.block_dup_depth += 1;
         return idx;
     }
 
@@ -887,6 +909,7 @@ pub const Parser = struct {
             .aux = 0,
             .node = @intFromEnum(node),
         });
+        if (!self.is_ts) self.block_dup_depth -= 1;
     }
 
     pub inline fn emitDeclare(self: *Parser, kind: BindingKindU8, node: NodeIndex) !void {
@@ -896,6 +919,23 @@ pub const Parser = struct {
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
         });
+        // Track block-level declarations for scope-elision fast path in parseBlockStatement.
+        // Kinds that are always emitted inside their own scope (parameter, catch_param,
+        // fn_expr_name, class_expr_name, type_param) are not block-level. var doesn't keep
+        // block scope alive.  Everything else (let/const/class_decl/function_decl/TS decls)
+        // prevents scope elision for the current block.
+        switch (kind) {
+            .@"var", .parameter, .catch_param, .fn_expr_name, .class_expr_name, .type_param => {},
+            else => {
+                // In JS mode, record depth-0 declares for incremental dup detection.
+                if (!self.is_ts and self.block_dup_depth == 0) {
+                    const main_tok = self.node_main_token_ptr[@intFromEnum(node)];
+                    const entry: u64 = (@as(u64, main_tok) << 32) | @as(u64, @intFromEnum(kind));
+                    try self.block_decl_scratch.append(self.gpa, entry);
+                }
+                self.block_has_lexical_decl = true;
+            },
+        }
     }
 
     /// Given a `.declarator` node, emit a declare event for its binding.
@@ -1006,12 +1046,10 @@ pub const Parser = struct {
             .aux = @intFromEnum(kind),
             .node = @intFromEnum(node),
         });
-        // Direct-array cache (no hashing). Bounds-checked: nodes capacity may
-        // have grown ahead of ref_event_idx if cache wasn't extended yet.
-        const node_u32 = @intFromEnum(node);
-        if (node_u32 < self.ref_event_idx.len) {
-            self.ref_event_idx[node_u32] = event_idx;
-        }
+        // Direct-array cache (no hashing). ref_event_idx is always sized to
+        // nodes.capacity (kept in sync in addNode's grow path), and node indices
+        // are always < nodes.len <= nodes.capacity, so the write is always in bounds.
+        self.ref_event_idx[@intFromEnum(node)] = event_idx + 1;
     }
 
     pub const TerminatorKind = enum(u8) { @"return", @"throw", @"break", @"continue" };
@@ -1336,11 +1374,13 @@ pub const Parser = struct {
     pub fn upgradeReferenceKindUnbounded(self: *Parser, node: NodeIndex, new_kind: ReferenceKindU8) bool {
         if (!self.emit_scope_events) return false;
         const node_u32 = @intFromEnum(node);
-        if (node_u32 >= self.ref_event_idx.len) return false;
+        // ref_event_idx is always sized to nodes.capacity and node indices are always
+        // < nodes.len <= nodes.capacity, so the load is always in bounds.
         const idx = self.ref_event_idx[node_u32];
-        if (idx == std.math.maxInt(u32)) return false;
-        if (idx < self.ev_len and self.ev_ptr[idx].kind == .reference and self.ev_ptr[idx].node == node_u32) {
-            self.ev_ptr[idx].aux = @intFromEnum(new_kind);
+        if (idx == 0) return false;
+        const ev_idx = idx - 1;
+        if (ev_idx < self.ev_len and self.ev_ptr[ev_idx].kind == .reference and self.ev_ptr[ev_idx].node == node_u32) {
+            self.ev_ptr[ev_idx].aux = @intFromEnum(new_kind);
             return true;
         }
         return false;
@@ -1405,24 +1445,28 @@ pub const Parser = struct {
     pub fn convertRefToDeclare(self: *Parser, node: NodeIndex, kind: BindingKindU8) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
-        if (node_u32 >= self.ref_event_idx.len) return;
+        // ref_event_idx is always sized to nodes.capacity and node indices are always
+        // < nodes.len <= nodes.capacity, so the load is always in bounds.
         const idx = self.ref_event_idx[node_u32];
-        if (idx == std.math.maxInt(u32)) return;
-        if (idx < self.ev_len and self.ev_ptr[idx].kind == .reference and self.ev_ptr[idx].node == node_u32) {
-            self.ev_ptr[idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
-            self.ref_event_idx[node_u32] = std.math.maxInt(u32);
+        if (idx == 0) return;
+        const ev_idx = idx - 1;
+        if (ev_idx < self.ev_len and self.ev_ptr[ev_idx].kind == .reference and self.ev_ptr[ev_idx].node == node_u32) {
+            self.ev_ptr[ev_idx] = .{ .kind = .declare, .aux = @intFromEnum(kind), .node = node_u32 };
+            self.ref_event_idx[node_u32] = 0;
         }
     }
 
     pub fn cancelReferenceForNode(self: *Parser, node: NodeIndex) void {
         if (!self.emit_scope_events) return;
         const node_u32 = @intFromEnum(node);
-        if (node_u32 >= self.ref_event_idx.len) return;
+        // ref_event_idx is always sized to nodes.capacity and node indices are always
+        // < nodes.len <= nodes.capacity, so the load is always in bounds.
         const idx = self.ref_event_idx[node_u32];
-        if (idx == std.math.maxInt(u32)) return;
-        if (idx < self.ev_len and self.ev_ptr[idx].kind == .reference and self.ev_ptr[idx].node == node_u32) {
-            self.ev_ptr[idx].kind = .nop;
-            self.ref_event_idx[node_u32] = std.math.maxInt(u32);
+        if (idx == 0) return;
+        const ev_idx = idx - 1;
+        if (ev_idx < self.ev_len and self.ev_ptr[ev_idx].kind == .reference and self.ev_ptr[ev_idx].node == node_u32) {
+            self.ev_ptr[ev_idx].kind = .nop;
+            self.ref_event_idx[node_u32] = 0;
         }
     }
 
@@ -1754,41 +1798,40 @@ pub const Parser = struct {
         }
 
         // Duplicate __proto__ in object literals (not patterns) is a SyntaxError.
-        // Walk all nodes; reinterpretAsPattern has already retagged patterns.
-        {
-            var ni: u32 = 0;
-            while (ni < self.nodes.len) : (ni += 1) {
-                if (self.node_tags_ptr[ni] != .object_literal) continue;
-                const data = self.node_data_ptr[ni];
-                const start = data.lhs.toInt();
-                const end = data.rhs.toInt();
-                var seen_proto = false;
-                var i = start;
-                while (i < end) : (i += 1) {
-                    const child = NodeIndex.fromInt(self.extra_data.items[i]);
-                    if (child == .none) continue;
-                    if (self.node_tags_ptr[child.toInt()] != .property) continue;
-                    const cd = self.node_data_ptr[child.toInt()];
-                    const key = cd.lhs;
-                    if (key == .none) continue;
-                    const key_tag = self.node_tags_ptr[key.toInt()];
-                    var is_proto = false;
-                    if (key_tag == .identifier) {
-                        const tok = self.node_main_token_ptr[key.toInt()];
-                        if (self.tokenTagAt(tok) != .hash and std.mem.eql(u8, self.tokenText(tok), "__proto__")) is_proto = true;
-                    } else if (key_tag == .string_literal) {
-                        const tok = self.node_main_token_ptr[key.toInt()];
-                        const tok_start = self.tok_starts_ptr[tok];
-                        const text = self.getStringContent(tok_start);
-                        if (std.mem.eql(u8, text, "__proto__")) is_proto = true;
+        // proto_check_nodes holds only the nodes created as object_literal during
+        // parsing. Nodes reinterpreted by reinterpretAsPattern will have been
+        // retagged to object_pattern — the tag guard below skips those.
+        for (self.proto_check_nodes.items) |ni| {
+            if (self.node_tags_ptr[ni] != .object_literal) continue;
+            const data = self.node_data_ptr[ni];
+            const start = data.lhs.toInt();
+            const end = data.rhs.toInt();
+            var seen_proto = false;
+            var i = start;
+            while (i < end) : (i += 1) {
+                const child = NodeIndex.fromInt(self.extra_data.items[i]);
+                if (child == .none) continue;
+                if (self.node_tags_ptr[child.toInt()] != .property) continue;
+                const cd = self.node_data_ptr[child.toInt()];
+                const key = cd.lhs;
+                if (key == .none) continue;
+                const key_tag = self.node_tags_ptr[key.toInt()];
+                var is_proto = false;
+                if (key_tag == .identifier) {
+                    const tok = self.node_main_token_ptr[key.toInt()];
+                    if (self.tokenTagAt(tok) != .hash and std.mem.eql(u8, self.tokenText(tok), "__proto__")) is_proto = true;
+                } else if (key_tag == .string_literal) {
+                    const tok = self.node_main_token_ptr[key.toInt()];
+                    const tok_start = self.tok_starts_ptr[tok];
+                    const text = self.getStringContent(tok_start);
+                    if (std.mem.eql(u8, text, "__proto__")) is_proto = true;
+                }
+                if (is_proto) {
+                    if (seen_proto) {
+                        try self.emitDiagnostic(self.currentSpan(), "Duplicate __proto__ fields are not allowed in object literals", .{});
+                        break;
                     }
-                    if (is_proto) {
-                        if (seen_proto) {
-                            try self.emitDiagnostic(self.currentSpan(), "Duplicate __proto__ fields are not allowed in object literals", .{});
-                            break;
-                        }
-                        seen_proto = true;
-                    }
+                    seen_proto = true;
                 }
             }
         }
@@ -1804,9 +1847,28 @@ pub const Parser = struct {
     /// Dispatch to the correct statement/declaration parser based on the
     /// current token.
     pub fn parseStatement(self: *Parser) Error!NodeIndex {
+        const tag = self.peek();
+
+        // Fast path: identifier is the most common statement-starting token.
+        // Skip the TS dispatch and main switch entirely.
+        if (tag == .identifier) {
+            @branchHint(.likely);
+            // 'using x = ...' — Explicit Resource Management (ES2025)
+            if (self.tok_lens_ptr[self.tok_i] == 5) {
+                const text = self.tokenText(self.tok_i);
+                const next_using = self.peekAt(1);
+                if (std.mem.eql(u8, text, "using") and (next_using == .identifier or
+                    next_using == .kw_await or next_using == .kw_yield or
+                    next_using == .kw_of or next_using == .kw_let)) {
+                    return self.parseUsingDeclaration(false);
+                }
+            }
+            return self.parseExprOrLabeledStatement();
+        }
+
         // TypeScript declaration dispatch
         if (self.is_ts) {
-            switch (self.peek()) {
+            switch (tag) {
                 .kw_interface => {
                     // `interface Name` is a TS declaration; standalone `interface` is an expression
                     // In TS, keywords like void/never/unknown are valid interface names
@@ -1888,7 +1950,7 @@ pub const Parser = struct {
             }
         }
 
-        switch (self.peek()) {
+        switch (tag) {
             .l_brace => return self.parseBlockStatement(),
             .semicolon => return self.parseEmptyStatement(),
             .kw_if => return self.parseIfStatement(),
@@ -2036,17 +2098,9 @@ pub const Parser = struct {
                 }
                 return self.parseExpressionStatement();
             },
-            .identifier, .escaped_keyword => {
-                // `using x = ...` — Explicit Resource Management (ES2025)
-                if (self.peek() == .identifier) {
-                    const text = self.tokenText(self.tok_i);
-                    const next_using = self.peekAt(1);
-                    if (std.mem.eql(u8, text, "using") and (next_using == .identifier or
-                        next_using == .kw_await or next_using == .kw_yield or
-                        next_using == .kw_of or next_using == .kw_let)) {
-                        return self.parseUsingDeclaration(false);
-                    }
-                }
+            // .identifier is handled by the fast path above; only .escaped_keyword
+            // reaches here (contextual keywords encoded as escaped).
+            .escaped_keyword => {
                 return self.parseExprOrLabeledStatement();
             },
             else => return self.parseExpressionStatement(),
@@ -2059,14 +2113,20 @@ pub const Parser = struct {
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         var consecutive_errors: u32 = 0;
-        while (self.peek() != end_tag and !self.isAtEnd()) {
+        while (true) {
+            const cur = self.peek();
+            if (cur == end_tag or cur == .eof) break;
             const before = self.tok_i;
             const stmt = self.parseStatement() catch |err| switch (err) {
                 error.ParseError => {
                     consecutive_errors += 1;
                     if (consecutive_errors > 100) {
                         // Skip remaining tokens in this block to avoid OOM
-                        while (self.peek() != end_tag and !self.isAtEnd()) _ = self.advance();
+                        while (true) {
+                            const t = self.peek();
+                            if (t == end_tag or t == .eof) break;
+                            _ = self.advance();
+                        }
                         break;
                     }
                     self.synchronize();
@@ -2107,6 +2167,22 @@ pub const Parser = struct {
         const prev_in_case_clause = self.in_case_clause;
         self.in_case_clause = false;
         defer self.in_case_clause = prev_in_case_clause;
+        // Save and reset the block declaration flag. Nested parseBlockStatement calls
+        // save/restore their own copy, so this flag tracks only direct declarations in
+        // THIS block. After parsing, block_has_lexical_decl = true means keep the scope.
+        const prev_block_has_lexical_decl = self.block_has_lexical_decl;
+        self.block_has_lexical_decl = false;
+        defer self.block_has_lexical_decl = prev_block_has_lexical_decl;
+        // Incremental dup-detection: save depth/scratch-top so nested blocks can
+        // reuse the same buffer without interfering with this block's window.
+        // Set block_dup_depth = -1 so that the imminent emitScopeOpen brings it to 0,
+        // meaning only direct (depth-0) declares are recorded for THIS block.
+        const use_scratch = self.emit_scope_events and !self.is_ts;
+        const prev_block_dup_depth = self.block_dup_depth;
+        const block_decl_top = self.block_decl_scratch.items.len;
+        if (use_scratch) self.block_dup_depth = -1;
+        defer if (use_scratch) { self.block_dup_depth = prev_block_dup_depth; };
+        defer if (use_scratch) { self.block_decl_scratch.shrinkRetainingCapacity(block_decl_top); };
         const scope_ev = try self.emitScopeOpen(.block, .none);
         // Capture FunctionBody flag BEFORE parsing inner statements — nested
         // parseBlockStatement calls would otherwise consume it.
@@ -2115,105 +2191,84 @@ pub const Parser = struct {
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
 
-        // Detect duplicate lexical declarations at this block's depth.
-        // Scan events emitted between scope_ev and now; track declare events
-        // at depth==0 with non-hoisted binding kinds (let/const/class/fn_decl
-        // when block-scoped). Diagnostic on duplicate name.
+        // Determine keep_scope and check for duplicate lexical declarations.
+        //
+        // Fast path: block_has_lexical_decl is set by emitDeclare for block-level kinds
+        // (let/const/class_decl/function_decl/TS-decls). When false, no non-var decls
+        // were emitted directly in this block, so:
+        //   – keep_scope = false (scope can be elided).
+        //   – No dup check needed (nothing to dup).
+        // This skips the event-stream scan for the common case (if/while/try bodies
+        // with no lexical declarations).
+        //
+        // For TypeScript, dup detection is always skipped (TS type-checker handles it),
+        // so block_has_lexical_decl alone determines keep_scope — scan always omitted.
+        var keep_scope: bool = !self.emit_scope_events;
         if (self.emit_scope_events) {
-            var depth: i32 = 0;
-            const evs = self.ev_ptr[0..self.ev_len][scope_ev + 1 ..];
-            const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
-            var names_buf: [64]Entry = undefined;
-            var names_n: usize = 0;
-            const allow_fn_dup = !self.is_module and !self.in_strict and self.annex_b;
-            for (evs) |ev| {
-                switch (ev.kind) {
-                    // Elided scope_opens have no matching scope_close — skip
-                    // them in depth tracking. ScopeKind.elided = 10.
-                    .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
-                    .scope_close => depth -= 1,
-                    .declare => if (depth == 0) {
-                        const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                        // var/parameter never participate in lexical-redecl checks here.
-                        if (bk == .@"var" or bk == .parameter) continue;
-                        // FunctionBody: function decls skip redecl check (TopLevelLexicallyDeclaredNames).
-                        if (is_fn_body and (bk == .function_decl or bk == .function_decl_annex_b)) continue;
-                        // TypeScript allows duplicate declarations (overloads, namespace merging).
-                        if (self.is_ts) continue;
-                        const main_tok_idx = self.node_main_token_ptr[@intCast(ev.node)];
-                        const tok_start = self.tok_starts_ptr[main_tok_idx];
-                        const tok_len = self.tok_lens_ptr[main_tok_idx];
-                        if (tok_start + tok_len > self.source.len) continue;
-                        const name = self.source[tok_start..tok_start + tok_len];
-                        const flavor: u32 = if (bk == .function_decl or bk == .function_decl_annex_b) self.classifyFnDeclFlavor(main_tok_idx) else 0;
-                        var dup = false;
-                        for (names_buf[0..names_n]) |existing| {
-                            if (!std.mem.eql(u8, existing.name, name)) continue;
-                            // B.3.3: in sloppy script, only plain FunctionDeclaration pairs are allowed.
-                            if (allow_fn_dup and (existing.kind == .function_decl or existing.kind == .function_decl_annex_b) and
-                                (bk == .function_decl or bk == .function_decl_annex_b)
-                                and existing.fn_flavor == 0 and flavor == 0) continue;
-                            // AnnexB B.3.2.1: in sloppy mode, when fn-decl
-                            // nested in IfStatement/LabelledStatement body
-                            // conflicts with prior let/const/class at the
-                            // same enclosing block scope, the AnnexB
-                            // extension is "not applied" — no early error.
-                            if (allow_fn_dup and bk == .function_decl_annex_b and
-                                (existing.kind == .let or existing.kind == .@"const" or existing.kind == .class_decl))
-                            {
-                                continue;
-                            }
-                            if (allow_fn_dup and existing.kind == .function_decl_annex_b and
-                                (bk == .let or bk == .@"const" or bk == .class_decl))
-                            {
-                                continue;
-                            }
-                            dup = true;
-                            break;
+            const has_decl = self.block_has_lexical_decl;
+            if (!has_decl or self.is_ts) {
+                // Fast path: no dup check needed — block_has_lexical_decl is authoritative.
+                keep_scope = has_decl;
+            } else {
+                // JS mode with block-level declarations: use incremental scratch
+                // for dup detection. block_decl_scratch.items[block_decl_top..] holds
+                // all depth-0 declares emitted during parseStatementList above —
+                // no event-stream scan needed.
+                keep_scope = true;
+                const Entry = struct { name: []const u8, kind: BindingKindU8, fn_flavor: u32 };
+                var names_buf: [64]Entry = undefined;
+                var names_n: usize = 0;
+                const allow_fn_dup = !self.is_module and !self.in_strict and self.annex_b;
+                for (self.block_decl_scratch.items[block_decl_top..]) |scratch_entry| {
+                    const main_tok_idx: TokenIndex = @truncate(scratch_entry >> 32);
+                    const bk: BindingKindU8 = @enumFromInt(@as(u8, @truncate(scratch_entry)));
+                    // FunctionBody: function decls skip redecl check (TopLevelLexicallyDeclaredNames).
+                    if (is_fn_body and (bk == .function_decl or bk == .function_decl_annex_b)) continue;
+                    const tok_start = self.tok_starts_ptr[main_tok_idx];
+                    const tok_len = self.tok_lens_ptr[main_tok_idx];
+                    if (tok_start + tok_len > self.source.len) continue;
+                    const name = self.source[tok_start..tok_start + tok_len];
+                    const flavor: u32 = if (bk == .function_decl or bk == .function_decl_annex_b) self.classifyFnDeclFlavor(main_tok_idx) else 0;
+                    var dup = false;
+                    for (names_buf[0..names_n]) |existing| {
+                        if (!std.mem.eql(u8, existing.name, name)) continue;
+                        // B.3.3: in sloppy script, only plain FunctionDeclaration pairs are allowed.
+                        if (allow_fn_dup and (existing.kind == .function_decl or existing.kind == .function_decl_annex_b) and
+                            (bk == .function_decl or bk == .function_decl_annex_b)
+                            and existing.fn_flavor == 0 and flavor == 0) continue;
+                        // AnnexB B.3.2.1: in sloppy mode, when fn-decl nested in
+                        // IfStatement/LabelledStatement body conflicts with prior
+                        // let/const/class at the same block scope, the AnnexB
+                        // extension is "not applied" — no early error.
+                        if (allow_fn_dup and bk == .function_decl_annex_b and
+                            (existing.kind == .let or existing.kind == .@"const" or existing.kind == .class_decl))
+                        {
+                            continue;
                         }
-                        if (dup) {
-                            try self.emitDiagnostic(self.currentSpan(),
-                                "Identifier '{s}' has already been declared", .{name});
-                        } else if (names_n < names_buf.len) {
-                            names_buf[names_n] = .{ .name = name, .kind = bk, .fn_flavor = flavor };
-                            names_n += 1;
+                        if (allow_fn_dup and existing.kind == .function_decl_annex_b and
+                            (bk == .let or bk == .@"const" or bk == .class_decl))
+                        {
+                            continue;
                         }
-                    },
-                    else => {},
+                        dup = true;
+                        break;
+                    }
+                    if (dup) {
+                        try self.emitDiagnostic(self.currentSpan(),
+                            "Identifier '{s}' has already been declared", .{name});
+                    } else if (names_n < names_buf.len) {
+                        names_buf[names_n] = .{ .name = name, .kind = bk, .fn_flavor = flavor };
+                        names_n += 1;
+                    }
                 }
             }
         }
-
-        // Elide scopes that bind nothing block-scoped (no let/const/class at this
-        // level). var and function_decl hoist to the var-scope regardless, so
-        // attributing references to the parent scope is semantically equivalent.
-        // event_resolver recognises .elided scope_open and skips creating a ScopeId.
-        const keep_scope = blk: {
-            if (!self.emit_scope_events) break :blk true;
-            // Skip elided scope_opens in depth tracking (they have no matching
-            // scope_close). Without this guard, elided nested scopes inflate
-            // depth, causing top-level declares to appear at depth>0 and
-            // wrongly elide the enclosing block.
-            var depth: i32 = 0;
-            for (self.ev_ptr[0..self.ev_len][scope_ev + 1 ..]) |ev| {
-                switch (ev.kind) {
-                    .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
-                    .scope_close => depth -= 1,
-                    .declare => if (depth == 0) {
-                        const bk: BindingKindU8 = @enumFromInt(ev.aux);
-                        if (!bk.isHoisted()) break :blk true;
-                        if (bk == .function_decl or bk == .function_decl_annex_b) break :blk true;
-                    },
-                    else => {},
-                }
-            }
-            break :blk false;
-        };
 
         if (keep_scope) {
             try self.emitScopeClose(.none);
         } else if (self.emit_scope_events) {
             self.ev_ptr[scope_ev].aux = @intFromEnum(ScopeKindU8.elided);
+            self.elided_scope_count += 1;
         }
 
         const node = try self.addNode(.{
@@ -2789,7 +2844,9 @@ pub const Parser = struct {
     /// Used to gate calls to checkCoverInitializedName when the tag is already loaded.
     pub inline fn tagNeedsCoverCheck(tag: Node.Tag) bool {
         return switch (tag) {
-            .object_literal, .array_literal, .call_expr,
+            // call_expr is omitted: args are now checked inline in parseArgumentList,
+            // covering call/new/optional-call contexts uniformly and earlier.
+            .object_literal, .array_literal,
             .expression_stmt, .grouping_expr,
             .unary_plus, .unary_minus, .bitwise_not, .logical_not, .typeof_expr,
             .void_expr, .delete_expr, .yield_expr, .yield_delegate, .spread_element,
@@ -2833,7 +2890,7 @@ pub const Parser = struct {
                 var i = s;
                 while (i < e) : (i += 1) {
                     const elem = NodeIndex.fromInt(self.extra_data.items[i]);
-                    self.checkCoverInitializedName(elem);
+                    self.checkCoverInitializedNameFast(elem);
                 }
             },
             .expression_stmt, .grouping_expr,
@@ -2841,23 +2898,6 @@ pub const Parser = struct {
             .void_expr, .delete_expr, .yield_expr, .yield_delegate, .spread_element,
             .prefix_inc, .prefix_dec, .await_expr,
             => self.checkCoverInitializedName(data.lhs),
-            .call_expr => {
-                // data.rhs is an extra_data index containing SubRange {start, end}
-                if (data.rhs != .none) {
-                    const rhs_idx = @intFromEnum(data.rhs);
-                    if (rhs_idx + 1 < self.extra_data.items.len) {
-                        const s = self.extra_data.items[rhs_idx];
-                        const e = self.extra_data.items[rhs_idx + 1];
-                        var i = s;
-                        while (i < e) : (i += 1) {
-                            if (i < self.extra_data.items.len) {
-                                const arg = NodeIndex.fromInt(self.extra_data.items[i]);
-                                self.checkCoverInitializedName(arg);
-                            }
-                        }
-                    }
-                }
-            },
             else => {},
         }
     }
@@ -7379,31 +7419,67 @@ pub const Parser = struct {
         {
             return true;
         }
-        // For tokens lexed as identifier or escaped_keyword
-        if (tag == .identifier or tag == .escaped_keyword) {
+        if (tag == .identifier) {
             const text = self.tokenText(tok);
-            if (isStrictReservedStr(text)) return true;
-            // Also check with unicode escapes resolved
-            if (std.mem.indexOfScalar(u8, text, '\\') != null) {
-                var resolved_buf: [256]u8 = undefined;
-                if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
-                    return isStrictReservedStr(resolved);
+            // For raw .identifier text: let/yield/static/interface are already keyword tags;
+            // implements is kw_implements in TS mode. Only public/package/private/protected
+            // (all start with 'p') plus implements (JS-only, starts with 'i') can match.
+            if (text.len >= 6) {
+                if (text[0] == 'p' and isStrictReservedAccessModifier(text)) return true;
+                if (!self.is_ts and text[0] == 'i' and text.len == 10 and
+                    std.mem.eql(u8, text, "implements")) return true;
+            }
+            // Plain .identifier with \u escapes: decoded text might be a strict reserved word
+            // not in Token.keywords. The shortest strict-reserved word not already a keyword
+            // token is "public" (6 chars). To encode it with at least one escape, the raw text
+            // needs at minimum 5 bytes for the escape + 5 plain bytes = 10. So raw len < 10
+            // can never decode to a strict-reserved word — skip the backslash scan entirely.
+            if (text.len >= 10) {
+                const c0 = text[0];
+                if (c0 == 'p' or c0 == '\\' or (!self.is_ts and c0 == 'i')) {
+                    if (std.mem.indexOfScalar(u8, text, '\\') != null) {
+                        var resolved_buf: [256]u8 = undefined;
+                        if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
+                            return isStrictReservedStr(resolved);
+                        }
+                    }
                 }
+            }
+            return false;
+        }
+        if (tag == .escaped_keyword) {
+            // .escaped_keyword always has \u escapes; raw text always fails isStrictReservedStr
+            // so skip the raw check and go directly to resolution.
+            const text = self.tokenText(tok);
+            var resolved_buf: [256]u8 = undefined;
+            if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
+                return isStrictReservedStr(resolved);
             }
         }
         return false;
     }
 
+    /// Subset of strict-reserved words that appear as .identifier tokens (not keyword-tagged):
+    /// public, package, private, protected. All start with 'p' — callers must gate on that.
+    pub inline fn isStrictReservedAccessModifier(text: []const u8) bool {
+        return switch (text.len) {
+            6 => std.mem.eql(u8, text, "public"),
+            7 => std.mem.eql(u8, text, "package") or std.mem.eql(u8, text, "private"),
+            9 => std.mem.eql(u8, text, "protected"),
+            else => false,
+        };
+    }
+
     pub fn isStrictReservedStr(text: []const u8) bool {
-        return std.mem.eql(u8, text, "implements") or
-            std.mem.eql(u8, text, "interface") or
-            std.mem.eql(u8, text, "let") or
-            std.mem.eql(u8, text, "package") or
-            std.mem.eql(u8, text, "private") or
-            std.mem.eql(u8, text, "protected") or
-            std.mem.eql(u8, text, "public") or
-            std.mem.eql(u8, text, "static") or
-            std.mem.eql(u8, text, "yield");
+        return switch (text.len) {
+            3 => std.mem.eql(u8, text, "let"),
+            5 => std.mem.eql(u8, text, "yield"),
+            6 => std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "static"),
+            7 => std.mem.eql(u8, text, "package") or std.mem.eql(u8, text, "private"),
+            9 => std.mem.eql(u8, text, "interface") or std.mem.eql(u8, text, "protected"),
+            10 => std.mem.eql(u8, text, "implements"),
+            else => false,
+        };
     }
 
     /// Check if current token is a strict reserved word in strict mode and emit error.
@@ -7582,7 +7658,7 @@ pub const Parser = struct {
     /// Recursively collect binding identifier names from a parameter node
     /// (handles patterns: object_pattern/array_pattern, defaults via assignment_pattern,
     /// rest_element, property/shorthand_property, grouping_expr).
-    fn collectParamNames(self: *Parser, node: NodeIndex, names: *std.ArrayList([]const u8)) !void {
+    fn collectParamNames(self: *Parser, node: NodeIndex, names: *std.ArrayListUnmanaged([]const u8)) !void {
         if (node == .none) return;
         const tag = self.node_tags_ptr[node.toInt()];
         const data = self.node_data_ptr[node.toInt()];
@@ -7617,12 +7693,13 @@ pub const Parser = struct {
     pub fn checkUniqueParams(self: *Parser, params: SubRange) !void {
         // TypeScript reports duplicate params as type errors (TS2440), not parse errors.
         if (self.is_ts) return;
-        var names: std.ArrayList([]const u8) = .empty;
-        defer names.deinit(self.gpa);
+        // Reuse parser-level scratch buffer to avoid a malloc/free per function call.
+        const names = &self.param_names_scratch;
+        names.clearRetainingCapacity();
         var i = params.start;
         while (i < params.end) : (i += 1) {
             const p = NodeIndex.fromInt(self.extra_data.items[i]);
-            try self.collectParamNames(p, &names);
+            try self.collectParamNames(p, names);
         }
         var a: usize = 0;
         while (a < names.items.len) : (a += 1) {
