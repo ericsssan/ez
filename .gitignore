@@ -39,9 +39,11 @@ tmp/
 2025-*.txt
 2026-*.txt
 latest-convo.txt
+resume.txt
 
 # Xcode Instruments traces
 *.trace/
+*.dSYM/
 
 # Throwaway debug / repro files
 debug_*.js
@@ -53,6 +55,13 @@ bench_parallel_debug
 test_evented
 test_evented_type
 root
+bench_parser
+bench_parser_baseline
+count_tokens
+peek_test
+test262_runner
+test_parse_profile
+test_parse_profile_orig
 
 # Profiling artifacts (extension)
 profile.json.gz
