@@ -704,11 +704,17 @@ pub const Ast = struct {
     nodes: NodeList.Slice,
     tokens: TokenList.Slice,
     extra_data: []const u32,
+    /// True allocation capacity behind extra_data (>= extra_data.len). Non-zero
+    /// only when the parser transferred the buffer without shrink-realloc (the
+    /// common path). deinit uses this to free with the correct size.
+    extra_data_cap: u32 = 0,
     errors: []const Diagnostic,
     /// Scope/declare/reference events emitted during parsing.  Empty when the
     /// parser was invoked without event emission enabled.  When present, the
     /// event-driven semantic analyzer consumes this instead of walking the tree.
     scope_events: []const ScopeEvent = &.{},
+    /// True allocation capacity behind scope_events (>= scope_events.len).
+    scope_events_cap: u32 = 0,
 
     pub const NodeList = std.MultiArrayList(Node);
     pub const TokenList = std.MultiArrayList(struct {
@@ -726,12 +732,24 @@ pub const Ast = struct {
     pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {
         self.nodes.deinit(allocator);
         // tokens are NOT owned by Ast — the caller manages their lifetime
-        allocator.free(self.extra_data);
+        // Free extra_data using the true backing allocation size. When the parser
+        // transferred the buffer without shrink-realloc, extra_data_cap records the
+        // actual allocation capacity (>= extra_data.len); otherwise cap == 0 and
+        // extra_data.len equals the allocation size (toOwnedSlice was used).
+        if (self.extra_data_cap > 0) {
+            allocator.free(self.extra_data.ptr[0..self.extra_data_cap]);
+        } else {
+            allocator.free(self.extra_data);
+        }
         for (self.errors) |err| {
             allocator.free(err.message);
         }
         allocator.free(self.errors);
-        if (self.scope_events.len > 0) allocator.free(self.scope_events);
+        if (self.scope_events_cap > 0) {
+            allocator.free(self.scope_events.ptr[0..self.scope_events_cap]);
+        } else if (self.scope_events.len > 0) {
+            allocator.free(self.scope_events);
+        }
         self.* = undefined;
     }
 

@@ -143,18 +143,32 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         // .kw_in have relational prec (11), never 18, so those guards are also
         // irrelevant on this path.
         if (prec_entry == @intFromEnum(Precedence.call)) {
-            // Arrow functions are not valid call/member targets without parens.
-            // In TS mode, skip this check (TypeScript handles it at type-check level).
-            if (!is_ts and tag == .l_paren and left != .none) {
-                const left_tag = p.node_tags_ptr[left.toInt()];
-                if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
-                    try p.emitError("Arrow function is not directly callable (wrap in parens)");
-                    break;
-                }
+            // Fast paths for the two dominant call-level tokens.  Both always
+            // consume at least one token, so the before_call progress check is
+            // not needed — saving a save + load + compare per member/call site.
+            if (tag == .dot) {
+                left = try parseMemberAccess(p, left);
+                continue;
             }
+            if (tag == .l_paren) {
+                // Arrow functions are not valid call/member targets without parens.
+                // In TS mode, skip this check (TypeScript handles it at type-check level).
+                if (!is_ts and left != .none) {
+                    const left_tag = p.node_tags_ptr[left.toInt()];
+                    if (left_tag == .arrow_fn or left_tag == .async_arrow_fn) {
+                        try p.emitError("Arrow function is not directly callable (wrap in parens)");
+                        break;
+                    }
+                }
+                left = try parseCallExpression(p, left);
+                continue;
+            }
+            // Remaining call-level tokens (.l_bracket, .question_dot, .template_*)
+            // may legitimately fail to make progress (e.g. .l_bracket after a
+            // postfix op on a new line inside a class field triggers ASI).
             const before_call = p.tok_i;
             left = try parseCallLevelInfix(p, left, tag);
-            if (p.tok_i == before_call) break; // no progress (e.g. ASI in class field)
+            if (p.tok_i == before_call) break; // no progress (ASI in class field)
             continue;
         }
 
@@ -5485,9 +5499,13 @@ fn parseInfixExpression(p: *Parser, left: NodeIndex, prec: Precedence, tag: Toke
 
 // tag is passed from the Pratt loop where it was already peeked.
 inline fn parseCallLevelInfix(p: *Parser, left: NodeIndex, tag: TokenTag) Error!NodeIndex {
+    // Order by frequency in real JS/TS: member access (.dot) is the most common
+    // call-level infix, followed by function calls (.l_paren). Explicit if/else
+    // lets the branch predictor specialise on the most common path without waiting
+    // for the full jump table dispatch that the compiler would emit for the switch.
+    if (tag == .dot) return try parseMemberAccess(p, left);
+    if (tag == .l_paren) return try parseCallExpression(p, left);
     return switch (tag) {
-        .l_paren => try parseCallExpression(p, left),
-        .dot => try parseMemberAccess(p, left),
         .l_bracket => {
             // TS: after postfix ++/--, a `[` on a new line applies ASI (new class member).
             // For other expressions (e.g. literal `0`), no ASI — `0[e2]` is valid subscript.

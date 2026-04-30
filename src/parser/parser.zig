@@ -117,6 +117,8 @@ pub const Error = error{ParseError} || std.mem.Allocator.Error;
 const Language = @import("token.zig").Language;
 
 pub const Parser = struct {
+    const LabelEntry = struct { name: []const u8, fn_depth: u16 };
+
     source: []const u8,
     tokens: TokenList.Slice,
     /// Cached pointer to the tag array — avoids MultiArrayList.items(.tag)
@@ -201,7 +203,10 @@ pub const Parser = struct {
     /// Initialized from scope_events.events.items.ptr after pre-allocation;
     /// synced back to scope_events.events.items.len at end of parse.
     ev_ptr: [*]ScopeEvent = undefined,
-    ev_len: u32 = 0,
+    /// Hoisted write cursor length. Declared as usize (not u32) so Zig places
+    /// this in the 8-byte alignment group adjacent to ev_ptr, keeping both on
+    /// the same cache line. The actual event count always fits in u32.
+    ev_len: usize = 0,
     /// Count of elided scope_open events emitted during parse. Zero means the
     /// compaction pass in parseInternal can be skipped entirely.
     elided_scope_count: u32 = 0,
@@ -323,8 +328,12 @@ pub const Parser = struct {
     /// True when parsing statements directly inside a switch case/default clause
     /// (not inside a nested block within the clause). Used to detect TS1547/TS1548.
     in_case_clause: bool = false,
-    /// Stack of active label names for TS duplicate-label and cross-function-boundary checks.
-    ts_label_stack: [32]struct { name: []const u8, fn_depth: u16 } = undefined,
+    /// Heap-allocated (lazy) stack for TS duplicate-label and cross-function-
+    /// boundary checks.  Kept as a pointer so the 768-byte inline array does
+    /// not bloat the Parser struct and push hot fields (ev_len, gpa, is_ts)
+    /// to distant cache lines.  Allocated on first label push; null means no
+    /// labels have been seen yet (ts_label_count == 0).
+    ts_label_stack: ?*[32]LabelEntry = null,
     ts_label_count: u8 = 0,
     /// Incremented each time we enter a non-arrow function body; used to detect TS1107.
     ts_label_fn_depth: u16 = 0,
@@ -494,6 +503,7 @@ pub const Parser = struct {
         defer p.block_decl_scratch.deinit(allocator);
         defer p.proto_check_nodes.deinit(allocator);
         defer p.param_names_scratch.deinit(allocator);
+        defer if (p.ts_label_stack) |s| allocator.destroy(s);
         // Note: diagnostics ownership transfers to the returned Ast,
         // but we need a defer in case of early error.
         var diag_transferred = false;
@@ -555,7 +565,13 @@ pub const Parser = struct {
         if (p.emit_scope_events) {
             const ref_idx_count = @max(estimated_node_count, p.nodes.capacity);
             p.ref_event_idx = try allocator.alloc(u32, ref_idx_count);
-            @memset(p.ref_event_idx, 0);
+            // In ReleaseFast, rely on the OS providing zero-initialized pages for
+            // large mmap-backed allocations (Zig's GeneralPurposeAllocator). The
+            // sentinel value 0 ("no event") matches the OS-zero fill. Debug/Safe
+            // modes always zero explicitly so tests pass with any allocator.
+            if (comptime @import("builtin").mode != .ReleaseFast) {
+                @memset(p.ref_event_idx, 0);
+            }
         }
         // Pre-size the incremental dup-detection scratch (JS mode only).
         if (p.emit_scope_events and !p.is_ts) {
@@ -602,8 +618,21 @@ pub const Parser = struct {
         p.syncYieldLex();
         try p.parseProgram();
 
-        const extra_data = try p.extra_data.toOwnedSlice(allocator);
-        errdefer allocator.free(extra_data);
+        // Transfer extra_data without a shrink-realloc memcpy. The pre-allocated
+        // capacity (3/4 × token count) typically exceeds actual usage; rather than
+        // calling toOwnedSlice (which allocates a new smaller buffer, copies all
+        // data, and frees the old one — up to 4MB copied per parse), we hand the
+        // over-allocated buffer directly to the Ast and record the true capacity so
+        // deinit can free with the correct size.
+        const extra_data_slice = p.extra_data.items;
+        const extra_data_cap: u32 = @intCast(p.extra_data.capacity);
+        p.extra_data.items = &.{};
+        p.extra_data.capacity = 0;
+        // defer p.extra_data.deinit(allocator) is already registered above and
+        // will now be a no-op (empty ArrayList). Free on errpath explicitly.
+        errdefer if (extra_data_cap > 0)
+            allocator.free(extra_data_slice.ptr[0..extra_data_cap]);
+
         const errors = try p.diagnostics.toOwnedSlice(allocator);
         errdefer allocator.free(errors);
         diag_transferred = true;
@@ -615,6 +644,10 @@ pub const Parser = struct {
         if (p.emit_scope_events) {
             p.scope_events.events.items.len = p.ev_len;
         }
+        // Similarly transfer scope_events without a shrink-realloc memcpy.
+        // Pre-allocated capacity (1× token count) is ~2× actual event count;
+        // skipping toOwnedSlice avoids copying ~5MB per parse.
+        var ast_events_cap: u32 = 0;
         const ast_events: []const scope_events_mod.Event = blk: {
             if (events_out) |out| {
                 out.* = p.scope_events;
@@ -622,21 +655,27 @@ pub const Parser = struct {
                 break :blk &.{};
             }
             if (p.emit_scope_events) {
-                // Transfer into the Ast's owned slice.
-                const s = try p.scope_events.events.toOwnedSlice(allocator);
+                const s = p.scope_events.events.items;
+                ast_events_cap = @intCast(p.scope_events.events.capacity);
+                p.scope_events.events.items = &.{};
+                p.scope_events.events.capacity = 0;
                 p.scope_events = .{};
                 break :blk s;
             }
             break :blk &.{};
         };
+        errdefer if (ast_events_cap > 0)
+            allocator.free(ast_events.ptr[0..ast_events_cap]);
 
         return Ast{
             .source = source,
             .nodes = p.nodes.toOwnedSlice(),
             .tokens = p.tokens,
-            .extra_data = extra_data,
+            .extra_data = extra_data_slice,
+            .extra_data_cap = extra_data_cap,
             .errors = errors,
             .scope_events = ast_events,
+            .scope_events_cap = ast_events_cap,
         };
     }
 
@@ -850,7 +889,11 @@ pub const Parser = struct {
             if (self.ref_event_idx.len < self.nodes.capacity) {
                 const old_len = self.ref_event_idx.len;
                 self.ref_event_idx = try self.gpa.realloc(self.ref_event_idx, self.nodes.capacity);
-                @memset(self.ref_event_idx[old_len..], 0);
+                // Same rationale as in parseInternal: new pages from gpa.realloc are
+                // OS-zero-initialized in ReleaseFast; zero explicitly in debug/safe.
+                if (comptime @import("builtin").mode != .ReleaseFast) {
+                    @memset(self.ref_event_idx[old_len..], 0);
+                }
             }
         }
         // Write via hoisted raw pointers — skips MultiArrayList's internal
@@ -890,7 +933,7 @@ pub const Parser = struct {
 
     pub inline fn emitScopeOpen(self: *Parser, kind: ScopeKindU8, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .scope_open,
             .aux = @intFromEnum(kind),
@@ -1047,7 +1090,7 @@ pub const Parser = struct {
 
     pub inline fn emitReference(self: *Parser, kind: ReferenceKindU8, node: NodeIndex) !void {
         if (!self.emit_scope_events) return;
-        const event_idx: u32 = self.ev_len;
+        const event_idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .reference,
             .aux = @intFromEnum(kind),
@@ -1101,7 +1144,7 @@ pub const Parser = struct {
 
     pub inline fn emitLoopOpen(self: *Parser, kind: LoopKind, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .loop_open,
             .aux = @intFromEnum(kind),
@@ -1139,7 +1182,7 @@ pub const Parser = struct {
 
     pub inline fn emitTryOpen(self: *Parser, has_finalizer: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .try_open,
             .aux = if (has_finalizer) 1 else 0,
@@ -1159,7 +1202,7 @@ pub const Parser = struct {
 
     pub inline fn emitTryCatchStart(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .try_catch_start,
             .aux = 0,
@@ -1179,7 +1222,7 @@ pub const Parser = struct {
 
     pub inline fn emitTryFinallyStart(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .try_finally_start,
             .aux = 0,
@@ -1199,7 +1242,7 @@ pub const Parser = struct {
 
     pub inline fn emitSwitchOpen(self: *Parser, has_default: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .switch_open,
             .aux = if (has_default) 1 else 0,
@@ -1239,7 +1282,7 @@ pub const Parser = struct {
 
     pub inline fn emitLogicalOpen(self: *Parser, kind: LogicalKind, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .logical_open,
             .aux = @intFromEnum(kind),
@@ -1268,7 +1311,7 @@ pub const Parser = struct {
 
     pub inline fn emitCondOpen(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .cond_open,
             .aux = 0,
@@ -1297,7 +1340,7 @@ pub const Parser = struct {
 
     pub inline fn emitIfOpen(self: *Parser, has_else: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .if_open,
             .aux = if (has_else) 1 else 0,
@@ -1308,7 +1351,7 @@ pub const Parser = struct {
 
     pub inline fn emitIfAlt(self: *Parser, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .if_alt,
             .aux = 0,
@@ -1328,7 +1371,7 @@ pub const Parser = struct {
 
     pub inline fn emitLabelOpen(self: *Parser, is_loop: bool, node: NodeIndex) !u32 {
         if (!self.emit_scope_events) return 0;
-        const idx: u32 = self.ev_len;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .label_open,
             .aux = if (is_loop) 1 else 0,
@@ -1563,36 +1606,45 @@ pub const Parser = struct {
     /// Skip tokens until reaching a synchronization point:
     /// `;`, `}`, `eof`, or a statement-starting keyword.
     pub fn synchronize(self: *Parser) void {
-        while (!self.isAtEnd()) {
-            // If we just consumed a semicolon, stop.
-            if (self.tok_i > 0 and self.tokenTagAt(@intCast(self.tok_i - 1)) == .semicolon) return;
+        // If previous token was already a semicolon, we're past the boundary.
+        if (self.tok_i > 0 and self.tokenTagAt(@intCast(self.tok_i - 1)) == .semicolon) return;
 
+        // SIMD bulk-advance: skip 16 tokens at a time until a potential stop is
+        // found.  The SoA tags array is a dense u8 sequence — exactly what SIMD
+        // needs.  Two tests per chunk cover all synchronize() stop tokens:
+        //   (1) structural: semicolon | r_brace | eof   (exact match)
+        //   (2) keyword range: tag in [kw_break, kw_class] — covers all 19
+        //       statement-starting keywords; false positives (kw_else, kw_new …)
+        //       cause early stop, which is safe for error recovery.
+        {
+            const V = @Vector(16, u8);
+            const raw: [*]const u8 = @ptrCast(self.tags_ptr);
+            const lim = self.parsed_len;
+            const v_semi:   V = @splat(@intFromEnum(TokenTag.semicolon));
+            const v_rbrace: V = @splat(@intFromEnum(TokenTag.r_brace));
+            const v_eof:    V = @splat(@intFromEnum(TokenTag.eof));
+            const kw_lo:    V = @splat(@intFromEnum(TokenTag.kw_break));  // = 9
+            const kw_hi:    V = @splat(@intFromEnum(TokenTag.kw_class));  // = 42
+            var i = self.tok_i;
+            while (i + 16 <= lim) {
+                const chunk: V = raw[i..][0..16].*;
+                const structural = (chunk == v_semi) | (chunk == v_rbrace) | (chunk == v_eof);
+                const in_kw     = (chunk >= kw_lo) & (chunk <= kw_hi);
+                if (@reduce(.Or, structural | in_kw)) break;
+                i += 16;
+            }
+            self.tok_i = i;
+        }
+
+        // Scalar finish: exact semantics for each stop token.
+        while (!self.isAtEnd()) {
             switch (self.peek()) {
-                .semicolon => {
-                    _ = self.advance();
-                    return;
-                },
+                .semicolon => { _ = self.advance(); return; },
                 .r_brace, .eof => return,
-                // Statement-starting keywords
-                .kw_var,
-                .kw_let,
-                .kw_const,
-                .kw_function,
-                .kw_class,
-                .kw_if,
-                .kw_while,
-                .kw_for,
-                .kw_do,
-                .kw_return,
-                .kw_throw,
-                .kw_try,
-                .kw_switch,
-                .kw_break,
-                .kw_continue,
-                .kw_debugger,
-                .kw_with,
-                .kw_export,
-                .kw_import,
+                .kw_var, .kw_let, .kw_const, .kw_function, .kw_class,
+                .kw_if, .kw_while, .kw_for, .kw_do, .kw_return, .kw_throw,
+                .kw_try, .kw_switch, .kw_break, .kw_continue, .kw_debugger,
+                .kw_with, .kw_export, .kw_import,
                 => return,
                 else => _ = self.advance(),
             }
@@ -1872,6 +1924,14 @@ pub const Parser = struct {
             }
             return self.parseExprOrLabeledStatement();
         }
+
+        // Fast paths for the most frequent non-identifier statement starters.
+        // These tokens are not in the TS dispatch switch, so we can skip both
+        // the is_ts check and the main switch lookup for the common cases.
+        // (kw_function is the dominant statement type in deeply-nested TS files.)
+        if (tag == .kw_function) return self.parseFunctionDeclaration();
+        if (tag == .kw_return) return self.parseReturnStatement();
+        if (tag == .kw_if) return self.parseIfStatement();
 
         // TypeScript declaration dispatch
         if (self.is_ts) {
@@ -2425,7 +2485,10 @@ pub const Parser = struct {
     /// Reject lexical declarations but allow function declarations (Annex B).
     /// In strict mode, function declarations are also rejected (not in a block).
     fn parseIfBody(self: *Parser) Error!NodeIndex {
-        switch (self.peek()) {
+        const tok = self.peek();
+        // The overwhelmingly common case — skip the full switch dispatch.
+        if (tok == .l_brace) return self.parseBlockStatement();
+        switch (tok) {
             .kw_const => {
                 if (self.is_ts and self.peekAt(1) == .kw_enum) return self.parseStatement();
                 try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed in single-statement context", .{});
@@ -3371,14 +3434,16 @@ pub const Parser = struct {
             // TS1107/TS1116: validate label target
             if (self.is_ts) {
                 var found = false;
-                var i: u8 = 0;
-                while (i < self.ts_label_count) : (i += 1) {
-                    if (std.mem.eql(u8, self.ts_label_stack[i].name, label_name)) {
-                        if (self.ts_label_fn_depth > self.ts_label_stack[i].fn_depth) {
-                            try self.emitDiagnosticAtToken(label_tok, "Jump target cannot cross function boundary", .{});
+                if (self.ts_label_stack) |stack| {
+                    var i: u8 = 0;
+                    while (i < self.ts_label_count) : (i += 1) {
+                        if (std.mem.eql(u8, stack[i].name, label_name)) {
+                            if (self.ts_label_fn_depth > stack[i].fn_depth) {
+                                try self.emitDiagnosticAtToken(label_tok, "Jump target cannot cross function boundary", .{});
+                            }
+                            found = true;
+                            break;
                         }
-                        found = true;
-                        break;
                     }
                 }
                 if (!found) {
@@ -3429,14 +3494,16 @@ pub const Parser = struct {
             // TS1107/TS1115: validate label target
             if (self.is_ts) {
                 var found = false;
-                var i: u8 = 0;
-                while (i < self.ts_label_count) : (i += 1) {
-                    if (std.mem.eql(u8, self.ts_label_stack[i].name, label_name)) {
-                        if (self.ts_label_fn_depth > self.ts_label_stack[i].fn_depth) {
-                            try self.emitDiagnosticAtToken(label_tok, "Jump target cannot cross function boundary", .{});
+                if (self.ts_label_stack) |stack| {
+                    var i: u8 = 0;
+                    while (i < self.ts_label_count) : (i += 1) {
+                        if (std.mem.eql(u8, stack[i].name, label_name)) {
+                            if (self.ts_label_fn_depth > stack[i].fn_depth) {
+                                try self.emitDiagnosticAtToken(label_tok, "Jump target cannot cross function boundary", .{});
+                            }
+                            found = true;
+                            break;
                         }
-                        found = true;
-                        break;
                     }
                 }
                 if (!found) {
@@ -3487,19 +3554,23 @@ pub const Parser = struct {
 
         // TS1114: Duplicate label check
         if (self.is_ts) {
-            var i: u8 = 0;
-            while (i < self.ts_label_count) : (i += 1) {
-                if (std.mem.eql(u8, self.ts_label_stack[i].name, label_name)) {
-                    try self.emitDiagnostic(self.currentSpan(), "Duplicate label", .{});
-                    break;
+            if (self.ts_label_stack) |stack| {
+                var i: u8 = 0;
+                while (i < self.ts_label_count) : (i += 1) {
+                    if (std.mem.eql(u8, stack[i].name, label_name)) {
+                        try self.emitDiagnostic(self.currentSpan(), "Duplicate label", .{});
+                        break;
+                    }
                 }
             }
         }
 
         // Push label onto stack for TS cross-function-boundary detection
         const prev_label_count = self.ts_label_count;
-        if (self.is_ts and self.ts_label_count < self.ts_label_stack.len) {
-            self.ts_label_stack[self.ts_label_count] = .{ .name = label_name, .fn_depth = self.ts_label_fn_depth };
+        if (self.is_ts and self.ts_label_count < 32) {
+            if (self.ts_label_stack == null)
+                self.ts_label_stack = try self.gpa.create([32]LabelEntry);
+            self.ts_label_stack.?[self.ts_label_count] = .{ .name = label_name, .fn_depth = self.ts_label_fn_depth };
             self.ts_label_count += 1;
         }
         defer self.ts_label_count = prev_label_count;
@@ -7774,6 +7845,7 @@ pub const Parser = struct {
             else => @compileError("scratchPush: expected NodeIndex or u32"),
         };
         if (self.scratch.items.len >= self.scratch.capacity) {
+            @branchHint(.cold);
             try self.scratch.ensureTotalCapacity(self.gpa, self.scratch.capacity * 2 + 16);
         }
         self.scratch.appendAssumeCapacity(val);
