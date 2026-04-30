@@ -5484,7 +5484,7 @@ fn parseInfixExpression(p: *Parser, left: NodeIndex, prec: Precedence, tag: Toke
 // ── Call-level infix (member access, calls, etc.) ────────────────
 
 // tag is passed from the Pratt loop where it was already peeked.
-fn parseCallLevelInfix(p: *Parser, left: NodeIndex, tag: TokenTag) Error!NodeIndex {
+inline fn parseCallLevelInfix(p: *Parser, left: NodeIndex, tag: TokenTag) Error!NodeIndex {
     return switch (tag) {
         .l_paren => try parseCallExpression(p, left),
         .dot => try parseMemberAccess(p, left),
