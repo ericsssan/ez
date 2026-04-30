@@ -72,7 +72,7 @@ pub fn parseJsxElement(p: *Parser) Error!NodeIndex {
 /// Returns a node with tag `jsx_opening_element` (if `>` terminates)
 /// or `jsx_self_closing` (if `/>` terminates).
 fn parseJsxOpeningElement(p: *Parser) Error!NodeIndex {
-    const name_tok = p.tok_i;
+    const name_tok: u32 = p.tokIdx();
 
     // Parse element name — identifier or dotted name like Foo.Bar.Baz.
     const name_node = try parseJsxDottedName(p);
@@ -303,7 +303,7 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                     if (prev_end < cur_start) {
                         const gap_node = try p.addNode(.{
                             .tag = .jsx_gap_node,
-                            .main_token = p.tok_i - 1,
+                            .main_token = @intCast(p.tok_i - 1),
                             .data = .{
                                 .lhs = NodeIndex.fromInt(prev_end),
                                 .rhs = NodeIndex.fromInt(cur_start),
@@ -324,7 +324,7 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                 if (prev_end < cur_start) {
                     const gap_node = try p.addNode(.{
                         .tag = .jsx_gap_node,
-                        .main_token = p.tok_i - 1,
+                        .main_token = @intCast(p.tok_i - 1),
                         .data = .{
                             .lhs = NodeIndex.fromInt(prev_end),
                             .rhs = NodeIndex.fromInt(cur_start),
@@ -351,7 +351,7 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                 if (prev_end < cur_start) {
                     const gap_node = try p.addNode(.{
                         .tag = .jsx_gap_node,
-                        .main_token = p.tok_i - 1,
+                        .main_token = @intCast(p.tok_i - 1),
                         .data = .{
                             .lhs = NodeIndex.fromInt(prev_end),
                             .rhs = NodeIndex.fromInt(cur_start),
@@ -423,7 +423,7 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                 }
             }
 
-            const first_tok = p.tok_i;
+            const first_tok: u32 = p.tokIdx();
             _ = p.advance(); // consume first token
 
             // Consume all subsequent text tokens (no `<`, `{`, eof).
@@ -439,7 +439,7 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                 .tag = .jsx_text_node,
                 .main_token = first_tok,
                 .data = .{
-                    .lhs = NodeIndex.fromInt(p.tok_i), // next token after text span
+                    .lhs = NodeIndex.fromInt(p.tokIdx()), // next token after text span
                     .rhs = if (leading_gap_start) |gs| NodeIndex.fromInt(gs) else .none,
                 },
             });
@@ -503,7 +503,7 @@ fn parseJsxAttribute(p: *Parser) Error!NodeIndex {
     }
 
     // Named attribute.
-    const name_tok = p.tok_i;
+    const name_tok: u32 = p.tokIdx();
     const name_node = try parseJsxAttributeName(p);
 
     // No value — boolean attribute: `<input disabled />`.
@@ -560,7 +560,7 @@ fn parseJsxAttribute(p: *Parser) Error!NodeIndex {
 /// by the caller, and we are looking at `>` (the closing angle bracket
 /// of the `<>` opening).
 fn parseJsxFragment(p: *Parser) Error!NodeIndex {
-    const open_tok = p.tok_i;
+    const open_tok: u32 = p.tokIdx();
     _ = try p.expect(.greater_than); // consume `>` to complete `<>`
 
     // Parse children.

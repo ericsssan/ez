@@ -30,7 +30,7 @@ const Error = parser_mod.Error;
 pub fn parseType(p: *Parser) Error!NodeIndex {
     // Type predicate: `x is Type` or `asserts x is Type`
     if (p.peek() == .identifier) {
-        const text = p.tokenText(p.tok_i);
+        const text = p.tokenText(p.tokIdx());
         if (std.mem.eql(u8, text, "asserts")) {
             // `asserts x` or `asserts x is Type`
             _ = p.advance(); // eat 'asserts'
@@ -45,15 +45,15 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
             // `asserts x` without `is` — just a void assertion
             return p.addNode(.{
                 .tag = .ts_type_annotation,
-                .main_token = p.tok_i,
+                .main_token = p.tokIdx(),
                 .data = .{ .lhs = .none, .rhs = .none },
             });
         }
         // Check for `x is Type` — only valid in return type position.
         // When not in return type, fall through to parse as normal type reference;
         // `is` then becomes an unexpected token (TS1005).
-        if (p.in_return_type and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
-            const param_tok = p.tok_i;
+        if (p.in_return_type and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tokIdx(), @intCast(p.tok_i + 1))) {
+            const param_tok: u32 = p.tokIdx();
             _ = p.advance(); // eat param name
             _ = p.advance(); // eat 'is'
             const type_node = try parseType(p);
@@ -71,8 +71,8 @@ pub fn parseType(p: *Parser) Error!NodeIndex {
     }
     // `this is Type` predicate — recognized everywhere but only valid in return type position.
     // Emit TS1228 if not in return type context.
-    if (p.peek() == .kw_this and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tok_i, p.tok_i + 1)) {
-        const param_tok = p.tok_i;
+    if (p.peek() == .kw_this and p.peekAt(1) == .kw_is and !p.hasNewLineBetween(p.tokIdx(), @intCast(p.tok_i + 1))) {
+        const param_tok: u32 = p.tokIdx();
         if (!p.in_return_type) {
             // TS1228: type predicate not in return type position
             try p.emitDiagnostic(p.currentSpan(), "A type predicate is only allowed in return type position for functions and methods", .{});
@@ -190,7 +190,7 @@ pub fn parseNonConditionalType(p: *Parser) Error!NodeIndex {
 
     return p.addNode(.{
         .tag = .ts_union_type,
-        .main_token = p.tok_i,
+        .main_token = p.tokIdx(),
         .data = .{ .lhs = NodeIndex.fromInt(range.start), .rhs = NodeIndex.fromInt(range.end) },
     });
 }
@@ -228,7 +228,7 @@ pub fn parseIntersectionType(p: *Parser) Error!NodeIndex {
 
     return p.addNode(.{
         .tag = .ts_intersection_type,
-        .main_token = p.tok_i,
+        .main_token = p.tokIdx(),
         .data = .{ .lhs = NodeIndex.fromInt(range.start), .rhs = NodeIndex.fromInt(range.end) },
     });
 }
@@ -392,7 +392,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         .kw_unique => {
             const tok = p.advance(); // consume `unique`
             // Expect `symbol` identifier to follow
-            if (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "symbol")) {
+            if (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tokIdx()), "symbol")) {
                 _ = p.advance(); // consume `symbol`
             }
             return p.addNode(.{
@@ -657,7 +657,7 @@ fn parseTypeReference(p: *Parser) Error!NodeIndex {
 /// Disambiguate between `(Type)` (parenthesized) and `(params) => ReturnType`
 /// (function type).
 fn parseParenthesizedOrFunctionType(p: *Parser) Error!NodeIndex {
-    const open_paren = p.tok_i;
+    const open_paren: u32 = p.tokIdx();
 
     // Use checkpoint for speculative parsing.
     const saved = p.checkpoint();
@@ -820,7 +820,7 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
             // Optional type annotation — wrap in ts_type_annotation for consistent parent chain
             var type_ann: NodeIndex = .none;
             if (p.peek() == .colon) {
-                const colon_tok = p.tok_i;
+                const colon_tok: u32 = p.tokIdx();
                 _ = p.advance();
                 const inner_type = try parseType(p);
                 type_ann = try p.addNode(.{
@@ -877,14 +877,14 @@ fn parseFunctionType(p: *Parser) Error!NodeIndex {
 
 /// Parse a single function type parameter: `name: Type` or `name?: Type`.
 fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
-    const param_tok = p.tok_i;
+    const param_tok: u32 = p.tokIdx();
 
     // Rest parameter: `...args: Type` — emit rest_element for correct parent chain
     const is_rest = p.eat(.ellipsis) != null;
 
     // Skip access modifiers: `public`, `private`, `protected`, `readonly`
     if (p.peek() == .identifier) {
-        const text = p.tokenText(p.tok_i);
+        const text = p.tokenText(p.tokIdx());
         if ((std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "private") or
             std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "readonly")) and
             (p.peekAt(1) == .identifier or p.peekAt(1) == .kw_this or p.peekAt(1) == .l_brace or p.peekAt(1) == .l_bracket))
@@ -899,7 +899,7 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
         _ = p.eat(.question);
         var type_ann: NodeIndex = .none;
         if (p.peek() == .colon) {
-            const colon_tok = p.tok_i;
+            const colon_tok: u32 = p.tokIdx();
             _ = p.advance();
             const type_node = try parseType(p);
             if (p.peek() == .equal) {
@@ -929,7 +929,7 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
 
     // Consume parameter name (identifier or keyword like `this`)
     if (p.peek() == .identifier or p.peek() == .kw_this or p.peek().isKeyword()) {
-        const name_tok = p.tok_i;
+        const name_tok: u32 = p.tokIdx();
         _ = p.advance();
 
         // Optional marker `?`; encode as lhs=root (0) vs lhs=none for adapter.
@@ -938,7 +938,7 @@ fn parseFunctionTypeParam(p: *Parser) Error!NodeIndex {
 
         // Expect `:` for type annotation
         if (p.peek() == .colon) {
-            const colon_tok = p.tok_i;
+            const colon_tok: u32 = p.tokIdx();
             _ = p.advance(); // consume `:`
             const type_node = try parseType(p);
             // Skip default value: `param: Type = value` (semantic error in TS, but parseable)
@@ -1306,7 +1306,7 @@ fn parseConstructorType(p: *Parser) Error!NodeIndex {
 
 /// Parse a template literal type: `` `prefix${Type}suffix` ``.
 fn parseTemplateLiteralType(p: *Parser) Error!NodeIndex {
-    const head_tok = p.tok_i;
+    const head_tok: u32 = p.tokIdx();
     const scratch_top = p.scratchLen();
     defer p.scratchPop(scratch_top);
 
@@ -1398,7 +1398,7 @@ fn parseTypeParameterListImpl(p: *Parser, allow_const: bool) Error!SubRange {
         }
         // `in` and `out` variance modifiers — `<in T>`, `<out T>`, `<in out T>`
         while ((p.peek() == .kw_in or (p.peek() == .identifier and
-            std.mem.eql(u8, p.tokenText(p.tok_i), "out"))) and
+            std.mem.eql(u8, p.tokenText(p.tokIdx()), "out"))) and
             p.peekAt(1) == .identifier)
         {
             _ = p.advance();
@@ -1613,7 +1613,7 @@ pub fn parseEnumDeclaration(p: *Parser) Error!NodeIndex {
     defer p.scratchPop(scratch_top);
 
     while (p.peek() != .r_brace and !p.isAtEnd()) {
-        const member_tok = p.tok_i;
+        const member_tok: u32 = p.tokIdx();
 
         // Member name can be identifier or string literal
         var member_name: NodeIndex = undefined;
@@ -1756,7 +1756,7 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
             });
             name_node = try p.addNode(.{
                 .tag = .member_expr,
-                .main_token = p.tok_i,
+                .main_token = p.tokIdx(),
                 .data = .{ .lhs = name_node, .rhs = sub },
             });
         }
@@ -1814,7 +1814,7 @@ fn parseNamespaceOrModule(p: *Parser, node_tag: Node.Tag) Error!NodeIndex {
 ///   - Construct signature:    `new (params): ReturnType;`
 ///   - Readonly property:      `readonly name: Type;`
 pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
-    const member_tok = p.tok_i;
+    const member_tok: u32 = p.tokIdx();
 
     // ── TS1071: 'static' modifier on index signature in interface ────
     // `static` is a keyword token, handled before the identifier-modifier path.
@@ -1838,7 +1838,7 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
     const is_override_kw = p.peek() == .kw_override and !p.isOnNewLineAt(1);
     const is_ident_mod = p.peek() == .identifier and !p.isOnNewLineAt(1);
     if (is_override_kw or is_ident_mod) {
-        const mod_text = p.tokenText(p.tok_i);
+        const mod_text = p.tokenText(p.tokIdx());
         const is_invalid_mod = is_override_kw or
             std.mem.eql(u8, mod_text, "public") or
             std.mem.eql(u8, mod_text, "private") or
@@ -2095,7 +2095,7 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
     // Colon and key type
     _ = try p.expect(.colon);
     // TS1268: index signature parameter type must be string, number, symbol, or a template literal type.
-    const key_type_tok = p.tok_i;
+    const key_type_tok: u32 = p.tokIdx();
     const key_type_first_tag = p.peek();
     const valid_key_type = switch (key_type_first_tag) {
         .identifier => blk: {

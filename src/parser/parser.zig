@@ -130,7 +130,7 @@ pub const Parser = struct {
     tok_starts_ptr: [*]u32,
     /// Cached pointer to token byte lengths.
     tok_lens_ptr: [*]const u32,
-    tok_i: u32,
+    tok_i: usize,
     /// Visible token count for the parser. In sequential (lexer-finalized)
     /// mode this equals `tokens.len`. In streaming (lex-parse pipeline) mode
     /// it is a snapshot of the producer's published count, refreshed via
@@ -645,9 +645,12 @@ pub const Parser = struct {
     /// is handled at lex time via tokenizeWithLanguage's built-in flags.
     pub inline fn syncYieldLex(_: *Parser) void {}
 
+    /// Current token index as TokenIndex (u32 cast from usize tok_i).
+    pub inline fn tokIdx(self: *const Parser) TokenIndex { return @intCast(self.tok_i); }
+
     /// Consume the current token and return its index.
     pub inline fn advance(self: *Parser) TokenIndex {
-        const result = self.tok_i;
+        const result: TokenIndex = @intCast(self.tok_i);
         // Hot path identical for iter + non-iter: peek already brought the
         // current token into the materialized buffer (iter mode) or it was
         // pre-tokenized (non-iter mode). Just bump tok_i.
@@ -768,7 +771,7 @@ pub const Parser = struct {
             @branchHint(.likely);
             return self.tags_ptr[idx];
         }
-        return self.peekAtSlow(idx);
+        return self.peekAtSlow(@intCast(idx));
     }
 
     fn peekAtSlow(self: *Parser, idx: u32) TokenTag {
@@ -1558,7 +1561,7 @@ pub const Parser = struct {
     pub fn synchronize(self: *Parser) void {
         while (!self.isAtEnd()) {
             // If we just consumed a semicolon, stop.
-            if (self.tok_i > 0 and self.tokenTagAt(self.tok_i - 1) == .semicolon) return;
+            if (self.tok_i > 0 and self.tokenTagAt(@intCast(self.tok_i - 1)) == .semicolon) return;
 
             switch (self.peek()) {
                 .semicolon => {
@@ -1596,7 +1599,7 @@ pub const Parser = struct {
     pub fn makeErrorNode(self: *Parser) !NodeIndex {
         return self.addNode(.{
             .tag = .error_node,
-            .main_token = self.tok_i,
+            .main_token = @intCast(self.tok_i),
             .data = .{ .lhs = .none, .rhs = .none },
         });
     }
@@ -1855,7 +1858,7 @@ pub const Parser = struct {
             @branchHint(.likely);
             // 'using x = ...' — Explicit Resource Management (ES2025)
             if (self.tok_lens_ptr[self.tok_i] == 5) {
-                const text = self.tokenText(self.tok_i);
+                const text = self.tokenText(@intCast(self.tok_i));
                 const next_using = self.peekAt(1);
                 if (std.mem.eql(u8, text, "using") and (next_using == .identifier or
                     next_using == .kw_await or next_using == .kw_yield or
@@ -1919,7 +1922,7 @@ pub const Parser = struct {
                     }
                     // `declare global { ... }` — global augmentation
                     if (self.is_ts and next == .identifier and
-                        std.mem.eql(u8, self.tokenText(self.tok_i + 1), "global"))
+                        std.mem.eql(u8, self.tokenText(@intCast(self.tok_i + 1)), "global"))
                     {
                         _ = self.advance(); // eat 'declare'
                         _ = self.advance(); // eat 'global'
@@ -1994,7 +1997,7 @@ pub const Parser = struct {
                     next == .kw_abstract or next == .kw_readonly or next == .kw_override or
                     next == .kw_implements or next == .kw_target or next == .kw_meta;
                 if (could_be_binding) {
-                    if (!self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                    if (!self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                         return self.parseVariableDeclaration();
                     }
                     // With newline: `let\n{...} =` is still a destructuring declaration
@@ -2066,7 +2069,7 @@ pub const Parser = struct {
             },
             .kw_async => {
                 // `async function` declaration
-                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                     return self.parseFunctionDeclaration();
                 }
                 // Otherwise fall through to expression statement
@@ -2075,7 +2078,7 @@ pub const Parser = struct {
             .kw_await => {
                 // `await using x = ...` — Explicit Resource Management (ES2025)
                 if (self.peekAt(1) == .identifier and
-                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using"))
+                    std.mem.eql(u8, self.tokenText(@intCast(self.tok_i + 1)), "using"))
                 {
                     const tok2 = self.peekAt(2);
                     if (tok2 == .identifier) {
@@ -2299,7 +2302,7 @@ pub const Parser = struct {
 
     /// Parse expression followed by semicolon.
     pub fn parseExpressionStatement(self: *Parser) Error!NodeIndex {
-        const main_tok = self.tok_i;
+        const main_tok: u32 = self.tokIdx();
         const expr = try self.parseExpression();
 
         // Check for CoverInitializedName ({a = 0}) in expression context.
@@ -2364,7 +2367,7 @@ pub const Parser = struct {
                 if (!self.in_strict) {
                     const next = self.peekAt(1);
                     const could_be_binding = (next == .identifier or next == .l_bracket or next == .l_brace or next.isKeyword());
-                    if (!could_be_binding or self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                    if (!could_be_binding or self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                         return self.parseStatement();
                     }
                 }
@@ -2385,14 +2388,14 @@ pub const Parser = struct {
             },
             .kw_async => {
                 // `async function` declarations are not allowed in single-statement context
-                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                     try self.emitDiagnostic(self.currentSpan(), "async function declaration not allowed in single-statement context", .{});
                     return error.ParseError;
                 }
                 return self.parseStatement();
             },
             .identifier => {
-                if (std.mem.eql(u8, self.tokenText(self.tok_i), "using")) {
+                if (std.mem.eql(u8, self.tokenText(self.tokIdx()), "using")) {
                     const next = self.peekAt(1);
                     if (next == .identifier or next == .kw_of or next == .kw_let or next == .kw_await) {
                         try self.emitDiagnostic(self.currentSpan(), "'using' declarations can only be declared inside a block", .{});
@@ -2403,7 +2406,7 @@ pub const Parser = struct {
             },
             .kw_await => {
                 if (self.peekAt(1) == .identifier and
-                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
+                    std.mem.eql(u8, self.tokenText(@intCast(self.tok_i + 1)), "using") and
                     self.peekAt(2) == .identifier)
                 {
                     try self.emitDiagnostic(self.currentSpan(), "'await using' declarations can only be declared inside a block", .{});
@@ -2428,7 +2431,7 @@ pub const Parser = struct {
                 if (!self.in_strict) {
                     const next = self.peekAt(1);
                     const could_be_binding = (next == .identifier or next == .l_bracket or next == .l_brace or next.isKeyword());
-                    if (!could_be_binding or self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                    if (!could_be_binding or self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                         return self.parseStatement();
                     }
                 }
@@ -2457,7 +2460,7 @@ pub const Parser = struct {
             },
             .kw_async => {
                 // `async function` declarations are not allowed in if-body
-                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                     try self.emitDiagnostic(self.currentSpan(), "async function declaration not allowed in single-statement context", .{});
                     return error.ParseError;
                 }
@@ -2473,7 +2476,7 @@ pub const Parser = struct {
                 return error.ParseError;
             },
             .identifier => {
-                if (std.mem.eql(u8, self.tokenText(self.tok_i), "using")) {
+                if (std.mem.eql(u8, self.tokenText(self.tokIdx()), "using")) {
                     const next = self.peekAt(1);
                     if (next == .identifier or next == .kw_of or next == .kw_let or next == .kw_await) {
                         try self.emitDiagnostic(self.currentSpan(), "'using' declarations can only be declared inside a block", .{});
@@ -2484,7 +2487,7 @@ pub const Parser = struct {
             },
             .kw_await => {
                 if (self.peekAt(1) == .identifier and
-                    std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
+                    std.mem.eql(u8, self.tokenText(@intCast(self.tok_i + 1)), "using") and
                     self.peekAt(2) == .identifier)
                 {
                     try self.emitDiagnostic(self.currentSpan(), "'await using' declarations can only be declared inside a block", .{});
@@ -2669,18 +2672,18 @@ pub const Parser = struct {
             // Check for `using x` or `await using x`
             // Also allow `using of = ...` (for (using of = null;;)) — `of` is a valid binding
             // identifier; the `of` lookahead restriction only applies to for-of/for-await-of.
-            if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "using") and
+            if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "using") and
                 (self.peekAt(1) == .identifier or self.peekAt(1) == .kw_let or
                  (self.peekAt(1) == .kw_of and self.peekAt(2) == .equal))) {
-                const main_tok = self.tok_i;
+                const main_tok: u32 = self.tokIdx();
                 _ = self.advance(); // eat 'using'
                 break :init_blk try self.parseUsingDeclaratorList(main_tok);
             }
             if (self.peek() == .kw_await and self.peekAt(1) == .identifier and
-                std.mem.eql(u8, self.tokenText(self.tok_i + 1), "using") and
+                std.mem.eql(u8, self.tokenText(@intCast(self.tok_i + 1)), "using") and
                 (self.peekAt(2) == .identifier or self.peekAt(2) == .kw_of or self.peekAt(2) == .kw_let))
             {
-                const main_tok = self.tok_i;
+                const main_tok: u32 = self.tokIdx();
                 _ = self.advance(); // eat 'await'
                 _ = self.advance(); // eat 'using'
                 break :init_blk try self.parseUsingDeclaratorList(main_tok);
@@ -2786,7 +2789,7 @@ pub const Parser = struct {
 
     /// Check for "use strict" directive at current position (without consuming tokens).
     fn checkDirectivePrologue(self: *Parser) void {
-        _ = self.checkDirectivePrologueAt(self.tok_i);
+        _ = self.checkDirectivePrologueAt(@intCast(self.tok_i));
     }
 
     /// Check for "use strict" starting at a specific token position.
@@ -3519,7 +3522,7 @@ pub const Parser = struct {
                     if (self.in_strict) break :blk true;
                     const next = self.peekAt(1);
                     const could_be_binding = (next == .identifier or next == .l_bracket or next == .l_brace or next.isKeyword());
-                    break :blk could_be_binding and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1);
+                    break :blk could_be_binding and !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1));
                 };
                 if (is_decl) {
                     try self.emitDiagnostic(self.currentSpan(), "lexical declaration not allowed after label", .{});
@@ -3808,7 +3811,7 @@ pub const Parser = struct {
 
     /// Parse `binding [: Type] = init`, with optional const-requires-initializer check.
     fn parseDeclaratorConst(self: *Parser, is_const: bool, is_ts_ambient: bool) Error!NodeIndex {
-        const main_tok = self.tok_i;
+        const main_tok: u32 = self.tokIdx();
         const binding = try self.parseBindingPattern();
 
         // TS definite assignment: `let x!;` or `let x!: Type;`
@@ -3883,7 +3886,7 @@ pub const Parser = struct {
     /// and generator (*).
     pub fn parseFunctionDeclaration(self: *Parser) Error!NodeIndex {
         var is_async = false;
-        var main_tok = self.tok_i;
+        var main_tok: u32 = self.tokIdx();
 
         // Check for `async function`
         if (self.peek() == .kw_async) {
@@ -3905,7 +3908,7 @@ pub const Parser = struct {
         const fn_name_tag = self.peek();
         const name: NodeIndex = if (fn_name_tag == .identifier) blk: {
             // Check strict-mode restrictions on function name
-            try self.checkStrictBinding(self.tok_i);
+            try self.checkStrictBinding(self.tokIdx());
             break :blk try self.parseIdentifier();
         } else if (fn_name_tag == .kw_yield and !self.in_generator and !self.in_strict and !self.is_ts) blk: {
             break :blk try self.parseIdentifier();
@@ -3982,7 +3985,7 @@ pub const Parser = struct {
         }
 
         const prev_strict = self.in_strict;
-        if (self.peek() == .l_brace) _ = self.checkDirectivePrologueAt(self.tok_i + 1);
+        if (self.peek() == .l_brace) _ = self.checkDirectivePrologueAt(@intCast(self.tok_i + 1));
         if (self.in_strict != prev_strict) self.syncYieldLex();
         defer { self.in_strict = prev_strict; self.syncYieldLex(); }
 
@@ -4096,7 +4099,7 @@ pub const Parser = struct {
         const name: NodeIndex = blk: {
             const next = self.peek();
             if (next == .identifier or next == .escaped_keyword) {
-                const tok_ix = self.tok_i;
+                const tok_ix: u32 = self.tokIdx();
                 const id = try self.parseIdentifier();
                 // Strict reserved (let/yield/static/etc) via escape — reject.
                 if (self.isStrictReservedWord(tok_ix)) {
@@ -4407,7 +4410,7 @@ pub const Parser = struct {
             const mod_tag = self.peek();
             // Load token text only for .identifier (public/private/protected);
             // keyword tags (abstract, override, readonly, declare, export) skip text entirely.
-            const text: []const u8 = if (mod_tag == .identifier) self.tokenText(self.tok_i) else "";
+            const text: []const u8 = if (mod_tag == .identifier) self.tokenText(self.tokIdx()) else "";
             const mod_kind: enum { access, abstract, override, readonly, declare, @"export", not_modifier } =
                 switch (mod_tag) {
                     .kw_abstract => .abstract,
@@ -4654,7 +4657,7 @@ pub const Parser = struct {
             const next = self.peekAt(1);
             if (next != .l_paren and next != .equal and next != .semicolon and
                 next != .colon and next != .r_brace and
-                !self.hasNewLineBetween(self.tok_i, self.tok_i + 1))
+                !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1)))
             {
                 is_static = true;
                 _ = self.advance(); // eat 'static'
@@ -4712,10 +4715,10 @@ pub const Parser = struct {
         // `accessor` field modifier (ES2024 auto-accessors). Only treat
         // `accessor` as modifier when followed by a member-name token on
         // the SAME line (no ASI). On newline, `accessor` is the field name.
-        if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "accessor") and
+        if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "accessor") and
             self.peekAt(1) != .l_paren and self.peekAt(1) != .equal and
             self.peekAt(1) != .semicolon and self.peekAt(1) != .r_brace and
-            !self.hasNewLineBetween(self.tok_i, self.tok_i + 1))
+            !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1)))
         {
             _ = self.advance(); // eat 'accessor'
         }
@@ -4725,7 +4728,7 @@ pub const Parser = struct {
         if (self.peek() == .kw_async and self.peekAt(1) != .l_paren and
             self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
             self.peekAt(1) != .r_brace and
-            !self.hasNewLineBetween(self.tok_i, self.tok_i + 1))
+            !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1)))
         {
             is_async_method = true;
             _ = self.advance(); // eat 'async'
@@ -4756,7 +4759,7 @@ pub const Parser = struct {
 
         // Computed key: `[expr]` — always allow `in` in computed keys
         if (self.peek() == .l_bracket) {
-            const computed_main_tok = self.tok_i; // '[' token — used as main_token for the method node
+            const computed_main_tok: u32 = self.tokIdx(); // '[' token — used as main_token for the method node
             _ = self.advance(); // eat '['
             const prev_allow_in = self.allow_in;
             self.allow_in = true;
@@ -4882,7 +4885,7 @@ pub const Parser = struct {
         }
 
         // Regular (non-computed) key
-        const main_tok = self.tok_i;
+        const main_tok: u32 = self.tokIdx();
         const key = try self.parseClassPropertyKey();
 
         // TS1206: Decorators are not valid on private class members (#name) with experimental decorators.
@@ -5166,7 +5169,7 @@ pub const Parser = struct {
 
             // 'use strict' directive in method body with non-simple params is SyntaxError.
             if (self.peek() == .l_brace) {
-                const peek_pos = self.tok_i + 1;
+                const peek_pos: u32 = @intCast(self.tok_i + 1);
                 if (peek_pos < self.tokens.len and self.tokenTagAt(peek_pos) == .string_literal) {
                     const ts_pos = self.tok_starts_ptr[peek_pos];
                     const text = self.getStringContent(ts_pos);
@@ -5341,7 +5344,7 @@ pub const Parser = struct {
                 const hash_tok = self.advance();
                 const hash_start = self.tok_starts_ptr[hash_tok];
                 if (self.peek() == .identifier or self.peek().isKeyword() or self.peek() == .escaped_keyword) {
-                    const ident_tok = self.tok_i;
+                    const ident_tok: u32 = self.tokIdx();
                     const ident_start = self.tok_starts_ptr[ident_tok];
                     if (ident_start != hash_start + 1) {
                         try self.emitError("No whitespace allowed between `#` and identifier");
@@ -5517,7 +5520,7 @@ pub const Parser = struct {
             while (self.peek() == .identifier or self.peek() == .kw_readonly or
                 self.peek() == .kw_override)
             {
-                const text = self.tokenText(self.tok_i);
+                const text = self.tokenText(self.tokIdx());
                 const is_access = std.mem.eql(u8, text, "public") or
                     std.mem.eql(u8, text, "private") or
                     std.mem.eql(u8, text, "protected");
@@ -5529,7 +5532,7 @@ pub const Parser = struct {
                 if (next == .colon or next == .comma or next == .r_paren or
                     next == .equal or next == .question)
                     break;
-                if (first_mod_tok == null) first_mod_tok = self.tok_i;
+                if (first_mod_tok == null) first_mod_tok = self.tokIdx();
                 // TS1029: check modifier ordering
                 const phase: u8 = if (is_access) 1 else if (is_override) 2 else 3;
                 if (phase < param_mod_last_phase) {
@@ -5559,7 +5562,7 @@ pub const Parser = struct {
             }
         }
 
-        const main_tok = self.tok_i;
+        const main_tok: u32 = self.tokIdx();
         const binding = try self.parseBindingPattern();
         if (!self.suppress_param_declares) try self.emitDeclaresFromPattern(binding, .parameter);
 
@@ -5648,7 +5651,7 @@ pub const Parser = struct {
                 // TS1202: `import X = require("mod")` not allowed when targeting ECMAScript modules.
                 // Only apply to the CommonJS-style `require(...)` form, not namespace aliases like `import X = A.B`.
                 if (self.is_module and self.in_strict and
-                    self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "require") and
+                    self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "require") and
                     self.peekAt(1) == .l_paren)
                 {
                     try self.emitDiagnostic(self.currentSpan(), "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"' instead", .{});
@@ -5656,7 +5659,7 @@ pub const Parser = struct {
                 // TS1005: `import X = module(...)` — old TS syntax; module cannot be called here.
                 // Only `require(...)` is valid as a call in import aliases.
                 if (self.peekAt(1) == .l_paren and (self.peek() == .kw_module or
-                    (self.peek() == .identifier and !std.mem.eql(u8, self.tokenText(self.tok_i), "require"))))
+                    (self.peek() == .identifier and !std.mem.eql(u8, self.tokenText(self.tokIdx()), "require"))))
                 {
                     try self.emitDiagnostic(self.currentSpan(), "';' expected", .{});
                 }
@@ -5705,8 +5708,8 @@ pub const Parser = struct {
 
         // `import defer * as ns from '...'` or `import source x from '...'`
         if (self.peek() == .identifier and
-            (std.mem.eql(u8, self.tokenText(self.tok_i), "defer") or
-            std.mem.eql(u8, self.tokenText(self.tok_i), "source")) and
+            (std.mem.eql(u8, self.tokenText(self.tokIdx()), "defer") or
+            std.mem.eql(u8, self.tokenText(self.tokIdx()), "source")) and
             (self.peekAt(1) == .asterisk or self.peekAt(1) == .identifier))
         {
             _ = self.advance(); // skip modifier (defer/source)
@@ -5723,7 +5726,7 @@ pub const Parser = struct {
 
         // Default import: `import x from '...'`
         if (self.peek() == .identifier) {
-            const local_tok = self.tok_i;
+            const local_tok: u32 = self.tokIdx();
             _ = self.advance();
 
             // Create a real identifier node for the local binding.
@@ -5814,7 +5817,7 @@ pub const Parser = struct {
                     specifier_is_type = true;
                 }
             }
-            const imported_tok = self.tok_i;
+            const imported_tok: u32 = self.tokIdx();
             const imported_is_string = self.peek() == .string_literal;
             if (imported_is_string) {
                 try self.validateModuleExportName(imported_tok);
@@ -6007,7 +6010,7 @@ pub const Parser = struct {
                 });
             },
             .kw_async => {
-                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                     const decl = try self.parseFunctionDeclaration();
                     return self.addNode(.{
                         .tag = .export_named,
@@ -6184,7 +6187,7 @@ pub const Parser = struct {
                 });
             },
             .kw_async => {
-                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tok_i, self.tok_i + 1)) {
+                if (self.peekAt(1) == .kw_function and !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1))) {
                     self.in_export_default = true;
                     const decl = try self.parseFunctionDeclaration();
                     self.in_export_default = false;
@@ -6268,7 +6271,7 @@ pub const Parser = struct {
                 }
             }
 
-            const local_tok = self.tok_i;
+            const local_tok: u32 = self.tokIdx();
             const local_is_string = self.peek() == .string_literal;
             if (local_is_string) {
                 try self.validateModuleExportName(local_tok);
@@ -6281,7 +6284,7 @@ pub const Parser = struct {
             var exported_tok = local_tok;
             var exported_is_string = local_is_string;
             if (self.eat(.kw_as) != null) {
-                exported_tok = self.tok_i;
+                exported_tok = self.tokIdx();
                 exported_is_string = self.peek() == .string_literal;
                 if (exported_is_string) {
                     try self.validateModuleExportName(exported_tok);
@@ -6427,7 +6430,7 @@ pub const Parser = struct {
         // Optional `as ns` or `as "string"` — store as exported node in rhs
         var exported_node: NodeIndex = .none;
         if (self.eat(.kw_as) != null) {
-            const name_tok = self.tok_i;
+            const name_tok: u32 = self.tokIdx();
             if (self.peek() == .string_literal) {
                 try self.validateModuleExportName(name_tok);
                 _ = self.advance();
@@ -6469,7 +6472,7 @@ pub const Parser = struct {
 
     /// Parse `using x = expr` or `await using x = expr` (ES2025 Explicit Resource Management).
     fn parseUsingDeclaration(self: *Parser, is_await: bool) Error!NodeIndex {
-        const main_tok = self.tok_i;
+        const main_tok: u32 = self.tokIdx();
         // Spec: in Script goal, UsingDeclaration must be contained in Block,
         // ForStatement, ForInOfStatement, FunctionBody, ClassStaticBlock, etc.
         // Note: TypeScript allows `using` at the top level even in script mode (non-module),
@@ -6498,7 +6501,7 @@ pub const Parser = struct {
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         while (true) {
-            const decl_tok = self.tok_i;
+            const decl_tok: u32 = self.tokIdx();
             const binding = try self.parseBindingPattern();
             // Using declarations require simple identifier binding, not destructuring.
             if (binding != .none) {
@@ -6913,8 +6916,8 @@ pub const Parser = struct {
     fn skipImportAttributes(self: *Parser) !void {
         // `with` or `assert` keyword followed by `{`
         if ((self.peek() == .kw_with or
-            (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "with")) or
-            (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tok_i), "assert"))) and
+            (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "with")) or
+            (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "assert"))) and
             self.peekAt(1) == .l_brace)
         {
             _ = self.advance(); // eat 'with' / 'assert'
@@ -6925,7 +6928,7 @@ pub const Parser = struct {
             var key_offsets: [32]struct { start: u32, len: u32 } = undefined;
             var keys_len: usize = 0;
             while (self.peek() != .r_brace and !self.isAtEnd()) {
-                const key_tok = self.tok_i;
+                const key_tok: u32 = self.tokIdx();
                 const key_tag = self.peek();
                 const key_span_start = self.tok_starts_ptr[key_tok];
                 if (key_tag == .string_literal or key_tag == .identifier or key_tag.isKeyword()) {
@@ -6987,8 +6990,8 @@ pub const Parser = struct {
     pub fn parseBindingPattern(self: *Parser) Error!NodeIndex {
         switch (self.peek()) {
             .identifier => {
-                try self.checkStrictBinding(self.tok_i);
-                if (self.in_lexical_decl and std.mem.eql(u8, self.tokenText(self.tok_i), "let")) {
+                try self.checkStrictBinding(self.tokIdx());
+                if (self.in_lexical_decl and std.mem.eql(u8, self.tokenText(self.tokIdx()), "let")) {
                     try self.emitDiagnostic(self.currentSpan(), "'let' is not allowed as a variable name in lexical declarations", .{});
                     return error.ParseError;
                 }
@@ -7107,7 +7110,7 @@ pub const Parser = struct {
                         continue;
                     }
 
-                    const key_tok = self.tok_i;
+                    const key_tok: u32 = self.tokIdx();
 
                     // Computed property: [expr]: binding
                     if (self.peek() == .l_bracket) {
@@ -7258,7 +7261,7 @@ pub const Parser = struct {
                 // In TS mode, `interface` is always reserved (TypeScript keyword).
                 // In JS strict mode, `implements`/`interface` are future reserved words.
                 if (self.is_ts or self.in_strict) {
-                    try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(self.tok_i)});
+                    try self.emitDiagnostic(self.currentSpan(), "'{s}' is not allowed as a binding name in strict mode", .{self.tokenText(self.tokIdx())});
                     return error.ParseError;
                 }
                 return self.parseIdentifier();
@@ -7292,7 +7295,7 @@ pub const Parser = struct {
 
     /// Parse a binding element: binding pattern with optional default.
     pub fn parseBindingElement(self: *Parser) Error!NodeIndex {
-        const main_tok = self.tok_i;
+        const main_tok: u32 = self.tokIdx();
         const binding = try self.parseBindingPattern();
 
         if (self.eat(.equal) != null) {
@@ -7553,7 +7556,7 @@ pub const Parser = struct {
     /// Scans from tok_i+1 (`{`) forward, counting braces to find the matching `}`,
     /// then checks if `=` follows.
     fn looksLikeLetDestructuring(self: *const Parser) bool {
-        var i = self.tok_i + 1; // should be `{`
+        var i: u32 = @intCast(self.tok_i + 1); // should be `{`
         if (i >= self.parsed_len or self.tokenTagAt(i) != .l_brace) return false;
         i += 1;
         var depth: u32 = 1;
@@ -7745,7 +7748,7 @@ pub const Parser = struct {
 
     /// Check if there is a newline between tok_i and tok_i + offset.
     pub fn isOnNewLineAt(self: *const Parser, offset: u32) bool {
-        return self.hasNewLineBetween(self.tok_i, self.tok_i + offset);
+        return self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + offset));
     }
 
     /// Put a token back by rewinding tok_i to the given position.
@@ -7850,7 +7853,7 @@ pub const Parser = struct {
 
     /// Checkpoint: save current parser position for speculative parsing.
     pub fn checkpoint(self: *const Parser) u32 {
-        return self.tok_i;
+        return self.tokIdx();
     }
 
     /// Restore parser position from a checkpoint.

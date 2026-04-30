@@ -571,12 +571,12 @@ fn parseYieldExpression(p: *Parser) Error!NodeIndex {
     // emitted as .slash or .slash_equal. In generator context, re-lex as regex.
     const next = p.peek();
     if (next == .slash or next == .slash_equal) blk: {
-        const slash_start: u32 = p.tokenStart(p.tok_i);
+        const slash_start: u32 = p.tokenStart(p.tokIdx());
         if (slash_start >= p.source.len) break :blk;
         const regex_end = LexHelpers.regexEnd(p.source, slash_start);
         if (regex_end <= slash_start + 1) break :blk;
-        const slash_tok = p.tok_i;
-        while (!p.isAtEnd() and p.tokenStart(p.tok_i) < regex_end) _ = p.advance();
+        const slash_tok: u32 = p.tokIdx();
+        while (!p.isAtEnd() and p.tokenStart(p.tokIdx()) < regex_end) _ = p.advance();
         const operand = try p.addNode(.{
             .tag = .regex_literal,
             .main_token = slash_tok,
@@ -2482,7 +2482,7 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
 // the regex span.
 
 fn rescanSlashAsRegex(p: *Parser) Error!NodeIndex {
-    const slash_tok = p.tok_i;
+    const slash_tok: u32 = p.tokIdx();
     const start = p.tokenStart(slash_tok);
     const source = p.source;
 
@@ -2523,7 +2523,7 @@ fn rescanSlashAsRegex(p: *Parser) Error!NodeIndex {
                 } else break;
             }
             // Advance tok_i past all tokens within the regex span
-            while (p.tok_i < p.tokens.len - 1 and p.tokenStart(p.tok_i) < idx) {
+            while (p.tok_i < p.tokens.len - 1 and p.tokenStart(p.tokIdx()) < idx) {
                 p.tok_i += 1;
             }
             // Validate flags: only g i m s u y d v are valid; no duplicates; u/v exclusive
@@ -2767,7 +2767,7 @@ fn parseAsyncFunctionExpression(p: *Parser, async_tok: TokenIndex) Error!NodeInd
 
     // Optional name
     const name_node: NodeIndex = if (p.peek() == .identifier) blk: {
-        try p.checkStrictBinding(p.tok_i);
+        try p.checkStrictBinding(p.tokIdx());
         const name_tok = p.advance();
         break :blk try p.addNode(.{
             .tag = .identifier,
@@ -3559,8 +3559,8 @@ fn parseArrayLiteral(p: *Parser) Error!NodeIndex {
         const last_elem = NodeIndex.fromInt(elements[elements.len - 1]);
         if (last_elem != .none and p.node_tags_ptr[last_elem.toInt()] == .spread_element) {
             // Check if there was a trailing comma (consumed at line above)
-            if (p.tok_i > 0 and p.tokenTagAt(p.tok_i - 1) == .r_bracket and
-                p.tok_i > 1 and p.tokenTagAt(p.tok_i - 2) == .comma)
+            if (p.tok_i > 0 and p.tokenTagAt(@intCast(p.tok_i - 1)) == .r_bracket and
+                p.tok_i > 1 and p.tokenTagAt(@intCast(p.tok_i - 2)) == .comma)
             {
                 // Push a .none sentinel so validatePattern can detect the trailing comma
                 try p.scratchPush(NodeIndex.none);
@@ -3731,8 +3731,8 @@ fn parseObjectLiteral(p: *Parser) Error!NodeIndex {
     if (props.len > 0) {
         const last_prop = NodeIndex.fromInt(props[props.len - 1]);
         if (last_prop != .none and p.node_tags_ptr[last_prop.toInt()] == .spread_element) {
-            if (p.tok_i > 1 and p.tokenTagAt(p.tok_i - 1) == .r_brace and
-                p.tokenTagAt(p.tok_i - 2) == .comma)
+            if (p.tok_i > 1 and p.tokenTagAt(@intCast(p.tok_i - 1)) == .r_brace and
+                p.tokenTagAt(@intCast(p.tok_i - 2)) == .comma)
             {
                 try p.scratchPush(NodeIndex.none);
             }
@@ -3818,7 +3818,7 @@ fn parseGetterSetter(p: *Parser) Error!NodeIndex {
     const accessor_tag = p.tokenTag(accessor_tok);
 
     const is_computed = p.peek() == .l_bracket;
-    const computed_open = p.tok_i; // save `[` token index for computed case
+    const computed_open: u32 = p.tokIdx(); // save `[` token index for computed case
     const key = try parsePropertyName(p);
 
     // Set method flags BEFORE parsing params so super works in setter param defaults.
@@ -3982,7 +3982,7 @@ fn parseAsyncMethod(p: *Parser) Error!NodeIndex {
     if (is_generator) _ = p.advance();
 
     const is_computed = p.peek() == .l_bracket;
-    const computed_open = p.tok_i; // save `[` token index for computed case
+    const computed_open: u32 = p.tokIdx(); // save `[` token index for computed case
     const key = try parsePropertyName(p);
 
     // Set flags BEFORE parsing params
@@ -4032,7 +4032,7 @@ fn parseGeneratorMethod(p: *Parser) Error!NodeIndex {
     const star_tok = p.advance(); // consume `*`
 
     const is_computed = p.peek() == .l_bracket;
-    const computed_open = p.tok_i; // save `[` token index for computed case
+    const computed_open: u32 = p.tokIdx(); // save `[` token index for computed case
     const key = try parsePropertyName(p);
 
     // Set flags BEFORE parsing params
@@ -4171,7 +4171,7 @@ fn parseComputedProperty(p: *Parser) Error!NodeIndex {
 }
 
 fn parseRegularProperty(p: *Parser) Error!NodeIndex {
-    const key_tok = p.tok_i;
+    const key_tok: u32 = p.tokIdx();
     const key = try parsePropertyName(p);
 
     // TS generic method: name<T>() { }
@@ -4395,7 +4395,7 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
         (p.peek() == .kw_yield and !is_generator and !p.in_strict) or
         (p.peek() == .kw_await and !p.is_module);
     const name_node: NodeIndex = if (can_be_name) blk: {
-        try p.checkStrictBinding(p.tok_i);
+        try p.checkStrictBinding(p.tokIdx());
         const name_tok = p.advance();
         break :blk try p.addNode(.{
             .tag = .identifier,
@@ -4507,7 +4507,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     // by something other than `{`, `<`, `extends`, or `implements` — in that case they
     // are class-member modifiers, not the name.
     const peek_is_ts_modifier = p.is_ts and blk: {
-        const txt = p.tokenText(p.tok_i);
+        const txt = p.tokenText(p.tokIdx());
         break :blk std.mem.eql(u8, txt, "private") or std.mem.eql(u8, txt, "protected") or
             std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "abstract") or
             std.mem.eql(u8, txt, "readonly") or std.mem.eql(u8, txt, "override") or
@@ -4711,7 +4711,7 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
 
     // `static` prefix — only consume as modifier when next token indicates modifier usage
     var is_static = false;
-    var main_tok = p.tok_i;
+    var main_tok: u32 = p.tokIdx();
 
     if (p.peek() == .kw_static) {
         const next = p.peekAt(1);
@@ -4745,7 +4745,7 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
             p.peek() == .kw_readonly or p.peek() == .kw_override or
             p.peek() == .kw_declare or p.peek() == .kw_export)
         {
-            const text = p.tokenText(p.tok_i);
+            const text = p.tokenText(p.tokIdx());
             const is_mod = std.mem.eql(u8, text, "private") or
                 std.mem.eql(u8, text, "protected") or
                 std.mem.eql(u8, text, "public") or
@@ -4788,7 +4788,7 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
         while (p.peek() == .identifier or p.peek() == .kw_abstract or
             p.peek() == .kw_readonly or p.peek() == .kw_override)
         {
-            const text = p.tokenText(p.tok_i);
+            const text = p.tokenText(p.tokIdx());
             const is_mod = std.mem.eql(u8, text, "abstract") or
                 std.mem.eql(u8, text, "override") or
                 std.mem.eql(u8, text, "readonly");
@@ -4802,7 +4802,7 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     }
 
     // `accessor` field modifier (ES2024)
-    if (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "accessor") and
+    if (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tokIdx()), "accessor") and
         isPropertyNameStart(p.peekAt(1)))
     {
         _ = p.advance(); // eat 'accessor'
@@ -4840,7 +4840,7 @@ fn parseClassMember(p: *Parser) Error!NodeIndex {
     }
 
     // Regular member (method, field, or constructor)
-    main_tok = p.tok_i;
+    main_tok = p.tokIdx();
     const key = try parsePropertyName(p);
 
     // TS type parameters on method: method<T>()
@@ -4978,7 +4978,7 @@ fn parseNewExpression(p: *Parser) Error!NodeIndex {
     // new.target
     if (p.peek() == .dot) {
         _ = p.advance(); // consume `.`
-        if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "target"))) {
+        if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tokIdx()), "target"))) {
             const target_tok = p.advance(); // consume `target`
             if (!p.new_target_allowed and !p.in_class and !p.is_ts) {
                 try p.emitError("'new.target' is only valid inside functions or class members");
@@ -5195,7 +5195,7 @@ fn parseTemplateLiteralTagged(p: *Parser) Error!NodeIndex {
 }
 
 fn parseTemplateLiteralInner(p: *Parser, validate_escapes: bool) Error!NodeIndex {
-    const head_tok = p.tok_i;
+    const head_tok: u32 = p.tokIdx();
 
     // No-substitution template: `text`
     if (p.peek() == .template_no_sub) {
@@ -5330,7 +5330,7 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
     if (p.peek() == .dot) {
         _ = p.advance(); // consume `.`
         if (p.peek() == .kw_meta or
-            (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tok_i), "meta")))
+            (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tokIdx()), "meta")))
         {
             const meta_tok = p.advance(); // consume `meta`
             if (!p.is_module and !p.is_ts) {
@@ -5354,7 +5354,7 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
         }
         // import.source(...) and import.defer(...) are valid dynamic import variants
         if (p.peek() == .identifier) {
-            const prop_text = p.tokenText(p.tok_i);
+            const prop_text = p.tokenText(p.tokIdx());
             if (std.mem.eql(u8, prop_text, "source") or std.mem.eql(u8, prop_text, "defer")) {
                 _ = p.advance(); // consume property name
                 // These require a call expression: import.source(specifier)
@@ -5634,7 +5634,7 @@ fn tokenToBinaryTag(tag: TokenTag) Node.Tag {
 
 fn parseAssignment(p: *Parser, left: NodeIndex) Error!NodeIndex {
     const left_tag = p.node_tags_ptr[left.toInt()];
-    const op_tag = p.tokenTag(p.tok_i);
+    const op_tag = p.tokenTag(p.tokIdx());
 
     // Array/object destructuring only valid with plain `=`
     if (op_tag != .equal) {
@@ -5796,7 +5796,7 @@ fn parseConditionalTail(p: *Parser, condition: NodeIndex) Error!NodeIndex {
 // ── Sequence expression (comma) ──────────────────────────────────
 
 fn parseSequenceExpression(p: *Parser, first: NodeIndex) Error!NodeIndex {
-    const comma_tok = p.tok_i;
+    const comma_tok: u32 = p.tokIdx();
     const scratch_top = p.scratchLen();
     try p.scratchPush(first);
 
@@ -5835,7 +5835,7 @@ fn parseCallExpression(p: *Parser, callee: NodeIndex) Error!NodeIndex {
             }
         }
     }
-    const open_paren = p.tok_i;
+    const open_paren: u32 = p.tokIdx();
     const args_range = try parseArgumentList(p);
     const range_extra = try p.addExtra(SubRange, .{
         .start = args_range.start,
@@ -5920,7 +5920,7 @@ fn parseMemberAccess(p: *Parser, object: NodeIndex) Error!NodeIndex {
         break :blk hash;
     } else blk: {
         try p.emitError("Expected property name after '.'");
-        break :blk p.tok_i;
+        break :blk p.tokIdx();
     };
 
     const prop_node = try p.addNode(.{
@@ -6013,7 +6013,7 @@ fn parseOptionalChain(p: *Parser, object: NodeIndex) Error!NodeIndex {
                 p.advance()
             else blk: {
                 try p.emitError("Expected property name after '?.'");
-                break :blk p.tok_i;
+                break :blk p.tokIdx();
             };
             const prop_node = try p.addNode(.{
                 .tag = .property_ident,
@@ -6048,7 +6048,7 @@ fn parseTaggedTemplate(p: *Parser, tag_expr: NodeIndex) Error!NodeIndex {
             return error.ParseError;
         }
     }
-    const main_tok = p.tok_i;
+    const main_tok: u32 = p.tokIdx();
     const tmpl = try parseTemplateLiteralTagged(p);
     return p.addNode(.{
         .tag = .tagged_template,
@@ -6151,7 +6151,7 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
         while (p.peek() == .identifier or p.peek() == .kw_readonly or
             p.peek() == .kw_override or p.peek() == .kw_declare)
         {
-            const text = p.tokenText(p.tok_i);
+            const text = p.tokenText(p.tokIdx());
             const is_mod = std.mem.eql(u8, text, "public") or
                 std.mem.eql(u8, text, "private") or
                 std.mem.eql(u8, text, "protected") or
@@ -6162,7 +6162,7 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
             if (next == .colon or next == .comma or next == .r_paren or
                 next == .equal or next == .question)
                 break;
-            if (first_mod_tok == null) first_mod_tok = p.tok_i;
+            if (first_mod_tok == null) first_mod_tok = p.tokIdx();
             _ = p.advance();
         }
         if (first_mod_tok != null and p.tok_i > saved_tok) {
@@ -6242,7 +6242,7 @@ fn parseBindingPattern(p: *Parser) Error!NodeIndex {
         .identifier => blk: {
             // Strict mode / TypeScript: eval and arguments cannot be binding names.
             if (p.in_strict or p.is_ts) {
-                const text = p.tokenText(p.tok_i);
+                const text = p.tokenText(p.tokIdx());
                 if (std.mem.eql(u8, text, "eval") or std.mem.eql(u8, text, "arguments")) {
                     try p.emitError("cannot use eval or arguments as a binding name in strict mode");
                     return p.makeErrorNode();
@@ -6352,7 +6352,7 @@ fn parseObjectBindingPattern(p: *Parser) Error!NodeIndex {
 }
 
 fn parseBindingProperty(p: *Parser) Error!NodeIndex {
-    const key_tok = p.tok_i;
+    const key_tok: u32 = p.tokIdx();
 
     // Computed key: [expr]: pattern
     if (p.peek() == .l_bracket) {
@@ -6715,7 +6715,7 @@ fn parseTsTypeAssertion(p: *Parser) Error!NodeIndex {
     // vs type assertion: <Type>expr
     // Heuristic: speculatively parse as type parameters; if followed by `(`, it's a generic arrow.
     {
-        const saved_tok = p.tok_i;
+        const saved_tok: u32 = p.tokIdx();
         const saved_diag = p.diagnostics.items.len;
         const saved_nodes = p.nodes.len;
         const saved_extra = p.extra_data.items.len;
@@ -6989,7 +6989,7 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
             if (after_q == .colon or after_q == .r_paren or after_q == .comma) return true;
         }
         // Check for TS modifier followed by another identifier
-        const text = p.tokenText(p.tok_i);
+        const text = p.tokenText(p.tokIdx());
         if ((std.mem.eql(u8, text, "public") or std.mem.eql(u8, text, "private") or
             std.mem.eql(u8, text, "protected") or std.mem.eql(u8, text, "readonly")) and
             (next == .identifier or next == .l_brace or next == .l_bracket))
@@ -7036,7 +7036,7 @@ fn looksLikeTsArrowParams(p: *Parser) bool {
                     if (after_q == .colon or after_q == .r_paren or after_q == .comma) return true;
                 }
                 // Check for modifier keywords
-                const txt = p.tokenText(p.tok_i + i);
+                const txt = p.tokenText(@intCast(p.tok_i + i));
                 if ((std.mem.eql(u8, txt, "public") or std.mem.eql(u8, txt, "private") or
                     std.mem.eql(u8, txt, "protected") or std.mem.eql(u8, txt, "readonly")) and
                     (nt == .identifier or nt == .l_brace or nt == .l_bracket))
