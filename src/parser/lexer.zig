@@ -374,6 +374,13 @@ const KW_FC_MASK: [11]u32 = m: {
     break :m m;
 };
 
+/// True when the previous token is a property-access operator.
+/// After `.` or `?.`, the next identifier is always a property name —
+/// keyword lookup is semantically unnecessary and can be skipped.
+inline fn isPropertyAccess(tag: Tag) bool {
+    return tag == .dot or tag == .question_dot;
+}
+
 pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
     const len = text.len;
     if (len < 2 or len > 10) return .identifier;
@@ -528,6 +535,170 @@ pub inline fn keywordLookup(text: []const u8, ts: bool) Tag {
     };
 }
 
+/// Keyword dispatch given a pre-loaded 8-byte chunk from ptr[0..8].
+/// Derives fc from low byte of raw8, using shifts for ptr[1]/ptr[2] disambiguation
+/// so the entire hot path (len 2–8) runs from registers after a single load.
+/// ptr is only accessed for len=9 (ptr[8]) and len=10 (ptr[8], ptr[9]).
+inline fn keywordLookupFromRaw(raw8: u64, ptr: [*]const u8, len: usize, ts: bool) Tag {
+    if (len < 2 or len > 10) return .identifier;
+    const fc: u8 = @truncate(raw8);
+    if (fc < 'a' or fc > 'z') return .identifier;
+    if ((KW_FC_MASK[len] >> @as(u5, @intCast(fc - 'a'))) & 1 == 0) return .identifier;
+    const c2: u8 = @truncate(raw8 >> 8);   // ptr[1] — from register, no load
+    const c3: u8 = @truncate(raw8 >> 16);  // ptr[2] — from register, no load
+    return switch (len) {
+        2 => {
+            const v = raw8 & 0xFFFF;
+            return switch (fc) {
+                'a' => if (v == comptime pK("as")) Tag.kw_as else Tag.identifier,
+                'd' => if (v == comptime pK("do")) Tag.kw_do else Tag.identifier,
+                'i' => if (v == comptime pK("in")) Tag.kw_in
+                        else if (v == comptime pK("if")) Tag.kw_if
+                        else if (ts and v == comptime pK("is")) Tag.kw_is
+                        else Tag.identifier,
+                'o' => if (v == comptime pK("of")) Tag.kw_of else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        3 => {
+            const v = raw8 & 0xFFFFFF;
+            return switch (fc) {
+                'v' => if (v == comptime pK("var")) Tag.kw_var else Tag.identifier,
+                'l' => if (v == comptime pK("let")) Tag.kw_let else Tag.identifier,
+                'f' => if (v == comptime pK("for")) Tag.kw_for else Tag.identifier,
+                'n' => if (v == comptime pK("new")) Tag.kw_new else Tag.identifier,
+                't' => if (v == comptime pK("try")) Tag.kw_try else Tag.identifier,
+                'g' => if (v == comptime pK("get")) Tag.kw_get else Tag.identifier,
+                's' => if (v == comptime pK("set")) Tag.kw_set else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        4 => {
+            const v = raw8 & 0xFFFFFFFF;
+            return switch (fc) {
+                'c' => if (v == comptime pK("case")) Tag.kw_case else Tag.identifier,
+                'e' => switch (c2) {
+                    'l' => if (v == comptime pK("else")) Tag.kw_else else Tag.identifier,
+                    'n' => if (v == comptime pK("enum")) Tag.kw_enum else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'f' => if (v == comptime pK("from")) Tag.kw_from else Tag.identifier,
+                'n' => if (v == comptime pK("null")) Tag.kw_null else Tag.identifier,
+                't' => switch (c2) {
+                    'h' => if (v == comptime pK("this")) Tag.kw_this else Tag.identifier,
+                    'r' => if (v == comptime pK("true")) Tag.kw_true else Tag.identifier,
+                    'y' => if (ts and v == comptime pK("type")) Tag.kw_type else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'v' => if (v == comptime pK("void")) Tag.kw_void else Tag.identifier,
+                'w' => if (v == comptime pK("with")) Tag.kw_with else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        5 => {
+            const v = raw8 & 0x000000FFFFFFFFFF;
+            return switch (fc) {
+                'a' => switch (c2) {
+                    's' => if (v == comptime pK("async")) Tag.kw_async else Tag.identifier,
+                    'w' => if (v == comptime pK("await")) Tag.kw_await else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'b' => if (v == comptime pK("break")) Tag.kw_break else Tag.identifier,
+                'c' => switch (c2) {
+                    'a' => if (v == comptime pK("catch")) Tag.kw_catch else Tag.identifier,
+                    'l' => if (v == comptime pK("class")) Tag.kw_class else Tag.identifier,
+                    'o' => if (v == comptime pK("const")) Tag.kw_const else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'f' => if (v == comptime pK("false")) Tag.kw_false else Tag.identifier,
+                'i' => if (ts and v == comptime pK("infer")) Tag.kw_infer else Tag.identifier,
+                'k' => if (ts and v == comptime pK("keyof")) Tag.kw_keyof else Tag.identifier,
+                's' => if (v == comptime pK("super")) Tag.kw_super else Tag.identifier,
+                't' => if (v == comptime pK("throw")) Tag.kw_throw else Tag.identifier,
+                'w' => if (v == comptime pK("while")) Tag.kw_while else Tag.identifier,
+                'y' => if (v == comptime pK("yield")) Tag.kw_yield else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        6 => {
+            const v = raw8 & 0x0000FFFFFFFFFFFF;
+            return switch (fc) {
+                'd' => if (v == comptime pK("delete")) Tag.kw_delete else Tag.identifier,
+                'e' => if (v == comptime pK("export")) Tag.kw_export else Tag.identifier,
+                'i' => if (v == comptime pK("import")) Tag.kw_import else Tag.identifier,
+                'm' => if (ts and v == comptime pK("module")) Tag.kw_module else Tag.identifier,
+                'r' => if (v == comptime pK("return")) Tag.kw_return else Tag.identifier,
+                's' => switch (c2) {
+                    'w' => if (v == comptime pK("switch")) Tag.kw_switch else Tag.identifier,
+                    't' => if (v == comptime pK("static")) Tag.kw_static else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                't' => if (v == comptime pK("typeof")) Tag.kw_typeof else Tag.identifier,
+                'u' => if (ts and v == comptime pK("unique")) Tag.kw_unique else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        7 => {
+            const v = raw8 & 0x00FFFFFFFFFFFFFF;
+            return switch (fc) {
+                'a' => if (ts and v == comptime pK("asserts")) Tag.kw_asserts else Tag.identifier,
+                'd' => switch (c3) {  // "default"[2]='f', "declare"[2]='c'
+                    'f' => if (v == comptime pK("default")) Tag.kw_default else Tag.identifier,
+                    'c' => if (ts and v == comptime pK("declare")) Tag.kw_declare else Tag.identifier,
+                    else => Tag.identifier,
+                },
+                'e' => if (v == comptime pK("extends")) Tag.kw_extends else Tag.identifier,
+                'f' => if (v == comptime pK("finally")) Tag.kw_finally else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        8 => {
+            const v = raw8;
+            return switch (fc) {
+                'a' => if (ts and v == comptime pK("abstract")) Tag.kw_abstract else Tag.identifier,
+                'c' => if (v == comptime pK("continue")) Tag.kw_continue else Tag.identifier,
+                'd' => if (v == comptime pK("debugger")) Tag.kw_debugger else Tag.identifier,
+                'f' => if (v == comptime pK("function")) Tag.kw_function else Tag.identifier,
+                'o' => if (ts and v == comptime pK("override")) Tag.kw_override else Tag.identifier,
+                'r' => if (ts and v == comptime pK("readonly")) Tag.kw_readonly else Tag.identifier,
+                else => Tag.identifier,
+            };
+        },
+        9 => blk: {
+            const v8 = raw8;
+            const c9 = ptr[8];
+            const KW9_SATISFIE: u64 = pK("satisfie");
+            const KW9_NAMESPAC: u64 = pK("namespac");
+            const KW9_INTERFAC: u64 = pK("interfac");
+            if (ts) {
+                if (v8 == KW9_SATISFIE and c9 == 's') break :blk Tag.kw_satisfies;
+                if (v8 == KW9_NAMESPAC and c9 == 'e') break :blk Tag.kw_namespace;
+                if (v8 == KW9_INTERFAC and c9 == 'e') break :blk Tag.kw_interface;
+            }
+            break :blk Tag.identifier;
+        },
+        10 => blk: {
+            const v8 = raw8;
+            const c9 = ptr[8];
+            const c10 = ptr[9];
+            const KW10_INSTANCE: u64 = pK("instance");
+            const KW10_IMPLEMEN: u64 = pK("implemen");
+            if (v8 == KW10_INSTANCE and c9 == 'o' and c10 == 'f') break :blk Tag.kw_instanceof;
+            if (ts and v8 == KW10_IMPLEMEN and c9 == 't' and c10 == 's') break :blk Tag.kw_implements;
+            break :blk Tag.identifier;
+        },
+        else => Tag.identifier,
+    };
+}
+
+/// Hot-path keyword lookup. Caller guarantees ptr+8 is readable.
+/// Issues a single 8-byte unaligned load then delegates to keywordLookupFromRaw,
+/// which derives fc from raw8 and uses register shifts for ptr[1]/ptr[2].
+pub inline fn keywordLookupHot(ptr: [*]const u8, len: usize, ts: bool) Tag {
+    const raw8 = @as(*align(1) const u64, @ptrCast(ptr)).*;
+    return keywordLookupFromRaw(raw8, ptr, len, ts);
+}
+
 
 /// Position of the next set bit at index ≥ `from`, or `n` if none.
 /// Used to scan strings / comments / templates against pre-built bitmaps
@@ -556,9 +727,12 @@ inline fn nextSetBit(bm: []const u64, from: u32, n: u32) u32 {
 /// Bitmap-driven line comment scan. Returns position of the LineTerminator
 /// that ends the comment (or n if none). Stops at \n, \r, LS (U+2028), or
 /// PS (U+2029) — all four are LineTerminators per the ECMAScript spec.
-inline fn lineCommentEndBM(newline_bm: []const u64, start: u32, src: []const u8) u32 {
+/// `has_high`: set from bm.has_high; when false, no 0x80+ bytes exist so
+/// the LS/PS byte scan is unconditionally skipped.
+inline fn lineCommentEndBM(newline_bm: []const u64, start: u32, src: []const u8, has_high: bool) u32 {
     const n: u32 = @intCast(src.len);
     const nl = nextSetBit(newline_bm, start, n);
+    if (!has_high) return nl;
     // Scan [start..nl) for LS (E2 80 A8) or PS (E2 80 A9).
     var i = start;
     while (i + 2 < nl) : (i += 1) {
@@ -627,12 +801,14 @@ pub fn stringEndBM(
 /// Bitmap-driven block comment scan. Walks structural for `*` candidates,
 /// newline for has_nl tracking. Returns end (after `*/`) and whether a
 /// newline lies within the comment body.
+/// `has_high`: set from bm.has_high; when false, the LS/PS byte scans are skipped.
 pub fn blockCommentEndBM(
     src: []const u8,
     structural_bm: []const u64,
     newline_bm: []const u64,
     open: u32,
     n: u32,
+    has_high: bool,
 ) struct { end: u32, has_nl: bool } {
     const i: u32 = open + 2;
     var has_nl = false;
@@ -662,7 +838,7 @@ pub fn blockCommentEndBM(
                         if ((nl_word & before_mask) != 0) has_nl = true;
                     }
                     // Check for LS/PS in bytes [word_start..p).
-                    if (!has_nl) {
+                    if (has_high and !has_nl) {
                         const word_start2: u32 = @intCast(wi * 64);
                         var scan2: u32 = if (word_start2 < i) i else word_start2;
                         while (scan2 + 2 < p) : (scan2 += 1) {
@@ -677,7 +853,7 @@ pub fn blockCommentEndBM(
             // No more candidates in this word. Check if newlines exist in remainder.
             if (nl_word != 0) has_nl = true;
             // Also check for LS/PS in this word's bytes.
-            if (!has_nl) {
+            if (has_high and !has_nl) {
                 const ws: u32 = @intCast(wi * 64);
                 var sc: u32 = if (ws < i) i else ws;
                 const we: u32 = @min(ws + 64, n);
@@ -1002,7 +1178,7 @@ pub fn tokenizeWithBufAndBitmaps(
         // Drop bits < (skip_until - word_off) within this word.
         if (skip_until > word_off) {
             const shift: u6 = @intCast(skip_until - word_off);
-            visit &= ~((@as(u64, 1) << shift) - 1);
+            visit &= ~@as(u64, 0) << shift;
         }
 
         while (visit != 0) {
@@ -1012,24 +1188,14 @@ pub fn tokenizeWithBufAndBitmaps(
             if (p >= n) break;
             if (p < skip_until) continue;
             const byte = src[p];
-
-            // Newline: bump line_starts, set saw_nl, no token emit.
-            // Profile: ~30K newlines vs 1.5M visits = 2% — predict not-taken.
-            if (byte == '\n') {
+            if ((w_nl >> @intCast(b)) & 1 != 0) {
                 @branchHint(.unlikely);
                 saw_nl = true;
                 at_line_start = true;
-                try ls.append(alloc, p + 1);
-                continue;
-            }
-            if (byte == '\r') {
-                @branchHint(.unlikely);
-                saw_nl = true;
-                at_line_start = true;
-                if (p + 1 < n and src[p + 1] == '\n') {
-                    try ls.append(alloc, p + 2);
-                } else {
+                if (byte == '\n') {
                     try ls.append(alloc, p + 1);
+                } else { // '\r'
+                    try ls.append(alloc, if (p + 1 < n and src[p + 1] == '\n') p + 2 else p + 1);
                 }
                 continue;
             }
@@ -1102,7 +1268,7 @@ pub fn tokenizeWithBufAndBitmaps(
                                     },
                                     else => {
                                         te = identEndFromBitmap(bm.ident, sw, sb, sw * 64, n);
-                                        tt = keywordLookup(src[skip_until..te], language.isTs());
+                                        tt = if (isPropertyAccess(prev_kind)) .identifier else keywordLookup(src[skip_until..te], language.isTs());
                                     },
                                 }
                                 tag_ptr[tok_n] = tt;
@@ -1111,8 +1277,8 @@ pub fn tokenizeWithBufAndBitmaps(
                                 nl_ptr[tok_n] = saw_nl;
                                 tok_n += 1;
                                 saw_nl = false;
-                                
-                                prev_kind = if (tt.isKeyword() and prev_kind == .dot) .identifier else tt;
+
+                                prev_kind = if (tt.isKeyword() and isPropertyAccess(prev_kind)) .identifier else tt;
                                 skip_until = te;
                             }
                             continue;
@@ -1123,6 +1289,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (p + start_len > n) {
                             // Truncated sequence at EOF: skip it.
                             skip_until = p + 1;
+                            if (p + 1 < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(p + 1 - word_off)); } else { visit = 0; }
                             continue;
                         } else {
                             const start_cp = std.unicode.utf8Decode(src[p..p+start_len]) catch 0;
@@ -1181,7 +1348,7 @@ pub fn tokenizeWithBufAndBitmaps(
                                                 },
                                                 else => {
                                                     te = identEndFromBitmap(bm.ident, sw, sb, sw * 64, n);
-                                                    tt = keywordLookup(src[skip_until..te], language.isTs());
+                                                    tt = if (isPropertyAccess(prev_kind)) .identifier else keywordLookup(src[skip_until..te], language.isTs());
                                                 },
                                             }
                                         }
@@ -1192,7 +1359,7 @@ pub fn tokenizeWithBufAndBitmaps(
                                         tok_n += 1;
                                         saw_nl = false;
                                         at_line_start = false;
-                                        prev_kind = if (tt.isKeyword() and prev_kind == .dot) .identifier else tt;
+                                        prev_kind = if (tt.isKeyword() and isPropertyAccess(prev_kind)) .identifier else tt;
                                         skip_until = te;
                                     }
                                     continue;
@@ -1270,7 +1437,13 @@ pub fn tokenizeWithBufAndBitmaps(
                         }
                     },
                     else => {
+                        // Hoist 8-byte load before identEndFromBitmapW — p is known, end is not.
+                        // The load and the bitmap CTZ are independent: OOO cores overlap them,
+                        // hiding ~4 cycles of load latency before keywordLookupFromRaw needs raw8.
+                        const ident_hot = p + 8 <= n;
+                        const ident_raw8: u64 = if (ident_hot) @as(*align(1) const u64, @ptrCast(src.ptr + p)).* else 0;
                         end = identEndFromBitmapW(bm.ident, w_id, wi, b, word_off, n);
+                        const ident_bm_end = end; // position after pure-bitmap run; used below for has_escape
                         // Extend identifier if followed by \u escape continuation.
                         while (end < n and src[end] == '\\' and end + 1 < n and src[end + 1] == 'u') {
                             const uid3 = @import("unicode_id.zig");
@@ -1322,31 +1495,48 @@ pub fn tokenizeWithBufAndBitmaps(
                         // Validate any high-byte continuation sequences in the identifier.
                         // The bitmap includes all 0x80+ bytes as ident-class, but not all
                         // are valid ID_Continue (e.g. Po chars, whitespace).
-                        var valid_end = end;
-                        var scan_i: u32 = p + 1;
-                        while (scan_i < valid_end) {
-                            const sc = src[scan_i];
-                            if (sc < 0x80) { scan_i += 1; continue; }
-                            // BOM inside ident → invalid.
-                            if (sc == 0xEF and scan_i + 2 < n and src[scan_i + 1] == 0xBB and src[scan_i + 2] == 0xBF) {
-                                valid_end = scan_i;
-                                break;
+                        // Skip entirely when no high bytes exist in the source — all bytes
+                        // are guaranteed < 0x80 so nothing to validate.
+                        if (bm.has_high) {
+                            // Fast-reject: use the pre-loaded ident_raw8 to check whether
+                            // any of the first 8 ident bytes has bit 7 set — all register
+                            // ops, no extra loads. For ident_len <= 8 (the vast majority),
+                            // mask out bytes beyond the ident to avoid false positives.
+                            const ident_len: u32 = end - p;
+                            const need_scan: bool = if (ident_hot and ident_len <= 8) b: {
+                                const shift: u6 = @intCast((8 - ident_len) << 3);
+                                const mask: u64 = @as(u64, std.math.maxInt(u64)) >> shift;
+                                break :b (ident_raw8 & mask & 0x8080808080808080) != 0;
+                            } else true;
+                            if (need_scan) {
+                                var valid_end = end;
+                                var scan_i: u32 = p + 1;
+                                while (scan_i < valid_end) {
+                                    const sc = src[scan_i];
+                                    if (sc < 0x80) { scan_i += 1; continue; }
+                                    // BOM inside ident → invalid.
+                                    if (sc == 0xEF and scan_i + 2 < n and src[scan_i + 1] == 0xBB and src[scan_i + 2] == 0xBF) {
+                                        valid_end = scan_i;
+                                        break;
+                                    }
+                                    const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(sc) catch 1);
+                                    if (scan_i + cl > n) { valid_end = scan_i; break; }
+                                    const cc = std.unicode.utf8Decode(src[scan_i..scan_i+cl]) catch 0;
+                                    if (isUnicodeWhitespace(cc) or !@import("unicode_id.zig").isIdContinueJS(@intCast(cc))) {
+                                        valid_end = scan_i;
+                                        break;
+                                    }
+                                    scan_i += cl;
+                                }
+                                end = valid_end;
                             }
-                            const cl: u32 = @intCast(std.unicode.utf8ByteSequenceLength(sc) catch 1);
-                            if (scan_i + cl > n) { valid_end = scan_i; break; }
-                            const cc = std.unicode.utf8Decode(src[scan_i..scan_i+cl]) catch 0;
-                            // Check if it's a Unicode whitespace (should have been skipped) or invalid ID_Continue.
-                            if (isUnicodeWhitespace(cc) or !@import("unicode_id.zig").isIdContinueJS(@intCast(cc))) {
-                                valid_end = scan_i;
-                                break;
-                            }
-                            scan_i += cl;
                         }
-                        end = valid_end;
                         const text = src[p..end];
-                        // Fast path: no backslash → no escape, raw text is the identifier.
-                        var has_escape = false;
-                        for (text) |tc| { if (tc == '\\') { has_escape = true; break; } }
+                        // has_escape: true when the identifier contains \u continuation
+                        // escapes (the extension loop above ran past ident_bm_end).
+                        // The pure-bitmap run can never contain '\', so if end ==
+                        // ident_bm_end the text is escape-free — no byte scan needed.
+                        const has_escape = (end != ident_bm_end);
                         if (has_escape) {
                             // Decode the raw escaped text and check if it's a reserved word.
                             var dec_buf: [16]u8 = undefined;
@@ -1408,7 +1598,9 @@ pub fn tokenizeWithBufAndBitmaps(
                                 tag = .identifier;
                             }
                         } else {
-                            tag = keywordLookup(text, language.isTs());
+                            tag = if (isPropertyAccess(prev_kind)) .identifier
+                                  else if (ident_hot) keywordLookupFromRaw(ident_raw8, src.ptr + p, end - p, language.isTs())
+                                  else keywordLookup(text, language.isTs());
                         }
                         is_escaped_id = has_escape;
                     },
@@ -1422,7 +1614,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 saw_nl = false;
                 at_line_start = false;
 
-                prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
+                prev_kind = if (isPropertyAccess(prev_kind) and tag.isKeyword()) .identifier else tag;
                 if (opts.publish_to) |pp| {
                     if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
                 }
@@ -1477,7 +1669,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         },
                         else => {
                             t_end = identEndFromBitmap(bm.ident, ew, eb, ew * 64, n);
-                            t_tag = keywordLookup(src[end..t_end], language.isTs());
+                            t_tag = if (isPropertyAccess(prev_kind)) .identifier else keywordLookup(src[end..t_end], language.isTs());
                         },
                     }
                     tag_ptr[tok_n]   = t_tag;
@@ -1487,7 +1679,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     tok_n += 1;
                     saw_nl = false;
                     at_line_start = false;
-                    prev_kind = if (prev_kind == .dot and t_tag.isKeyword()) .identifier else t_tag;
+                    prev_kind = if (isPropertyAccess(prev_kind) and t_tag.isKeyword()) .identifier else t_tag;
                     if (opts.publish_to) |pp| {
                         if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
                     }
@@ -1550,13 +1742,14 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (opts.is_module or !opts.annex_b) {
                             tag = .invalid; end = p + 3;
                         } else {
-                            const ce = lineCommentEndBM(bm.newline, p + 3, src);
+                            const ce = lineCommentEndBM(bm.newline, p + 3, src, bm.has_high);
                             try cm_s.append(alloc, p);
                             try cm_e.append(alloc, ce);
                             try cm_k.append(alloc, 0);
                             saw_nl = true;
                             at_line_start = true;
                             skip_until = ce;
+                            if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
                             continue;
                         }
                     } else if (p + 1 < n and src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
@@ -1603,12 +1796,13 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (opts.is_module or !opts.annex_b) {
                             tag = .less_than; end = p + 1;
                         } else {
-                            const ce = lineCommentEndBM(bm.newline, p + 4, src);
+                            const ce = lineCommentEndBM(bm.newline, p + 4, src, bm.has_high);
                             try cm_s.append(alloc, p);
                             try cm_e.append(alloc, ce);
                             try cm_k.append(alloc, 0);
                             saw_nl = true;
                             skip_until = ce;
+                            if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
                             continue;
                         }
                     } else if (p + 1 < n and src[p + 1] == '=') { tag = .less_equal; end = p + 2; }
@@ -1636,21 +1830,22 @@ pub fn tokenizeWithBufAndBitmaps(
                 },
                 '#' => {
                     if (p == 0 and p + 1 < n and src[p + 1] == '!') {
-                        end = lineCommentEndBM(bm.newline, p + 2, src); tag = .hashbang;
+                        end = lineCommentEndBM(bm.newline, p + 2, src, bm.has_high); tag = .hashbang;
                     } else { tag = .hash; end = p + 1; }
                 },
                 '/' => {
                     if (p + 1 < n and src[p + 1] == '/') {
-                        const ce = lineCommentEndBM(bm.newline, p + 2, src);
+                        const ce = lineCommentEndBM(bm.newline, p + 2, src, bm.has_high);
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, ce);
                         try cm_k.append(alloc, 0);
                         saw_nl = true;
                         skip_until = ce;
+                        if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
                         continue;
                     }
                     if (p + 1 < n and src[p + 1] == '*') {
-                        const res = blockCommentEndBM(src, bm.structural, bm.newline, p, n);
+                        const res = blockCommentEndBM(src, bm.structural, bm.newline, p, n, bm.has_high);
                         if (res.has_nl) { saw_nl = true; }
                         // Unterminated block comment: emit .invalid, stop tokenizing.
                         if (res.end >= n and !(n >= 2 and src[n-2] == '*' and src[n-1] == '/')) {
@@ -1664,6 +1859,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         try cm_e.append(alloc, res.end);
                         try cm_k.append(alloc, 1);
                         skip_until = res.end;
+                        if (res.end < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(res.end - word_off)); } else { visit = 0; }
                         continue;
                     }
                     if (Lex.regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = Lex.regexEnd(src, p); tag = .regex_literal; }
@@ -1867,11 +2063,13 @@ pub fn tokenizeWithBufAndBitmaps(
                         at_line_start = true;
                         const skip_to: u32 = p + 3;
                         skip_until = skip_to;
+                        if (skip_to < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(skip_to - word_off)); } else { visit = 0; }
                         continue;
                     }
                     if (byte == 0xEF and p + 2 < n and src[p + 1] == 0xBB and src[p + 2] == 0xBF) {
                         const skip_to: u32 = p + 3;
                         skip_until = skip_to;
+                        if (skip_to < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(skip_to - word_off)); } else { visit = 0; }
                         continue;
                     }
                     end = Lex.identEnd(src, p); tag = .identifier;
@@ -1894,7 +2092,7 @@ pub fn tokenizeWithBufAndBitmaps(
             saw_nl = false;
             at_line_start = false;
 
-            prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
+            prev_kind = if (isPropertyAccess(prev_kind) and tag.isKeyword()) .identifier else tag;
             if (opts.publish_to) |pp| {
                 if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
             }
@@ -1905,7 +2103,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 skip_until = end;
                 if (end < word_off + 64) {
                     const shift: u6 = @intCast(end - word_off);
-                    visit &= ~((@as(u64, 1) << shift) - 1);
+                    visit &= ~@as(u64, 0) << shift;
                 } else {
                     visit = 0;
                 }
@@ -1972,7 +2170,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     },
                     else => {
                         t_end = identEndFromBitmap(bm.ident, ew, eb, ew * 64, n);
-                        t_tag = keywordLookup(src[end..t_end], language.isTs());
+                        t_tag = if (isPropertyAccess(prev_kind)) .identifier else keywordLookup(src[end..t_end], language.isTs());
                     },
                 }
                 tag_ptr[tok_n]   = t_tag;
@@ -1982,7 +2180,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 tok_n += 1;
                 saw_nl = false;
                 at_line_start = false;
-                prev_kind = if (prev_kind == .dot and t_tag.isKeyword()) .identifier else t_tag;
+                prev_kind = if (isPropertyAccess(prev_kind) and t_tag.isKeyword()) .identifier else t_tag;
                 if (opts.publish_to) |pp| {
                     if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
                 }
