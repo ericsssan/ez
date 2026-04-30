@@ -444,6 +444,8 @@ pub fn tokenizeWithBuf(
     var start_ptr = ts_init.items(.start).ptr;
     var len_ptr   = ts_init.items(.len).ptr;
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
+    var esc_ptr   = ts_init.items(.has_unicode_escape).ptr;
+    @memset(esc_ptr[0..tokens.capacity], false);
     var tok_n: usize = 0;
     const cm_cap: u32 = @max(n / 200 + 16, 16);
     var cm_s = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
@@ -479,6 +481,8 @@ pub fn tokenizeWithBuf(
             start_ptr = ts_init.items(.start).ptr;
             len_ptr   = ts_init.items(.len).ptr;
             nl_ptr    = ts_init.items(.has_newline_before).ptr;
+            esc_ptr   = ts_init.items(.has_unicode_escape).ptr;
+            @memset(esc_ptr[tok_n..tokens.capacity], false);
         }
         const byte = src[pos];
 
@@ -544,6 +548,7 @@ pub fn tokenizeWithBuf(
         // ══════════════════════════════════════════════════════════════════════
         var tag: Tag = undefined;
         var end: u32 = undefined;
+        var is_escaped: bool = false;
 
         switch (byte) {
             // ── Whitespace not caught by fast path (tail of file, etc.) ──────
@@ -823,6 +828,7 @@ pub fn tokenizeWithBuf(
                 if (end == pos) end = pos + 1;
                 const text = src[pos..end];
                 tag = if (Token.keywords.get(text) != null) .escaped_keyword else .identifier;
+                is_escaped = true;
             },
 
             // ── Anything else ────────────────────────────────────────────────
@@ -839,6 +845,7 @@ pub fn tokenizeWithBuf(
         start_ptr[tok_n] = pos;
         len_ptr[tok_n]   = end - pos;
         nl_ptr[tok_n]    = saw_nl;
+        if (is_escaped) esc_ptr[tok_n] = true;
         tok_n += 1;
         saw_nl       = false;
         at_line_start = false;

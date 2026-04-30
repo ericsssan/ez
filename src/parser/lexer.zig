@@ -931,6 +931,10 @@ pub fn tokenizeWithBufAndBitmaps(
     var start_ptr = ts_init.items(.start).ptr;
     var len_ptr   = ts_init.items(.len).ptr;
     var nl_ptr    = ts_init.items(.has_newline_before).ptr;
+    var esc_ptr   = ts_init.items(.has_unicode_escape).ptr;
+    // Zero escape array — most tokens have no unicode escapes; only the rare
+    // \u-escape identifier paths write `true` below.
+    @memset(esc_ptr[0..tokens.capacity], false);
     var tok_n: usize = 0;
     const cm_cap: u32 = @max(n / 200 + 16, 16);
     var cm_s = try std.ArrayListUnmanaged(u32).initCapacity(alloc, cm_cap);
@@ -982,6 +986,8 @@ pub fn tokenizeWithBufAndBitmaps(
             start_ptr = ts_init.items(.start).ptr;
             len_ptr   = ts_init.items(.len).ptr;
             nl_ptr    = ts_init.items(.has_newline_before).ptr;
+            esc_ptr   = ts_init.items(.has_unicode_escape).ptr;
+            @memset(esc_ptr[tok_n..tokens.capacity], false);
         }
         const w_id = bm.ident[wi];
         const w_nl = bm.newline[wi];
@@ -1035,6 +1041,7 @@ pub fn tokenizeWithBufAndBitmaps(
             if ((id_starts >> @intCast(b)) & 1 != 0) {
                 var tag: Tag = undefined;
                 var end: u32 = undefined;
+                var is_escaped_id: bool = false; // set true when identifier has \u escapes
                 switch (byte) {
                     '0'...'9' => {
                         end = Lex.numberEnd(src, p);
@@ -1403,12 +1410,14 @@ pub fn tokenizeWithBufAndBitmaps(
                         } else {
                             tag = keywordLookup(text, language.isTs());
                         }
+                        is_escaped_id = has_escape;
                     },
                 }
                 tag_ptr[tok_n]   = tag;
                 start_ptr[tok_n] = p;
                 len_ptr[tok_n]   = end - p;
                 nl_ptr[tok_n]    = saw_nl;
+                if (is_escaped_id) esc_ptr[tok_n] = true;
                 tok_n += 1;
                 saw_nl = false;
                 at_line_start = false;
@@ -1491,6 +1500,7 @@ pub fn tokenizeWithBufAndBitmaps(
             // Structural byte: dispatch identical to lexer.zig.
             var tag: Tag = undefined;
             var end: u32 = undefined;
+            var is_escaped: bool = false; // set true only for \u-start identifier paths
             // Fast path: single-char tokens with no special handling.
             // Skips the giant switch's jump-table for the most common case.
             const single_tag = SINGLE_TAG[byte];
@@ -1849,6 +1859,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         }
                         tag = if (is_kw) .escaped_keyword else .identifier;
                     }
+                    is_escaped = true;
                 },
                 0x80...0xFF => {
                     if (byte == 0xE2 and p + 2 < n and src[p + 1] == 0x80 and (src[p + 2] == 0xA8 or src[p + 2] == 0xA9)) {
@@ -1878,6 +1889,7 @@ pub fn tokenizeWithBufAndBitmaps(
             start_ptr[tok_n] = p;
             len_ptr[tok_n]   = end - p;
             nl_ptr[tok_n]    = saw_nl;
+            if (is_escaped) { esc_ptr[tok_n] = true; is_escaped = false; }
             tok_n += 1;
             saw_nl = false;
             at_line_start = false;

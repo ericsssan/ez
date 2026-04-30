@@ -126,6 +126,9 @@ pub const Parser = struct {
     /// Cached pointer to has_newline_before — used by isOnNewLine (called once
     /// per parseExpressionPrec iteration).
     newlines_ptr: [*]const bool,
+    /// Cached pointer to has_unicode_escape — lets isStrictReservedWord skip
+    /// the O(n) indexOfScalar backslash scan for plain identifiers.
+    has_escape_ptr: [*]const bool,
     /// Cached pointer to token byte starts (mutable for TS `>>` splitting).
     tok_starts_ptr: [*]u32,
     /// Cached pointer to token byte lengths.
@@ -427,6 +430,7 @@ pub const Parser = struct {
             .tokens = tokens,
             .tags_ptr = tokens.items(.tag).ptr,
             .newlines_ptr = tokens.items(.has_newline_before).ptr,
+            .has_escape_ptr = tokens.items(.has_unicode_escape).ptr,
             .tok_starts_ptr = tokens.items(.start).ptr,
             .tok_lens_ptr = tokens.items(.len).ptr,
             .tok_i = 0,
@@ -7433,18 +7437,14 @@ pub const Parser = struct {
                     std.mem.eql(u8, text, "implements")) return true;
             }
             // Plain .identifier with \u escapes: decoded text might be a strict reserved word
-            // not in Token.keywords. The shortest strict-reserved word not already a keyword
-            // token is "public" (6 chars). To encode it with at least one escape, the raw text
-            // needs at minimum 5 bytes for the escape + 5 plain bytes = 10. So raw len < 10
-            // can never decode to a strict-reserved word — skip the backslash scan entirely.
-            if (text.len >= 10) {
+            // not in Token.keywords. The lexer sets has_unicode_escape for identifiers that
+            // contain backslash sequences — skip the O(n) indexOfScalar scan for plain identifiers.
+            if (text.len >= 10 and self.has_escape_ptr[tok]) {
                 const c0 = text[0];
                 if (c0 == 'p' or c0 == '\\' or (!self.is_ts and c0 == 'i')) {
-                    if (std.mem.indexOfScalar(u8, text, '\\') != null) {
-                        var resolved_buf: [256]u8 = undefined;
-                        if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
-                            return isStrictReservedStr(resolved);
-                        }
+                    var resolved_buf: [256]u8 = undefined;
+                    if (resolveUnicodeEscapesParser(text, &resolved_buf)) |resolved| {
+                        return isStrictReservedStr(resolved);
                     }
                 }
             }

@@ -718,6 +718,9 @@ pub const Ast = struct {
         len: u32 = 0,
         /// True if there is a line terminator between the previous token and this one.
         has_newline_before: bool = false,
+        /// True if the token text contains a \u unicode escape sequence.
+        /// Set by the lexer; lets the parser skip a memchr scan in isStrictReservedWord.
+        has_unicode_escape: bool = false,
     });
 
     pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {
