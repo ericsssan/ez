@@ -17,13 +17,15 @@ const Parser = ez.Parser;
 const semantic_mod = ez.semantic;
 const Language = ez.token.Language;
 
-const Fixture = struct { path: []const u8, is_module: bool = false };
+const Fixture = struct { path: []const u8, is_module: bool = false, lang: Language = .js };
 const fixtures = [_]Fixture{
     .{ .path = "bench/fixtures/jquery.js" },
     .{ .path = "bench/fixtures/lodash.js" },
     .{ .path = "bench/fixtures/three.js" },
     .{ .path = "bench/fixtures/react-dom.development.js" },
     .{ .path = "bench/fixtures/angular-core.mjs", .is_module = true },
+    .{ .path = "bench/fixtures/angular-core.d.ts", .lang = .ts },
+    .{ .path = "bench/fixtures/lib.dom.d.ts",       .lang = .ts },
     .{ .path = "bench/fixtures/typescript.js" },
 };
 
@@ -59,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
     for (fixtures) |fx| {
         const source = std.Io.Dir.cwd().readFileAlloc(io, fx.path, gpa, .unlimited) catch continue;
         defer gpa.free(source);
-        const lang: Language = .js;
+        const lang = fx.lang;
         var fba = std.heap.FixedBufferAllocator.init(working);
         for (0..WARMUP) |_| {
             fba.reset();
@@ -99,7 +101,7 @@ pub fn main(init: std.process.Init) !void {
     for (fixtures) |fx| {
         const source = std.Io.Dir.cwd().readFileAlloc(io, fx.path, gpa, .unlimited) catch continue;
         defer gpa.free(source);
-        const lang: Language = .js;
+        const lang = fx.lang;
         var fba = std.heap.FixedBufferAllocator.init(working);
         for (0..WARMUP) |_| {
             fba.reset();
@@ -136,7 +138,7 @@ pub fn main(init: std.process.Init) !void {
         };
         defer gpa.free(source);
 
-        const lang: Language = .js;
+        const lang = fx.lang;
         const stats_lex = bench(io, source, lang, fx.is_module, working, times);
 
         const size_kb = @as(f64, @floatFromInt(source.len)) / 1024.0;
