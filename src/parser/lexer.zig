@@ -254,6 +254,15 @@ inline fn loadU64(buf: []const u8, comptime L: usize) u64 {
     return v;
 }
 
+/// Cold helper: load up to 8 bytes from src[p..], zero-padding the rest.
+/// Used only for the last 1–2 bitmap words (word_safe = false).
+fn safeRaw8(src: []const u8, p: u32, n: u32) u64 {
+    var buf = [_]u8{0} ** 8;
+    const avail = @min(8, n - p);
+    @memcpy(buf[0..avail], src[p .. p + avail]);
+    return @bitCast(buf);
+}
+
 const KW2_JS = [_]KW{
     .{ .bytes = pK("in"), .tag = .kw_in },
     .{ .bytes = pK("if"), .tag = .kw_if },
@@ -1172,6 +1181,9 @@ pub fn tokenizeWithBufAndBitmaps(
         const id_starts = w_id & ~((w_id << 1) | prev_ident_last_bit);
         prev_ident_last_bit = (w_id >> 63) & 1;
         const word_off: u32 = @intCast(wi * 64);
+        // word_safe: every p in this word satisfies p+3 < n (worst-case operator lookahead).
+        // True for all words except the last 1–2; set once per word, used in structural dispatch.
+        const word_safe: bool = (word_off + 67 <= n);
         // Fast-forward whole words covered by skip_until.
         if (skip_until >= word_off + 64) continue;
         var visit = w_nl | w_st | id_starts;
@@ -1699,7 +1711,20 @@ pub fn tokenizeWithBufAndBitmaps(
             if (single_tag != .eof) {
                 tag = single_tag;
                 end = p + 1;
-            } else switch (byte) {
+            } else {
+                // SWAR lookahead: load 8 bytes at p into a register once.
+                // next1/next2/next3 replace p+k bounds-checked loads in operator arms.
+                // safeRaw8 zero-pads for the last 1–2 bitmap words (word_safe = false);
+                // zero bytes don't match any operator continuation char, so all
+                // branch outcomes are identical to the original bounds-checked code.
+                const raw8: u64 = if (word_safe)
+                    @as(*align(1) const u64, @ptrCast(src.ptr + p)).*
+                else
+                    safeRaw8(src, p, n);
+                const next1: u8 = @truncate(raw8 >> 8);
+                const next2: u8 = @truncate(raw8 >> 16);
+                const next3: u8 = @truncate(raw8 >> 24);
+                switch (byte) {
                 // ( ) [ ] ; , ~ @ : are handled by SINGLE_TAG fast path.
                 '{' => {
                     if (tmpl_depth > 0) brace_d[tmpl_depth - 1] += 1;
@@ -1718,27 +1743,27 @@ pub fn tokenizeWithBufAndBitmaps(
                     }
                 },
                 '.' => {
-                    if (p + 2 < n and src[p + 1] == '.' and src[p + 2] == '.') { tag = .ellipsis; end = p + 3; }
-                    else if (p + 1 < n and src[p + 1] >= '0' and src[p + 1] <= '9') {
+                    if (next1 == '.' and next2 == '.') { tag = .ellipsis; end = p + 3; }
+                    else if (next1 >= '0' and next1 <= '9') {
                         end = Lex.numberEnd(src, p);
                         tag = if (!validateNumericLiteral(src, p, end) or (end < n and isIdentStartAtPos(src, end))) .invalid else .number_literal;
                     }
                     else { tag = .dot; end = p + 1; }
                 },
                 '?' => {
-                    if (p + 1 < n and src[p + 1] == '?') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .question_question_equal; end = p + 3; }
+                    if (next1 == '?') {
+                        if (next2 == '=') { tag = .question_question_equal; end = p + 3; }
                         else { tag = .question_question; end = p + 2; }
-                    } else if (p + 1 < n and src[p + 1] == '.' and !(p + 2 < n and src[p + 2] >= '0' and src[p + 2] <= '9')) { tag = .question_dot; end = p + 2; }
+                    } else if (next1 == '.' and !(next2 >= '0' and next2 <= '9')) { tag = .question_dot; end = p + 2; }
                     else { tag = .question; end = p + 1; }
                 },
                 '+' => {
-                    if (p + 1 < n and src[p + 1] == '+') { tag = .plus_plus; end = p + 2; }
-                    else if (p + 1 < n and src[p + 1] == '=') { tag = .plus_equal; end = p + 2; }
+                    if (next1 == '+') { tag = .plus_plus; end = p + 2; }
+                    else if (next1 == '=') { tag = .plus_equal; end = p + 2; }
                     else { tag = .plus; end = p + 1; }
                 },
                 '-' => {
-                    if (at_line_start and p + 2 < n and src[p + 1] == '-' and src[p + 2] == '>') {
+                    if (at_line_start and next1 == '-' and next2 == '>') {
                         if (opts.is_module or !opts.annex_b) {
                             tag = .invalid; end = p + 3;
                         } else {
@@ -1752,47 +1777,47 @@ pub fn tokenizeWithBufAndBitmaps(
                             if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
                             continue;
                         }
-                    } else if (p + 1 < n and src[p + 1] == '-') { tag = .minus_minus; end = p + 2; }
-                    else if (p + 1 < n and src[p + 1] == '=') { tag = .minus_equal; end = p + 2; }
+                    } else if (next1 == '-') { tag = .minus_minus; end = p + 2; }
+                    else if (next1 == '=') { tag = .minus_equal; end = p + 2; }
                     else { tag = .minus; end = p + 1; }
                 },
                 '*' => {
-                    if (p + 1 < n and src[p + 1] == '*') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .asterisk_asterisk_equal; end = p + 3; }
+                    if (next1 == '*') {
+                        if (next2 == '=') { tag = .asterisk_asterisk_equal; end = p + 3; }
                         else { tag = .asterisk_asterisk; end = p + 2; }
-                    } else if (p + 1 < n and src[p + 1] == '=') { tag = .asterisk_equal; end = p + 2; }
+                    } else if (next1 == '=') { tag = .asterisk_equal; end = p + 2; }
                     else { tag = .asterisk; end = p + 1; }
                 },
                 '%' => {
-                    if (p + 1 < n and src[p + 1] == '=') { tag = .percent_equal; end = p + 2; }
+                    if (next1 == '=') { tag = .percent_equal; end = p + 2; }
                     else { tag = .percent; end = p + 1; }
                 },
                 '&' => {
-                    if (p + 1 < n and src[p + 1] == '&') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .ampersand_ampersand_equal; end = p + 3; }
+                    if (next1 == '&') {
+                        if (next2 == '=') { tag = .ampersand_ampersand_equal; end = p + 3; }
                         else { tag = .ampersand_ampersand; end = p + 2; }
-                    } else if (p + 1 < n and src[p + 1] == '=') { tag = .ampersand_equal; end = p + 2; }
+                    } else if (next1 == '=') { tag = .ampersand_equal; end = p + 2; }
                     else { tag = .ampersand; end = p + 1; }
                 },
                 '|' => {
-                    if (p + 1 < n and src[p + 1] == '|') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .pipe_pipe_equal; end = p + 3; }
+                    if (next1 == '|') {
+                        if (next2 == '=') { tag = .pipe_pipe_equal; end = p + 3; }
                         else { tag = .pipe_pipe; end = p + 2; }
-                    } else if (p + 1 < n and src[p + 1] == '=') { tag = .pipe_equal; end = p + 2; }
+                    } else if (next1 == '=') { tag = .pipe_equal; end = p + 2; }
                     else { tag = .pipe; end = p + 1; }
                 },
                 '^' => {
-                    if (p + 1 < n and src[p + 1] == '=') { tag = .caret_equal; end = p + 2; }
+                    if (next1 == '=') { tag = .caret_equal; end = p + 2; }
                     else { tag = .caret; end = p + 1; }
                 },
                 '!' => {
-                    if (p + 1 < n and src[p + 1] == '=') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .bang_equal_equal; end = p + 3; }
+                    if (next1 == '=') {
+                        if (next2 == '=') { tag = .bang_equal_equal; end = p + 3; }
                         else { tag = .bang_equal; end = p + 2; }
                     } else { tag = .bang; end = p + 1; }
                 },
                 '<' => {
-                    if (p + 3 < n and src[p + 1] == '!' and src[p + 2] == '-' and src[p + 3] == '-') {
+                    if (next1 == '!' and next2 == '-' and next3 == '-') {
                         if (opts.is_module or !opts.annex_b) {
                             tag = .less_than; end = p + 1;
                         } else {
@@ -1805,36 +1830,36 @@ pub fn tokenizeWithBufAndBitmaps(
                             if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
                             continue;
                         }
-                    } else if (p + 1 < n and src[p + 1] == '=') { tag = .less_equal; end = p + 2; }
-                    else if (p + 1 < n and src[p + 1] == '<') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .less_less_equal; end = p + 3; }
+                    } else if (next1 == '=') { tag = .less_equal; end = p + 2; }
+                    else if (next1 == '<') {
+                        if (next2 == '=') { tag = .less_less_equal; end = p + 3; }
                         else { tag = .less_less; end = p + 2; }
                     } else { tag = .less_than; end = p + 1; }
                 },
                 '>' => {
-                    if (p + 1 < n and src[p + 1] == '=') { tag = .greater_equal; end = p + 2; }
-                    else if (p + 1 < n and src[p + 1] == '>') {
-                        if (p + 2 < n and src[p + 2] == '>') {
-                            if (p + 3 < n and src[p + 3] == '=') { tag = .greater_greater_greater_equal; end = p + 4; }
+                    if (next1 == '=') { tag = .greater_equal; end = p + 2; }
+                    else if (next1 == '>') {
+                        if (next2 == '>') {
+                            if (next3 == '=') { tag = .greater_greater_greater_equal; end = p + 4; }
                             else { tag = .greater_greater_greater; end = p + 3; }
-                        } else if (p + 2 < n and src[p + 2] == '=') { tag = .greater_greater_equal; end = p + 3; }
+                        } else if (next2 == '=') { tag = .greater_greater_equal; end = p + 3; }
                         else { tag = .greater_greater; end = p + 2; }
                     } else { tag = .greater_than; end = p + 1; }
                 },
                 '=' => {
-                    if (p + 1 < n and src[p + 1] == '=') {
-                        if (p + 2 < n and src[p + 2] == '=') { tag = .equal_equal_equal; end = p + 3; }
+                    if (next1 == '=') {
+                        if (next2 == '=') { tag = .equal_equal_equal; end = p + 3; }
                         else { tag = .equal_equal; end = p + 2; }
-                    } else if (p + 1 < n and src[p + 1] == '>') { tag = .arrow; end = p + 2; }
+                    } else if (next1 == '>') { tag = .arrow; end = p + 2; }
                     else { tag = .equal; end = p + 1; }
                 },
                 '#' => {
-                    if (p == 0 and p + 1 < n and src[p + 1] == '!') {
+                    if (p == 0 and next1 == '!') {
                         end = lineCommentEndBM(bm.newline, p + 2, src, bm.has_high); tag = .hashbang;
                     } else { tag = .hash; end = p + 1; }
                 },
                 '/' => {
-                    if (p + 1 < n and src[p + 1] == '/') {
+                    if (next1 == '/') {
                         const ce = lineCommentEndBM(bm.newline, p + 2, src, bm.has_high);
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, ce);
@@ -1844,7 +1869,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (ce < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(ce - word_off)); } else { visit = 0; }
                         continue;
                     }
-                    if (p + 1 < n and src[p + 1] == '*') {
+                    if (next1 == '*') {
                         const res = blockCommentEndBM(src, bm.structural, bm.newline, p, n, bm.has_high);
                         if (res.has_nl) { saw_nl = true; }
                         // Unterminated block comment: emit .invalid, stop tokenizing.
@@ -1863,7 +1888,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         continue;
                     }
                     if (Lex.regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = Lex.regexEnd(src, p); tag = .regex_literal; }
-                    else if (p + 1 < n and src[p + 1] == '=') { tag = .slash_equal; end = p + 2; }
+                    else if (next1 == '=') { tag = .slash_equal; end = p + 2; }
                     else { tag = .slash; end = p + 1; }
                 },
                 '"', '\'' => { end = stringEndBM(src, bm.structural, bm.newline, p, n); tag = .string_literal; },
@@ -1896,7 +1921,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     var valid: bool = true;
                     var first_cp: u32 = 0;
                     var ie: u32 = p; // end of first escape sequence
-                    if (p + 1 < n and src[p + 1] == 'u') {
+                    if (next1 == 'u') {
                         var ec_end: u32 = p + 2;
                         var ec_cp: u32 = 0;
                         if (ec_end < n and src[ec_end] == '{') {
@@ -2058,7 +2083,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     is_escaped = true;
                 },
                 0x80...0xFF => {
-                    if (byte == 0xE2 and p + 2 < n and src[p + 1] == 0x80 and (src[p + 2] == 0xA8 or src[p + 2] == 0xA9)) {
+                    if (byte == 0xE2 and next1 == 0x80 and (next2 == 0xA8 or next2 == 0xA9)) {
                         saw_nl = true;
                         at_line_start = true;
                         const skip_to: u32 = p + 3;
@@ -2066,7 +2091,7 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (skip_to < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(skip_to - word_off)); } else { visit = 0; }
                         continue;
                     }
-                    if (byte == 0xEF and p + 2 < n and src[p + 1] == 0xBB and src[p + 2] == 0xBF) {
+                    if (byte == 0xEF and next1 == 0xBB and next2 == 0xBF) {
                         const skip_to: u32 = p + 3;
                         skip_until = skip_to;
                         if (skip_to < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(skip_to - word_off)); } else { visit = 0; }
@@ -2081,6 +2106,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     tag = .invalid; end = p + 1;
                 },
             }
+            } // else (SWAR structural dispatch)
 
             // Emit token.
             tag_ptr[tok_n]   = tag;
