@@ -24,8 +24,11 @@ const fixtures = [_]Fixture{
     .{ .path = "bench/fixtures/three.js" },
     .{ .path = "bench/fixtures/react-dom.development.js" },
     .{ .path = "bench/fixtures/angular-core.mjs", .is_module = true },
-    .{ .path = "bench/fixtures/angular-core.d.ts", .lang = .ts },
-    .{ .path = "bench/fixtures/lib.dom.d.ts",       .lang = .ts },
+    .{ .path = "bench/fixtures/angular-core.d.ts",  .lang = .ts },
+    .{ .path = "bench/fixtures/lib.dom.d.ts",        .lang = .ts },
+    .{ .path = "bench/fixtures/app-render.tsx",      .lang = .tsx, .is_module = true },
+    .{ .path = "bench/fixtures/angular-classes.ts",  .lang = .ts,  .is_module = true },
+    .{ .path = "bench/fixtures/checker.ts",          .lang = .ts,  .is_module = true },
     .{ .path = "bench/fixtures/typescript.js" },
 };
 
