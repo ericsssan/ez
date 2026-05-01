@@ -255,14 +255,14 @@ pub fn main(init: std.process.Init) !void {
 
         if (tree.errors.len > 0) {
             for (tree.errors) |err| {
-                try err.format(source, file_path, stdout);
+                try err.format(lex.line_starts, source, file_path, stdout);
             }
         }
 
         if (!json_format) {
             try debug.dumpAst(&tree, stdout);
         } else {
-            try diagnostic.formatJson(tree.errors, source, file_path, stdout);
+            try diagnostic.formatJson(tree.errors, lex.line_starts, source, file_path, stdout);
         }
         try stdout.flush();
     }
@@ -301,7 +301,7 @@ fn lintSingleFile(
 
     if (tree.errors.len > 0) {
         for (tree.errors) |err| {
-            try err.format(source, file_path, stdout);
+            try err.format(lex_result.line_starts, source, file_path, stdout);
         }
     }
 
@@ -324,11 +324,11 @@ fn lintSingleFile(
         lex_result.comment_kinds,
     ) catch InlineDisables.empty();
     defer disables.deinit();
-    const lint_diagnostics = try linter.filterByInlineDisables(allocator, raw_diagnostics, &disables, source);
+    const lint_diagnostics = try linter.filterByInlineDisables(allocator, raw_diagnostics, &disables, lex_result.line_starts, source);
     defer allocator.free(lint_diagnostics);
 
     for (lint_diagnostics) |*diag| {
-        try diag.format(source, file_path, &linter.rule_names, stdout);
+        try diag.format(lex_result.line_starts, source, file_path, &linter.rule_names, stdout);
     }
     try stdout.flush();
 

@@ -5,6 +5,7 @@ const Lexer = parser.Lexer;
 const parser_mod = @import("../parser/parser.zig");
 const semantic_mod = parser.semantic;
 const Severity = parser.diagnostic.Severity;
+const Location = parser.span.Location;
 const Language = parser.token.Language;
 const ast_mod = parser.ast.Ast;
 const TokenList = ast_mod.TokenList;
@@ -1179,7 +1180,7 @@ pub const ParallelRunner = struct {
             lex_result.comment_ends,
             lex_result.comment_kinds,
         ) catch InlineDisables.empty();
-        const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, source) catch raw_diagnostics;
+        const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, lex_result.line_starts, source) catch raw_diagnostics;
 
         // Count total diagnostics (parse errors + lint diagnostics).
         const total_count = tree.errors.len + diagnostics.len;
@@ -1215,30 +1216,16 @@ pub const ParallelRunner = struct {
         for (diagnostics, 0..) |*diag, i| {
             if (dr < total_diags) { diag_refs[dr] = .{ .offset = diag.span.start, .kind = .lint, .idx = @intCast(i) }; dr += 1; }
         }
-        std.sort.pdq(DiagRef, diag_refs[0..dr], {}, struct {
-            fn lt(_: void, a: DiagRef, b: DiagRef) bool { return a.offset < b.offset; }
-        }.lt);
-
-        // One forward pass through source to compute line/column for all diagnostics.
-        var cur_pos: u32 = 0;
-        var cur_line: u32 = 0;
-        var cur_line_start: u32 = 0;
-
+        // Binary-search line_starts for each diagnostic's line/column — no sort needed.
         for (diag_refs[0..dr]) |ref| {
-            // Advance cursor forward to this offset.
-            while (cur_pos < ref.offset and cur_pos < source.len) : (cur_pos += 1) {
-                if (source[cur_pos] == '\n') {
-                    cur_line += 1;
-                    cur_line_start = cur_pos + 1;
-                }
-            }
-            const column = ref.offset - cur_line_start;
+            const loc = Location.fromLineStarts(lex_result.line_starts, source, ref.offset);
+            const column = loc.column;
 
             switch (ref.kind) {
                 .parse_error => {
                     const err = &tree.errors[ref.idx];
                     const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}: {s}\n", .{
-                        file_path, cur_line + 1, column + 1, err.severity.symbol(), err.message,
+                        file_path, loc.line + 1, column + 1, err.severity.symbol(), err.message,
                     }) catch continue;
                     output_buf.appendSlice(arena, out) catch {};
                     error_count += 1;
@@ -1252,7 +1239,7 @@ pub const ParallelRunner = struct {
                     }
                     const rn = if (diag.rule_index < linter_mod.rule_names.len) linter_mod.rule_names[diag.rule_index] else "unknown";
                     const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s})\n", .{
-                        file_path, cur_line + 1, column + 1, diag.severity.symbol(), rn,
+                        file_path, loc.line + 1, column + 1, diag.severity.symbol(), rn,
                     }) catch continue;
                     output_buf.appendSlice(arena, out) catch {};
                 },
@@ -1307,6 +1294,7 @@ pub const ParallelRunner = struct {
         self: *ParallelRunner,
         arena: std.mem.Allocator,
         file_path: []const u8,
+        line_starts: []const u32,
         source: []const u8,
         tree: *const ast_mod,
         diagnostics: []const LintDiagnostic,
@@ -1330,29 +1318,15 @@ pub const ParallelRunner = struct {
         for (diagnostics, 0..) |*diag, i| {
             if (dr < total_count) { diag_refs[dr] = .{ .offset = diag.span.start, .kind = .lint, .idx = @intCast(i) }; dr += 1; }
         }
-        std.sort.pdq(DiagRef, diag_refs[0..dr], {}, struct {
-            fn lt(_: void, a: DiagRef, b: DiagRef) bool { return a.offset < b.offset; }
-        }.lt);
-
         var output_buf: std.ArrayList(u8) = .empty;
-        var cur_pos: u32 = 0;
-        var cur_line: u32 = 0;
-        var cur_line_start: u32 = 0;
 
         for (diag_refs[0..dr]) |ref| {
-            while (cur_pos < ref.offset and cur_pos < source.len) : (cur_pos += 1) {
-                if (source[cur_pos] == '\n') {
-                    cur_line += 1;
-                    cur_line_start = cur_pos + 1;
-                }
-            }
-            const column = ref.offset - cur_line_start;
-
+            const loc = Location.fromLineStarts(line_starts, source, ref.offset);
             switch (ref.kind) {
                 .parse_error => {
                     const err = &tree.errors[ref.idx];
                     const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}: {s}\n", .{
-                        file_path, cur_line + 1, column + 1, err.severity.symbol(), err.message,
+                        file_path, loc.line + 1, loc.column + 1, err.severity.symbol(), err.message,
                     }) catch continue;
                     output_buf.appendSlice(arena, out) catch {};
                     error_count += 1;
@@ -1366,7 +1340,7 @@ pub const ParallelRunner = struct {
                     }
                     const rn = if (diag.rule_index < linter_mod.rule_names.len) linter_mod.rule_names[diag.rule_index] else "unknown";
                     const out = std.fmt.allocPrint(arena, "{s}:{d}:{d}: {s}({s})\n", .{
-                        file_path, cur_line + 1, column + 1, diag.severity.symbol(), rn,
+                        file_path, loc.line + 1, loc.column + 1, diag.severity.symbol(), rn,
                     }) catch continue;
                     output_buf.appendSlice(arena, out) catch {};
                 },

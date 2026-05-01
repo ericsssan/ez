@@ -207,7 +207,14 @@ fn tryParseDetailed(allocator: std.mem.Allocator, source: []const u8, is_module:
     var tree = Parser.parseWithLanguage(allocator, source, tokens.slice(), .js, is_module) catch return .{ .has_error = true, .detail = .{ .kind = .parse, .count = 0 } };
     defer tree.deinit(allocator);
 
-    if (tree.errors.len > 0) return .{ .has_error = true, .detail = .{ .kind = .parse, .count = @intCast(tree.errors.len) } };
+    if (tree.errors.len > 0) {
+        if (std.mem.indexOf(u8, source, "BigInt literals as property keys") != null) {
+            for (tree.errors[0..@min(tree.errors.len, 5)]) |e| {
+                std.debug.print("  err span={d} \"{s}\"\n", .{e.span.start, e.message});
+            }
+        }
+        return .{ .has_error = true, .detail = .{ .kind = .parse, .count = @intCast(tree.errors.len) } };
+    }
 
     // Run semantic analysis to catch early errors (duplicate bindings, etc.)
     var sem = ez.semantic.SemanticAnalyzer.analyzeModule(allocator, &tree, is_module) catch return .{ .has_error = false, .detail = .{ .kind = .semantic, .count = 0 } };

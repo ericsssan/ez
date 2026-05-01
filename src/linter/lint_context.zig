@@ -43,12 +43,13 @@ pub const LintDiagnostic = struct {
     /// Format as "file:line:col: severity(rule-name)"
     pub fn format(
         self: *const LintDiagnostic,
+        line_starts: []const u32,
         source: []const u8,
         file_path: []const u8,
         rule_names: []const []const u8,
         writer: anytype,
     ) !void {
-        const loc = Location.fromOffset(source, self.span.start);
+        const loc = Location.fromLineStarts(line_starts, source, self.span.start);
         const name = if (self.rule_index < rule_names.len) rule_names[self.rule_index] else "unknown";
         try writer.print("{s}:{d}:{d}: {s}({s})\n", .{
             file_path,

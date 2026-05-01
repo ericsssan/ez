@@ -315,11 +315,11 @@ fn handleSemAndRules(ctx: *PoolCtx, file_idx: u32) void {
     var disables = InlineDisables.parseFromComments(
         arena, state.source, lex.comment_starts, lex.comment_ends, lex.comment_kinds,
     ) catch InlineDisables.empty();
-    const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, state.source) catch raw_diagnostics;
+    const diagnostics = linter_mod.filterByInlineDisables(arena, raw_diagnostics, &disables, lex.line_starts, state.source) catch raw_diagnostics;
 
     // Format diagnostics into output string via shared ParallelRunner helper.
     const formatted = ctx.runner.formatDiagnostics(
-        arena, state.file_path, state.source, &tree, diagnostics,
+        arena, state.file_path, lex.line_starts, state.source, &tree, diagnostics,
     );
     ctx.runner.appendResult(.{
         .file_path = state.file_path,

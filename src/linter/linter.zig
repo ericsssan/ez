@@ -361,6 +361,7 @@ pub fn filterByInlineDisables(
     allocator: std.mem.Allocator,
     diagnostics: []const LintDiagnostic,
     disables: *const InlineDisables,
+    line_starts: []const u32,
     source: []const u8,
 ) ![]const LintDiagnostic {
     if (disables.directives.len == 0) return try allocator.dupe(LintDiagnostic, diagnostics);
@@ -369,7 +370,7 @@ pub fn filterByInlineDisables(
     errdefer filtered.deinit(allocator);
 
     for (diagnostics) |diag| {
-        const loc = Location.fromOffset(source, diag.span.start);
+        const loc = Location.fromLineStarts(line_starts, source, diag.span.start);
         const rn = if (diag.rule_index < rule_names.len) rule_names[diag.rule_index] else "";
         if (!disables.isSuppressed(loc.line, rn)) {
             try filtered.append(allocator, diag);
