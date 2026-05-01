@@ -125,7 +125,7 @@ pub fn main(init: std.process.Init) !void {
         printStats("+ convertSpansToUtf16", &times, source.len);
     }
 
-    // ── Phase 4: + computeTraversal ─────────────────────────────────
+    // ── Phase 4: + buildTraversal ─────────────────────────────────
     {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
         for (0..WARMUP) |_| {
@@ -135,7 +135,7 @@ pub fn main(init: std.process.Init) !void {
             var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch continue;
         }
         for (0..ITERATIONS) |iter| {
             fba.reset();
@@ -151,14 +151,14 @@ pub fn main(init: std.process.Init) !void {
             };
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch {
                 times[iter] = 0;
                 continue;
             };
             const t1 = std.Io.Timestamp.now(io, .boot);
             times[iter] = @intCast(t0.durationTo(t1).nanoseconds);
         }
-        printStats("+ computeTraversal", &times, source.len);
+        printStats("+ buildTraversal", &times, source.len);
     }
 
     // ── Phase 5: + SemanticAnalysis ─────────────────────────────────
@@ -172,7 +172,7 @@ pub fn main(init: std.process.Init) !void {
             var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch continue;
             if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
@@ -194,7 +194,7 @@ pub fn main(init: std.process.Init) !void {
             };
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch {
                 times[iter] = 0;
                 continue;
             };
@@ -219,7 +219,7 @@ pub fn main(init: std.process.Init) !void {
             var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch unreachable;
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {};
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch {};
             const after_parse = fba.end_index;
             if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(fba.allocator(), &tree, .{})) |sem_result| {
                 var sem = sem_result;
@@ -249,7 +249,7 @@ pub fn main(init: std.process.Init) !void {
             var tree = Parser.parse(fba.allocator(), source, tok.tokens.slice()) catch continue;
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch continue;
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch continue;
             if (semantic_mod.SemanticAnalyzer.analyze(fba.allocator(), &tree)) |sem_result| {
                 var sem = sem_result;
                 sem.deinit(fba.allocator());
@@ -271,7 +271,7 @@ pub fn main(init: std.process.Init) !void {
             };
             defer tree.deinit(fba.allocator());
             _ = js_buffer.convertSpansToUtf16(source, tok.tokens.slice().items(.start));
-            _ = parent_builder.computeTraversal(&tree, fba.allocator()) catch {
+            _ = parent_builder.buildTraversal(&tree, fba.allocator()) catch {
                 times[iter] = 0;
                 continue;
             };

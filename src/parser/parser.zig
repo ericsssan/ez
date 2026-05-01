@@ -12,6 +12,7 @@ const Span = @import("span.zig").Span;
 const Diagnostic = @import("diagnostic.zig").Diagnostic;
 const Severity = @import("diagnostic.zig").Severity;
 
+const parent_builder = @import("parent_builder.zig");
 const TokenList = Ast.TokenList;
 const scope_events_mod = @import("scope_events.zig");
 const ScopeEventStream = scope_events_mod.EventStream;
@@ -242,6 +243,9 @@ pub const Parser = struct {
     /// emitReference fires per-reference (~1.8M times on typescript.js) and
     /// each put incurred wyhash + bucket probe + amortized grow.
     ref_event_idx: []u32 = &.{},
+    /// Per-node end token: last consumed token index at addNode time.
+    /// Parallel to nodes; pre-allocated to estimated_node_count in parseInternal.
+    node_end_toks: []u32 = &.{},
     /// Suppression flag for param-declare emission while we're speculatively
     /// parsing parenthesized content that MIGHT be an arrow's parameter list.
     /// When the arrow is confirmed we walk the params SubRange and emit
@@ -254,6 +258,9 @@ pub const Parser = struct {
     /// `.function_decl` when the NFE name matches the outer var name —
     /// matches ESLint's fn_expr_exceptions rule (affects no-shadow).
     decl_name_text: []const u8 = &.{},
+    /// Pre-allocated buffer for parent pointers, written at addNode time.
+    /// Kept at nodes.capacity during parsing; trimmed to nodes.len on transfer to Ast.parents.
+    parents_buf: []u32 = &.{},
     gpa: std.mem.Allocator,
     max_nodes: usize,
 
@@ -495,6 +502,8 @@ pub const Parser = struct {
         // If events were requested, hand the stream back; otherwise free it.
         defer if (events_out == null) p.scope_events.deinit(allocator);
         defer if (p.ref_event_idx.len > 0) allocator.free(p.ref_event_idx);
+        defer if (p.node_end_toks.len > 0) allocator.free(p.node_end_toks);
+        defer if (p.parents_buf.len > 0) allocator.free(p.parents_buf);
         defer p.private_decls.deinit(allocator);
         defer p.private_refs.deinit(allocator);
         defer p.exported_names.deinit(allocator);
@@ -535,6 +544,12 @@ pub const Parser = struct {
         const estimated_extra_count: usize = @max(sizing_count * 3 / 4, 1);
         try p.nodes.ensureTotalCapacity(allocator, estimated_node_count);
         p.refreshNodePtrs();
+        // Allocate to the actual (rounded-up) capacity so the hot path in addNode
+        // is always in-bounds. nodes.capacity may exceed estimated_node_count.
+        p.node_end_toks = try allocator.alloc(u32, p.nodes.capacity);
+        p.parents_buf = try allocator.alloc(u32, p.nodes.capacity);
+        // NONE = 0xFFFF_FFFF, not 0; cannot rely on OS zero-pages.
+        @memset(p.parents_buf, parent_builder.NONE);
         try p.extra_data.ensureTotalCapacity(allocator, estimated_extra_count);
         // Scratch is a stack used by statement-list / arg-list parsers. Peak
         // depth depends on the largest block in the file (could be thousands
@@ -667,6 +682,18 @@ pub const Parser = struct {
         errdefer if (ast_events_cap > 0)
             allocator.free(ast_events.ptr[0..ast_events_cap]);
 
+        // Transfer node_end_toks to Ast (only first nodes.len entries are valid).
+        const final_node_count = p.nodes.len;
+        const ast_node_end_toks: []const u32 = p.node_end_toks[0..final_node_count];
+        const ast_node_end_toks_cap: u32 = @intCast(p.node_end_toks.len);
+        p.node_end_toks = &.{}; // hand off; prevent defer from double-freeing
+        errdefer if (ast_node_end_toks_cap > 0) allocator.free(ast_node_end_toks.ptr[0..ast_node_end_toks_cap]);
+
+        const ast_parents: []const u32 = p.parents_buf[0..final_node_count];
+        const ast_parents_cap: u32 = @intCast(p.parents_buf.len);
+        p.parents_buf = &.{};
+        errdefer if (ast_parents_cap > 0) allocator.free(ast_parents.ptr[0..ast_parents_cap]);
+
         return Ast{
             .source = source,
             .nodes = p.nodes.toOwnedSlice(),
@@ -676,6 +703,10 @@ pub const Parser = struct {
             .errors = errors,
             .scope_events = ast_events,
             .scope_events_cap = ast_events_cap,
+            .node_end_toks = ast_node_end_toks,
+            .node_end_toks_cap = ast_node_end_toks_cap,
+            .parents = ast_parents,
+            .parents_cap = ast_parents_cap,
         };
     }
 
@@ -895,6 +926,14 @@ pub const Parser = struct {
                     @memset(self.ref_event_idx[old_len..], 0);
                 }
             }
+            if (self.node_end_toks.len < self.nodes.capacity) {
+                self.node_end_toks = try self.gpa.realloc(self.node_end_toks, self.nodes.capacity);
+            }
+            if (self.parents_buf.len < self.nodes.capacity) {
+                const old_plen = self.parents_buf.len;
+                self.parents_buf = try self.gpa.realloc(self.parents_buf, self.nodes.capacity);
+                @memset(self.parents_buf[old_plen..], parent_builder.NONE);
+            }
         }
         // Write via hoisted raw pointers — skips MultiArrayList's internal
         // pointer-chain lookups (fields[0], fields[1], fields[2]).
@@ -902,6 +941,9 @@ pub const Parser = struct {
         self.node_main_token_ptr[result] = node.main_token;
         self.node_data_ptr[result]       = node.data;
         self.nodes.len += 1;
+        self.node_end_toks[result] = if (self.tok_i > 0) @intCast(self.tok_i - 1) else 0;
+        std.debug.assert(self.parents_buf.len > result);
+        parent_builder.setChildParents(self.parents_buf, self.extra_data.items, node.tag, node.data, result);
         return NodeIndex.fromInt(result);
     }
 
@@ -1752,21 +1794,27 @@ pub const Parser = struct {
         const range = try self.listToSubRange(stmts);
 
         // Fill in root node data: lhs/rhs encode SubRange start/end.
-        self.node_data_ptr[0] = .{
+        const root_data = Node.Data{
             .lhs = NodeIndex.fromInt(range.start),
             .rhs = NodeIndex.fromInt(range.end),
         };
+        self.node_data_ptr[0] = root_data;
+        // Root is pre-allocated via nodes.append (not addNode), so setChildParents
+        // must be called manually to populate parents_buf for top-level statements.
+        parent_builder.setChildParents(self.parents_buf, self.extra_data.items, .root, root_data, 0);
+        self.node_end_toks[0] = if (self.tok_i > 0) @intCast(self.tok_i - 1) else 0;
 
         // Validate that named exports without 'from' refer to declared bindings.
         // Spec: It is a SyntaxError if any element of ExportedBindings does
         // not also occur in either VarDeclaredNames or LexicallyDeclaredNames.
+        // O(N+E) vs naive O(N×E): N can be 400+ on large bundles like angular-core.mjs.
         if (self.is_module and self.pending_export_local_toks.items.len > 0 and
             self.emit_scope_events)
         {
-            const evs_ee = self.ev_ptr[0..self.ev_len][program_scope_ev + 1 ..];
-            for (self.pending_export_local_toks.items) |tok_idx| {
-                const want = self.tokenText(tok_idx);
-                var found = false;
+            var decl_names = std.StringHashMapUnmanaged(void){};
+            defer decl_names.deinit(self.gpa);
+            {
+                const evs_ee = self.ev_ptr[0..self.ev_len][program_scope_ev + 1 ..];
                 var fn_stack: [128]bool = undefined;
                 var stack_n: usize = 0;
                 var fn_d: i32 = 0;
@@ -1790,16 +1838,16 @@ pub const Parser = struct {
                             const is_var_at_module = (bk == .@"var" and fn_d == 0);
                             if (stack_n == 0 or is_var_at_module) {
                                 const dn_tok = self.node_main_token_ptr[@intCast(ev.node)];
-                                if (std.mem.eql(u8, self.tokenText(dn_tok), want)) {
-                                    found = true;
-                                    break;
-                                }
+                                try decl_names.put(self.gpa, self.tokenText(dn_tok), {});
                             }
                         },
                         else => {},
                     }
                 }
-                if (!found and !self.is_ts) {
+            }
+            for (self.pending_export_local_toks.items) |tok_idx| {
+                const want = self.tokenText(tok_idx);
+                if (!decl_names.contains(want) and !self.is_ts) {
                     const span = Span{ .start = self.tok_starts_ptr[tok_idx], .end = self.tok_starts_ptr[tok_idx] };
                     try self.emitDiagnostic(span, "Export '{s}' is not declared in the module", .{want});
                     return;

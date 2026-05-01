@@ -117,7 +117,16 @@ pub const SemanticAnalyzer = struct {
             .skip_ref_ranges = !opts.build_ref_ranges,
         });
         if (opts.build_parents) {
-            result.parent_indices = try parent_builder.computeParents(ast, allocator);
+            if (ast.parents.len > 0) {
+                result.parent_indices = try allocator.dupe(u32, ast.parents);
+            } else {
+                const tr = try parent_builder.buildTraversal(ast, allocator);
+                allocator.free(tr.pre_order);
+                allocator.free(tr.post_order);
+                allocator.free(tr.dfs_events);
+                allocator.free(tr.min_tok);
+                result.parent_indices = tr.parents;
+            }
         }
         computeLoopBodyExitability(ast, result.loop_exit_reachable, result.node_reachable);
         return result;

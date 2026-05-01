@@ -149,7 +149,7 @@ fn fuzzFullPipeline(allocator: std.mem.Allocator, input: []const u8, lang: Langu
     allocator.free(diags);
 }
 
-// Exercises parent_builder.computeTraversal — the DFS/parent-index pass that
+// Exercises parent_builder.buildTraversal — the traversal-order pass that
 // the NAPI entry point runs between parse and semantic analysis.
 fn fuzzTraversal(allocator: std.mem.Allocator, input: []const u8, lang: Language) void {
     var result = Lexer.tokenizeWithLanguage(allocator, input, lang) catch return;
@@ -159,7 +159,7 @@ fn fuzzTraversal(allocator: std.mem.Allocator, input: []const u8, lang: Language
         lang == .ts or lang == .tsx,
     ) catch return;
     defer tree.deinit(allocator);
-    const traversal = parent_builder.computeTraversal(&tree, allocator) catch return;
+    const traversal = parent_builder.buildTraversal(&tree, allocator) catch return;
     allocator.free(traversal.parents);
     allocator.free(traversal.pre_order);
     allocator.free(traversal.post_order);

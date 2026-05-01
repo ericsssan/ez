@@ -171,7 +171,7 @@ fn parseImpl(
 
     // Compute parent indices and DFS traversal orders in a single pass.
     // All three arrays are allocated into the bump region.
-    const traversal = parent_builder.computeTraversal(&tree, alloc) catch |e| return e;
+    const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| return e;
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
     const pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
@@ -221,8 +221,7 @@ fn parseImpl(
     for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
     const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
 
-    // Compute line starts (UTF-8 byte offsets).
-    const line_starts = try js_buffer.computeLineStarts(source, alloc);
+    const line_starts = lex_result.line_starts;
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Collect JSX position-override nodes (byte offsets) for UTF-16 conversion.
@@ -279,22 +278,19 @@ fn parseImpl(
     // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
 
     // Compute node start/end positions (UTF-16) — uses already-converted tok_starts/tok_ends.
-    const token_count: u32 = @intCast(tokens.len);
-    const node_pos = try js_buffer.computeNodePositions(
+    const node_pos = try js_buffer.buildNodeSpans(
         alloc,
         tree.nodes.items(.tag),
-        tree.nodes.items(.main_token),
-        traversal.parents,
         tokens.slice().items(.tag),
         tok_starts,
         tok_ends,
         traversal.pre_order,
+        tree.node_end_toks,
+        traversal.min_tok,
         node_count,
-        token_count,
     );
 
     // Override positions for jsx_gap_node and jsx_text_node.
-    // computeNodePositions uses main_token alone — wrong for text/gap nodes.
     var needs_resort = false;
     for (0..node_count) |i| {
         const nt = node_tag_items[i];
@@ -454,7 +450,7 @@ fn parseAndLintImpl(
         .emit_events = true,
     }) catch |e| return e;
 
-    const traversal = parent_builder.computeTraversal(&tree, alloc) catch |e| return e;
+    const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| return e;
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
     const pre_order_offset      = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset     = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
@@ -534,7 +530,7 @@ fn parseAndLintImpl(
     for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
     const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
 
-    const line_starts = try js_buffer.computeLineStarts(source, alloc);
+    const line_starts = lex_result.line_starts;
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
 
     // Collect JSX position-override nodes for UTF-16 conversion (see parseImpl for details).
@@ -585,18 +581,16 @@ fn parseAndLintImpl(
     var spans2 = [_][]u32{ tok_starts, tok_ends, cs2, ce2, line_starts, gap_starts_u322, gap_ends_u322, text_gap_starts_u322 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans2);
 
-    const token_count: u32 = @intCast(tokens.len);
-    const node_pos = try js_buffer.computeNodePositions(
+    const node_pos = try js_buffer.buildNodeSpans(
         alloc,
         tree.nodes.items(.tag),
-        tree.nodes.items(.main_token),
-        traversal.parents,
         tokens.slice().items(.tag),
         tok_starts,
         tok_ends,
         traversal.pre_order,
+        tree.node_end_toks,
+        traversal.min_tok,
         node_count,
-        token_count,
     );
 
     // Override positions for jsx_gap_node and jsx_text_node.

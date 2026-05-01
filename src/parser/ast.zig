@@ -715,6 +715,15 @@ pub const Ast = struct {
     scope_events: []const ScopeEvent = &.{},
     /// True allocation capacity behind scope_events (>= scope_events.len).
     scope_events_cap: u32 = 0,
+    /// Per-node last-consumed token index, captured at addNode time.
+    /// node_end_toks[i] = last token index consumed for node i.
+    /// tok_ends[node_end_toks[i]] gives the correct ESTree end byte position.
+    node_end_toks: []const u32 = &.{},
+    node_end_toks_cap: u32 = 0,
+    /// Parent node index for every node (NONE = no parent, i.e. root).
+    /// Pre-populated by the parser at addNode time.
+    parents: []const u32 = &.{},
+    parents_cap: u32 = 0,
 
     pub const NodeList = std.MultiArrayList(Node);
     pub const TokenList = std.MultiArrayList(struct {
@@ -728,6 +737,16 @@ pub const Ast = struct {
         /// Set by the lexer; lets the parser skip a memchr scan in isStrictReservedWord.
         has_unicode_escape: bool = false,
     });
+
+    // Free a slice that may have been allocated with extra capacity.
+    // When cap > 0, the live slice is a sub-slice of a larger backing allocation.
+    inline fn freeCapped(allocator: std.mem.Allocator, slice: anytype, cap: u32) void {
+        if (cap > 0) {
+            allocator.free(slice.ptr[0..cap]);
+        } else if (slice.len > 0) {
+            allocator.free(slice);
+        }
+    }
 
     pub fn deinit(self: *Ast, allocator: std.mem.Allocator) void {
         self.nodes.deinit(allocator);
@@ -745,11 +764,9 @@ pub const Ast = struct {
             allocator.free(err.message);
         }
         allocator.free(self.errors);
-        if (self.scope_events_cap > 0) {
-            allocator.free(self.scope_events.ptr[0..self.scope_events_cap]);
-        } else if (self.scope_events.len > 0) {
-            allocator.free(self.scope_events);
-        }
+        freeCapped(allocator, self.scope_events, self.scope_events_cap);
+        freeCapped(allocator, self.node_end_toks, self.node_end_toks_cap);
+        freeCapped(allocator, self.parents, self.parents_cap);
         self.* = undefined;
     }
 

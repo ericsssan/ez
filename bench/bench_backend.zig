@@ -92,7 +92,7 @@ fn timeOnce(gpa: std.mem.Allocator, source: []const u8, io: *std.Io) !Timings {
     defer sem.deinit(alloc);
     const t3 = std.Io.Timestamp.now(io, .boot);
 
-    const traversal = try parent_builder.computeTraversal(&tree, alloc);
+    const traversal = try parent_builder.buildTraversal(&tree, alloc);
     _ = traversal;
     const t4 = std.Io.Timestamp.now(io, .boot);
 

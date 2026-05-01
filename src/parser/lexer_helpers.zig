@@ -34,7 +34,7 @@ pub const TokenizeResult = struct {
     comment_ends: []const u32,
     comment_kinds: []const u8,
     comment_count: u32,
-    line_starts: []const u32,
+    line_starts: []u32,
     /// Precomputed wyhash(0, name) for each token at index i where tag == .identifier.
     /// Zero for all other token kinds. Length == tokens.capacity (may exceed tokens.len).
 

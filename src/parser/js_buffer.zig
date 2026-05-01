@@ -1055,59 +1055,80 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     // SIMD scan decides it.  Typical JS/TS source is pure ASCII.
     if (isAllAscii(source)) return @intCast(source.len);
 
-    var byte_pos: u32 = 0;
-    var utf16_pos: u32 = 0;
-    // Cursors: one per array, tracking which element to convert next.
+    // Chunk-scan algorithm: process source in 16-byte SIMD blocks.
+    //
+    // For each ASCII block (all bytes < 0x80): byte_pos == utf16_pos + diff, where
+    // `diff = byte_pos - utf16_pos` accumulates only at non-ASCII chars and stays
+    // constant across ASCII runs. Positions that fall in ASCII blocks only need
+    // `value -= diff` (or no-op when diff == 0, before the first non-ASCII char).
+    // For non-ASCII blocks: process byte-by-byte, updating diff per codepoint.
+    //
+    // This avoids the per-position inner byte scan (1–6 bytes each) that the
+    // previous merge-scan incurred on every cursor step for closely-packed positions.
     const MAX_ARRAYS = 16;
     var cursors: [MAX_ARRAYS]usize = .{0} ** MAX_ARRAYS;
     const n = @min(arrays.len, MAX_ARRAYS);
 
-    // Process until all cursors are exhausted.
-    while (true) {
-        // Find the smallest byte offset across all arrays.
-        var min_target: u32 = @intCast(source.len);
-        var any_left = false;
-        for (0..n) |a| {
-            if (cursors[a] < arrays[a].len) {
-                any_left = true;
-                const t = arrays[a][cursors[a]];
-                if (t < min_target) min_target = t;
+    var byte_pos: u32 = 0;
+    var utf16_pos: u32 = 0;
+
+    while (byte_pos + 16 <= @as(u32, @intCast(source.len))) {
+        const next: u32 = byte_pos + 16;
+        const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
+        if (@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) {
+            // ASCII block: diff is constant across this block.
+            // utf16(P) = P - diff  for P in [byte_pos, next).
+            const diff = byte_pos - utf16_pos;
+            if (diff == 0) {
+                // No rewrite needed: utf16 == byte. Just advance cursors.
+                for (0..n) |a| {
+                    while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] < next)
+                        cursors[a] += 1;
+                }
+            } else {
+                // Subtract diff from all positions in this block.
+                for (0..n) |a| {
+                    while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] < next) {
+                        arrays[a][cursors[a]] -= diff;
+                        cursors[a] += 1;
+                    }
+                }
             }
-        }
-        if (!any_left) break;
-
-        // Advance scanner to min_target.
-        const simd_end = @min(min_target, @as(u32, @intCast(source.len)));
-        while (byte_pos + 16 <= simd_end) {
-            const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
-            if (!@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) break;
-            utf16_pos += 16;
-            byte_pos += 16;
-        }
-        while (byte_pos < min_target and byte_pos < source.len) {
-            utf16_pos += utf16Advance(source, &byte_pos);
-        }
-
-        // Update all cursors that point to min_target.
-        for (0..n) |a| {
-            while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == min_target) {
-                arrays[a][cursors[a]] = utf16_pos;
-                cursors[a] += 1;
+            byte_pos = next;
+            utf16_pos = next - diff; // diff unchanged across ASCII block
+        } else {
+            // Non-ASCII block: byte-by-byte to track codepoint boundaries.
+            const block_end = next;
+            while (byte_pos < block_end and byte_pos < source.len) {
+                // Update any cursors sitting exactly at byte_pos.
+                for (0..n) |a| {
+                    while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == byte_pos) {
+                        arrays[a][cursors[a]] = utf16_pos;
+                        cursors[a] += 1;
+                    }
+                }
+                utf16_pos += utf16Advance(source, &byte_pos);
             }
         }
     }
 
-    // Scan remaining source for total UTF-16 length.
+    // Tail: remaining bytes after the last full 16-byte block.
     while (byte_pos < source.len) {
-        if (byte_pos + 16 <= source.len) {
-            const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
-            if (@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) {
-                utf16_pos += 16;
-                byte_pos += 16;
-                continue;
+        for (0..n) |a| {
+            while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == byte_pos) {
+                arrays[a][cursors[a]] = utf16_pos;
+                cursors[a] += 1;
             }
         }
         utf16_pos += utf16Advance(source, &byte_pos);
+    }
+
+    // Flush any cursors pointing past end-of-source.
+    for (0..n) |a| {
+        while (cursors[a] < arrays[a].len) {
+            arrays[a][cursors[a]] = utf16_pos;
+            cursors[a] += 1;
+        }
     }
 
     return utf16_pos;
@@ -1159,57 +1180,44 @@ const token_mod = @import("token.zig");
 /// 1. Propagate max/min main_token through parent pointers
 /// 2. Bracket matching via token tags
 /// 3. Extend each node's end past maxTok to include trailing ; and matched brackets
-pub fn computeNodePositions(
+pub fn buildNodeSpans(
     alloc: std.mem.Allocator,
     node_tags: []const ast_mod.Node.Tag,
-    main_tokens: []const u32,
-    parent_indices: []const u32,
     tok_tags: []const token_mod.Tag,
     tok_starts: []const u32,
     tok_ends: []const u32,
     pre_order: []const u32,
+    end_toks: []const u32,    // tree.node_end_toks: last consumed token per node
+    min_tok_in: []const u32,  // traversal.min_tok: leftmost token per subtree
     node_count: u32,
-    token_count: u32,
 ) !struct { starts: []u32, ends: []u32, max_tok: []u32, min_tok: []u32, sorted_by_start: []u32 } {
     const n: usize = node_count;
-    const tc: usize = token_count;
-    const NONE: u32 = 0xFFFFFFFF;
 
-    // maxTok[i] = highest main_token index in node i's subtree
-    const maxTok = try alloc.alloc(u32, n);
-    @memcpy(maxTok, main_tokens[0..n]);
-    for (1..n) |i| {
-        const p = parent_indices[i];
-        if (p != NONE and maxTok[i] > maxTok[p]) maxTok[p] = maxTok[i];
-    }
+    // min_tok: copy from traversal result (already bottom-up propagated there).
+    const min_tok = try alloc.alloc(u32, n);
+    @memcpy(min_tok, min_tok_in[0..n]);
 
-    // minMainTok[i] = lowest main_token index in node i's subtree
-    const minTok = try alloc.alloc(u32, n);
-    @memcpy(minTok, main_tokens[0..n]);
-    for (1..n) |i| {
-        const p = parent_indices[i];
-        if (p != NONE and minTok[i] < minTok[p]) minTok[p] = minTok[i];
-    }
+    // max_tok = end_toks directly — the parser builds bottom-up left-to-right, so
+    // end_toks[parent] >= end_toks[child] >= main_token[child]; no propagation needed.
+    const max_tok = try alloc.alloc(u32, n);
+    @memcpy(max_tok, end_toks[0..n]);
 
-    // node_start_pos[i] = tok_starts[minTok[i]]
+    // node_starts = tok_starts[min_tok[i]]
     const node_starts = try alloc.alloc(u32, n);
-    for (node_starts, minTok[0..n]) |*ns, mt| ns.* = tok_starts[mt];
+    for (node_starts, min_tok[0..n]) |*ns, mt| ns.* = tok_starts[mt];
 
-    // Adjust MethodDefinition start to include get/set/static/async keywords.
-    // These modifier tokens precede the method name but aren't any child's main token.
-    // Adjust MethodDefinition/PropertyDefinition start to include modifier keywords.
-    // get/set/static/async/* precede the method name but aren't any child's main token.
-    // Also covers getter_def, setter_def, constructor_def and computed_ variants.
+    // Adjust MethodDefinition/PropertyDefinition start to include modifier keywords
+    // (get/set/static/async/*) that precede the name and aren't any child's main_token.
+    // JSX element/fragment: `<` is consumed by the caller, not tracked in min_tok.
     for (0..n) |i| {
-        const tag = node_tags[i];
-        switch (tag) {
+        switch (node_tags[i]) {
             .method_def, .computed_method_def,
             .getter_def, .computed_getter_def,
             .setter_def, .computed_setter_def,
             .constructor_def,
             .property_def, .computed_property_def,
             => {
-                var t = minTok[i];
+                var t = min_tok[i];
                 while (t > 0) {
                     const pt = tok_tags[t - 1];
                     if (pt == .kw_get or pt == .kw_set or pt == .kw_static or
@@ -1218,13 +1226,10 @@ pub fn computeNodePositions(
                         t -= 1;
                     } else break;
                 }
-                if (t != minTok[i]) node_starts[i] = tok_starts[t];
+                if (t != min_tok[i]) node_starts[i] = tok_starts[t];
             },
-            // JSX element/fragment: `<` is consumed by the caller of parseJsxElement/
-            // parseJsxFragment; it's not any node's main_token, so minTok[i] points
-            // to the tag name (or `>` for fragments). Back up by 1 token to include `<`.
             .jsx_element, .jsx_opening_element, .jsx_self_closing, .jsx_fragment => {
-                const mt = minTok[i];
+                const mt = min_tok[i];
                 if (mt > 0 and tok_tags[mt - 1] == .less_than) {
                     node_starts[i] = tok_starts[mt - 1];
                 }
@@ -1233,275 +1238,10 @@ pub fn computeNodePositions(
         }
     }
 
-    // Bracket matching: closeOpen[k] = opener token index for closing bracket k
-    const closeOpen = try alloc.alloc(u32, tc);
-    @memset(closeOpen, NONE);
-    // Stack for bracket matching (max depth = tc)
-    var stack_buf = try alloc.alloc(u32, tc);
-    var stack_top: usize = 0;
-    for (0..tc) |j| {
-        const tt = tok_tags[j];
-        if (tt == .l_brace or tt == .l_bracket or tt == .l_paren) {
-            stack_buf[stack_top] = @intCast(j);
-            stack_top += 1;
-        }
-        // Closers: } ] ) and template tokens starting with } (template_middle, template_tail)
-        // This mirrors JS _computeAllEndPos which matches by source character, not token tag.
-        else if (tt == .r_brace or tt == .r_bracket or tt == .r_paren or
-            tt == .template_middle or tt == .template_tail)
-        {
-            if (stack_top > 0) {
-                stack_top -= 1;
-                closeOpen[j] = stack_buf[stack_top];
-            }
-        }
-    }
-
-    // isMainTok[j] = 1 if token j is the main token of some AST node.
-    // Exclude jsx_text_node: gap-type JSXText nodes use the PRECEDING regular token
-    // as their main_token (the actual text is stored in data.lhs/rhs). Setting
-    // isMainTok on that preceding token (e.g. `}`) would cause the scan of the
-    // JSXExpressionContainer to break before including the closing `}`.
-    const isMainTok = try alloc.alloc(u8, tc);
-    @memset(isMainTok, 0);
-    for (0..n) |i| {
-        if (node_tags[i] != .jsx_text_node and node_tags[i] != .jsx_gap_node) isMainTok[main_tokens[i]] = 1;
-    }
-
-    // Compute node end positions
+    // node_ends = tok_ends[end_toks[i]]. No propagation needed: same bottom-up
+    // invariant as max_tok means tok_ends[end_toks[parent]] >= tok_ends[end_toks[child]].
     const node_ends = try alloc.alloc(u32, n);
-    for (0..n) |i| {
-        const base = maxTok[i];
-        var ext_end = tok_ends[base];
-        const tag = node_tags[i];
-
-        // SequenceExpression / TemplateElement: no extension
-        if (tag == .sequence_expr or tag == .template_element) {
-            node_ends[i] = ext_end;
-            continue;
-        }
-
-        // MethodDefinition / StaticBlock / FunctionExpression / ClassExpression /
-        // ArrowFunction: extend through closing brackets but stop including
-        // non-bracket tokens after the outermost `}`.
-        // - MethodDef: `;` after `a() {}` is NOT part of the node.
-        // - FunctionExpression: `;` after `function f() {}` must NOT be included
-        //   (only `}` closes the node), otherwise range check in rules like
-        //   no-shadow's isFunctionNameInitializerException breaks.
-        // - ArrowFunction with block body: same as FunctionExpression.
-        // - ClassExpression: `;` after `class {}` must NOT be included.
-        // Note: arrow functions with expression bodies (no `}`) will extend through
-        // the expression but stop before the trailing `;` via found_outer_brace=false
-        // breaking on the next non-bracket after the expression ends (isMainTok).
-        if (tag == .method_def or tag == .computed_method_def or
-            tag == .getter_def or tag == .computed_getter_def or
-            tag == .setter_def or tag == .computed_setter_def or
-            tag == .constructor_def or tag == .static_block or
-            tag == .fn_expr or tag == .async_fn_expr or
-            tag == .generator_fn_expr or tag == .async_generator_fn_expr or
-            tag == .class_expr or
-            tag == .arrow_fn or tag == .async_arrow_fn)
-        {
-            const sp = tok_starts[minTok[i]];
-            var found_outer_brace = false;
-            var j2 = base + 1;
-            while (j2 < tc) {
-                if (isMainTok[j2] == 1) break;
-                const tt2 = tok_tags[j2];
-                if (tt2 == .r_brace or tt2 == .r_bracket or tt2 == .r_paren or
-                    tt2 == .template_middle or tt2 == .template_tail)
-                {
-                    const opener2 = closeOpen[j2];
-                    if (opener2 != NONE and tok_starts[opener2] >= sp) {
-                        const te2 = tok_ends[j2];
-                        if (te2 > ext_end) ext_end = te2;
-                        // Track outermost `}` — once we close the method body,
-                        // stop including further non-bracket tokens (like `;`).
-                        if (tt2 == .r_brace) found_outer_brace = true;
-                    } else break;
-                } else if (found_outer_brace) {
-                    break; // After method body `}`, don't include `;`
-                } else {
-                    const te2 = tok_ends[j2];
-                    if (te2 > ext_end) ext_end = te2;
-                }
-                j2 += 1;
-            }
-            node_ends[i] = ext_end;
-            continue;
-        }
-
-        // Determine if this node is a statement/declaration (owns trailing `;`)
-        // vs an expression/identifier (should NOT include trailing operators).
-        // expression_stmt stops at `;` to prevent consuming sibling tokens
-        // like `else` in `if (cond) expr; else ...`.
-        const is_expr_stmt = tag == .expression_stmt;
-        // var/let/const as the init of a for-statement: don't scan forward — the `;`
-        // separators and the closing `)` of the for(...) must not be included in the range.
-        const is_for_init_decl = (tag == .var_decl or tag == .let_decl or tag == .const_decl) and blk: {
-            const pi = parent_indices[i];
-            break :blk pi != NONE and node_tags[pi] == .for_stmt;
-        };
-        const is_stmt = !is_for_init_decl and switch (tag) {
-            .expression_stmt, .var_decl, .let_decl, .const_decl, .debugger_stmt,
-            .return_stmt, .throw_stmt, .break_stmt, .break_label, .continue_stmt, .continue_label,
-            .do_while_stmt, .import_decl, .export_named, .export_named_from, .export_all,
-            .export_default_expr, .export_default_fn, .export_default_class,
-            .property_def, .computed_property_def,
-            .ts_type_alias_decl, .ts_interface_decl, .ts_enum_decl, .ts_declare_function,
-            .root, .block_stmt, .class_body, .class_decl,
-            .fn_decl, .async_fn_decl,
-            .generator_fn_decl, .async_generator_fn_decl,
-            .if_stmt, .if_else_stmt, .while_stmt, .for_stmt,
-            .for_in_stmt, .for_of_stmt, .for_await_of_stmt,
-            .switch_stmt, .try_stmt, .with_stmt, .labeled_stmt,
-            .catch_clause, .switch_case, .switch_default,
-            // Import/export specifiers: include `as <name>` trailing tokens
-            .import_specifier, .import_default_specifier, .import_namespace_specifier,
-            .export_specifier,
-            => true,
-            else => false,
-        };
-
-        const start_p = tok_starts[minTok[i]];
-        var j = base + 1;
-        // For arrays/objects, continue through interior tokens to find the closing bracket.
-        // Object literals/patterns need this because their maxTok may be inside a
-        // getter/setter body, with non-bracket tokens (`;`) between it and the
-        // object's closing `}`.
-        var is_array = tag == .array_literal or tag == .array_pattern;
-        var is_object = tag == .object_literal or tag == .object_pattern;
-        // NewExpression / OptionalCall (no args): maxTok is the callee's last main token,
-        // need to extend through the `()` argument list to include the closing `)`.
-        // For a simple callee (new A()), base+1 is directly `(`.
-        // For a parenthesized callee (new (new A)()), the callee's closing `)` tokens
-        // lie between base and the args `(`; scan past them to find the real `(`.
-        // Track args_open_tok so we break on the matching `)`, not an inner `)`.
-        var args_open_tok: u32 = NONE;
-        if (tag == .new_expr or tag == .optional_call_expr) {
-            var k: u32 = @intCast(base + 1);
-            while (k < tc and isMainTok[k] == 0 and tok_tags[k] == .r_paren) : (k += 1) {
-                // Only skip r_paren tokens whose opener is within this node's range.
-                const opener = closeOpen[k];
-                if (opener == NONE or tok_starts[opener] < start_p) break;
-            }
-            if (k < tc and tok_tags[k] == .l_paren) args_open_tok = k;
-        }
-        // For call_expr, main_token is the opening `(` of the argument list.
-        // If maxTok falls inside a complex argument (e.g., an arrow function with a
-        // block body), the extension loop may encounter a `;` between maxTok and the
-        // closing `)` and break early. Setting args_open_tok ensures we extend through
-        // all interior tokens until the matching `)`.
-        if (tag == .call_expr) {
-            args_open_tok = main_tokens[i];
-        }
-        var is_call = args_open_tok != NONE;
-        // Import/export specifiers: stop before `,` or `}` (don't consume siblings)
-        const is_specifier = tag == .import_specifier or tag == .import_default_specifier or
-            tag == .import_namespace_specifier or tag == .export_specifier;
-        // For class properties, stop after the first semicolon (don't include extras)
-        const is_property = tag == .property_def or tag == .computed_property_def;
-        // JSX elements/fragments: extend through the terminating `>` (not a bracket).
-        // The loop scans through `<`, `/`, identifier tokens, then stops after `>`.
-        const is_jsx_elem = tag == .jsx_element or tag == .jsx_opening_element or
-            tag == .jsx_self_closing or tag == .jsx_closing_element or
-            tag == .jsx_fragment;
-        while (j < tc) {
-            if (isMainTok[j] == 1) break;
-            const tt = tok_tags[j];
-            if (tt == .r_brace or tt == .r_bracket or tt == .r_paren or
-                tt == .template_middle or tt == .template_tail)
-            {
-                const opener = closeOpen[j];
-                if (opener != NONE and tok_starts[opener] >= start_p) {
-                    const te = tok_ends[j];
-                    if (te > ext_end) ext_end = te;
-                    // For arrays, stop after the matching closing bracket.
-                    // Only break on the `]` whose opener is THIS array's `[` (main_tokens[i]).
-                    // Inner arrays' `]` tokens have a different opener and must be skipped.
-                    if (is_array and tt == .r_bracket and opener == main_tokens[i]) {
-                        is_array = false;
-                        break;
-                    }
-                    // For objects, stop after the matching closing brace
-                    if (is_object and tt == .r_brace and opener == main_tokens[i]) {
-                        is_object = false;
-                        break;
-                    }
-                    // For new expressions, stop after the closing `)` of the arguments.
-                    // Use args_open_tok so we don't stop on the callee's paren `)`.
-                    if (is_call and tt == .r_paren and opener == args_open_tok) {
-                        is_call = false;
-                        // Extend maxTok to include the closing `)` so getTokens() returns it.
-                        if (j > maxTok[i]) maxTok[i] = @intCast(j);
-                        break;
-                    }
-                    // For block statements and class bodies, stop after the matching
-                    // closing `}` to prevent including `else`, `catch`, `finally`, etc.
-                    if ((tag == .block_stmt or tag == .class_body) and tt == .r_brace and opener == main_tokens[i]) {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            } else if (is_stmt) {
-                // Statement/declaration: include trailing `;` and other tokens.
-                // For expression statements specifically, stop after `;` to prevent
-                // consuming sibling tokens (e.g., `else` after `if (cond) expr;`).
-                // Also stop before keywords that can follow an expression statement
-                // without a semicolon (ASI): `else`, `catch`, `finally`, `while`.
-                // For property definitions in class bodies, only include the first `;`
-                // For specifiers: stop before `,` `}` `)` `from` to not consume siblings or import tail
-                if (is_specifier and (tt == .comma or tt == .r_brace or tt == .r_paren or tt == .kw_from)) break;
-                // `else` after any statement means the outer if-else owns it; don't include.
-                if (tt == .kw_else) break;
-                if (is_expr_stmt and (tt == .kw_catch or tt == .kw_finally or tt == .kw_while)) break;
-                const te = tok_ends[j];
-                if (te > ext_end) ext_end = te;
-                if ((is_expr_stmt or is_property) and tt == .semicolon) break;
-            } else if (is_array) {
-                // For arrays: continue past interior tokens (`;` inside function bodies,
-                // commas between elements) to reach the closing `]`. The `isMainTok`
-                // check above prevents scanning into sibling nodes.
-                const te = tok_ends[j];
-                if (te > ext_end) ext_end = te;
-            } else if (is_object) {
-                // For objects: continue past interior tokens (`;` inside method bodies,
-                // commas between properties) to reach the closing `}`.
-                const te = tok_ends[j];
-                if (te > ext_end) ext_end = te;
-            } else if (is_call) {
-                // For new/optional-call with no args: include `(` and any interior
-                // tokens up to the closing `)` (handled by r_paren branch above).
-                const te = tok_ends[j];
-                if (te > ext_end) ext_end = te;
-            } else if (is_jsx_elem) {
-                // JSX: extend through `<`, `/`, identifier tokens and the closing `>`.
-                // All `>` inside attribute expressions {a > b} are part of child subtrees
-                // (already consumed at base), so the first `>` we see here is the tag closer.
-                const te = tok_ends[j];
-                if (te > ext_end) ext_end = te;
-                // Also extend maxTok so getTokens() includes these punctuation tokens.
-                if (j > maxTok[i]) maxTok[i] = @intCast(j);
-                if (tt == .greater_than) break;
-            } else {
-                // Expression/identifier: stop at non-bracket tokens
-                break;
-            }
-            j += 1;
-        }
-        node_ends[i] = ext_end;
-    }
-
-    // Bottom-up end propagation: ensure every parent's end >= any child's end.
-    // This fixes expression nodes (like yield_expr, await_expr) that contain
-    // block-bodied children (like fn_expr). The general extension loop stops at
-    // `;` tokens inside the child's body before reaching the closing `}`, so
-    // the parent's computed end may be smaller than the child's actual end.
-    for (1..n) |i| {
-        const p = parent_indices[i];
-        if (p != NONE and node_ends[i] > node_ends[p]) node_ends[p] = node_ends[i];
-    }
+    for (0..n) |i| node_ends[i] = tok_ends[end_toks[i]];
 
     // ── Sorted index for getNodeByRangeIndex: no sort required ──
     //
@@ -1530,75 +1270,7 @@ pub fn computeNodePositions(
         }
     }
 
-    return .{ .starts = node_starts, .ends = node_ends, .max_tok = maxTok, .min_tok = minTok, .sorted_by_start = sorted_by_start };
-}
-
-/// Compute line start offsets (UTF-8 byte positions → later converted to UTF-16).
-/// Line 1 starts at offset 0. Each `\n` (or `\r` not followed by `\n`,
-/// or U+2028 / U+2029) starts a new line.
-pub fn computeLineStarts(source: []const u8, alloc: std.mem.Allocator) ![]u32 {
-    // Fast path: LF-only ASCII-or-BMP source (covers essentially every
-    // modern JS/TS file).  Walk newlines with SIMD-vectorised
-    // indexOfScalarPos rather than a byte-by-byte loop with branches for
-    // CR and U+2028/9.
-    //
-    // Preconditions checked with cheap early-exit scans:
-    //   - no '\r' anywhere (no CRLF / CR-only line endings)
-    //   - no 0xE2 anywhere (no possibility of U+2028/9, which are 3-byte
-    //     UTF-8 sequences starting with 0xE2)
-    const has_cr = std.mem.indexOfScalar(u8, source, '\r') != null;
-    const has_e2 = std.mem.indexOfScalar(u8, source, 0xE2) != null;
-
-    const nl_count: u32 = @intCast(std.mem.count(u8, source, "\n"));
-
-    if (!has_cr and !has_e2) {
-        // Allocate exact size up-front — nl_count is authoritative here.
-        const starts = try alloc.alloc(u32, nl_count + 1);
-        errdefer alloc.free(starts);
-        starts[0] = 0;
-        var idx: u32 = 1;
-        var pos: usize = 0;
-        while (std.mem.indexOfScalarPos(u8, source, pos, '\n')) |p| {
-            starts[idx] = @intCast(p + 1);
-            idx += 1;
-            pos = p + 1;
-        }
-        return starts;
-    }
-
-    // Slow path: rare line-terminator forms present.  Byte-by-byte scan
-    // with all the corner cases.  Sized from nl_count + small pad; a
-    // realloc catches the unusual file where CR-only lines or U+2028/9
-    // push us past the LF estimate.
-    var capacity: u32 = nl_count + 1 + 16;
-    var starts = try alloc.alloc(u32, capacity);
-    errdefer alloc.free(starts);
-    starts[0] = 0;
-    var idx: u32 = 1;
-    var i: usize = 0;
-    while (i < source.len) : (i += 1) {
-        const c = source[i];
-        var add_here = false;
-        if (c == '\n') {
-            add_here = true;
-        } else if (c == '\r') {
-            if (i + 1 < source.len and source[i + 1] == '\n') i += 1;
-            add_here = true;
-        } else if (c == 0xE2 and i + 2 < source.len and source[i + 1] == 0x80 and (source[i + 2] == 0xA8 or source[i + 2] == 0xA9)) {
-            i += 2;
-            add_here = true;
-        }
-        if (add_here) {
-            if (idx >= capacity) {
-                capacity *= 2;
-                starts = try alloc.realloc(starts, capacity);
-            }
-            starts[idx] = @intCast(i + 1);
-            idx += 1;
-        }
-    }
-    if (idx < starts.len) starts = try alloc.realloc(starts, idx);
-    return starts;
+    return .{ .starts = node_starts, .ends = node_ends, .max_tok = max_tok, .min_tok = min_tok, .sorted_by_start = sorted_by_start };
 }
 
 // ── BOM Handling ─────────────────────────────────────────────────

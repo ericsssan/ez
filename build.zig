@@ -409,6 +409,33 @@ pub fn build(b: *std.Build) void {
     const sm_step = b.step("test-sem-profile", "Long-running sem profile harness");
     sm_step.dependOn(&sm_cmd.step);
 
+    // ── typescript.js semantic failure test ──
+    const ts_fail_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_ts_fail.zig"),
+        .target = target, .optimize = .ReleaseFast,
+    });
+    ts_fail_mod.addImport("ez", test_mod);
+    const ts_fail_exe = b.addExecutable(.{ .name = "test_ts_fail", .root_module = ts_fail_mod });
+    b.installArtifact(ts_fail_exe);
+    const ts_fail_cmd = b.addRunArtifact(ts_fail_exe);
+    ts_fail_cmd.step.dependOn(b.getInstallStep());
+    const ts_fail_step = b.step("test-ts-fail", "Debug typescript.js semantic failure");
+    ts_fail_step.dependOn(&ts_fail_cmd.step);
+
+    // ── Full pipeline profile harness ──
+    const pl_mod = b.createModule(.{
+        .root_source_file = b.path("bench/test_pipeline_profile.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    pl_mod.addImport("ez", test_mod);
+    const pl_exe = b.addExecutable(.{ .name = "test_pipeline_profile", .root_module = pl_mod });
+    b.installArtifact(pl_exe);
+    const pl_cmd = b.addRunArtifact(pl_exe);
+    pl_cmd.step.dependOn(b.getInstallStep());
+    const pl_step = b.step("test-pipeline-profile", "Full pipeline profile harness for sampling");
+    pl_step.dependOn(&pl_cmd.step);
+
     // ── Sem split parity test ──
     const sp_mod = b.createModule(.{
         .root_source_file = b.path("bench/test_sem_split_parity.zig"),
