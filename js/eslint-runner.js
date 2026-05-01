@@ -3345,7 +3345,15 @@ class SourceCode {
       const firstPos = lo;
       // Among all nodes with same (start, end) range, pick the one with the
       // highest pre-order rank (visited last in DFS = deepest in tree).
-      const preOrderRank = ast._preOrderRank;
+      // _preOrderRank is computed lazily on first call.
+      let preOrderRank = ast._preOrderRank;
+      if (preOrderRank === null && ast._preOrder) {
+        const po = ast._preOrder;
+        const n = ast.nodeCount;
+        const rank = new Uint32Array(n);
+        for (let pi = 0; pi < n; pi++) rank[po[pi]] = pi;
+        ast._preOrderRank = preOrderRank = rank;
+      }
       let deepest = candidateIdx;
       let deepestRank = preOrderRank ? preOrderRank[candidateIdx] : 0;
       for (let i = firstPos; i < sorted.length; i++) {

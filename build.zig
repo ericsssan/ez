@@ -141,6 +141,19 @@ pub fn build(b: *std.Build) void {
     const bench_st_step = b.step("bench-pipeline-st", "Single-thread lex+parse+sem benchmark");
     bench_st_step.dependOn(&bench_st_cmd.step);
 
+    // ── Parse stage breakdown bench ──
+    const bench_stages_mod = b.createModule(.{
+        .root_source_file = b.path("bench/bench_parse_stages.zig"),
+        .target = target,
+        .optimize = .ReleaseFast,
+    });
+    bench_stages_mod.addImport("ez", test_mod);
+    const bench_stages = b.addExecutable(.{ .name = "bench_parse_stages", .root_module = bench_stages_mod });
+    const bench_stages_cmd = b.addRunArtifact(bench_stages);
+    bench_stages_cmd.step.dependOn(b.getInstallStep());
+    const bench_stages_step = b.step("bench-parse-stages", "Per-stage pipeline timing breakdown");
+    bench_stages_step.dependOn(&bench_stages_cmd.step);
+
     const prof_p1_mod = b.createModule(.{
         .root_source_file = b.path("bench/profile_phase1.zig"),
         .target = target,

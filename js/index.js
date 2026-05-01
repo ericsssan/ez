@@ -235,11 +235,22 @@ function getTagNames() {
 
 // ── Public API ───────────────────────────────────────────────────
 
+function detectIsModule(filename) {
+  if (!filename) return false;
+  return filename.endsWith(".mjs") || filename.endsWith(".mts") ||
+    filename.endsWith(".module.js") || filename.endsWith(".module.ts");
+}
+
 function parseSource(source, options = {}) {
   const b = loadBinding();
   const lang = options.lang
     ? LANG[options.lang] ?? LANG.js
     : options.filename ? detectLang(options.filename) : LANG.js;
+
+  // Bit 7 of the lang byte signals is_module to the Zig NAPI entry.
+  const isModule = options.sourceType === "module" ||
+    (options.sourceType !== "script" && detectIsModule(options.filename));
+  const langWithFlag = lang | (isModule ? 0x80 : 0);
 
   const { buf, sourceStart, sourceLen } = _encodeSource(source);
   // Pass globals as null-separated UTF-8 bytes so Zig pre-declares them in scope 0,
@@ -248,9 +259,9 @@ function parseSource(source, options = {}) {
   const globals = options.globals;
   if (globals && globals.length > 0) {
     const globalsU8 = Buffer.from(globals.join('\0'), 'utf8');
-    bytesUsed = b.parse(buf, sourceStart, sourceLen, lang, globalsU8);
+    bytesUsed = b.parse(buf, sourceStart, sourceLen, langWithFlag, globalsU8);
   } else {
-    bytesUsed = b.parse(buf, sourceStart, sourceLen, lang);
+    bytesUsed = b.parse(buf, sourceStart, sourceLen, langWithFlag);
   }
   if (bytesUsed === 0) throw new Error("ez: parse failed (buffer too small or invalid source)");
 

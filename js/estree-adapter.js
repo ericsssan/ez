@@ -354,25 +354,17 @@ class AstView {
     // Inverse of _preOrder: _preOrderRank[nodeIdx] = DFS pre-order visiting position.
     // Used by getNodeByRangeIndex to pick the deepest (last-entered) node among
     // same-range candidates. Higher rank = visited later in DFS = deeper in tree.
-    if (this._preOrder) {
-      const rank = new Uint32Array(this.nodeCount);
-      for (let pi = 0; pi < this.nodeCount; pi++) rank[this._preOrder[pi]] = pi;
-      this._preOrderRank = rank;
-    } else {
-      this._preOrderRank = null;
-    }
+    // Computed lazily on first getNodeByRangeIndex call (O(n) fill).
+    this._preOrderRank = null;
 
-    // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig)
-    // Copy immediately: the Zig allocator reuses this memory region during subsequent
-    // native calls, so a live TypedArray view would see stale data by the time
-    // getDFSEvents() is called inside runPlugins.
+    // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig).
+    // Kept as a view into the buffer. With private copy buffers (the default path in
+    // parseSource), the buffer is JS-owned and stable. With noPrivateCopy, the caller
+    // must not call getDFSEvents() after the next b.parse() call.
     const dfsEvOff = dv.getUint32(H.DFS_EVENTS_OFFSET, true);
-    if (dfsEvOff > 0) {
-      const view = new Int32Array(buffer, dfsEvOff, this.nodeCount * 2);
-      this._dfsEvents = new Int32Array(view);  // copy, not a view
-    } else {
-      this._dfsEvents = null;
-    }
+    this._dfsEvents = dfsEvOff > 0
+      ? new Int32Array(buffer, dfsEvOff, this.nodeCount * 2)
+      : null;
 
     // Source type (v5 — 1 = module, 0 = script)
     this._sourceType = dv.getUint32(H.SOURCE_TYPE, true);
@@ -426,33 +418,8 @@ class AstView {
         this._scopeSymIds     = (_scopeSymIdsOff > 0 && this._semSymbolCount > 0) ? new Uint32Array(buffer, _scopeSymIdsOff, this._semSymbolCount) : null;
         this._symNameStarts   = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_STARTS, true),this._semSymbolCount);
         this._symNameLens     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_LENS, true),  this._semSymbolCount);
-        // Pre-decode all symbol names eagerly: 1 TextDecoder call per file (ASCII fast path)
-        // or N calls (non-ASCII fallback). Makes _symName() a pure O(1) array lookup.
-        // Also pre-populates the lazy source cache as a side-effect.
-        const symCount = this._semSymbolCount;
-        const nameCache = new Array(symCount);
-        const srcStr = _decoder.decode(this._sourceBytes);
-        this._sourceText = srcStr; // pre-fill lazy source cache
-        if (srcStr.length === this.sourceLen) {
-          // All-ASCII source: byte offset == char offset in decoded string → string slicing.
-          // Names in the bump region (implicit globals) have s < srcOff, so cs < 0;
-          // fall back to direct buffer decode for those.
-          const srcOff = this._sourceOff;
-          for (let i = 0; i < symCount; i++) {
-            const s = this._symNameStarts[i], l = this._symNameLens[i];
-            if (l === 0) { nameCache[i] = ''; continue; }
-            const cs = s - srcOff;
-            nameCache[i] = cs >= 0 ? srcStr.slice(cs, cs + l) : _decoder.decode(new Uint8Array(buffer, s, l));
-          }
-        } else {
-          // Non-ASCII source: per-symbol TextDecoder (correctness fallback)
-          const bufLen = buffer.byteLength;
-          for (let i = 0; i < symCount; i++) {
-            const s = this._symNameStarts[i], l = this._symNameLens[i];
-            nameCache[i] = (l === 0 || s + l > bufLen) ? '' : _decoder.decode(new Uint8Array(buffer, s, l));
-          }
-        }
-        this._symNameCache = nameCache;
+        // Symbol name cache built lazily on first _symName() call.
+        this._symNameCache = null;
       }
 
       if (this._semRefCount > 0) {
@@ -829,11 +796,37 @@ class AstView {
 
   // ── Semantic accessors ─────────────────────────────────────────
 
-  /** Get the name of a symbol. All names are pre-decoded at construction; pure array lookup. */
+  /** Get the name of a symbol. Cache is built lazily on first call. */
   _symName(symId) {
-    const cache = this._symNameCache;
-    if (!cache) return '';
+    let cache = this._symNameCache;
+    if (cache === null) cache = this._buildSymNameCache();
     return cache[symId] ?? '';
+  }
+
+  _buildSymNameCache() {
+    const symCount = this._semSymbolCount;
+    const nameCache = new Array(symCount);
+    const srcStr = this.source; // lazy decode; also pre-fills _sourceText
+    if (srcStr.length === this.sourceLen) {
+      // All-ASCII: byte offset == char offset → string slicing.
+      // Names in the bump region (implicit globals, offset < sourceStart) fall back to decode.
+      const srcOff = this._sourceOff;
+      for (let i = 0; i < symCount; i++) {
+        const s = this._symNameStarts[i], l = this._symNameLens[i];
+        if (l === 0) { nameCache[i] = ''; continue; }
+        const cs = s - srcOff;
+        nameCache[i] = cs >= 0 ? srcStr.slice(cs, cs + l) : _decoder.decode(new Uint8Array(this.buffer, s, l));
+      }
+    } else {
+      // Non-ASCII: per-symbol TextDecoder
+      const bufLen = this.buffer.byteLength;
+      for (let i = 0; i < symCount; i++) {
+        const s = this._symNameStarts[i], l = this._symNameLens[i];
+        nameCache[i] = (l === 0 || s + l > bufLen) ? '' : _decoder.decode(new Uint8Array(this.buffer, s, l));
+      }
+    }
+    this._symNameCache = nameCache;
+    return nameCache;
   }
 
   /**

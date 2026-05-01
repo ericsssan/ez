@@ -27,6 +27,21 @@ fn getLintArena() *std.heap.ArenaAllocator {
     return &tl_lint_arena;
 }
 
+// Thread-local arena for semantic analysis intermediate data (HashMaps, ArrayLists).
+// Reused across parse calls (reset, not deinit) to avoid repeated mmap/munmap overhead.
+// Only the compact serialized output is written to the bump region; this arena holds
+// the transient analysis structures that are discarded after serialization.
+threadlocal var tl_sem_arena: std.heap.ArenaAllocator = undefined;
+threadlocal var tl_sem_arena_ready: bool = false;
+
+fn getSemArena() *std.heap.ArenaAllocator {
+    if (!tl_sem_arena_ready) {
+        tl_sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        tl_sem_arena_ready = true;
+    }
+    return &tl_sem_arena;
+}
+
 // ── Debug memory probe — exported to JS for per-call Zig accounting ──
 //
 // Reports the total bytes currently held in Zig-side long-lived arenas
@@ -65,7 +80,7 @@ pub export fn ez_parse(
     source_len: u32,
     lang: u8,
 ) u32 {
-    return parseImpl(buf_ptr, buf_len, source_start, source_len, lang, &.{}) catch 0;
+    return parseImpl(buf_ptr, buf_len, source_start, source_len, lang, false, &.{}) catch 0;
 }
 
 /// Lean parse: lex + parse only — no semantic analysis, no parent
@@ -127,6 +142,7 @@ fn parseImpl(
     source_start: u32,
     source_len: u32,
     lang: u8,
+    is_module: bool,
     globals: []const u8,
 ) !u32 {
     if (source_start + source_len > buf_len) return 0;
@@ -149,7 +165,7 @@ fn parseImpl(
     // Parse — node/extra_data arrays land in the bump region.
     var tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
         .language = language,
-        .is_module = false,
+        .is_module = is_module,
         .emit_events = true,
     }) catch |e| return e;
 
@@ -164,16 +180,15 @@ fn parseImpl(
     // Run semantic analysis BEFORE converting to UTF-16 so that
     // tokenText() (used for symbol names) reads correct byte offsets.
     //
-    // Use a separate arena for the intermediate analysis data (ArrayLists,
-    // HashMaps) so their growth-related waste does NOT fragment the bump
-    // region.  Only the compact serialized output (written by writeSemanticData)
-    // ends up in the bump.  The arena is freed after serialization.
+    // Use the thread-local sem arena (reset, not deinit) so intermediate
+    // analysis structures (HashMaps, ArrayLists) reuse already-mapped pages
+    // rather than going through mmap/munmap every call.  Only the compact
+    // serialized output ends up in the bump region.
     var semantic_data_offset: u32 = 0;
-    var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer sem_arena.deinit();
-    if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena.allocator(), &tree, globals)) |sem_result| {
+    const sem_arena_ptr = getSemArena();
+    _ = sem_arena_ptr.reset(.retain_capacity);
+    if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
         var sem = sem_result;
-        // sem.deinit() is intentionally skipped — the arena frees everything.
         if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
             semantic_data_offset = off;
         } else |_| {}
@@ -954,10 +969,14 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     _ = n.napi_get_value_uint32(env, argv[2], &source_len);
     _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
 
+    // Bit 7 of lang_val encodes is_module; bits 0–6 encode the Language enum.
+    const is_module: bool = (lang_val & 0x80) != 0;
+    const lang_enum: u8 = @intCast(lang_val & 0x7F);
+
     // Optional 5th arg: null-separated globals Uint8Array (Buffer or Uint8Array)
     const globals: []const u8 = if (argc >= 5) (getOptionalConfigBytes(env, argv[4]) orelse &.{}) else &.{};
 
-    const result = parseImpl(buf_ptr, @intCast(buf_len), source_start, source_len, @intCast(lang_val), globals) catch 0;
+    const result = parseImpl(buf_ptr, @intCast(buf_len), source_start, source_len, lang_enum, is_module, globals) catch 0;
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
@@ -1032,7 +1051,7 @@ fn napiParseFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
     const file_info = readFileIntoBuf(buf_ptr, @intCast(buf_len), path_z) catch return returnU32(env, 0);
 
-    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val), &.{}) catch return returnU32(env, 0);
+    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val), false, &.{}) catch return returnU32(env, 0);
     return returnU32(env, result);
 }
 

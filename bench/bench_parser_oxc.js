@@ -1,72 +1,197 @@
 "use strict";
-
 /**
- * Head-to-head: Ez parser vs oxc-parser.
- * Both called via NAPI from Bun, both return the full AST.
- * Report per-file wall time, MB/s, and MLines/s.
+ * NAPI throughput: ez vs oxc-parser.
+ * Both called from Bun via NAPI.
+ *
+ * TWO COMPARISONS:
+ *
+ * (A) Lean — lex+parse only, apples-to-apples:
+ *   ez:  parseSourceLean(src, { filename })  — tokenize + parse, no semantic, no AstView
+ *   oxc: parseSync(filename, src)             — tokenize + parse + JS object tree
+ *   Both return a usable representation of the parsed code.
+ *
+ * (B) Full pipeline — what real linting uses:
+ *   ez:  parseSource(src, { filename, noPrivateCopy })
+ *         — lex + parse + scope analysis + node positions + AstView (lazy)
+ *   oxc: parseSync(filename, src)             — lex + parse + JS object tree (no scope analysis)
+ *   Note: ez does significantly MORE work in (B) — semantic/scope analysis is in the same call.
  *
  * Run: bun bench/bench_parser_oxc.js
  */
 
 const fs = require("fs");
 const path = require("path");
-const { parseSource: ezParse, reset } = require("../js/index");
+const { parseSource: ezParse, parseSourceLean: ezParseLean, reset } = require("../js/index");
 const { parseSync: oxcParseSync } = require("oxc-parser");
 
-const WARMUP = 10;
-const ITERATIONS = 100;
+const WARMUP = 20;
+const ITERATIONS = 200;
 
 const fixtures = [
-  "bench/fixtures/jquery.js",
-  "bench/fixtures/lodash.js",
-  "bench/fixtures/three.js",
-  "bench/fixtures/typescript.js",
+  { path: "bench/fixtures/jquery.js" },
+  { path: "bench/fixtures/lodash.js" },
+  { path: "bench/fixtures/three.js" },
+  { path: "bench/fixtures/react-dom.development.js" },
+  { path: "bench/fixtures/angular-core.mjs" },
+  { path: "bench/fixtures/angular-core.d.ts" },
+  { path: "bench/fixtures/lib.dom.d.ts" },
+  { path: "bench/fixtures/app-render.tsx" },
+  { path: "bench/fixtures/angular-classes.ts" },
+  { path: "bench/fixtures/checker.ts" },
+  { path: "bench/fixtures/typescript.js" },
 ];
 
-function bench(name, fn, iters) {
+/** Returns p50 ms over ITERATIONS runs. */
+function bench(fn) {
   for (let i = 0; i < WARMUP; i++) fn();
-  const t0 = performance.now();
-  for (let i = 0; i < iters; i++) fn();
-  const dt = performance.now() - t0;
-  return dt / iters;
+  const times = new Float64Array(ITERATIONS);
+  for (let i = 0; i < ITERATIONS; i++) {
+    const t0 = performance.now();
+    fn();
+    times[i] = performance.now() - t0;
+  }
+  times.sort();
+  return times[Math.floor(ITERATIONS / 2)];
 }
 
-console.log(`Parser head-to-head — Bun ${Bun.version}`);
-console.log(`${WARMUP} warmup + ${ITERATIONS} iters per fixture\n`);
-
-const pad = s => String(s).padStart(10);
-console.log(
-  `${'fixture'.padEnd(18)} ${'size'.padStart(8)} ${'lines'.padStart(7)}  ` +
-  `${'ez (ms)'.padStart(9)}  ${'oxc (ms)'.padStart(10)}  ${'ez MB/s'.padStart(9)}  ${'oxc MB/s'.padStart(9)}  ratio`);
-console.log('─'.repeat(100));
-
-for (const fx of fixtures) {
-  const p = path.join(__dirname, '..', fx);
-  const src = fs.readFileSync(p, 'utf-8');
-  const bytes = Buffer.byteLength(src, 'utf-8');
-  const lines = src.split('\n').length;
-  const name = path.basename(fx);
-
-  const ezMs = bench('ez', () => {
-    ezParse(src, { filename: name });
-    reset();
-  }, ITERATIONS);
-
-  const oxcMs = bench('oxc', () => {
-    oxcParseSync(name, src);
-  }, ITERATIONS);
-
-  const ezMBps = (bytes / 1024 / 1024) / (ezMs / 1000);
-  const oxcMBps = (bytes / 1024 / 1024) / (oxcMs / 1000);
-  const ratio = ezMs / oxcMs;
-
-  console.log(
-    `${name.padEnd(18)} ${pad((bytes/1024).toFixed(0)+' KB').padStart(8)} ` +
-    `${pad(lines).padStart(7)}  ` +
-    `${pad(ezMs.toFixed(2))}  ${pad(oxcMs.toFixed(2))}  ` +
-    `${pad(ezMBps.toFixed(1))}  ${pad(oxcMBps.toFixed(1))}  ${ratio.toFixed(2)}x`);
+function mbPerSec(bytes, ms) {
+  return (bytes / 1048576) / (ms / 1000);
 }
 
-console.log();
-console.log('ez = Ez.parseSource (NAPI, private-copy path)');
-console.log('oxc = oxc-parser.parseSync (NAPI, in-process)');
+const root = path.join(__dirname, "..");
+
+console.log(`\nez vs oxc-parser — Bun ${Bun.version}`);
+console.log(`Both NAPI. warmup: ${WARMUP}  iters: ${ITERATIONS}  metric: p50\n`);
+
+// ── (A) Lex+Parse only — apples-to-apples ──────────────────────────
+console.log("(A) Lex+Parse only — ez parseLean vs oxc parseSync:");
+console.log("    ez: lex+parse, no semantic, no AstView | oxc: lex+parse + JS object tree");
+{
+  const W = { fix: 32, kb: 7, ms: 8, mbs: 9 };
+  const hdr = [
+    "fixture".padEnd(W.fix),
+    "KB".padStart(W.kb),
+    "ez ms".padStart(W.ms),
+    "oxc ms".padStart(W.ms),
+    "ez MB/s".padStart(W.mbs),
+    "oxc MB/s".padStart(W.mbs),
+    "ratio".padStart(7),
+  ].join("  ");
+  console.log(hdr);
+  console.log("─".repeat(hdr.length));
+
+  let totalBytes = 0, totalEzMs = 0, totalOxcMs = 0;
+
+  for (const fx of fixtures) {
+    const fullPath = path.join(root, fx.path);
+    if (!fs.existsSync(fullPath)) continue;
+    const src = fs.readFileSync(fullPath, "utf8");
+    const bytes = Buffer.byteLength(src, "utf8");
+    const name = path.basename(fx.path);
+
+    const ezMs  = bench(() => { ezParseLean(src, { filename: name }); reset(); });
+    const oxcMs = bench(() => { oxcParseSync(name, src); });
+
+    const ezMBs  = mbPerSec(bytes, ezMs);
+    const oxcMBs = mbPerSec(bytes, oxcMs);
+    const ratio  = oxcMs / ezMs;
+
+    totalBytes  += bytes;
+    totalEzMs   += ezMs;
+    totalOxcMs  += oxcMs;
+
+    const winner = ratio >= 1.05 ? "✓ ez" : ratio <= 0.95 ? "  oxc" : "  ≈";
+    console.log([
+      name.padEnd(W.fix),
+      (bytes / 1024).toFixed(0).padStart(W.kb),
+      ezMs.toFixed(3).padStart(W.ms),
+      oxcMs.toFixed(3).padStart(W.ms),
+      ezMBs.toFixed(0).padStart(W.mbs),
+      oxcMBs.toFixed(0).padStart(W.mbs),
+      `${ratio.toFixed(2)}x`.padStart(7),
+      winner,
+    ].join("  "));
+  }
+
+  console.log("─".repeat(hdr.length));
+  const aggEzMBs  = mbPerSec(totalBytes, totalEzMs);
+  const aggOxcMBs = mbPerSec(totalBytes, totalOxcMs);
+  const aggRatio  = totalOxcMs / totalEzMs;
+  console.log([
+    "AGGREGATE".padEnd(W.fix),
+    "".padStart(W.kb),
+    totalEzMs.toFixed(1).padStart(W.ms),
+    totalOxcMs.toFixed(1).padStart(W.ms),
+    aggEzMBs.toFixed(0).padStart(W.mbs),
+    aggOxcMBs.toFixed(0).padStart(W.mbs),
+    `${aggRatio.toFixed(2)}x`.padStart(7),
+  ].join("  "));
+  console.log(`ratio = oxc_ms / ez_lean_ms  (> 1 → ez faster)\n`);
+}
+
+// ── (B) Full pipeline ──────────────────────────────────────────────
+console.log("(B) Full pipeline — ez parseSource vs oxc parseSync:");
+console.log("    ez: lex+parse+semantic+positions+AstView(lazy) | oxc: lex+parse+JS objects");
+console.log("    NOTE: ez does scope analysis here; oxc does NOT — ez provides more data.\n");
+{
+  const W = { fix: 32, kb: 7, ms: 8, mbs: 9 };
+  const hdr = [
+    "fixture".padEnd(W.fix),
+    "KB".padStart(W.kb),
+    "ez ms".padStart(W.ms),
+    "oxc ms".padStart(W.ms),
+    "ez MB/s".padStart(W.mbs),
+    "oxc MB/s".padStart(W.mbs),
+    "ratio".padStart(7),
+  ].join("  ");
+  console.log(hdr);
+  console.log("─".repeat(hdr.length));
+
+  let totalBytes = 0, totalEzMs = 0, totalOxcMs = 0;
+
+  for (const fx of fixtures) {
+    const fullPath = path.join(root, fx.path);
+    if (!fs.existsSync(fullPath)) continue;
+    const src = fs.readFileSync(fullPath, "utf8");
+    const bytes = Buffer.byteLength(src, "utf8");
+    const name = path.basename(fx.path);
+
+    const ezMs  = bench(() => { ezParse(src, { filename: name, noPrivateCopy: true }); reset(); });
+    const oxcMs = bench(() => { oxcParseSync(name, src); });
+
+    const ezMBs  = mbPerSec(bytes, ezMs);
+    const oxcMBs = mbPerSec(bytes, oxcMs);
+    const ratio  = oxcMs / ezMs;
+
+    totalBytes  += bytes;
+    totalEzMs   += ezMs;
+    totalOxcMs  += oxcMs;
+
+    const winner = ratio >= 1.05 ? "✓ ez" : ratio <= 0.95 ? "  oxc" : "  ≈";
+    console.log([
+      name.padEnd(W.fix),
+      (bytes / 1024).toFixed(0).padStart(W.kb),
+      ezMs.toFixed(3).padStart(W.ms),
+      oxcMs.toFixed(3).padStart(W.ms),
+      ezMBs.toFixed(0).padStart(W.mbs),
+      oxcMBs.toFixed(0).padStart(W.mbs),
+      `${ratio.toFixed(2)}x`.padStart(7),
+      winner,
+    ].join("  "));
+  }
+
+  console.log("─".repeat(hdr.length));
+  const aggEzMBs  = mbPerSec(totalBytes, totalEzMs);
+  const aggOxcMBs = mbPerSec(totalBytes, totalOxcMs);
+  const aggRatio  = totalOxcMs / totalEzMs;
+  console.log([
+    "AGGREGATE".padEnd(W.fix),
+    "".padStart(W.kb),
+    totalEzMs.toFixed(1).padStart(W.ms),
+    totalOxcMs.toFixed(1).padStart(W.ms),
+    aggEzMBs.toFixed(0).padStart(W.mbs),
+    aggOxcMBs.toFixed(0).padStart(W.mbs),
+    `${aggRatio.toFixed(2)}x`.padStart(7),
+  ].join("  "));
+  console.log(`ratio = oxc_ms / ez_ms  (> 1 → ez faster)\n`);
+}
