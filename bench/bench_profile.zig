@@ -49,7 +49,6 @@ pub fn main(init: std.process.Init) !void {
         .events_out = &ev,
     });
     defer tree.deinit(gpa);
-    tree.tok_hashes = tok.tok_hashes;
 
     const events = ev.items();
     std.debug.print("Events: {d}\n", .{events.len});
@@ -71,7 +70,7 @@ pub fn main(init: std.process.Init) !void {
     for (0..ITERATIONS) |iter| {
         var fba = std.heap.FixedBufferAllocator.init(working_buf);
         const t0 = std.Io.Timestamp.now(io, .boot);
-        var res = try event_resolver.resolveFull(fba.allocator(), &tree, events, .{ .tok_hashes = tree.tok_hashes });
+        var res = try event_resolver.resolveFull(fba.allocator(), &tree, events, .{});
         const t1 = std.Io.Timestamp.now(io, .boot);
         total_ns += @intCast(t0.durationTo(t1).nanoseconds);
         res.deinit(fba.allocator());

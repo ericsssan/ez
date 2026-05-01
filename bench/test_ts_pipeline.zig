@@ -38,7 +38,6 @@ pub fn main(init: std.process.Init) !void {
             var tok = try Lexer.tokenizeWithLanguage(alloc, source, .js);
             const t1 = std.Io.Timestamp.now(io, .boot);
             var tree = try Parser.parseWithOptions(alloc, source, tok.tokens.slice(), .{ .is_module = true, .emit_events = true });
-            tree.tok_hashes = tok.tok_hashes;
             const t2 = std.Io.Timestamp.now(io, .boot);
             var sem = try SemanticAnalyzer.analyzeWithOptions(alloc, &tree, v.opts);
             const t3 = std.Io.Timestamp.now(io, .boot);

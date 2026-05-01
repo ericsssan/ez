@@ -853,8 +853,6 @@ fn resolveFullImpl(
             }
             if (phase == .scope_only) try ref_event_to_id.append(allocator, ref_id);
 
-            // Compute name_hash before the sp==0 branch so it can be stored in
-            // (tok_hashes removed; lazy compute always.)
             if (skip_resolve) continue;
             const main_tok = node_main_tokens[e.node];
             const name_hash = blk: {

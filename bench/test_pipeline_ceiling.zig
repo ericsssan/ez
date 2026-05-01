@@ -25,7 +25,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
     defer prebuilt_arena.deinit();
     const prebuilt_tok = try Lexer.tokenizeWithLanguage(prebuilt_arena.allocator(), source, .js);
     var prebuilt_tree = try Parser.parseWithOptions(prebuilt_arena.allocator(), source, prebuilt_tok.tokens.slice(), .{ .is_module = true, .emit_events = true });
-    prebuilt_tree.tok_hashes = prebuilt_tok.tok_hashes;
 
     // Adaptive iteration count: small files get many runs, huge files few.
     const N: usize = if (source.len < 1024 * 1024) 50 else if (source.len < 4 * 1024 * 1024) 10 else 5;
@@ -46,7 +45,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             var tok = try Lexer.tokenizeWithLanguage(a, source, .js);
             const t1 = std.Io.Timestamp.now(io, .boot);
             var tree = try Parser.parseWithOptions(a, source, tok.tokens.slice(), .{ .is_module = true, .emit_events = true });
-            tree.tok_hashes = tok.tok_hashes;
             const t2 = std.Io.Timestamp.now(io, .boot);
             var sem = try SemanticAnalyzer.analyzeWithOptions(a, &tree, .{});
             sem.deinit(a);
@@ -81,7 +79,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 alloc: std.mem.Allocator,
                 source: []const u8,
                 tokens: @TypeOf(prebuilt_tok.tokens.slice()),
-                tok_hashes: []const u64,
                 io: std.Io,
                 elapsed: u64 = 0,
             };
@@ -91,7 +88,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 .alloc = arena_b.allocator(),
                 .source = source,
                 .tokens = prebuilt_tok.tokens.slice(),
-                .tok_hashes = prebuilt_tok.tok_hashes,
                 .io = io,
             };
 
@@ -107,7 +103,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 fn go(c: *ParseSlice) void {
                     const t0 = std.Io.Timestamp.now(c.io, .boot);
                     var tree = Parser.parseWithOptions(c.alloc, c.source, c.tokens, .{ .is_module = true, .emit_events = true }) catch return;
-                    tree.tok_hashes = c.tok_hashes;
                     c.elapsed = @intCast(t0.durationTo(std.Io.Timestamp.now(c.io, .boot)).nanoseconds);
                 }
             }.go;
@@ -135,7 +130,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 alloc: std.mem.Allocator,
                 source: []const u8,
                 tokens: @TypeOf(prebuilt_tok.tokens.slice()),
-                tok_hashes: []const u64,
                 io: std.Io,
             };
             const SemCtx3 = struct {
@@ -149,7 +143,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
                 .alloc = arena_b.allocator(),
                 .source = source,
                 .tokens = prebuilt_tok.tokens.slice(),
-                .tok_hashes = prebuilt_tok.tok_hashes,
                 .io = io,
             };
             var sem_c: SemCtx3 = .{ .alloc = arena_c.allocator(), .tree = &prebuilt_tree, .io = io };
@@ -163,7 +156,7 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             const parse3 = struct {
                 fn go(c: *ParseCtx3) void {
                     var tree = Parser.parseWithOptions(c.alloc, c.source, c.tokens, .{ .is_module = true, .emit_events = true }) catch return;
-                    tree.tok_hashes = c.tok_hashes;
+                    _ = &tree;
                 }
             }.go;
             const sem3 = struct {

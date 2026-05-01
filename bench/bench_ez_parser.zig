@@ -59,7 +59,6 @@ pub fn main(init: std.process.Init) !void {
             defer tok.deinit(alloc);
             var tree = try Parser.parseWithOptions(alloc, source, tok.tokens.slice(), .{ .is_module = true, .emit_events = true });
             defer tree.deinit(alloc);
-            tree.tok_hashes = tok.tok_hashes;
             var sem = try SemanticAnalyzer.analyzeWithOptions(alloc, &tree, .{});
             sem.deinit(alloc);
         }

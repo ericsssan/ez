@@ -126,7 +126,6 @@ fn benchFile(gpa: std.mem.Allocator, io: std.Io, path: []const u8) !void {
             var tok = try Lexer.tokenizeWithLanguage(a, source, .js);
             const t1 = std.Io.Timestamp.now(io, .boot);
             var tree = try Parser.parseWithOptions(a, source, tok.tokens.slice(), .{ .is_module = true, .emit_events = true });
-            tree.tok_hashes = tok.tok_hashes;
             const t2 = std.Io.Timestamp.now(io, .boot);
             var sem = try SemanticAnalyzer.analyzeWithOptions(a, &tree, .{});
             sem.deinit(a);

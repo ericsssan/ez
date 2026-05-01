@@ -1055,52 +1055,71 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     // SIMD scan decides it.  Typical JS/TS source is pure ASCII.
     if (isAllAscii(source)) return @intCast(source.len);
 
-    // Chunk-scan algorithm: process source in 16-byte SIMD blocks.
+    // ASCII-run algorithm: use SIMD to find the longest contiguous ASCII run
+    // starting at each block, then process all cursors in that run at once.
     //
-    // For each ASCII block (all bytes < 0x80): byte_pos == utf16_pos + diff, where
-    // `diff = byte_pos - utf16_pos` accumulates only at non-ASCII chars and stays
-    // constant across ASCII runs. Positions that fall in ASCII blocks only need
-    // `value -= diff` (or no-op when diff == 0, before the first non-ASCII char).
-    // For non-ASCII blocks: process byte-by-byte, updating diff per codepoint.
+    // `diff = byte_pos - utf16_pos` grows only at non-ASCII codepoints and
+    // stays constant across any ASCII run.  utf16(P) = P - diff for P in the
+    // run, so one cursor loop (or a 4-wide SIMD subtract) handles the whole
+    // run instead of repeating the loop once per 16-byte block.
     //
-    // This avoids the per-position inner byte scan (1–6 bytes each) that the
-    // previous merge-scan incurred on every cursor step for closely-packed positions.
+    // For real-world JS/TS (e.g. angular-core.mjs: 1.58 MB, 1510 non-ASCII
+    // runs), this reduces ASCII cursor-loop setups from ~98 K to ~1.5 K.
     const MAX_ARRAYS = 16;
+    std.debug.assert(arrays.len <= MAX_ARRAYS);
     var cursors: [MAX_ARRAYS]usize = .{0} ** MAX_ARRAYS;
     const n = @min(arrays.len, MAX_ARRAYS);
+    const src_len: u32 = @intCast(source.len);
 
     var byte_pos: u32 = 0;
     var utf16_pos: u32 = 0;
 
-    while (byte_pos + 16 <= @as(u32, @intCast(source.len))) {
-        const next: u32 = byte_pos + 16;
+    while (byte_pos + 16 <= src_len) {
         const chunk: @Vector(16, u8) = source[byte_pos..][0..16].*;
         if (@reduce(.And, chunk < @as(@Vector(16, u8), @splat(0x80)))) {
-            // ASCII block: diff is constant across this block.
-            // utf16(P) = P - diff  for P in [byte_pos, next).
+            // Extend the ASCII run as far as possible in 16-byte strides.
+            var run_end: u32 = byte_pos + 16;
+            while (run_end + 16 <= src_len) {
+                const ext: @Vector(16, u8) = source[run_end..][0..16].*;
+                if (!@reduce(.And, ext < @as(@Vector(16, u8), @splat(0x80)))) break;
+                run_end += 16;
+            }
+            // source[byte_pos..run_end] is all ASCII; diff is constant here.
+            std.debug.assert(byte_pos >= utf16_pos);
             const diff = byte_pos - utf16_pos;
             if (diff == 0) {
-                // No rewrite needed: utf16 == byte. Just advance cursors.
+                // utf16 == byte: no rewrite, just skip cursors past the run.
                 for (0..n) |a| {
-                    while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] < next)
-                        cursors[a] += 1;
+                    var c = cursors[a];
+                    while (c < arrays[a].len and arrays[a][c] < run_end) c += 1;
+                    cursors[a] = c;
                 }
             } else {
-                // Subtract diff from all positions in this block.
+                // Subtract diff from every position in the run.
+                // 4-wide SIMD handles aligned bulk; scalar cleans the tail.
+                // Sorted invariant: arr[c+3] < run_end implies arr[c..c+4] all in run.
+                const diff_splat: @Vector(4, u32) = @splat(diff);
                 for (0..n) |a| {
-                    while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] < next) {
-                        arrays[a][cursors[a]] -= diff;
-                        cursors[a] += 1;
+                    const arr = arrays[a];
+                    var c = cursors[a];
+                    while (c + 4 <= arr.len and arr[c + 3] < run_end) {
+                        const v: @Vector(4, u32) = arr[c..][0..4].*;
+                        arr[c..][0..4].* = v - diff_splat;
+                        c += 4;
                     }
+                    while (c < arr.len and arr[c] < run_end) {
+                        arr[c] -= diff;
+                        c += 1;
+                    }
+                    cursors[a] = c;
                 }
             }
-            byte_pos = next;
-            utf16_pos = next - diff; // diff unchanged across ASCII block
+            utf16_pos = run_end - diff;
+            byte_pos = run_end;
         } else {
             // Non-ASCII block: byte-by-byte to track codepoint boundaries.
-            const block_end = next;
-            while (byte_pos < block_end and byte_pos < source.len) {
-                // Update any cursors sitting exactly at byte_pos.
+            const block_end = byte_pos + 16;
+            while (byte_pos < block_end and byte_pos < src_len) {
                 for (0..n) |a| {
                     while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == byte_pos) {
                         arrays[a][cursors[a]] = utf16_pos;
@@ -1113,7 +1132,7 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     }
 
     // Tail: remaining bytes after the last full 16-byte block.
-    while (byte_pos < source.len) {
+    while (byte_pos < src_len) {
         for (0..n) |a| {
             while (cursors[a] < arrays[a].len and arrays[a][cursors[a]] == byte_pos) {
                 arrays[a][cursors[a]] = utf16_pos;
@@ -1134,7 +1153,6 @@ pub fn convertMultiSpansToUtf16(source: []const u8, arrays: []const []u32) u32 {
     return utf16_pos;
 }
 
-/// Advance one UTF-8 codepoint, returning the number of UTF-16 code units.
 /// Fast SIMD scan: true if every byte in `source` is < 0x80.
 /// Used as fast-path gate for UTF-16 conversion (ASCII = byte offsets
 /// already correct; skip entire per-token rewrite pass).
