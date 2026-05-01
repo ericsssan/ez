@@ -895,9 +895,15 @@ pub const Ast = struct {
     }
 
     /// Get the span of a node.
+    /// `end` is the byte position after the node's main token — correct for
+    /// single-token nodes (identifiers, literals).  For compound nodes the
+    /// true end (closing `}`, `)`, `;`) is only available via
+    /// `LintContext.nodeSpan`, which uses a precomputed per-node max-token table.
     pub fn nodeSpan(self: *const Ast, index: NodeIndex) Span {
-        const start = self.tokenStart(self.nodeMainToken(index));
-        return .{ .start = start, .end = start }; // TODO: compute proper end
+        const tok = self.nodeMainToken(index);
+        const start = self.tokenStart(tok);
+        const end = start + self.tokens.items(.len)[tok];
+        return .{ .start = start, .end = end };
     }
 
     /// Returns true if `callee_node` is a call to a known mutating Object/Reflect method

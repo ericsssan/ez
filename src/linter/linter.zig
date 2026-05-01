@@ -230,6 +230,25 @@ pub fn lint(
     const inline_globals = try @import("lint_context.zig").scanInlineGlobals(allocator, tree.source);
     defer allocator.free(inline_globals);
 
+    // Compute per-node max-token table for proper nodeSpan().end.
+    // Forward pass over parent_indices (children have smaller indices than parents,
+    // so each node's subtree-max is finalized before propagating to its parent).
+    const node_max_toks: []u32 = blk: {
+        const n = tree.nodes.len;
+        const mt = try allocator.alloc(u32, n);
+        @memcpy(mt, tree.nodes.items(.main_token));
+        const parents = semantic.parent_indices;
+        if (parents.len == n) {
+            const NONE = std.math.maxInt(u32);
+            for (1..n) |i| {
+                const p = parents[i];
+                if (p != NONE and mt[i] > mt[p]) mt[p] = mt[i];
+            }
+        }
+        break :blk mt;
+    };
+    defer allocator.free(node_max_toks);
+
     var ctx = LintContext{
         .ast = tree,
         .semantic = semantic,
@@ -239,6 +258,7 @@ pub fn lint(
         .settings = if (config) |cfg| cfg.settings else null,
         .language_options = if (config) |cfg| cfg.language_options else null,
         .inline_globals = inline_globals,
+        .node_max_toks = node_max_toks,
     };
 
     // ── Phase 1: AST node walk (CSR dispatch) ─────────────────

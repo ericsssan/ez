@@ -96,6 +96,10 @@ pub const LintContext = struct {
     /// Inline `/* global <name>[:off|readonly|...] */` directives parsed from source.
     /// Populated once by the linter before rules run; empty when no directives exist.
     inline_globals: []const InlineGlobalEntry = &.{},
+    /// Per-node maximum main_token index over the node's full subtree.
+    /// node_max_toks[i] = highest main_token index among node i and all its descendants.
+    /// Populated by the linter (O(n) pass using parent_indices); empty when unavailable.
+    node_max_toks: []const u32 = &.{},
 
     // ── AST accessors ─────────────────────────────────────
 
@@ -293,7 +297,13 @@ pub const LintContext = struct {
     }
 
     pub fn nodeSpan(self: *const LintContext, index: NodeIndex) Span {
-        return self.ast.nodeSpan(index);
+        const main_tok = self.ast.nodeMainToken(index);
+        const start = self.ast.tokenStart(main_tok);
+        const i = index.toInt();
+        const last_tok = if (i < self.node_max_toks.len) self.node_max_toks[i] else main_tok;
+        const last_start = self.ast.tokenStart(last_tok);
+        const last_len = self.ast.tokens.items(.len)[last_tok];
+        return .{ .start = start, .end = last_start + last_len };
     }
 
     /// Parent node of `index`, or `.none` when semantic did not compute parents
