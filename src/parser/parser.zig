@@ -1939,7 +1939,8 @@ pub const Parser = struct {
                 .kw_interface => {
                     // `interface Name` is a TS declaration; standalone `interface` is an expression
                     // In TS, keywords like void/never/unknown are valid interface names
-                    if (self.peekAt(1) == .identifier or self.peekAt(1).isKeyword()) {
+                    const iface_p1 = self.peekAt(1);
+                    if (iface_p1 == .identifier or iface_p1.isKeyword()) {
                         return typescript.parseInterfaceDeclaration(self);
                     }
                 },
@@ -1949,12 +1950,14 @@ pub const Parser = struct {
                     }
                 },
                 .kw_namespace => {
-                    if (self.peekAt(1) == .identifier or self.peekAt(1) == .string_literal) {
+                    const ns_p1 = self.peekAt(1);
+                    if (ns_p1 == .identifier or ns_p1 == .string_literal) {
                         return typescript.parseNamespaceDeclaration(self);
                     }
                 },
                 .kw_module => {
-                    if (self.peekAt(1) == .identifier or self.peekAt(1) == .string_literal) {
+                    const mod_p1 = self.peekAt(1);
+                    if (mod_p1 == .identifier or mod_p1 == .string_literal) {
                         return typescript.parseModuleDeclaration(self);
                     }
                 },
@@ -2086,19 +2089,20 @@ pub const Parser = struct {
                     _ = self.advance(); // eat @
                     _ = try self.parseAssignmentExpression(); // decorator expression
                 }
-                if (self.peek() == .kw_class) {
+                const after_deco = self.peek();
+                if (after_deco == .kw_class) {
                     return self.parseClassDeclaration();
                 }
-                if (self.peek() == .kw_export) {
+                if (after_deco == .kw_export) {
                     return self.parseExportDeclaration();
                 }
                 // TS1206: decorators are not valid on function declarations
-                if (self.is_ts and (self.peek() == .kw_function or
-                    (self.peek() == .kw_async and self.peekAt(1) == .kw_function)))
+                if (self.is_ts and (after_deco == .kw_function or
+                    (after_deco == .kw_async and self.peekAt(1) == .kw_function)))
                 {
                     try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here", .{});
                 }
-                if (self.peek() == .kw_abstract and self.peekAt(1) == .kw_class) {
+                if (after_deco == .kw_abstract and self.peekAt(1) == .kw_class) {
                     _ = self.advance(); // eat abstract
                     return self.parseClassDeclaration();
                 }
@@ -2106,7 +2110,8 @@ pub const Parser = struct {
             },
             .kw_import => {
                 // import.meta and import() are expressions, not declarations
-                if (self.peekAt(1) == .dot or self.peekAt(1) == .l_paren) {
+                const imp_p1 = self.peekAt(1);
+                if (imp_p1 == .dot or imp_p1 == .l_paren) {
                     return self.parseExpressionStatement();
                 }
                 if (!self.is_module) {
@@ -2440,7 +2445,8 @@ pub const Parser = struct {
             },
             .kw_import => {
                 // import() and import.meta are expressions, allowed in single-statement context
-                if (self.peekAt(1) == .dot or self.peekAt(1) == .l_paren) {
+                const imp_p1 = self.peekAt(1);
+                if (imp_p1 == .dot or imp_p1 == .l_paren) {
                     return self.parseStatement();
                 }
                 try self.emitDiagnostic(self.currentSpan(), "import/export not allowed in single-statement context", .{});
@@ -2534,7 +2540,8 @@ pub const Parser = struct {
                 return self.parseStatement();
             },
             .kw_import => {
-                if (self.peekAt(1) == .dot or self.peekAt(1) == .l_paren) return self.parseStatement();
+                const imp_p1 = self.peekAt(1);
+                if (imp_p1 == .dot or imp_p1 == .l_paren) return self.parseStatement();
                 try self.emitDiagnostic(self.currentSpan(), "import/export not allowed in single-statement context", .{});
                 return error.ParseError;
             },
@@ -2716,10 +2723,11 @@ pub const Parser = struct {
             }
 
             // Check for var/let/const
-            if (self.peek() == .kw_var or self.peek() == .kw_const) {
+            const for_init_tag = self.peek();
+            if (for_init_tag == .kw_var or for_init_tag == .kw_const) {
                 break :init_blk try self.parseVariableDeclarationNoSemicolon();
             }
-            if (self.peek() == .kw_let) {
+            if (for_init_tag == .kw_let) {
                 // In non-strict, `let` is only a declaration when followed by binding start
                 if (self.in_strict) {
                     break :init_blk try self.parseVariableDeclarationNoSemicolon();
@@ -2739,14 +2747,14 @@ pub const Parser = struct {
             // Check for `using x` or `await using x`
             // Also allow `using of = ...` (for (using of = null;;)) — `of` is a valid binding
             // identifier; the `of` lookahead restriction only applies to for-of/for-await-of.
-            if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "using") and
+            if (for_init_tag == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "using") and
                 (self.peekAt(1) == .identifier or self.peekAt(1) == .kw_let or
                  (self.peekAt(1) == .kw_of and self.peekAt(2) == .equal))) {
                 const main_tok: u32 = self.tokIdx();
                 _ = self.advance(); // eat 'using'
                 break :init_blk try self.parseUsingDeclaratorList(main_tok);
             }
-            if (self.peek() == .kw_await and self.peekAt(1) == .identifier and
+            if (for_init_tag == .kw_await and self.peekAt(1) == .identifier and
                 std.mem.eql(u8, self.tokenText(@intCast(self.tok_i + 1)), "using") and
                 (self.peekAt(2) == .identifier or self.peekAt(2) == .kw_of or self.peekAt(2) == .kw_let))
             {
@@ -4478,11 +4486,11 @@ pub const Parser = struct {
         var flags = TsModifierFlags{};
         // Track modifier order phase (higher number = later in order)
         var last_phase: u8 = 0;
-        while (self.peek() == .identifier or self.peek() == .kw_abstract or
-            self.peek() == .kw_readonly or self.peek() == .kw_override or
-            self.peek() == .kw_declare or self.peek() == .kw_export)
-        {
+        while (true) {
             const mod_tag = self.peek();
+            if (mod_tag != .identifier and mod_tag != .kw_abstract and
+                mod_tag != .kw_readonly and mod_tag != .kw_override and
+                mod_tag != .kw_declare and mod_tag != .kw_export) break;
             // Load token text only for .identifier (public/private/protected);
             // keyword tags (abstract, override, readonly, declare, export) skip text entirely.
             const text: []const u8 = if (mod_tag == .identifier) self.tokenText(self.tokIdx()) else "";
@@ -4771,17 +4779,19 @@ pub const Parser = struct {
         // getter/setter detection
         // In TS, `get<T>()` is a generic method, not a getter — exclude `<`
         // Getters/setters can't be generators, so `get *` means `get` is a field name
-        if (self.peek() == .kw_get and self.peekAt(1) != .l_paren and
-            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
-            self.peekAt(1) != .r_brace and self.peekAt(1) != .asterisk and
-            !(self.is_ts and self.peekAt(1) == .less_than))
+        const gs_cur = self.peek();
+        const gs_p1 = self.peekAt(1);
+        if (gs_cur == .kw_get and gs_p1 != .l_paren and
+            gs_p1 != .equal and gs_p1 != .semicolon and
+            gs_p1 != .r_brace and gs_p1 != .asterisk and
+            !(self.is_ts and gs_p1 == .less_than))
         {
             is_getter = true;
             _ = self.advance(); // eat 'get'
-        } else if (self.peek() == .kw_set and self.peekAt(1) != .l_paren and
-            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
-            self.peekAt(1) != .r_brace and self.peekAt(1) != .asterisk and
-            !(self.is_ts and self.peekAt(1) == .less_than))
+        } else if (gs_cur == .kw_set and gs_p1 != .l_paren and
+            gs_p1 != .equal and gs_p1 != .semicolon and
+            gs_p1 != .r_brace and gs_p1 != .asterisk and
+            !(self.is_ts and gs_p1 == .less_than))
         {
             is_setter = true;
             _ = self.advance(); // eat 'set'
@@ -4790,9 +4800,10 @@ pub const Parser = struct {
         // `accessor` field modifier (ES2024 auto-accessors). Only treat
         // `accessor` as modifier when followed by a member-name token on
         // the SAME line (no ASI). On newline, `accessor` is the field name.
+        const acc_p1 = self.peekAt(1);
         if (self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "accessor") and
-            self.peekAt(1) != .l_paren and self.peekAt(1) != .equal and
-            self.peekAt(1) != .semicolon and self.peekAt(1) != .r_brace and
+            acc_p1 != .l_paren and acc_p1 != .equal and
+            acc_p1 != .semicolon and acc_p1 != .r_brace and
             !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1)))
         {
             _ = self.advance(); // eat 'accessor'
@@ -4800,9 +4811,9 @@ pub const Parser = struct {
 
         // Async method: async name() or async *name() (generator)
         var is_async_method = false;
-        if (self.peek() == .kw_async and self.peekAt(1) != .l_paren and
-            self.peekAt(1) != .equal and self.peekAt(1) != .semicolon and
-            self.peekAt(1) != .r_brace and
+        const async_p1 = self.peekAt(1);
+        if (self.peek() == .kw_async and async_p1 != .l_paren and
+            async_p1 != .equal and async_p1 != .semicolon and async_p1 != .r_brace and
             !self.hasNewLineBetween(self.tokIdx(), @intCast(self.tok_i + 1)))
         {
             is_async_method = true;
@@ -4821,8 +4832,9 @@ pub const Parser = struct {
         }
 
         // TS index signature in class body: `[key: Type]: ValueType;`
+        const idx_p1 = self.peekAt(1);
         if (self.is_ts and self.peek() == .l_bracket and
-            (self.peekAt(1) == .identifier or self.peekAt(1) == .kw_readonly) and
+            (idx_p1 == .identifier or idx_p1 == .kw_readonly) and
             self.peekAt(2) == .colon)
         {
             // Modifiers like public/private/protected/export are not allowed on index signatures
@@ -5710,10 +5722,12 @@ pub const Parser = struct {
         if (self.is_ts) {
             // Skip `type` keyword if present
             const start_tok = self.tok_i;
-            if (self.peek() == .kw_type and (self.peekAt(1) == .identifier or self.peekAt(1).isKeyword()) and self.peekAt(2) == .equal) {
+            const alias_p1 = self.peekAt(1);
+            if (self.peek() == .kw_type and (alias_p1 == .identifier or alias_p1.isKeyword()) and self.peekAt(2) == .equal) {
                 _ = self.advance(); // eat 'type'
             }
-            if ((self.peek() == .identifier or self.peek().isKeyword()) and self.peekAt(1) == .equal) {
+            const alias_cur = self.peek();
+            if ((alias_cur == .identifier or alias_cur.isKeyword()) and self.peekAt(1) == .equal) {
                 // TS1262: In module mode, `await` is reserved and cannot be used as an import alias name.
                 // Only applies when the file is a true ES module (has top-level export statements,
                 // not merely namespace aliases). Check source for export at line start.
@@ -5782,18 +5796,20 @@ pub const Parser = struct {
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
 
         // `import defer * as ns from '...'` or `import source x from '...'`
+        const ds_p1 = self.peekAt(1);
         if (self.peek() == .identifier and
             (std.mem.eql(u8, self.tokenText(self.tokIdx()), "defer") or
             std.mem.eql(u8, self.tokenText(self.tokIdx()), "source")) and
-            (self.peekAt(1) == .asterisk or self.peekAt(1) == .identifier))
+            (ds_p1 == .asterisk or ds_p1 == .identifier))
         {
             _ = self.advance(); // skip modifier (defer/source)
         }
 
         // TS `import type { ... }` or `import type X from '...'` or `import type * as X from '...'`
         var is_type_import = false;
+        const type_imp_p1 = self.peekAt(1);
         if (self.is_ts and self.peek() == .kw_type and
-            (self.peekAt(1) == .l_brace or self.peekAt(1) == .identifier or self.peekAt(1) == .asterisk))
+            (type_imp_p1 == .l_brace or type_imp_p1 == .identifier or type_imp_p1 == .asterisk))
         {
             _ = self.advance(); // skip 'type'
             is_type_import = true;
