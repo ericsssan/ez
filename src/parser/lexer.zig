@@ -189,6 +189,28 @@ pub fn buildBitmaps(src: []const u8, bm: *Bitmaps) void {
         bm.structural[word_idx] = 0;
     }
     bm.has_high = any_high != 0;
+
+    // LS (U+2028 = E2 80 A8) and PS (U+2029 = E2 80 A9) are LineTerminators,
+    // not identifier characters. The SIMD classifier marks all >= 0x80 bytes
+    // as ident, so post-correct: clear their ident bits and set the E2 lead
+    // byte in the newline bitmap so the dispatch handles them as line breaks.
+    if (bm.has_high) {
+        var i: usize = 0;
+        while (i + 2 < n) {
+            if (src[i] == 0xE2 and src[i + 1] == 0x80 and (src[i + 2] == 0xA8 or src[i + 2] == 0xA9)) {
+                const w0: usize = i / 64;       const b0: u6 = @intCast(i % 64);
+                const w1: usize = (i + 1) / 64; const b1: u6 = @intCast((i + 1) % 64);
+                const w2: usize = (i + 2) / 64; const b2: u6 = @intCast((i + 2) % 64);
+                bm.ident[w0]   &= ~(@as(u64, 1) << b0);
+                bm.ident[w1]   &= ~(@as(u64, 1) << b1);
+                bm.ident[w2]   &= ~(@as(u64, 1) << b2);
+                bm.newline[w0] |=   @as(u64, 1) << b0;
+                i += 3;
+            } else {
+                i += 1;
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1206,8 +1228,13 @@ pub fn tokenizeWithBufAndBitmaps(
                 at_line_start = true;
                 if (byte == '\n') {
                     try ls.append(alloc, p + 1);
-                } else { // '\r'
+                } else if (byte == '\r') {
                     try ls.append(alloc, if (p + 1 < n and src[p + 1] == '\n') p + 2 else p + 1);
+                } else {
+                    // LS (U+2028, E2 80 A8) or PS (U+2029, E2 80 A9): lead byte set in
+                    // newline bitmap by buildBitmaps; continuation bytes cleared from ident.
+                    skip_until = p + 3;
+                    try ls.append(alloc, p + 3);
                 }
                 continue;
             }
@@ -1504,6 +1531,13 @@ pub fn tokenizeWithBufAndBitmaps(
                                 break;
                             }
                         }
+                        // has_escape: true when the identifier contains \u continuation
+                        // escapes (the extension loop above ran past ident_bm_end).
+                        // Must be computed here, BEFORE the high-byte validation below
+                        // can shorten `end` (e.g. when a keyword is immediately followed
+                        // by a Unicode whitespace like NBSP — the validation sets
+                        // end = valid_end < ident_bm_end, which must NOT set has_escape).
+                        const has_escape = (end != ident_bm_end);
                         // Validate any high-byte continuation sequences in the identifier.
                         // The bitmap includes all 0x80+ bytes as ident-class, but not all
                         // are valid ID_Continue (e.g. Po chars, whitespace).
@@ -1544,11 +1578,6 @@ pub fn tokenizeWithBufAndBitmaps(
                             }
                         }
                         const text = src[p..end];
-                        // has_escape: true when the identifier contains \u continuation
-                        // escapes (the extension loop above ran past ident_bm_end).
-                        // The pure-bitmap run can never contain '\', so if end ==
-                        // ident_bm_end the text is escape-free — no byte scan needed.
-                        const has_escape = (end != ident_bm_end);
                         if (has_escape) {
                             // Decode the raw escaped text and check if it's a reserved word.
                             var dec_buf: [16]u8 = undefined;
