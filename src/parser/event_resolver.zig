@@ -528,12 +528,12 @@ fn resolveFullImpl(
     cpb.allocator = cpb.arena.allocator();
     errdefer cpb.deinit();
 
-    // Pre-size cpb ArrayLists from event volume.  Segments scale roughly with
-    // (if + loop + switch + logical + cond) events; over-estimation is harmless
-    // since the arena is freed wholesale.
+    // Pre-size cpb ArrayLists.  ev_len is a safe upper bound for all per-event
+    // arrays (measured peak ratios: segs 0.27, evts 0.62, aprev 0.40 — all < 1).
+    // Over-allocation is harmless; the arena is freed wholesale after analysis.
     {
         const ev_len: u32 = @intCast(events.len);
-        if (do_cfg) try cpb.ensureCapacity(ev_len / 3, ev_len / 20);
+        if (do_cfg) try cpb.ensureCapacity(ev_len, ev_len / 10);
     }
 
     // Scope stack — holds ScopeIds as we enter/leave scopes during the event
