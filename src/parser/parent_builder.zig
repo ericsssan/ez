@@ -411,7 +411,6 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
     const pre_order  = try alloc.alloc(u32, n);
     const post_order = try alloc.alloc(u32, n);
     const dfs_events = try alloc.alloc(i32, n * 2);
-    @memset(parents, NONE);
 
     if (n == 0) {
         const empty_min_tok = try alloc.alloc(u32, 0);
@@ -428,6 +427,7 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
     if (tree.parents.len == n) {
         @memcpy(parents, tree.parents[0..n]);
     } else {
+        @memset(parents, NONE);
         const tags  = tree.nodes.items(.tag);
         const data  = tree.nodes.items(.data);
         const extra = tree.extra_data;
@@ -436,27 +436,32 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         }
     }
 
-    // ── Step 2: min_tok forward pass ───────────────────────────────────────────
+    // ── Step 2+3a: min_tok forward pass + counting (fused) ───────────────────
+    // min_tok[i] is final at iteration i (all children j<i have propagated).
     const min_tok = try alloc.alloc(u32, n);
     const main_tokens = tree.nodes.items(.main_token);
     @memcpy(min_tok, main_tokens[0..n]);
+
+    // Pre-allocate counts using token count (safe upper bound for any min_tok value).
+    const counts = try alloc.alloc(u32, tree.tokens.len + 1);
+    defer alloc.free(counts);
+    @memset(counts, 0);
+
+    var max_min_tok: u32 = 0;
     for (1..n) |i| {
+        const v = min_tok[i];
+        max_min_tok = @max(max_min_tok, v);
+        counts[v] += 1;
         const p = parents[i];
-        if (p != NONE and min_tok[i] < min_tok[p]) min_tok[p] = min_tok[i];
+        if (p != NONE) min_tok[p] = @min(min_tok[p], v);
     }
 
-    // ── Step 3: Counting sort on min_tok → pre_order ──────────────────────────
+    // ── Step 3b: Counting sort prefix sum + scatter → pre_order ──────────────
     // Root (idx 0) always goes first.  For non-root nodes, descending-index
     // placement within each bucket gives parent (higher idx) before child.
     {
-        var max_min_tok: u32 = 0;
-        for (min_tok[1..n]) |v| if (v > max_min_tok) { max_min_tok = v; };
-        const counts = try alloc.alloc(u32, max_min_tok + 1);
-        defer alloc.free(counts);
-        @memset(counts, 0);
-        for (1..n) |i| counts[min_tok[i]] += 1;
         var sum: u32 = 1; // position 0 reserved for root
-        for (counts) |*c| { const old = c.*; c.* = sum; sum += old; }
+        for (counts[0..max_min_tok + 1]) |*c| { const old = c.*; c.* = sum; sum += old; }
         pre_order[0] = 0;
         var ii: usize = n;
         while (ii > 1) {
@@ -469,21 +474,25 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
 
     // ── Step 4: dfs_events via ancestor-stack walk ────────────────────────────
     {
-        var anc: std.ArrayList(u32) = .empty;
-        defer anc.deinit(alloc);
-        try anc.ensureTotalCapacity(alloc, @min(n, 512));
+        // Raw slice stack avoids ArrayList overhead (capacity checks, optional unwrapping).
+        const stk = try alloc.alloc(u32, n);
+        defer alloc.free(stk);
+        var stk_top: usize = 0;
         var ei: u32 = 0;
         for (pre_order) |node| {
-            while (anc.items.len > 0 and parents[node] != anc.items[anc.items.len - 1]) {
-                dfs_events[ei] = ~@as(i32, @intCast(anc.pop().?));
+            while (stk_top > 0 and parents[node] != stk[stk_top - 1]) {
+                stk_top -= 1;
+                dfs_events[ei] = ~@as(i32, @intCast(stk[stk_top]));
                 ei += 1;
             }
             dfs_events[ei] = @intCast(node);
             ei += 1;
-            try anc.append(alloc, node);
+            stk[stk_top] = node;
+            stk_top += 1;
         }
-        while (anc.items.len > 0) {
-            dfs_events[ei] = ~@as(i32, @intCast(anc.pop().?));
+        while (stk_top > 0) {
+            stk_top -= 1;
+            dfs_events[ei] = ~@as(i32, @intCast(stk[stk_top]));
             ei += 1;
         }
     }
