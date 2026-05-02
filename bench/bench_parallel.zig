@@ -7,6 +7,7 @@
 //   F — hybrid 3-stage
 //   G — AIO + 3-stage hybrid
 //   H — WS + AIO (no 3-stage)
+//   I — pool
 //
 // Usage:
 //   zig build bench-parallel                          # large fixtures
@@ -67,6 +68,7 @@ pub fn main(init: std.process.Init) !void {
     var times_f: [RUNS]u64 = undefined;
     var times_g: [RUNS]u64 = undefined;
     var times_h: [RUNS]u64 = undefined;
+    var times_i: [RUNS]u64 = undefined;
 
     var ra = ParallelRunner.init(gpa); defer ra.deinit(); ra.bench_skip_lint = true;
     var rb = ParallelRunner.init(gpa); defer rb.deinit(); rb.bench_skip_lint = true;
@@ -76,6 +78,7 @@ pub fn main(init: std.process.Init) !void {
     var rf = ParallelRunner.init(gpa); defer rf.deinit(); rf.bench_skip_lint = true;
     var rg = ParallelRunner.init(gpa); defer rg.deinit(); rg.bench_skip_lint = true;
     var rh = ParallelRunner.init(gpa); defer rh.deinit(); rh.bench_skip_lint = true;
+    var ri = ParallelRunner.init(gpa); defer ri.deinit(); ri.bench_skip_lint = true;
 
     for (0..RUNS) |run| {
         times_a[run] = if (only_last) 1 else timeRunReused(io, files, .static,               &ra);
@@ -85,10 +88,11 @@ pub fn main(init: std.process.Init) !void {
         times_e[run] = if (only_last) 1 else timeRunReused(io, files, .per_thread_pipelined, &re);
         times_f[run] = if (only_last) 1 else timeRunReused(io, files, .hybrid_3stage,        &rf);
         times_g[run] = if (only_last) 1 else timeRunReused(io, files, .aio_hybrid_3stage,    &rg);
-        times_h[run] = timeRunReused(io, files, .ws_aio, &rh);
+        times_h[run] = if (only_last) 1 else timeRunReused(io, files, .ws_aio,               &rh);
+        times_i[run] = timeRunReused(io, files, .pool, &ri);
 
         const label: []const u8 = if (run < WARMUP) " (warmup)" else "";
-        std.debug.print("  run {d}:  A={d}  B={d}  C={d}  D={d}  E={d}  F={d}  G={d}  H={d}{s}\n", .{
+        std.debug.print("  run {d}:  A={d}  B={d}  C={d}  D={d}  E={d}  F={d}  G={d}  H={d}  I={d}{s}\n", .{
             run + 1,
             times_a[run] / 1_000_000,
             times_b[run] / 1_000_000,
@@ -98,6 +102,7 @@ pub fn main(init: std.process.Init) !void {
             times_f[run] / 1_000_000,
             times_g[run] / 1_000_000,
             times_h[run] / 1_000_000,
+            times_i[run] / 1_000_000,
             label,
         });
     }
@@ -110,6 +115,7 @@ pub fn main(init: std.process.Init) !void {
     const med_f = median(times_f[WARMUP..]);
     const med_g = median(times_g[WARMUP..]);
     const med_h = median(times_h[WARMUP..]);
+    const med_i = median(times_i[WARMUP..]);
 
     const fps_a = files.len * 1_000_000_000 / @max(med_a, 1);
     const fps_b = files.len * 1_000_000_000 / @max(med_b, 1);
@@ -119,6 +125,7 @@ pub fn main(init: std.process.Init) !void {
     const fps_f = files.len * 1_000_000_000 / @max(med_f, 1);
     const fps_g = files.len * 1_000_000_000 / @max(med_g, 1);
     const fps_h = files.len * 1_000_000_000 / @max(med_h, 1);
+    const fps_i = files.len * 1_000_000_000 / @max(med_i, 1);
 
     const pct_b = pctDiff(fps_a, fps_b);
     const pct_c = pctDiff(fps_a, fps_c);
@@ -127,6 +134,7 @@ pub fn main(init: std.process.Init) !void {
     const pct_f = pctDiff(fps_a, fps_f);
     const pct_g = pctDiff(fps_a, fps_g);
     const pct_h = pctDiff(fps_a, fps_h);
+    const pct_i = pctDiff(fps_a, fps_i);
 
     std.debug.print("\n── wall-clock (median) ──────────────────────────────────\n", .{});
     std.debug.print("  A  static    N_CPU       : {d:>6}ms  {d:>8} files/s  (baseline)\n", .{ med_a / 1_000_000, fps_a });
@@ -137,6 +145,7 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("  F  hybrid 3-stage        : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_f / 1_000_000, fps_f, sign(pct_f), pct_f });
     std.debug.print("  G  AIO + 3-stage hybrid  : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_g / 1_000_000, fps_g, sign(pct_g), pct_g });
     std.debug.print("  H  WS + AIO (no 3-stage) : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_h / 1_000_000, fps_h, sign(pct_h), pct_h });
+    std.debug.print("  I  pool                  : {d:>6}ms  {d:>8} files/s  ({s}{d}%)\n", .{ med_i / 1_000_000, fps_i, sign(pct_i), pct_i });
 
     // ── Profile run — phase breakdown + CPU utilisation ─────────
     std.debug.print("\n── phase breakdown (one profiling run each) ─────────────\n", .{});
@@ -148,6 +157,7 @@ pub fn main(init: std.process.Init) !void {
     profileRun(gpa, io, files, .hybrid_3stage,        med_f, cpu_count, "F  hybrid 3-stage");
     profileRun(gpa, io, files, .aio_hybrid_3stage,    med_g, cpu_count, "G  AIO + 3-stage hybrid");
     profileRun(gpa, io, files, .ws_aio,               med_h, cpu_count, "H  WS + AIO (no 3-stage)");
+    profileRun(gpa, io, files, .pool,                 med_i, cpu_count, "I  pool");
 
     std.debug.print("\n", .{});
 }
