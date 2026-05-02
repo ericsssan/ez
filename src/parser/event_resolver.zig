@@ -533,7 +533,7 @@ fn resolveFullImpl(
     // since the arena is freed wholesale.
     {
         const ev_len: u32 = @intCast(events.len);
-        if (do_cfg) try cpb.ensureCapacity(ev_len / 4, ev_len / 40);
+        if (do_cfg) try cpb.ensureCapacity(ev_len / 3, ev_len / 20);
     }
 
     // Scope stack — holds ScopeIds as we enter/leave scopes during the event
