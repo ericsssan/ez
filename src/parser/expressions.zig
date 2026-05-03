@@ -3038,7 +3038,11 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     }
 
     // Not an arrow — `async(args)` is a call expression where `async`
-    // is the callee identifier.
+    // is the callee identifier.  Args were collected speculatively with the
+    // cover grammar (could have become arrow params), so now that we've
+    // committed to call-expression semantics we must run the same
+    // CoverInitializedName check that parseArgumentList does — otherwise
+    // patterns like `async({ foo = 1 })` slip through silently.
     const callee = try p.addNode(.{
         .tag = .identifier,
         .main_token = async_tok,
@@ -3046,6 +3050,7 @@ fn parseAsyncParenArrowOrCall(p: *Parser, async_tok: TokenIndex) Error!NodeIndex
     });
 
     const args = p.scratchSlice(scratch_top);
+    for (args) |raw| p.checkCoverInitializedNameFast(NodeIndex.fromInt(raw));
     const args_range = try p.addSlice(args);
     p.scratchPop(scratch_top);
 
