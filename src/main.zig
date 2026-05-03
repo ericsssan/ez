@@ -182,7 +182,17 @@ pub fn main(init: std.process.Init) !void {
         defer runner.deinit();
         runner.config = resolved_config;
         runner.profile_phases = profile_phases;
-        try runner.lintFiles(io, files);
+        // Strategy override for benchmarking: EZ_STRATEGY=pool|pool2 (default = static).
+        const parallel_pool_mod = @import("cli/parallel_pool.zig");
+        const strat_c = std.c.getenv("EZ_STRATEGY");
+        const strat: []const u8 = if (strat_c) |p| std.mem.span(p) else "";
+        if (std.mem.eql(u8, strat, "pool")) {
+            try parallel_pool_mod.lintFilesPooled(&runner, io, files);
+        } else if (std.mem.eql(u8, strat, "pool2")) {
+            try parallel_pool_mod.lintFilesPooledV2(&runner, io, files);
+        } else {
+            try runner.lintFiles(io, files);
+        }
         runner.sortResults();
         if (profile_phases) runner.printTimings();
 
