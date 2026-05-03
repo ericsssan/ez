@@ -922,7 +922,31 @@ fn resolveFullImpl(
 
         // ── Loop CodePath events ─────────────────────────────────
         .loop_open => {
-            if (!cfg_alive and e.node < node_reachable.len) node_reachable[e.node] = 0;
+            // In streaming mode the parser emits loop_open with node=.none and
+            // patches the real index after parsing the loop body.  The batch
+            // publish may fire between the push and the patch, so spin until
+            // patchEventNode's release-store is visible.
+            var node_raw = e.node;
+            if (opts.streaming != null and node_raw == std.math.maxInt(u32)) {
+                const ev_u64: *const u64 = @ptrCast(&events_view[ev_i - 1]);
+                while (true) {
+                    std.atomic.spinLoopHint();
+                    node_raw = @truncate(@atomicLoad(u64, ev_u64, .acquire) >> 32);
+                    if (node_raw != std.math.maxInt(u32)) break;
+                }
+            }
+            // Defensive: skip CFG/loop processing if node is unpatched (still .none)
+            // or out-of-range — happens when the parser hits a recoverable error
+            // mid-loop (e.g. `for (using x of arr) {}` — `using` not yet handled)
+            // and unwinds before patching the loop_open event.  Without this
+            // guard, loopingTargetNode below would index ast.nodes with maxInt(u32)
+            // and panic.  Note: the linter's parallel path calls sem unconditionally
+            // even when tree.errors.len > 0, so sem must be robust to broken ASTs.
+            if (node_raw >= ast.nodes.len) {
+                pending_label = "";
+                continue;
+            }
+            if (!cfg_alive and node_raw < node_reachable.len) node_reachable[node_raw] = 0;
             const loop_type: code_path_mod.LoopType = switch (e.aux) {
                 0 => .while_stmt,
                 1 => .do_while_stmt,
@@ -930,7 +954,7 @@ fn resolveFullImpl(
                 3 => .for_in_stmt,
                 else => .for_of_stmt,
             };
-            const n: NodeIndex = @enumFromInt(e.node);
+            const n: NodeIndex = @enumFromInt(node_raw);
             const target = loopingTargetNode(ast, n, loop_type);
             // has_skip_path: false for do-while (always executes once), for(;;) /
             // for(init;;update) (no condition), and while(true) (condition is always truthy).
