@@ -480,10 +480,20 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         var stk_top: usize = 0;
         var ei: u32 = 0;
         for (pre_order) |node| {
-            while (stk_top > 0 and parents[node] != stk[stk_top - 1]) {
-                stk_top -= 1;
-                dfs_events[ei] = ~@as(i32, @intCast(stk[stk_top]));
-                ei += 1;
+            const parent = parents[node];
+            // For nodes with a recorded parent: pop the stack until that parent is
+            // on top, emitting exit events for the popped ancestors.
+            // For orphan nodes (parent == NONE — root, or a child whose parent the
+            // parser failed to record like some TS type annotations): DON'T pop the
+            // stack hunting for a NONE that isn't there.  Instead treat the orphan
+            // as a child of the current stack top so the DFS shape stays consistent
+            // and downstream rule traversal doesn't see fake ancestor exits.
+            if (parent != NONE) {
+                while (stk_top > 0 and parent != stk[stk_top - 1]) {
+                    stk_top -= 1;
+                    dfs_events[ei] = ~@as(i32, @intCast(stk[stk_top]));
+                    ei += 1;
+                }
             }
             dfs_events[ei] = @intCast(node);
             ei += 1;
