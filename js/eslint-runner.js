@@ -32,13 +32,13 @@ function ruleNameFromRuleId(ruleId) {
 // ── Symbol BindingKind → ESLint def.type mapping ───────────────
 // Must match BindingKind enum in src/parser/symbol.zig (values in enum order).
 // Indices match BindingKind enum order in symbol.zig:
-// 0=var, 1=let, 2=const, 3=function_decl, 4=class_decl, 5=parameter, 6=catch_param,
-// 7=import_binding, 8=type_import_binding, 9=implicit_global,
-// 10=type_decl, 11=interface_decl, 12=enum_decl, 13=namespace_decl
-// 14=fn_expr_name (named function-expression binding), 15=class_expr_name (named class-expression binding)
+// 0=var, 1=let, 2=const, 3=function_decl, 4=function_decl_annex_b, 5=class_decl, 6=parameter, 7=catch_param,
+// 8=import_binding, 9=type_import_binding, 10=implicit_global,
+// 11=type_decl, 12=interface_decl, 13=enum_decl, 14=namespace_decl
+// 15=fn_expr_name (named function-expression binding), 16=class_expr_name (named class-expression binding)
 // TS def type strings match @typescript-eslint/scope-manager DefinitionType values:
 // 'Type' for type aliases/interfaces, 'TSEnumName' for enums, 'TSModuleName' for namespaces
-const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName','TypeParameter'];
+const _DEF_TYPE_FROM_KIND = ['Variable','Variable','Variable','FunctionName','FunctionName','ClassName','Parameter','CatchClause','ImportBinding','ImportBinding','Variable','Type','Type','TSEnumName','TSModuleName','FunctionName','ClassName','TypeParameter'];
 const _SCOPE_KIND_NAMES = ['global','module','function','block','class','catch','switch','static_block','with','class-field-initializer'];
 let _tsServices = null;
 function tsServices() {
