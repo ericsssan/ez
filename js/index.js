@@ -51,10 +51,10 @@ function ensureBuffer(sourceLen) {
 // that ArrayBuffer stuck around for the whole process.
 function ensureBufferBytes(totalBytes) {
   const minSize = Math.max(totalBytes, DEFAULT_BUFFER_SIZE);
-  // Grow-only: never shrink. Shrinking would orphan the old buffer, and any
-  // AstView with noPrivateCopy wrapping it would hold an unreachable reference.
-  // Staying at the high-water mark costs at most one large allocation; resize
-  // events are O(log n) over any bounded corpus so the cost is negligible.
+  // Grow-only: never shrink. AstView wraps sharedBuffer directly (returned by
+  // parse/parseSource/parseAndLintNative); shrinking would orphan the buffer
+  // any caller is reading from. Staying at the high-water mark costs at most
+  // one large allocation per corpus.
   if (!sharedBuffer || sharedBuffer.byteLength < minSize) {
     sharedBuffer = new ArrayBuffer(minSize);
   }
@@ -98,46 +98,6 @@ function _encodeSource(source) {
   sourceStart = buf.byteLength - encoded.byteLength;
   new Uint8Array(buf).set(encoded, sourceStart);
   return { buf, sourceStart, sourceLen: encoded.byteLength };
-}
-
-/**
- * Copy AST data from shared buffer into a private buffer.
- * Adjusts SOURCE_OFFSET and symbol name pointers.
- * Returns the private ArrayBuffer.
- */
-function _makePrivateBuf(buf, sourceStart, sourceLen) {
-  const dv0 = new DataView(buf);
-  const totalUsed = dv0.getUint32(56, true);
-  const semOff = dv0.getUint32(68, true);
-  const semEnd = semOff > 0 ? semOff + 152 : 0; // SemanticHeader = 152 bytes
-  const srcStart = Math.max(totalUsed, semEnd);
-  const privateSize = srcStart + sourceLen;
-  const privateArr = new Uint8Array(privateSize);
-  privateArr.set(new Uint8Array(buf, 0, totalUsed));
-  privateArr.set(new Uint8Array(buf, sourceStart, sourceLen), srcStart);
-  const privateBuf = privateArr.buffer;
-  const pdv = new DataView(privateBuf);
-  pdv.setUint32(52, srcStart, true);
-  if (semOff > 0) {
-    const symCount = pdv.getUint32(semOff + 4, true);
-    if (symCount > 0) {
-      const nameStartsArrOff = pdv.getUint32(semOff + 60, true);
-      if (nameStartsArrOff > 0 && nameStartsArrOff + symCount * 4 <= totalUsed) {
-        const nameStartsArr = new Uint32Array(privateBuf, nameStartsArrOff, symCount);
-        const shift = srcStart - sourceStart;
-        for (let i = 0; i < symCount; i++) {
-          const orig = nameStartsArr[i];
-          // Only shift offsets that point into the source text.
-          // Names in the bump region (implicit globals, offset < sourceStart) are already
-          // at the correct offset in the private buffer — no shift needed.
-          if (orig >= sourceStart) nameStartsArr[i] = (orig + shift) >>> 0;
-        }
-      }
-    }
-  }
-  const magic = pdv.getUint32(0, true);
-  if (magic !== MAGIC) throw new Error("ez: invalid buffer header (magic mismatch)");
-  return privateBuf;
 }
 
 /**
@@ -266,16 +226,14 @@ function parseSource(source, options = {}) {
   if (bytesUsed === 0) throw new Error("ez: parse failed (buffer too small or invalid source)");
 
   getTagNames();
-  if (options.noPrivateCopy) return new AstView(buf);
-  const privateBuf = _makePrivateBuf(buf, sourceStart, sourceLen);
   // Allow caller to override source_type in the header (offset 84).
   // Needed when parsing script-mode code (sourceType: "script").
   if (options.sourceType === "script") {
-    new DataView(privateBuf).setUint32(84, 0, true);
+    new DataView(buf).setUint32(84, 0, true);
   } else if (options.sourceType === "module") {
-    new DataView(privateBuf).setUint32(84, 1, true);
+    new DataView(buf).setUint32(84, 1, true);
   }
-  return new AstView(privateBuf);
+  return new AstView(buf);
 }
 
 function parse(filePath, options = {}) {
@@ -295,13 +253,7 @@ function parse(filePath, options = {}) {
   }
   sharedBuffer = buf;
   getTagNames();
-
-  if (options.noPrivateCopy) return new AstView(buf);
-
-  const dv0 = new DataView(buf);
-  const sourceLen = dv0.getUint32(20, true);
-  const sourceStart = dv0.getUint32(52, true);
-  return new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
+  return new AstView(buf);
 }
 
 function resetBuffer() {
@@ -354,10 +306,7 @@ function parseAndLintNative(filePath, options = {}) {
   const sourceLen = dv0.getUint32(20, true);
   const sourceStart = dv0.getUint32(52, true);
 
-  const ast = options.noPrivateCopy
-    ? new AstView(buf)
-    : new AstView(_makePrivateBuf(buf, sourceStart, sourceLen));
-
+  const ast = new AstView(buf);
   const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
   const diags = _parseDiags(bytesUsed, srcBytes);
   return { ast, diags };

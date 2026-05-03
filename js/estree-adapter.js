@@ -358,9 +358,9 @@ class AstView {
     this._preOrderRank = null;
 
     // Interleaved DFS events (v5 — enter/exit in correct DFS order, computed in Zig).
-    // Kept as a view into the buffer. With private copy buffers (the default path in
-    // parseSource), the buffer is JS-owned and stable. With noPrivateCopy, the caller
-    // must not call getDFSEvents() after the next b.parse() call.
+    // Kept as a view into the shared parse buffer.  The view is valid until the
+    // next parse/parseSource/parseAndLintNative call overwrites the buffer —
+    // callers must consume the AST before parsing the next file.
     const dfsEvOff = dv.getUint32(H.DFS_EVENTS_OFFSET, true);
     this._dfsEvents = dfsEvOff > 0
       ? new Int32Array(buffer, dfsEvOff, this.nodeCount * 2)
@@ -1113,6 +1113,16 @@ const NodeProto = {
     if (ast._nodeTags[this._i] === T.jsx_identifier) {
       const lhs = ast.nodeLhs(this._i);
       if (lhs !== NONE && ast._tokEnds) return ast._tokEnds[lhs];
+    }
+    // SequenceExpression: when paren-wrapped, _nodeEndPos includes the closing ')'.
+    // ESTree requires end at the last expression (parens are not part of the range).
+    if (ast._nodeTags[this._i] === T.sequence_expr) {
+      const lhs = ast.nodeLhs(this._i), rhs = ast.nodeRhs(this._i);
+      const extra = ast._extraData;
+      for (let i = rhs - 1; i >= lhs; i--) {
+        const ci = extra[i];
+        if (ci !== NONE) return ast._nodeEndPos(ci);
+      }
     }
     return ast._nodeEndPos(this._i);
   },
@@ -3544,6 +3554,17 @@ const NodeProto = {
       if (tag === T.jsx_identifier) {
         const lhs = this._ast.nodeLhs(this._i);
         if (lhs !== NONE && this._ast._tokEnds) end = this._ast._tokEnds[lhs];
+      }
+
+      // SequenceExpression: when paren-wrapped, _nodeEndPos includes the closing ')'.
+      // Walk backwards through elements to find the last expression's true end position.
+      if (tag === T.sequence_expr) {
+        const lhs = this._ast.nodeLhs(this._i), rhs = this._ast.nodeRhs(this._i);
+        const extra = this._ast._extraData;
+        for (let i = rhs - 1; i >= lhs; i--) {
+          const ci = extra[i];
+          if (ci !== NONE) { end = this._ast._nodeEndPos(ci); break; }
+        }
       }
 
       // For statement nodes, check if a semicolon token follows and extend the range to include it.

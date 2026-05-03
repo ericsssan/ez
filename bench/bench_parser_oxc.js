@@ -11,7 +11,7 @@
  *   Both return a usable representation of the parsed code.
  *
  * (B) Full pipeline — what real linting uses:
- *   ez:  parseSource(src, { filename, noPrivateCopy })
+ *   ez:  parseSource(src, { filename })
  *         — lex + parse + scope analysis + node positions + AstView (lazy)
  *   oxc: parseSync(filename, src)             — lex + parse + JS object tree (no scope analysis)
  *   Note: ez does significantly MORE work in (B) — semantic/scope analysis is in the same call.
@@ -156,7 +156,7 @@ console.log("    NOTE: ez does scope analysis here; oxc does NOT — ez provides
     const bytes = Buffer.byteLength(src, "utf8");
     const name = path.basename(fx.path);
 
-    const ezMs  = bench(() => { ezParse(src, { filename: name, noPrivateCopy: true }); reset(); });
+    const ezMs  = bench(() => { ezParse(src, { filename: name }); reset(); });
     const oxcMs = bench(() => { oxcParseSync(name, src); });
 
     const ezMBs  = mbPerSec(bytes, ezMs);
