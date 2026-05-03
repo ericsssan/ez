@@ -1862,6 +1862,11 @@ class SourceCode {
     // Global scope: add built-in globals so no-undef doesn't flag NaN, undefined, etc.
     if (kind === 0) {
       const ecmaVersion = this._ecmaVersion;
+      // In script mode (no globalReturn), a code-declared var in scope 0 is effectively
+      // in the global scope, so it can "redeclare" a builtin. Mark it so no-redeclare
+      // with builtinGlobals:true can detect it. Skip in module/globalReturn mode — there
+      // code declarations are in a different scope from config globals.
+      const markBuiltins = !this._globalReturn && this._sourceType !== 'module';
       for (const name of _BUILTIN_GLOBALS) {
         const minVer = _GLOBAL_MIN_VERSION[name];
         if (minVer !== undefined && ecmaVersion < minVer) continue;
@@ -1869,10 +1874,10 @@ class SourceCode {
           const g = _mkGlobalVar(name, globalScopeRef, false, 'writable');
           set.set(name, g);
           variables.push(g);
+        } else if (markBuiltins) {
+          const existing = set.get(name);
+          if (!existing.eslintImplicitGlobalSetting) existing.eslintImplicitGlobalSetting = 'writable';
         }
-        // Don't set eslintImplicitGlobalSetting on variables that already have
-        // code declarations — ECMAScript builtins don't count as env globals for
-        // no-redeclare purposes (ESLint behavior: `var Object = 0` is NOT a redeclaration).
       }
       if (this._envGlobals) {
         for (const name of _ENV_GLOBALS) {
@@ -1881,6 +1886,8 @@ class SourceCode {
             set.set(name, g);
             variables.push(g);
           }
+          // Env globals (top, window, etc.) are NOT marked as builtins on code vars —
+          // builtinGlobals:true only tracks explicitly configured globals, not background envGlobals.
         }
       }
       if (this._configGlobals) {
@@ -1894,9 +1901,10 @@ class SourceCode {
           if (set.has(name)) {
             const existing = set.get(name);
             existing.writeable = isWritable;
-            // Mark as an env global so no-redeclare can detect redeclarations
-            // (e.g., `var top = 0` in browser env fires because `top` is a browser global).
-            if (!existing.eslintImplicitGlobalSetting) {
+            // Mark code var as an implicit global so no-redeclare can detect it, but only
+            // in script mode without globalReturn: in module/globalReturn mode, code
+            // declarations are in a separate scope from the config globals.
+            if (!existing.eslintImplicitGlobalSetting && markBuiltins) {
               existing.eslintImplicitGlobalSetting = isWritable ? 'writable' : 'readonly';
             }
           } else {
@@ -2004,7 +2012,8 @@ class SourceCode {
           }
           // In script mode without globalReturn, top-level vars shadow globals: copy igs so
           // no-redeclare can detect redeclarations of builtins and env globals (Object, top, etc.).
-          if (!this._globalReturn && !v.eslintImplicitGlobalSetting && gVar.eslintImplicitGlobalSetting) {
+          // Skip in module mode: module-scoped vars don't redeclare globals in a different scope.
+          if (!this._globalReturn && this._sourceType !== 'module' && !v.eslintImplicitGlobalSetting && gVar.eslintImplicitGlobalSetting) {
             v.eslintImplicitGlobalSetting = gVar.eslintImplicitGlobalSetting;
           }
         }
