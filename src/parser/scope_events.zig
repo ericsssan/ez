@@ -107,6 +107,8 @@ pub const EventStream = struct {
     /// concurrent sem thread to consume events as they are produced. Null
     /// in sequential mode — branch is predicted not-taken with zero overhead.
     publish_to: ?*std.atomic.Value(usize) = null,
+    /// Bitmask for publish granularity (batch_size - 1). Must be power-of-2 - 1.
+    sem_batch_mask: usize = PUBLISH_BATCH - 1,
 
     pub const PUBLISH_BATCH: usize = 4096;
 
@@ -123,7 +125,9 @@ pub const EventStream = struct {
         }
         if (self.publish_to) |p| {
             const n = self.events.items.len;
-            if ((n & (PUBLISH_BATCH - 1)) == 0) p.store(n, .release);
+            if ((n & self.sem_batch_mask) == 0) {
+                p.store(n, .release);
+            }
         }
     }
 

@@ -85,6 +85,11 @@ pub const ParallelRunner = struct {
     /// When true, lintOneFile3Stage prints per-stage start/end timestamps
     /// for each file so we can decompose the 3-stage pipeline wallclock.
     bench_stage_log: bool = false,
+    /// 0 = use default (PUBLISH_BATCH-1). Set to batch_size-1 to override.
+    bench_lex_batch_mask: usize = 0,
+    bench_sem_batch_mask: usize = 0,
+    /// 0 = use default (cpu_count/3). Override pool2 reserved lex worker count.
+    bench_n_lex: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) ParallelRunner {
         return .{
@@ -1087,7 +1092,7 @@ pub const ParallelRunner = struct {
         for (threads[0..spawned]) |thread| thread.join();
     }
 
-    fn lintSource(self: *ParallelRunner, io: Io, file_path: []const u8, source: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
+    pub fn lintSource(self: *ParallelRunner, io: Io, file_path: []const u8, source: []const u8, arena_impl: *std.heap.ArenaAllocator) void {
         const arena = arena_impl.allocator();
         var t_phase = if (self.profile_phases) Io.Clock.Timestamp.now(io, .awake) else undefined;
 
@@ -1642,7 +1647,7 @@ pub const ParallelRunner = struct {
         while (true) {
             const idx = ctx.cursor.fetchAdd(1, .acq_rel);
             if (idx >= ctx.files.len) break;
-            ctx.runner.lintOneFile3Stage(ctx.io, ctx.files[idx]);
+            ctx.runner.lintOneFile3Stage(ctx.io, ctx.files[idx], null);
         }
     }
 
@@ -1843,7 +1848,7 @@ pub const ParallelRunner = struct {
 
         // Big files: process serially on the main thread, each one fanning
         // out to 3 worker threads.  Other cores stay busy on small files.
-        for (big.items) |path| self.lintOneFile3Stage(io, path);
+        for (big.items) |path| self.lintOneFile3Stage(io, path, null);
 
         // Wait for small-file workers.
         for (small_threads[0..small_spawned]) |th| th.join();
@@ -1853,7 +1858,9 @@ pub const ParallelRunner = struct {
     /// sequentially on the resulting AST.  Used by the hybrid scheduler for
     /// files large enough that the ~22ms wall savings exceed the ~50µs
     /// thread spawn overhead (empirically ~50KB+).
-    pub fn lintOneFile3Stage(self: *ParallelRunner, io: Io, file_path: []const u8) void {
+    /// presource: caller-owned source bytes already read (skips internal aioReadFull).
+    /// Pass null to let the function read the file itself.
+    pub fn lintOneFile3Stage(self: *ParallelRunner, io: Io, file_path: []const u8, presource: ?[]const u8) void {
         var arena_lex = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_lex.deinit();
         var arena_parse = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -1863,11 +1870,7 @@ pub const ParallelRunner = struct {
         var arena_cfg = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         defer arena_cfg.deinit();
 
-        // POSIX AIO read: submit aio_read, then aio_suspend until done.
-        // On warm cache this is ~equivalent to sync read; on cold cache the
-        // kernel can overlap the read with other in-flight work in the
-        // process (e.g. small-file workers' AIO rings).
-        const source = aioReadFull(arena_parse.allocator(), file_path) orelse {
+        const source: []const u8 = presource orelse aioReadFull(arena_parse.allocator(), file_path) orelse {
             const msg = std.fmt.allocPrint(self.allocator, "{s}: error: read failed\n", .{file_path}) catch "";
             self.appendResult(.{ .file_path = file_path, .output = msg, .error_count = 1, .warning_count = 0, .had_error = true });
             return;
@@ -1887,12 +1890,12 @@ pub const ParallelRunner = struct {
         };
         tokens_buf.len = max_toks;
 
-        var published = std.atomic.Value(usize).init(0);
-        var lex_done = std.atomic.Value(bool).init(false);
-        var events_pub = std.atomic.Value(usize).init(0);
-        var parse_done = std.atomic.Value(bool).init(false);
+        var published    = std.atomic.Value(usize).init(0);
+        var lex_done     = std.atomic.Value(bool).init(false);
+        var events_pub   = std.atomic.Value(usize).init(0);
+        var parse_done   = std.atomic.Value(bool).init(false);
         var ast_view: Ast = undefined;
-        var ast_ready = std.atomic.Value(bool).init(false);
+        var ast_ready    = std.atomic.Value(bool).init(false);
 
         const LexCtx = struct {
             alloc: std.mem.Allocator,
@@ -1902,6 +1905,7 @@ pub const ParallelRunner = struct {
             publish: *std.atomic.Value(usize),
             lex_done: *std.atomic.Value(bool),
             t_start: *u64, t_end: *u64,
+            lex_batch_mask: usize,
         };
         const ParseCtx = struct {
             alloc: std.mem.Allocator,
@@ -1917,6 +1921,9 @@ pub const ParallelRunner = struct {
             ast_view: *Ast,
             ast_ready: *std.atomic.Value(bool),
             t_spawn: *u64, t_first_token_seen: *u64, t_end: *u64,
+            lex_stall_count: u64 = 0,
+            lex_stall_ns: u64 = 0,
+            sem_batch_mask: usize,
         };
         const SemCtx = struct {
             alloc: std.mem.Allocator,
@@ -1927,6 +1934,7 @@ pub const ParallelRunner = struct {
             parse_done: *std.atomic.Value(bool),
             ast_ready: *std.atomic.Value(bool),
             t_spawn: *u64, t_ast_ready_seen: *u64, t_end: *u64,
+            sem_stats: event_resolver.Stats = .{},
         };
 
         const lex_runner = struct {
@@ -1934,7 +1942,7 @@ pub const ParallelRunner = struct {
                 c.t_start.* = nowNs();
                 var result = Lexer.tokenizeWithBuf(
                     c.alloc, c.source, c.lang,
-                    .{ .publish_to = c.publish },
+                    .{ .publish_to = c.publish, .publish_batch_mask = c.lex_batch_mask },
                     c.tokens_buf,
                 ) catch {
                     c.lex_done.store(true, .release);
@@ -1964,6 +1972,9 @@ pub const ParallelRunner = struct {
                         .events_publish_to = c.events_pub,
                         .ast_view_out = c.ast_view,
                         .ast_ready = c.ast_ready,
+                        .lex_stall_count_out = &c.lex_stall_count,
+                        .lex_stall_ns_out    = &c.lex_stall_ns,
+                        .sem_batch_mask      = c.sem_batch_mask,
                     },
                 }) catch {
                     c.events_pub.store(c.events_pub.load(.monotonic), .release);
@@ -1988,8 +1999,9 @@ pub const ParallelRunner = struct {
                     .skip_ref_ranges = true,
                     .streaming = .{
                         .events_published = c.events_pub,
-                        .parse_done = c.parse_done,
-                        .node_count_hint = c.cap_hint * 2,
+                        .parse_done       = c.parse_done,
+                        .node_count_hint  = c.cap_hint * 2,
+                        .stats            = &c.sem_stats,
                     },
                 };
                 const events_slice = c.ast.scope_events;
@@ -2034,6 +2046,7 @@ pub const ParallelRunner = struct {
             .alloc = arena_lex.allocator(), .source = source, .tokens_buf = &tokens_buf,
             .lang = lang, .publish = &published, .lex_done = &lex_done,
             .t_start = &t_lex_start, .t_end = &t_lex_end,
+            .lex_batch_mask = if (self.bench_lex_batch_mask != 0) self.bench_lex_batch_mask else Lexer.PUBLISH_BATCH - 1,
         };
         var parse_ctx = ParseCtx{
             .alloc = arena_parse.allocator(), .source = source, .tokens = tokens_buf.slice(),
@@ -2042,11 +2055,13 @@ pub const ParallelRunner = struct {
             .events_pub = &events_pub, .parse_done = &parse_done,
             .ast_view = &ast_view, .ast_ready = &ast_ready,
             .t_spawn = &t_parse_spawn, .t_first_token_seen = &t_parse_first, .t_end = &t_parse_end,
+            .sem_batch_mask = if (self.bench_sem_batch_mask != 0) self.bench_sem_batch_mask else parser.scope_events.EventStream.PUBLISH_BATCH - 1,
         };
         var sem_ctx = SemCtx{
             .alloc = arena_sem.allocator(), .alloc_cfg = arena_cfg.allocator(),
             .ast = &ast_view, .cap_hint = max_toks,
-            .events_pub = &events_pub, .parse_done = &parse_done, .ast_ready = &ast_ready,
+            .events_pub = &events_pub,
+            .parse_done = &parse_done, .ast_ready = &ast_ready,
             .t_spawn = &t_sem_spawn, .t_ast_ready_seen = &t_sem_ready, .t_end = &t_sem_end,
         };
 
@@ -2071,17 +2086,21 @@ pub const ParallelRunner = struct {
                 (t_lex_end - t_pipeline_start) / 1000,
                 (t_lex_end - t_lex_start) / 1000,
             });
-            std.debug.print("  parse : spawn={d}us first_tok={d}us end={d}us  active={d}us\n", .{
+            std.debug.print("  parse : spawn={d}us first_tok={d}us end={d}us  active={d}us  lex_stalls={d} stall_ns={d}us\n", .{
                 (t_parse_spawn - t_pipeline_start) / 1000,
                 (t_parse_first - t_pipeline_start) / 1000,
                 (t_parse_end - t_pipeline_start) / 1000,
                 (t_parse_end - t_parse_first) / 1000,
+                parse_ctx.lex_stall_count,
+                parse_ctx.lex_stall_ns / 1000,
             });
-            std.debug.print("  sem   : spawn={d}us ready={d}us end={d}us  active={d}us\n", .{
+            std.debug.print("  sem   : spawn={d}us ready={d}us end={d}us  active={d}us  parse_stalls={d} stall_ns={d}us\n", .{
                 (t_sem_spawn - t_pipeline_start) / 1000,
                 (t_sem_ready - t_pipeline_start) / 1000,
                 (t_sem_end - t_pipeline_start) / 1000,
                 (t_sem_end - t_sem_ready) / 1000,
+                sem_ctx.sem_stats.spin_count,
+                sem_ctx.sem_stats.spin_ns / 1000,
             });
             std.debug.print("  wallclock={d}us\n", .{(t_pipeline_end - t_pipeline_start) / 1000});
         }

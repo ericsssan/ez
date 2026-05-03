@@ -153,6 +153,8 @@ pub const Parser = struct {
     /// so a concurrent semantic analyzer can consume events as they are
     /// produced. Null in 1- and 2-stage modes.
     events_publish_to: ?*std.atomic.Value(usize) = null,
+    lex_stall_count: u64 = 0,
+    lex_stall_ns: u64 = 0,
     nodes: Ast.NodeList,
     /// Cached pointers into the nodes SoA — refreshed whenever nodes grows.
     /// `MultiArrayList.items(.tag)` reconstructs the slice (loops over field
@@ -409,6 +411,12 @@ pub const Parser = struct {
         /// use events_publish_to for the bound and node_count_hint for sizing.
         ast_view_out: ?*Ast = null,
         ast_ready: ?*std.atomic.Value(bool) = null,
+        /// Populated by the parser with the number of times it blocked waiting
+        /// for the lexer and the total nanoseconds spent spinning.
+        lex_stall_count_out: ?*u64 = null,
+        lex_stall_ns_out: ?*u64 = null,
+        /// Publish batch mask for parse→sem (batch_size - 1). Defaults to PUBLISH_BATCH-1.
+        sem_batch_mask: usize = scope_events_mod.EventStream.PUBLISH_BATCH - 1,
     };
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
@@ -566,7 +574,10 @@ pub const Parser = struct {
             // This publishes every PUBLISH_BATCH events instead of only at
             // top-level statement boundaries — necessary for files with one
             // huge top-level IIFE (typescript.js etc.).
-            if (streaming) |s| p.scope_events.publish_to = s.events_publish_to;
+            if (streaming) |s| {
+                p.scope_events.publish_to     = s.events_publish_to;
+                p.scope_events.sem_batch_mask = s.sem_batch_mask;
+            }
             // Wire hoisted cursor — avoids struct traversal on every event emit.
             p.ev_ptr = p.scope_events.events.items.ptr;
             p.ev_len = 0;
@@ -694,6 +705,11 @@ pub const Parser = struct {
         p.parents_buf = &.{};
         errdefer if (ast_parents_cap > 0) allocator.free(ast_parents.ptr[0..ast_parents_cap]);
 
+        if (streaming) |s| {
+            if (s.lex_stall_count_out) |out| out.* = p.lex_stall_count;
+            if (s.lex_stall_ns_out)    |out| out.* = p.lex_stall_ns;
+        }
+
         return Ast{
             .source = source,
             .nodes = p.nodes.toOwnedSlice(),
@@ -758,16 +774,19 @@ pub const Parser = struct {
             return;
         }
         // Slow path: spin/yield until publisher advances or EOF.
+        self.lex_stall_count += 1;
+        var ts0: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &ts0);
         var spins: u32 = 0;
         while (true) {
             const v = pub_atomic.load(.acquire);
             if (v > self.parsed_len) {
                 self.parsed_len = v;
-                return;
+                break;
             }
             if (self.lex_done.?.load(.acquire)) {
                 self.parsed_len = pub_atomic.load(.acquire);
-                return;
+                break;
             }
             spins += 1;
             if (spins < 100) {
@@ -777,6 +796,10 @@ pub const Parser = struct {
                 spins = 0;
             }
         }
+        var ts1: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &ts1);
+        self.lex_stall_ns += @as(u64, @intCast(ts1.sec - ts0.sec)) * 1_000_000_000 +
+            @as(u64, @intCast(ts1.nsec)) -% @as(u64, @intCast(ts0.nsec));
     }
 
     /// Skip balanced parentheses, consuming from `(` to matching `)`.
@@ -963,8 +986,9 @@ pub const Parser = struct {
         self.ev_len = n + 1;
         if (self.scope_events.publish_to) |pp| {
             const new_n = n + 1;
-            if ((new_n & (ScopeEventStream.PUBLISH_BATCH - 1)) == 0)
+            if ((new_n & self.scope_events.sem_batch_mask) == 0) {
                 pp.store(new_n, .release);
+            }
         }
     }
 
@@ -1433,7 +1457,12 @@ pub const Parser = struct {
 
     pub inline fn patchEventNode(self: *Parser, event_idx: u32, node: NodeIndex) void {
         if (!self.emit_scope_events) return;
-        self.ev_ptr[event_idx].node = @intFromEnum(node);
+        // Streaming: the resolver may race ahead and read the node field before
+        // this patch fires. Use a release-store on the whole packed-u64 event so
+        // the acquire-spin in the resolver's loop_open handler sees the real node.
+        const ev_u64: *u64 = @ptrCast(&self.ev_ptr[event_idx]);
+        const old = @atomicLoad(u64, ev_u64, .monotonic);
+        @atomicStore(u64, ev_u64, (old & 0x00000000_FFFFFFFF) | (@as(u64, @intFromEnum(node)) << 32), .release);
     }
 
     /// Walk back through recently-emitted events to find the reference event
@@ -2826,6 +2855,7 @@ pub const Parser = struct {
         if (self.eat(.kw_in)) |_| {
             try self.rejectForInOfInitializer(init, true);
             try self.validateForInOfBinding(init, false);
+            try self.upgradePatternRefsToWrite(init);
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
             const loop_ev = try self.emitLoopOpen(.for_in, .none);
@@ -2866,6 +2896,7 @@ pub const Parser = struct {
             }
             try self.rejectForInOfInitializer(init, false);
             try self.validateForInOfBinding(init, true);
+            try self.upgradePatternRefsToWrite(init);
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
             const loop_ev = try self.emitLoopOpen(.for_of, .none);
@@ -6623,7 +6654,8 @@ pub const Parser = struct {
         if (at_script_top_level and (is_await or !self.is_ts)) {
             const msg = if (is_await) "'await using' declaration not allowed at top level of a Script" else "'using' declaration not allowed at top level of a Script";
             try self.emitDiagnostic(self.currentSpan(), "{s}", .{msg});
-            return error.ParseError;
+            // Emit diagnostic but continue parsing so the binding is established.
+            // This matches Espree's lenient behavior (error recovery without abort).
         }
         // TS1547/TS1548: using/await using not allowed directly in case/default clause
         if (self.is_ts and self.in_case_clause) {
@@ -6670,6 +6702,7 @@ pub const Parser = struct {
                 .data = .{ .lhs = binding, .rhs = init },
             });
             try self.scratchPush(decl);
+            try self.emitDeclareFromDeclarator(decl, .@"const");
             if (self.eat(.comma) == null) break;
         }
 
@@ -6700,6 +6733,7 @@ pub const Parser = struct {
             const init: NodeIndex = if (self.eat(.equal) != null) try self.parseAssignmentExpression() else .none;
             const decl = try self.addNode(.{ .tag = .declarator, .main_token = main_tok, .data = .{ .lhs = binding, .rhs = init } });
             try self.scratchPush(decl);
+            try self.emitDeclareFromDeclarator(decl, .@"const");
             if (self.eat(.comma) == null) break;
         }
 

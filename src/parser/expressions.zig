@@ -4598,6 +4598,8 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     } else .none;
 
     // Class body.
+    const class_expr_scope_ev = try p.emitScopeOpen(.class, .none);
+    if (name_node != .none) try p.emitDeclare(.class_expr_name, name_node);
     const l_brace_tok = try p.expect(.l_brace);
     const prev_in_class = p.in_class;
     const prev_strict = p.in_strict;
@@ -4640,6 +4642,7 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
     }
 
     _ = try p.expect(.r_brace);
+    try p.emitScopeClose(.none);
 
     const members = p.scratchSlice(scratch_top);
 
@@ -4709,11 +4712,13 @@ fn parseClassExpression(p: *Parser) Error!NodeIndex {
         .type_params = class_expr_type_params.start,
         .type_params_end = class_expr_type_params.end,
     });
-    return p.addNode(.{
+    const class_expr_node = try p.addNode(.{
         .tag = .class_expr,
         .main_token = class_tok,
         .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
     });
+    p.patchScopeOpenNode(class_expr_scope_ev, class_expr_node);
+    return class_expr_node;
 }
 
 fn parseClassMember(p: *Parser) Error!NodeIndex {

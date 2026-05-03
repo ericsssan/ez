@@ -55,6 +55,9 @@ pub const TokenizeOptions = struct {
     /// to consume tokens as they are produced. Null in sequential mode —
     /// hot-loop branch is predicted not-taken with zero overhead.
     publish_to: ?*std.atomic.Value(usize) = null,
+    /// Bitmask for publish granularity (batch_size - 1). Must be power-of-2 - 1.
+    /// Defaults to PUBLISH_BATCH - 1. Override to tune streaming latency vs overhead.
+    publish_batch_mask: usize = PUBLISH_BATCH - 1,
 };
 
 /// Streaming publish granularity. Tuned to amortise atomic store cost
@@ -138,13 +141,26 @@ pub inline fn identEnd(src: []const u8, start: u32) u32 {
         const is_digit = (chunk >= @as(V16, @splat(@as(u8, '0')))) & (chunk <= @as(V16, @splat(@as(u8, '9'))));
         const is_ud: B16 = (chunk == @as(V16, @splat(@as(u8, '_')))) | (chunk == @as(V16, @splat(@as(u8, '$'))));
         const is_high: B16 = chunk >= @as(V16, @splat(@as(u8, 0x80)));
+        const is_e2: B16 = chunk == @as(V16, @splat(@as(u8, 0xE2)));
         const ib: u16 = @bitCast(is_lower | is_upper | is_digit | is_ud | is_high);
-        if (ib != 0xFFFF) return i + @as(u32, @ctz(~ib));
+        const e2_mask: u16 = @bitCast(is_e2);
+        if (ib != 0xFFFF) {
+            const first_bad = @as(u32, @ctz(~ib));
+            if (e2_mask == 0) return i + first_bad;
+            return i + @min(first_bad, @as(u32, @ctz(e2_mask)));
+        }
+        // All 16 bytes look like ident chars, but 0xE2 may start LS (U+2028) or PS (U+2029).
+        if (e2_mask != 0) return i + @as(u32, @ctz(e2_mask));
         i += 16;
     }
     while (i < n) : (i += 1) {
         switch (src[i]) {
-            'a'...'z', 'A'...'Z', '0'...'9', '_', '$', 0x80...0xFF => {},
+            'a'...'z', 'A'...'Z', '0'...'9', '_', '$' => {},
+            0x80...0xFF => {
+                // U+2028 LS (E2 80 A8) and U+2029 PS (E2 80 A9) are line terminators, not ident chars.
+                if (src[i] == 0xE2 and i + 2 < n and src[i + 1] == 0x80 and
+                    (src[i + 2] == 0xA8 or src[i + 2] == 0xA9)) break;
+            },
             else => break,
         }
     }
@@ -537,7 +553,7 @@ pub fn tokenizeWithBuf(
                 // keep the atomic store rate low. In sequential mode the
                 // option is null and the branch is predicted not-taken.
                 if (opts.publish_to) |p| {
-                    if ((tok_n & (PUBLISH_BATCH - 1)) == 0) p.store(tok_n, .release);
+                    if ((tok_n & opts.publish_batch_mask) == 0) p.store(tok_n, .release);
                 }
                 continue :outer; // byte is stale after pos changes — restart loop
             }
@@ -854,7 +870,7 @@ pub fn tokenizeWithBuf(
         prev_kind = if (prev_kind == .dot and tag.isKeyword()) .identifier else tag;
         pos       = end;
         if (opts.publish_to) |p| {
-            if ((tok_n & (PUBLISH_BATCH - 1)) == 0) p.store(tok_n, .release);
+            if ((tok_n & opts.publish_batch_mask) == 0) p.store(tok_n, .release);
         }
     }
 

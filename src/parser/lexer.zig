@@ -1657,7 +1657,7 @@ pub fn tokenizeWithBufAndBitmaps(
 
                 prev_kind = if (isPropertyAccess(prev_kind) and tag.isKeyword()) .identifier else tag;
                 if (opts.publish_to) |pp| {
-                    if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
+                    if ((tok_n & opts.publish_batch_mask) == 0) pp.store(tok_n, .release);
                 }
                 skip_until = end;
                 // Drain trailing ident-bitmap-run if number consumed only part.
@@ -1722,7 +1722,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     at_line_start = false;
                     prev_kind = if (isPropertyAccess(prev_kind) and t_tag.isKeyword()) .identifier else t_tag;
                     if (opts.publish_to) |pp| {
-                        if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
+                        if ((tok_n & opts.publish_batch_mask) == 0) pp.store(tok_n, .release);
                     }
                     end = t_end;
                     skip_until = end;
@@ -2149,7 +2149,7 @@ pub fn tokenizeWithBufAndBitmaps(
 
             prev_kind = if (isPropertyAccess(prev_kind) and tag.isKeyword()) .identifier else tag;
             if (opts.publish_to) |pp| {
-                if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
+                if ((tok_n & opts.publish_batch_mask) == 0) pp.store(tok_n, .release);
             }
 
             // Skip visit bits in [p+1 .. end). Bulk-clear covered bits in
@@ -2237,7 +2237,7 @@ pub fn tokenizeWithBufAndBitmaps(
                 at_line_start = false;
                 prev_kind = if (isPropertyAccess(prev_kind) and t_tag.isKeyword()) .identifier else t_tag;
                 if (opts.publish_to) |pp| {
-                    if ((tok_n & (PUBLISH_BATCH - 1)) == 0) pp.store(tok_n, .release);
+                    if ((tok_n & opts.publish_batch_mask) == 0) pp.store(tok_n, .release);
                 }
                 end = t_end;
                 skip_until = end;
