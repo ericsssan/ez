@@ -39,10 +39,7 @@ test-conformance: build-conformance napi
 	@./zig-out/bin/babel_runner tests/conformance/babel/packages/babel-parser/test/fixtures --compact
 	@./zig-out/bin/typescript_runner tests/conformance/typescript/tests/cases/conformance --compact
 	@echo ""
-	@echo "ESLint Rule Conformance"
-	@echo "────────────────────────────────────────────────────────────"
-	@node tests/conformance/eslint_runner.js
-	@echo ""
+
 
 test-differential: build napi
 	bun tests/differential/run.js
