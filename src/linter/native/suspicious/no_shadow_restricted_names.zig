@@ -69,7 +69,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         if (kind == .implicit_global) continue;
 
         const name = syms.getName(id);
-        const report_global_this = ctx.getOptionBool("reportGlobalThis", false);
+        const report_global_this = ctx.getOptionBool("reportGlobalThis", true);
         for (always_restricted) |restricted| {
             if (std.mem.eql(u8, name, restricted)) {
                 if (std.mem.eql(u8, name, "undefined") and safelyShadowsUndefined(id, ctx)) break;
