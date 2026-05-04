@@ -115,6 +115,7 @@ pub const SemanticAnalyzer = struct {
     pub fn analyzeWithOptions(allocator: std.mem.Allocator, ast: *const Ast, opts: Options) !SemanticResult {
         var result = try event_resolver.resolveFull(allocator, ast, ast.scope_events, .{
             .skip_ref_ranges = !opts.build_ref_ranges,
+            .globals = opts.globals,
         });
         if (opts.build_parents) {
             if (ast.parents.len > 0) {

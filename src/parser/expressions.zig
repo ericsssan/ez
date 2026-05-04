@@ -5590,7 +5590,7 @@ fn parseBinaryExpression(p: *Parser, left: NodeIndex, prec: Precedence, op_tag: 
     var logical_ev: u32 = 0;
     if (logical_kind) |lk| {
         logical_ev = try p.emitLogicalOpen(lk, .none);
-        try p.emitLogicalRight(lk, .none);
+        try p.emitLogicalRight(lk, left);
     }
 
     const rhs = try parseExpressionPrec(p, prec.next());
@@ -5797,12 +5797,15 @@ fn parseConditionalTail(p: *Parser, condition: NodeIndex) Error!NodeIndex {
     const q_tok = p.advance(); // consume `?`
 
     const cond_ev = try p.emitCondOpen(.none);
+    // Fork at condition.exit BEFORE parsing the consequent so the outer fork
+    // event precedes any nested-ternary events in the resolver stream.
+    try p.emitCondFork(condition);
     // Parse consequent at assignment level (commas are part of ternary, not grouping).
     const saved_in = p.allow_in;
     p.allow_in = true;
     const consequent = try parseAssignmentExpression(p);
     p.allow_in = saved_in;
-    try p.emitCondAlt(.none);
+    try p.emitCondAlt(consequent);
 
     _ = try p.expect(.colon);
     const alternate = try parseAssignmentExpression(p);

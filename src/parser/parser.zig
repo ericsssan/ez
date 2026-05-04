@@ -1317,13 +1317,15 @@ pub const Parser = struct {
         return idx;
     }
 
-    pub inline fn emitSwitchCaseStart(self: *Parser, is_default: bool, node: NodeIndex) !void {
-        if (!self.emit_scope_events) return;
+    pub inline fn emitSwitchCaseStart(self: *Parser, is_default: bool, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .switch_case_start,
             .aux = if (is_default) 1 else 0,
             .node = @intFromEnum(node),
         });
+        return idx;
     }
 
     pub inline fn emitSwitchCaseEnd(self: *Parser, node: NodeIndex) !void {
@@ -1335,13 +1337,15 @@ pub const Parser = struct {
         });
     }
 
-    pub inline fn emitSwitchClose(self: *Parser, node: NodeIndex) !void {
-        if (!self.emit_scope_events) return;
+    pub inline fn emitSwitchClose(self: *Parser, node: NodeIndex) !u32 {
+        if (!self.emit_scope_events) return 0;
+        const idx: u32 = @intCast(self.ev_len);
         try self.evPush(.{
             .kind = .switch_close,
             .aux = 0,
             .node = @intFromEnum(node),
         });
+        return idx;
     }
 
     pub const LogicalKind = enum(u8) { logical_and, logical_or, nullish_coalesce };
@@ -1384,6 +1388,15 @@ pub const Parser = struct {
             .node = @intFromEnum(node),
         });
         return idx;
+    }
+
+    pub inline fn emitCondFork(self: *Parser, node: NodeIndex) !void {
+        if (!self.emit_scope_events) return;
+        try self.evPush(.{
+            .kind = .cond_fork,
+            .aux = 0,
+            .node = @intFromEnum(node),
+        });
     }
 
     pub inline fn emitCondAlt(self: *Parser, node: NodeIndex) !void {
@@ -2678,7 +2691,9 @@ pub const Parser = struct {
                 },
             });
             try self.emitIfClose(if_else_node);
-            self.patchEventNode(if_ev, if_else_node);
+            // Patch if_open with the consequent node so makeIfConsequent fires at
+            // consequent.enter — after visiting the condition, before entering consequent.
+            self.patchEventNode(if_ev, consequent);
             // Patch if_alt to use the alternate body — gives the else-branch segment
             // a first/last range that covers only the else body, not the entire if-else.
             self.patchEventNode(if_alt_ev, alternate);
@@ -2694,7 +2709,9 @@ pub const Parser = struct {
             },
         });
         try self.emitIfClose(if_node);
-        self.patchEventNode(if_ev, if_node);
+        // Patch if_open with the consequent node so makeIfConsequent fires at
+        // consequent.enter — after visiting the condition, before entering consequent.
+        self.patchEventNode(if_ev, consequent);
         return if_node;
     }
 
@@ -2702,6 +2719,11 @@ pub const Parser = struct {
     pub fn parseWhileStatement(self: *Parser) Error!NodeIndex {
         const while_tok = self.advance(); // eat 'while'
         _ = try self.expect(.l_paren);
+        // Emit loop_open BEFORE parsing the condition so the resolver processes
+        // pushLoopContext before any CFG events from nested ternaries inside the
+        // condition.  This matches DFS playback order (loop entry fires at the
+        // condition's enter phase, before any intra-condition events).
+        const loop_ev = try self.emitLoopOpen(.@"while", .none);
         const condition = try self.parseExpression();
         _ = try self.expect(.r_paren);
 
@@ -2709,7 +2731,6 @@ pub const Parser = struct {
         self.in_loop = true;
         defer self.in_loop = prev_in_loop;
 
-        const loop_ev = try self.emitLoopOpen(.@"while", .none);
         try self.emitLoopTestEnd(.@"while", .none);
         // Wrap loop body in branch_open/close so that terminators inside the
         // body (return, throw, break) don't poison the post-loop alive state:
@@ -2856,9 +2877,9 @@ pub const Parser = struct {
             try self.rejectForInOfInitializer(init, true);
             try self.validateForInOfBinding(init, false);
             try self.upgradePatternRefsToWrite(init);
+            const loop_ev = try self.emitLoopOpen(.for_in, .none);
             const right = try self.parseExpression();
             _ = try self.expect(.r_paren);
-            const loop_ev = try self.emitLoopOpen(.for_in, .none);
             try self.emitLoopTestEnd(.for_in, .none);
             try self.emitBranchOpen(.none);
             const body = try self.parseNonDeclStatement();
@@ -2897,9 +2918,9 @@ pub const Parser = struct {
             try self.rejectForInOfInitializer(init, false);
             try self.validateForInOfBinding(init, true);
             try self.upgradePatternRefsToWrite(init);
+            const loop_ev = try self.emitLoopOpen(.for_of, .none);
             const right = try self.parseAssignmentExpression();
             _ = try self.expect(.r_paren);
-            const loop_ev = try self.emitLoopOpen(.for_of, .none);
             try self.emitLoopTestEnd(.for_of, .none);
             try self.emitBranchOpen(.none);
             const body = try self.parseNonDeclStatement();
@@ -3323,7 +3344,7 @@ pub const Parser = struct {
         }
         if (self.emit_scope_events and has_default)
             self.ev_ptr[switch_ev].aux = 1;
-        try self.emitSwitchClose(.none);
+        const switch_close_ev = try self.emitSwitchClose(.none);
         try self.emitScopeClose(.none);
 
         _ = try self.expect(.r_brace);
@@ -3345,6 +3366,7 @@ pub const Parser = struct {
         });
         self.patchScopeOpenNode(switch_scope_ev, switch_node);
         self.patchEventNode(switch_ev, switch_node);
+        self.patchEventNode(switch_close_ev, switch_node);
         return switch_node;
     }
 
@@ -3352,7 +3374,7 @@ pub const Parser = struct {
     pub fn parseSwitchCase(self: *Parser) Error!NodeIndex {
         if (self.eat(.kw_default)) |default_tok| {
             _ = try self.expect(.colon);
-            try self.emitSwitchCaseStart(true, .none);
+            const case_start_ev = try self.emitSwitchCaseStart(true, .none);
 
             const scratch_top = self.scratch.items.len;
             defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3391,6 +3413,7 @@ pub const Parser = struct {
                     .rhs = NodeIndex.fromInt(range_extra),
                 },
             });
+            self.patchEventNode(case_start_ev, default_node);
             try self.emitSwitchCaseEnd(default_node);
             return default_node;
         }
@@ -3398,7 +3421,7 @@ pub const Parser = struct {
         const case_tok = try self.expect(.kw_case);
         const test_expr = try self.parseExpression();
         _ = try self.expect(.colon);
-        try self.emitSwitchCaseStart(false, .none);
+        const case_start_ev2 = try self.emitSwitchCaseStart(false, .none);
 
         const scratch_top = self.scratch.items.len;
         defer self.scratch.shrinkRetainingCapacity(scratch_top);
@@ -3437,6 +3460,7 @@ pub const Parser = struct {
                 .rhs = NodeIndex.fromInt(range_extra),
             },
         });
+        self.patchEventNode(case_start_ev2, case_node);
         try self.emitSwitchCaseEnd(case_node);
         return case_node;
     }

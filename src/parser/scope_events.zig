@@ -75,7 +75,12 @@ pub const EventKind = enum(u8) {
     logical_close,
     /// Conditional (ternary ?:) expression events.  node: conditional_expr.
     cond_open,
-    /// End of consequent, start of alternate.
+    /// Fork at condition.exit (fires before consequent is parsed).
+    /// node: the condition expression.  Transitions to the true-fork path.
+    /// Separating fork from cond_alt ensures outer-fork events precede
+    /// any nested-ternary events in the resolver stream, matching DFS order.
+    cond_fork,
+    /// End of consequent, start of alternate.  node: the consequent expression.
     cond_alt,
     cond_close,
     /// A labeled statement begins.  node: labeled_stmt.  aux: 0=non-loop, 1=loop.

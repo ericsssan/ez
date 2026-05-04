@@ -273,7 +273,7 @@ pub fn resolve(
         .try_open, .try_body_end, .try_catch_start, .try_catch_end, .try_finally_start, .try_close,
         .switch_open, .switch_case_start, .switch_case_end, .switch_close,
         .logical_open, .logical_right, .logical_close,
-        .cond_open, .cond_alt, .cond_close,
+        .cond_open, .cond_fork, .cond_alt, .cond_close,
         .label_open, .label_close,
         .if_open, .if_alt, .if_close,
         .nop,
@@ -1039,12 +1039,17 @@ fn resolveFullImpl(
         },
         .cond_open => {
             if (do_cfg) try cpb.pushChoiceContext(.test_kind, true);
+        },
+        .cond_fork => {
+            // n = condition node.  Fork at condition.exit so the outer-ternary fork
+            // event precedes any nested-ternary events, matching DFS playback order.
             const n: NodeIndex = @enumFromInt(e.node);
-            if (do_cfg) try cpb.makeIfConsequent(n);
+            if (do_cfg) try cpb.makeConsequent(n);
         },
         .cond_alt => {
+            // n = consequent node.  Transition to the false-fork at consequent.exit.
             const n: NodeIndex = @enumFromInt(e.node);
-            if (do_cfg) try cpb.makeIfAlternate(n);
+            if (do_cfg) try cpb.makeConditionalAlternate(n);
         },
         .cond_close => {
             const n: NodeIndex = @enumFromInt(e.node);
@@ -1132,6 +1137,48 @@ fn resolveFullImpl(
                 }
                 if (p.toInt() == vsid.toInt()) break;
                 vsid = p;
+            }
+        }
+    }
+
+    // Resolve pre-declared globals (ES builtins + user-configured) as implicit_global
+    // symbols in scope 0.  Eliminates the JS-side ~200-object builtin creation per
+    // file and removes the need for the eager `void globalScope.through` in the runner.
+    // Refs that match a global name get resolved here so ref.resolved is non-null;
+    // the Zig through CSR excludes implicit_global refs, keeping scope.through clean.
+    if (do_scope and !skip_resolve and opts.globals.len > 0 and scopes.kinds.items.len > 0) {
+        const global_scope_id = ScopeId.fromInt(0);
+        const implicit_flags = symbol_mod.flagsFromBindingKind(.implicit_global);
+
+        // Build a hash → sym_id map for O(1) lookup during the ref scan.
+        const NameHashCtx2 = struct {
+            pub fn hash(_: @This(), k: u64) u64 { return k; }
+            pub fn eql(_: @This(), a: u64, b: u64) bool { return a == b; }
+        };
+        var global_lookup = std.HashMapUnmanaged(u64, symbol_mod.SymbolId, NameHashCtx2, 80){};
+        try global_lookup.ensureTotalCapacity(sa, 512);
+
+        var git = std.mem.splitScalar(u8, opts.globals, 0);
+        while (git.next()) |name| {
+            if (name.len == 0) continue;
+            const h = std.hash.Wyhash.hash(0, name);
+            // Skip duplicate names (same hash) — first one wins.
+            if (global_lookup.contains(h)) continue;
+            const sym_id = try symbols.addSymbol(name, implicit_flags, .implicit_global, global_scope_id, ast_mod.NodeIndex.none);
+            global_lookup.putAssumeCapacity(h, sym_id);
+        }
+
+        if (global_lookup.count() > 0) {
+            for (unresolved_refs.items) |ur| {
+                const ref_id = ur.ref_id;
+                if (references.isResolved(ref_id)) continue;
+                if (global_lookup.get(ur.name_hash)) |sym_id| {
+                    references.resolve(ref_id, sym_id);
+                    const rk = references.getKind(ref_id);
+                    if (rk.isRead()) symbols.markRead(sym_id);
+                    if (rk.isWrite() and rk != .write_init) symbols.markWritten(sym_id);
+                    if (rk == .type_of) symbols.markTypeOf(sym_id);
+                }
             }
         }
     }

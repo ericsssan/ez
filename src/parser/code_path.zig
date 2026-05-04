@@ -984,6 +984,25 @@ pub const CodePathBuilder = struct {
         try self.forwardCurrentToHead(node, .enter);
     }
 
+    /// Fork at condition.exit for ternary `?:`.
+    /// Like makeIfConsequent but fires at the .exit phase of the condition node
+    /// rather than the .enter phase of the consequent node.  This ensures the
+    /// outer-ternary fork event is written before any nested-ternary events in
+    /// the resolver stream, so DFS playback always sees SEG_START before SEG_END.
+    pub fn makeConsequent(self: *CodePathBuilder, node: NodeIndex) !void {
+        const ctx = self.choice_context orelse return;
+        if (!ctx.processed) {
+            ctx.processed = true;
+            const head = self.fork_context.head();
+            try ctx.true_fork.add(head, self);
+            try ctx.false_fork.add(head, self);
+        }
+        try self.leaveFromCurrentSegment(node, .exit);
+        const new_segs = try ctx.true_fork.makeNext(0, -1, self);
+        try self.fork_context.replaceHead(new_segs, self);
+        try self.forwardCurrentToHead(node, .exit);
+    }
+
     /// Called between LHS and RHS of a logical expression (&&, ||, ??).
     /// For `a && b`: LHS evaluated, now fork — truthy continues to RHS,
     /// falsy short-circuits to merge. Save LHS-end to the short-circuit
@@ -994,11 +1013,13 @@ pub const CodePathBuilder = struct {
         // leaveFromCurrentSegment replaces fork_context.head but leaves the old
         // arena-backed slice alive — true_fork keeps a valid reference.
         try ctx.true_fork.add(self.fork_context.head(), self);
-        // End LHS segment, create new segment for RHS
-        try self.leaveFromCurrentSegment(node, .enter);
+        // End LHS segment, create new segment for RHS.
+        // node is the LHS operand; fire at its .exit phase so the transition
+        // fires after the LHS subtree is fully traversed (matching ESLint behavior).
+        try self.leaveFromCurrentSegment(node, .exit);
         const new_segs = try self.fork_context.makeNext(-1, -1, self);
         try self.fork_context.replaceHead(new_segs, self);
-        try self.forwardCurrentToHead(node, .enter);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     pub fn makeIfAlternate(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -1012,6 +1033,18 @@ pub const CodePathBuilder = struct {
         try self.fork_context.replaceHead(new_segs, self);
         // Start new (else branch) segments
         try self.forwardCurrentToHead(node, .enter);
+    }
+
+    /// Like makeIfAlternate but fires at the .exit phase of `node` (the consequent).
+    /// Used for ternary `?:` expressions where `node` is the consequent operand,
+    /// so the transition fires after the consequent is fully traversed.
+    pub fn makeConditionalAlternate(self: *CodePathBuilder, node: NodeIndex) !void {
+        const ctx = self.choice_context orelse return;
+        try ctx.true_fork.add(self.fork_context.head(), self);
+        try self.leaveFromCurrentSegment(node, .exit);
+        const new_segs = try ctx.false_fork.makeNext(0, -1, self);
+        try self.fork_context.replaceHead(new_segs, self);
+        try self.forwardCurrentToHead(node, .exit);
     }
 
     // ── Switch ───────────────────────────────────────────────
@@ -1472,6 +1505,12 @@ pub const CodePathBuilder = struct {
         if (!self.break_target_is_switch) {
             if (self.loop_context) |lc| {
                 try lc.break_fork.add(self.fork_context.head(), self);
+            }
+        } else {
+            // break inside switch: save the current head to the switch's choice context
+            // true_fork so popChoiceContext includes it in the post-switch merge.
+            if (self.choice_context) |cc| {
+                try cc.true_fork.add(self.fork_context.head(), self);
             }
         }
         try self.makeUnreachable(node);
