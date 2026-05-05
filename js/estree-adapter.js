@@ -1327,17 +1327,28 @@ const NodeProto = {
   get name() {
     const t = this._tag;
     if (t === T.identifier || t === T.property_ident) {
+      // Lazy-cache identifier name on the instance — `_buildScopeRefsAndThrough`
+      // and rule code (`ref.identifier.name`) read this for nearly every
+      // reference, often more than once per identifier across multiple rules.
+      // Each computation calls `_identAt` (string slice + Unicode escape
+      // resolve), which adds up at hundreds of thousands of accesses per file.
+      let cached = this._cachedName;
+      if (cached !== undefined) return cached;
       const ast = this._ast;
       const tok = this.mainToken;
       const pos = ast._tokStarts[tok];
       if (ast.source.charCodeAt(pos) === 35) { // '#'
         const nextTokStart = tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : pos + 1;
         if (nextTokStart === pos + 1 && tok + 1 < ast.tokenCount) {
-          return _resolveUnicodeEscapes(ast._identAt(tok + 1));
+          cached = _resolveUnicodeEscapes(ast._identAt(tok + 1));
+        } else {
+          cached = _resolveUnicodeEscapes(ast.source.slice(pos + 1, nextTokStart).replace(/\s+$/, ''));
         }
-        return _resolveUnicodeEscapes(ast.source.slice(pos + 1, nextTokStart).replace(/\s+$/, ''));
+      } else {
+        cached = _resolveUnicodeEscapes(ast._identAt(tok));
       }
-      return _resolveUnicodeEscapes(ast._identAt(tok));
+      this._cachedName = cached;
+      return cached;
     }
     // JSXIdentifier.name — the identifier text
     if (t === T.jsx_identifier) {
@@ -4016,6 +4027,7 @@ function _nodeViewRaw(ast, index) {
     n._body = _BODY_UNSET;
     n._value = _VALUE_UNSET;
     n._init = _INIT_UNSET;
+    n._cachedName = undefined;
     n._params = undefined;
     n._typeParameters = undefined;
     n._arguments = undefined;
