@@ -227,6 +227,25 @@ const _refProto = {
   get isTypeReference()  { return !!this._isTypeRef; },
 };
 
+// Constructor function for Reference objects. JSC allocates with a single
+// statically-known structure per `new _Reference(...)` instead of paying the
+// `Object.create(_refProto)` + 7 sequential property-add transitions that the
+// previous `_buildReference` body cost. Mirrors the `_NodeView` shape-locking
+// trick in estree-adapter.js.
+function _Reference(identifier, from, resolved, kind, writeExpr, isTypeRef) {
+  this.identifier = identifier;
+  this.from = from;
+  this.resolved = resolved;
+  this._kind = kind;
+  this.init = (kind === 4);
+  // ESLint convention: `typeof ref.writeExpr !== 'undefined'` distinguishes
+  // writes from reads, so read-only refs must carry `writeExpr === undefined`
+  // (not null). Caller passes `undefined` for read-only kinds.
+  this.writeExpr = writeExpr;
+  this._isTypeRef = isTypeRef;
+}
+_Reference.prototype = _refProto;
+
 // ── ES2022 built-in globals ─────────────────────────────────────
 // Added to the global scope so no-undef doesn't flag these as undeclared.
 // Matches ESLint's default globals (es2022 environment).
@@ -816,6 +835,33 @@ const _varProto = {
   },
   set references(v) { this._refs = v; },
 };
+
+// Constructor function for Variable objects — same shape-locking rationale
+// as `_Reference` and `_NodeView`. JSC allocates with one statically-known
+// structure per `new _Variable(...)` instead of paying per-property add
+// transitions in the previous `_buildVariable` body. Per-instance per-call
+// fields are constructor args; lazy fields (_scope, _defs, _identifiers,
+// _refs, _synthRefs) get their sentinel values here so all variables share
+// the same hidden class regardless of which lazy fields rules later read.
+function _Variable(name, ast, sc, symId, flags16, hasWriteInitRef, declNodeIdx, refStart, refEnd, writeable, eslintImplicitGlobalSetting) {
+  this.name = name;
+  this._ast = ast;
+  this._sc = sc;
+  this._symId = symId;
+  this._flags16 = flags16;
+  this._hasWriteInitRef = hasWriteInitRef;
+  this._declNodeIdx = declNodeIdx;
+  this._refStart = refStart;
+  this._refEnd = refEnd;
+  this._scope = undefined;       // lazy → _computeVarScope
+  this._defs = undefined;        // lazy → _computeVarDefs
+  this._identifiers = undefined; // lazy → derived from defs
+  this._refs = null;             // lazy → references getter
+  this._synthRefs = undefined;   // lazy → _computeVariableSynthRefs
+  this.writeable = writeable;
+  this.eslintImplicitGlobalSetting = eslintImplicitGlobalSetting;
+}
+_Variable.prototype = _varProto;
 
 // ── Scope prototypes (shared hidden class) ───────────────────────────
 //
@@ -2719,31 +2765,16 @@ class SourceCode {
       }
     }
 
-    // Allocate the Variable shell with a fixed, small set of instance fields.
-    // Everything else (defs, scope, identifiers, isValueVariable, isTypeVariable,
-    // writeable, eslintImplicitGlobalSetting, references, synthRefs) is computed
-    // lazily on first access via `_varProto` getters + `_computeVar*` helpers.
-    // Variables for which a rule never probes those fields skip the cost entirely.
-    const v = Object.create(_varProto);
-    v.name = name;
-    v._ast = ast;
-    v._sc = this;
-    v._symId = symId;
-    v._flags16 = flags16;
-    v._hasWriteInitRef = hasWriteInitRef;
-    v._declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
-    v._refStart = refStart;
-    v._refEnd = refEnd;
-    v._scope = undefined;        // lazy → _computeVarScope
-    v._defs = undefined;         // lazy → _computeVarDefs
-    v._identifiers = undefined;  // lazy → derived from defs
-    v._refs = null;              // lazy → references getter
-    v._synthRefs = undefined;    // lazy → _computeVariableSynthRefs
     // Mutable: env-globals / comment-directives may flip these — they're
     // initialized to the flag-derived value here and live on the instance.
     const _isImplicitGlobal = (flags16 & 0x2000) !== 0;
-    v.writeable = _isImplicitGlobal ? false : undefined;
-    v.eslintImplicitGlobalSetting = _isImplicitGlobal ? 'writable' : undefined;
+    const writeable = _isImplicitGlobal ? false : undefined;
+    const eslintImplicitGlobalSetting = _isImplicitGlobal ? 'writable' : undefined;
+    const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
+    const v = new _Variable(
+      name, ast, this, symId, flags16, hasWriteInitRef,
+      declNodeIdx, refStart, refEnd, writeable, eslintImplicitGlobalSetting,
+    );
     this._varCache[symId] = v;
     return v;
   }
@@ -2843,34 +2874,29 @@ class SourceCode {
     const from = (refScopeId !== undefined && refScopeId !== NONE32)
       ? this._buildScope(refScopeId) : this._stubScope();
 
-    const ref = Object.create(_refProto);
-    ref.identifier = refNode;
-    ref.from = from;
-    ref.resolved = resolved;
-    ref._kind = kind;
-    // kind 4 = write_init: VarDecl initializer. ESLint scope-manager marks these with init=true
-    // so prefer-const and similar rules know this write is the declaration initializer, not a reassignment.
-    ref.init = (kind === 4);
-    // Read pre-baked write expression from Zig buffer (pre-computed during semantic analysis).
-    if (kind === 1 || kind === 2 || kind === 4) { // write, read_write, or write_init
+    // Pre-bake writeExpr (pre-computed in Zig for write/read_write/write_init)
+    // before constructor call so the shape is locked at allocation. Read-only
+    // refs pass `undefined` so `typeof ref.writeExpr !== 'undefined'` still
+    // distinguishes writes from reads (ESLint scope convention).
+    let writeExpr;
+    if (kind === 1 || kind === 2 || kind === 4) {
       const weIdx = ast._refWriteExprIds ? ast._refWriteExprIds[refIdx] : NONE32;
-      ref.writeExpr = (weIdx !== undefined && weIdx !== NONE32 && weIdx < ast.nodeCount)
+      writeExpr = (weIdx !== undefined && weIdx !== NONE32 && weIdx < ast.nodeCount)
         ? nodeView(ast, weIdx) : null;
     }
-    // Read-only refs: leave writeExpr as undefined (not null). ESLint scope convention:
-    // `typeof ref.writeExpr !== 'undefined'` is how code checks if a ref is a write.
-
-    // typescript-eslint scope-manager uses referenceDualValueType() for export specifier
-    // locals, which sets isTypeReference=true. Rules like no-use-before-define check
-    // `isTypeReference` to skip UBD checks when ignoreTypeReferences:true (default).
-    // Replicate: if this ref's identifier is the `local` of an ExportSpecifier, mark it.
+    // typescript-eslint scope-manager marks export-specifier locals as type
+    // references so rules like no-use-before-define can skip UBD checks under
+    // ignoreTypeReferences. Compute the flag before construction so the shape
+    // is fixed.
+    let isTypeRef = false;
     if (refNode && kind === 0 /* read */) {
       const parent = refNode.parent;
       if (parent && parent.type === 'ExportSpecifier' && parent.local === refNode) {
-        ref._isTypeRef = true;
+        isTypeRef = true;
       }
     }
 
+    const ref = new _Reference(refNode, from, resolved, kind, writeExpr, isTypeRef);
     this._refCache[refIdx] = ref;
     return ref;
   }
@@ -6997,6 +7023,22 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
   }
 
+  // Pre-compute per-tag "must process this tag at enter/exit" bitmaps. Combines
+  // the chained `!handlers && !flags && !catchTrack && !synth && !remapPossible`
+  // skip check at the top of each phase into a single typed-array read. The
+  // CFG-events check stays node-based because it depends on the specific node.
+  const _enterMustProcess = new Uint8Array(tagNames.length);
+  const _exitMustProcess  = new Uint8Array(tagNames.length);
+  for (let _t = 0; _t < tagNames.length; _t++) {
+    const hasFlag  = tagFlags[_t] !== 0;
+    const hasCatch = _catchStackTrackArr && _catchStackTrackArr[_t];
+    const hasSynth = _synthTagArr && _synthTagArr[_t];
+    const remapEligible = _remapNeededArr[_t];
+    const baseWork = hasFlag || hasCatch || hasSynth || remapEligible;
+    if (baseWork || (tagEnterHandlers[_t] != null)) _enterMustProcess[_t] = 1;
+    if (baseWork || (tagExitHandlers[_t]  != null)) _exitMustProcess[_t]  = 1;
+  }
+
   const { events: dfsEvents, count: dfsCount } = getDFSEvents();
   for (let i = 0; i < dfsCount; i++) {
     if (skipSet._allSkipped) break; // direct field access skips getter dispatch
@@ -7006,11 +7048,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = ev;
       if (usePruning && !subtreeRelevant[idx]) continue;
       const tag = nodeTags[idx];
+      // Fast skip: precomputed bitmap collapses 5 chained conditions into one.
+      if (canSkip && !_enterMustProcess[tag] && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Fast path: most tags can never trigger a remap. Skip the
       // `_resolveHandlers` function call and read the handler array directly.
       const handlers = _remapNeededArr[tag] ? _resolveHandlers(tagEnterHandlers, tag, idx) : tagEnterHandlers[tag];
       const flags = tagFlags[tag];
-      if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag]) && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Catch stack: bookkeep CatchClause/function-boundary for ThrowStatement pre-warming
       if (catchStack !== null) {
         if (tag === _catchClauseTag) {
@@ -7170,9 +7213,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = ~ev;
       if (usePruning && !subtreeRelevant[idx]) continue;
       const tag = nodeTags[idx];
+      // Fast skip: precomputed bitmap collapses 5 chained conditions into one.
+      if (canSkip && !_exitMustProcess[tag] && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       const handlers = _remapNeededArr[tag] ? _resolveHandlers(tagExitHandlers, tag, idx) : tagExitHandlers[tag];
       const flags = tagFlags[tag];
-      if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag]) && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Catch stack: pop CatchClause/function-boundary on exit
       if (catchStack !== null && (tag === _catchClauseTag || _catchBarrierTagArr[tag])) {
         catchStack.pop();
