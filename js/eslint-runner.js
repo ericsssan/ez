@@ -3103,6 +3103,18 @@ class SourceCode {
       this._ensureDeclSymIndex();
       const symIds = this._declSymIndex ? this._declSymIndex.get(node._i) : null;
       if (symIds && symIds.length > 0) {
+        // Fast path: single symbol AND no var-sibling extension applies (the common
+        // case — most decl-nodes own exactly one binding, and only `var` decls need
+        // sibling extension). Skip the Map/Set/array allocations entirely.
+        if (symIds.length === 1) {
+          const i = symIds[0];
+          const flags = ast._symFlags ? ast._symFlags[i] : 0;
+          const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
+          if (!is_var_only || !this._varScopeNameIndex || !ast._symScopeIds) {
+            const v = this._buildVariable(i);
+            return v ? [v] : [];
+          }
+        }
         // Merge variables with the same name AND def type (e.g. duplicate params `function f(a,b,a)`).
         // ESLint scope analysis merges them into one variable with multiple defs.
         // Key includes defType to avoid merging a FunctionName variable with a same-named Parameter
