@@ -1049,6 +1049,10 @@ class SourceCode {
     this.parserServices = {};
     // _declSymIndex is file-specific — must be cleared so it rebuilds for the new AST.
     this._declSymIndex = null;
+    // _declVarsCache: per-lintSource memo for getDeclaredVariables(node) results.
+    // Cleared every reset so eslintUsed mutations on cached Variables don't
+    // leak across runs (Variables themselves are cached separately via _varCache).
+    this._declVarsCache = null;
     this._allComments = undefined;
     this._disableDirectivesCache = null;
     // _globalScope guards _precomputeScopes — must be cleared so it reruns for new AST.
@@ -3080,8 +3084,29 @@ class SourceCode {
    */
   getDeclaredVariables(node) {
     if (!node) return [];
-    const ast = this._ast;
+    // Per-lintSource cache. Rules like no-unused-vars's `isAfterLastUsedArg`
+    // call `getDeclaredVariables(funcNode)` once per parameter being checked
+    // — same function node, identical result each time. Without this cache
+    // the merge logic re-runs O(params²) per function. The Variables
+    // returned are already cached (via `_varCache`) so the cached array
+    // holds stable identities, and `eslintUsed` mutations propagate correctly.
+    const idx = node._i;
+    if (idx !== undefined) {
+      let cache = this._declVarsCache;
+      if (cache === null || cache === undefined) {
+        cache = this._declVarsCache = new Map();
+      }
+      const cached = cache.get(idx);
+      if (cached !== undefined) return cached;
+      const result = this._computeDeclaredVariables(node);
+      cache.set(idx, result);
+      return result;
+    }
+    return this._computeDeclaredVariables(node);
+  }
 
+  _computeDeclaredVariables(node) {
+    const ast = this._ast;
     // Use real semantic data if available — O(1) via precomputed _declSymIndex.
     if (ast._symDeclNodes && node._i !== undefined && node._i !== null) {
       this._ensureDeclSymIndex();

@@ -1200,7 +1200,7 @@ const NodeProto = {
     // Example: (Object?.prototype).p = 0
     //   buffer: MemberExpression(.p) -> MemberExpression(.prototype, optional)
     //   ESTree: MemberExpression(.p) -> ChainExpression -> MemberExpression(.prototype, optional)
-    const thisTag = this._ast._nodeTags[this._i];
+    const thisTag = this._tag; // own data field, no typed-array dispatch
     if (result && _isOptionalTag(thisTag) && !_isChainChild(this._ast, this._i)) {
       // This node is the outermost optional node — wrap parent in a ChainExpression.
       // (Chain children should NOT get a ChainExpression parent; their parent is the
