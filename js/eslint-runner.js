@@ -740,6 +740,10 @@ const _varProto = {
     if (refs === null) {
       const sc = _activeBuilder;
       const ast = sc._ast;
+      // Synth refs (catch-param destructure / let-const init / var-in-forof)
+      // are computed lazily on first `.references` access. Variables that no
+      // rule probes for `.references` skip the parent-chain walks entirely.
+      if (this._synthRefs === undefined) sc._computeVariableSynthRefs(this);
       refs = [];
       const refStart = this._refStart, refEnd = this._refEnd;
       const symRefBySym = ast._symRefBySym;
@@ -2697,8 +2701,6 @@ class SourceCode {
     // Synth refs accumulate into this small array; null if none. Each entry:
     //   { pos: -1, ref }  — unshift to front (catch-param destructure)
     //   { pos: N,  ref }  — splice before first basic ref with start > N
-    let synthRefs = null;
-
     const declNodeIdx = ast._symDeclNodes[symId];
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
@@ -2766,163 +2768,6 @@ class SourceCode {
       scope = this._stubScope();
     }
 
-    // Synthesize an init-write reference for let/const variables that have an initializer.
-    // The Zig semantic analyzer only tracks explicit write references (assignments),
-    // but ESLint's prefer-const also needs the initializer tracked as a write reference.
-    // For destructured patterns (let {a, b} = obj), the identifier's immediate parent is
-    // a property/shorthand_property/object_pattern/array_pattern, not the VariableDeclarator.
-    // Walk up through destructuring nodes to find the enclosing VariableDeclarator.
-    // Also synthesize a write reference for destructured catch params with default values.
-    // e.g. `catch({nonExistsProperty = thisWillExecute()})` — ESLint sees a reference because
-    // the default initializer creates a write. Without this, `variable.references.length === 0`
-    // and `prefer-optional-catch-binding` wrongly reports a violation.
-    const is_catch_param = (flags16 & 0x40) !== 0;
-    if (is_catch_param && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
-      const parentIdx = ast._parentData[declNodeIdx];
-      if (parentIdx !== undefined && parentIdx !== NONE && ast._nodeTags[parentIdx] === T.assignment_pattern) {
-        const initNodeIdx = ast.nodeRhs(parentIdx);
-        if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
-          const thin = v;
-          const initRef = {
-            identifier: declNode,
-            from: scope,
-            resolved: thin,
-            writeExpr: nodeView(ast, initNodeIdx),
-            init: true,
-            isWrite: () => true,
-            isRead: () => false,
-            isWriteOnly: () => true,
-            isReadOnly: () => false,
-            isReadWrite: () => false,
-          };
-          (synthRefs || (synthRefs = [])).push({ pos: -1, ref: initRef });
-        }
-      }
-    }
-    if (!hasWriteInitRef && (is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
-      let curIdx = ast._parentData[declNodeIdx];
-      let initAdded = false;
-      while (!initAdded && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
-        const curTag = ast._nodeTags[curIdx];
-        if (curTag === T.declarator) {
-          // Unwrap grouping_expr (parenthesized expression) so writeExpr points to the actual
-          // expression, not the grouping wrapper. Needed for e.g. `const x = (<JSX/>)` where
-          // jsx-max-depth uses isJSX(writeExpr) and can't see through ParenthesizedExpression.
-          let initNodeIdx = ast.nodeRhs(curIdx);
-          while (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount &&
-                 ast._nodeTags[initNodeIdx] === T.grouping_expr) {
-            initNodeIdx = ast.nodeLhs(initNodeIdx);
-          }
-          // Check if this declarator is in a for-in/for-of statement (no initializer,
-          // but the loop itself provides the write each iteration).
-          const declParentIdx = ast._parentData ? ast._parentData[curIdx] : NONE;
-          const declParentTag = (declParentIdx !== undefined && declParentIdx !== NONE)
-            ? ast._nodeTags[ast._parentData[declParentIdx]] : undefined; // grandparent = for-in/of
-          const isForInOf = declParentTag === T.for_in_stmt || declParentTag === T.for_of_stmt ||
-                            declParentTag === T.for_await_of_stmt;
-          if ((initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) || isForInOf) {
-            const thin = v;
-            // Insert the init-write in source order relative to other references.
-            // Most reads come after the declaration, but class static blocks can reference
-            // variables that are declared later (read before init in source order).
-            // ESLint's prefer-const with ignoreReadBeforeAssign:true returns null if it
-            // sees a read (writer===null) before the write, so source order matters.
-            const initRef = {
-              identifier: declNode,
-              from: scope, // same object as variable.scope — required for prefer-const
-              resolved: thin,
-              writeExpr: initNodeIdx !== NONE ? nodeView(ast, initNodeIdx) : null,
-              init: true,
-              isWrite: () => true,
-              isRead: () => false,
-              isWriteOnly: () => true,
-              isReadOnly: () => false,
-              isReadWrite: () => false,
-            };
-            // Source-order insertion is handled in the `references` getter when
-            // basic refs are first materialized (handles class-static-blocks that
-            // reference outer `let` declared later — reads must precede init-write).
-            (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
-          }
-          initAdded = true; // found declarator; stop regardless of whether init exists
-        } else if (curTag === T.property || curTag === T.shorthand_property ||
-                   curTag === T.computed_property || curTag === T.object_pattern ||
-                   curTag === T.array_pattern || curTag === T.assignment_pattern ||
-                   curTag === T.rest_element) {
-          curIdx = ast._parentData[curIdx];
-        } else {
-          break;
-        }
-      }
-    }
-
-    // Add write reference for `var` in for-in/for-of headers (e.g. `for (var i in obj)`).
-    // ESLint scope analysis creates an implicit write ref so rules like no-loop-func can detect
-    // that the loop variable changes each iteration (making closures over it unsafe).
-    if (!hasWriteInitRef && is_var && !is_let && !is_const && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
-      let curIdx = ast._parentData[declNodeIdx];
-      let forInOfChecked = false;
-      while (!forInOfChecked && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
-        const curTag = ast._nodeTags[curIdx];
-        if (curTag === T.declarator) {
-          const declParentIdx = ast._parentData[curIdx];
-          const declGrandParentIdx = (declParentIdx !== undefined && declParentIdx !== NONE)
-            ? ast._parentData[declParentIdx] : NONE;
-          const declGPTag = (declGrandParentIdx !== undefined && declGrandParentIdx !== NONE)
-            ? ast._nodeTags[declGrandParentIdx] : undefined;
-          const isForInOf = declGPTag === T.for_in_stmt || declGPTag === T.for_of_stmt ||
-                            declGPTag === T.for_await_of_stmt;
-          if (isForInOf) {
-            const thin = v;
-            const initRef = {
-              identifier: declNode,
-              from: scope,
-              resolved: thin,
-              writeExpr: null,
-              init: true,
-              isWrite: () => true,
-              isRead: () => false,
-              isWriteOnly: () => true,
-              isReadOnly: () => false,
-              isReadWrite: () => false,
-            };
-            (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
-          } else {
-            // Regular `var x = init` — synthesize init-write ref (like let/const).
-            // Required so rules like block-scoped-var can detect cross-scope var usage.
-            let initNodeIdx = ast.nodeRhs(curIdx);
-            while (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount &&
-                   ast._nodeTags[initNodeIdx] === T.grouping_expr) {
-              initNodeIdx = ast.nodeLhs(initNodeIdx);
-            }
-            if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
-              const thin = v;
-              const initRef = {
-                identifier: declNode,
-                from: scope,
-                resolved: thin,
-                writeExpr: nodeView(ast, initNodeIdx),
-                init: true,
-                isWrite: () => true,
-                isRead: () => false,
-                isWriteOnly: () => true,
-                isReadOnly: () => false,
-                isReadWrite: () => false,
-              };
-              (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
-            }
-          }
-          forInOfChecked = true;
-        } else if (curTag === T.property || curTag === T.shorthand_property ||
-                   curTag === T.computed_property || curTag === T.object_pattern ||
-                   curTag === T.array_pattern || curTag === T.assignment_pattern ||
-                   curTag === T.rest_element) {
-          curIdx = ast._parentData[curIdx];
-        } else {
-          break;
-        }
-      }
-    }
 
     const is_implicit_global = (flags16 & 0x2000) !== 0;
     // @typescript-eslint/scope-manager compat: isValueVariable / isTypeVariable.
@@ -2952,7 +2797,13 @@ class SourceCode {
     v._sc = this;
     v._refStart = refStart;
     v._refEnd = refEnd;
-    v._synthRefs = synthRefs;
+    // Synth refs (catch-param destructure / let-const init / var-in-forof)
+    // deferred to first `.references` access — see `_computeVariableSynthRefs`.
+    // Variables whose `.references` is never read skip the parent-chain walks.
+    v._declNodeIdx = declNodeIdx;
+    v._flags16 = flags16;
+    v._hasWriteInitRef = hasWriteInitRef;
+    v._synthRefs = undefined;
     v._refs = null;
     return v;
   }
@@ -3019,6 +2870,163 @@ class SourceCode {
   // _buildThinVariable removed — collapsed into _buildVariable. The early-cache
   // pattern in _buildVariable (allocate-and-cache `v` before computing scope /
   // synth refs) breaks the recursion that ThinVariable was introduced to dodge.
+
+  /**
+   * Synthesize ESLint Reference objects that the Zig semantic analyzer doesn't
+   * track natively: let/const init-writes, var-in-for-in/of, catch-param
+   * destructure-default. Called LAZILY from `_varProto.references` on first
+   * access — variables whose `references` is never read pay nothing.
+   *
+   * Inputs read from `v`: _ast, _declNodeIdx, _flags16, _hasWriteInitRef,
+   *                      scope, name. Output: writes `v._synthRefs`
+   *                      (null if no synth refs apply, else an array of
+   *                      `{pos, ref}` entries to be merged in source order).
+   */
+  _computeVariableSynthRefs(v) {
+    const ast = v._ast;
+    const declNodeIdx = v._declNodeIdx;
+    const flags16 = v._flags16;
+    const hasWriteInitRef = v._hasWriteInitRef;
+    const scope = v.scope;
+    const declNode = (declNodeIdx !== 0xFFFFFFFF && declNodeIdx < ast.nodeCount)
+      ? nodeView(ast, declNodeIdx) : null;
+    const is_let = (flags16 & 0x02) !== 0;
+    const is_const = (flags16 & 0x04) !== 0;
+    const is_var = (flags16 & 0x01) !== 0;
+    const is_catch_param = (flags16 & 0x40) !== 0;
+    let synthRefs = null;
+
+    // Catch-param destructure with default: `catch ({p = 1}) { ... }`
+    if (is_catch_param && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+      const parentIdx = ast._parentData[declNodeIdx];
+      if (parentIdx !== undefined && parentIdx !== NONE && ast._nodeTags[parentIdx] === T.assignment_pattern) {
+        const initNodeIdx = ast.nodeRhs(parentIdx);
+        if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+          const initRef = {
+            identifier: declNode,
+            from: scope,
+            resolved: v,
+            writeExpr: nodeView(ast, initNodeIdx),
+            init: true,
+            isWrite: () => true,
+            isRead: () => false,
+            isWriteOnly: () => true,
+            isReadOnly: () => false,
+            isReadWrite: () => false,
+          };
+          (synthRefs || (synthRefs = [])).push({ pos: -1, ref: initRef });
+        }
+      }
+    }
+
+    // let/const declarator init: `let x = expr;` / `const x = expr;`
+    if (!hasWriteInitRef && (is_let || is_const) && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+      let curIdx = ast._parentData[declNodeIdx];
+      let initAdded = false;
+      while (!initAdded && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
+        const curTag = ast._nodeTags[curIdx];
+        if (curTag === T.declarator) {
+          let initNodeIdx = ast.nodeRhs(curIdx);
+          while (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount &&
+                 ast._nodeTags[initNodeIdx] === T.grouping_expr) {
+            initNodeIdx = ast.nodeLhs(initNodeIdx);
+          }
+          const declParentIdx = ast._parentData ? ast._parentData[curIdx] : NONE;
+          const declParentTag = (declParentIdx !== undefined && declParentIdx !== NONE)
+            ? ast._nodeTags[ast._parentData[declParentIdx]] : undefined;
+          const isForInOf = declParentTag === T.for_in_stmt || declParentTag === T.for_of_stmt ||
+                            declParentTag === T.for_await_of_stmt;
+          if ((initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) || isForInOf) {
+            const initRef = {
+              identifier: declNode,
+              from: scope,
+              resolved: v,
+              writeExpr: initNodeIdx !== NONE ? nodeView(ast, initNodeIdx) : null,
+              init: true,
+              isWrite: () => true,
+              isRead: () => false,
+              isWriteOnly: () => true,
+              isReadOnly: () => false,
+              isReadWrite: () => false,
+            };
+            (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
+          }
+          initAdded = true;
+        } else if (curTag === T.property || curTag === T.shorthand_property ||
+                   curTag === T.computed_property || curTag === T.object_pattern ||
+                   curTag === T.array_pattern || curTag === T.assignment_pattern ||
+                   curTag === T.rest_element) {
+          curIdx = ast._parentData[curIdx];
+        } else {
+          break;
+        }
+      }
+    }
+
+    // var declarator: `var x = expr;` and `for (var x in ...)` / `of ...`
+    if (!hasWriteInitRef && is_var && !is_let && !is_const && declNodeIdx !== undefined && declNodeIdx !== NONE && ast._parentData) {
+      let curIdx = ast._parentData[declNodeIdx];
+      let forInOfChecked = false;
+      while (!forInOfChecked && curIdx !== undefined && curIdx !== NONE && curIdx < ast.nodeCount) {
+        const curTag = ast._nodeTags[curIdx];
+        if (curTag === T.declarator) {
+          const declParentIdx = ast._parentData[curIdx];
+          const declGrandParentIdx = (declParentIdx !== undefined && declParentIdx !== NONE)
+            ? ast._parentData[declParentIdx] : NONE;
+          const declGPTag = (declGrandParentIdx !== undefined && declGrandParentIdx !== NONE)
+            ? ast._nodeTags[declGrandParentIdx] : undefined;
+          const isForInOf = declGPTag === T.for_in_stmt || declGPTag === T.for_of_stmt ||
+                            declGPTag === T.for_await_of_stmt;
+          if (isForInOf) {
+            const initRef = {
+              identifier: declNode,
+              from: scope,
+              resolved: v,
+              writeExpr: null,
+              init: true,
+              isWrite: () => true,
+              isRead: () => false,
+              isWriteOnly: () => true,
+              isReadOnly: () => false,
+              isReadWrite: () => false,
+            };
+            (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
+          } else {
+            let initNodeIdx = ast.nodeRhs(curIdx);
+            while (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount &&
+                   ast._nodeTags[initNodeIdx] === T.grouping_expr) {
+              initNodeIdx = ast.nodeLhs(initNodeIdx);
+            }
+            if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
+              const initRef = {
+                identifier: declNode,
+                from: scope,
+                resolved: v,
+                writeExpr: nodeView(ast, initNodeIdx),
+                init: true,
+                isWrite: () => true,
+                isRead: () => false,
+                isWriteOnly: () => true,
+                isReadOnly: () => false,
+                isReadWrite: () => false,
+              };
+              (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
+            }
+          }
+          forInOfChecked = true;
+        } else if (curTag === T.property || curTag === T.shorthand_property ||
+                   curTag === T.computed_property || curTag === T.object_pattern ||
+                   curTag === T.array_pattern || curTag === T.assignment_pattern ||
+                   curTag === T.rest_element) {
+          curIdx = ast._parentData[curIdx];
+        } else {
+          break;
+        }
+      }
+    }
+
+    v._synthRefs = synthRefs;
+  }
 
   // _buildThinScope removed — collapsed into _buildScope. The early-cache
   // pattern in _buildScope (cache the scope before any potential recursion
