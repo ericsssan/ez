@@ -682,6 +682,38 @@ function _removeGlobal(name, set, variables) {
   }
 }
 
+// ── Cross-call shared caches ─────────────────────────────────────────
+//
+// Wrapper allocation (Scope / Variable / Reference) is the dominant cost on
+// large files. Wrappers depend only on (ast, id) — not on per-call config —
+// so they can be memoized per-AST and reused across `lintSource()` calls
+// (LSP rechecks, watch mode, multi-rule passes on the same file).
+//
+// Mutable per-call state (`Variable.eslintUsed`) is in a Uint8Array
+// side-table on the SourceCode (cleared on every `reset()`), so cached
+// wrappers don't carry state across calls.
+//
+// Cached wrappers' lazy methods (`_ensureVarsSet`, `references` getter, etc.)
+// must consult `_activeBuilder` rather than a captured `_sc` pointer so they
+// always run against the live SourceCode regardless of which call originally
+// materialized the wrapper.
+const _sharedCaches = new WeakMap();
+function _getSharedCaches(ast) {
+  let c = _sharedCaches.get(ast);
+  if (!c) {
+    c = {
+      scopeCache: new Array(ast._semScopeCount || 64),
+      varCache:   new Array(ast._semSymbolCount || 256),
+      refCache:   new Array(ast._semRefCount || 256),
+      declSymIndex: null,
+      varScopeNameIndex: null,
+    };
+    _sharedCaches.set(ast, c);
+  }
+  return c;
+}
+let _activeBuilder = null;
+
 // ── Variable prototype (lazy references) ─────────────────────────────
 //
 // Every Variable produced by `_buildVariable` shares this prototype.
@@ -701,13 +733,13 @@ const _varProto = {
   // eslintUsed lives in a Uint8Array on the SourceCode (cleared every
   // `reset()`). Variables don't carry a per-instance mutable boolean; the
   // accessor reads/writes the side-table via the variable's `_symId`.
-  get eslintUsed() { return this._sc._eslintUsedBits[this._symId] !== 0; },
-  set eslintUsed(v) { this._sc._eslintUsedBits[this._symId] = v ? 1 : 0; },
+  get eslintUsed() { return _activeBuilder._eslintUsedBits[this._symId] !== 0; },
+  set eslintUsed(v) { _activeBuilder._eslintUsedBits[this._symId] = v ? 1 : 0; },
   get references() {
     let refs = this._refs;
     if (refs === null) {
-      const ast = this._ast;
-      const sc = this._sc;
+      const sc = _activeBuilder;
+      const ast = sc._ast;
       refs = [];
       const refStart = this._refStart, refEnd = this._refEnd;
       const symRefBySym = ast._symRefBySym;
@@ -769,7 +801,7 @@ const _scopeProto = {
 
   _ensureVarsSet() {
     if (this._vars !== null) return;
-    const vs = this._sc._buildScopeVarsAndSet(this._scopeId, this, this._kind);
+    const vs = _activeBuilder._buildScopeVarsAndSet(this._scopeId, this, this._kind);
     this._vars = vs[0]; this._set = vs[1];
     // FEN extraction: when this scope is the body of a named FunctionExpression,
     // hoist the function-name def into the FEN wrapper scope.
@@ -804,7 +836,7 @@ const _scopeProto = {
           const refCount = ast._scopeRefCounts[this._scopeId];
           for (let ri = 0; ri < refCount; ri++) {
             const refId = ast._scopeRefIds[refStart + ri];
-            const ref = this._sc._buildReference(refId);
+            const ref = _activeBuilder._buildReference(refId);
             if (ref.identifier?.name === fenName) {
               fenVar.references.push(ref);
               ref.resolved = fenVar;
@@ -830,7 +862,7 @@ const _scopeProto = {
     if (this._refsBuilding) { this._refs = []; this._through = []; return; }
     this._refsBuilding = true;
     const cs = this.childScopes;
-    const rt = this._sc._buildScopeRefsAndThrough(this._scopeId, this, cs);
+    const rt = _activeBuilder._buildScopeRefsAndThrough(this._scopeId, this, cs);
     this._refs = rt[0]; this._through = rt[1];
     // Populate FEN variable references: refs to the function-name from inside
     // the body resolve to the FEN var, not to whatever was up the scope chain.
@@ -848,7 +880,7 @@ const _scopeProto = {
 
   _ensureChildren() {
     if (this._children !== null) return;
-    this._children = this._sc._buildScopeChildren(this._scopeId);
+    this._children = _activeBuilder._buildScopeChildren(this._scopeId);
   },
 
   _ensureThisFound() {
@@ -924,8 +956,13 @@ class SourceCode {
     this._linesCache = null;
     this._tokensCache = null;
     this._mergedCache = null;
-    this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
-    this._varCache = null;       // lazily allocated Array[symCount] — same object per symId for indexOf identity
+    // Per-AST shared caches — same wrappers reused across every `lintSource()`
+    // call on this AST. WeakMap-keyed so caches are GC'd with the AST.
+    const _shared = _getSharedCaches(ast);
+    this._scopeCache = _shared.scopeCache;
+    this._varCache   = _shared.varCache;
+    this._refCache   = _shared.refCache;
+    this._sharedCaches = _shared;
     // eslintUsed side-table: one bit per symbol, lazily allocated. Variables
     // built via `_buildVariable` read/write this through proto accessors so
     // the field doesn't have to live on every Variable instance.
@@ -933,6 +970,7 @@ class SourceCode {
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
     this.parserServices = {};
+    _activeBuilder = this;
   }
 
   reset(ast, sourceText, sourceType, ecmaVersion) {
@@ -948,9 +986,13 @@ class SourceCode {
     this._tokensCache = null;
     this._mergedCache = null;
     this._tokBeforeIcCache = null;
-    this._scopeCache = null;
-    this._varCache = null;       // file-specific — must be cleared so new AST gets fresh variables
-    this._refCache = null;       // file-specific — ref objects hold AST node pointers
+    // Per-AST shared caches — keyed on the AST so re-lints of the same file
+    // (LSP, watch, multi-rule passes) reuse previously-materialized wrappers.
+    const _shared = _getSharedCaches(ast);
+    this._scopeCache = _shared.scopeCache;
+    this._varCache   = _shared.varCache;
+    this._refCache   = _shared.refCache;
+    this._sharedCaches = _shared;
     // eslintUsed side-table: re-use existing buffer if it fits the new AST,
     // otherwise allocate a larger one. Either way, zero it.
     if (this._eslintUsedBits && this._eslintUsedBits.length >= (ast._semSymbolCount || 0)) {
@@ -958,6 +1000,7 @@ class SourceCode {
     } else {
       this._eslintUsedBits = new Uint8Array(ast._semSymbolCount || 256);
     }
+    _activeBuilder = this;
     this._tokenSkipList = null;
     this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
@@ -1903,6 +1946,13 @@ class SourceCode {
    */
   _ensureDeclSymIndex() {
     if (this._declSymIndex) return;
+    // Reuse across calls if the same AST already built it.
+    const _shared = this._sharedCaches;
+    if (_shared && _shared.declSymIndex) {
+      this._declSymIndex = _shared.declSymIndex;
+      this._varScopeNameIndex = _shared.varScopeNameIndex;
+      return;
+    }
     const ast = this._ast;
     const declSymIndex = new Map();
     // varScopeNameIndex: "${scopeId}:${name}" → [symId,...] for var symbols only.
@@ -1942,6 +1992,10 @@ class SourceCode {
     }
     this._declSymIndex = declSymIndex;
     this._varScopeNameIndex = varScopeNameIndex;
+    if (_shared) {
+      _shared.declSymIndex = declSymIndex;
+      _shared.varScopeNameIndex = varScopeNameIndex;
+    }
   }
 
   /**
@@ -3601,7 +3655,9 @@ class SourceCode {
         return arr;
       },
       get globalScope() {
-        if (!sc._scopeCache) sc._precomputeScopes();
+        // _scopeCache is now always present (per-AST shared cache), so the
+        // "have we precomputed yet?" check is on the populated globalScope ref.
+        if (!sc._globalScope) sc._precomputeScopes();
         return sc._scopeCache ? sc._scopeCache[0] : null;
       },
     };
