@@ -34,6 +34,11 @@ pub const TraversalResult = struct {
     dfs_events: []i32,
     /// min_tok[i] = minimum main_token index in the subtree rooted at node i.
     min_tok: []u32,
+    /// resolved_parents[i] = parents[i] with grouping_expr / ts_parenthesized_type
+    /// ancestors skipped — i.e. the parent that ESTree-shaped JS sees after
+    /// `nodeView` unwraps parenthesised expressions. Eliminates a hot while-loop
+    /// in the JS `get parent` slow path.
+    resolved_parents: []u32,
 };
 
 /// Called by Parser.addNode to record parent→child edges incrementally.
@@ -414,7 +419,8 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
 
     if (n == 0) {
         const empty_min_tok = try alloc.alloc(u32, 0);
-        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = empty_min_tok };
+        const empty_resolved = try alloc.alloc(u32, 0);
+        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = empty_min_tok, .resolved_parents = empty_resolved };
     }
 
     // Post-order: trivial (bottom-up build → always [1..n-1, 0]).
@@ -507,7 +513,28 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         }
     }
 
-    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = min_tok };
+    // ── Resolved parents (post grouping_expr / ts_parenthesized_type skip) ─
+    // JS-side `nodeView` transparently unwraps grouping_expr and
+    // ts_parenthesized_type, so the ESTree-visible parent of a node whose
+    // direct parent is a grouping_expr is the grouping's own parent. The JS
+    // `get parent` slow path used to walk this chain on every first access;
+    // pre-baking it here turns that walk into a single typed-array read.
+    const resolved_parents = try alloc.alloc(u32, n);
+    {
+        const tags = tree.nodes.items(.tag);
+        for (0..n) |i| {
+            var p = parents[i];
+            var guard: u32 = 0;
+            while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type)) {
+                p = parents[p];
+                guard += 1;
+                if (guard > 64) { p = NONE; break; }
+            }
+            resolved_parents[i] = p;
+        }
+    }
+
+    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = min_tok, .resolved_parents = resolved_parents };
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

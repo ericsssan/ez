@@ -77,10 +77,14 @@ pub const BufferHeader = extern struct {
     // comment index (value - token_count).
     // JS views this to expose `sourceCode.tokensAndComments` without merging.
     tok_cmt_merge_offset: u32 = 0,
+    // v12: resolved parent indices (parent post grouping_expr / ts_parenthesized_type
+    // skip). u32[node_count]. Eliminates a JS-side parent-chain while-loop in
+    // `get parent`'s slow path.
+    resolved_parent_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 140);
+    std.debug.assert(@sizeOf(BufferHeader) == 144);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -219,6 +223,9 @@ pub const CfgGraphHeader = extern struct {
     seg_all_prev_targets_offset: u32,
     seg_looped_starts_offset: u32,
     seg_looped_targets_offset: u32,
+    // Collapsed prev: reachable ancestors of each unreachable segment (BFS-precomputed).
+    seg_collapsed_prev_starts_offset: u32,
+    seg_collapsed_prev_targets_offset: u32,
 
     // Per-codepath data
     cp_origin_offset: u32,             // u8[codepath_count]
@@ -691,86 +698,73 @@ fn writeCfgGraph(
     // bump region risks reading stale data if the allocator reuses pages.
     // Using a two-pass approach (count, then copy) avoids this entirely.
 
-    // Pass 1: count total entries per list type
-    var total_next: u32 = 0;
+    // Pass 1: count total entries per list type (next/all_next omitted — reconstructed in JS)
     var total_prev: u32 = 0;
-    var total_all_next: u32 = 0;
     var total_all_prev: u32 = 0;
     var total_looped: u32 = 0;
+    var total_collapsed_prev: u32 = 0;
     for (0..seg_count) |i| {
-        const n = cpr.seg_next[i];
-        if (n.next_end > n.next_start) total_next += n.next_end - n.next_start;
         if (cpr.seg_prev_end[i] > cpr.seg_prev_start[i]) total_prev += cpr.seg_prev_end[i] - cpr.seg_prev_start[i];
-        if (n.all_next_end > n.all_next_start) total_all_next += n.all_next_end - n.all_next_start;
         if (cpr.seg_all_prev_end[i] > cpr.seg_all_prev_start[i]) total_all_prev += cpr.seg_all_prev_end[i] - cpr.seg_all_prev_start[i];
         if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i]) total_looped += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
+        if (cpr.seg_collapsed_prev_end[i] > cpr.seg_collapsed_prev_start[i]) total_collapsed_prev += cpr.seg_collapsed_prev_end[i] - cpr.seg_collapsed_prev_start[i];
     }
 
     // Pass 2: copy source pool data to temp buffers (before allocating output)
-    const tmp_next = try alloc.alloc(u32, total_next);
     const tmp_prev = try alloc.alloc(u32, total_prev);
-    const tmp_all_next = try alloc.alloc(u32, total_all_next);
     const tmp_all_prev = try alloc.alloc(u32, total_all_prev);
     const tmp_looped = try alloc.alloc(u32, total_looped);
+    const tmp_collapsed_prev = try alloc.alloc(u32, total_collapsed_prev);
     {
-        var n: u32 = 0;
         var p: u32 = 0;
-        var an: u32 = 0;
         var ap: u32 = 0;
         var lo: u32 = 0;
+        var cp: u32 = 0;
         for (0..seg_count) |i| {
-            const ni = cpr.seg_next[i];
-            if (ni.next_end > ni.next_start) { const len = ni.next_end - ni.next_start; @memcpy(tmp_next[n..][0..len], cpr.next_targets[ni.next_start..ni.next_end]); n += len; }
             const ps = cpr.seg_prev_start[i]; const pe = cpr.seg_prev_end[i];
             if (pe > ps) { const len = pe - ps; @memcpy(tmp_prev[p..][0..len], cpr.prev_targets[ps..pe]); p += len; }
-            if (ni.all_next_end > ni.all_next_start) { const len = ni.all_next_end - ni.all_next_start; @memcpy(tmp_all_next[an..][0..len], cpr.all_next_targets[ni.all_next_start..ni.all_next_end]); an += len; }
             const aps = cpr.seg_all_prev_start[i]; const ape = cpr.seg_all_prev_end[i];
             if (ape > aps) { const len = ape - aps; @memcpy(tmp_all_prev[ap..][0..len], cpr.all_prev_targets[aps..ape]); ap += len; }
             const lps = cpr.seg_looped_prev_start[i]; const lpe = cpr.seg_looped_prev_end[i];
             if (lpe > lps) { const len = lpe - lps; @memcpy(tmp_looped[lo..][0..len], cpr.looped_targets[lps..lpe]); lo += len; }
+            const cps = cpr.seg_collapsed_prev_start[i]; const cpe = cpr.seg_collapsed_prev_end[i];
+            if (cpe > cps) { const len = cpe - cps; @memcpy(tmp_collapsed_prev[cp..][0..len], cpr.collapsed_prev_targets[cps..cpe]); cp += len; }
         }
     }
 
     // Pass 3: allocate output arrays and build CSR starts from temp data
-    const seg_next_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_next_targets = try alloc.alloc(u32, total_next);
+    // next/all_next omitted — JS reconstructs them by inverting prev + loopedPrev.
     const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_prev_targets = try alloc.alloc(u32, total_prev);
-    const seg_all_next_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_all_next_targets = try alloc.alloc(u32, total_all_next);
     const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_all_prev_targets = try alloc.alloc(u32, total_all_prev);
     const seg_looped_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_looped_targets = try alloc.alloc(u32, total_looped);
-    @memcpy(seg_next_targets, tmp_next);
+    const seg_collapsed_prev_starts = try alloc.alloc(u32, seg_count + 1);
+    const seg_collapsed_prev_targets = try alloc.alloc(u32, total_collapsed_prev);
     @memcpy(seg_prev_targets, tmp_prev);
-    @memcpy(seg_all_next_targets, tmp_all_next);
     @memcpy(seg_all_prev_targets, tmp_all_prev);
     @memcpy(seg_looped_targets, tmp_looped);
+    @memcpy(seg_collapsed_prev_targets, tmp_collapsed_prev);
     {
-        var n: u32 = 0;
         var p: u32 = 0;
-        var an: u32 = 0;
         var ap: u32 = 0;
         var lo: u32 = 0;
+        var cp: u32 = 0;
         for (0..seg_count) |i| {
-            const ni = cpr.seg_next[i];
-            seg_next_starts[i] = n;
-            if (ni.next_end > ni.next_start) n += ni.next_end - ni.next_start;
             seg_prev_starts[i] = p;
             if (cpr.seg_prev_end[i] > cpr.seg_prev_start[i]) p += cpr.seg_prev_end[i] - cpr.seg_prev_start[i];
-            seg_all_next_starts[i] = an;
-            if (ni.all_next_end > ni.all_next_start) an += ni.all_next_end - ni.all_next_start;
             seg_all_prev_starts[i] = ap;
             if (cpr.seg_all_prev_end[i] > cpr.seg_all_prev_start[i]) ap += cpr.seg_all_prev_end[i] - cpr.seg_all_prev_start[i];
             seg_looped_starts[i] = lo;
             if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i]) lo += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
+            seg_collapsed_prev_starts[i] = cp;
+            if (cpr.seg_collapsed_prev_end[i] > cpr.seg_collapsed_prev_start[i]) cp += cpr.seg_collapsed_prev_end[i] - cpr.seg_collapsed_prev_start[i];
         }
-        seg_next_starts[seg_count] = n;
         seg_prev_starts[seg_count] = p;
-        seg_all_next_starts[seg_count] = an;
         seg_all_prev_starts[seg_count] = ap;
         seg_looped_starts[seg_count] = lo;
+        seg_collapsed_prev_starts[seg_count] = cp;
     }
 
     // ── Per-codepath data ───────────────────────────────────
@@ -847,16 +841,18 @@ fn writeCfgGraph(
         .seg_reachable_offset = ptrOffsetPub(buf, seg_reachable.ptr),
         .seg_codepath_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_codepath.ptr))),
 
-        .seg_next_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_next_starts.ptr))),
-        .seg_next_targets_offset = if (seg_next_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_next_targets.ptr))) else 0,
+        .seg_next_starts_offset = 0, // reconstructed in JS by inverting prev + loopedPrev
+        .seg_next_targets_offset = 0,
         .seg_prev_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_prev_starts.ptr))),
         .seg_prev_targets_offset = if (seg_prev_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_prev_targets.ptr))) else 0,
-        .seg_all_next_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_next_starts.ptr))),
-        .seg_all_next_targets_offset = if (seg_all_next_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_next_targets.ptr))) else 0,
+        .seg_all_next_starts_offset = 0, // reconstructed in JS
+        .seg_all_next_targets_offset = 0,
         .seg_all_prev_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_prev_starts.ptr))),
         .seg_all_prev_targets_offset = if (seg_all_prev_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_all_prev_targets.ptr))) else 0,
         .seg_looped_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_looped_starts.ptr))),
         .seg_looped_targets_offset = if (seg_looped_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_looped_targets.ptr))) else 0,
+        .seg_collapsed_prev_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_collapsed_prev_starts.ptr))),
+        .seg_collapsed_prev_targets_offset = if (seg_collapsed_prev_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(seg_collapsed_prev_targets.ptr))) else 0,
 
         .cp_origin_offset = ptrOffsetPub(buf, cp_origin.ptr),
         .cp_upper_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_upper.ptr))),
@@ -936,6 +932,7 @@ pub const HeaderInfo = struct {
     min_tok_offset: u32 = 0,
     sorted_by_start_offset: u32 = 0,
     tok_cmt_merge_offset: u32 = 0,
+    resolved_parent_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -981,6 +978,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .min_tok_offset = info.min_tok_offset,
         .sorted_by_start_offset = info.sorted_by_start_offset,
         .tok_cmt_merge_offset = info.tok_cmt_merge_offset,
+        .resolved_parent_offset = info.resolved_parent_offset,
     };
 }
 

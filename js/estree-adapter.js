@@ -164,6 +164,9 @@ const H = {
   SORTED_BY_START_OFFSET: 132,
   // v11: merged token+comment order (byte 136)
   TOK_CMT_MERGE_OFFSET: 136,
+  // v12: resolved parent indices (parent post grouping_expr / ts_parenthesized_type
+  // skip). Eliminates a parent-chain while-loop in `get parent`'s slow path.
+  RESOLVED_PARENT_OFFSET: 140,
 };
 
 // CfgGraphHeader: 25 u32 fields = 100 bytes
@@ -344,6 +347,13 @@ class AstView {
     const parentOff = dv.getUint32(H.PARENT_INDICES_OFFSET, true);
     this._parentData = parentOff > 0
       ? new Uint32Array(buffer, parentOff, this.nodeCount)
+      : null;
+    // Resolved parent indices (v12 — `_parentData` with grouping_expr /
+    // ts_parenthesized_type ancestors skipped). Eliminates the while-loop in
+    // `get parent`'s slow path. Falls back to runtime walking if absent.
+    const resolvedParentOff = dv.getUint32(H.RESOLVED_PARENT_OFFSET, true);
+    this._resolvedParentData = resolvedParentOff > 0
+      ? new Uint32Array(buffer, resolvedParentOff, this.nodeCount)
       : null;
 
     // DFS traversal orders (v4 — pre-order and post-order, computed in Zig)
@@ -1176,18 +1186,24 @@ const NodeProto = {
    */
   get parent() {
     if (this._parent !== _PARENT_UNSET) return this._parent;
-    const pd = this._ast._parentData;
+    const ast = this._ast;
+    const pd = ast._parentData;
     if (!pd) { this._parent = null; return null; }
-    // Walk past grouping_expr and ts_parenthesized_type parents since nodeView
-    // unwraps them — without this skip the parent chain would cycle:
-    //   child → ParenthesizedExpression parent → nodeView unwraps back to child
-    //   child → TSParenthesizedType parent → nodeView unwraps back to child
-    let parentIdx = pd[this._i];
-    let _skipGuard = 0;
-    while (parentIdx !== NONE && (this._ast._nodeTags[parentIdx] === T.grouping_expr ||
-                                   this._ast._nodeTags[parentIdx] === T.ts_parenthesized_type)) {
-      parentIdx = pd[parentIdx];
-      if (++_skipGuard > 64) { parentIdx = NONE; break; } // cycle guard
+    // Resolved parent (post grouping_expr / ts_parenthesized_type skip) is
+    // pre-baked in the buffer by Zig's `parent_builder`. Skips the while-loop
+    // that used to walk the parent chain on every first access. JS fallback
+    // path runs the loop only when the buffer doesn't carry the v12 array.
+    let parentIdx;
+    if (ast._resolvedParentData) {
+      parentIdx = ast._resolvedParentData[this._i];
+    } else {
+      parentIdx = pd[this._i];
+      let _skipGuard = 0;
+      while (parentIdx !== NONE && (ast._nodeTags[parentIdx] === T.grouping_expr ||
+                                     ast._nodeTags[parentIdx] === T.ts_parenthesized_type)) {
+        parentIdx = pd[parentIdx];
+        if (++_skipGuard > 64) { parentIdx = NONE; break; }
+      }
     }
     let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
 
@@ -3998,6 +4014,33 @@ function _getTypeProto(tag) {
   return proto;
 }
 
+// Constructor function with all node fields initialized — JSC allocates a
+// single statically-known structure per `new _NodeView(...)`, no proto hop.
+// (A `class` would also work but its `.prototype` is non-writable so we can't
+// point it at NodeProto.) Used for the common case where
+// `_getTypeProto(tag) === NodeProto`; tags with `_TAG_DELETE_PROPS` overrides
+// take the object-literal slow path.
+function _NodeView(ast, idx, tag, type) {
+  this._ast = ast;
+  this._i = idx;
+  this._tag = tag;
+  this._parent = _PARENT_UNSET;
+  this.type = type;
+  this._loc = null;
+  this._range = null;
+  this._body = _BODY_UNSET;
+  this._value = _VALUE_UNSET;
+  this._init = _INIT_UNSET;
+  this._cachedName = undefined;
+  this._params = undefined;
+  this._typeParameters = undefined;
+  this._arguments = undefined;
+  this._decorators = undefined;
+}
+// Point `new _NodeView` instances at NodeProto so they reach the same
+// getters/methods as Object.create(NodeProto)-built nodes.
+_NodeView.prototype = NodeProto;
+
 /** Raw nodeView — returns per-type proto node, no ChainExpression wrapping. */
 function _nodeViewRaw(ast, index) {
   let cache = ast._nodeCache;
@@ -4008,30 +4051,34 @@ function _nodeViewRaw(ast, index) {
   let n = cache[index];
   if (n === undefined) {
     const tag = ast._nodeTags[index];
-    n = Object.create(_getTypeProto(tag));
-    n._ast = ast;
-    n._i = index;
-    // Cache the numeric tag on the instance — every `node._tag` access then
-    // becomes a direct property read instead of `ast._nodeTags[idx]` (a typed
-    // array dispatch). At ~hundreds of millions of `_tag` reads on big files
-    // the dispatch overhead is real.
-    n._tag = tag;
-    n._parent = _PARENT_UNSET;
-    // type is computed eagerly and stored as own data property — no getter.
-    // Buffer-direct: `_computeNodeType` reads `_nodeTags`, `_parentData`,
-    // `_mainTokens`, `_tokStarts` from typed arrays only. Every `node.type ===
-    // 'X'` access at rule call sites is a direct property load.
-    n.type = _computeNodeType(ast, index, tag);
-    n._loc  = null;
-    n._range = null;
-    n._body = _BODY_UNSET;
-    n._value = _VALUE_UNSET;
-    n._init = _INIT_UNSET;
-    n._cachedName = undefined;
-    n._params = undefined;
-    n._typeParameters = undefined;
-    n._arguments = undefined;
-    n._decorators = undefined;
+    const proto = _getTypeProto(tag);
+    // Fast path: most tags share NodeProto. `new _NodeView()` lets JSC
+    // allocate with a single statically-known structure — no
+    // setPrototypeDirect hop (which `__proto__: <expr>` in a literal pays).
+    // Slow path: 9 tags carry `_TAG_DELETE_PROPS` overrides → object
+    // literal with `__proto__:` to attach the per-tag clone.
+    if (proto === NodeProto) {
+      n = new _NodeView(ast, index, tag, _computeNodeType(ast, index, tag));
+    } else {
+      n = {
+        __proto__: proto,
+        _ast: ast,
+        _i: index,
+        _tag: tag,
+        _parent: _PARENT_UNSET,
+        type: _computeNodeType(ast, index, tag),
+        _loc: null,
+        _range: null,
+        _body: _BODY_UNSET,
+        _value: _VALUE_UNSET,
+        _init: _INIT_UNSET,
+        _cachedName: undefined,
+        _params: undefined,
+        _typeParameters: undefined,
+        _arguments: undefined,
+        _decorators: undefined,
+      };
+    }
     // Make regex/bigint own properties so Object.hasOwn() works (ESLint uses this)
     if (tag === T.regex_literal) {
       const _n = n;

@@ -176,6 +176,8 @@ fn parseImpl(
     const pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
     const dfs_events_offset = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
+    const resolved_parent_offset = if (traversal.resolved_parents.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
 
     // Run semantic analysis BEFORE converting to UTF-16 so that
     // tokenText() (used for symbol names) reads correct byte offsets.
@@ -388,6 +390,7 @@ fn parseImpl(
         .min_tok_offset = min_tok_offset,
         .sorted_by_start_offset = sorted_by_start_offset,
         .tok_cmt_merge_offset = tok_cmt_merge_offset,
+        .resolved_parent_offset = resolved_parent_offset,
     });
 
     return backing.bytesUsed();
@@ -418,7 +421,7 @@ pub export fn ez_parse_and_lint(
     out_ptr: [*]u8,
     out_len: u32,
 ) u32 {
-    return parseAndLintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, out_ptr, out_len, null) catch 0;
+    return parseAndLintImpl(buf_ptr, buf_len, source_start, source_len, lang_val, false, &.{}, out_ptr, out_len, null) catch 0;
 }
 
 fn parseAndLintImpl(
@@ -427,6 +430,8 @@ fn parseAndLintImpl(
     source_start: u32,
     source_len: u32,
     lang_val: u8,
+    is_module: bool,
+    globals: []const u8,
     out_ptr: [*]u8,
     out_len: u32,
     config: ?*const linter_root.config.Config,
@@ -446,7 +451,7 @@ fn parseAndLintImpl(
     var tokens = lex_result.tokens;
     var tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
         .language = language,
-        .is_module = false,
+        .is_module = is_module,
         .emit_events = true,
     }) catch |e| return e;
 
@@ -455,13 +460,19 @@ fn parseAndLintImpl(
     const pre_order_offset      = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset     = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
     const dfs_events_offset     = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
+    const resolved_parent_offset = if (traversal.resolved_parents.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
 
     // Semantic analysis — keep result alive for lint below.
     var semantic_data_offset: u32 = 0;
     var sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer sem_arena.deinit();
     var sem_result_opt: ?semantic_mod.SemanticResult = null;
-    if (semantic_mod.SemanticAnalyzer.analyze(sem_arena.allocator(), &tree)) |sr| {
+    if (semantic_mod.SemanticAnalyzer.analyzeWithOptions(sem_arena.allocator(), &tree, .{
+        .is_module = is_module,
+        .globals = globals,
+        .build_parents = true,
+    })) |sr| {
         sem_result_opt = sr;
         if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
             semantic_data_offset = off;
@@ -671,7 +682,7 @@ fn parseAndLintImpl(
         .pre_order_offset       = pre_order_offset,
         .post_order_offset      = post_order_offset,
         .dfs_events_offset      = dfs_events_offset,
-        .source_type            = 1,
+        .source_type            = if (is_module) 1 else 0,
         .comment_count          = comment_count,
         .comment_starts_offset  = comment_starts_offset,
         .comment_ends_offset    = comment_ends_offset,
@@ -685,6 +696,7 @@ fn parseAndLintImpl(
         .min_tok_offset         = min_tok_offset,
         .sorted_by_start_offset = sorted_by_start_offset,
         .tok_cmt_merge_offset   = tok_cmt_merge_offset,
+        .resolved_parent_offset = resolved_parent_offset,
     });
 
     return backing.bytesUsed();
@@ -811,6 +823,7 @@ const n = struct {
     // NAPI functions — symbols resolved at load time by the JS runtime.
     extern fn napi_get_cb_info(env: Env, info: CallbackInfo, argc: *usize, argv: [*]Value, this_arg: ?*anyopaque, data: ?*anyopaque) Status;
     extern fn napi_get_arraybuffer_info(env: Env, value: Value, data: *?*anyopaque, length: *usize) Status;
+    extern fn napi_get_shared_arraybuffer_info(env: Env, value: Value, data: *?*anyopaque, length: *usize) Status;
     extern fn napi_get_value_uint32(env: Env, value: Value, result: *u32) Status;
     extern fn napi_create_uint32(env: Env, value: u32, result: *Value) Status;
     extern fn napi_create_double(env: Env, value: f64, result: *Value) Status;
@@ -831,6 +844,19 @@ const n = struct {
     extern fn napi_get_typedarray_info(env: Env, typedarray: Value, type_out: ?*c_uint, length: *usize, data: *?*anyopaque, arraybuffer: ?*Value, byte_offset: ?*usize) Status;
     extern fn napi_create_arraybuffer(env: Env, byte_length: usize, data: *?*anyopaque, result: *Value) Status;
 };
+
+/// Extract a raw pointer from an ArrayBuffer or SharedArrayBuffer.
+/// Returns null if the value is neither.
+fn getAnyBufferPtr(env: n.Env, val: n.Value, out_len: *usize) ?[*]u8 {
+    var data: ?*anyopaque = null;
+    if (n.napi_get_arraybuffer_info(env, val, &data, out_len) == n.OK) {
+        return @ptrCast(data orelse return null);
+    }
+    if (n.napi_get_shared_arraybuffer_info(env, val, &data, out_len) == n.OK) {
+        return @ptrCast(data orelse return null);
+    }
+    return null;
+}
 
 // ── Config helpers ────────────────────────────────────────────────
 
@@ -884,6 +910,7 @@ pub export fn napi_register_module_v1(env: n.Env, exports: n.Value) n.Value {
     registerFn(env, exports, "parseLean", napiParseLean);
     registerFn(env, exports, "parseFile", napiParseFile);
     registerFn(env, exports, "lint", napiLint);
+    registerFn(env, exports, "parseAndLint", napiParseAndLint);
     registerFn(env, exports, "parseAndLintFile", napiParseAndLintFile);
     registerFn(env, exports, "discoverFiles", napiDiscoverFiles);
     registerFn(env, exports, "getNativeRules", napiGetNativeRules);
@@ -944,17 +971,12 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
         return null;
     }
 
-    // ArrayBuffer → raw pointer
-    var buf_data: ?*anyopaque = null;
+    // ArrayBuffer or SharedArrayBuffer → raw pointer
     var buf_len: usize = 0;
-    if (n.napi_get_arraybuffer_info(env, argv[0], &buf_data, &buf_len) != n.OK) {
-        _ = n.napi_throw_error(env, null, "first argument must be an ArrayBuffer");
+    const buf_ptr = getAnyBufferPtr(env, argv[0], &buf_len) orelse {
+        _ = n.napi_throw_error(env, null, "first argument must be an ArrayBuffer or SharedArrayBuffer");
         return null;
-    }
-    const buf_ptr: [*]u8 = @ptrCast(buf_data orelse {
-        _ = n.napi_throw_error(env, null, "ArrayBuffer data is null");
-        return null;
-    });
+    };
 
     var source_start: u32 = 0;
     var source_len: u32 = 0;
@@ -1093,7 +1115,62 @@ fn napiParseAndLintFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value 
     const bytes_used = parseAndLintImpl(
         buf_ptr, @intCast(buf_len),
         file_info.source_start, file_info.source_len, @intCast(lang_val),
+        false, &.{},
         out_ptr, @intCast(out_len),
+        config_ptr,
+    ) catch return returnU32(env, 0);
+    return returnU32(env, bytes_used);
+}
+
+// ── parseAndLint(buf, sourceStart, sourceLen, lang, outBuf[, configBuf, globals]) → bytesUsed ──
+//
+// Source-string variant of parseAndLintFile: parse + lint in one call, sharing the parse tree.
+// lang encodes is_module in bit 7 (same convention as napiParse).
+// outBuf receives compact binary diagnostics (same format as napiLint).
+// Returns AST bytesUsed (same as napiParse) on success, 0 on error.
+
+fn napiParseAndLint(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
+    var argc: usize = 7;
+    var argv: [7]n.Value = undefined;
+    if (n.napi_get_cb_info(env, info, &argc, &argv, null, null) != n.OK) return null;
+    if (argc < 5) {
+        _ = n.napi_throw_error(env, null, "parseAndLint(buf, sourceStart, sourceLen, lang, outBuf[, configBuf, globals]): 5 args required");
+        return null;
+    }
+
+    // ArrayBuffer or SharedArrayBuffer → raw pointer (workers pass SAB for zero-copy AST sharing)
+    var buf_len: usize = 0;
+    const buf_ptr = getAnyBufferPtr(env, argv[0], &buf_len) orelse return returnU32(env, 0);
+
+    var source_start: u32 = 0;
+    var source_len: u32 = 0;
+    var lang_val: u32 = 0;
+    _ = n.napi_get_value_uint32(env, argv[1], &source_start);
+    _ = n.napi_get_value_uint32(env, argv[2], &source_len);
+    _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
+
+    const is_module: bool = (lang_val & 0x80) != 0;
+    const lang_enum: u8 = @intCast(lang_val & 0x7F);
+
+    var out_data: ?*anyopaque = null;
+    var out_buf_len: usize = 0;
+    if (n.napi_get_arraybuffer_info(env, argv[4], &out_data, &out_buf_len) != n.OK) return null;
+    const out_ptr: [*]u8 = @ptrCast(out_data orelse return returnU32(env, 0));
+
+    var config_ptr: ?*const linter_root.config.Config = null;
+    if (argc >= 6) {
+        if (getOptionalConfigBytes(env, argv[5])) |bytes| {
+            config_ptr = configFromJson(bytes);
+        }
+    }
+
+    const globals: []const u8 = if (argc >= 7) (getOptionalConfigBytes(env, argv[6]) orelse &.{}) else &.{};
+
+    const bytes_used = parseAndLintImpl(
+        buf_ptr, @intCast(buf_len),
+        source_start, source_len, lang_enum,
+        is_module, globals,
+        out_ptr, @intCast(out_buf_len),
         config_ptr,
     ) catch return returnU32(env, 0);
     return returnU32(env, bytes_used);
