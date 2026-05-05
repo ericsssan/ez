@@ -2906,14 +2906,13 @@ const NodeProto = {
   get init() {
     const t = this._tag;
     const ast = this._ast;
-    const lhs = ast.nodeLhs(this._i);
-    const rhs = ast.nodeRhs(this._i);
     if (t === T.declarator) {
       // Use nodeViewChain: `const {x} = obj?.foo` — init may be optional chain.
+      const rhs = ast.nodeRhs(this._i);
       return rhs === NONE ? null : nodeViewChain(ast, rhs);
     }
     if (t === T.for_stmt) {
-      const d = ast.extraForData(lhs);
+      const d = ast.extraForData(ast.nodeLhs(this._i));
       return d.init === NONE ? null : nodeView(ast, d.init);
     }
     return null;
