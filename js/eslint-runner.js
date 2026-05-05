@@ -920,7 +920,6 @@ class SourceCode {
     this._tokensCache = null;
     this._mergedCache = null;
     this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
-    this._thinScopeCache = null; // lazily allocated Array[scopeCount]
     this._varCache = null;       // lazily allocated Array[symCount] — same object per symId for indexOf identity
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
@@ -941,7 +940,6 @@ class SourceCode {
     this._mergedCache = null;
     this._tokBeforeIcCache = null;
     this._scopeCache = null;
-    this._thinScopeCache = null;
     this._varCache = null;       // file-specific — must be cleared so new AST gets fresh variables
     this._refCache = null;       // file-specific — ref objects hold AST node pointers
     this._tokenSkipList = null;
@@ -2507,9 +2505,7 @@ class SourceCode {
         if (wrapper !== moduleScope) {
           // Replace in cache so _buildScope(1) always returns the wrapper.
           if (this._scopeCache) this._scopeCache[1] = wrapper;
-          // Replace in thin-scope cache too, so _buildThinScope(1) returns wrapper.
-          if (this._thinScopeCache) this._thinScopeCache[1] = wrapper;
-          // All lazily-built refs/vars for scope 1 will use _buildThinScope(1) → wrapper,
+          // All lazily-built refs/vars for scope 1 will use _buildScope(1) → wrapper,
           // so ref.from and variable.scope are correct without eager loops here.
         }
       }
@@ -2686,7 +2682,7 @@ class SourceCode {
     // required for prefer-const's `writer.from === variable.scope` identity check.
     let scope;
     if (symScopeId !== undefined && symScopeId !== NONE32) {
-      const thinScope = this._buildThinScope(symScopeId);
+      const thinScope = this._buildScope(symScopeId);
       // Implicit globals (kind=10) must have scope.type='global' regardless of the Zig scope kind.
       // In single-scope module files, scope 0 has kind=1 ('module'), but Zig declares implicit
       // globals there — they must appear in a 'global'-typed scope to satisfy rules like
@@ -2915,7 +2911,7 @@ class SourceCode {
 
     const refScopeId = ast._refScopeIds ? ast._refScopeIds[refIdx] : NONE;
     const from = (refScopeId !== undefined && refScopeId !== NONE32)
-      ? this._buildThinScope(refScopeId) : this._stubScope();
+      ? this._buildScope(refScopeId) : this._stubScope();
 
     const ref = Object.create(_refProto);
     ref.identifier = refNode;
@@ -2953,71 +2949,9 @@ class SourceCode {
   // pattern in _buildVariable (allocate-and-cache `v` before computing scope /
   // synth refs) breaks the recursion that ThinVariable was introduced to dodge.
 
-  /**
-   * Build a thin scope (no variables/references) for use as variable.scope.
-   * Avoids infinite recursion: _buildScope → _buildVariable → _buildScope.
-   * Thin scopes only provide chain structure: type, isStrict, upper, variableScope.
-   * Results are cached so same scopeId → same object (required for === comparisons
-   * in prefer-const: writer.from === variable.scope).
-   */
-  _buildThinScope(scopeId) {
-    // If the full scope was already built via _buildScope, return it directly.
-    // This ensures reference.from === scope for rules that use identity checks
-    // (e.g. consistent-this: reference.from === sourceCode.getScope(node)).
-    if (this._scopeCache && this._scopeCache[scopeId]) {
-      return this._scopeCache[scopeId];
-    }
-    if (!this._thinScopeCache) this._thinScopeCache = new Array(this._ast._semScopeCount || 64);
-    const cached = this._thinScopeCache[scopeId];
-    if (cached) return cached;
-
-    const ast = this._ast;
-    const NONE32 = 0xFFFFFFFF;
-    if (!ast._scopeKinds || scopeId === NONE || scopeId === NONE32 || scopeId >= ast._semScopeCount) {
-      return this._stubScope();
-    }
-    const kind = ast._scopeKinds[scopeId];
-    const flags16 = ast._scopeFlags[scopeId];
-    const parentId = ast._scopeParents[scopeId];
-    const upper = (parentId !== NONE32) ? this._buildThinScope(parentId) : null;
-    const isAlwaysStrict = kind === 4 || kind === 7 || kind === 9 /* class_field_initializer */;
-    const isStrict = isAlwaysStrict || (
-      this._sourceType === 'script'
-        ? (flags16 & SF_HAS_USE_STRICT) !== 0 || !!(upper && upper.isStrict)
-        : (flags16 & SF_STRICT_MODE) !== 0
-    );
-    const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE32;
-    const block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
-      ? nodeView(ast, scopeNodeIdx) : null;
-    const isVarScope = kind === 0 || kind === 1 || kind === 2 || kind === 9 /* class_field_initializer */;
-    const set = new Map();
-    // In module mode, the root scope (kind=0, no parent) acts as module scope.
-    const thinTypeName = (kind === 0 && this._sourceType === 'module' && upper === null)
-      ? 'module' : (_SCOPE_KIND_NAMES[kind] || 'block');
-    const s = {
-      type: thinTypeName, isStrict, variables: [], references: [],
-      set, through: [], childScopes: [], implicit: { variables: [], left: [], leftToBeResolved: [] },
-      block, upper, lookup: () => null,
-    };
-    s.variableScope = isVarScope ? s : (upper ? upper.variableScope || upper : s);
-    // Cache before populating set to avoid infinite recursion (thin vars back-ref this scope).
-    this._thinScopeCache[scopeId] = s;
-    // Populate set with symbol names so getVariableByName(scope, name) lookups work.
-    // Required by prefer-const's isOuterVariableInDestructing check and similar rule patterns
-    // that walk the scope chain looking for variables by name.
-    this._ensureDeclSymIndex();
-    const symStart = ast._scopeBindStart ? ast._scopeBindStart[scopeId] : 0;
-    const symCount = ast._scopeBindCount ? ast._scopeBindCount[scopeId] : 0;
-    for (let i = 0; i < symCount; i++) {
-      const symId = symStart + i;
-      const symName = ast._symName(symId);
-      if (symName) {
-        const thinVar = this._buildVariable(symId);
-        set.set(symName, thinVar);
-      }
-    }
-    return s;
-  }
+  // _buildThinScope removed — collapsed into _buildScope. The early-cache
+  // pattern in _buildScope (cache the scope before any potential recursion
+  // via lazy getters) breaks the cycle that ThinScope was introduced to dodge.
 
   /** Fallback stub scope (no semantic data). */
   _stubScope() {
