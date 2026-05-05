@@ -99,9 +99,26 @@ else if (_flag("--all-rules")) {
 // ── ez ───────────────────────────────────────────────────────────────
 const { lintSource } = require(path.join(ROOT, "js/api.js"));
 
+// Memoize config objects — `lintSource` re-resolves config (filesystem
+// checks for eslint.config.js, core-rule reload) on every call, gated by
+// a WeakMap on object identity. Passing the SAME object across iters lets
+// the cache hit and isolates lint time from config setup. Without this
+// the bench over-reports by ~18 ms / iter on typescript.js.
+const _cfgMemo = new Map();
+function _ezCfg(filename, ruleId) {
+  const key = filename + "\0" + ruleId;
+  let cfg = _cfgMemo.get(key);
+  if (!cfg) {
+    cfg = { filename, rules: { [ruleId]: "error" } };
+    _cfgMemo.set(key, cfg);
+  }
+  return cfg;
+}
+
 async function runEz(src, ruleId, filename) {
+  const cfg = _ezCfg(filename, ruleId);
   const t0 = performance.now();
-  const diags = await lintSource(src, { filename, rules: { [ruleId]: "error" } });
+  const diags = await lintSource(src, cfg);
   const ms = performance.now() - t0;
   return { ms, diags: diags.filter(d => d.ruleId === ruleId).map(d => d.line).sort((a, b) => a - b) };
 }

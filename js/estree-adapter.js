@@ -294,7 +294,8 @@ class AstView {
     // Node SoA arrays
     this._nodeTags = new Uint8Array(buffer, tagsOff, this.nodeCount);
     this._mainTokens = new Uint32Array(buffer, mainToksOff, this.nodeCount);
-    // Data is interleaved [lhs: u32, rhs: u32] per node
+    // Data is interleaved [lhs: u32, rhs: u32] per node, accessed via DataView
+    // (Uint32Array view was slightly slower in V8/Bun for this hot path).
     this._dv = dv;
     this._dataOff = dataOff;
 
@@ -1067,10 +1068,9 @@ const NodeProto = {
     this._type = result; // cached in pre-allocated own field (see nodeView)
     return result;
   },
-  /** Internal numeric tag (Zig AST node type). Use this for all internal checks. */
-  get _tag() {
-    return this._ast._nodeTags[this._i];
-  },
+  // _tag (numeric Zig AST node type) is now an own data property on every
+  // node instance, set at `_nodeViewRaw` construction time. Direct property
+  // read instead of typed-array dispatch via `ast._nodeTags[idx]`.
   /**
    * ESTree-compatible `tag`:
    * - TaggedTemplateExpression: returns the tag expression node
@@ -3994,6 +3994,11 @@ function _nodeViewRaw(ast, index) {
     n = Object.create(_getTypeProto(tag));
     n._ast = ast;
     n._i = index;
+    // Cache the numeric tag on the instance — every `node._tag` access then
+    // becomes a direct property read instead of `ast._nodeTags[idx]` (a typed
+    // array dispatch). At ~hundreds of millions of `_tag` reads on big files
+    // the dispatch overhead is real.
+    n._tag = tag;
     n._parent = _PARENT_UNSET;
     n._type = null;
     n._loc  = null;
@@ -4156,16 +4161,18 @@ const CGH = {
   SEG_ALL_PREV_TARGETS: 48,
   SEG_LOOPED_STARTS: 52,
   SEG_LOOPED_TARGETS: 56,
-  CP_ORIGIN: 60,
-  CP_UPPER: 64,
-  CP_INITIAL_SEG: 68,
-  CP_FINAL_STARTS: 72,
-  CP_FINAL_TARGETS: 76,
-  CP_RETURNED_STARTS: 80,
-  CP_RETURNED_TARGETS: 84,
-  CP_THROWN_STARTS: 88,
-  CP_THROWN_TARGETS: 92,
-  EVENTS: 96,
+  SEG_COLLAPSED_PREV_STARTS: 60,
+  SEG_COLLAPSED_PREV_TARGETS: 64,
+  CP_ORIGIN: 68,
+  CP_UPPER: 72,
+  CP_INITIAL_SEG: 76,
+  CP_FINAL_STARTS: 80,
+  CP_FINAL_TARGETS: 84,
+  CP_RETURNED_STARTS: 88,
+  CP_RETURNED_TARGETS: 92,
+  CP_THROWN_STARTS: 96,
+  CP_THROWN_TARGETS: 100,
+  EVENTS: 104,
 };
 
 const CP_ORIGINS = ['program', 'function', 'class-field-initializer', 'class-static-block'];
@@ -4189,20 +4196,16 @@ class CfgGraph {
 
     // Adjacency CSR — targets need explicit length from starts[N]
     const sc1 = this._segCount + 1;
-    this._nextStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_NEXT_STARTS, true), sc1);
-    const ntOff = dv.getUint32(off + CGH.SEG_NEXT_TARGETS, true);
-    const ntLen = this._nextStarts[this._segCount];
-    this._nextTargets = ntOff > 0 && ntLen > 0 ? new Uint32Array(buffer, ntOff, ntLen) : null;
+    // next/allNext are reconstructed lazily in JS by inverting prev + loopedPrev.
+    this._nextStarts = null;
+    this._nextTargets = null;
+    this._allNextStarts = null;
+    this._allNextTargets = null;
 
     this._prevStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_PREV_STARTS, true), sc1);
     const ptOff = dv.getUint32(off + CGH.SEG_PREV_TARGETS, true);
     const ptLen = this._prevStarts[this._segCount];
     this._prevTargets = ptOff > 0 && ptLen > 0 ? new Uint32Array(buffer, ptOff, ptLen) : null;
-
-    this._allNextStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_ALL_NEXT_STARTS, true), sc1);
-    const antOff = dv.getUint32(off + CGH.SEG_ALL_NEXT_TARGETS, true);
-    const antLen = this._allNextStarts[this._segCount];
-    this._allNextTargets = antOff > 0 && antLen > 0 ? new Uint32Array(buffer, antOff, antLen) : null;
 
     this._allPrevStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_ALL_PREV_STARTS, true), sc1);
     const aptOff = dv.getUint32(off + CGH.SEG_ALL_PREV_TARGETS, true);
@@ -4213,6 +4216,11 @@ class CfgGraph {
     const ltOff = dv.getUint32(off + CGH.SEG_LOOPED_TARGETS, true);
     const ltLen = this._loopedStarts[this._segCount];
     this._loopedTargets = ltOff > 0 && ltLen > 0 ? new Uint32Array(buffer, ltOff, ltLen) : null;
+
+    this._collapsedPrevStarts = new Uint32Array(buffer, dv.getUint32(off + CGH.SEG_COLLAPSED_PREV_STARTS, true), sc1);
+    const cptOff = dv.getUint32(off + CGH.SEG_COLLAPSED_PREV_TARGETS, true);
+    const cptLen = this._collapsedPrevStarts[this._segCount];
+    this._collapsedPrevTargets = cptOff > 0 && cptLen > 0 ? new Uint32Array(buffer, cptOff, cptLen) : null;
 
     // Per-codepath
     this._cpOrigin = new Uint8Array(buffer, dv.getUint32(off + CGH.CP_ORIGIN, true), this._cpCount);
@@ -4279,14 +4287,94 @@ class CfgGraph {
     for (let i = start; i < end; i++) result.push(targets[i]);
     return result;
   }
+
+  /** Build next/allNext adjacency by inverting prev + loopedPrev (called once on first access). */
+  _ensureNextAdjacency() {
+    if (this._nextStarts !== null) return;
+    const N = this._segCount;
+    const degNext = new Uint32Array(N);
+    const degAllNext = new Uint32Array(N);
+    const prevT = this._prevTargets, allPrevT = this._allPrevTargets;
+    const loopedT = this._loopedTargets;
+    // From prev edges — nextSegments only includes reachable successors; skip unreachable i
+    const reach = this._segReachable;
+    if (prevT) {
+      for (let i = 0; i < N; i++) {
+        if (!reach[i]) continue;
+        const ps = this._prevStarts[i], pe = this._prevStarts[i + 1];
+        for (let k = ps; k < pe; k++) degNext[prevT[k]]++;
+      }
+    }
+    if (allPrevT) {
+      for (let i = 0; i < N; i++) {
+        const aps = this._allPrevStarts[i], ape = this._allPrevStarts[i + 1];
+        for (let k = aps; k < ape; k++) degAllNext[allPrevT[k]]++;
+      }
+    }
+    // From looped back-edges: loopedTargets[loopedStarts[i]..loopedStarts[i+1]] = loop-end segs for header i
+    if (loopedT) {
+      for (let i = 0; i < N; i++) {
+        const ls = this._loopedStarts[i], le = this._loopedStarts[i + 1];
+        for (let k = ls; k < le; k++) {
+          const p = loopedT[k];
+          degAllNext[p]++;
+          if (reach[p] && reach[i]) degNext[p]++;
+        }
+      }
+    }
+    // Build CSR starts
+    const nextStarts = new Uint32Array(N + 1);
+    const allNextStarts = new Uint32Array(N + 1);
+    for (let i = 0; i < N; i++) {
+      nextStarts[i + 1] = nextStarts[i] + degNext[i];
+      allNextStarts[i + 1] = allNextStarts[i] + degAllNext[i];
+    }
+    const nextTargets = new Uint32Array(nextStarts[N]);
+    const allNextTargets = new Uint32Array(allNextStarts[N]);
+    // Fill from prev edges
+    const posNext = new Uint32Array(N);
+    const posAllNext = new Uint32Array(N);
+    if (prevT) {
+      for (let i = 0; i < N; i++) {
+        if (!reach[i]) continue;
+        const ps = this._prevStarts[i], pe = this._prevStarts[i + 1];
+        for (let k = ps; k < pe; k++) {
+          const p = prevT[k];
+          nextTargets[nextStarts[p] + posNext[p]++] = i;
+        }
+      }
+    }
+    if (allPrevT) {
+      for (let i = 0; i < N; i++) {
+        const aps = this._allPrevStarts[i], ape = this._allPrevStarts[i + 1];
+        for (let k = aps; k < ape; k++) {
+          const p = allPrevT[k];
+          allNextTargets[allNextStarts[p] + posAllNext[p]++] = i;
+        }
+      }
+    }
+    // Fill from looped back-edges
+    if (loopedT) {
+      for (let i = 0; i < N; i++) {
+        const ls = this._loopedStarts[i], le = this._loopedStarts[i + 1];
+        for (let k = ls; k < le; k++) {
+          const p = loopedT[k];
+          allNextTargets[allNextStarts[p] + posAllNext[p]++] = i;
+          if (reach[p] && reach[i]) nextTargets[nextStarts[p] + posNext[p]++] = i;
+        }
+      }
+    }
+    this._nextStarts = nextStarts;
+    this._nextTargets = nextTargets.length > 0 ? nextTargets : null;
+    this._allNextStarts = allNextStarts;
+    this._allNextTargets = allNextTargets.length > 0 ? allNextTargets : null;
+  }
 }
 
 class CfgSegment {
   constructor(cfg, idx) {
     this._cfg = cfg;
     this._idx = idx;
-    const cpIdx = cfg._segCp[idx];
-    this.id = `s${cpIdx + 1}_${idx + 1}`;
     this.reachable = cfg._segReachable[idx] !== 0;
     // Lazy cached adjacency
     this._next = undefined;
@@ -4294,11 +4382,26 @@ class CfgSegment {
     this._allNext = undefined;
     this._allPrev = undefined;
     this._looped = undefined;
-    this.internal = { used: true, loopedPrevSegments: null, nodes: [] };
+    // Lazy id/internal — backing fields initialized null so the hidden class is stable
+    this._id = null;
+    this._internal = null;
   }
+  get id() {
+    if (this._id === null) this._id = `s${this._cfg._segCp[this._idx] + 1}_${this._idx + 1}`;
+    return this._id;
+  }
+  set id(v) { this._id = v; }
+  get internal() {
+    if (this._internal === null) this._internal = { used: true, loopedPrevSegments: null, nodes: [] };
+    return this._internal;
+  }
+  set internal(v) { this._internal = v; }
 
   get nextSegments() {
-    if (this._next === undefined) this._next = this._cfg._csrSegments(this._cfg._nextStarts, this._cfg._nextTargets, this._idx);
+    if (this._next === undefined) {
+      this._cfg._ensureNextAdjacency();
+      this._next = this._cfg._csrSegments(this._cfg._nextStarts, this._cfg._nextTargets, this._idx);
+    }
     return this._next;
   }
   get prevSegments() {
@@ -4306,11 +4409,22 @@ class CfgSegment {
     return this._prev;
   }
   get allNextSegments() {
-    if (this._allNext === undefined) this._allNext = this._cfg._csrSegments(this._cfg._allNextStarts, this._cfg._allNextTargets, this._idx);
+    if (this._allNext === undefined) {
+      this._cfg._ensureNextAdjacency();
+      this._allNext = this._cfg._csrSegments(this._cfg._allNextStarts, this._cfg._allNextTargets, this._idx);
+    }
     return this._allNext;
   }
   get allPrevSegments() {
-    if (this._allPrev === undefined) this._allPrev = this._cfg._csrSegments(this._cfg._allPrevStarts, this._cfg._allPrevTargets, this._idx);
+    if (this._allPrev === undefined) {
+      if (!this.reachable && this._cfg._collapsedPrevTargets) {
+        // Use precomputed reachable-ancestor list — eliminates O(depth) JS recursion
+        // in rules like no-useless-return that traverse unreachable predecessor chains.
+        this._allPrev = this._cfg._csrSegments(this._cfg._collapsedPrevStarts, this._cfg._collapsedPrevTargets, this._idx);
+      } else {
+        this._allPrev = this._cfg._csrSegments(this._cfg._allPrevStarts, this._cfg._allPrevTargets, this._idx);
+      }
+    }
     return this._allPrev;
   }
 
