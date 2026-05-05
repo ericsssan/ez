@@ -921,7 +921,6 @@ class SourceCode {
     this._mergedCache = null;
     this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
     this._thinScopeCache = null; // lazily allocated Array[scopeCount]
-    this._thinVarCache = null;   // lazily allocated Array[symCount]
     this._varCache = null;       // lazily allocated Array[symCount] — same object per symId for indexOf identity
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
@@ -943,7 +942,6 @@ class SourceCode {
     this._tokBeforeIcCache = null;
     this._scopeCache = null;
     this._thinScopeCache = null;
-    this._thinVarCache = null;
     this._varCache = null;       // file-specific — must be cleared so new AST gets fresh variables
     this._refCache = null;       // file-specific — ref objects hold AST node pointers
     this._tokenSkipList = null;
@@ -2383,20 +2381,9 @@ class SourceCode {
         const refId = _scopeThroughIdsArr[thStart + j];
         const ref = this._buildReference(refId);
         through.push(ref);
-        // Upgrade ref.resolved from thin→full so variable.references is complete.
-        // Old bubble-up code did this as a side effect of parent processing child.through;
-        // with Zig precomputed through, we must upgrade explicitly.
-        // Example: `for (var i in {})` — Zig tracks only the read ref for `i`, but
-        // _buildScopeVarsAndSet synthesizes a write ref into the full variable's .references.
-        // Rules like no-loop-func read variable.references to detect unsafe writes.
-        // Only upgrade if still a thin variable — FEN refs are upgraded to FEN-scope
-        // variables by FEN handling and must not be overwritten.
-        if (ref.resolved?._isThin && _refSymbolIds) {
-          const symId = _refSymbolIds[refId];
-          if (symId !== undefined && symId !== 0xFFFFFFFF) {
-            ref.resolved = this._buildVariable(symId);
-          }
-        }
+        // (Previously upgraded `ref.resolved` from thin→full here. With the
+        // ThinVariable collapse `_buildReference` already resolves to the full
+        // Variable, so no upgrade pass is needed.)
       }
     } else {
       // Fallback: old JS path when Zig CSR is unavailable (older buffer format).
@@ -2608,6 +2595,17 @@ class SourceCode {
     // ESLint's eslint-scope only creates variables for actual identifiers, not the pattern itself.
     if (!name) { this._varCache[symId] = null; return null; }
 
+    // Allocate the Variable shell EARLY and cache it so any recursive
+    // `_buildVariable(symId)` call (e.g. from `_buildThinScope` populating
+    // `scope.set` with this same symbol) returns the same object. Synth refs
+    // below refer to `v` directly (it IS the resolved target) so we no longer
+    // need a separate ThinVariable. Other fields (defs, scope, references…)
+    // are filled in below before the function returns.
+    const v = Object.create(_varProto);
+    v.name = name;
+    v._symId = symId;
+    this._varCache[symId] = v;
+
     // SymbolFlags bits (matches symbol.zig):
     // 0=is_var, 1=is_let, 2=is_const, 3=is_function, 4=is_class,
     // 5=is_parameter, 6=is_catch_param, 7=is_import, 8=is_export,
@@ -2718,7 +2716,7 @@ class SourceCode {
       if (parentIdx !== undefined && parentIdx !== NONE && ast._nodeTags[parentIdx] === T.assignment_pattern) {
         const initNodeIdx = ast.nodeRhs(parentIdx);
         if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
-          const thin = this._buildThinVariable(symId);
+          const thin = v;
           const initRef = {
             identifier: declNode,
             from: scope,
@@ -2757,7 +2755,7 @@ class SourceCode {
           const isForInOf = declParentTag === T.for_in_stmt || declParentTag === T.for_of_stmt ||
                             declParentTag === T.for_await_of_stmt;
           if ((initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) || isForInOf) {
-            const thin = this._buildThinVariable(symId);
+            const thin = v;
             // Insert the init-write in source order relative to other references.
             // Most reads come after the declaration, but class static blocks can reference
             // variables that are declared later (read before init in source order).
@@ -2809,7 +2807,7 @@ class SourceCode {
           const isForInOf = declGPTag === T.for_in_stmt || declGPTag === T.for_of_stmt ||
                             declGPTag === T.for_await_of_stmt;
           if (isForInOf) {
-            const thin = this._buildThinVariable(symId);
+            const thin = v;
             const initRef = {
               identifier: declNode,
               from: scope,
@@ -2832,7 +2830,7 @@ class SourceCode {
               initNodeIdx = ast.nodeLhs(initNodeIdx);
             }
             if (initNodeIdx !== NONE && initNodeIdx < ast.nodeCount) {
-              const thin = this._buildThinVariable(symId);
+              const thin = v;
               const initRef = {
                 identifier: declNode,
                 from: scope,
@@ -2866,13 +2864,9 @@ class SourceCode {
     // Enums and namespaces ARE value variables (they compile to runtime objects).
     // Rules like no-shadow use these to implement ignoreTypeValueShadow logic.
     const isTypeOnlyDecl = defType === 'Type' || defType === 'TypeParameter';
-    // Allocate via shared `_varProto` with lazy `references`. Field assignment
-    // order is fixed across every Variable so V8 sees one hidden class for the
-    // whole file; rule property accesses (`v.scope`, `v.eslintUsed`, …) become
-    // monomorphic. Optional fields (`writeable`, `eslintImplicitGlobalSetting`)
-    // are always set — to a value or to `undefined` — so the shape stays stable.
-    const v = Object.create(_varProto);
-    v.name = name;
+    // Finalize fields on `v` (already allocated and cached at the top of this
+    // function so synth refs above could refer to it). Field assignment order
+    // is fixed across every Variable so V8 sees one shared hidden class.
     v.defs = defs;
     v.scope = scope;
     v.identifiers = identNode ? [identNode] : [];
@@ -2893,7 +2887,6 @@ class SourceCode {
     v._refEnd = refEnd;
     v._synthRefs = synthRefs;
     v._refs = null;
-    if (this._varCache) this._varCache[symId] = v;
     return v;
   }
 
@@ -2918,7 +2911,7 @@ class SourceCode {
     if (refNode !== null && refNode.parent === null) refNode = null;
 
     // Use thin variable for resolved to avoid recursive buildVariable→buildReference cycles.
-    const resolved = symId !== NONE32 ? this._buildThinVariable(symId) : null;
+    const resolved = symId !== NONE32 ? this._buildVariable(symId) : null;
 
     const refScopeId = ast._refScopeIds ? ast._refScopeIds[refIdx] : NONE;
     const from = (refScopeId !== undefined && refScopeId !== NONE32)
@@ -2956,79 +2949,9 @@ class SourceCode {
     return ref;
   }
 
-  /**
-   * Build a thin Variable (no references) for use as reference.resolved.
-   * Avoids cycles: _buildVariable → _buildReference → _buildVariable.
-   */
-  _buildThinVariable(symId) {
-    if (!this._thinVarCache) this._thinVarCache = new Array(this._ast._semSymbolCount || 64);
-    const thinCached = this._thinVarCache[symId];
-    if (thinCached !== undefined) return thinCached;
-    const ast = this._ast;
-    const NONE32 = 0xFFFFFFFF;
-    if (!ast._symFlags || symId === NONE || symId === NONE32 || symId >= ast._semSymbolCount) { this._thinVarCache[symId] = null; return null; }
-    const name = ast._symName(symId);
-    const flags16 = ast._symFlags[symId];
-    const is_const  = (flags16 & 0x04) !== 0;
-    const is_param  = (flags16 & 0x20) !== 0;
-    const is_import = (flags16 & 0x80) !== 0;
-    const is_read   = (flags16 & 0x800) !== 0;
-    const is_written= (flags16 & 0x400) !== 0;
-    const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
-    const symKind10 = ast._symKinds ? ast._symKinds[symId] : 0;
-    let scope = (symScopeId !== undefined && symScopeId !== NONE32)
-      ? this._buildThinScope(symScopeId) : this._stubScope();
-    // implicit_global (kind=10) symbols must appear in a 'global'-typed scope.
-    // In single-scope module files, scope 0 has kind=1 ('module') so we need the override.
-    // Skip if the global is explicitly turned off via configGlobals — then it's unresolved
-    // and isReferenceToGlobalVariable must return false (scope.type stays 'module').
-    const _cg = this._configGlobals;
-    if (symKind10 === 10 && scope.type !== 'global' && !(_cg && _cg[name] === 'off')) {
-      scope = new Proxy(scope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } });
-    }
-    const defType = ast._symKinds
-      ? (_DEF_TYPE_FROM_KIND[ast._symKinds[symId]] ?? 'Variable')
-      : (is_param ? 'Parameter' : (flags16 & 0x40) ? 'CatchClause' : (flags16 & 0x08) ? 'FunctionName' : (flags16 & 0x10) ? 'ClassName' : is_import ? 'ImportBinding' : 'Variable');
-    const declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
-    const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
-      ? nodeView(ast, declNodeIdx) : null;
-    // For import bindings, identifiers/def.name must be the local Identifier, not the specifier.
-    let identNode2 = declNode;
-    if (is_import && declNode) {
-      const local = declNode.local;
-      if (local && local.type === 'Identifier') identNode2 = local;
-    }
-    let defNode = declNode ? _findDefNode(declNode, defType) : null;
-    const builder = this;
-    const _symId = symId;
-    const thinVar = {
-      name,
-      _isThin: true,
-      defs: declNode ? [{ type: defType, name: identNode2, node: defNode, parent: defNode ? defNode.parent || null : null }] : [],
-      _refs: null, // lazy — populated on first access from Zig buffer ranges
-      get references() {
-        if (this._refs === null) {
-          this._refs = [];
-          const _ast = builder._ast;
-          const rs = _ast._symRefStarts ? _ast._symRefStarts[_symId] : 0;
-          const re = _ast._symRefEnds ? _ast._symRefEnds[_symId] : 0;
-          for (let j = rs; j < re; j++) {
-            const refId = _ast._symRefBySym ? _ast._symRefBySym[j] : j;
-            this._refs.push(builder._buildReference(refId));
-          }
-        }
-        return this._refs;
-      },
-      set references(v) { this._refs = v; },
-      scope,
-      identifiers: identNode2 ? [identNode2] : [],
-      eslintUsed: false,
-      isRead: () => is_read,
-      isWritten: () => is_written,
-    };
-    this._thinVarCache[symId] = thinVar;
-    return thinVar;
-  }
+  // _buildThinVariable removed — collapsed into _buildVariable. The early-cache
+  // pattern in _buildVariable (allocate-and-cache `v` before computing scope /
+  // synth refs) breaks the recursion that ThinVariable was introduced to dodge.
 
   /**
    * Build a thin scope (no variables/references) for use as variable.scope.
@@ -3089,7 +3012,7 @@ class SourceCode {
       const symId = symStart + i;
       const symName = ast._symName(symId);
       if (symName) {
-        const thinVar = this._buildThinVariable(symId);
+        const thinVar = this._buildVariable(symId);
         set.set(symName, thinVar);
       }
     }
