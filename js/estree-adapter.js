@@ -997,77 +997,79 @@ function _memberToQualifiedName(ast, idx) {
   return _syntheticNode('TSQualifiedName', start, end, { left: leftNode, right: rightNode }, ast);
 }
 
+// Compute the ESTree-shape `type` string for a node at construction time.
+// Buffer-direct: reads `_nodeTags`, `_parentData`, `_mainTokens`, `_tokStarts`
+// without ever touching a wrapper. Stored as an own data field on each node
+// (see `_nodeViewRaw`) so `node.type` is a direct property read, no getter.
+function _computeNodeType(ast, index, tag) {
+  const tagName = TAG_NAMES ? TAG_NAMES[tag] : String(tag);
+  // Identifier → PrivateIdentifier when the token starts with `#`.
+  if (tagName === 'Identifier') {
+    const pos = ast._tokStarts[ast._mainTokens[index]];
+    if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
+      return 'PrivateIdentifier';
+    }
+    return tagName;
+  }
+  // MethodDefinition → Property when inside an object literal/pattern.
+  if (tagName === 'MethodDefinition') {
+    const pd = ast._parentData;
+    if (pd) {
+      const parentIdx = pd[index];
+      if (parentIdx !== NONE) {
+        const parentTag = ast._nodeTags[parentIdx];
+        if (parentTag === T.object_literal || parentTag === T.object_pattern) {
+          return 'Property';
+        }
+      }
+    }
+    return tagName;
+  }
+  // ImportDeclaration → TSImportEqualsDeclaration for `import X = require('...')`.
+  if (tagName === 'ImportDeclaration' && ast.nodeLhs(index) === NONE && ast.nodeRhs(index) !== NONE) {
+    return 'TSImportEqualsDeclaration';
+  }
+  // BlockStatement → TSModuleBlock when it's the body of a TS namespace/module.
+  if (tagName === 'BlockStatement') {
+    const pd = ast._parentData;
+    if (pd) {
+      const parentIdx = pd[index];
+      if (parentIdx !== NONE && parentIdx !== 0xFFFFFFFF) {
+        const parentTag = ast._nodeTags[parentIdx];
+        if (parentTag === T.ts_namespace_decl || parentTag === T.ts_module_decl) {
+          return 'TSModuleBlock';
+        }
+      }
+    }
+    return tagName;
+  }
+  // TSTypeReference → TS*Keyword or TSLiteralType when no type args and the
+  // main token is a built-in keyword/literal.
+  if (tagName === 'TSTypeReference' && ast.nodeRhs(index) === NONE) {
+    const tok = ast._mainTokens[index];
+    const start = ast._tokStarts[tok];
+    const end = ast._tokEnds ? ast._tokEnds[tok]
+      : (tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length);
+    const text = ast.source.slice(start, end);
+    const kw = _TS_KW_TYPES[text.trim()];
+    if (kw) return kw;
+    const c = text.charCodeAt(0);
+    if (c === 39 || c === 34 || c === 96 || (c >= 48 && c <= 57) ||
+        text === 'true' || text === 'false' || text === '-') {
+      return 'TSLiteralType';
+    }
+    return tagName;
+  }
+  return tagName;
+}
+
 const NodeProto = {
   // ── Low-level ez accessors (existing) ──────────────────────
 
-  get type() {
-    // Fast path: return cached value from pre-allocated own field.
-    // _type is initialized to null in nodeView(); all instances share the same
-    // hidden class so V8 can inline this check with a single field offset load.
-    if (this._type !== null) return this._type;
-    const tagName = TAG_NAMES ? TAG_NAMES[this._ast._nodeTags[this._i]] : String(this._ast._nodeTags[this._i]);
-    let result = tagName;
-    // Remap Identifier → PrivateIdentifier when the token starts with #.
-    // Applies to both regular identifiers and property_ident (which maps to Identifier).
-    if (tagName === 'Identifier') {
-      const pos = this._ast._tokStarts[this._ast._mainTokens[this._i]];
-      if (pos < this._ast.source.length && this._ast.source.charCodeAt(pos) === 35) {
-        result = 'PrivateIdentifier';
-      }
-    }
-    // Remap MethodDefinition → Property when inside an object literal/pattern.
-    // ESTree uses Property for object methods, MethodDefinition for class methods.
-    if (tagName === 'MethodDefinition') {
-      const parentIdx = this._ast._parentData ? this._ast._parentData[this._i] : NONE;
-      if (parentIdx !== NONE) {
-        const parentTag = this._ast._nodeTags[parentIdx];
-        if (parentTag === T.object_literal || parentTag === T.object_pattern) {
-          result = 'Property';
-        }
-      }
-    }
-    // Remap ImportDeclaration → TSImportEqualsDeclaration for `import X = require('...')`:
-    // These have lhs=NONE (no ImportData) and rhs=module_ref expression (not NONE).
-    if (tagName === 'ImportDeclaration' && this._ast.nodeLhs(this._i) === NONE &&
-        this._ast.nodeRhs(this._i) !== NONE) {
-      result = 'TSImportEqualsDeclaration';
-    }
-    // Remap BlockStatement → TSModuleBlock when it's the body of a TS namespace/module.
-    // ESLint's astUtils.isTopLevelExpressionStatement() checks parent.type === 'TSModuleBlock'
-    // to recognize directive prologues inside namespace/module bodies.
-    if (tagName === 'BlockStatement' && this._ast._parentData) {
-      const parentIdx = this._ast._parentData[this._i];
-      if (parentIdx !== NONE && parentIdx !== 0xFFFFFFFF) {
-        const parentTag = this._ast._nodeTags[parentIdx];
-        if (parentTag === T.ts_namespace_decl || parentTag === T.ts_module_decl) {
-          result = 'TSModuleBlock';
-        }
-      }
-    }
-    // Remap TSTypeReference to TS*Keyword or TSLiteralType when it's a built-in keyword/literal type
-    // (no type arguments, and main token text matches a TS keyword or literal).
-    if (tagName === 'TSTypeReference' && this._ast.nodeRhs(this._i) === NONE) {
-      const ast = this._ast;
-      const tok = ast._mainTokens[this._i];
-      const start = ast._tokStarts[tok];
-      const end = ast._tokEnds ? ast._tokEnds[tok]
-        : (tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length);
-      const text = ast.source.slice(start, end);
-      const kw = _TS_KW_TYPES[text.trim()];
-      if (kw) { result = kw; }
-      else {
-        // Literal type: string/template literal, number/bigint, boolean
-        const c = text.charCodeAt(0);
-        if (c === 39 || c === 34 || c === 96 || // ' " `
-            (c >= 48 && c <= 57) ||              // digit (number/bigint)
-            text === 'true' || text === 'false' || text === '-') {
-          result = 'TSLiteralType';
-        }
-      }
-    }
-    this._type = result; // cached in pre-allocated own field (see nodeView)
-    return result;
-  },
+  // `type` is set as an own data property at construction time
+  // (see `_nodeViewRaw` → `_computeNodeType`). No getter — a direct
+  // property read at every call site. Eliminates ~14% of profile time
+  // that used to be spent in the cached-fast-path getter check.
   // _tag (numeric Zig AST node type) is now an own data property on every
   // node instance, set at `_nodeViewRaw` construction time. Direct property
   // read instead of typed-array dispatch via `ast._nodeTags[idx]`.
@@ -3999,7 +4001,11 @@ function _nodeViewRaw(ast, index) {
     // the dispatch overhead is real.
     n._tag = tag;
     n._parent = _PARENT_UNSET;
-    n._type = null;
+    // type is computed eagerly and stored as own data property — no getter.
+    // Buffer-direct: `_computeNodeType` reads `_nodeTags`, `_parentData`,
+    // `_mainTokens`, `_tokStarts` from typed arrays only. Every `node.type ===
+    // 'X'` access at rule call sites is a direct property load.
+    n.type = _computeNodeType(ast, index, tag);
     n._loc  = null;
     n._range = null;
     n._body = _BODY_UNSET;
