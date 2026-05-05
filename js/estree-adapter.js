@@ -4055,9 +4055,55 @@ function _NodeView(ast, idx, tag, type) {
   this._arguments = undefined;
   this._decorators = undefined;
 }
-// Point `new _NodeView` instances at NodeProto so they reach the same
-// getters/methods as Object.create(NodeProto)-built nodes.
 _NodeView.prototype = NodeProto;
+
+// Per-override-set constructors. Each carries its own statically-set
+// prototype (NodeProto clone with the override's properties deleted), so
+// `new _NodeView_X` allocates with a fixed shape and no setPrototypeDirect
+// call. Bodies are intentionally identical to `_NodeView`'s — JSC's
+// allocation profile is per-constructor.
+function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
+  this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
+  this.type = type; this._loc = null; this._range = null;
+  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  this._cachedName = undefined; this._params = undefined;
+  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+}
+function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']
+  this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
+  this.type = type; this._loc = null; this._range = null;
+  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  this._cachedName = undefined; this._params = undefined;
+  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+}
+function _NodeView_N(ast, idx, tag, type) {    // ['name']
+  this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
+  this.type = type; this._loc = null; this._range = null;
+  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  this._cachedName = undefined; this._params = undefined;
+  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+}
+function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation']
+  this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
+  this.type = type; this._loc = null; this._range = null;
+  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  this._cachedName = undefined; this._params = undefined;
+  this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+}
+_NodeView_LRN.prototype = _getTypeProto(T.rest_element);
+_NodeView_LR.prototype  = _getTypeProto(T.identifier);
+_NodeView_N.prototype   = _getTypeProto(T.assignment_pattern);
+_NodeView_LNT.prototype = _getTypeProto(T.ts_parameter_property);
+
+// Tag → constructor table. Default cell = `_NodeView` (NodeProto). Special
+// tags route to their override-set ctor. Lookup is a single array read.
+const _NODE_CTOR = new Array(256);
+for (let i = 0; i < 256; i++) _NODE_CTOR[i] = _NodeView;
+for (const t of [T.rest_element, T.object_pattern, T.array_pattern,
+                 T.property, T.shorthand_property, T.computed_property]) _NODE_CTOR[t] = _NodeView_LRN;
+for (const t of [T.identifier, T.property_ident]) _NODE_CTOR[t] = _NodeView_LR;
+_NODE_CTOR[T.assignment_pattern] = _NodeView_N;
+_NODE_CTOR[T.ts_parameter_property] = _NodeView_LNT;
 
 /** Raw nodeView — returns per-type proto node, no ChainExpression wrapping. */
 function _nodeViewRaw(ast, index) {
@@ -4069,34 +4115,10 @@ function _nodeViewRaw(ast, index) {
   let n = cache[index];
   if (n === undefined) {
     const tag = ast._nodeTags[index];
-    const proto = _getTypeProto(tag);
-    // Fast path: most tags share NodeProto. `new _NodeView()` lets JSC
-    // allocate with a single statically-known structure — no
-    // setPrototypeDirect hop (which `__proto__: <expr>` in a literal pays).
-    // Slow path: 9 tags carry `_TAG_DELETE_PROPS` overrides → object
-    // literal with `__proto__:` to attach the per-tag clone.
-    if (proto === NodeProto) {
-      n = new _NodeView(ast, index, tag, _computeNodeType(ast, index, tag));
-    } else {
-      n = {
-        __proto__: proto,
-        _ast: ast,
-        _i: index,
-        _tag: tag,
-        _parent: _PARENT_UNSET,
-        type: _computeNodeType(ast, index, tag),
-        _loc: null,
-        _range: null,
-        _body: _BODY_UNSET,
-        _value: _VALUE_UNSET,
-        _init: _INIT_UNSET,
-        _cachedName: undefined,
-        _params: undefined,
-        _typeParameters: undefined,
-        _arguments: undefined,
-        _decorators: undefined,
-      };
-    }
+    // Single dispatch through tag→ctor table. Each ctor has a fixed
+    // prototype; no setPrototypeDirect on any path.
+    const Ctor = _NODE_CTOR[tag];
+    n = new Ctor(ast, index, tag, _computeNodeType(ast, index, tag));
     // Make regex/bigint own properties so Object.hasOwn() works (ESLint uses this)
     if (tag === T.regex_literal) {
       const _n = n;
