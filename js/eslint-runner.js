@@ -682,6 +682,63 @@ function _removeGlobal(name, set, variables) {
   }
 }
 
+// ── Variable prototype (lazy references) ─────────────────────────────
+//
+// Every Variable produced by `_buildVariable` shares this prototype.
+//   - `references` is a lazy getter — the underlying array of Reference
+//     objects is built only on first access. For multi-rule lints where
+//     some rules never touch `.references` (e.g. no-redeclare iterates
+//     getDeclaredVariables but rejects on `defs[0]` checks), we save the
+//     entire array's worth of allocation.
+//   - Synth refs (catch-param destructure init, let/const init, var-in-forof)
+//     are queued at construction in `_synthRefs` and merged into the
+//     materialized array on first access. Empty for most variables.
+//   - All Variables share one hidden class → property accesses like
+//     `v.scope`, `v.name`, `v.eslintUsed` become monomorphic.
+const _varProto = {
+  isRead()    { return this._isReadFlag; },
+  isWritten() { return this._isWrittenFlag; },
+  get references() {
+    let refs = this._refs;
+    if (refs === null) {
+      const ast = this._ast;
+      const sc = this._sc;
+      refs = [];
+      const refStart = this._refStart, refEnd = this._refEnd;
+      const symRefBySym = ast._symRefBySym;
+      for (let j = refStart; j < refEnd; j++) {
+        const refId = symRefBySym ? symRefBySym[j] : j;
+        refs.push(sc._buildReference(refId));
+      }
+      const synth = this._synthRefs;
+      if (synth !== null) {
+        for (let k = 0; k < synth.length; k++) {
+          const sr = synth[k];
+          if (sr.pos === -1) {
+            // Catch-param destructure: unshift to front.
+            refs.unshift(sr.ref);
+          } else {
+            // Source-order insertion: splice before first ref whose start > sr.pos.
+            let i = 0;
+            while (i < refs.length) {
+              const rId = refs[i].identifier;
+              const rStart = rId && rId.range ? rId.range[0]
+                : (rId ? ast._nodeStartPos(rId._i) : Infinity);
+              if (rStart > sr.pos) break;
+              i++;
+            }
+            refs.splice(i, 0, sr.ref);
+          }
+        }
+        this._synthRefs = null;
+      }
+      this._refs = refs;
+    }
+    return refs;
+  },
+  set references(v) { this._refs = v; },
+};
+
 // ── Scope prototypes (shared hidden class) ───────────────────────────
 //
 // Every Scope object created by `_buildScope` inherits from `_scopeProto`;
@@ -2561,16 +2618,22 @@ class SourceCode {
     const is_read   = (flags16 & 0x800) !== 0;
     const is_written= (flags16 & 0x400) !== 0;
 
-    // Build references for this symbol from Zig-side ref ranges (O(refs_for_sym)).
-    const references = [];
-    let hasWriteInitRef = false; // true if a write_init (kind=4) Zig ref exists → skip JS synthRef synthesis
+    // Reference range for this symbol (Zig-side CSR). The actual Reference
+    // objects are built lazily in `get references()` so rules that never read
+    // `.references` (e.g. no-redeclare's defs-only check) skip the work entirely.
     const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
     const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
-    for (let j = refStart; j < refEnd; j++) {
-      const refId = ast._symRefBySym ? ast._symRefBySym[j] : j;
-      if (ast._refKinds && ast._refKinds[refId] === 4) hasWriteInitRef = true;
-      references.push(this._buildReference(refId));
+    let hasWriteInitRef = false; // controls whether synth init-write ref is added
+    if (ast._refKinds && ast._symRefBySym) {
+      const refKinds = ast._refKinds, symRefBySym = ast._symRefBySym;
+      for (let j = refStart; j < refEnd; j++) {
+        if (refKinds[symRefBySym[j]] === 4) { hasWriteInitRef = true; break; }
+      }
     }
+    // Synth refs accumulate into this small array; null if none. Each entry:
+    //   { pos: -1, ref }  — unshift to front (catch-param destructure)
+    //   { pos: N,  ref }  — splice before first basic ref with start > N
+    let synthRefs = null;
 
     const declNodeIdx = ast._symDeclNodes[symId];
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
@@ -2668,7 +2731,7 @@ class SourceCode {
             isReadOnly: () => false,
             isReadWrite: () => false,
           };
-          references.unshift(initRef);
+          (synthRefs || (synthRefs = [])).push({ pos: -1, ref: initRef });
         }
       }
     }
@@ -2712,18 +2775,10 @@ class SourceCode {
               isReadOnly: () => false,
               isReadWrite: () => false,
             };
-            // Insert in source order: find first ref whose start > declNode.start.
-            // This handles class static blocks that can reference outer `let` variables
-            // declared later in the source — those reads must precede the init-write.
-            const declStart = ast._nodeStartPos(declNodeIdx);
-            let insertIdx = 0;
-            while (insertIdx < references.length) {
-              const rId = references[insertIdx].identifier;
-              const rStart = rId && rId.range ? rId.range[0] : (rId ? ast._nodeStartPos(rId._i) : Infinity);
-              if (rStart > declStart) break;
-              insertIdx++;
-            }
-            references.splice(insertIdx, 0, initRef);
+            // Source-order insertion is handled in the `references` getter when
+            // basic refs are first materialized (handles class-static-blocks that
+            // reference outer `let` declared later — reads must precede init-write).
+            (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
           }
           initAdded = true; // found declarator; stop regardless of whether init exists
         } else if (curTag === T.property || curTag === T.shorthand_property ||
@@ -2767,15 +2822,7 @@ class SourceCode {
               isReadOnly: () => false,
               isReadWrite: () => false,
             };
-            const declStart = ast._nodeStartPos(declNodeIdx);
-            let insertIdx = 0;
-            while (insertIdx < references.length) {
-              const rId = references[insertIdx].identifier;
-              const rStart = rId && rId.range ? rId.range[0] : (rId ? ast._nodeStartPos(rId._i) : Infinity);
-              if (rStart > declStart) break;
-              insertIdx++;
-            }
-            references.splice(insertIdx, 0, initRef);
+            (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
           } else {
             // Regular `var x = init` — synthesize init-write ref (like let/const).
             // Required so rules like block-scoped-var can detect cross-scope var usage.
@@ -2798,15 +2845,7 @@ class SourceCode {
                 isReadOnly: () => false,
                 isReadWrite: () => false,
               };
-              const declStart = ast._nodeStartPos(declNodeIdx);
-              let insertIdx = 0;
-              while (insertIdx < references.length) {
-                const rId = references[insertIdx].identifier;
-                const rStart = rId && rId.range ? rId.range[0] : (rId ? ast._nodeStartPos(rId._i) : Infinity);
-                if (rStart > declStart) break;
-                insertIdx++;
-              }
-              references.splice(insertIdx, 0, initRef);
+              (synthRefs || (synthRefs = [])).push({ pos: ast._nodeStartPos(declNodeIdx), ref: initRef });
             }
           }
           forInOfChecked = true;
@@ -2827,28 +2866,33 @@ class SourceCode {
     // Enums and namespaces ARE value variables (they compile to runtime objects).
     // Rules like no-shadow use these to implement ignoreTypeValueShadow logic.
     const isTypeOnlyDecl = defType === 'Type' || defType === 'TypeParameter';
-    const v = {
-      name,
-      defs,
-      references,
-      scope,
-      identifiers: identNode ? [identNode] : [],
-      eslintUsed: false,
-      // DO NOT set writeable for user-declared vars — writeable is only for ESLint's builtin globals.
-      // The no-implicit-globals rule checks: writeable===false (readonly global), writeable===true
-      // (writable global), writeable===undefined (user-declared variable).
-      isRead: () => is_read,
-      isWritten: () => is_written || is_let, // let vars are potentially writable
-      isValueVariable: !isTypeOnlyDecl,
-      isTypeVariable: isTypeOnlyDecl,
-    };
-    if (is_implicit_global) {
-      // Match the shape of JS-created builtin globals: writeable=false, eslintImplicitGlobalSetting='writable'.
-      // no-global-assign/no-native-reassign check variable.writeable===false to identify protected globals.
-      // no-shadow with builtinGlobals:true uses writeable!==undefined to detect implicit globals.
-      v.writeable = false;
-      v.eslintImplicitGlobalSetting = 'writable';
-    }
+    // Allocate via shared `_varProto` with lazy `references`. Field assignment
+    // order is fixed across every Variable so V8 sees one hidden class for the
+    // whole file; rule property accesses (`v.scope`, `v.eslintUsed`, …) become
+    // monomorphic. Optional fields (`writeable`, `eslintImplicitGlobalSetting`)
+    // are always set — to a value or to `undefined` — so the shape stays stable.
+    const v = Object.create(_varProto);
+    v.name = name;
+    v.defs = defs;
+    v.scope = scope;
+    v.identifiers = identNode ? [identNode] : [];
+    v.eslintUsed = false;
+    v._isReadFlag = is_read;
+    v._isWrittenFlag = is_written || is_let;
+    v.isValueVariable = !isTypeOnlyDecl;
+    v.isTypeVariable = isTypeOnlyDecl;
+    // writeable / eslintImplicitGlobalSetting: rule code reads these by
+    // identity (`writeable === false` / `!== undefined`), so they need to be
+    // present-as-undefined for non-implicit-globals to keep the shape stable.
+    v.writeable = is_implicit_global ? false : undefined;
+    v.eslintImplicitGlobalSetting = is_implicit_global ? 'writable' : undefined;
+    // Lazy refs backing fields.
+    v._ast = ast;
+    v._sc = this;
+    v._refStart = refStart;
+    v._refEnd = refEnd;
+    v._synthRefs = synthRefs;
+    v._refs = null;
     if (this._varCache) this._varCache[symId] = v;
     return v;
   }
