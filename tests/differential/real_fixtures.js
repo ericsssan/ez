@@ -178,16 +178,21 @@ function oxlintRules() {
   return set;
 }
 
-function runOxlint(filePath, ruleId) {
+function runOxlint(filePath, ruleId, opts = {}) {
   if (!oxlintRules().has(ruleId)) return { ms: 0, diags: [], skipped: "unknown-rule" };
   // -A all silences everything, then -D <rule> turns just the target on.
-  // --silent suppresses summary output; we want JSON diagnostics only.
+  // For TIMING-ONLY runs (default), we use `--silent` and discard stdout —
+  // otherwise oxlint spends most of its time serializing JSON for high-diag
+  // rules (no-var on typescript.js is 11.7s with JSON output, 0.1s without).
+  // Callers that need diagnostic content (`--diff` mode) pass `wantDiags:true`.
+  const wantDiags = !!opts.wantDiags;
+  const args = wantDiags
+    ? [OXLINT_BIN, "-A", "all", "-D", ruleId, "--format", "json", filePath]
+    : [OXLINT_BIN, "-A", "all", "-D", ruleId, "--silent", filePath];
   const t0 = performance.now();
-  const proc = Bun.spawnSync(
-    [OXLINT_BIN, "-A", "all", "-D", ruleId, "--format", "json", filePath],
-    { stdout: "pipe", stderr: "pipe" },
-  );
+  const proc = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
   const ms = performance.now() - t0;
+  if (!wantDiags) return { ms, diags: [] }; // diag list intentionally empty
   const lines = [];
   try {
     const out = Buffer.from(proc.stdout).toString("utf8");
@@ -281,21 +286,30 @@ if (!_isMain) return;
       let ezDiags = [], esDiags = [], oxDiags = [];
       let esSkipped = null, oxSkipped = null;
 
+      // One slow oxlint run with JSON output for the diag agreement check
+      // (rules with many diagnostics like no-var spend most of subprocess
+      // time serializing JSON; we don't want that to skew timing).
+      const oxDiagsRun = runOxlint(filePath, ruleId, { wantDiags: true });
+      if (oxDiagsRun.skipped) oxSkipped = oxDiagsRun.skipped;
+      oxDiags = oxDiagsRun.diags;
+
       // Warmup (timings discarded)
       for (let i = 0; i < WARMUP; i++) {
         await runEz(src, ruleId, filename);
         runEslint(src, ruleId, filename);
-        runOxlint(filePath, ruleId);
+        if (!oxSkipped) runOxlint(filePath, ruleId); // --silent timing
       }
-      // Measured iters
+      // Measured iters — timing only, no JSON serialization in the hot loop.
       for (let i = 0; i < ITERS; i++) {
         const ez = await runEz(src, ruleId, filename);
         const es = runEslint(src, ruleId, filename);
-        const ox = runOxlint(filePath, ruleId);
-        ezTimes.push(ez.ms); esTimes.push(es.ms); oxTimes.push(ox.ms);
-        ezDiags = ez.diags; esDiags = es.diags; oxDiags = ox.diags;
+        ezTimes.push(ez.ms); esTimes.push(es.ms);
+        ezDiags = ez.diags; esDiags = es.diags;
         if (es.skipped) esSkipped = es.skipped;
-        if (ox.skipped) oxSkipped = ox.skipped;
+        if (!oxSkipped) {
+          const ox = runOxlint(filePath, ruleId); // --silent fast path
+          oxTimes.push(ox.ms);
+        }
       }
 
       const ezMs = median(ezTimes);
