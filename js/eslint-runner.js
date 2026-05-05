@@ -56,6 +56,64 @@ function esquery() {
 }
 const _selectorParseCache = new Map();
 
+// ── FFI binding (Bun) for SourceCode hot-path token lookups. ────────────
+//
+// Delegates to js/ffi-source-code.js which owns the dylib binding for all
+// token primitives. Returns { ptr, sym } with the full token symbol set.
+// Disable explicitly with EZ_DISABLE_FFI=1.
+let _ffiAttempted = false;
+let _ffi = null;
+function _getFfi() {
+  if (_ffiAttempted) return _ffi;
+  _ffiAttempted = true;
+  if (process.env.EZ_DISABLE_FFI === "1") return null;
+  let ffiSc;
+  try { ffiSc = require("./ffi-source-code.js"); } catch { return null; }
+  if (!ffiSc.isAvailable()) return null;
+  const b = ffiSc._internal.tryLoad();
+  _ffi = { ptr: b.ptr, sym: b.sym };
+  return _ffi;
+}
+
+// Per-AstView pointer cache — pinning a Uint8Array view of the buffer once and
+// re-using its FFI-stable pointer avoids re-pinning on every method call. Either of
+// the FFI bindings (token helpers OR selector dispatcher) can supply the bun:ffi
+// `ptr` function — we just need ONE of them loaded.
+const _ffiPtrCache = new WeakMap();
+function _ffiBufPtr(ast) {
+  if (!ast || !ast.buffer) return 0;
+  let p = _ffiPtrCache.get(ast);
+  if (p !== undefined) return p;
+  const ffi = _getFfi() || _getFfiSelector();
+  if (!ffi) { _ffiPtrCache.set(ast, 0); return 0; }
+  const view = new Uint8Array(ast.buffer);
+  // Pin the view by storing it alongside the pointer so it isn't GC'd.
+  p = { ptr: ffi.ptr(view), _view: view };
+  _ffiPtrCache.set(ast, p);
+  return p;
+}
+
+// ── FFI selector dispatcher ──────────────────────────────────────────────
+//
+// Delegates entirely to js/ffi-dispatch.js — that module owns the dylib binding,
+// events buffer, overflow handling, and selector plan compiler. The runner holds
+// no FFI binding code of its own for dispatch.
+
+let _ffiSelAttempted = false;
+let _ffiSel = null;
+function _getFfiSelector() {
+  if (_ffiSelAttempted) return _ffiSel;
+  _ffiSelAttempted = true;
+  if (process.env.EZ_DISABLE_FFI === "1" || process.env.EZ_DISABLE_FFI_SEL === "1") return null;
+  let ffiDisp;
+  try { ffiDisp = require("./ffi-dispatch.js"); } catch { return null; }
+  if (!ffiDisp.isAvailable()) return null;
+  const b = ffiDisp._internal.tryLoad();
+  // b._ptr is bun:ffi ptr() — used to pin the plan buffer for FFI calls.
+  _ffiSel = { ptr: b._ptr, dispatch: ffiDisp.dispatch, compiler: ffiDisp };
+  return _ffiSel;
+}
+
 // ── defaultOptions deep merge ───────────────────────────────────
 // Mirrors ESLint's getRuleOptions / deepMergeArrays so that rules with
 // meta.defaultOptions get the correct merged options when user options
@@ -132,7 +190,9 @@ function _normalizeEcmaVersion(v) {
 
 // Minimum ecmaVersion (year) for globals that were added after ES5.
 // Globals not in this map were available since ES3/5 (pre-ES2015).
-const _GLOBAL_MIN_VERSION = {
+// Null prototype avoids Object.prototype method names (hasOwnProperty, toString, etc.)
+// shadowing absent entries — those names are in _BUILTIN_GLOBALS with no version restriction.
+const _GLOBAL_MIN_VERSION = Object.assign(Object.create(null), {
   // ES2015 (ES6)
   Symbol: 2015, Promise: 2015, Proxy: 2015, Reflect: 2015, Map: 2015, Set: 2015,
   WeakMap: 2015, WeakSet: 2015, ArrayBuffer: 2015, DataView: 2015, Intl: 2015,
@@ -148,7 +208,7 @@ const _GLOBAL_MIN_VERSION = {
   // ES2025
   Iterator: 2025, AsyncIterator: 2025, Float16Array: 2025,
   AsyncDisposableStack: 2025, DisposableStack: 2025, SuppressedError: 2025,
-};
+});
 
 // ── Reference prototype ─────────────────────────────────────────
 // Shared prototype for all reference objects — eliminates 5 closure allocations
@@ -209,6 +269,20 @@ const _ENV_GLOBALS = [
 
 const _BUILTIN_GLOBALS_SET = new Set(_BUILTIN_GLOBALS);
 
+// Per-ecmaVersion filtered builtin lists — computed once, reused across all files.
+const _filteredBuiltinsCache = new Map(); // ecmaVersion → string[]
+function _filteredBuiltins(ecmaVersion) {
+  let list = _filteredBuiltinsCache.get(ecmaVersion);
+  if (list) return list;
+  list = [];
+  for (const name of _BUILTIN_GLOBALS) {
+    const minVer = _GLOBAL_MIN_VERSION[name];
+    if (minVer === undefined || ecmaVersion >= minVer) list.push(name);
+  }
+  _filteredBuiltinsCache.set(ecmaVersion, list);
+  return list;
+}
+
 /**
  * Compute the list of global names to pre-declare in Zig's semantic analysis.
  * Pass the returned array as `options.globals` to `parseSource()`.
@@ -221,12 +295,7 @@ const _BUILTIN_GLOBALS_SET = new Set(_BUILTIN_GLOBALS);
  */
 function computeGlobals(ecmaVersion, envEnabled) {
   const ev = _normalizeEcmaVersion(ecmaVersion);
-  const globals = [];
-  for (const name of _BUILTIN_GLOBALS) {
-    const minVer = _GLOBAL_MIN_VERSION[name];
-    if (minVer !== undefined && ev < minVer) continue;
-    globals.push(name);
-  }
+  const globals = _filteredBuiltins(ev).slice();
   if (envEnabled) {
     for (const name of _ENV_GLOBALS) globals.push(name);
   }
@@ -318,6 +387,78 @@ const _FN_TAGS = new Set([
   T.ts_declare_function,
 ]);
 const _CLASS_TAG_SET = new Set([T.class_decl, T.class_expr]);
+
+// ── Hot ast-utils helpers (buffer-direct) ────────────────────────────
+//
+// ESLint rules import `astUtils.isFunction(node)` etc. The vendored impls
+// read `node.type` (a getter that walks back to the buffer + does a regex test)
+// and `node.parent` (another getter that materializes a wrapper). On a large
+// file every `isInLoop(node)` walks parent chain — each hop a wrapper alloc.
+//
+// We patch the hot helpers in-place to read `_nodeTags`/`_parentData` directly,
+// skipping wrapper materialization entirely. `astUtils` is namespace-imported
+// by every rule (`const astUtils = require("./utils/ast-utils")`) so mutating
+// the exports object propagates to all callers. Done at module load before any
+// rule's create() runs.
+const _AU_FN_TAG_BITS = new Uint8Array(256);
+for (const t of [T.fn_decl, T.async_fn_decl, T.generator_fn_decl, T.async_generator_fn_decl,
+                 T.fn_expr, T.async_fn_expr, T.generator_fn_expr, T.async_generator_fn_expr,
+                 T.arrow_fn, T.async_arrow_fn]) {
+  if (t !== undefined) _AU_FN_TAG_BITS[t] = 1;
+}
+const _AU_LOOP_TAG_BITS = new Uint8Array(256);
+for (const t of [T.while_stmt, T.do_while_stmt, T.for_stmt, T.for_in_stmt, T.for_of_stmt, T.for_await_of_stmt]) {
+  if (t !== undefined) _AU_LOOP_TAG_BITS[t] = 1;
+}
+
+(function patchAstUtils() {
+  let astUtils;
+  try { astUtils = require("./node_modules/eslint/lib/rules/utils/ast-utils"); }
+  catch { return; } // ESLint not present — nothing to patch
+
+  const _origIsFunction = astUtils.isFunction;
+  const _origIsLoop     = astUtils.isLoop;
+  const _origIsInLoop   = astUtils.isInLoop;
+
+  astUtils.isFunction = function isFunction(node) {
+    if (!node) return false;
+    const i = node._i, ast = node._ast;
+    if (i === undefined || !ast || !ast._nodeTags || i >= ast.nodeCount) {
+      return _origIsFunction(node);
+    }
+    return _AU_FN_TAG_BITS[ast._nodeTags[i]] === 1;
+  };
+
+  astUtils.isLoop = function isLoop(node) {
+    if (!node) return false;
+    const i = node._i, ast = node._ast;
+    if (i === undefined || !ast || !ast._nodeTags || i >= ast.nodeCount) {
+      return _origIsLoop(node);
+    }
+    return _AU_LOOP_TAG_BITS[ast._nodeTags[i]] === 1;
+  };
+
+  // isInLoop walks node.parent until a function or null. Buffer-direct version
+  // walks _parentData with raw indices — never materializes a wrapper.
+  astUtils.isInLoop = function isInLoop(node) {
+    if (!node) return false;
+    const ast = node._ast;
+    let i = node._i;
+    if (i === undefined || !ast || !ast._nodeTags || !ast._parentData || i >= ast.nodeCount) {
+      return _origIsInLoop(node);
+    }
+    const tags = ast._nodeTags, parents = ast._parentData;
+    const NONE32 = 0xFFFFFFFF;
+    while (i !== NONE32 && i !== undefined && i < ast.nodeCount) {
+      const t = tags[i];
+      if (_AU_FN_TAG_BITS[t] === 1) return false;
+      if (_AU_LOOP_TAG_BITS[t] === 1) return true;
+      i = parents[i];
+    }
+    return false;
+  };
+})();
+
 
 /**
  * Walk up from declNode to find the correct ESLint def.node for a given def type.
@@ -1045,6 +1186,47 @@ class SourceCode {
 
   getTokenBefore(node, filterOrOpts) {
     if (!node) return null;
+    // FFI fast path: default options (no filter, no skip, no includeComments) covers
+    // ~95% of getTokenBefore calls in practice. Returns a token *index*; existing
+    // _makeToken builds the wrapper (preserves cache + shadowed-token handling).
+    if (!filterOrOpts) {
+      const ffi = _getFfi();
+      if (ffi) {
+        const ast = this._ast;
+        const mainTok = node.mainToken;
+        let anchorTok = -1;
+        if (mainTok !== undefined && mainTok !== null) {
+          // If mainToken's start matches node start, prev token is mainTok-1 (no FFI needed).
+          // Otherwise binary search via FFI for the position-based anchor — this also covers
+          // the case where mainToken is BEFORE node.range[0] (e.g. SequenceExpression `(a,b)`
+          // has mainToken `(` at 0 but range starts at 1, so the actual prev-token of the
+          // SequenceExpression is the `(` itself, not mainTok-1).
+          if (!node.range || ast._tokStarts[mainTok] === node.range[0]) {
+            if (mainTok === 0) return null;
+            anchorTok = mainTok - 1;
+          } else {
+            const pinned = _ffiBufPtr(ast);
+            if (pinned) {
+              const idx = ffi.sym.ez_ffi_token_idx_at_or_before(pinned.ptr, node.range[0] - 1);
+              anchorTok = (idx !== 0xFFFFFFFF && ast._tokStarts[idx] < node.range[0]) ? idx : -1;
+            }
+          }
+        } else if (node.range) {
+          const pinned = _ffiBufPtr(ast);
+          if (pinned) {
+            const idx = ffi.sym.ez_ffi_token_idx_at_or_before(pinned.ptr, node.range[0] - 1);
+            anchorTok = (idx !== 0xFFFFFFFF && ast._tokStarts[idx] < node.range[0]) ? idx : -1;
+          }
+        }
+        if (anchorTok < 0) return null;
+        // Walk backward past shadowed tokens (existing semantics).
+        for (let i = anchorTok; i >= 0; i--) {
+          const tok = this._makeToken(i);
+          if (tok !== null) return tok;
+        }
+        return null;
+      }
+    }
     const { fn, skip, ic } = this._normalizeFilter(filterOrOpts);
     // includeComments path: binary search on merged token+comment array
     if (ic) {
@@ -1121,6 +1303,25 @@ class SourceCode {
   getTokenAfter(node, filterOrOpts) {
     if (!node) return null;
     const ast = this._ast;
+    // FFI fast path — symmetric to getTokenBefore.
+    if (!filterOrOpts) {
+      const ffi = _getFfi();
+      if (ffi && node.range) {
+        const pinned = _ffiBufPtr(ast);
+        if (pinned) {
+          const idx = ffi.sym.ez_ffi_token_idx_at_or_after(pinned.ptr, node.range[1]);
+          if (idx !== 0xFFFFFFFF) {
+            // Skip EOF (tag 131) and shadowed tokens forward.
+            for (let i = idx; i < ast.tokenCount; i++) {
+              if (ast._tokTags[i] === 131) continue;
+              const tok = this._makeToken(i);
+              if (tok !== null) return tok;
+            }
+          }
+          return null;
+        }
+      }
+    }
     const { fn, skip, ic } = this._normalizeFilter(filterOrOpts);
     // includeComments path: binary search on merged token+comment array
     if (ic) {
@@ -1446,11 +1647,11 @@ class SourceCode {
           return _setProxy;
         }
         if (prop === 'type') return 'global';
-        // Wrapper presents itself as global scope — its `through` should be the
-        // truly-unresolved subset (root globalScope.through), not moduleScope.through
-        // which retains refs that the root scope eventually resolved (e.g. /*global*/
-        // declarations live on globalScope.set, not moduleScope.set).
-        if (prop === 'through') return globalScope.through;
+        // Return scope 1's own through — delegates to globalScope.through caused a cycle
+        // because globalScope's _buildScopeRefsAndThrough accesses wrapper.through (its child).
+        // Refs resolved by globalScope are marked via ref.resolved, so callers can still
+        // distinguish resolved from unresolved regardless of what through contains.
+        if (prop === 'through') return target.through;
         if (prop === 'variables') {
           if (!_mergedVars) {
             // Merge: module scope variables first, then globals not already present
@@ -1587,6 +1788,7 @@ class SourceCode {
     // Lazy state: computed once on first access, then reused.
     const sc = this;
     let _vars = null, _set = null, _refs = null, _through = null, _children = null;
+    let _refsBuilding = false; // re-entrancy guard for ensureRefsThrough
     let _fenVarRef = null; // reference to the FEN variable (for ensureRefsThrough access)
 
     // Named FunctionExpression: create a virtual function-expression-name scope that sits
@@ -1702,15 +1904,11 @@ class SourceCode {
 
     function ensureRefsThrough() {
       if (_refs !== null) return;
+      if (_refsBuilding) { _refs = []; _through = []; return; } // re-entrant: scope cycle, return empty
+      _refsBuilding = true;
       const cs = scope.childScopes; // trigger lazy children first (needed for through bubbling)
       const rt = sc._buildScopeRefsAndThrough(scopeId, scope, cs);
       _refs = rt[0]; _through = rt[1];
-      // Eagerly resolve through-refs upward: trigger parent's through getter so ref.resolved
-      // is populated before callers access scope.references directly
-      // (e.g. consistent-function-scoping checks ref.resolved on inner-scope references).
-      if (_through.length > 0 && upper) {
-        void upper.through; // triggers ensureRefsThrough on parent, mutates ref.resolved
-      }
       // Populate FEN variable's references: for named FunctionExpressions, the function
       // name (e.g. `fn` in `function fn(x){}`) resolves to the FEN variable. But since
       // refs are pre-resolved in Zig, they bypass the normal variable.references push.
@@ -1855,21 +2053,24 @@ class SourceCode {
     // In module mode the root scope has type='module' for local declarations, but globals
     // (defs=[]) should appear to be in a 'global' scope so that rules like no-useless-assignment
     // that check variable.scope.type === "global" can skip them correctly.
-    const globalScopeRef = (kind === 0 && this._sourceType === 'module')
+    // isModuleRootScope: module source type + kind=1 (module scope) + no parent → the only
+    // scope in module files. ReferenceTracker needs builtins here to find Math.pow etc.
+    const isModuleRootScope = kind === 1 && this._sourceType === 'module' && (ast._scopeParents ? ast._scopeParents[scopeId] === 0xFFFFFFFF : false);
+    const globalScopeRef = ((kind === 0 && this._sourceType === 'module') || isModuleRootScope)
       ? new Proxy(scope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } })
       : scope;
 
     // Global scope: add built-in globals so no-undef doesn't flag NaN, undefined, etc.
-    if (kind === 0) {
+    // Also applies to module root scope (kind=1, no parent) in module mode since Zig creates
+    // no separate global scope there — ReferenceTracker needs builtins in scope.set.
+    if (kind === 0 || isModuleRootScope) {
       const ecmaVersion = this._ecmaVersion;
       // In script mode (no globalReturn), a code-declared var in scope 0 is effectively
       // in the global scope, so it can "redeclare" a builtin. Mark it so no-redeclare
       // with builtinGlobals:true can detect it. Skip in module/globalReturn mode — there
       // code declarations are in a different scope from config globals.
       const markBuiltins = !this._globalReturn && this._sourceType !== 'module';
-      for (const name of _BUILTIN_GLOBALS) {
-        const minVer = _GLOBAL_MIN_VERSION[name];
-        if (minVer !== undefined && ecmaVersion < minVer) continue;
+      for (const name of _filteredBuiltins(ecmaVersion)) {
         if (!set.has(name)) {
           const g = _mkGlobalVar(name, globalScopeRef, false, 'writable');
           set.set(name, g);
@@ -1896,6 +2097,7 @@ class SourceCode {
             _removeGlobal(name, set, variables);
             continue;
           }
+          this._hadCustomGlobals = true;
           // false = legacy 'readonly', true = legacy 'writable'
           const isWritable = value === 'writable' || value === true;
           if (set.has(name)) {
@@ -1930,7 +2132,7 @@ class SourceCode {
     // Process /*global X, Y */ and /*globals X: writable */ directive comments.
     // The Zig AST buffer may not include comment data, so we scan the source text
     // directly for /* globals ... */ block comments.
-    if (kind === 0) {
+    if (kind === 0 || isModuleRootScope) {
       const src = ast.source;
       const blockCommentRe = /\/\*([\s\S]*?)\*\//g;
       let m;
@@ -1952,6 +2154,7 @@ class SourceCode {
             continue;
           }
           const isWritable = valueStr === 'writable' || valueStr === 'true' || valueStr === 'writeable';
+          this._hadCustomGlobals = true;
           if (set.has(name)) {
             const v = set.get(name);
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
@@ -2151,9 +2354,9 @@ class SourceCode {
         if (refSymId !== NONE32) continue; // resolved — covered by Zig CSR
         through.push(this._buildReference(refId));
       }
-      // Bubble unresolved from children; also propagate resolved refs NOT declared
-      // in this scope so they keep surfacing upward (required for no-loop-func and
-      // similar rules that check scope.through at higher scopes).
+      // Bubble unresolved refs from children. With hasZigThrough, the Zig CSR already
+      // puts each resolved ref into every ancestor scope's through array directly, so
+      // we only bubble UNRESOLVED refs to avoid duplicates with the Zig CSR entries.
       for (const child of childScopes) {
         for (const ref of child.through) {
           if (ref.identifier?.type === 'PrivateIdentifier') { through.push(ref); continue; }
@@ -2162,7 +2365,9 @@ class SourceCode {
           if (variable) {
             if (ref.resolved === null) variable.references.push(ref);
             ref.resolved = variable;
-          } else {
+          } else if (ref.resolved === null) {
+            // Only bubble unresolved refs; resolved refs are already in the Zig CSR
+            // for this scope and will be added via the Zig through path above.
             through.push(ref);
           }
         }
@@ -2228,22 +2433,8 @@ class SourceCode {
   _precomputeScopes() {
     const ast = this._ast;
     if (!ast._scopeKinds) return;
-    // Build all scopes bottom-up (children before parents are already handled
-    // by the recursive _buildScope + cache). Just trigger the root scope.
     const globalScope = this._buildScope(0);
     this._globalScope = globalScope;
-
-    // Post-build: resolve unresolved references against global scope variables.
-    // Zig's semantic analyzer doesn't know about JS builtin globals (undefined,
-    // NaN, Boolean, etc.), so references to them have resolved=null. Walk all
-    // scopes and resolve them now that global variables are populated.
-    // Trigger the full through-bubbling chain: global → children → grandchildren.
-    // Accessing globalScope.through forces ensureRefsThrough(), which calls
-    // _buildScopeRefsAndThrough(0, ...) and resolves all child scope through-arrays
-    // against global builtins (Math, console, undefined, etc.) that Zig doesn't know about.
-    // Without this, scope 1's .through retains unresolved builtin refs since nothing
-    // triggers global scope's lazy getter.
-    void globalScope.through; // eslint-disable-line no-void
 
     // In script mode getScope(Program) wraps scope 1 with globals for ReferenceTracker.
     // Eagerly create that wrapper now and update reference.from to point to it, so
@@ -2261,51 +2452,18 @@ class SourceCode {
           if (this._scopeCache) this._scopeCache[1] = wrapper;
           // Replace in thin-scope cache too, so _buildThinScope(1) returns wrapper.
           if (this._thinScopeCache) this._thinScopeCache[1] = wrapper;
-          // Update all top-level references' from pointer to the wrapper.
-          // This covers refs in scope.references (Zig-generated refs built during
-          // `void globalScope.through` above).
-          for (const ref of moduleScope.references) {
-            if (ref.from === moduleScope) ref.from = wrapper;
-          }
-          // Also update variable.scope and all variable.references[].from so that
-          // identity checks like `variable.scope !== reference.from` (used in
-          // no-use-before-define's isInInitializer) work correctly.
-          // Full variables (from _buildVariable) and thin variables (from _buildThinVariable)
-          // were both built eagerly during `void globalScope.through` above, before the
-          // wrapper was created, so they point to moduleScope instead of wrapper.
-          for (const v of moduleScope.variables) {
-            if (v.scope === moduleScope) v.scope = wrapper;
-            for (const ref of v.references) {
-              if (ref.from === moduleScope) ref.from = wrapper;
-            }
-          }
-          // Thin variables (used as ref.resolved) also need scope updated.
-          if (this._thinVarCache) {
-            const ast2 = this._ast;
-            const symCount = ast2._semSymbolCount || 0;
-            for (let si = 0; si < symCount; si++) {
-              const tv = this._thinVarCache[si];
-              if (tv && tv.scope === moduleScope) tv.scope = wrapper;
-            }
-          }
-          // Update scope.upper for child scopes that point to moduleScope.
-          // Required so rules like no-shadow can do getOuterScope(innerScope) === outerVar.scope
-          // (both should be wrapper, not a mix of scope1 and wrapper).
-          const scopeCount = this._ast._semScopeCount || 0;
-          if (this._thinScopeCache) {
-            for (let si = 0; si < scopeCount; si++) {
-              const ts = this._thinScopeCache[si];
-              if (ts && ts.upper === moduleScope) ts.upper = wrapper;
-            }
-          }
-          if (this._scopeCache) {
-            for (let si = 0; si < scopeCount; si++) {
-              const fs = this._scopeCache[si];
-              if (fs && fs !== wrapper && fs.upper === moduleScope) fs.upper = wrapper;
-            }
-          }
+          // All lazily-built refs/vars for scope 1 will use _buildThinScope(1) → wrapper,
+          // so ref.from and variable.scope are correct without eager loops here.
         }
       }
+    }
+
+    // Module mode: eager through only when custom globals exist (config or /*global*/ comments).
+    // Without them, building through cascades 441K+ refs — lazy is correct and rules that need
+    // scope.through will trigger it on first access. With custom globals, eager ensures
+    // variable.references bubble-up before rules inspect them.
+    if (this._sourceType === 'module' && this._hadCustomGlobals) {
+      void globalScope.through;
     }
 
     // Populate scope.implicit.variables from global scope's write-only through refs.
@@ -2452,8 +2610,21 @@ class SourceCode {
     // variable.scope is used primarily for variableScope chain traversal.
     // Cached via _thinScopeCache so same scopeId always returns the same object,
     // required for prefer-const's `writer.from === variable.scope` identity check.
-    const scope = (symScopeId !== undefined && symScopeId !== NONE32)
-      ? this._buildThinScope(symScopeId) : this._stubScope();
+    let scope;
+    if (symScopeId !== undefined && symScopeId !== NONE32) {
+      const thinScope = this._buildThinScope(symScopeId);
+      // Implicit globals (kind=10) must have scope.type='global' regardless of the Zig scope kind.
+      // In single-scope module files, scope 0 has kind=1 ('module'), but Zig declares implicit
+      // globals there — they must appear in a 'global'-typed scope to satisfy rules like
+      // prefer-object-has-own that check variable.scope.type === 'global'.
+      const isImplicitGlobal = ast._symKinds ? (ast._symKinds[symId] === 10) : ((flags16 & 0x2000) !== 0);
+      const _cg2 = this._configGlobals;
+      scope = (isImplicitGlobal && thinScope.type !== 'global' && !(_cg2 && _cg2[name] === 'off'))
+        ? new Proxy(thinScope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } })
+        : thinScope;
+    } else {
+      scope = this._stubScope();
+    }
 
     // Synthesize an init-write reference for let/const variables that have an initializer.
     // The Zig semantic analyzer only tracks explicit write references (assignments),
@@ -2747,8 +2918,17 @@ class SourceCode {
     const is_read   = (flags16 & 0x800) !== 0;
     const is_written= (flags16 & 0x400) !== 0;
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
-    const scope = (symScopeId !== undefined && symScopeId !== NONE32)
+    const symKind10 = ast._symKinds ? ast._symKinds[symId] : 0;
+    let scope = (symScopeId !== undefined && symScopeId !== NONE32)
       ? this._buildThinScope(symScopeId) : this._stubScope();
+    // implicit_global (kind=10) symbols must appear in a 'global'-typed scope.
+    // In single-scope module files, scope 0 has kind=1 ('module') so we need the override.
+    // Skip if the global is explicitly turned off via configGlobals — then it's unresolved
+    // and isReferenceToGlobalVariable must return false (scope.type stays 'module').
+    const _cg = this._configGlobals;
+    if (symKind10 === 10 && scope.type !== 'global' && !(_cg && _cg[name] === 'off')) {
+      scope = new Proxy(scope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } });
+    }
     const defType = ast._symKinds
       ? (_DEF_TYPE_FROM_KIND[ast._symKinds[symId]] ?? 'Variable')
       : (is_param ? 'Parameter' : (flags16 & 0x40) ? 'CatchClause' : (flags16 & 0x08) ? 'FunctionName' : (flags16 & 0x10) ? 'ClassName' : is_import ? 'ImportBinding' : 'Variable');
@@ -4004,15 +4184,20 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         const merged = _mergeRuleOptions(plugins[pi].meta?.defaultOptions, configured);
         perRuleCtxs[pi].options = _applySchemaDefaults(plugins[pi].meta?.schema, merged);
       }
-      perRuleCtxs[pi]._onListeners = null; // reset before create() so context.on() accumulates
+      // Wrap perRuleCtxs[pi] in a fresh object for each file so that module-level WeakMaps
+      // keyed on `context` (e.g. react plugin's memoized getPragma in componentUtil.js) always
+      // miss and recompute from the current file's sourceCode rather than returning stale values
+      // cached from the first file's context object identity.
+      const fileCtx = Object.create(perRuleCtxs[pi]);
+      fileCtx._onListeners = null; // own property — context.on() appends here, not to perRuleCtxs[pi]
       let visitors = null;
       try {
         if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(pluginRuleIds[pi]);
-        visitors = plugins[pi].create(perRuleCtxs[pi]);
+        visitors = plugins[pi].create(fileCtx);
       } catch { /* empty-recipe match */ }
       if (!visitors || typeof visitors !== 'object') visitors = {};
       // Merge context.on() listeners into visitors (used by unicorn / ESLint 9 rules).
-      if (perRuleCtxs[pi]._onListeners) Object.assign(visitors, perRuleCtxs[pi]._onListeners);
+      if (fileCtx._onListeners) Object.assign(visitors, fileCtx._onListeners);
       if (Object.keys(visitors).length === 0) {
         if (recipe.length !== 0) { mismatch = true; break; }
         continue;
@@ -4043,6 +4228,18 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     if (mismatch) {
       _cachedVMPlugins = null;
       _cachedVM = null;
+      // The fast path's create() may have accessed sourceCode.ast, populating per-program
+      // WeakMaps in third-party plugins (e.g. allVisitorBuilder in eslint-plugin-es-x's
+      // define-regexp-handler.js). Clearing _astObj alone is not enough: nodeView(ast, 0)
+      // caches the root node object in ast._nodeCache[0], so the cold rebuild's
+      // sourceCode.ast getter would return the SAME programNode identity — causing DRH
+      // lookups to hit the stale fast-path entry and return {} for all DRH rules.
+      // Clear the root cache entry to force a fresh programNode object in the cold rebuild.
+      if (context.sourceCode) {
+        const nc = context.sourceCode._ast?._nodeCache;
+        if (nc) nc[0] = undefined;
+        context.sourceCode._astObj = null;
+      }
       return buildVisitorMap(plugins, context, ruleConfig);
     }
     _cachedVM.lastRuleConfig = ruleConfig;
@@ -4503,7 +4700,7 @@ function _invokeFused(desc, node, nodeIdx, context) {
  * for one node type — no exit handlers, no special handlers (codepath,
  * classBody, selectors), and no entries in the visitorMap for other keys.
  */
-function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers, tagFlags) {
+function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers, tagFlags, selectorHandlers) {
   const batchable = new Map(); // typeName → handler[]
 
   // Build a set of all ruleIds that have ANY non-tag-enter entry in the visitorMap.
@@ -4516,6 +4713,14 @@ function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers
     const items = Array.isArray(handlers) ? handlers : (handlers.items || []);
     for (const h of items) {
       rulesWithNonTagEntries.add(h.ruleId);
+    }
+  }
+  // Rules with CSS selectors (e.g. ':matches(FunctionExpression, FunctionDeclaration)') have
+  // DFS-order dependencies and must NOT be batch-scanned out of the DFS. The selector
+  // handlers live in selectorHandlers, not in visitorMap, so we must add their ruleIds here.
+  if (selectorHandlers) {
+    for (let si = 0; si < selectorHandlers.length; si++) {
+      rulesWithNonTagEntries.add(selectorHandlers[si].ruleId);
     }
   }
 
@@ -4937,6 +5142,12 @@ function _compileSelectorFastMatcher(parsedSelector) {
 
     // A > B (right identifier)
     if (right.type === 'identifier') {
+      // Include node type check: per-tag dispatch guarantees it (harmless), but universal
+      // dispatch (when B's type is not in ez's tag system) requires it to avoid FPs.
+      if (right.value !== '*') {
+        const rightType = right.value;
+        return { fn: (n, a) => n.type === rightType && checkParent(a), complete: leftComplete, requiredParentType: leftType, needsAncestors: true };
+      }
       return { fn: (_n, a) => checkParent(a), complete: leftComplete, requiredParentType: leftType, needsAncestors: true };
     }
     // A > .field (right is a field selector)
@@ -5147,6 +5358,7 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
     const rawTypes = Array.isArray(rootType) ? rootType : [rootType];
     const types = rawTypes.length > 1 ? [...new Set(rawTypes)] : rawTypes;
     let isJSXOpeningElementSel = false;
+    let addedToAnyTag = false;
     for (const rt of types) {
       // ez uses variant tags: populate ALL tag indices for this type name.
       const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;
@@ -5157,9 +5369,13 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
         const byTag = sh.isExit ? selectorsByTagExit : selectorsByTagEnter;
         if (!byTag[i]) byTag[i] = [];
         byTag[i].push(sh);
+        addedToAnyTag = true;
       }
       if (rt === 'JSXOpeningElement') isJSXOpeningElementSel = true;
     }
+    // Type not in ez's tag system (e.g. PrivateIdentifier): fall back to universal dispatch
+    // so esquery can still match via the adapter's .type getter.
+    if (!addedToAnyTag) (sh.isExit ? universalExit : universalEnter).push(sh);
     // JSX: self-closing elements (<Foo/>) serve as their own JSXOpeningElement.
     // Add JSXOpeningElement selectors to jsx_self_closing dispatch so rules like
     // 'JSXOpeningElement[name.name="iframe"]' fire on self-closing elements.
@@ -5173,8 +5389,123 @@ function _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) 
       if (!byTag[scTag].includes(sh)) byTag[scTag].push(sh);
     }
   }
+  // ── FFI selector plan: compile universal handlers to a Zig spec table ────
+  //
+  // Universal handlers (no resolvable root tag — must check every node) are the most
+  // expensive selectors: they go through esquery for every node × handler. Compiling
+  // them to Zig specs and dispatching once per file via FFI is the biggest single win
+  // identified in the v2 dispatch profile (~25% of total time spent in esquery).
+  //
+  // Only universal handlers are migrated for the initial integration. Per-tag handlers
+  // already get O(1) dispatch in JS via selectorsByTagEnter[tag], so they don't benefit
+  // here. Handlers whose selector pattern isn't supported by the Zig matcher (compound
+  // with attrs, child/descendant combinators, etc.) keep their slot in universalEnter/Exit
+  // and continue through the JS path.
+  let ffiPlan = null;
+  const ffiSel = _getFfiSelector();
+  if (ffiSel && (universalEnter.length > 0 || universalExit.length > 0)) {
+    // Build name → tagId map (a type name can resolve to multiple variant tag IDs in ez).
+    const tagNameToIds = new Map();
+    for (let i = 0; i < tagNames.length; i++) {
+      const n = tagNames[i]; if (!n) continue;
+      let arr = tagNameToIds.get(n); if (!arr) { arr = []; tagNameToIds.set(n, arr); }
+      arr.push(i);
+    }
+    const compiledSpecs = []; // i → spec or null
+    const ffiHandlers   = []; // i → { sh, isExit }   (parallel index with compiledSpecs)
+    const ffiHandledSet = new Set(); // sh objects that are dispatched via FFI
+
+    // Tag IDs for types that the JS runtime emits via synthesis (i.e. tag-mismatched events
+    // fired on a different node than the FFI matcher would assume). These selectors must
+    // stay on the JS path because the matcher has no awareness of:
+    //   - FunctionExpression  : synthesized for class method bodies (fires on MethodDefinition node)
+    //   - ArrowFunctionExpression: parallel — methods declared as arrows
+    //   - JSXOpeningElement   : synthesized for self-closing JSX elements
+    //   - TSAnyKeyword/etc.   : synthesized for TSTypeReference with keyword main_token
+    const _syntheticTypeNames = ["FunctionExpression", "ArrowFunctionExpression",
+                                 "JSXOpeningElement", "TSAnyKeyword", "TSStringKeyword",
+                                 "TSNumberKeyword", "TSBooleanKeyword", "TSObjectKeyword",
+                                 "TSUnknownKeyword", "TSNeverKeyword", "TSVoidKeyword",
+                                 "TSNullKeyword", "TSUndefinedKeyword", "TSBigIntKeyword",
+                                 "TSSymbolKeyword", "TSIntrinsicKeyword"];
+    const _syntheticTagSet = new Set();
+    for (const n of _syntheticTypeNames) {
+      const ids = tagNameToIds.get(n);
+      if (ids) for (const id of ids) _syntheticTagSet.add(id);
+    }
+
+    function _specTouchesSynthetic(spec) {
+      if (!spec) return false;
+      if (spec.kind === 4 /* WILDCARD */) return true; // matches everything incl synthetic targets
+      if (spec.kind === 1 /* TAG_EQ */) return _syntheticTagSet.has(spec.a);
+      if (spec.kind === 2 /* TAG_IN */ || spec.kind === 3 /* TAG_NOT_IN */) {
+        if (!spec.tagSet) return false;
+        for (const t of spec.tagSet) if (_syntheticTagSet.has(t)) return true;
+      }
+      return false;
+    }
+
+    function _tryCompile(sh, isExit) {
+      try {
+        const spec = ffiSel.compiler.compileSelectorSpec(
+          sh.parsedSelector, tagNameToIds, tagNames, sh.selector || "<unknown>"
+        );
+        // KIND_UNSUPPORTED (kind=0) means "match nothing" — drop the handler from FFI;
+        // it will also never fire in JS (esquery would never match either), so safe to skip.
+        if (!spec || spec.kind === 0) return false;
+        // Selectors that touch JS-synthesized node types must stay on the JS path so they
+        // fire for synthetic events (e.g. FunctionExpression for class methods). FFI
+        // matches against real Zig nodes only.
+        if (_specTouchesSynthetic(spec)) return false;
+        // Compound/child-combinator specs need a JS fast matcher to apply attribute or
+        // field checks after Zig pre-filters by type/parent-tag. Require complete=true
+        // so we can verify without falling back to esquery.
+        let verify = null;
+        if (spec.needsJSVerify) {
+          const fm = sh._fastMatcher;
+          if (!fm || !fm.complete) return false; // can't verify in JS without esquery — stay on JS path
+          verify = fm.fn;
+        }
+        compiledSpecs.push(spec);
+        ffiHandlers.push({ sh, isExit, verify, needsAncestors: verify && sh._fastMatcher?.needsAncestors });
+        ffiHandledSet.add(sh);
+        return true;
+      } catch (e) {
+        // SelectorNotImplemented — keep on JS path.
+        return false;
+      }
+    }
+
+    for (const sh of universalEnter) _tryCompile(sh, false);
+    for (const sh of universalExit)  _tryCompile(sh, true);
+
+    if (compiledSpecs.length > 0) {
+      const planBuf = ffiSel.compiler.buildPlanBuffer(compiledSpecs);
+      if (planBuf) {
+        ffiPlan = {
+          planBuf,
+          planPtr:  ffiSel.ptr(planBuf),
+          planLen:  planBuf.byteLength,
+          handlers: ffiHandlers,        // sel_id → { sh, isExit }
+          handledSet: ffiHandledSet,    // for fast "is sh handled by FFI?" check
+          numSelectors: compiledSpecs.length,
+        };
+      }
+    }
+  }
+
+  // Pre-filter universal lists to skip FFI-handled handlers in the JS dispatch path.
+  // (Filtered list is identical to the original when no FFI plan exists.)
+  const universalEnterJs = ffiPlan ? universalEnter.filter(sh => !ffiPlan.handledSet.has(sh)) : universalEnter;
+  const universalExitJs  = ffiPlan ? universalExit .filter(sh => !ffiPlan.handledSet.has(sh)) : universalExit;
+
   _cachedSelectorPlanPlugins = plugins;
-  _cachedSelectorPlan = { selectorTagArr, selectorsByTagEnter, selectorsByTagExit, universalEnter, universalExit };
+  _cachedSelectorPlan = {
+    selectorTagArr, selectorsByTagEnter, selectorsByTagExit,
+    universalEnter, universalExit,           // full lists (legacy callers)
+    universalEnterJs, universalExitJs,       // filtered lists for use during walk
+    ffiPlan,
+  };
   return _cachedSelectorPlan;
 }
 
@@ -5294,21 +5625,33 @@ const _PSEUDO_CLASS_TYPES = {
  *   'MethodDefinition[kind="constructor"]:exit' → Set{'MethodDefinition'}
  */
 function _getSelectorRootTypes(key) {
-  // Strip :exit suffix
   const k = key.endsWith(':exit') ? key.slice(0, -5) : key;
-  // Handle comma-separated union selectors: resolve each part individually
+  // Split on top-level commas only — naive k.split(',') breaks for ':matches(A, B)'
+  // which has an embedded comma inside parentheses.
   if (k.includes(',')) {
-    const types = [];
-    for (const part of k.split(',')) {
-      const t = _getSelectorRootTypes(part.trim());
-      if (t === null) return null; // if any part is unresolvable, fall back to full scan
-      if (Array.isArray(t)) { for (const tp of t) types.push(tp); }
-      else types.push(t);
+    const parts = [];
+    let _d = 0, _s = 0;
+    for (let i = 0; i < k.length; i++) {
+      const c = k[i];
+      if (c === '(' || c === '[') _d++;
+      else if (c === ')' || c === ']') _d--;
+      else if (c === ',' && _d === 0) { parts.push(k.slice(_s, i).trim()); _s = i + 1; }
     }
-    return types; // flat array of root types for union
+    parts.push(k.slice(_s).trim());
+    if (parts.length > 1) {
+      // Genuine top-level union — resolve each branch.
+      const types = [];
+      for (const part of parts) {
+        const t = _getSelectorRootTypes(part);
+        if (t === null) return null;
+        if (Array.isArray(t)) { for (const tp of t) types.push(tp); }
+        else types.push(t);
+      }
+      return types;
+    }
+    // Only 1 top-level part — all commas were inside parens; fall through.
   }
-  // Get the last part after any combinator (> child, or space descendant).
-  // Walk the string respecting bracket nesting to find the last combinator position.
+  // Walk respecting bracket nesting to find the last combinator (> or space).
   let depth = 0, lastSep = -1;
   for (let i = 0; i < k.length; i++) {
     const c = k[i];
@@ -5320,17 +5663,47 @@ function _getSelectorRootTypes(key) {
     }
   }
   const last = lastSep >= 0 ? k.slice(lastSep + 1).trim() : k.trim();
-  // Remove attribute selectors [...] and field access .field (but NOT pseudo-classes here)
-  const stripped = last.replace(/\[[^\]]*\]/g, '').split('.')[0].trim();
-  // Remove leading pseudo-class prefix like :function or :matches (keep the type after it)
+  // Remove attribute selectors [...] and field access .field
+  let stripped = last.replace(/\[[^\]]*\]/g, '').split('.')[0].trim();
+  // Strip trailing :pseudo-class(...) blocks when the segment starts with a type name.
+  // 'ExportNamedDeclaration:not([source])' → attr removal → 'ExportNamedDeclaration:not()' → 'ExportNamedDeclaration'
+  if (stripped.length > 0 && stripped[0] !== ':') {
+    stripped = stripped.replace(/:([a-z-]+)\([^)]*\)/g, '').trim();
+  }
+  // Remove leading pseudo-class prefix to expose the type name (e.g. ':function FooType')
   const typePart = stripped.replace(/^:[a-z-]+\s*/, '').trim();
-  // Must start with uppercase letter to be a node type name
   if (/^[A-Z][A-Za-z]*$/.test(typePart)) return typePart;
-  // Handle bare pseudo-class selectors like :function, :expression (when no type follows)
+  // Handle pseudo-class selectors
   const pseudoMatch = stripped.match(/^:([a-z-]+)/);
   if (pseudoMatch) {
-    const resolved = _PSEUDO_CLASS_TYPES[pseudoMatch[1]];
-    if (resolved) return resolved; // array of concrete types
+    const name = pseudoMatch[1];
+    const resolved = _PSEUDO_CLASS_TYPES[name];
+    if (resolved) return resolved;
+    // :matches(A, B) / :is(A, B) — resolve each inner type recursively.
+    if (name === 'matches' || name === 'is') {
+      const open = stripped.indexOf('(');
+      const close = stripped.lastIndexOf(')');
+      if (open > 0 && close > open) {
+        const inner = stripped.slice(open + 1, close);
+        const innerParts = [];
+        let _d = 0, _s = 0;
+        for (let i = 0; i < inner.length; i++) {
+          const c = inner[i];
+          if (c === '(' || c === '[') _d++;
+          else if (c === ')' || c === ']') _d--;
+          else if (c === ',' && _d === 0) { innerParts.push(inner.slice(_s, i).trim()); _s = i + 1; }
+        }
+        innerParts.push(inner.slice(_s).trim());
+        const types = [];
+        for (const p of innerParts) {
+          const t = _getSelectorRootTypes(p);
+          if (t === null) return null;
+          if (Array.isArray(t)) types.push(...t);
+          else types.push(t);
+        }
+        return types.length > 0 ? types : null;
+      }
+    }
   }
   return null;
 }
@@ -5352,12 +5725,14 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
       const rootType = _getSelectorRootTypes(sh.selector);
       if (rootType === null) { hasUniversalSelectors = true; continue; }
       const rtArr = Array.isArray(rootType) ? rootType : [rootType];
+      let foundAnyTag = false;
       for (const rt of rtArr) {
         const allTags = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get(rt) : null;
-        if (allTags) { for (let ki = 0; ki < allTags.length; ki++) selectorRelevantTags[allTags[ki]] = 1; }
-        else { const i = tagNames.indexOf(rt); if (i >= 0) selectorRelevantTags[i] = 1; }
+        if (allTags) { for (let ki = 0; ki < allTags.length; ki++) { selectorRelevantTags[allTags[ki]] = 1; foundAnyTag = true; } }
+        else { const i = tagNames.indexOf(rt); if (i >= 0) { selectorRelevantTags[i] = 1; foundAnyTag = true; } }
       }
-      // unknown tag name (e.g. TSModuleDeclaration not in ez's tagNames): selector won't fire, skip
+      // Unknown type (e.g. PrivateIdentifier): treat as universal so FLAG_SELECTOR fires for all nodes.
+      if (!foundAnyTag) hasUniversalSelectors = true;
     }
     // JSX: self-closing elements (<Foo/>) serve as their own JSXOpeningElement.
     // If any JSXOpeningElement selector exists, also mark jsx_self_closing as selector-relevant.
@@ -5366,6 +5741,17 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
       let _jxc2 = 0;
       for (let _t2 = 0; _t2 < tagCount; _t2++) {
         if (tagNames[_t2] === 'JSXElement' && ++_jxc2 === 2) { selectorRelevantTags[_t2] = 1; break; }
+      }
+    }
+    // Method-def tags (MethodDefinition) are adapter-remapped to Property when inside
+    // ObjectExpression/ObjectPattern. invokeSelectorHandlers applies this same remap at
+    // call time, so any MethodDefinition tag must have FLAG_SELECTOR set when Property
+    // selectors exist — otherwise the call is never reached.
+    {
+      const _propTagsForSel = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get('Property') : null;
+      if (_propTagsForSel && _propTagsForSel.some(t => selectorRelevantTags[t])) {
+        const _mdTagsForSel = _cachedTypeNameToAllTags ? _cachedTypeNameToAllTags.get('MethodDefinition') : null;
+        if (_mdTagsForSel) for (let _mi = 0; _mi < _mdTagsForSel.length; _mi++) selectorRelevantTags[_mdTagsForSel[_mi]] = 1;
       }
     }
   }
@@ -5462,7 +5848,7 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
 
   // Columnar batch scan
   const batchScannable = canSkip ? _extractBatchScannable(
-    visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers, tagFlags
+    visitorMap, tagNames, tagCount, tagEnterHandlers, tagExitHandlers, tagFlags, selectorHandlers
   ) : new Map();
 
   // Record the structural template: for each slot, store the ruleId ordering
@@ -5683,10 +6069,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
             matched = fm.fn(_shNode, null);
           }
           if (!matched) continue;
-          if (fm.complete) { sh.handler(_shNode); continue; }
+          if (fm.complete) { if (process.env.EZ_PROFILE_DISPATCH) { (globalThis.__ez_dispatch_stats__ ||= { fast_hit:0, fast_miss:0, esq_call:0, esq_no_fm:0, esq_partial:0 }).fast_hit++; } sh.handler(_shNode); continue; }
           // complete=false: fast matcher is a pre-filter only, still need esq.matches
+          if (process.env.EZ_PROFILE_DISPATCH) { (globalThis.__ez_dispatch_stats__ ||= { fast_hit:0, fast_miss:0, esq_call:0, esq_no_fm:0, esq_partial:0 }).esq_partial++; }
+        } else if (process.env.EZ_PROFILE_DISPATCH) {
+          const stats = (globalThis.__ez_dispatch_stats__ ||= { fast_hit:0, fast_miss:0, esq_call:0, esq_no_fm:0, esq_partial:0, by_sel: new Map() });
+          stats.esq_no_fm++;
+          const k = sh.selector || "<noname>";
+          stats.by_sel.set(k, (stats.by_sel.get(k) || 0) + 1);
         }
         if (_shAncestors === null) _shAncestors = getAncestorsFor(_shNodeIdx);
+        if (process.env.EZ_PROFILE_DISPATCH) { (globalThis.__ez_dispatch_stats__ ||= { fast_hit:0, fast_miss:0, esq_call:0, esq_no_fm:0, esq_partial:0, by_sel: new Map() }).esq_call++; }
         if (esq.matches(_shNode, sh.parsedSelector, _shAncestors)) {
           sh.handler(_shNode);
         }
@@ -5701,22 +6094,67 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   function invokeSelectorHandlers(nodeIdx, isExit) {
     if (!esq || selectorHandlers.length === 0) return;
-    const tag = nodeTags[nodeIdx];
+    let tag = nodeTags[nodeIdx];
     // Skip the rhs call_expr of `import X = require(...)` — see _resolveHandlers.
     if (tag === T.call_expr && pd) {
       const parentIdx = pd[nodeIdx];
       if (parentIdx !== undefined && parentIdx !== NONE && nodeTags[parentIdx] === _importDeclTagNum &&
           ast.nodeLhs(parentIdx) === NONE) return;
     }
+    // Apply method-def → Property remapping: object literal methods ({ a() {} }) use method-def
+    // tags remapped to Property by the adapter. Selector dispatch must use the same remapped tag
+    // so handlers keyed to 'Property' fire for method properties too.
+    if (_hasMdRemap && _methodDefTagBits[tag] && pd) {
+      const parentIdx = pd[nodeIdx];
+      if (parentIdx !== undefined && parentIdx !== NONE && _objContainerTagBits[nodeTags[parentIdx]]) {
+        if (_propertyTagNum >= 0) tag = _propertyTagNum;
+      }
+    }
     const byTag = isExit ? selectorsByTagExit : selectorsByTagEnter;
     const universal = isExit ? _universalExit : _universalEnter;
     const handlers = byTag ? byTag[tag] : (universal ? null : selectorHandlers);
-    const hasHandlers = (handlers && handlers.length > 0) || (universal && universal.length > 0);
+    // Check FFI events for this node (only if a plan was set up).
+    const ffiStart = _ffiEvStart ? _ffiEvStart[nodeIdx]     : 0;
+    const ffiEnd   = _ffiEvStart ? _ffiEvStart[nodeIdx + 1] : 0;
+    const hasFfi   = ffiEnd > ffiStart;
+    const hasHandlers = (handlers && handlers.length > 0) || (universal && universal.length > 0) || hasFfi;
     if (!hasHandlers) return;
     _shNode = nodeView(ast, nodeIdx);
     _shNodeIdx = nodeIdx;
     _shAncestors = null; // lazy per-node
     context._currentNodeIdx = nodeIdx;
+    // ESLint visitor order: handlers fire in registration order. The existing code's
+    // approximation is "per-tag → universal", but rules like padding-line-between-
+    // statements actually require :statement (universal) to fire BEFORE BlockStatement
+    // (per-tag enterScope) so verify uses the OUTER scope's prevNode. That's how the
+    // registration-order resolution works in practice (rules register universal-shaped
+    // selectors AFTER per-tag in the visitor literal but ESLint walks them by node). For
+    // FFI events (extracted from the universal pool), restore that semantic by firing
+    // them BEFORE per-tag handlers — this matches what the original universal pool did
+    // when the JS path treated `:statement` etc. as universal handlers running AFTER the
+    // per-tag pre-pass set up state.
+    if (hasFfi && _ffiPlan) {
+      const ffiHandlers = _ffiPlan.handlers;
+      const evIds = _ffiEvSelIds;
+      for (let p = ffiStart; p < ffiEnd; p++) {
+        const entry = ffiHandlers[evIds[p]];
+        if (!entry || entry.isExit !== isExit) continue;
+        // Compound and child-combinator specs pre-filter by type/parent-tag in Zig but
+        // delegate right-side attribute and field checks to the JS fast matcher.
+        if (entry.verify) {
+          try {
+            let ancestors = null;
+            if (entry.needsAncestors) {
+              if (_shAncestors === null) _shAncestors = getAncestorsFor(_shNodeIdx);
+              ancestors = _shAncestors;
+            }
+            if (!entry.verify(_shNode, ancestors)) continue;
+          } catch { continue; }
+        }
+        try { entry.sh.handler(_shNode); }
+        catch (err) { context._reports.push({ ruleId: entry.sh.ruleId, message: `Plugin error: ${err.message}` }); }
+      }
+    }
     if (handlers && handlers.length > 0) _runSelectorList(handlers);
     if (universal && universal.length > 0) _runSelectorList(universal);
   }
@@ -5927,8 +6365,59 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _selPlan = hasSelectors ? _getOrBuildSelectorPlan(plugins, selectorHandlers, tagNames, tagCount) : null;
   const selectorsByTagEnter = _selPlan ? _selPlan.selectorsByTagEnter : null;
   const selectorsByTagExit  = _selPlan ? _selPlan.selectorsByTagExit  : null;
-  const _universalEnter     = _selPlan && _selPlan.universalEnter.length > 0 ? _selPlan.universalEnter : null;
-  const _universalExit      = _selPlan && _selPlan.universalExit.length  > 0 ? _selPlan.universalExit  : null;
+  // Use JS-only filtered universal lists (FFI-handled handlers fired separately via events).
+  const _universalEnter     = _selPlan && _selPlan.universalEnterJs.length > 0 ? _selPlan.universalEnterJs : null;
+  const _universalExit      = _selPlan && _selPlan.universalExitJs .length > 0 ? _selPlan.universalExitJs  : null;
+
+  // ── Per-file FFI selector dispatch ────────────────────────────────────────
+  //
+  // If the plan has an FFI sub-plan (universal selectors compiled to Zig specs), run
+  // the matcher once for this AST and bucket the (sel_id, node_idx) events by node into
+  // a CSR (compressed sparse row) layout — `_ffiEvStart[i] .. _ffiEvStart[i+1]` are the
+  // event indices for node i, each encoded as `sel_id` (selector index in the FFI plan).
+  //
+  // During the walk, invokeSelectorHandlers reads this lookup in O(degree) instead of
+  // running esquery on every node × universal handler.
+  let _ffiEvStart = null;       // Uint32Array[nodeCount + 1]  prefix sums
+  let _ffiEvSelIds = null;      // Uint32Array[totalEvents]    — selector indices, sorted by node
+  let _ffiPlan = null;
+  if (_selPlan && _selPlan.ffiPlan) {
+    const ffiSel  = _getFfiSelector();
+    const pinned  = _ffiBufPtr(ast);
+    if (ffiSel && pinned) {
+      _ffiPlan = _selPlan.ffiPlan;
+      // Run the dispatcher — ffi-dispatch.js owns the events buffer and overflow retry.
+      const events = ffiSel.dispatch(
+        pinned.ptr, ast.buffer.byteLength,
+        _ffiPlan.planPtr, _ffiPlan.planLen,
+      );
+      if (!events) { _ffiPlan = null; }
+      const eventCount = events ? (events.length >>> 1) : 0;
+      // Bucket-sort events by node_idx → CSR. O(events + nodeCount).
+      const counts = new Uint32Array(ast.nodeCount + 1);
+      for (let i = 0; i < eventCount; i++) {
+        const nodeIdx = events[i * 2 + 1];
+        if (nodeIdx < ast.nodeCount) counts[nodeIdx]++;
+      }
+      _ffiEvStart = new Uint32Array(ast.nodeCount + 1);
+      let acc = 0;
+      for (let i = 0; i < ast.nodeCount; i++) {
+        _ffiEvStart[i] = acc;
+        acc += counts[i];
+      }
+      _ffiEvStart[ast.nodeCount] = acc;
+      _ffiEvSelIds = new Uint32Array(acc);
+      const cursor = new Uint32Array(_ffiEvStart);
+      for (let i = 0; i < eventCount; i++) {
+        const selId   = events[i * 2];
+        const nodeIdx = events[i * 2 + 1];
+        if (nodeIdx < ast.nodeCount) {
+          const pos = cursor[nodeIdx]++;
+          _ffiEvSelIds[pos] = selId;
+        }
+      }
+    }
+  }
 
   // ── Interleaved DFS traversal ──────────────────────────────────
   // Use Zig-precomputed DFS events if available (v5 buffer), else compute in JS.
@@ -6029,10 +6518,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const evType = evs[ei], nodeRaw = evs[ei + 1], d1 = evs[ei + 2], d2 = evs[ei + 3];
       const isPost = (nodeRaw & POST_FLAG) !== 0, isExit = (nodeRaw & EXIT_FLAG) !== 0;
       const nodeIdx = nodeRaw & NODE_MASK;
-      // after_enter = both flags set (fires after enter handler, before children)
       const map = (isPost && isExit) ? _cfgAfterEnterEvents : isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
-      if (!map.has(nodeIdx)) map.set(nodeIdx, []);
-      map.get(nodeIdx).push({ type: evType, d1, d2 });
+      let arr = map.get(nodeIdx);
+      if (!arr) map.set(nodeIdx, arr = []);
+      arr.push(evType, d1, d2);
     }
   }
   // Build per-node bitfield of nodes that have CfgGraph events.
@@ -6054,11 +6543,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const evts = map.get(nodeIdx);
     if (!evts) return;
     const node = nodeView(ast, nodeIdx);
-    for (let i = 0; i < evts.length; i++) {
-      const ev = evts[i];
-      switch (ev.type) {
+    for (let i = 0; i < evts.length; i += 3) {
+      const evType = evts[i], d1 = evts[i + 1], d2 = evts[i + 2];
+      switch (evType) {
         case 0: { // CODEPATH_START
-          const cp = _cfgGraph.codepath(ev.d1);
+          const cp = _cfgGraph.codepath(d1);
           if (cp) {
             _cfgCpStack.push(_cfgCurrentCp); _cfgCurrentCp = cp;
             cp.currentSegments = [cp.initialSegment];
@@ -6073,7 +6562,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           break;
         }
         case 1: { // CODEPATH_END
-          const cp = _cfgGraph.codepath(ev.d1);
+          const cp = _cfgGraph.codepath(d1);
           if (cp) {
             const nt2 = node.type;
             const cpNode = (nt2 === 'MethodDefinition' || nt2 === 'Property') ? (node.value || node) : node;
@@ -6086,12 +6575,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
           break;
         }
-        case 2: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_segStartH) _dispatchSeg(_segStartH, seg, node); } break; }
-        case 3: { const seg = _cfgGraph.segment(ev.d1); if (seg && _segEndH) _dispatchSeg(_segEndH, seg, node); break; }
-        case 4: { const seg = _cfgGraph.segment(ev.d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node); } break; }
-        case 5: { const seg = _cfgGraph.segment(ev.d1); if (seg && _unreachEndH) _dispatchSeg(_unreachEndH, seg, node); break; }
+        case 2: { const seg = _cfgGraph.segment(d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_segStartH) _dispatchSeg(_segStartH, seg, node); } break; }
+        case 3: { const seg = _cfgGraph.segment(d1); if (seg && _segEndH) _dispatchSeg(_segEndH, seg, node); break; }
+        case 4: { const seg = _cfgGraph.segment(d1); if (seg) { if (_cfgCurrentCp) _cfgCurrentCp.currentSegments = [seg]; if (_unreachStartH) _dispatchSeg(_unreachStartH, seg, node); } break; }
+        case 5: { const seg = _cfgGraph.segment(d1); if (seg && _unreachEndH) _dispatchSeg(_unreachEndH, seg, node); break; }
         case 6: {
-          const fromSeg = _cfgGraph.segment(ev.d1), toSeg = _cfgGraph.segment(ev.d2);
+          const fromSeg = _cfgGraph.segment(d1), toSeg = _cfgGraph.segment(d2);
           if (fromSeg && toSeg) {
             if (!toSeg.prevSegments.includes(fromSeg)) toSeg.prevSegments.push(fromSeg);
             if (!toSeg.allPrevSegments.includes(fromSeg)) toSeg.allPrevSegments.push(fromSeg);
@@ -6476,6 +6965,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
+
       _fireCfgEvents(idx, 0);
       // ESLint fires CSS selector handlers (e.g. `:statement`) BEFORE type-specific handlers
       // (e.g. `BlockStatement`). This matches ESLint's NodeEventGenerator behavior where all
@@ -6527,7 +7017,6 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Synthesize Identifier visits for synthetic label children (optimized path).
       // MemberExpression.property and import/export specifier names are now real
       // nodes in the buffer and get visited naturally via DFS.
-      const _tn = tagNames[tag];
       if (needsLabelSynthOpt && _labelStmtTagSet.has(tag)) {
         let synthNodes;
         const pn = nodeView(ast, idx);
@@ -6547,7 +7036,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
               const lists = [selHandlers, _universalEnter].filter(Boolean);
               const parentAncestors = [pn];
               let _p = pd ? pd[idx] : NONE;
-              while (_p !== NONE && _p < ast.nodeCount) { parentAncestors.push(nodeView(ast, _p)); _p = pd[_p]; }
+              while (_p !== NONE && _p < ast.nodeCount) {
+                parentAncestors.push(nodeView(ast, _p)); _p = pd[_p];
+              }
               const _esq = esquery();
               for (const list of lists) {
                 for (let h = 0; h < list.length; h++) {
@@ -6963,7 +7454,6 @@ function runPlugins(ast, plugins, options = {}) {
   }
 
   const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
-
   walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);
 
   // Retain the pool for this AST; the owner check on the next entry wipes only when a
