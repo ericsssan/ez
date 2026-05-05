@@ -911,6 +911,7 @@ const _emptyArray = Object.freeze([]);
 // share the same V8 hidden class {_ast, _i, _parent} from creation — preventing
 // the IC polymorphism that occurs when _parent is added on first access.
 const _PARENT_UNSET = Object.create(null);
+const _INIT_UNSET = Object.create(null);
 // Sentinel for "body not yet computed". Distinct from null (valid body value for
 // nodes where body is absent) and from arrays/objects (valid body values).
 const _BODY_UNSET = Object.create(null);
@@ -2904,20 +2905,24 @@ const NodeProto = {
 
   /**
    * node.init — initializer in VariableDeclarator or ForStatement.
+   * Lazy-cached on the instance via `_init` so repeated reads (the rule
+   * `def.node.init` read fires per variable + the prefer-const synth-write-
+   * ref check fires too) don't re-materialize the init node every call.
    */
   get init() {
+    if (this._init !== _INIT_UNSET) return this._init;
     const t = this._tag;
     const ast = this._ast;
+    let result = null;
     if (t === T.declarator) {
-      // Use nodeViewChain: `const {x} = obj?.foo` — init may be optional chain.
       const rhs = ast.nodeRhs(this._i);
-      return rhs === NONE ? null : nodeViewChain(ast, rhs);
-    }
-    if (t === T.for_stmt) {
+      result = rhs === NONE ? null : nodeViewChain(ast, rhs);
+    } else if (t === T.for_stmt) {
       const d = ast.extraForData(ast.nodeLhs(this._i));
-      return d.init === NONE ? null : nodeView(ast, d.init);
+      result = d.init === NONE ? null : nodeView(ast, d.init);
     }
-    return null;
+    this._init = result;
+    return result;
   },
 
   /**
@@ -4010,6 +4015,7 @@ function _nodeViewRaw(ast, index) {
     n._range = null;
     n._body = _BODY_UNSET;
     n._value = _VALUE_UNSET;
+    n._init = _INIT_UNSET;
     n._params = undefined;
     n._typeParameters = undefined;
     n._arguments = undefined;
