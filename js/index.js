@@ -281,6 +281,143 @@ function lintSourceNative(source, options = {}) {
   return _parseDiags(bytesWritten, srcBytes);
 }
 
+function parseAndLintSource(source, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename ? detectLang(options.filename) : LANG.js;
+
+  const isModule = options.sourceType === "module" ||
+    (options.sourceType !== "script" && detectIsModule(options.filename));
+  const langWithFlag = lang | (isModule ? 0x80 : 0);
+
+  const { buf, sourceStart, sourceLen } = _encodeSource(source);
+  _ensureLintOutBuf(sourceLen);
+
+  let configBuf;
+  if (options.config instanceof Uint8Array) {
+    configBuf = options.config;
+  } else if (options.rules) {
+    configBuf = buildNativeConfig({ rules: options.rules });
+  }
+
+  const globals = options.globals;
+  let bytesUsed;
+  if (globals && globals.length > 0) {
+    const globalsU8 = Buffer.from(globals.join('\0'), 'utf8');
+    bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf, globalsU8);
+  } else {
+    bytesUsed = b.parseAndLint(buf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf);
+  }
+  if (bytesUsed === 0) throw new Error("ez: parseAndLintSource failed (buffer too small or invalid source)");
+
+  getTagNames();
+  if (options.sourceType === "script") new DataView(buf).setUint32(84, 0, true);
+  else if (options.sourceType === "module") new DataView(buf).setUint32(84, 1, true);
+
+  const srcBytes = new Uint8Array(buf, sourceStart, sourceLen);
+  const diags = _parseDiags(bytesUsed, srcBytes);
+  return { ast: new AstView(buf), diags };
+}
+
+/**
+ * Encode source string into a caller-provided buffer (ArrayBuffer or SharedArrayBuffer).
+ * Returns { sourceStart, sourceLen }.
+ */
+function _encodeSourceInto(source, buf) {
+  const reservedLen = source.length + 128;
+  if (buf.byteLength < HEADER_SIZE + reservedLen) {
+    // Caller must pre-allocate large enough buffer
+    throw new Error(`ez: target buffer too small (${buf.byteLength} < ${HEADER_SIZE + reservedLen})`);
+  }
+  let sourceStart = buf.byteLength - reservedLen;
+  const { read, written } = _encoder.encodeInto(source, new Uint8Array(buf, sourceStart, reservedLen));
+  if (read === source.length) return { sourceStart, sourceLen: written };
+  // Multi-byte: encoded length > source.length (CJK/emoji)
+  const encoded = _encoder.encode(source);
+  sourceStart = buf.byteLength - encoded.byteLength;
+  if (sourceStart < HEADER_SIZE) throw new Error("ez: target buffer too small for encoded source");
+  new Uint8Array(buf).set(encoded, sourceStart);
+  return { sourceStart, sourceLen: encoded.byteLength };
+}
+
+/**
+ * Parse source into a caller-provided buffer (ArrayBuffer or SharedArrayBuffer).
+ * The buffer must be pre-allocated large enough (use SAB_SIZE = 4MB for test cases).
+ * Returns { ast: AstView, sourceStart, sourceLen }.
+ */
+function parseSourceIntoBuffer(source, targetBuf, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename ? detectLang(options.filename) : LANG.js;
+
+  const isModule = options.sourceType === "module" ||
+    (options.sourceType !== "script" && detectIsModule(options.filename));
+  const langWithFlag = lang | (isModule ? 0x80 : 0);
+
+  const { sourceStart, sourceLen } = _encodeSourceInto(source, targetBuf);
+
+  let bytesUsed;
+  const globals = options.globals;
+  if (globals && globals.length > 0) {
+    const globalsU8 = Buffer.from(globals.join('\0'), 'utf8');
+    bytesUsed = b.parse(targetBuf, sourceStart, sourceLen, langWithFlag, globalsU8);
+  } else {
+    bytesUsed = b.parse(targetBuf, sourceStart, sourceLen, langWithFlag);
+  }
+  if (bytesUsed === 0) throw new Error("ez: parseSourceIntoBuffer failed (buffer too small or invalid source)");
+
+  getTagNames();
+  if (options.sourceType === "script") new DataView(targetBuf).setUint32(84, 0, true);
+  else if (options.sourceType === "module") new DataView(targetBuf).setUint32(84, 1, true);
+  return { ast: new AstView(targetBuf), sourceStart, sourceLen };
+}
+
+/**
+ * Parse + native lint source into a caller-provided buffer (ArrayBuffer or SharedArrayBuffer).
+ * Native diagnostics go into the module-level _lintOutBuf (caller reads them immediately).
+ * Returns { ast: AstView, diags, sourceStart, sourceLen }.
+ */
+function parseAndLintSourceIntoBuffer(source, targetBuf, options = {}) {
+  const b = loadBinding();
+  const lang = options.lang
+    ? LANG[options.lang] ?? LANG.js
+    : options.filename ? detectLang(options.filename) : LANG.js;
+
+  const isModule = options.sourceType === "module" ||
+    (options.sourceType !== "script" && detectIsModule(options.filename));
+  const langWithFlag = lang | (isModule ? 0x80 : 0);
+
+  const { sourceStart, sourceLen } = _encodeSourceInto(source, targetBuf);
+  _ensureLintOutBuf(sourceLen);
+
+  let configBuf;
+  if (options.config instanceof Uint8Array) {
+    configBuf = options.config;
+  } else if (options.rules) {
+    configBuf = buildNativeConfig({ rules: options.rules });
+  }
+
+  const globals = options.globals;
+  let bytesUsed;
+  if (globals && globals.length > 0) {
+    const globalsU8 = Buffer.from(globals.join('\0'), 'utf8');
+    bytesUsed = b.parseAndLint(targetBuf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf, globalsU8);
+  } else {
+    bytesUsed = b.parseAndLint(targetBuf, sourceStart, sourceLen, langWithFlag, _lintOutBuf, configBuf);
+  }
+  if (bytesUsed === 0) throw new Error("ez: parseAndLintSourceIntoBuffer failed (buffer too small or invalid source)");
+
+  getTagNames();
+  if (options.sourceType === "script") new DataView(targetBuf).setUint32(84, 0, true);
+  else if (options.sourceType === "module") new DataView(targetBuf).setUint32(84, 1, true);
+
+  const srcBytes = new Uint8Array(targetBuf, sourceStart, sourceLen);
+  const diags = _parseDiags(bytesUsed, srcBytes);
+  return { ast: new AstView(targetBuf), diags, sourceStart, sourceLen };
+}
+
 function parseAndLintNative(filePath, options = {}) {
   const b = loadBinding();
   const lang = options.lang ? LANG[options.lang] ?? LANG.js : detectLang(filePath);
@@ -316,12 +453,11 @@ function parseAndLintNative(filePath, options = {}) {
 
 let _nativeRulesMap = null;
 
+// Native Zig rules are disabled: every rule goes through the JS runner.
+// The Zig binding's native rules are still compiled in but never registered
+// here, so api.js / differential runner / hybrid path all fall through to JS.
 function getNativeRules() {
-  if (_nativeRulesMap === null) {
-    const b = loadBinding();
-    const arr = b.getNativeRules();
-    _nativeRulesMap = new Map(arr.map(r => [r.name, r]));
-  }
+  if (_nativeRulesMap === null) _nativeRulesMap = new Map();
   return _nativeRulesMap;
 }
 
@@ -377,4 +513,4 @@ function parseSourceLean(source, options = {}) {
   return b.parseLean(buf, sourceStart, sourceLen, lang);
 }
 
-module.exports = { parse, parseSource, parseSourceLean, parseAndLintNative, lintSourceNative, discoverFiles, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
+module.exports = { parse, parseSource, parseSourceLean, parseAndLintSource, parseSourceIntoBuffer, parseAndLintSourceIntoBuffer, parseAndLintNative, lintSourceNative, discoverFiles, getNativeRules, buildNativeConfig, reset: resetBuffer, getTagNames, detectLang, LANG, HEADER_SIZE, MAGIC };
