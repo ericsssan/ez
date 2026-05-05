@@ -1008,70 +1008,88 @@ function _memberToQualifiedName(ast, idx) {
   return _syntheticNode('TSQualifiedName', start, end, { left: leftNode, right: rightNode }, ast);
 }
 
+// Per-tag constants extracted from `T` once at module-init so the switch
+// in `_computeNodeType` dispatches on hoisted integer constants instead of
+// re-resolving `T.identifier` etc. on every node.
+const _T_IDENTIFIER       = T.identifier;
+const _T_METHOD_DEF       = T.method_def;
+const _T_IMPORT_DECL      = T.import_decl;
+const _T_BLOCK_STMT       = T.block_stmt;
+const _T_TS_TYPE_REFERENCE = T.ts_type_reference;
+const _T_OBJECT_LITERAL   = T.object_literal;
+const _T_OBJECT_PATTERN   = T.object_pattern;
+const _T_TS_NAMESPACE_DECL = T.ts_namespace_decl;
+const _T_TS_MODULE_DECL   = T.ts_module_decl;
+
 // Compute the ESTree-shape `type` string for a node at construction time.
 // Buffer-direct: reads `_nodeTags`, `_parentData`, `_mainTokens`, `_tokStarts`
 // without ever touching a wrapper. Stored as an own data field on each node
 // (see `_nodeViewRaw`) so `node.type` is a direct property read, no getter.
 function _computeNodeType(ast, index, tag) {
-  const tagName = TAG_NAMES ? TAG_NAMES[tag] : String(tag);
-  // Identifier → PrivateIdentifier when the token starts with `#`.
-  if (tagName === 'Identifier') {
-    const pos = ast._tokStarts[ast._mainTokens[index]];
-    if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
-      return 'PrivateIdentifier';
+  // Integer-tag dispatch: most tags (default case) map directly to
+  // TAG_NAMES[tag]. Five tags need contextual disambiguation. Switching
+  // on the numeric tag avoids the per-node `TAG_NAMES[tag]` string read +
+  // chain of `tagName === '…'` string comparisons that the previous shape
+  // ran on every node.
+  switch (tag) {
+    case _T_IDENTIFIER: {
+      const pos = ast._tokStarts[ast._mainTokens[index]];
+      if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
+        return 'PrivateIdentifier';
+      }
+      return 'Identifier';
     }
-    return tagName;
-  }
-  // MethodDefinition → Property when inside an object literal/pattern.
-  if (tagName === 'MethodDefinition') {
-    const pd = ast._parentData;
-    if (pd) {
-      const parentIdx = pd[index];
-      if (parentIdx !== NONE) {
-        const parentTag = ast._nodeTags[parentIdx];
-        if (parentTag === T.object_literal || parentTag === T.object_pattern) {
-          return 'Property';
+    case _T_METHOD_DEF: {
+      const pd = ast._parentData;
+      if (pd) {
+        const parentIdx = pd[index];
+        if (parentIdx !== NONE) {
+          const parentTag = ast._nodeTags[parentIdx];
+          if (parentTag === _T_OBJECT_LITERAL || parentTag === _T_OBJECT_PATTERN) {
+            return 'Property';
+          }
         }
       }
+      return 'MethodDefinition';
     }
-    return tagName;
-  }
-  // ImportDeclaration → TSImportEqualsDeclaration for `import X = require('...')`.
-  if (tagName === 'ImportDeclaration' && ast.nodeLhs(index) === NONE && ast.nodeRhs(index) !== NONE) {
-    return 'TSImportEqualsDeclaration';
-  }
-  // BlockStatement → TSModuleBlock when it's the body of a TS namespace/module.
-  if (tagName === 'BlockStatement') {
-    const pd = ast._parentData;
-    if (pd) {
-      const parentIdx = pd[index];
-      if (parentIdx !== NONE && parentIdx !== 0xFFFFFFFF) {
-        const parentTag = ast._nodeTags[parentIdx];
-        if (parentTag === T.ts_namespace_decl || parentTag === T.ts_module_decl) {
-          return 'TSModuleBlock';
+    case _T_IMPORT_DECL: {
+      if (ast.nodeLhs(index) === NONE && ast.nodeRhs(index) !== NONE) {
+        return 'TSImportEqualsDeclaration';
+      }
+      return 'ImportDeclaration';
+    }
+    case _T_BLOCK_STMT: {
+      const pd = ast._parentData;
+      if (pd) {
+        const parentIdx = pd[index];
+        if (parentIdx !== NONE && parentIdx !== 0xFFFFFFFF) {
+          const parentTag = ast._nodeTags[parentIdx];
+          if (parentTag === _T_TS_NAMESPACE_DECL || parentTag === _T_TS_MODULE_DECL) {
+            return 'TSModuleBlock';
+          }
         }
       }
+      return 'BlockStatement';
     }
-    return tagName;
-  }
-  // TSTypeReference → TS*Keyword or TSLiteralType when no type args and the
-  // main token is a built-in keyword/literal.
-  if (tagName === 'TSTypeReference' && ast.nodeRhs(index) === NONE) {
-    const tok = ast._mainTokens[index];
-    const start = ast._tokStarts[tok];
-    const end = ast._tokEnds ? ast._tokEnds[tok]
-      : (tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length);
-    const text = ast.source.slice(start, end);
-    const kw = _TS_KW_TYPES[text.trim()];
-    if (kw) return kw;
-    const c = text.charCodeAt(0);
-    if (c === 39 || c === 34 || c === 96 || (c >= 48 && c <= 57) ||
-        text === 'true' || text === 'false' || text === '-') {
-      return 'TSLiteralType';
+    case _T_TS_TYPE_REFERENCE: {
+      if (ast.nodeRhs(index) === NONE) {
+        const tok = ast._mainTokens[index];
+        const start = ast._tokStarts[tok];
+        const end = ast._tokEnds ? ast._tokEnds[tok]
+          : (tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length);
+        const text = ast.source.slice(start, end);
+        const kw = _TS_KW_TYPES[text.trim()];
+        if (kw) return kw;
+        const c = text.charCodeAt(0);
+        if (c === 39 || c === 34 || c === 96 || (c >= 48 && c <= 57) ||
+            text === 'true' || text === 'false' || text === '-') {
+          return 'TSLiteralType';
+        }
+      }
+      return 'TSTypeReference';
     }
-    return tagName;
   }
-  return tagName;
+  return TAG_NAMES ? TAG_NAMES[tag] : String(tag);
 }
 
 const NodeProto = {
