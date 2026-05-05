@@ -682,6 +682,163 @@ function _removeGlobal(name, set, variables) {
   }
 }
 
+// ── Scope prototypes (shared hidden class) ───────────────────────────
+//
+// Every Scope object created by `_buildScope` inherits from `_scopeProto`;
+// every named-FunctionExpression-name scope inherits from `_fenScopeProto`.
+// The 6 lazy getters (variables / set / references / through / childScopes /
+// thisFound) live on the prototype, so all scopes share one hidden class →
+// V8 can monomorphize property accesses in rule code (`scope.variables`,
+// `scope.upper`, `scope.type`).
+//
+// Per-scope state (`_vars`, `_refs`, `_children`, …) is stored as instance
+// fields, assigned in a fixed order so the hidden class stays stable.
+//
+// Replaces an earlier per-scope `Object.defineProperties(scope, {...})` call
+// + 4 captured closures, which was responsible for ~6.4% self time on a
+// no-unused-vars / typescript.js profile (visible) plus megamorphic deopt of
+// scope property accesses (invisible).
+
+const _NON_ARROW_FN_TAGS_BITS = new Uint8Array(256);
+for (const t of [30, 31, 32, 33, 63, 64, 65, 66]) _NON_ARROW_FN_TAGS_BITS[t] = 1;
+
+const _scopeProto = {
+  lookup(name) { return this.set.get(name) || null; },
+
+  _ensureVarsSet() {
+    if (this._vars !== null) return;
+    const vs = this._sc._buildScopeVarsAndSet(this._scopeId, this, this._kind);
+    this._vars = vs[0]; this._set = vs[1];
+    // FEN extraction: when this scope is the body of a named FunctionExpression,
+    // hoist the function-name def into the FEN wrapper scope.
+    const fenScope = this._fenScope;
+    if (!fenScope) return;
+    const fenName = fenScope._fenName;
+    const fenVarIdx = this._vars.findIndex(v => v.name === fenName);
+    if (fenVarIdx >= 0) {
+      const v = this._vars[fenVarIdx];
+      const feDefIdx = v.defs.findIndex(d => d.node !== null && d.node.type === 'FunctionExpression');
+      if (feDefIdx >= 0) {
+        const feDef = v.defs[feDefIdx];
+        const feIdentifier = feDef.name;
+        const fenVar = {
+          name: fenName,
+          defs: [feDef],
+          identifiers: feIdentifier ? [feIdentifier] : [],
+          references: [],
+          scope: fenScope,
+          eslintUsed: false,
+          isRead: _FALSE,
+          isWritten: _FALSE,
+          isValueVariable: true,
+          isTypeVariable: false,
+        };
+        fenScope._vars = [fenVar];
+        fenScope._set = new Map([[fenName, fenVar]]);
+        this._fenVarRef = fenVar;
+        const ast = this._ast;
+        if (ast._scopeRefStarts && ast._scopeRefCounts && ast._scopeRefIds) {
+          const refStart = ast._scopeRefStarts[this._scopeId];
+          const refCount = ast._scopeRefCounts[this._scopeId];
+          for (let ri = 0; ri < refCount; ri++) {
+            const refId = ast._scopeRefIds[refStart + ri];
+            const ref = this._sc._buildReference(refId);
+            if (ref.identifier?.name === fenName) {
+              fenVar.references.push(ref);
+              ref.resolved = fenVar;
+            }
+          }
+        }
+        v.defs.splice(feDefIdx, 1);
+        if (feIdentifier) {
+          const idIdx = v.identifiers.indexOf(feIdentifier);
+          if (idIdx >= 0) v.identifiers.splice(idIdx, 1);
+        }
+        if (v.defs.length === 0 && v.identifiers.length === 0) {
+          this._vars.splice(fenVarIdx, 1);
+          this._set.delete(fenName);
+        }
+      }
+    }
+    if (fenScope._vars === null) { fenScope._vars = []; fenScope._set = new Map(); }
+  },
+
+  _ensureRefsThrough() {
+    if (this._refs !== null) return;
+    if (this._refsBuilding) { this._refs = []; this._through = []; return; }
+    this._refsBuilding = true;
+    const cs = this.childScopes;
+    const rt = this._sc._buildScopeRefsAndThrough(this._scopeId, this, cs);
+    this._refs = rt[0]; this._through = rt[1];
+    // Populate FEN variable references: refs to the function-name from inside
+    // the body resolve to the FEN var, not to whatever was up the scope chain.
+    const fenVarRef = this._fenVarRef;
+    if (fenVarRef) {
+      const fenName = fenVarRef.name;
+      for (const ref of this._refs) {
+        if (ref.identifier?.name === fenName && !fenVarRef.references.includes(ref)) {
+          fenVarRef.references.push(ref);
+          ref.resolved = fenVarRef;
+        }
+      }
+    }
+  },
+
+  _ensureChildren() {
+    if (this._children !== null) return;
+    this._children = this._sc._buildScopeChildren(this._scopeId);
+  },
+
+  _ensureThisFound() {
+    if (this._thisFound !== null) return;
+    this._thisFound = false;
+    const ast = this._ast;
+    if (this._kind !== 2 || !ast._nodeTags || !ast._parentData || !this.block) return;
+    const blockIdx = this.block._i;
+    if (blockIdx === undefined || blockIdx === NONE) return;
+    const T_THIS_EXPR = 52;
+    const NONE32 = 0xFFFFFFFF;
+    const tags = ast._nodeTags, parents = ast._parentData;
+    for (let i = 0; i < ast.nodeCount; i++) {
+      if (tags[i] !== T_THIS_EXPR) continue;
+      let cur = parents[i];
+      let foundThis = false;
+      while (cur !== undefined && cur !== NONE32 && cur < ast.nodeCount) {
+        if (_NON_ARROW_FN_TAGS_BITS[tags[cur]] === 1) {
+          if (cur === blockIdx) foundThis = true;
+          break;
+        }
+        cur = parents[cur];
+      }
+      if (foundThis) { this._thisFound = true; break; }
+    }
+  },
+};
+Object.defineProperties(_scopeProto, {
+  variables:   { get() { this._ensureVarsSet();     return this._vars;     }, configurable: true, enumerable: true },
+  set:         { get() { this._ensureVarsSet();     return this._set;      }, configurable: true, enumerable: true },
+  references:  { get() { this._ensureRefsThrough(); return this._refs;     }, configurable: true, enumerable: true },
+  through:     { get() { this._ensureRefsThrough(); return this._through;  }, configurable: true, enumerable: true },
+  childScopes: { get() { this._ensureChildren();    return this._children; }, configurable: true, enumerable: true },
+  thisFound:   { get() { this._ensureThisFound();   return this._thisFound; }, configurable: true, enumerable: true },
+});
+
+const _fenScopeProto = {
+  lookup(name) { return this.set.get(name) || null; },
+  // Triggers the inner body scope's ensureVarsSet, which populates this._vars/_set
+  // as a side effect (it's the one that owns the FE-name hoist logic).
+  _ensureVarsSet() {
+    if (this._vars !== null) return;
+    this._fenInnerScope._ensureVarsSet();
+    if (this._vars === null) { this._vars = []; this._set = new Map(); }
+  },
+};
+Object.defineProperties(_fenScopeProto, {
+  variables:   { get() { this._ensureVarsSet(); return this._vars; }, configurable: true, enumerable: true },
+  set:         { get() { this._ensureVarsSet(); return this._set;  }, configurable: true, enumerable: true },
+  childScopes: { get() { return [this._fenInnerScope]; }, configurable: true, enumerable: true },
+});
+
 /**
  * ESLint-compatible SourceCode object.
  * Provides getText(), getTokens(), getFirstToken(), getLastToken().
@@ -1771,204 +1928,60 @@ class SourceCode {
       : (kind === 0 && this._sourceType === 'module' && upper === null) ? 'module'
       : (_SCOPE_KIND_NAMES[kind] || 'block');
 
-    // Cheap fields only — expensive arrays (variables/references/through/childScopes) are lazy.
-    const scope = {
-      type: scopeTypeName,
-      isStrict,
-      block,
-      upper,
-      implicit: { variables: [], left: [], leftToBeResolved: [] },
-      lookup(name) { return scope.set.get(name) || null; },
-    };
+    // Allocate via shared prototype so V8 sees one hidden class for every scope.
+    // Field assignment order is fixed: must stay identical across all _buildScope
+    // call sites or the hidden-class chain forks.
+    const scope = Object.create(_scopeProto);
+    scope.type = scopeTypeName;
+    scope.isStrict = isStrict;
+    scope.block = block;
+    scope.upper = upper;
+    scope.implicit = { variables: [], left: [], leftToBeResolved: [] };
+    scope._sc = this;
+    scope._ast = ast;
+    scope._scopeId = scopeId;
+    scope._kind = kind;
+    scope._vars = null;
+    scope._set = null;
+    scope._refs = null;
+    scope._through = null;
+    scope._children = null;
+    scope._thisFound = null;
+    scope._refsBuilding = false;
+    scope._fenScope = null;
+    scope._fenVarRef = null;
     scope.variableScope = isVarScope ? scope : (upper ? upper.variableScope || upper : scope);
 
-    // Cache BEFORE defining lazy getters — breaks parent↔child cycle.
+    // Cache BEFORE wiring the FEN wrapper — breaks parent↔child cycle.
     this._scopeCache[scopeId] = scope;
 
-    // Lazy state: computed once on first access, then reused.
-    const sc = this;
-    let _vars = null, _set = null, _refs = null, _through = null, _children = null;
-    let _refsBuilding = false; // re-entrancy guard for ensureRefsThrough
-    let _fenVarRef = null; // reference to the FEN variable (for ensureRefsThrough access)
-
-    // Named FunctionExpression: create a virtual function-expression-name scope that sits
-    // between this function body scope and its outer scope. eslint-scope puts the function
-    // expression name in this intermediate scope so no-shadow can detect when inner
-    // declarations shadow the function expression name.
-    //
-    // Example: `(function a() { function a(){} })()` — the inner `function a(){}` should
-    // shadow the outer named function expression `a`.
-    let _fenScope = null;
+    // Named FunctionExpression: create a virtual function-expression-name scope
+    // that sits between this function body scope and its outer scope. eslint-scope
+    // puts the function-expression name in this intermediate scope so no-shadow can
+    // detect inner declarations shadowing the function-expression name.
     if (kind === 2 && block !== null && block.type === 'FunctionExpression' && block.id !== null) {
-      const fenName = block.id.name;
-      const fenUpper = upper; // original upper of this function body scope
-      // Create the FEN scope object eagerly (lazy variables populated after scope vars are built).
-      _fenScope = {
-        type: 'function-expression-name',
-        functionExpressionScope: true,
-        isStrict,
-        block,
-        upper: fenUpper,
-        implicit: { variables: [], left: [], leftToBeResolved: [] },
-        variableScope: fenUpper ? (fenUpper.variableScope || fenUpper) : scope,
-        lookup(name) { return _fenScope.set.get(name) || null; },
-        references: [],
-        through: [],
-      };
-      // childScopes of the FEN scope is just this function body scope.
-      Object.defineProperty(_fenScope, 'childScopes', { get() { return [scope]; }, configurable: true, enumerable: true });
-      // FEN scope variables/set are populated lazily when this scope's variables are first accessed.
-      let _fenVars = null, _fenSet = null;
-      function ensureFenVars() {
-        if (_fenVars !== null) return;
-        // Compute this scope's variables first (triggers _buildScopeVarsAndSet)
-        void scope.variables;
-        if (_fenVars === null) { _fenVars = []; _fenSet = new Map(); } // fallback
-      }
-      Object.defineProperty(_fenScope, 'variables', { get() { ensureFenVars(); return _fenVars; }, configurable: true, enumerable: true });
-      Object.defineProperty(_fenScope, 'set', { get() { ensureFenVars(); return _fenSet; }, configurable: true, enumerable: true });
-      // Patch this scope's upper to the FEN scope, and expose the FEN scope so
-      // _buildScopeChildren can include it in parent scope's childScopes.
-      scope.upper = _fenScope;
-      scope._fenScope = _fenScope;
+      const fenScope = Object.create(_fenScopeProto);
+      fenScope.type = 'function-expression-name';
+      fenScope.functionExpressionScope = true;
+      fenScope.isStrict = isStrict;
+      fenScope.block = block;
+      fenScope.upper = upper; // original upper of the body scope
+      fenScope.implicit = { variables: [], left: [], leftToBeResolved: [] };
+      fenScope.variableScope = upper ? (upper.variableScope || upper) : scope;
+      fenScope._sc = this;
+      fenScope._ast = ast;
+      fenScope._fenName = block.id.name;
+      fenScope._fenInnerScope = scope;
+      fenScope._vars = null;
+      fenScope._set = null;
+      fenScope.references = [];
+      fenScope.through = [];
 
-      // Override ensureVarsSet to also extract the FE-name def into the FEN scope.
-      const _origEnsureVarsSet = function() {
-        if (_vars !== null) return;
-        const vs = sc._buildScopeVarsAndSet(scopeId, scope, kind);
-        _vars = vs[0]; _set = vs[1];
-        // Extract the function expression name def from this scope's variable.
-        const fenVarIdx = _vars.findIndex(v => v.name === fenName);
-        if (fenVarIdx >= 0) {
-          const v = _vars[fenVarIdx];
-          const feDefIdx = v.defs.findIndex(d => d.node !== null && d.node.type === 'FunctionExpression');
-          if (feDefIdx >= 0) {
-            const feDef = v.defs[feDefIdx];
-            const feIdentifier = feDef.name; // the Identifier node for the FE name
-            // Build the FEN variable with just the FE-name def.
-            const fenVar = {
-              name: fenName,
-              defs: [feDef],
-              identifiers: feIdentifier ? [feIdentifier] : [],
-              references: [],
-              scope: _fenScope,
-              eslintUsed: false,
-              isRead: _FALSE,
-              isWritten: _FALSE,
-              isValueVariable: true,
-              isTypeVariable: false,
-            };
-            _fenVars = [fenVar];
-            _fenSet = new Map([[fenName, fenVar]]);
-            _fenVarRef = fenVar; // expose to outer closure for ensureRefsThrough
-            // Eagerly populate fenVar.references by scanning the function scope's refs.
-            // This allows isFunctionSelfUsedInside to detect self-references without
-            // requiring scope.references (ensureRefsThrough) to be triggered first.
-            if (ast._scopeRefStarts && ast._scopeRefCounts && ast._scopeRefIds) {
-              const refStart = ast._scopeRefStarts[scopeId];
-              const refCount = ast._scopeRefCounts[scopeId];
-              for (let ri = 0; ri < refCount; ri++) {
-                const refId = ast._scopeRefIds[refStart + ri];
-                const ref = sc._buildReference(refId);
-                if (ref.identifier?.name === fenName) {
-                  fenVar.references.push(ref);
-                  ref.resolved = fenVar;
-                }
-              }
-            }
-            // Remove the FE-name def + identifier from the function body scope's variable.
-            v.defs.splice(feDefIdx, 1);
-            if (feIdentifier) {
-              const idIdx = v.identifiers.indexOf(feIdentifier);
-              if (idIdx >= 0) v.identifiers.splice(idIdx, 1);
-            }
-            // If the variable now has no defs/identifiers, remove it from scope 2.
-            if (v.defs.length === 0 && v.identifiers.length === 0) {
-              _vars.splice(fenVarIdx, 1);
-              _set.delete(fenName);
-            }
-          }
-        }
-        if (_fenVars === null) { _fenVars = []; _fenSet = new Map(); }
-      };
-      var ensureVarsSet = _origEnsureVarsSet; // shadow outer ensureVarsSet
+      // Re-parent the body scope under the FEN wrapper, and expose the wrapper
+      // to `_buildScopeChildren` so the parent's childScopes includes the FEN.
+      scope.upper = fenScope;
+      scope._fenScope = fenScope;
     }
-
-    if (!_fenScope) {
-      var ensureVarsSet = function() {
-        if (_vars !== null) return;
-        const vs = sc._buildScopeVarsAndSet(scopeId, scope, kind);
-        _vars = vs[0]; _set = vs[1];
-      };
-    }
-
-    function ensureRefsThrough() {
-      if (_refs !== null) return;
-      if (_refsBuilding) { _refs = []; _through = []; return; } // re-entrant: scope cycle, return empty
-      _refsBuilding = true;
-      const cs = scope.childScopes; // trigger lazy children first (needed for through bubbling)
-      const rt = sc._buildScopeRefsAndThrough(scopeId, scope, cs);
-      _refs = rt[0]; _through = rt[1];
-      // Populate FEN variable's references: for named FunctionExpressions, the function
-      // name (e.g. `fn` in `function fn(x){}`) resolves to the FEN variable. But since
-      // refs are pre-resolved in Zig, they bypass the normal variable.references push.
-      // Scan this scope's refs and add any that match the FEN name to fenVar.references.
-      if (_fenScope && _fenVarRef) {
-        const fenName2 = _fenVarRef.name;
-        for (const ref of _refs) {
-          if (ref.identifier?.name === fenName2 && !_fenVarRef.references.includes(ref)) {
-            _fenVarRef.references.push(ref);
-            ref.resolved = _fenVarRef;
-          }
-        }
-      }
-    }
-    function ensureChildren() {
-      if (_children !== null) return;
-      _children = sc._buildScopeChildren(scopeId);
-    }
-
-    // thisFound: true if `this` appears directly in this non-arrow function scope
-    // (not inside nested non-arrow functions). Used by rules like prefer-array-index-of.
-    // We scan _nodeTags for this_expr (tag=52) and walk _parentData up to find the
-    // closest non-arrow function, checking if it matches our block node.
-    const NON_ARROW_FN_TAGS = new Set([30, 31, 32, 33, 63, 64, 65, 66]); // fn_decl, async_fn_decl, etc., fn_expr variants
-    // thisFound only applies to function scopes (kind=2), not arrow, global, module, etc.
-    let _thisFound = null; // null = not computed yet
-    function ensureThisFound() {
-      if (_thisFound !== null) return;
-      _thisFound = false;
-      if (kind !== 2 || !ast._nodeTags || !ast._parentData || !block) return;
-      const blockIdx = block._i;
-      if (blockIdx === undefined || blockIdx === NONE) return;
-      const T_THIS_EXPR = 52; // tags.js: this_expr
-      const NONE32 = 0xFFFFFFFF;
-      for (let i = 0; i < ast.nodeCount; i++) {
-        if (ast._nodeTags[i] !== T_THIS_EXPR) continue;
-        // Walk up parent chain to find the closest non-arrow function.
-        let cur = ast._parentData[i];
-        let foundThis = false;
-        while (cur !== undefined && cur !== NONE32 && cur < ast.nodeCount) {
-          const curTag = ast._nodeTags[cur];
-          if (NON_ARROW_FN_TAGS.has(curTag)) {
-            // Found closest non-arrow function. If it's our block, this is in our scope.
-            if (cur === blockIdx) foundThis = true;
-            break;
-          }
-          cur = ast._parentData[cur];
-        }
-        if (foundThis) { _thisFound = true; break; }
-      }
-    }
-
-    Object.defineProperties(scope, {
-      variables:   { get() { ensureVarsSet();     return _vars;     }, configurable: true, enumerable: true },
-      set:         { get() { ensureVarsSet();     return _set;      }, configurable: true, enumerable: true },
-      references:  { get() { ensureRefsThrough(); return _refs;     }, configurable: true, enumerable: true },
-      through:     { get() { ensureRefsThrough(); return _through;  }, configurable: true, enumerable: true },
-      childScopes: { get() { ensureChildren();    return _children; }, configurable: true, enumerable: true },
-      thisFound:   { get() { ensureThisFound();   return _thisFound; }, configurable: true, enumerable: true },
-    });
 
     return scope;
   }
