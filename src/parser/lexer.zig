@@ -1912,6 +1912,26 @@ pub fn tokenizeWithBufAndBitmaps(
                         try cm_s.append(alloc, p);
                         try cm_e.append(alloc, res.end);
                         try cm_k.append(alloc, 1);
+                        // Newlines inside block comments must still register in `ls`
+                        // — `skip_until` would otherwise hide them from the bitmap walk,
+                        // leaving line numbers under-counted (loc.start.line wrong).
+                        if (res.has_nl) {
+                            var q: u32 = p + 2;
+                            while (q < res.end) : (q += 1) {
+                                const c = src[q];
+                                if (c == '\n') { try ls.append(alloc, q + 1); at_line_start = true; }
+                                else if (c == '\r') {
+                                    const next_q = if (q + 1 < res.end and src[q + 1] == '\n') q + 2 else q + 1;
+                                    try ls.append(alloc, next_q);
+                                    at_line_start = true;
+                                    q = next_q - 1; // -1 since loop increments
+                                } else if (c == 0xE2 and q + 2 < res.end and src[q + 1] == 0x80 and (src[q + 2] == 0xA8 or src[q + 2] == 0xA9)) {
+                                    try ls.append(alloc, q + 3);
+                                    at_line_start = true;
+                                    q += 2;
+                                }
+                            }
+                        }
                         skip_until = res.end;
                         if (res.end < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(res.end - word_off)); } else { visit = 0; }
                         continue;
