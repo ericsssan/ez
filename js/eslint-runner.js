@@ -698,6 +698,11 @@ function _removeGlobal(name, set, variables) {
 const _varProto = {
   isRead()    { return this._isReadFlag; },
   isWritten() { return this._isWrittenFlag; },
+  // eslintUsed lives in a Uint8Array on the SourceCode (cleared every
+  // `reset()`). Variables don't carry a per-instance mutable boolean; the
+  // accessor reads/writes the side-table via the variable's `_symId`.
+  get eslintUsed() { return this._sc._eslintUsedBits[this._symId] !== 0; },
+  set eslintUsed(v) { this._sc._eslintUsedBits[this._symId] = v ? 1 : 0; },
   get references() {
     let refs = this._refs;
     if (refs === null) {
@@ -921,6 +926,10 @@ class SourceCode {
     this._mergedCache = null;
     this._scopeCache = null;     // lazily allocated Array[scopeCount] for O(1) integer lookup
     this._varCache = null;       // lazily allocated Array[symCount] — same object per symId for indexOf identity
+    // eslintUsed side-table: one bit per symbol, lazily allocated. Variables
+    // built via `_buildVariable` read/write this through proto accessors so
+    // the field doesn't have to live on every Variable instance.
+    this._eslintUsedBits = new Uint8Array(ast._semSymbolCount || 256);
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
     this.parserServices = {};
@@ -942,6 +951,13 @@ class SourceCode {
     this._scopeCache = null;
     this._varCache = null;       // file-specific — must be cleared so new AST gets fresh variables
     this._refCache = null;       // file-specific — ref objects hold AST node pointers
+    // eslintUsed side-table: re-use existing buffer if it fits the new AST,
+    // otherwise allocate a larger one. Either way, zero it.
+    if (this._eslintUsedBits && this._eslintUsedBits.length >= (ast._semSymbolCount || 0)) {
+      this._eslintUsedBits.fill(0);
+    } else {
+      this._eslintUsedBits = new Uint8Array(ast._semSymbolCount || 256);
+    }
     this._tokenSkipList = null;
     this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
@@ -2866,7 +2882,8 @@ class SourceCode {
     v.defs = defs;
     v.scope = scope;
     v.identifiers = identNode ? [identNode] : [];
-    v.eslintUsed = false;
+    // eslintUsed lives in `this._eslintUsedBits` (side-table) — proto accessor
+    // on `_varProto` reads/writes it. No per-instance field needed.
     v._isReadFlag = is_read;
     v._isWrittenFlag = is_written || is_let;
     v.isValueVariable = !isTypeOnlyDecl;
