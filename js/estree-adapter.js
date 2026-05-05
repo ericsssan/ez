@@ -222,6 +222,9 @@ const SH = {
   SCOPE_THROUGH_REF_IDS: 164,    // u32[total_through_refs]
   SYM_REF_INDIRECT: 168,         // u32[ref_count] — ref_by_sym indirect index
   SCOPE_SYM_IDS: 172,            // u32[sym_count] — sym IDs sorted by scope (CSR)
+  // Phase B: per-node decl-sym CSR. Replaces JS-side `_ensureDeclSymIndex`.
+  DECL_SYM_NODE_STARTS: 176,     // u32[node_count + 1] — prefix-sum CSR offsets
+  DECL_SYM_NODE_IDS: 180,        // u32[total_entries]  — symbol IDs
 };
 
 const FLAG_HAS_BOM = 1;
@@ -438,6 +441,18 @@ class AstView {
         this._symRefBySym     = (_symRefIndirectOff > 0 && this._semRefCount > 0) ? new Uint32Array(buffer, _symRefIndirectOff, this._semRefCount) : null;
         const _scopeSymIdsOff = dv.getUint32(semOff + SH.SCOPE_SYM_IDS, true);
         this._scopeSymIds     = (_scopeSymIdsOff > 0 && this._semSymbolCount > 0) ? new Uint32Array(buffer, _scopeSymIdsOff, this._semSymbolCount) : null;
+        // Phase B: per-node decl-sym CSR. `_declSymNodeStarts[i]` is the start
+        // index into `_declSymNodeIds`; count = starts[i+1] - starts[i].
+        const _declSymStartsOff = dv.getUint32(semOff + SH.DECL_SYM_NODE_STARTS, true);
+        const _declSymIdsOff    = dv.getUint32(semOff + SH.DECL_SYM_NODE_IDS, true);
+        this._declSymNodeStarts = _declSymStartsOff > 0
+          ? new Uint32Array(buffer, _declSymStartsOff, this.nodeCount + 1)
+          : null;
+        // Total entry count is the last element of the prefix-sum array.
+        const _declSymTotal = this._declSymNodeStarts ? this._declSymNodeStarts[this.nodeCount] : 0;
+        this._declSymNodeIds = (_declSymIdsOff > 0 && _declSymTotal > 0)
+          ? new Uint32Array(buffer, _declSymIdsOff, _declSymTotal)
+          : null;
         this._symNameStarts   = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_STARTS, true),this._semSymbolCount);
         this._symNameLens     = new Uint32Array(buffer, dv.getUint32(semOff + SH.SYMBOL_NAME_LENS, true),  this._semSymbolCount);
         // Symbol name cache built lazily on first _symName() call.

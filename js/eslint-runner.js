@@ -1093,8 +1093,11 @@ class SourceCode {
     this._tokenObjCache = null;
     this._nodesByType = null;
     this.parserServices = {};
-    // _declSymIndex is file-specific — must be cleared so it rebuilds for the new AST.
+    // _declSymIndex / _varScopeNameIndex are file-specific — clear so they
+    // rebuild for the new AST. (Phase B: the heavy decl→sym Map is now Zig-
+    // baked; only the lighter var-scope-name Map is still rebuilt here.)
     this._declSymIndex = null;
+    this._varScopeNameIndex = null;
     // _declVarsCache: per-lintSource memo for getDeclaredVariables(node) results.
     // Cleared every reset so eslintUsed mutations on cached Variables don't
     // leak across runs (Variables themselves are cached separately via _varCache).
@@ -2036,57 +2039,62 @@ class SourceCode {
    * in the Zig buffer as CSR arrays.
    */
   _ensureDeclSymIndex() {
-    if (this._declSymIndex) return;
+    if (this._varScopeNameIndex !== null && this._varScopeNameIndex !== undefined) return;
     // Reuse across calls if the same AST already built it.
     const _shared = this._sharedCaches;
-    if (_shared && _shared.declSymIndex) {
-      this._declSymIndex = _shared.declSymIndex;
+    if (_shared && _shared.varScopeNameIndex) {
       this._varScopeNameIndex = _shared.varScopeNameIndex;
       return;
     }
     const ast = this._ast;
-    const declSymIndex = new Map();
-    // varScopeNameIndex: "${scopeId}:${name}" → [symId,...] for var symbols only.
-    // Used by getDeclaredVariables to merge sibling var declarations (e.g. `var a` in
-    // two separate branches) so block-scoped-var can detect cross-scope references.
+    // Phase B: when Zig pre-baked the decl→sym CSR, the JS Map is no longer
+    // needed — `_declSymsForNode` reads the typed-array slice directly.
+    // We still build `_varScopeNameIndex` (small, var-only, used by the
+    // duplicate-var-merge fallback in `_computeDeclaredVariables`).
     const varScopeNameIndex = new Map();
-    if (ast._symDeclNodes && ast._parentData) {
-      const pd2 = ast._parentData;
-      const tags2 = ast._nodeTags;
-      const NONE32b = 0xFFFFFFFF;
+    if (ast._symDeclNodes && ast._symFlags && ast._symScopeIds) {
+      const symFlags = ast._symFlags;
+      const symScopeIds = ast._symScopeIds;
       for (let i = 0; i < (ast._semSymbolCount || 0); i++) {
-        const declNodeIdx = ast._symDeclNodes[i];
-        if (declNodeIdx === NONE32b || declNodeIdx >= ast.nodeCount) continue;
-        let cur = declNodeIdx;
-        while (cur !== NONE && cur !== NONE32b && cur < ast.nodeCount) {
-          let arr = declSymIndex.get(cur);
-          if (!arr) { arr = []; declSymIndex.set(cur, arr); }
-          arr.push(i);
-          const curTag = tags2[cur];
-          if ((curTag >= 30 && curTag <= 34) || (curTag >= 63 && curTag <= 69) || _FN_TAGS.has(curTag)) break;
-          cur = pd2[cur];
-        }
-        // Build var-scope-name index for merging duplicate var declarations.
-        if (ast._symFlags && ast._symScopeIds) {
-          const flags = ast._symFlags[i];
-          const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
-          if (is_var_only) {
-            const scopeId = ast._symScopeIds[i];
-            const name = ast._symName(i);
-            const key = scopeId + ':' + name;
-            let arr2 = varScopeNameIndex.get(key);
-            if (!arr2) { arr2 = []; varScopeNameIndex.set(key, arr2); }
-            arr2.push(i);
-          }
-        }
+        const flags = symFlags[i];
+        // Match `_ensureDeclSymIndex` legacy path: var-only symbols are
+        // those with the var bit set and neither let nor const.
+        const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
+        if (!is_var_only) continue;
+        const scopeId = symScopeIds[i];
+        const name = ast._symName(i);
+        const key = scopeId + ':' + name;
+        let arr2 = varScopeNameIndex.get(key);
+        if (!arr2) { arr2 = []; varScopeNameIndex.set(key, arr2); }
+        arr2.push(i);
       }
     }
-    this._declSymIndex = declSymIndex;
     this._varScopeNameIndex = varScopeNameIndex;
+    // Legacy field — kept as truthy sentinel so callers that check for it
+    // pre-Phase B still see "index is built".
+    this._declSymIndex = varScopeNameIndex;
     if (_shared) {
-      _shared.declSymIndex = declSymIndex;
       _shared.varScopeNameIndex = varScopeNameIndex;
+      _shared.declSymIndex = varScopeNameIndex;
     }
+  }
+
+  /**
+   * Read the pre-baked decl→sym CSR. Returns a Uint32Array view of the
+   * symbol IDs declared at-or-below `nodeIdx` (up to function/class
+   * barrier), or `null` if the buffer doesn't carry the CSR or the node
+   * has no declared symbols. JSC handles `for (const i of typedArray)` and
+   * `typedArray.length` natively.
+   */
+  _declSymsForNode(nodeIdx) {
+    const ast = this._ast;
+    const starts = ast._declSymNodeStarts;
+    const ids = ast._declSymNodeIds;
+    if (!starts || !ids) return null;
+    const start = starts[nodeIdx];
+    const end = starts[nodeIdx + 1];
+    if (start === end) return null;
+    return ids.subarray(start, end);
   }
 
   /**
@@ -3133,10 +3141,10 @@ class SourceCode {
 
   _computeDeclaredVariables(node) {
     const ast = this._ast;
-    // Use real semantic data if available — O(1) via precomputed _declSymIndex.
+    // Use real semantic data if available — O(1) via the Zig-baked decl→sym
+    // CSR (`_declSymsForNode` reads a typed-array slice, no Map walk).
     if (ast._symDeclNodes && node._i !== undefined && node._i !== null) {
-      this._ensureDeclSymIndex();
-      const symIds = this._declSymIndex ? this._declSymIndex.get(node._i) : null;
+      const symIds = this._declSymsForNode(node._i);
       if (symIds && symIds.length > 0) {
         // Fast path: single symbol AND no var-sibling extension applies (the common
         // case — most decl-nodes own exactly one binding, and only `var` decls need
@@ -3145,10 +3153,16 @@ class SourceCode {
           const i = symIds[0];
           const flags = ast._symFlags ? ast._symFlags[i] : 0;
           const is_var_only = (flags & 0x01) !== 0 && (flags & 0x02) === 0 && (flags & 0x04) === 0;
-          if (!is_var_only || !this._varScopeNameIndex || !ast._symScopeIds) {
+          if (!is_var_only || !ast._symScopeIds) {
             const v = this._buildVariable(i);
             return v ? [v] : [];
           }
+          // var-only single symbol: still need the var-scope-name index for
+          // sibling merging — fall through to ensure it.
+          this._ensureDeclSymIndex();
+        } else {
+          // Multi-symbol path needs the var-scope-name index for sibling merging.
+          this._ensureDeclSymIndex();
         }
         // Merge variables with the same name AND def type (e.g. duplicate params `function f(a,b,a)`).
         // ESLint scope analysis merges them into one variable with multiple defs.
@@ -3161,7 +3175,8 @@ class SourceCode {
         // detection: `if (...) { var a=1; } else { var a=2; }` — each decl must
         // report references from the OTHER branch as out-of-scope.
         const seen = new Set(symIds);
-        const extendedIds = symIds.slice();
+        // Convert typed-array slice to plain Array — sibling extension uses .push().
+        const extendedIds = Array.from(symIds);
         if (this._varScopeNameIndex && ast._symScopeIds && ast._symFlags) {
           for (const i of symIds) {
             const flags = ast._symFlags[i];

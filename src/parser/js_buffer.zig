@@ -182,10 +182,18 @@ pub const SemanticHeader = extern struct {
     // Scope → symbols CSR: sym IDs sorted by scope (counting sort).
     // scope_bindings_start/count index into this array, not the raw sym table.
     scope_sym_ids_offset: u32 = 0,             // u32[sym_count]
+
+    // Node → declared-symbols CSR (Phase B: replaces JS-side
+    // `_ensureDeclSymIndex`). For each node, the list of symbols whose
+    // declaration is at-or-below that node, walking up to the nearest
+    // function/class barrier. `getDeclaredVariables(node)` reads it
+    // directly. Prefix-sum form: count[i] = starts[i+1] - starts[i].
+    decl_sym_node_starts_offset: u32 = 0,      // u32[node_count + 1]
+    decl_sym_node_ids_offset: u32 = 0,         // u32[total_entries]
 };
 
 comptime {
-    std.debug.assert(@sizeOf(SemanticHeader) == 176);
+    std.debug.assert(@sizeOf(SemanticHeader) == 184);
     std.debug.assert(@offsetOf(SemanticHeader, "ref_write_expr_ids_offset") == 84);
     std.debug.assert(@offsetOf(SemanticHeader, "node_depths_offset") == 148);
     std.debug.assert(@offsetOf(SemanticHeader, "symbol_kinds_offset") == 152);
@@ -252,6 +260,23 @@ pub const CfgGraphHeader = extern struct {
 /// Serialize scope/symbol/reference tables into the bump region.
 /// Returns the byte offset of the written SemanticHeader (for BufferHeader.semantic_data_offset).
 /// Returns error if there is not enough space in the buffer.
+/// Tags that halt the `decl_sym` walk — function and class boundaries.
+/// Mirrors `_FN_TAGS` + `_CLASS_TAG_SET` in js/eslint-runner.js. A symbol
+/// declared inside a function only "belongs to" that function and its
+/// containing scope path; the walk-up stops at the function boundary.
+inline fn isDeclSymBarrierTag(tag: ast_mod.Node.Tag) bool {
+    return switch (tag) {
+        .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+        .class_decl,
+        .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+        .class_expr, .arrow_fn, .async_arrow_fn,
+        .method_def, .getter_def, .setter_def, .constructor_def,
+        .computed_method_def, .computed_getter_def, .computed_setter_def,
+        .ts_declare_function => true,
+        else => false,
+    };
+}
+
 pub fn writeSemanticData(
     buf: [*]u8,
     backing: *JsBufferAllocator,
@@ -586,6 +611,62 @@ pub fn writeSemanticData(
         }
     }
 
+    // ── Node → declared symbols CSR (Phase B) ───────────────────────
+    // For each node, list of symbols whose decl is at-or-below that node,
+    // walking up to the nearest function/class barrier. Replaces the JS-side
+    // `_ensureDeclSymIndex` Map+parent-walk (~3.8% of CPU profile).
+    // Prefix-sum form: count[i] = starts[i+1] - starts[i].
+    const decl_sym_starts = try alloc.alloc(u32, node_count + 1);
+    @memset(decl_sym_starts, 0);
+    var decl_sym_total: u32 = 0;
+    if (symbol_count > 0 and node_count > 0) {
+        // Pass 1: count entries per node (walk up from each decl_node to barrier).
+        for (0..symbol_count) |i| {
+            const decl_idx = symbol_decl_nodes[i];
+            if (decl_idx == none32 or decl_idx >= node_count) continue;
+            var cur: u32 = decl_idx;
+            while (cur < node_count) {
+                decl_sym_starts[cur] += 1;
+                if (isDeclSymBarrierTag(node_tags[cur])) break;
+                const p = parent_indices[cur];
+                if (p == none32 or p >= node_count) break;
+                cur = p;
+            }
+        }
+        // Convert counts to prefix-sum starts. After this loop:
+        // decl_sym_starts[i] = position where node i's entries begin.
+        // decl_sym_starts[node_count] = total entry count.
+        var running: u32 = 0;
+        for (0..node_count) |i| {
+            const c = decl_sym_starts[i];
+            decl_sym_starts[i] = running;
+            running += c;
+        }
+        decl_sym_starts[node_count] = running;
+        decl_sym_total = running;
+    }
+    const decl_sym_ids = try alloc.alloc(u32, decl_sym_total);
+    if (decl_sym_total > 0) {
+        // Pass 2: scatter symbol IDs into the CSR using a per-node fill cursor.
+        const fill = try alloc.alloc(u32, node_count);
+        defer alloc.free(fill);
+        @memset(fill, 0);
+        for (0..symbol_count) |i| {
+            const decl_idx = symbol_decl_nodes[i];
+            if (decl_idx == none32 or decl_idx >= node_count) continue;
+            var cur: u32 = decl_idx;
+            while (cur < node_count) {
+                const slot = decl_sym_starts[cur] + fill[cur];
+                decl_sym_ids[slot] = @intCast(i);
+                fill[cur] += 1;
+                if (isDeclSymBarrierTag(node_tags[cur])) break;
+                const p = parent_indices[cur];
+                if (p == none32 or p >= node_count) break;
+                cur = p;
+            }
+        }
+    }
+
     // ── SemanticHeader ────────────────────────────────────────────
     const header_mem = try alloc.alloc(u8, @sizeOf(SemanticHeader));
     const sem_header: *SemanticHeader = @ptrCast(@alignCast(header_mem.ptr));
@@ -657,6 +738,8 @@ pub fn writeSemanticData(
     sem_header.scope_through_ref_ids_offset = if (total_through > 0) ptrOffsetPub(buf, scope_through_ref_ids.ptr) else 0;
 
     sem_header.scope_sym_ids_offset = if (symbol_count > 0) ptrOffsetPub(buf, scope_sym_ids.ptr) else 0;
+    sem_header.decl_sym_node_starts_offset = if (node_count > 0) ptrOffsetPub(buf, decl_sym_starts.ptr) else 0;
+    sem_header.decl_sym_node_ids_offset = if (decl_sym_total > 0) ptrOffsetPub(buf, decl_sym_ids.ptr) else 0;
 
     // Serialize ref_by_sym indirect index (ReferenceId → u32).
     if (sem.ref_by_sym.len > 0) {
