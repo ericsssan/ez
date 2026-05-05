@@ -728,13 +728,50 @@ let _activeBuilder = null;
 //   - All Variables share one hidden class → property accesses like
 //     `v.scope`, `v.name`, `v.eslintUsed` become monomorphic.
 const _varProto = {
-  isRead()    { return this._isReadFlag; },
-  isWritten() { return this._isWrittenFlag; },
-  // eslintUsed lives in a Uint8Array on the SourceCode (cleared every
+  // Read-only flag accessors — read directly from the buffer rather than from
+  // cached instance fields. V8 inlines these as monomorphic.
+  isRead()    { return (this._flags16 & 0x800) !== 0; },
+  isWritten() { return (this._flags16 & 0x400) !== 0 || (this._flags16 & 0x02) !== 0; },
+  // eslintUsed lives in a Uint8Array on the active SourceCode (cleared every
   // `reset()`). Variables don't carry a per-instance mutable boolean; the
   // accessor reads/writes the side-table via the variable's `_symId`.
   get eslintUsed() { return _activeBuilder._eslintUsedBits[this._symId] !== 0; },
   set eslintUsed(v) { _activeBuilder._eslintUsedBits[this._symId] = v ? 1 : 0; },
+  // scope / defs / identifiers / isValueVariable / isTypeVariable / writeable /
+  // eslintImplicitGlobalSetting are all derived from the buffer and computed
+  // lazily on first access. Variables whose rules never probe these fields
+  // (mostly the case for parameters / class names / imports) skip the work.
+  get scope() {
+    if (this._scope === undefined) this._scope = _activeBuilder._computeVarScope(this);
+    return this._scope;
+  },
+  set scope(v) { this._scope = v; },
+  get defs() {
+    if (this._defs === undefined) this._defs = _activeBuilder._computeVarDefs(this);
+    return this._defs;
+  },
+  set defs(v) { this._defs = v; },
+  get identifiers() {
+    if (this._identifiers === undefined) {
+      const d = this.defs;
+      this._identifiers = (d.length > 0 && d[0].name) ? [d[0].name] : [];
+    }
+    return this._identifiers;
+  },
+  set identifiers(v) { this._identifiers = v; },
+  get isValueVariable() {
+    const d = this.defs;
+    const t = d.length > 0 ? d[0].type : undefined;
+    return t !== 'Type' && t !== 'TypeParameter';
+  },
+  get isTypeVariable() {
+    const d = this.defs;
+    const t = d.length > 0 ? d[0].type : undefined;
+    return t === 'Type' || t === 'TypeParameter';
+  },
+  // writeable / eslintImplicitGlobalSetting are mutable (env-globals and
+  // /*global*/ comment-directive logic overwrite them). Initialized as data
+  // fields in `_buildVariable` so the setter pathway is just a plain write.
   get references() {
     let refs = this._refs;
     if (refs === null) {
@@ -2665,30 +2702,9 @@ class SourceCode {
     // ESLint's eslint-scope only creates variables for actual identifiers, not the pattern itself.
     if (!name) { this._varCache[symId] = null; return null; }
 
-    // Allocate the Variable shell EARLY and cache it so any recursive
-    // `_buildVariable(symId)` call (e.g. from `_buildThinScope` populating
-    // `scope.set` with this same symbol) returns the same object. Synth refs
-    // below refer to `v` directly (it IS the resolved target) so we no longer
-    // need a separate ThinVariable. Other fields (defs, scope, references…)
-    // are filled in below before the function returns.
-    const v = Object.create(_varProto);
-    v.name = name;
-    v._symId = symId;
-    this._varCache[symId] = v;
-
-    // SymbolFlags bits (matches symbol.zig):
-    // 0=is_var, 1=is_let, 2=is_const, 3=is_function, 4=is_class,
-    // 5=is_parameter, 6=is_catch_param, 7=is_import, 8=is_export,
-    // 9=is_hoisted, 10=is_written, 11=is_read, 12=is_type_of, 13=is_implicit_global
-    const is_param  = (flags16 & 0x20) !== 0;
-    const is_const  = (flags16 & 0x04) !== 0;
-    const is_import = (flags16 & 0x80) !== 0;
-    const is_read   = (flags16 & 0x800) !== 0;
-    const is_written= (flags16 & 0x400) !== 0;
-
     // Reference range for this symbol (Zig-side CSR). The actual Reference
-    // objects are built lazily in `get references()` so rules that never read
-    // `.references` (e.g. no-redeclare's defs-only check) skip the work entirely.
+    // objects are built lazily by the `references` getter — rules that never
+    // read `.references` skip the work entirely.
     const refStart = ast._symRefStarts ? ast._symRefStarts[symId] : 0;
     const refEnd = ast._symRefEnds ? ast._symRefEnds[symId] : 0;
     let hasWriteInitRef = false; // controls whether synth init-write ref is added
@@ -2698,114 +2714,102 @@ class SourceCode {
         if (refKinds[symRefBySym[j]] === 4) { hasWriteInitRef = true; break; }
       }
     }
-    // Synth refs accumulate into this small array; null if none. Each entry:
-    //   { pos: -1, ref }  — unshift to front (catch-param destructure)
-    //   { pos: N,  ref }  — splice before first basic ref with start > N
-    const declNodeIdx = ast._symDeclNodes[symId];
+
+    // Allocate the Variable shell with a fixed, small set of instance fields.
+    // Everything else (defs, scope, identifiers, isValueVariable, isTypeVariable,
+    // writeable, eslintImplicitGlobalSetting, references, synthRefs) is computed
+    // lazily on first access via `_varProto` getters + `_computeVar*` helpers.
+    // Variables for which a rule never probes those fields skip the cost entirely.
+    const v = Object.create(_varProto);
+    v.name = name;
+    v._ast = ast;
+    v._sc = this;
+    v._symId = symId;
+    v._flags16 = flags16;
+    v._hasWriteInitRef = hasWriteInitRef;
+    v._declNodeIdx = ast._symDeclNodes ? ast._symDeclNodes[symId] : NONE32;
+    v._refStart = refStart;
+    v._refEnd = refEnd;
+    v._scope = undefined;        // lazy → _computeVarScope
+    v._defs = undefined;         // lazy → _computeVarDefs
+    v._identifiers = undefined;  // lazy → derived from defs
+    v._refs = null;              // lazy → references getter
+    v._synthRefs = undefined;    // lazy → _computeVariableSynthRefs
+    // Mutable: env-globals / comment-directives may flip these — they're
+    // initialized to the flag-derived value here and live on the instance.
+    const _isImplicitGlobal = (flags16 & 0x2000) !== 0;
+    v.writeable = _isImplicitGlobal ? false : undefined;
+    v.eslintImplicitGlobalSetting = _isImplicitGlobal ? 'writable' : undefined;
+    this._varCache[symId] = v;
+    return v;
+  }
+
+  /**
+   * Compute Variable.defs lazily (called from `_varProto.get defs`).
+   * Reads buffer via `v._declNodeIdx`, `v._flags16`, `v._symId`. Returns
+   * the array `[{type, kind, name, node, parent}]` or `[]` if no decl node.
+   */
+  _computeVarDefs(v) {
+    const ast = v._ast;
+    const symId = v._symId;
+    const flags16 = v._flags16;
+    const NONE32 = 0xFFFFFFFF;
+    const declNodeIdx = v._declNodeIdx;
     const declNode = (declNodeIdx !== NONE32 && declNodeIdx < ast.nodeCount)
       ? nodeView(ast, declNodeIdx) : null;
+    if (!declNode) return [];
 
-    // Determine def type from pre-baked BindingKind (falls back to flag bits if unavailable).
+    const is_param  = (flags16 & 0x20) !== 0;
+    const is_const  = (flags16 & 0x04) !== 0;
+    const is_let    = (flags16 & 0x02) !== 0;
+    const is_import = (flags16 & 0x80) !== 0;
+
     const defType = ast._symKinds
       ? (_DEF_TYPE_FROM_KIND[ast._symKinds[symId]] ?? 'Variable')
       : (is_param ? 'Parameter' : (flags16 & 0x40) ? 'CatchClause' : (flags16 & 0x08) ? 'FunctionName' : (flags16 & 0x10) ? 'ClassName' : is_import ? 'ImportBinding' : 'Variable');
 
-    // For import bindings, the Zig semantic stores the specifier node as the decl node,
-    // but eslint-scope puts the *local identifier* in variable.identifiers and def.name.
-    // (def.node stays as the specifier, def.parent stays as the ImportDeclaration.)
+    // For import bindings, def.name is the local Identifier (not the specifier).
     let identNode = declNode;
-    if (is_import && declNode) {
+    if (is_import) {
       const local = declNode.local;
       if (local && local.type === 'Identifier') identNode = local;
     }
 
-    // Map declNode (Identifier) to the ESLint-expected def.node and def.parent:
-    //   Variable:    def.name=Identifier, def.node=VariableDeclarator, def.parent=VariableDeclaration
-    //   CatchClause: def.name=Identifier, def.node=Identifier, def.parent=TryStatement
-    //   Parameter:   def.name=Identifier, def.node=Identifier, def.parent=FunctionDeclaration
-    //   FunctionName:def.name=Identifier, def.node=FunctionDeclaration, def.parent=container
-    //   ClassName:   def.name=Identifier, def.node=ClassDeclaration, def.parent=container
-    //   ImportBinding: def.name=Identifier, def.node=ImportSpecifier, def.parent=ImportDeclaration
-    //   TypeDefinition: def.name=Identifier(synthetic), def.node=TSTypeAliasDeclaration etc., def.parent=container
-    let defNode = declNode ? _findDefNode(declNode, defType) : null;
-    // For TypeDefinition (TS type alias / interface / enum declared with declaration node as decl):
-    // declNode IS the declaration; extract id as a synthetic identifier with parent=declNode.
-    // For namespace_decl, declNode is already the identifier node (lhs of ts_namespace_decl),
-    // so its .parent getter already returns TSModuleDeclaration — skip synthesis in that case.
-    if ((defType === 'Type' || defType === 'TSEnumName' || defType === 'TSModuleName') && declNode && declNode.type !== 'Identifier') {
+    let defNode = _findDefNode(declNode, defType);
+    if ((defType === 'Type' || defType === 'TSEnumName' || defType === 'TSModuleName') && declNode.type !== 'Identifier') {
       const tsId = declNode.id;
       if (tsId && tsId.type === 'Identifier') {
         tsId.parent = declNode;
         identNode = tsId;
       }
-      // defNode is already declNode from _findDefNode
     }
-    const is_let = (flags16 & 0x02) !== 0;
-    const is_var = (flags16 & 0x01) !== 0;
-    // kind: for Variable defs, matches the declaration keyword ('const', 'let', 'var').
-    // Rules like unicorn/prefer-set-size check `definition.kind !== 'const'` to skip non-const vars.
+
     const defKind = (defType === 'Variable') ? (is_const ? 'const' : is_let ? 'let' : 'var') : undefined;
-    const defs = declNode ? [{ type: defType, kind: defKind, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null }] : [];
+    return [{ type: defType, kind: defKind, name: identNode, node: defNode, parent: defNode ? defNode.parent || null : null }];
+  }
 
+  /**
+   * Compute Variable.scope lazily (called from `_varProto.get scope`).
+   * Resolves the symbol's scope and wraps it in an implicit-global Proxy
+   * when needed. Returns the active SourceCode's stub scope if the symbol
+   * has no associated scope.
+   */
+  _computeVarScope(v) {
+    const ast = v._ast;
+    const symId = v._symId;
+    const flags16 = v._flags16;
+    const NONE32 = 0xFFFFFFFF;
     const symScopeId = ast._symScopeIds ? ast._symScopeIds[symId] : NONE;
-    // Use a thin scope (no variables) to avoid infinite recursion.
-    // variable.scope is used primarily for variableScope chain traversal.
-    // Cached via _thinScopeCache so same scopeId always returns the same object,
-    // required for prefer-const's `writer.from === variable.scope` identity check.
-    let scope;
-    if (symScopeId !== undefined && symScopeId !== NONE32) {
-      const thinScope = this._buildScope(symScopeId);
-      // Implicit globals (kind=10) must have scope.type='global' regardless of the Zig scope kind.
-      // In single-scope module files, scope 0 has kind=1 ('module'), but Zig declares implicit
-      // globals there — they must appear in a 'global'-typed scope to satisfy rules like
-      // prefer-object-has-own that check variable.scope.type === 'global'.
-      const isImplicitGlobal = ast._symKinds ? (ast._symKinds[symId] === 10) : ((flags16 & 0x2000) !== 0);
-      const _cg2 = this._configGlobals;
-      scope = (isImplicitGlobal && thinScope.type !== 'global' && !(_cg2 && _cg2[name] === 'off'))
-        ? new Proxy(thinScope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } })
-        : thinScope;
-    } else {
-      scope = this._stubScope();
-    }
-
-
-    const is_implicit_global = (flags16 & 0x2000) !== 0;
-    // @typescript-eslint/scope-manager compat: isValueVariable / isTypeVariable.
-    // Type-only declarations (type aliases, interfaces) are NOT value variables.
-    // Enums and namespaces ARE value variables (they compile to runtime objects).
-    // Rules like no-shadow use these to implement ignoreTypeValueShadow logic.
-    const isTypeOnlyDecl = defType === 'Type' || defType === 'TypeParameter';
-    // Finalize fields on `v` (already allocated and cached at the top of this
-    // function so synth refs above could refer to it). Field assignment order
-    // is fixed across every Variable so V8 sees one shared hidden class.
-    v.defs = defs;
-    v.scope = scope;
-    v.identifiers = identNode ? [identNode] : [];
-    // eslintUsed lives in `this._eslintUsedBits` (side-table) — proto accessor
-    // on `_varProto` reads/writes it. No per-instance field needed.
-    v._isReadFlag = is_read;
-    v._isWrittenFlag = is_written || is_let;
-    v.isValueVariable = !isTypeOnlyDecl;
-    v.isTypeVariable = isTypeOnlyDecl;
-    // writeable / eslintImplicitGlobalSetting: rule code reads these by
-    // identity (`writeable === false` / `!== undefined`), so they need to be
-    // present-as-undefined for non-implicit-globals to keep the shape stable.
-    v.writeable = is_implicit_global ? false : undefined;
-    v.eslintImplicitGlobalSetting = is_implicit_global ? 'writable' : undefined;
-    // Lazy refs backing fields.
-    v._ast = ast;
-    v._sc = this;
-    v._refStart = refStart;
-    v._refEnd = refEnd;
-    // Synth refs (catch-param destructure / let-const init / var-in-forof)
-    // deferred to first `.references` access — see `_computeVariableSynthRefs`.
-    // Variables whose `.references` is never read skip the parent-chain walks.
-    v._declNodeIdx = declNodeIdx;
-    v._flags16 = flags16;
-    v._hasWriteInitRef = hasWriteInitRef;
-    v._synthRefs = undefined;
-    v._refs = null;
-    return v;
+    if (symScopeId === undefined || symScopeId === NONE32) return this._stubScope();
+    const scope = this._buildScope(symScopeId);
+    // Implicit globals (kind=10) must report scope.type='global' even when
+    // they live in a 'module' scope (single-scope module files). Wrapped via
+    // Proxy so identity checks still work.
+    const isImplicitGlobal = ast._symKinds ? (ast._symKinds[symId] === 10) : ((flags16 & 0x2000) !== 0);
+    const _cg = this._configGlobals;
+    return (isImplicitGlobal && scope.type !== 'global' && !(_cg && _cg[v.name] === 'off'))
+      ? new Proxy(scope, { get(t, p) { return p === 'type' ? 'global' : Reflect.get(t, p); } })
+      : scope;
   }
 
   /** Build an ESLint Reference object for a reference entry. Cached per refIdx. */
