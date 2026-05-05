@@ -4677,7 +4677,7 @@ function _invokeFused(desc, node, nodeIdx, context) {
           catch (e) { context._reports.push({ ruleId: arr[k].ruleId, message: `Plugin error: ${e.message}` }); }
         }
       }
-    } else if (!skip.allSkipped) {
+    } else if (!skip._allSkipped) {
       for (let h = 0; h < n; h++) {
         if (skip.has(arr[h].ruleId)) continue;
         try { arr[h]._state.inner(node); }
