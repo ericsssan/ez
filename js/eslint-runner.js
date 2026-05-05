@@ -6999,7 +6999,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   const { events: dfsEvents, count: dfsCount } = getDFSEvents();
   for (let i = 0; i < dfsCount; i++) {
-    if (skipSet.allSkipped) break;
+    if (skipSet._allSkipped) break; // direct field access skips getter dispatch
     const ev = dfsEvents[i];
     if (ev >= 0) {
       // Enter event
