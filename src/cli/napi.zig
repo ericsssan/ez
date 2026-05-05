@@ -178,6 +178,8 @@ fn parseImpl(
     const dfs_events_offset = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
     const resolved_parent_offset = if (traversal.resolved_parents.len > 0)
         js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
+    const type_overrides_offset = if (traversal.type_overrides.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
 
     // Run semantic analysis BEFORE converting to UTF-16 so that
     // tokenText() (used for symbol names) reads correct byte offsets.
@@ -391,6 +393,7 @@ fn parseImpl(
         .sorted_by_start_offset = sorted_by_start_offset,
         .tok_cmt_merge_offset = tok_cmt_merge_offset,
         .resolved_parent_offset = resolved_parent_offset,
+        .type_overrides_offset = type_overrides_offset,
     });
 
     return backing.bytesUsed();
@@ -462,6 +465,8 @@ fn parseAndLintImpl(
     const dfs_events_offset     = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
     const resolved_parent_offset = if (traversal.resolved_parents.len > 0)
         js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
+    const type_overrides_offset = if (traversal.type_overrides.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
 
     // Semantic analysis — keep result alive for lint below.
     var semantic_data_offset: u32 = 0;
@@ -697,6 +702,7 @@ fn parseAndLintImpl(
         .sorted_by_start_offset = sorted_by_start_offset,
         .tok_cmt_merge_offset   = tok_cmt_merge_offset,
         .resolved_parent_offset = resolved_parent_offset,
+        .type_overrides_offset  = type_overrides_offset,
     });
 
     return backing.bytesUsed();

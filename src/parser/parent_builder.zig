@@ -39,6 +39,36 @@ pub const TraversalResult = struct {
     /// `nodeView` unwraps parenthesised expressions. Eliminates a hot while-loop
     /// in the JS `get parent` slow path.
     resolved_parents: []u32,
+    /// type_overrides[i] = ESTree-shape type override slot for node i, or 0 to
+    /// mean "use TAG_NAMES[tag]" (the common default). Lets JS skip the
+    /// per-node `_computeNodeType` switch + token text matching for the five
+    /// disambiguation cases. See `TypeOverride` below for the slot layout.
+    type_overrides: []u8,
+};
+
+/// ESTree-shape type override IDs. Must stay in sync with `_OVERRIDE_TYPES`
+/// in `js/estree-adapter.js`. Slot 0 is reserved to mean "no override".
+pub const TypeOverride = enum(u8) {
+    none = 0,
+    private_identifier = 1,
+    property = 2, // method_def inside object_literal/object_pattern
+    ts_import_equals_declaration = 3,
+    ts_module_block = 4,
+    ts_literal_type = 5,
+    ts_any_keyword = 6,
+    ts_bigint_keyword = 7,
+    ts_boolean_keyword = 8,
+    ts_intrinsic_keyword = 9,
+    ts_never_keyword = 10,
+    ts_null_keyword = 11,
+    ts_number_keyword = 12,
+    ts_object_keyword = 13,
+    ts_string_keyword = 14,
+    ts_symbol_keyword = 15,
+    ts_this_type = 16,
+    ts_undefined_keyword = 17,
+    ts_unknown_keyword = 18,
+    ts_void_keyword = 19,
 };
 
 /// Called by Parser.addNode to record parent→child edges incrementally.
@@ -420,7 +450,8 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
     if (n == 0) {
         const empty_min_tok = try alloc.alloc(u32, 0);
         const empty_resolved = try alloc.alloc(u32, 0);
-        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = empty_min_tok, .resolved_parents = empty_resolved };
+        const empty_type_ov = try alloc.alloc(u8, 0);
+        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = empty_min_tok, .resolved_parents = empty_resolved, .type_overrides = empty_type_ov };
     }
 
     // Post-order: trivial (bottom-up build → always [1..n-1, 0]).
@@ -534,7 +565,109 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         }
     }
 
-    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = min_tok, .resolved_parents = resolved_parents };
+    // ── Type overrides (ESTree-shape `type` disambiguation) ────────────────
+    // Pre-bake the result of JS-side `_computeNodeType` into a u8 per node so
+    // the JS adapter skips its per-node switch + token-text matching. Slot 0
+    // means "no override; use TAG_NAMES[tag]" (the common case).
+    const type_overrides = try alloc.alloc(u8, n);
+    @memset(type_overrides, 0);
+    {
+        const tags = tree.nodes.items(.tag);
+        const node_main_tokens = tree.nodes.items(.main_token);
+        const data = tree.nodes.items(.data);
+        const tok_starts = tree.tokens.items(.start);
+        const tok_lens = tree.tokens.items(.len);
+        const source = tree.source;
+        for (0..n) |i| {
+            switch (tags[i]) {
+                .identifier => {
+                    const tok = node_main_tokens[i];
+                    const start = tok_starts[tok];
+                    if (start < source.len and source[start] == '#') {
+                        type_overrides[i] = @intFromEnum(TypeOverride.private_identifier);
+                    }
+                },
+                .method_def => {
+                    const p = parents[i];
+                    if (p != NONE) {
+                        const ptag = tags[p];
+                        if (ptag == .object_literal or ptag == .object_pattern) {
+                            type_overrides[i] = @intFromEnum(TypeOverride.property);
+                        }
+                    }
+                },
+                .import_decl => {
+                    if (data[i].lhs == .none and data[i].rhs != .none) {
+                        type_overrides[i] = @intFromEnum(TypeOverride.ts_import_equals_declaration);
+                    }
+                },
+                .block_stmt => {
+                    const p = parents[i];
+                    if (p != NONE) {
+                        const ptag = tags[p];
+                        if (ptag == .ts_namespace_decl or ptag == .ts_module_decl) {
+                            type_overrides[i] = @intFromEnum(TypeOverride.ts_module_block);
+                        }
+                    }
+                },
+                .ts_type_reference => {
+                    if (data[i].rhs == .none) {
+                        const tok = node_main_tokens[i];
+                        const start = tok_starts[tok];
+                        const len = tok_lens[tok];
+                        if (start + len <= source.len) {
+                            const text = source[start .. start + len];
+                            if (computeTsTypeRefOverride(text)) |ov| {
+                                type_overrides[i] = @intFromEnum(ov);
+                            }
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = min_tok, .resolved_parents = resolved_parents, .type_overrides = type_overrides };
+}
+
+/// Match a TSTypeReference's main-token text against TS keyword type names
+/// and literal-type sigils, returning the corresponding override slot.
+/// Mirrors the `_TS_KW_TYPES` table + literal sigil checks in the JS adapter.
+fn computeTsTypeRefOverride(text: []const u8) ?TypeOverride {
+    if (text.len == 0) return null;
+    // Whitespace trim is unnecessary here — main-token text is already
+    // trimmed by the lexer for identifier/keyword tokens.
+    const TsKw = struct { name: []const u8, ov: TypeOverride };
+    const kws = [_]TsKw{
+        .{ .name = "any", .ov = .ts_any_keyword },
+        .{ .name = "bigint", .ov = .ts_bigint_keyword },
+        .{ .name = "boolean", .ov = .ts_boolean_keyword },
+        .{ .name = "intrinsic", .ov = .ts_intrinsic_keyword },
+        .{ .name = "never", .ov = .ts_never_keyword },
+        .{ .name = "null", .ov = .ts_null_keyword },
+        .{ .name = "number", .ov = .ts_number_keyword },
+        .{ .name = "object", .ov = .ts_object_keyword },
+        .{ .name = "string", .ov = .ts_string_keyword },
+        .{ .name = "symbol", .ov = .ts_symbol_keyword },
+        .{ .name = "this", .ov = .ts_this_type },
+        .{ .name = "undefined", .ov = .ts_undefined_keyword },
+        .{ .name = "unknown", .ov = .ts_unknown_keyword },
+        .{ .name = "void", .ov = .ts_void_keyword },
+    };
+    for (kws) |kw| {
+        if (std.mem.eql(u8, text, kw.name)) return kw.ov;
+    }
+    // Literal-type sigils: matches JS `text.charCodeAt(0)` checks for
+    // string/template/numeric/boolean/negative-numeric literal type refs.
+    const c = text[0];
+    if (c == '\'' or c == '"' or c == '`' or (c >= '0' and c <= '9') or c == '-') {
+        return .ts_literal_type;
+    }
+    if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) {
+        return .ts_literal_type;
+    }
+    return null;
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

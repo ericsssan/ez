@@ -167,6 +167,10 @@ const H = {
   // v12: resolved parent indices (parent post grouping_expr / ts_parenthesized_type
   // skip). Eliminates a parent-chain while-loop in `get parent`'s slow path.
   RESOLVED_PARENT_OFFSET: 140,
+  // v13: u8 type override per node — pre-baked result of the JS-side
+  // `_computeNodeType` switch. 0 = use TAG_NAMES[tag]; 1..19 = override
+  // slot in `_OVERRIDE_TYPES`. See parent_builder.zig TypeOverride enum.
+  TYPE_OVERRIDES_OFFSET: 144,
 };
 
 // CfgGraphHeader: 25 u32 fields = 100 bytes
@@ -354,6 +358,13 @@ class AstView {
     const resolvedParentOff = dv.getUint32(H.RESOLVED_PARENT_OFFSET, true);
     this._resolvedParentData = resolvedParentOff > 0
       ? new Uint32Array(buffer, resolvedParentOff, this.nodeCount)
+      : null;
+    // v13: per-node type override slot. 0 = use TAG_NAMES[tag]; 1..19 select
+    // an entry from `_OVERRIDE_TYPES`. Eliminates the per-node switch +
+    // token-text matching that `_computeNodeType` used to run on every node.
+    const typeOverridesOff = dv.getUint32(H.TYPE_OVERRIDES_OFFSET, true);
+    this._typeOverrides = typeOverridesOff > 0
+      ? new Uint8Array(buffer, typeOverridesOff, this.nodeCount)
       : null;
 
     // DFS traversal orders (v4 — pre-order and post-order, computed in Zig)
@@ -1008,86 +1019,45 @@ function _memberToQualifiedName(ast, idx) {
   return _syntheticNode('TSQualifiedName', start, end, { left: leftNode, right: rightNode }, ast);
 }
 
-// Per-tag constants extracted from `T` once at module-init so the switch
-// in `_computeNodeType` dispatches on hoisted integer constants instead of
-// re-resolving `T.identifier` etc. on every node.
-const _T_IDENTIFIER       = T.identifier;
-const _T_METHOD_DEF       = T.method_def;
-const _T_IMPORT_DECL      = T.import_decl;
-const _T_BLOCK_STMT       = T.block_stmt;
-const _T_TS_TYPE_REFERENCE = T.ts_type_reference;
-const _T_OBJECT_LITERAL   = T.object_literal;
-const _T_OBJECT_PATTERN   = T.object_pattern;
-const _T_TS_NAMESPACE_DECL = T.ts_namespace_decl;
-const _T_TS_MODULE_DECL   = T.ts_module_decl;
+// ESTree-shape type override slots. Index 0 is reserved as "no override"
+// (use TAG_NAMES[tag]); indices 1..19 mirror `parent_builder.TypeOverride`
+// in Zig and must stay in sync with that enum.
+const _OVERRIDE_TYPES = [
+  null,                          // 0 — no override (sentinel)
+  'PrivateIdentifier',           // 1
+  'Property',                    // 2 — method_def inside object_literal/object_pattern
+  'TSImportEqualsDeclaration',   // 3
+  'TSModuleBlock',               // 4
+  'TSLiteralType',               // 5
+  'TSAnyKeyword',                // 6
+  'TSBigIntKeyword',             // 7
+  'TSBooleanKeyword',            // 8
+  'TSIntrinsicKeyword',          // 9
+  'TSNeverKeyword',              // 10
+  'TSNullKeyword',               // 11
+  'TSNumberKeyword',             // 12
+  'TSObjectKeyword',             // 13
+  'TSStringKeyword',             // 14
+  'TSSymbolKeyword',             // 15
+  'TSThisType',                  // 16
+  'TSUndefinedKeyword',          // 17
+  'TSUnknownKeyword',            // 18
+  'TSVoidKeyword',               // 19
+];
 
 // Compute the ESTree-shape `type` string for a node at construction time.
-// Buffer-direct: reads `_nodeTags`, `_parentData`, `_mainTokens`, `_tokStarts`
-// without ever touching a wrapper. Stored as an own data field on each node
-// (see `_nodeViewRaw`) so `node.type` is a direct property read, no getter.
+// Fast path: read the pre-baked `_typeOverrides[index]` slot — Zig already
+// resolved the disambiguation cases (PrivateIdentifier, Property,
+// TSImportEqualsDeclaration, TSModuleBlock, TS keyword/literal types) at
+// parse time. Slot 0 means "no override; use TAG_NAMES[tag]".
+// Fallback: when the buffer doesn't carry the v13 array (legacy), recompute
+// from the raw tag.
 function _computeNodeType(ast, index, tag) {
-  // Integer-tag dispatch: most tags (default case) map directly to
-  // TAG_NAMES[tag]. Five tags need contextual disambiguation. Switching
-  // on the numeric tag avoids the per-node `TAG_NAMES[tag]` string read +
-  // chain of `tagName === '…'` string comparisons that the previous shape
-  // ran on every node.
-  switch (tag) {
-    case _T_IDENTIFIER: {
-      const pos = ast._tokStarts[ast._mainTokens[index]];
-      if (pos < ast.source.length && ast.source.charCodeAt(pos) === 35) {
-        return 'PrivateIdentifier';
-      }
-      return 'Identifier';
-    }
-    case _T_METHOD_DEF: {
-      const pd = ast._parentData;
-      if (pd) {
-        const parentIdx = pd[index];
-        if (parentIdx !== NONE) {
-          const parentTag = ast._nodeTags[parentIdx];
-          if (parentTag === _T_OBJECT_LITERAL || parentTag === _T_OBJECT_PATTERN) {
-            return 'Property';
-          }
-        }
-      }
-      return 'MethodDefinition';
-    }
-    case _T_IMPORT_DECL: {
-      if (ast.nodeLhs(index) === NONE && ast.nodeRhs(index) !== NONE) {
-        return 'TSImportEqualsDeclaration';
-      }
-      return 'ImportDeclaration';
-    }
-    case _T_BLOCK_STMT: {
-      const pd = ast._parentData;
-      if (pd) {
-        const parentIdx = pd[index];
-        if (parentIdx !== NONE && parentIdx !== 0xFFFFFFFF) {
-          const parentTag = ast._nodeTags[parentIdx];
-          if (parentTag === _T_TS_NAMESPACE_DECL || parentTag === _T_TS_MODULE_DECL) {
-            return 'TSModuleBlock';
-          }
-        }
-      }
-      return 'BlockStatement';
-    }
-    case _T_TS_TYPE_REFERENCE: {
-      if (ast.nodeRhs(index) === NONE) {
-        const tok = ast._mainTokens[index];
-        const start = ast._tokStarts[tok];
-        const end = ast._tokEnds ? ast._tokEnds[tok]
-          : (tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : ast.source.length);
-        const text = ast.source.slice(start, end);
-        const kw = _TS_KW_TYPES[text.trim()];
-        if (kw) return kw;
-        const c = text.charCodeAt(0);
-        if (c === 39 || c === 34 || c === 96 || (c >= 48 && c <= 57) ||
-            text === 'true' || text === 'false' || text === '-') {
-          return 'TSLiteralType';
-        }
-      }
-      return 'TSTypeReference';
-    }
+  const overrides = ast._typeOverrides;
+  if (overrides) {
+    const slot = overrides[index];
+    if (slot !== 0) return _OVERRIDE_TYPES[slot];
+    return TAG_NAMES[tag];
   }
   return TAG_NAMES ? TAG_NAMES[tag] : String(tag);
 }

@@ -81,10 +81,15 @@ pub const BufferHeader = extern struct {
     // skip). u32[node_count]. Eliminates a JS-side parent-chain while-loop in
     // `get parent`'s slow path.
     resolved_parent_offset: u32 = 0,
+    // v13: ESTree-shape `type` override slot per node. u8[node_count]. 0 means
+    // "no override; use TAG_NAMES[tag]"; 1..19 select an entry in JS-side
+    // `_OVERRIDE_TYPES` (PrivateIdentifier, Property, TSImportEquals…, etc).
+    // See parent_builder.TypeOverride for the mapping.
+    type_overrides_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 144);
+    std.debug.assert(@sizeOf(BufferHeader) == 148);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -933,6 +938,7 @@ pub const HeaderInfo = struct {
     sorted_by_start_offset: u32 = 0,
     tok_cmt_merge_offset: u32 = 0,
     resolved_parent_offset: u32 = 0,
+    type_overrides_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -979,6 +985,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .sorted_by_start_offset = info.sorted_by_start_offset,
         .tok_cmt_merge_offset = info.tok_cmt_merge_offset,
         .resolved_parent_offset = info.resolved_parent_offset,
+        .type_overrides_offset = info.type_overrides_offset,
     };
 }
 
