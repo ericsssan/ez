@@ -6583,6 +6583,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   function _fireCfgEvents(nodeIdx, phase) {
     if (!_cfgEnterEvents) return;
+    // Fast path: most visited nodes have no CFG events at any phase. Skip the
+    // map dispatch and lookup entirely. `_cfgNodeBits[idx] === 1` only when
+    // the node has events in at least one phase.
+    if (_cfgNodeBits && !_cfgNodeBits[nodeIdx]) return;
     const map = phase === 3 ? _cfgAfterEnterEvents : phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
     const evts = map.get(nodeIdx);
     if (!evts) return;
