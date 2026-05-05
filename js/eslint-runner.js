@@ -3152,9 +3152,17 @@ class SourceCode {
             }
           }
         }
+        // Compute merge key from buffer-direct flag lookup so we don't trigger
+        // the lazy `defs` getter just to read defType (which would allocate
+        // a Definition object even though most variables never need merging).
+        const symKinds = ast._symKinds;
         for (const i of extendedIds) {
           const v = this._buildVariable(i);
-          const key = v.name + '\0' + (v.defs[0] ? v.defs[0].type : '');
+          if (!v) continue;
+          const defType = symKinds
+            ? (_DEF_TYPE_FROM_KIND[symKinds[i]] ?? 'Variable')
+            : (v.defs[0] ? v.defs[0].type : '');
+          const key = v.name + '\0' + defType;
           const ex = mergeSet.get(key);
           if (ex) {
             ex.identifiers.push(...v.identifiers);
@@ -6871,6 +6879,21 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   const _hasTsKwRemap = _tsTypeRefTagNum >= 0 && (_tsKwEnterMap.size > 0 || _tsKwExitMap.size > 0);
 
+  // Per-tag remap-possibility bitmap: 0 means `_resolveHandlers` definitely
+  // can't change the dispatch for this tag, so the DFS hot path can skip
+  // the function call and read `tagEnterHandlers[tag]` / `tagExitHandlers[tag]`
+  // directly. Set for tags that any active remap condition could affect, plus
+  // call_expr (which always needs the `import = require(...)` suppression check).
+  const _remapNeededArr = new Uint8Array(tagNames.length);
+  if (T.call_expr < _remapNeededArr.length) _remapNeededArr[T.call_expr] = 1;
+  if (_hasMdRemap) {
+    for (let _t = 0; _t < _methodDefTagBits.length; _t++) {
+      if (_methodDefTagBits[_t]) _remapNeededArr[_t] = 1;
+    }
+  }
+  if (_hasTsImportEqualsRemap && _importDeclTagNum >= 0) _remapNeededArr[_importDeclTagNum] = 1;
+  if (_hasTsKwRemap && _tsTypeRefTagNum >= 0) _remapNeededArr[_tsTypeRefTagNum] = 1;
+
   // TSLiteralType → synthetic Literal child events.
   // TSLiteralType nodes (ts_type_reference, no rhs, literal main token) have no real Literal
   // child in the buffer. Synthesize Literal enter/exit so rules like no-magic-numbers work.
@@ -6979,7 +7002,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = ev;
       if (usePruning && !subtreeRelevant[idx]) continue;
       const tag = nodeTags[idx];
-      const handlers = _resolveHandlers(tagEnterHandlers, tag, idx);
+      // Fast path: most tags can never trigger a remap. Skip the
+      // `_resolveHandlers` function call and read the handler array directly.
+      const handlers = _remapNeededArr[tag] ? _resolveHandlers(tagEnterHandlers, tag, idx) : tagEnterHandlers[tag];
       const flags = tagFlags[tag];
       if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag]) && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Catch stack: bookkeep CatchClause/function-boundary for ThrowStatement pre-warming
@@ -7141,7 +7166,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const idx = ~ev;
       if (usePruning && !subtreeRelevant[idx]) continue;
       const tag = nodeTags[idx];
-      const handlers = _resolveHandlers(tagExitHandlers, tag, idx);
+      const handlers = _remapNeededArr[tag] ? _resolveHandlers(tagExitHandlers, tag, idx) : tagExitHandlers[tag];
       const flags = tagFlags[tag];
       if (canSkip && !handlers && !flags && !(_catchStackTrackArr && _catchStackTrackArr[tag]) && !(_synthTagArr && _synthTagArr[tag]) && !(_cfgNodeBits && _cfgNodeBits[idx])) continue;
       // Catch stack: pop CatchClause/function-boundary on exit
