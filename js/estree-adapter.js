@@ -4268,6 +4268,18 @@ const CGH = {
   CP_THROWN_STARTS: 96,
   CP_THROWN_TARGETS: 100,
   EVENTS: 104,
+  // Pre-baked per-phase CSR for CFG events. Replaces the per-runPlugins
+  // event-Map build that scanned `events`. See writeCfgGraph in js_buffer.zig.
+  CFG_PHASE_NODE_COUNT: 108,
+  CFG_PHASE_ENTER_STARTS: 112,
+  CFG_PHASE_ENTER_DATA: 116,
+  CFG_PHASE_EXIT_STARTS: 120,
+  CFG_PHASE_EXIT_DATA: 124,
+  CFG_PHASE_POST_STARTS: 128,
+  CFG_PHASE_POST_DATA: 132,
+  CFG_PHASE_AFTER_ENTER_STARTS: 136,
+  CFG_PHASE_AFTER_ENTER_DATA: 140,
+  CFG_NODE_BITS: 144,
 };
 
 const CP_ORIGINS = ['program', 'function', 'class-field-initializer', 'class-static-block'];
@@ -4338,6 +4350,39 @@ class CfgGraph {
     // Events
     const evOff = dv.getUint32(off + CGH.EVENTS, true);
     this._events = evOff > 0 && this._evCount > 0 ? new Uint32Array(buffer, evOff, this._evCount * 4) : null;
+
+    // Pre-baked per-phase CSR (replaces the runtime event-Map build).
+    // `phase_node_count` is the same node count the buffer was built against;
+    // also doubles as a "is the CSR present" flag (0 if not built).
+    const cfgNc = dv.getUint32(off + CGH.CFG_PHASE_NODE_COUNT, true);
+    if (cfgNc > 0) {
+      const sc1n = cfgNc + 1;
+      // 4 phases: enter (0), exit (1), post (2), after_enter (3).
+      const _readStarts = (cgh) => new Uint32Array(buffer, dv.getUint32(off + cgh, true), sc1n);
+      const _readData = (startsArr, cghData) => {
+        const total = startsArr[cfgNc];
+        const dOff = dv.getUint32(off + cghData, true);
+        return total > 0 && dOff > 0 ? new Uint32Array(buffer, dOff, total * 3) : null;
+      };
+      this._cfgEnterStarts      = _readStarts(CGH.CFG_PHASE_ENTER_STARTS);
+      this._cfgEnterData        = _readData(this._cfgEnterStarts, CGH.CFG_PHASE_ENTER_DATA);
+      this._cfgExitStarts       = _readStarts(CGH.CFG_PHASE_EXIT_STARTS);
+      this._cfgExitData         = _readData(this._cfgExitStarts, CGH.CFG_PHASE_EXIT_DATA);
+      this._cfgPostStarts       = _readStarts(CGH.CFG_PHASE_POST_STARTS);
+      this._cfgPostData         = _readData(this._cfgPostStarts, CGH.CFG_PHASE_POST_DATA);
+      this._cfgAfterEnterStarts = _readStarts(CGH.CFG_PHASE_AFTER_ENTER_STARTS);
+      this._cfgAfterEnterData   = _readData(this._cfgAfterEnterStarts, CGH.CFG_PHASE_AFTER_ENTER_DATA);
+      const nbOff = dv.getUint32(off + CGH.CFG_NODE_BITS, true);
+      this._cfgNodeBits = nbOff > 0 ? new Uint8Array(buffer, nbOff, cfgNc) : null;
+      this._cfgPhaseNodeCount = cfgNc;
+    } else {
+      this._cfgEnterStarts = null; this._cfgEnterData = null;
+      this._cfgExitStarts = null; this._cfgExitData = null;
+      this._cfgPostStarts = null; this._cfgPostData = null;
+      this._cfgAfterEnterStarts = null; this._cfgAfterEnterData = null;
+      this._cfgNodeBits = null;
+      this._cfgPhaseNodeCount = 0;
+    }
 
     // Segment/CodePath caches
     this._segCache = new Array(this._segCount).fill(null);

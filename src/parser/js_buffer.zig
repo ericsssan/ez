@@ -253,6 +253,23 @@ pub const CfgGraphHeader = extern struct {
 
     // Event stream (4 u32s per event: type, node_idx, data1, data2)
     events_offset: u32,                // u32[event_count * 4]
+
+    // Per-phase CSR for fast O(1) per-node event lookup. JS uses these to avoid
+    // building 4 Maps from `events` on every `runPlugins` call. Phases:
+    //   0 = enter, 1 = exit, 2 = post, 3 = after_enter
+    // For each phase: starts[node_count + 1] + data[total_phase_events * 3]
+    // (interleaved type, d1, d2 — same encoding as the per-node event lists JS used to build).
+    // node_count is implicit (BufferHeader exposes it; CSR length checks against it).
+    cfg_phase_node_count: u32,                  // node count used to size phase_*_starts
+    cfg_phase_enter_starts_offset: u32,         // u32[node_count + 1]
+    cfg_phase_enter_data_offset: u32,           // u32[total_enter_events * 3]
+    cfg_phase_exit_starts_offset: u32,
+    cfg_phase_exit_data_offset: u32,
+    cfg_phase_post_starts_offset: u32,
+    cfg_phase_post_data_offset: u32,
+    cfg_phase_after_enter_starts_offset: u32,
+    cfg_phase_after_enter_data_offset: u32,
+    cfg_node_bits_offset: u32,                  // u8[node_count] — 1 if node has any phase events
 };
 
 // ── Semantic Data Serializer ─────────────────────────────────────
@@ -718,7 +735,7 @@ pub fn writeSemanticData(
         .cfg_events_offset = 0, // legacy — replaced by cfg_graph_offset
         .cfg_events_count = 0,
 
-        .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr) catch 0; } break :blk 0; },
+        .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr, node_count) catch 0; } break :blk 0; },
     };
 
     // Set new fields AFTER struct write to avoid bump-allocator interactions
@@ -759,6 +776,7 @@ fn writeCfgGraph(
     buf: [*]u8,
     alloc: std.mem.Allocator,
     cpr: *const code_path_mod.CodePathBuilder.Result,
+    node_count: u32,
 ) !u32 {
     const seg_count: u32 = cpr.seg_count;
     const cp_count: u32 = @intCast(cpr.codepaths.len);
@@ -918,6 +936,87 @@ fn writeCfgGraph(
         events_flat[i * 4 + 3] = cpr.events[i].data2;
     }
 
+    // ── Per-phase CSR (pre-baked event maps) ────────────────
+    // JS used to scan `events_flat` and build 4 Maps on every runPlugins call.
+    // We do that work once here in a CSR layout so the JS side reads
+    // `phase_starts[node]..phase_starts[node+1]` directly.
+    //
+    // Layout per phase: starts[node_count + 1] (cumulative event count) +
+    // data[total_phase_events * 3] (interleaved type, d1, d2).
+    //
+    // Order within (phase, node) is preserved (matches the original DFS event
+    // order, since we walk `cpr.events` in order and use a per-(phase, node)
+    // write cursor).
+
+    // Pass 1: count events per (phase, node).
+    // Phases packed contiguously: counts[phase * node_count + node].
+    const counts = try alloc.alloc(u32, 4 * node_count);
+    @memset(counts, 0);
+    var phase_totals: [4]u32 = .{ 0, 0, 0, 0 };
+    for (0..ev_count) |i| {
+        const node_raw = @intFromEnum(cpr.events[i].node);
+        if (node_raw >= node_count) continue; // sentinel / out-of-range — ignored by JS too
+        const phase: u32 = switch (cpr.events[i].phase) {
+            .enter => 0,
+            .exit => 1,
+            .post => 2,
+            .after_enter => 3,
+        };
+        counts[phase * node_count + node_raw] += 1;
+        phase_totals[phase] += 1;
+    }
+
+    // Pass 2: allocate starts/data per phase, build prefix sums into starts.
+    var phase_starts: [4][]u32 = undefined;
+    var phase_data: [4][]u32 = undefined;
+    for (0..4) |p| {
+        phase_starts[p] = try alloc.alloc(u32, node_count + 1);
+        phase_data[p] = try alloc.alloc(u32, phase_totals[p] * 3);
+        var sum: u32 = 0;
+        for (0..node_count) |n| {
+            phase_starts[p][n] = sum;
+            sum += counts[p * node_count + n];
+        }
+        phase_starts[p][node_count] = sum;
+    }
+
+    // Pass 3: scatter events. Reuse `counts` as per-(phase, node) write cursor:
+    // starts at the phase_starts value and increments per write.
+    @memcpy(counts, counts); // no-op; cursors are seeded from phase_starts below
+    for (0..4) |p| {
+        for (0..node_count) |n| {
+            counts[p * node_count + n] = phase_starts[p][n];
+        }
+    }
+    for (0..ev_count) |i| {
+        const node_raw = @intFromEnum(cpr.events[i].node);
+        if (node_raw >= node_count) continue;
+        const phase: u32 = switch (cpr.events[i].phase) {
+            .enter => 0,
+            .exit => 1,
+            .post => 2,
+            .after_enter => 3,
+        };
+        const slot = counts[phase * node_count + node_raw];
+        phase_data[phase][slot * 3 + 0] = @intFromEnum(cpr.events[i].type);
+        phase_data[phase][slot * 3 + 1] = cpr.events[i].data1;
+        phase_data[phase][slot * 3 + 2] = cpr.events[i].data2;
+        counts[phase * node_count + node_raw] = slot + 1;
+    }
+
+    // Per-node bits: 1 iff the node has any event in any phase.
+    const cfg_node_bits = try alloc.alloc(u8, node_count);
+    @memset(cfg_node_bits, 0);
+    for (0..node_count) |n| {
+        if (phase_starts[0][n + 1] > phase_starts[0][n] or
+            phase_starts[1][n + 1] > phase_starts[1][n] or
+            phase_starts[2][n + 1] > phase_starts[2][n] or
+            phase_starts[3][n + 1] > phase_starts[3][n])
+        {
+            cfg_node_bits[n] = 1;
+        }
+    }
+
     // ── Write CfgGraphHeader ────────────────────────────────
     const header_mem = try alloc.alloc(u8, @sizeOf(CfgGraphHeader));
     const header: *CfgGraphHeader = @ptrCast(@alignCast(header_mem.ptr));
@@ -953,6 +1052,17 @@ fn writeCfgGraph(
         .cp_thrown_targets_offset = if (cp_thrown_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_thrown_targets.ptr))) else 0,
 
         .events_offset = if (events_flat.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(events_flat.ptr))) else 0,
+
+        .cfg_phase_node_count = node_count,
+        .cfg_phase_enter_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_starts[0].ptr))),
+        .cfg_phase_enter_data_offset = if (phase_data[0].len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_data[0].ptr))) else 0,
+        .cfg_phase_exit_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_starts[1].ptr))),
+        .cfg_phase_exit_data_offset = if (phase_data[1].len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_data[1].ptr))) else 0,
+        .cfg_phase_post_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_starts[2].ptr))),
+        .cfg_phase_post_data_offset = if (phase_data[2].len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_data[2].ptr))) else 0,
+        .cfg_phase_after_enter_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_starts[3].ptr))),
+        .cfg_phase_after_enter_data_offset = if (phase_data[3].len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_data[3].ptr))) else 0,
+        .cfg_node_bits_offset = ptrOffsetPub(buf, cfg_node_bits.ptr),
     };
 
     return ptrOffsetPub(buf, header_mem.ptr);

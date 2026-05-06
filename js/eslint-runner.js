@@ -6587,53 +6587,39 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   })() : null;
 
   // ── Zig CfgGraph event replay ─────────────────────────────
+  // The Zig side pre-bakes a 4-phase CSR (enter/exit/post/after_enter):
+  //   phase_starts[node_count + 1] + phase_data[total_phase_events * 3]
+  // and a `cfg_node_bits[node_count]` flag array. JS reads the typed-array
+  // views directly — no per-runPlugins Map construction, no `map.get` on the
+  // dispatch hot path.
   const _cfgGraph = ast._cfgGraph || null;
-  let _cfgEnterEvents = null;
-  let _cfgExitEvents = null;
-  let _cfgPostEvents = null;
-  let _cfgAfterEnterEvents = null;
-  if (_cfgGraph && _cfgGraph._events && hasCodePath) {
-    _cfgEnterEvents = new Map();
-    _cfgExitEvents = new Map();
-    _cfgPostEvents = new Map();
-    _cfgAfterEnterEvents = new Map();
-    const evs = _cfgGraph._events;
-    const EXIT_FLAG = 0x40000000, POST_FLAG = 0x80000000, NODE_MASK = 0x3FFFFFFF;
-    for (let ei = 0; ei < evs.length; ei += 4) {
-      const evType = evs[ei], nodeRaw = evs[ei + 1], d1 = evs[ei + 2], d2 = evs[ei + 3];
-      const isPost = (nodeRaw & POST_FLAG) !== 0, isExit = (nodeRaw & EXIT_FLAG) !== 0;
-      const nodeIdx = nodeRaw & NODE_MASK;
-      const map = (isPost && isExit) ? _cfgAfterEnterEvents : isPost ? _cfgPostEvents : isExit ? _cfgExitEvents : _cfgEnterEvents;
-      let arr = map.get(nodeIdx);
-      if (!arr) map.set(nodeIdx, arr = []);
-      arr.push(evType, d1, d2);
-    }
-  }
-  // Build per-node bitfield of nodes that have CfgGraph events.
-  // Used to selectively protect these nodes from skip/prune instead of
-  // blanket-disabling all optimizations when hasCodePath is true.
-  const _cfgNodeBits = _cfgEnterEvents ? new Uint8Array(ast.nodeCount) : null;
-  if (_cfgNodeBits) {
-    for (const idx of _cfgEnterEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
-    for (const idx of _cfgExitEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
-    for (const idx of _cfgPostEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
-    for (const idx of _cfgAfterEnterEvents.keys()) if (idx < ast.nodeCount) _cfgNodeBits[idx] = 1;
-  }
+  const _cfgHasPhaseCsr = !!(_cfgGraph && _cfgGraph._cfgPhaseNodeCount > 0 && hasCodePath);
+  const _cfgEnterStarts      = _cfgHasPhaseCsr ? _cfgGraph._cfgEnterStarts      : null;
+  const _cfgEnterData        = _cfgHasPhaseCsr ? _cfgGraph._cfgEnterData        : null;
+  const _cfgExitStarts       = _cfgHasPhaseCsr ? _cfgGraph._cfgExitStarts       : null;
+  const _cfgExitData         = _cfgHasPhaseCsr ? _cfgGraph._cfgExitData         : null;
+  const _cfgPostStarts       = _cfgHasPhaseCsr ? _cfgGraph._cfgPostStarts       : null;
+  const _cfgPostData         = _cfgHasPhaseCsr ? _cfgGraph._cfgPostData         : null;
+  const _cfgAfterEnterStarts = _cfgHasPhaseCsr ? _cfgGraph._cfgAfterEnterStarts : null;
+  const _cfgAfterEnterData   = _cfgHasPhaseCsr ? _cfgGraph._cfgAfterEnterData   : null;
+  const _cfgNodeBits         = _cfgHasPhaseCsr ? _cfgGraph._cfgNodeBits         : null;
   let _cfgCurrentCp = null;
   const _cfgCpStack = [];
 
   function _fireCfgEvents(nodeIdx, phase) {
-    if (!_cfgEnterEvents) return;
-    // Fast path: most visited nodes have no CFG events at any phase. Skip the
-    // map dispatch and lookup entirely. `_cfgNodeBits[idx] === 1` only when
-    // the node has events in at least one phase.
-    if (_cfgNodeBits && !_cfgNodeBits[nodeIdx]) return;
-    const map = phase === 3 ? _cfgAfterEnterEvents : phase === 2 ? _cfgPostEvents : phase === 1 ? _cfgExitEvents : _cfgEnterEvents;
-    const evts = map.get(nodeIdx);
-    if (!evts) return;
+    if (!_cfgHasPhaseCsr) return;
+    // Callers gate on `_cfgNodeBits[nodeIdx]` — by the time we get here the
+    // node has events in at least one phase. Pick the right CSR pair for the
+    // requested phase.
+    const starts = phase === 3 ? _cfgAfterEnterStarts : phase === 2 ? _cfgPostStarts : phase === 1 ? _cfgExitStarts : _cfgEnterStarts;
+    const start = starts[nodeIdx];
+    const end = starts[nodeIdx + 1];
+    if (start === end) return; // node has no events at THIS phase
+    const data = phase === 3 ? _cfgAfterEnterData : phase === 2 ? _cfgPostData : phase === 1 ? _cfgExitData : _cfgEnterData;
     const node = nodeView(ast, nodeIdx);
-    for (let i = 0; i < evts.length; i += 3) {
-      const evType = evts[i], d1 = evts[i + 1], d2 = evts[i + 2];
+    for (let k = start; k < end; k++) {
+      const base = k * 3;
+      const evType = data[base], d1 = data[base + 1], d2 = data[base + 2];
       switch (evType) {
         case 0: { // CODEPATH_START
           const cp = _cfgGraph.codepath(d1);
