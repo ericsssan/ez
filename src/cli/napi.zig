@@ -41,6 +41,48 @@ threadlocal var tl_sem_arena_ready: bool = false;
 threadlocal var tl_cfg_arena: std.heap.ArenaAllocator = undefined;
 threadlocal var tl_cfg_arena_ready: bool = false;
 
+// Streaming-sem worker context. Sem worker waits for `ast_ready` then runs
+// `event_resolver.resolveFull` in streaming mode, consuming events as the
+// parser publishes them. Lives on the napi caller's stack; main thread joins
+// the worker before stack unwinds so the pointer stays valid.
+const StreamSemCtx = struct {
+    alloc: std.mem.Allocator,
+    ast_view: *@import("../parser/ast.zig").Ast,
+    events_pub: *std.atomic.Value(usize),
+    parse_done: *std.atomic.Value(bool),
+    ast_ready: *std.atomic.Value(bool),
+    cap_hint: usize,
+    globals: []const u8,
+    result: ?semantic_mod.SemanticResult = null,
+    err: ?anyerror = null,
+};
+
+fn streamSemEntry(ctx: *StreamSemCtx) void {
+    // Spin for parser to publish ast_view (pointers + capacity).
+    while (!ctx.ast_ready.load(.acquire)) {
+        // If parse failed before publishing ast_view, parse_done fires first.
+        if (ctx.parse_done.load(.acquire)) return;
+        std.atomic.spinLoopHint();
+    }
+    if (event_resolver.resolveFull(
+        ctx.alloc,
+        ctx.ast_view,
+        ctx.ast_view.scope_events,
+        .{
+            .globals = ctx.globals,
+            .streaming = .{
+                .events_published = ctx.events_pub,
+                .parse_done = ctx.parse_done,
+                .node_count_hint = ctx.cap_hint,
+            },
+        },
+    )) |r| {
+        ctx.result = r;
+    } else |e| {
+        ctx.err = e;
+    }
+}
+
 fn getSemArena() *std.heap.ArenaAllocator {
     if (!tl_sem_arena_ready) {
         tl_sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -177,12 +219,95 @@ fn parseImpl(
     const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
     var tokens = lex_result.tokens;
 
-    // Parse — node/extra_data arrays land in the bump region.
-    var tree = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
-        .language = language,
-        .is_module = is_module,
-        .emit_events = true,
-    }) catch |e| return e;
+    // Streaming-sem decision: spawn the sem worker BEFORE parse so it can
+    // consume events as the parser publishes them. Saves wall-clock when
+    // sem analyzer would otherwise run sequentially after parse.
+    // Gate by source size; thread spawn cost makes it a loss on small files.
+    // Override threshold via EZ_STREAM_SEM_THRESHOLD; disable via EZ_NO_STREAM_SEM=1.
+    const stream_disabled: bool = blk: {
+        if (std.c.getenv("EZ_NO_STREAM_SEM")) |v| {
+            if (v[0] == '1' and v[1] == 0) break :blk true;
+        }
+        break :blk false;
+    };
+    const stream_threshold: usize = blk: {
+        if (std.c.getenv("EZ_STREAM_SEM_THRESHOLD")) |v| {
+            var nv: usize = 0;
+            var i: usize = 0;
+            while (v[i] != 0 and v[i] >= '0' and v[i] <= '9') : (i += 1) {
+                nv = nv * 10 + @as(usize, @intCast(v[i] - '0'));
+            }
+            if (nv > 0) break :blk nv;
+        }
+        break :blk 100 * 1024; // 100 KB default
+    };
+    const use_stream_sem = !stream_disabled and source.len >= stream_threshold;
+
+    // Streaming atomics (only used when use_stream_sem == true).
+    var s_published_len: std.atomic.Value(usize) = .init(tokens.len);
+    var s_lex_done: std.atomic.Value(bool) = .init(true);
+    var s_events_pub: std.atomic.Value(usize) = .init(0);
+    var s_parse_done: std.atomic.Value(bool) = .init(false);
+    var s_ast_ready: std.atomic.Value(bool) = .init(false);
+    var s_ast_view: @import("../parser/ast.zig").Ast = undefined;
+    // Lex already complete — use actual token count as exact upper bound,
+    // not the source.len/5 over-estimate (which would over-allocate the
+    // streaming parser's pre-sized arrays and exhaust the bump region).
+    const s_cap_hint: usize = tokens.len + 64;
+
+    // Sem worker (spawned only when streaming).
+    const stream_arena_ptr_ = if (use_stream_sem) blk: {
+        const ap = getSemArena();
+        _ = ap.reset(.retain_capacity);
+        break :blk ap;
+    } else null;
+    var stream_sem_ctx: StreamSemCtx = if (use_stream_sem) .{
+        .alloc = stream_arena_ptr_.?.allocator(),
+        .ast_view = &s_ast_view,
+        .events_pub = &s_events_pub,
+        .parse_done = &s_parse_done,
+        .ast_ready = &s_ast_ready,
+        .cap_hint = s_cap_hint,
+        .globals = globals,
+    } else undefined;
+    const stream_sem_thread: ?std.Thread = if (use_stream_sem) blk: {
+        const t = std.Thread.spawn(.{}, streamSemEntry, .{&stream_sem_ctx}) catch break :blk null;
+        break :blk t;
+    } else null;
+
+    // Parse — with streaming hooks when the worker is up so events are
+    // published incrementally to the sem worker; otherwise sequential.
+    var tree = blk: {
+        if (use_stream_sem and stream_sem_thread != null) {
+            const t = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
+                .language = language,
+                .is_module = is_module,
+                .emit_events = true,
+                .streaming = .{
+                    .published_len = &s_published_len,
+                    .lex_done = &s_lex_done,
+                    .capacity_hint = s_cap_hint,
+                    .events_publish_to = &s_events_pub,
+                    .ast_view_out = &s_ast_view,
+                    .ast_ready = &s_ast_ready,
+                },
+            }) catch |e| {
+                // Signal worker to bail out, then propagate.
+                s_parse_done.store(true, .release);
+                if (stream_sem_thread) |th| th.join();
+                return e;
+            };
+            // Final publish; worker walks events bounded by this.
+            s_events_pub.store(t.scope_events.len, .release);
+            s_parse_done.store(true, .release);
+            break :blk t;
+        }
+        break :blk parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
+            .language = language,
+            .is_module = is_module,
+            .emit_events = true,
+        }) catch |e| return e;
+    };
 
     // Compute parent indices and DFS traversal orders in a single pass.
     // All three arrays are allocated into the bump region.
@@ -199,13 +324,28 @@ fn parseImpl(
     // Run semantic analysis BEFORE converting to UTF-16 so that
     // tokenText() (used for symbol names) reads correct byte offsets.
     //
-    // Use the thread-local sem arena (reset, not deinit) so intermediate
-    // analysis structures (HashMaps, ArrayLists) reuse already-mapped pages
-    // rather than going through mmap/munmap every call.  Only the compact
-    // serialized output ends up in the bump region.
+    // Streaming-sem fast path: when the sem worker was spawned before parse,
+    // it has been consuming events concurrently. Just join and use its result;
+    // skip the parallel-cfg block below.
     var semantic_data_offset: u32 = 0;
+    var stream_sem_handled: bool = false;
+    if (use_stream_sem and stream_sem_thread != null) {
+        if (stream_sem_thread) |th| th.join();
+        stream_sem_handled = true;
+        if (stream_sem_ctx.err == null) {
+            if (stream_sem_ctx.result) |sem_result| {
+                var sem = sem_result;
+                semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
+                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+                    semantic_data_offset = off;
+                } else |_| {}
+            }
+        }
+    }
+
+    // Sequential / parallel-cfg fallback (small files): use the post-parse arena.
     const sem_arena_ptr = getSemArena();
-    _ = sem_arena_ptr.reset(.retain_capacity);
+    if (!stream_sem_handled) _ = sem_arena_ptr.reset(.retain_capacity);
 
     // Parallel scope+cfg analysis: spawn cfg worker, run scope on this thread,
     // join, combineParts. Saves ~max(0, cfg_time - thread_overhead) ms when
@@ -234,7 +374,7 @@ fn parseImpl(
         }
         break :blk 5000;
     };
-    const parallel_sem = !env_disabled and ev_count >= parallel_threshold;
+    const parallel_sem = !env_disabled and ev_count >= parallel_threshold and !stream_sem_handled;
 
     if (parallel_sem) {
         const cfg_arena_ptr = getCfgArena();
@@ -273,7 +413,7 @@ fn parseImpl(
                 } else |_| {}
             } else |_| {}
         }
-    } else {
+    } else if (!stream_sem_handled) {
         if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
             var sem = sem_result;
             if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
