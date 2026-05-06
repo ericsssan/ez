@@ -440,6 +440,27 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
     }
 }
 
+/// Quick path: produce JUST the `parents` array (the only thing the streaming
+/// sem worker needs to start writeSemanticData). Lets main fire parents_ready
+/// in ~0.3ms instead of waiting for the full ~10ms buildTraversal.
+pub fn buildParentsOnly(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
+    const n = tree.nodes.len;
+    const parents = try alloc.alloc(u32, n);
+    if (n == 0) return parents;
+    if (tree.parents.len == n) {
+        @memcpy(parents, tree.parents[0..n]);
+    } else {
+        @memset(parents, NONE);
+        const tags  = tree.nodes.items(.tag);
+        const data  = tree.nodes.items(.data);
+        const extra = tree.extra_data;
+        for (0..n) |i| {
+            setChildParents(parents, extra, tags[i], data[i], @intCast(i));
+        }
+    }
+    return parents;
+}
+
 pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResult {
     const n = tree.nodes.len;
     const parents    = try alloc.alloc(u32, n);

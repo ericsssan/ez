@@ -377,6 +377,9 @@ pub const CodePathBuilder = struct {
     /// dedup. Grown alongside segments. Each new BFS bumps `collapse_gen`.
     seg_collapse_visit: std.ArrayList(u32),
     collapse_gen: u32,
+    /// Reused BFS frontier — cleared (retain capacity) between calls so we
+    /// don't pay ArrayList alloc per createSegment.
+    collapse_frontier: std.ArrayList(SegmentId),
 
     // CodePath segment lists (finals, returned, thrown)
     cp_final_pool: std.ArrayList(SegmentId),
@@ -426,6 +429,7 @@ pub const CodePathBuilder = struct {
             .collapsed_prev_targets = .empty,
             .seg_collapse_visit = .empty,
             .collapse_gen = 0,
+            .collapse_frontier = .empty,
             .cp_final_pool = .empty,
             .cp_returned_pool = .empty,
             .cp_thrown_pool = .empty,
@@ -463,6 +467,7 @@ pub const CodePathBuilder = struct {
         try self.looped_targets.ensureTotalCapacity(self.allocator, est_codepaths * 8);
         try self.collapsed_prev_targets.ensureTotalCapacity(self.allocator, est_segments / 4);
         try self.seg_collapse_visit.ensureTotalCapacity(self.allocator, est_segments);
+        try self.collapse_frontier.ensureTotalCapacity(self.allocator, 64);
         try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
         try self.cp_returned_pool.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.cp_thrown_pool.ensureTotalCapacity(self.allocator, est_codepaths / 4);
@@ -604,22 +609,38 @@ pub const CodePathBuilder = struct {
         const gen = self.collapse_gen;
         const visit = self.seg_collapse_visit.items;
 
+        // Reserve worst-case capacity for collapsed_prev_targets in one shot:
+        // sum of all_prev's reachable contributions. Upper bound: sum of each
+        // unreachable prev's collapsed_prev_end - collapsed_prev_start, plus
+        // count of reachable prevs.
+        var max_add: usize = 0;
+        for (all_prev) |p| {
+            if (p == NONE_SEG) continue;
+            if (reach_s[p] != 0) {
+                max_add += 1;
+            } else {
+                max_add += cpe_arr[p] - cps_arr[p];
+            }
+        }
+        try self.collapsed_prev_targets.ensureUnusedCapacity(alloc, max_add);
+
+        const cpt = &self.collapsed_prev_targets;
         for (all_prev) |p| {
             if (p == NONE_SEG) continue;
             if (reach_s[p] != 0) {
                 if (visit[p] != gen) {
                     visit[p] = gen;
-                    try self.collapsed_prev_targets.append(alloc, p);
+                    cpt.appendAssumeCapacity(p);
                 }
                 continue;
             }
             // Unreachable prev — inherit its already-built collapsed list.
             const cps = cps_arr[p];
             const cpe = cpe_arr[p];
-            for (self.collapsed_prev_targets.items[cps..cpe]) |reach_id| {
+            for (cpt.items[cps..cpe]) |reach_id| {
                 if (visit[reach_id] != gen) {
                     visit[reach_id] = gen;
-                    try self.collapsed_prev_targets.append(alloc, reach_id);
+                    cpt.appendAssumeCapacity(reach_id);
                 }
             }
         }

@@ -22,6 +22,10 @@ pub fn semanticDataOffsetFieldOff() u32 {
     return @offsetOf(BufferHeader, "semantic_data_offset");
 }
 
+pub fn semHeaderCfgGraphOffsetFieldOff() u32 {
+    return @offsetOf(SemanticHeader, "cfg_graph_offset");
+}
+
 pub const BufferHeader = extern struct {
     magic: u32,
     version: u32,
@@ -299,6 +303,53 @@ inline fn isDeclSymBarrierTag(tag: ast_mod.Node.Tag) bool {
     };
 }
 
+/// Compute the tag→nodes CSR into the bump region. Standalone so the main
+/// thread can run it during the worker's analyzer phase. Returns the three
+/// header field values (starts_off, ids_off, tag_count).
+pub const TagNodeCsrResult = struct {
+    starts_offset: u32,
+    ids_offset: u32,
+    tag_count: u32,
+};
+pub fn computeTagNodeCsr(
+    buf: [*]u8,
+    backing: *JsBufferAllocator,
+    node_tags: []const ast_mod.Node.Tag,
+) !TagNodeCsrResult {
+    if (node_tags.len == 0) return .{ .starts_offset = 0, .ids_offset = 0, .tag_count = 0 };
+    const alloc = backing.allocator();
+    const node_count: u32 = @intCast(node_tags.len);
+    var max_tag: u32 = 0;
+    for (node_tags) |t| {
+        const tv: u32 = @intFromEnum(t);
+        if (tv > max_tag) max_tag = tv;
+    }
+    const tag_slots: u32 = max_tag + 1;
+    const tag_node_starts = try alloc.alloc(u32, tag_slots + 1);
+    const tag_node_ids = try alloc.alloc(u32, node_count);
+    @memset(tag_node_starts, 0);
+    for (node_tags) |t| tag_node_starts[@intFromEnum(t)] += 1;
+    var running: u32 = 0;
+    for (0..tag_slots) |i| {
+        const c = tag_node_starts[i];
+        tag_node_starts[i] = running;
+        running += c;
+    }
+    tag_node_starts[tag_slots] = running;
+    const cursor = try alloc.alloc(u32, tag_slots);
+    @memcpy(cursor, tag_node_starts[0..tag_slots]);
+    for (0..node_count) |i| {
+        const tv: u32 = @intFromEnum(node_tags[i]);
+        tag_node_ids[cursor[tv]] = @intCast(i);
+        cursor[tv] += 1;
+    }
+    return .{
+        .starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(tag_node_starts.ptr))),
+        .ids_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(tag_node_ids.ptr))),
+        .tag_count = tag_slots,
+    };
+}
+
 /// Compute node depths into the bump region. Standalone so the main thread
 /// can run it during the streaming-sem worker's analyzer phase, avoiding a
 /// second pass on the worker. Returns absolute offset of the depths array.
@@ -311,7 +362,8 @@ pub fn computeNodeDepths(
     if (node_count == 0) return 0;
     const alloc = backing.allocator();
     const node_depths = try alloc.alloc(u32, node_count);
-    @memset(node_depths, 0);
+    // No memset — every slot is overwritten in the loop below (parents have
+    // higher indices than children, so reverse iteration sees parent first).
     var i: usize = node_count;
     while (i > 0) {
         i -= 1;
@@ -329,6 +381,10 @@ pub fn writeSemanticData(
     node_tags: []const ast_mod.Node.Tag,
     parent_indices: []const u32,
     precomputed_node_depths_offset: u32,
+    precomputed_tag_csr: ?TagNodeCsrResult,
+    /// If non-zero, skip writeCfgGraph and use this offset directly. Used when
+    /// main thread runs writeCfgGraph in parallel with the worker.
+    precomputed_cfg_graph_offset: u32,
 ) !u32 {
     const alloc = backing.allocator();
     const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
@@ -601,30 +657,32 @@ pub fn writeSemanticData(
     }
 
     // ── Tag → nodes CSR (counting sort on node tags) ──────────────
-    // Find max tag value to size the starts array.
-    var max_tag: u32 = 0;
-    for (node_tags) |t| {
-        const tv: u32 = @intFromEnum(t);
-        if (tv > max_tag) max_tag = tv;
-    }
-    const tag_slots: u32 = max_tag + 1;
-    const tag_node_starts = try alloc.alloc(u32, tag_slots + 1); // +1 sentinel
-    const tag_node_ids = try alloc.alloc(u32, node_count);
-    {
-        // Count nodes per tag
-        @memset(tag_node_starts, 0);
+    // If main precomputed it, skip — those offsets feed the header directly.
+    var tag_starts_off: u32 = 0;
+    var tag_ids_off: u32 = 0;
+    var tag_slots: u32 = 0;
+    if (precomputed_tag_csr) |c| {
+        tag_starts_off = c.starts_offset;
+        tag_ids_off = c.ids_offset;
+        tag_slots = c.tag_count;
+    } else {
+        var max_tag: u32 = 0;
         for (node_tags) |t| {
-            tag_node_starts[@intFromEnum(t)] += 1;
+            const tv: u32 = @intFromEnum(t);
+            if (tv > max_tag) max_tag = tv;
         }
-        // Prefix sum
+        tag_slots = max_tag + 1;
+        const tag_node_starts = try alloc.alloc(u32, tag_slots + 1);
+        const tag_node_ids = try alloc.alloc(u32, node_count);
+        @memset(tag_node_starts, 0);
+        for (node_tags) |t| tag_node_starts[@intFromEnum(t)] += 1;
         var running: u32 = 0;
         for (0..tag_slots) |i| {
             const c = tag_node_starts[i];
             tag_node_starts[i] = running;
             running += c;
         }
-        tag_node_starts[tag_slots] = running; // sentinel
-        // Place node indices (use a cursor copy of starts)
+        tag_node_starts[tag_slots] = running;
         const cursor = try alloc.alloc(u32, tag_slots);
         @memcpy(cursor, tag_node_starts[0..tag_slots]);
         for (0..node_count) |i| {
@@ -632,6 +690,8 @@ pub fn writeSemanticData(
             tag_node_ids[cursor[tv]] = @intCast(i);
             cursor[tv] += 1;
         }
+        tag_starts_off = ptrOffsetPub(buf, @as([*]u8, @ptrCast(tag_node_starts.ptr)));
+        tag_ids_off = ptrOffsetPub(buf, @as([*]u8, @ptrCast(tag_node_ids.ptr)));
     }
 
     // ── Node depths ─────────────────────────────────────────────
@@ -757,7 +817,11 @@ pub fn writeSemanticData(
         .cfg_events_offset = 0, // legacy — replaced by cfg_graph_offset
         .cfg_events_count = 0,
 
-        .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr, node_count, parent_indices) catch 0; } break :blk 0; },
+        .cfg_graph_offset = blk: {
+            if (precomputed_cfg_graph_offset != 0) break :blk precomputed_cfg_graph_offset;
+            if (sem.code_path_result) |cpr| break :blk writeCfgGraph(buf, alloc, &cpr, node_count, parent_indices) catch 0;
+            break :blk 0;
+        },
     };
 
     // Set new fields AFTER struct write to avoid bump-allocator interactions
@@ -768,8 +832,8 @@ pub fn writeSemanticData(
     sem_header.scope_child_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_child_starts.ptr) else 0;
     sem_header.scope_child_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_child_counts.ptr) else 0;
     sem_header.scope_child_ids_offset = if (total_children > 0) ptrOffsetPub(buf, scope_child_ids.ptr) else 0;
-    sem_header.tag_node_starts_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_starts.ptr) else 0;
-    sem_header.tag_node_ids_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_ids.ptr) else 0;
+    sem_header.tag_node_starts_offset = tag_starts_off;
+    sem_header.tag_node_ids_offset = tag_ids_off;
     sem_header.tag_count = tag_slots;
     sem_header.node_depths_offset = node_depths_offset_final;
     sem_header.scope_through_ref_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_starts.ptr) else 0;
@@ -794,7 +858,7 @@ pub fn writeSemanticData(
 
 /// Serialize the full code path graph into the bump region.
 /// Returns the byte offset of the CfgGraphHeader.
-fn writeCfgGraph(
+pub fn writeCfgGraph(
     buf: [*]u8,
     alloc: std.mem.Allocator,
     cpr: *const code_path_mod.CodePathBuilder.Result,

@@ -38,7 +38,7 @@ pub fn main(init: std.process.Init) !void {
         const source_start: u32 = @intCast(buf.len - src.len);
         @memcpy(buf[source_start..], src);
         var backing = ez.js_buffer.JsBufferAllocator.init(buf.ptr, source_start);
-        _ = try ez.js_buffer.writeSemanticData(buf.ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0);
+        _ = try ez.js_buffer.writeSemanticData(buf.ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0);
         const t4 = std.Io.Timestamp.now(io, .boot);
 
         if (iter >= WARMUP) {

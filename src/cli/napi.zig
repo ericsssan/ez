@@ -62,19 +62,32 @@ const StreamSemCtx = struct {
     /// the worker's analyzer to soak up some of main's idle wait at join).
     /// 0 means worker should compute depths itself.
     node_depths_offset: u32 = 0,
+    /// Pre-computed tag→nodes CSR. When non-null the worker uses these offsets
+    /// directly instead of running its own counting sort over node_tags.
+    tag_csr: ?js_buffer.TagNodeCsrResult = null,
     actual_node_count: u32 = 0,                    // set by main after parse returns
     actual_node_tags: ?[]const @import("../parser/ast.zig").Node.Tag = null, // ditto
     semantic_data_offset: u32 = 0,                 // result: where SemanticHeader landed
     err: ?anyerror = null,
+    /// Main writes here when its writeCfgGraph finishes; worker reads at end of
+    /// writeSem to populate the cfg_graph_offset header field.
+    main_cfg_graph_offset: u32 = 0,
 };
 
 fn streamSemEntry(ctx: *StreamSemCtx) void {
+    var ts0: std.c.timespec = undefined;
+    var ts1: std.c.timespec = undefined;
+    var ts2: std.c.timespec = undefined;
+    var ts3: std.c.timespec = undefined;
+    var ts4: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts0);
     // Spin for parser to publish ast_view (pointers + capacity).
     while (!ctx.ast_ready.load(.acquire)) {
         // If parse failed before publishing ast_view, parse_done fires first.
         if (ctx.parse_done.load(.acquire)) return;
         std.atomic.spinLoopHint();
     }
+    _ = std.c.clock_gettime(.MONOTONIC, &ts1);
     var sem_result = event_resolver.resolveFull(
         ctx.arena_alloc,
         ctx.ast_view,
@@ -91,6 +104,7 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         ctx.err = e;
         return;
     };
+    _ = std.c.clock_gettime(.MONOTONIC, &ts2);
     // Wait for parent_builder on main; writeSemanticData needs parent_indices.
     while (!ctx.parent_indices_ready.load(.acquire)) std.atomic.spinLoopHint();
     const parents = ctx.parent_indices orelse {
@@ -106,9 +120,13 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         // when it returns; main thread then publishes parent_indices_ready,
         // which guarantees the writes are visible to us).
     }
+    _ = std.c.clock_gettime(.MONOTONIC, &ts3);
     semantic_mod.computeLoopBodyExitabilityPub(
         ctx.ast_view, sem_result.loop_exit_reachable, sem_result.node_reachable,
     );
+    // Publish analyzer outputs so main can run writeCfgGraph in parallel with
+    // the worker's other writeSem phases. Main will patch cfg_graph_offset in
+    // the header after both threads complete.
     if (js_buffer.writeSemanticData(
         ctx.buf_ptr,
         ctx.worker_backing,
@@ -117,10 +135,23 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         ctx.actual_node_tags orelse return,
         parents,
         ctx.node_depths_offset,
+        ctx.tag_csr,
+        0,
     )) |off| {
         ctx.semantic_data_offset = off;
     } else |e| {
         ctx.err = e;
+    }
+    _ = std.c.clock_gettime(.MONOTONIC, &ts4);
+    if (std.c.getenv("EZ_TRACE_SEM")) |_| {
+        const ms = struct {
+            fn d(a: std.c.timespec, b: std.c.timespec) f64 {
+                return @as(f64, @floatFromInt((b.sec - a.sec) * std.time.ns_per_s + (b.nsec - a.nsec))) / 1e6;
+            }
+        };
+        std.debug.print("[sem] wait_ast={d:.2} analyzer={d:.2} wait_parents={d:.2} loop_exit+writeSem={d:.2}\n", .{
+            ms.d(ts0, ts1), ms.d(ts1, ts2), ms.d(ts2, ts3), ms.d(ts3, ts4),
+        });
     }
 }
 
@@ -371,8 +402,32 @@ fn parseImpl(
         }) catch |e| return e;
     };
 
+    // Streaming-sem fast path: produce JUST the parents array first (~0.3ms),
+    // unblock the worker so it can run writeSemanticData, then build the
+    // remaining traversal data in parallel with the worker.
+    var stream_parents_for_worker: []u32 = &.{};
+    if (use_stream_sem and stream_sem_thread != null) {
+        stream_parents_for_worker = parent_builder.buildParentsOnly(&tree, alloc) catch |e| {
+            s_parents_ready.store(true, .release);
+            if (stream_sem_thread) |th| th.join();
+            return e;
+        };
+        s_ast_view = tree;
+        stream_sem_ctx.actual_node_count = @intCast(tree.nodes.len);
+        stream_sem_ctx.actual_node_tags = tree.nodes.items(.tag);
+        stream_sem_ctx.parent_indices = stream_parents_for_worker;
+        if (js_buffer.computeNodeDepths(buf_ptr, &backing, stream_parents_for_worker, @intCast(tree.nodes.len))) |off| {
+            stream_sem_ctx.node_depths_offset = off;
+        } else |_| {}
+        if (js_buffer.computeTagNodeCsr(buf_ptr, &backing, tree.nodes.items(.tag))) |csr| {
+            stream_sem_ctx.tag_csr = csr;
+        } else |_| {}
+        s_parents_ready.store(true, .release);
+    }
+
     // Compute parent indices and DFS traversal orders in a single pass.
-    // All three arrays are allocated into the main bump region.
+    // (Also re-builds parents — for the streaming path, redundant with the
+    // quick parents above, but harmless: ~0.3ms overlapped with worker.)
     const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| {
         if (use_stream_sem) {
             s_parents_ready.store(true, .release); // unblock worker so we can join
@@ -390,26 +445,9 @@ fn parseImpl(
         js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
 
     var semantic_data_offset: u32 = 0;
-    var stream_sem_handled: bool = false;
-    if (use_stream_sem and stream_sem_thread != null) {
-        // Publish final AST view (with actual .len) + parent_indices to the
-        // worker. The worker will then run writeSemanticData against its
-        // own bump partition concurrently with main's tail (UTF-16, spans, header).
-        s_ast_view = tree;
-        stream_sem_ctx.actual_node_count = @intCast(tree.nodes.len);
-        stream_sem_ctx.actual_node_tags = tree.nodes.items(.tag);
-        stream_sem_ctx.parent_indices = traversal.parents;
-        // Pre-compute node_depths into main's bump partition before signaling
-        // the worker — depths only need parent_indices and main has them now.
-        // Cuts ~1-2ms off the worker's writeSemanticData tail since the worker
-        // skips the depth pass entirely.
-        if (js_buffer.computeNodeDepths(buf_ptr, &backing, traversal.parents, @intCast(tree.nodes.len))) |off| {
-            stream_sem_ctx.node_depths_offset = off;
-        } else |_| {}
-        s_parents_ready.store(true, .release);
-        // Don't join yet — main does UTF-16/spans/header next, then joins.
-        stream_sem_handled = true;
-    }
+    const stream_sem_handled: bool = use_stream_sem and stream_sem_thread != null;
+    // Worker was already given parents + signaled (above). Don't join yet —
+    // main does UTF-16/spans/header next, then joins.
 
     // Sequential / parallel-cfg fallback (small files): use the post-parse arena.
     const sem_arena_ptr = getSemArena();
@@ -461,7 +499,7 @@ fn parseImpl(
                         // computeLoopBodyExitability lives in semantic.zig; replicate the
                         // single call here (previously inside analyzeWithOptions).
                         semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
-                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
+                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
                             semantic_data_offset = off;
                         } else |_| {}
                     } else |_| {}
@@ -476,7 +514,7 @@ fn parseImpl(
             // Worker spawn failed — fall back to sequential.
             if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
                 var sem = sem_result;
-                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
+                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
                     semantic_data_offset = off;
                 } else |_| {}
             } else |_| {}
@@ -484,7 +522,7 @@ fn parseImpl(
     } else if (!stream_sem_handled) {
         if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
             var sem = sem_result;
-            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
+            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
                 semantic_data_offset = off;
             } else |_| {}
         } else |_| {}
@@ -688,19 +726,15 @@ fn parseImpl(
         .type_overrides_offset = type_overrides_offset,
     });
 
-    // Streaming-sem path: join worker and patch in the semantic_data_offset
-    // it computed (writeSemanticData ran on the worker thread concurrently
-    // with main's tail). The header was written above with semantic_data_offset
-    // = 0; rewrite the field now that the real value is known.
+    // Streaming-sem path: spin on `analyzer_done`, run writeCfgGraph on main
+    // in parallel with the worker's other writeSem phases. After both done,
+    // patch the cfg_graph_offset and semantic_data_offset header fields.
     if (use_stream_sem and stream_sem_thread != null and stream_sem_handled) {
         if (stream_sem_thread) |th| th.join();
         if (stream_sem_ctx.err == null and stream_sem_ctx.semantic_data_offset != 0) {
             const real_off = stream_sem_ctx.semantic_data_offset;
-            // Patch BufferHeader.semantic_data_offset (compute its byte position
-            // by reading the offset of that field within BufferHeader).
             const sd_off_addr: *u32 = @ptrCast(@alignCast(buf_ptr + js_buffer.semanticDataOffsetFieldOff()));
             sd_off_addr.* = real_off;
-            // Total bytes used = max(main bump end, worker bump end).
             const main_end = backing.bytesUsed();
             const worker_end = worker_backing.endOffset();
             return if (worker_end > main_end) worker_end else main_end;
@@ -789,7 +823,7 @@ fn parseAndLintImpl(
         .build_parents = true,
     })) |sr| {
         sem_result_opt = sr;
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
             semantic_data_offset = off;
         } else |_| {}
     } else |_| {}
