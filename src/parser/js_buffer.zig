@@ -299,6 +299,28 @@ inline fn isDeclSymBarrierTag(tag: ast_mod.Node.Tag) bool {
     };
 }
 
+/// Compute node depths into the bump region. Standalone so the main thread
+/// can run it during the streaming-sem worker's analyzer phase, avoiding a
+/// second pass on the worker. Returns absolute offset of the depths array.
+pub fn computeNodeDepths(
+    buf: [*]u8,
+    backing: *JsBufferAllocator,
+    parent_indices: []const u32,
+    node_count: u32,
+) !u32 {
+    if (node_count == 0) return 0;
+    const alloc = backing.allocator();
+    const node_depths = try alloc.alloc(u32, node_count);
+    @memset(node_depths, 0);
+    var i: usize = node_count;
+    while (i > 0) {
+        i -= 1;
+        const p = parent_indices[i];
+        node_depths[i] = if (p < node_count) node_depths[p] + 1 else 0;
+    }
+    return ptrOffsetPub(buf, @as([*]u8, @ptrCast(node_depths.ptr)));
+}
+
 pub fn writeSemanticData(
     buf: [*]u8,
     backing: *JsBufferAllocator,
@@ -306,6 +328,7 @@ pub fn writeSemanticData(
     node_count: u32,
     node_tags: []const ast_mod.Node.Tag,
     parent_indices: []const u32,
+    precomputed_node_depths_offset: u32,
 ) !u32 {
     const alloc = backing.allocator();
     const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
@@ -612,18 +635,19 @@ pub fn writeSemanticData(
     }
 
     // ── Node depths ─────────────────────────────────────────────
-    // depth[root]=0, depth[child]=depth[parent]+1.
-    // Parents have higher indices than children (except root=0),
-    // so reverse iteration guarantees parent is processed first.
-    const node_depths = try alloc.alloc(u32, node_count);
-    @memset(node_depths, 0);
-    if (node_count > 0) {
+    // If main thread already computed these (via computeNodeDepths into its
+    // own bump partition during the worker's analyzer phase), skip and reuse.
+    var node_depths_offset_final: u32 = precomputed_node_depths_offset;
+    if (node_depths_offset_final == 0 and node_count > 0) {
+        const node_depths = try alloc.alloc(u32, node_count);
+        @memset(node_depths, 0);
         var i: usize = node_count;
         while (i > 0) {
             i -= 1;
             const p = parent_indices[i];
             node_depths[i] = if (p < node_count) node_depths[p] + 1 else 0;
         }
+        node_depths_offset_final = ptrOffsetPub(buf, @as([*]u8, @ptrCast(node_depths.ptr)));
     }
 
     // ── Node → declared symbols CSR (Phase B) ───────────────────────
@@ -747,7 +771,7 @@ pub fn writeSemanticData(
     sem_header.tag_node_starts_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_starts.ptr) else 0;
     sem_header.tag_node_ids_offset = if (node_count > 0) ptrOffsetPub(buf, tag_node_ids.ptr) else 0;
     sem_header.tag_count = tag_slots;
-    sem_header.node_depths_offset = if (node_count > 0) ptrOffsetPub(buf, node_depths.ptr) else 0;
+    sem_header.node_depths_offset = node_depths_offset_final;
     sem_header.scope_through_ref_starts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_starts.ptr) else 0;
     sem_header.scope_through_ref_counts_offset = if (scope_count > 0) ptrOffsetPub(buf, scope_through_ref_counts.ptr) else 0;
     sem_header.scope_through_ref_ids_offset = if (total_through > 0) ptrOffsetPub(buf, scope_through_ref_ids.ptr) else 0;

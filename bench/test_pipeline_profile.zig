@@ -61,7 +61,7 @@ pub fn main(init: std.process.Init) !void {
         var dummy_backing = js_buffer.JsBufferAllocator.init(working.ptr, @intCast(source.len + 65536));
         _ = js_buffer.writeSemanticData(
             working.ptr, &dummy_backing, &sem,
-            @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents,
+            @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0,
         ) catch {};
         sem_arena.deinit();
     }

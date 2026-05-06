@@ -58,6 +58,10 @@ const StreamSemCtx = struct {
     globals: []const u8,
     parent_indices: ?[]const u32 = null,         // set by main once parent_builder finishes
     parent_indices_ready: *std.atomic.Value(bool),
+    /// Pre-computed node_depths offset (main thread runs this in parallel with
+    /// the worker's analyzer to soak up some of main's idle wait at join).
+    /// 0 means worker should compute depths itself.
+    node_depths_offset: u32 = 0,
     actual_node_count: u32 = 0,                    // set by main after parse returns
     actual_node_tags: ?[]const @import("../parser/ast.zig").Node.Tag = null, // ditto
     semantic_data_offset: u32 = 0,                 // result: where SemanticHeader landed
@@ -112,6 +116,7 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         ctx.actual_node_count,
         ctx.actual_node_tags orelse return,
         parents,
+        ctx.node_depths_offset,
     )) |off| {
         ctx.semantic_data_offset = off;
     } else |e| {
@@ -394,6 +399,13 @@ fn parseImpl(
         stream_sem_ctx.actual_node_count = @intCast(tree.nodes.len);
         stream_sem_ctx.actual_node_tags = tree.nodes.items(.tag);
         stream_sem_ctx.parent_indices = traversal.parents;
+        // Pre-compute node_depths into main's bump partition before signaling
+        // the worker — depths only need parent_indices and main has them now.
+        // Cuts ~1-2ms off the worker's writeSemanticData tail since the worker
+        // skips the depth pass entirely.
+        if (js_buffer.computeNodeDepths(buf_ptr, &backing, traversal.parents, @intCast(tree.nodes.len))) |off| {
+            stream_sem_ctx.node_depths_offset = off;
+        } else |_| {}
         s_parents_ready.store(true, .release);
         // Don't join yet — main does UTF-16/spans/header next, then joins.
         stream_sem_handled = true;
@@ -449,7 +461,7 @@ fn parseImpl(
                         // computeLoopBodyExitability lives in semantic.zig; replicate the
                         // single call here (previously inside analyzeWithOptions).
                         semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
-                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
                             semantic_data_offset = off;
                         } else |_| {}
                     } else |_| {}
@@ -464,7 +476,7 @@ fn parseImpl(
             // Worker spawn failed — fall back to sequential.
             if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
                 var sem = sem_result;
-                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
                     semantic_data_offset = off;
                 } else |_| {}
             } else |_| {}
@@ -472,7 +484,7 @@ fn parseImpl(
     } else if (!stream_sem_handled) {
         if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
             var sem = sem_result;
-            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
                 semantic_data_offset = off;
             } else |_| {}
         } else |_| {}
@@ -777,7 +789,7 @@ fn parseAndLintImpl(
         .build_parents = true,
     })) |sr| {
         sem_result_opt = sr;
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0)) |off| {
             semantic_data_offset = off;
         } else |_| {}
     } else |_| {}

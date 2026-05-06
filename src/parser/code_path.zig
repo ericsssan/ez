@@ -36,6 +36,11 @@ pub const Segment = struct {
     // Looped prev — set rarely via markLooped.
     looped_prev_start: u32,
     looped_prev_end: u32,
+    // Collapsed prev — only populated for unreachable segments. BFS through
+    // unreachable predecessors collects the set of REACHABLE ancestors. Lets
+    // JS rules (no-useless-return) skip recursive walks at runtime.
+    collapsed_prev_start: u32,
+    collapsed_prev_end: u32,
 };
 
 /// Hot adjacency sidecar — written on every markUsed/markLooped call.
@@ -366,6 +371,12 @@ pub const CodePathBuilder = struct {
     all_next_targets: std.ArrayList(SegmentId),
     next_targets: std.ArrayList(SegmentId),
     looped_targets: std.ArrayList(SegmentId),
+    /// Collapsed-prev pool — populated for unreachable segments only.
+    collapsed_prev_targets: std.ArrayList(SegmentId),
+    /// Per-segment visit generation for buildCollapsedPrev. Avoids O(N²)
+    /// dedup. Grown alongside segments. Each new BFS bumps `collapse_gen`.
+    seg_collapse_visit: std.ArrayList(u32),
+    collapse_gen: u32,
 
     // CodePath segment lists (finals, returned, thrown)
     cp_final_pool: std.ArrayList(SegmentId),
@@ -412,6 +423,9 @@ pub const CodePathBuilder = struct {
             .all_next_targets = .empty,
             .next_targets = .empty,
             .looped_targets = .empty,
+            .collapsed_prev_targets = .empty,
+            .seg_collapse_visit = .empty,
+            .collapse_gen = 0,
             .cp_final_pool = .empty,
             .cp_returned_pool = .empty,
             .cp_thrown_pool = .empty,
@@ -447,6 +461,8 @@ pub const CodePathBuilder = struct {
         try self.next_targets.ensureTotalCapacity(self.allocator, est_segments);
         // Loop back-edges and cp pools scale with loop/function counts — smaller.
         try self.looped_targets.ensureTotalCapacity(self.allocator, est_codepaths * 8);
+        try self.collapsed_prev_targets.ensureTotalCapacity(self.allocator, est_segments / 4);
+        try self.seg_collapse_visit.ensureTotalCapacity(self.allocator, est_segments);
         try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
         try self.cp_returned_pool.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.cp_thrown_pool.ensureTotalCapacity(self.allocator, est_codepaths / 4);
@@ -489,10 +505,13 @@ pub const CodePathBuilder = struct {
             .prev_end = 0,
             .looped_prev_start = 0,
             .looped_prev_end = 0,
+            .collapsed_prev_start = 0,
+            .collapsed_prev_end = 0,
         });
         try self.seg_reachable.append(self.allocator, 1);
         try self.seg_used.append(self.allocator, 0);
         try self.seg_next.append(self.allocator, .{});
+        try self.seg_collapse_visit.append(self.allocator, 0);
         return id;
     }
 
@@ -541,6 +560,15 @@ pub const CodePathBuilder = struct {
         const ap_end: u32 = @intCast(self.all_prev_targets.items.len);
         const p_end: u32 = @intCast(self.prev_targets.items.len);
 
+        // For unreachable segments: BFS through unreachable predecessors to
+        // collect their reachable ancestors. Used by JS to give rules a
+        // direct reachable-ancestor list (skips runtime walks).
+        const cp_start: u32 = @intCast(self.collapsed_prev_targets.items.len);
+        if (!is_reachable and all_prev.len > 0) {
+            try self.buildCollapsedPrev(alloc, all_prev);
+        }
+        const cp_end: u32 = @intCast(self.collapsed_prev_targets.items.len);
+
         try self.segments.append(alloc, .{
             .codepath = self.current_codepath,
             .all_prev_start = ap_start,
@@ -549,11 +577,52 @@ pub const CodePathBuilder = struct {
             .prev_end = p_end,
             .looped_prev_start = 0,
             .looped_prev_end = 0,
+            .collapsed_prev_start = cp_start,
+            .collapsed_prev_end = cp_end,
         });
         try self.seg_reachable.append(alloc, if (is_reachable) 1 else 0);
         try self.seg_used.append(alloc, 0);
         try self.seg_next.append(alloc, .{});
+        try self.seg_collapse_visit.append(alloc, 0);
         return id;
+    }
+
+    /// Compute the reachable-ancestor closure of an unreachable segment by
+    /// inheriting from each prev: if prev is reachable, include it directly;
+    /// if unreachable, include its already-computed collapsed_prev set.
+    /// O(prev_count + sum_of_inherited_sets) per call, dedup via gen counter.
+    fn buildCollapsedPrev(self: *CodePathBuilder, alloc: Allocator, all_prev: []const SegmentId) !void {
+        const reach_s = self.seg_reachable.items;
+        const cps_arr = self.segments.items(.collapsed_prev_start);
+        const cpe_arr = self.segments.items(.collapsed_prev_end);
+
+        self.collapse_gen +%= 1;
+        if (self.collapse_gen == 0) {
+            @memset(self.seg_collapse_visit.items, 0);
+            self.collapse_gen = 1;
+        }
+        const gen = self.collapse_gen;
+        const visit = self.seg_collapse_visit.items;
+
+        for (all_prev) |p| {
+            if (p == NONE_SEG) continue;
+            if (reach_s[p] != 0) {
+                if (visit[p] != gen) {
+                    visit[p] = gen;
+                    try self.collapsed_prev_targets.append(alloc, p);
+                }
+                continue;
+            }
+            // Unreachable prev — inherit its already-built collapsed list.
+            const cps = cps_arr[p];
+            const cpe = cpe_arr[p];
+            for (self.collapsed_prev_targets.items[cps..cpe]) |reach_id| {
+                if (visit[reach_id] != gen) {
+                    visit[reach_id] = gen;
+                    try self.collapsed_prev_targets.append(alloc, reach_id);
+                }
+            }
+        }
     }
 
     /// Mark a segment as used — registers it in prev segments' next lists.
@@ -1406,7 +1475,7 @@ pub const CodePathBuilder = struct {
 
     // ── Return/Throw ─────────────────────────────────────────
 
-    pub fn makeReturn(self: *CodePathBuilder, node: NodeIndex) !void {
+    pub fn makeReturn(self: *CodePathBuilder, node: NodeIndex, has_argument: bool) !void {
         const cp_id = self.current_codepath;
         if (cp_id == NONE_CP) return;
 
@@ -1430,6 +1499,12 @@ pub const CodePathBuilder = struct {
         if (self.try_context) |tc| {
             if (tc.has_finalizer and tc.position != .finally_body) {
                 try tc.returned_fork.add(head, self);
+            }
+            // `return expr;` evaluates an expression that can throw — same as makeThrow,
+            // it makes the catch body reachable from the pre-try state.
+            if (has_argument and tc.position == .try_body and !tc.first_throwable_called) {
+                tc.first_throwable_called = true;
+                try tc.thrown_fork.add(head, self);
             }
         }
 
@@ -1594,6 +1669,8 @@ pub const CodePathBuilder = struct {
         seg_prev_end: []const u32,
         seg_looped_prev_start: []const u32,
         seg_looped_prev_end: []const u32,
+        seg_collapsed_prev_start: []const u32,
+        seg_collapsed_prev_end: []const u32,
         /// Per-segment flags.
         seg_reachable: []const u8,
         /// Per-segment adjacency (all_next_*/next_*) ranges.
@@ -1606,6 +1683,7 @@ pub const CodePathBuilder = struct {
         all_next_targets: []const SegmentId,
         next_targets: []const SegmentId,
         looped_targets: []const SegmentId,
+        collapsed_prev_targets: []const SegmentId,
         // CodePath segment pools
         cp_final_pool: []const SegmentId,
         cp_returned_pool: []const SegmentId,
@@ -1633,6 +1711,8 @@ pub const CodePathBuilder = struct {
             .seg_prev_end = self.segments.items(.prev_end),
             .seg_looped_prev_start = self.segments.items(.looped_prev_start),
             .seg_looped_prev_end = self.segments.items(.looped_prev_end),
+            .seg_collapsed_prev_start = self.segments.items(.collapsed_prev_start),
+            .seg_collapsed_prev_end = self.segments.items(.collapsed_prev_end),
             .seg_reachable = self.seg_reachable.items,
             .seg_next = self.seg_next.items,
             .codepaths = self.codepaths.items,
@@ -1642,6 +1722,7 @@ pub const CodePathBuilder = struct {
             .all_next_targets = self.all_next_targets.items,
             .next_targets = self.next_targets.items,
             .looped_targets = self.looped_targets.items,
+            .collapsed_prev_targets = self.collapsed_prev_targets.items,
             .cp_final_pool = self.cp_final_pool.items,
             .cp_returned_pool = self.cp_returned_pool.items,
             .cp_thrown_pool = self.cp_thrown_pool.items,
