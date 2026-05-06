@@ -733,7 +733,10 @@ fn resolveFullImpl(
             const term_node: NodeIndex = @enumFromInt(e.node);
             const term_i = @intFromEnum(term_node);
             switch (e.aux) {
-                0 => if (do_cfg) try cpb.makeReturn(term_node),
+                0 => if (do_cfg) {
+                    const has_arg = term_i < node_tags.len and node_datas[term_i].lhs != .none;
+                    try cpb.makeReturn(term_node, has_arg);
+                },
                 1 => if (do_cfg) try cpb.makeThrow(term_node),
                 2 => if (term_i < node_tags.len and node_tags[term_i] == .break_label) blk: {
                     const lbl_n = node_datas[term_i].lhs;

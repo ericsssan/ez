@@ -140,6 +140,10 @@ pub const SemanticAnalyzer = struct {
 // (via break/return/throw on every path). Sets loop_exit_reachable[i] = 0 for
 // such loops, allowing the no-unreachable-loop rule to report them.
 
+pub fn computeLoopBodyExitabilityPub(ast: *const Ast, loop_exit_reachable: []u8, node_reachable: []u8) void {
+    return computeLoopBodyExitability(ast, loop_exit_reachable, node_reachable);
+}
+
 fn computeLoopBodyExitability(ast: *const Ast, loop_exit_reachable: []u8, node_reachable: []u8) void {
     const tags = ast.nodes.items(.tag);
     const datas = ast.nodes.items(.data);

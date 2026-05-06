@@ -10,6 +10,7 @@ inline fn tokenizeMaybeFused(alloc: std.mem.Allocator, source: []const u8, langu
 }
 const parent_builder = @import("../parser/parent_builder.zig");
 const semantic_mod = @import("../parser/semantic.zig");
+const event_resolver = @import("../parser/event_resolver.zig");
 const Language = parser.token.Language;
 const linter_root = @import("../linter/root.zig");
 const linter_mod = linter_root.linter;
@@ -34,12 +35,26 @@ fn getLintArena() *std.heap.ArenaAllocator {
 threadlocal var tl_sem_arena: std.heap.ArenaAllocator = undefined;
 threadlocal var tl_sem_arena_ready: bool = false;
 
+// Second thread-local arena used by the CFG worker thread when scope/cfg run in
+// parallel (EZ_PARALLEL_SEM=1). Each thread reuses its own arena across parses;
+// the CFG one is touched only by the spawned worker so there's no contention.
+threadlocal var tl_cfg_arena: std.heap.ArenaAllocator = undefined;
+threadlocal var tl_cfg_arena_ready: bool = false;
+
 fn getSemArena() *std.heap.ArenaAllocator {
     if (!tl_sem_arena_ready) {
         tl_sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         tl_sem_arena_ready = true;
     }
     return &tl_sem_arena;
+}
+
+fn getCfgArena() *std.heap.ArenaAllocator {
+    if (!tl_cfg_arena_ready) {
+        tl_cfg_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        tl_cfg_arena_ready = true;
+    }
+    return &tl_cfg_arena;
 }
 
 // ── Debug memory probe — exported to JS for per-call Zig accounting ──
@@ -191,12 +206,81 @@ fn parseImpl(
     var semantic_data_offset: u32 = 0;
     const sem_arena_ptr = getSemArena();
     _ = sem_arena_ptr.reset(.retain_capacity);
-    if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
-        var sem = sem_result;
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
-            semantic_data_offset = off;
+
+    // Parallel scope+cfg analysis: spawn cfg worker, run scope on this thread,
+    // join, combineParts. Saves ~max(0, cfg_time - thread_overhead) ms when
+    // cfg analysis runs concurrently with scope analysis.
+    //
+    // Gate by event count: thread spawn costs ~50-100us on macOS, so the
+    // crossover is around a few thousand events. Below that, sequential wins
+    // (no thread overhead). Set EZ_NO_PARALLEL_SEM=1 to disable; set
+    // EZ_PARALLEL_SEM_THRESHOLD=<n> to override the default 5000 event gate.
+    const env_disabled: bool = blk: {
+        if (std.c.getenv("EZ_NO_PARALLEL_SEM")) |v| {
+            if (v[0] == '1' and v[1] == 0) break :blk true;
+        }
+        break :blk false;
+    };
+    const ev_count: usize = tree.scope_events.len;
+    const parallel_threshold: usize = blk: {
+        if (std.c.getenv("EZ_PARALLEL_SEM_THRESHOLD")) |v| {
+            // parse decimal — fall through to default on any error
+            var nv: usize = 0;
+            var i: usize = 0;
+            while (v[i] != 0 and v[i] >= '0' and v[i] <= '9') : (i += 1) {
+                nv = nv * 10 + @as(usize, @intCast(v[i] - '0'));
+            }
+            if (nv > 0) break :blk nv;
+        }
+        break :blk 5000;
+    };
+    const parallel_sem = !env_disabled and ev_count >= parallel_threshold;
+
+    if (parallel_sem) {
+        const cfg_arena_ptr = getCfgArena();
+        _ = cfg_arena_ptr.reset(.retain_capacity);
+        const er_opts = event_resolver.Options{ .globals = globals };
+        // Spawn cfg worker first so it runs concurrently with scope on this thread.
+        if (event_resolver.ScopeCfgParallel.start(
+            cfg_arena_ptr.allocator(), &tree, tree.scope_events, er_opts,
+        )) |cfg_worker| {
+            if (event_resolver.resolveFullScope(
+                sem_arena_ptr.allocator(), &tree, tree.scope_events, er_opts,
+            )) |scope_part| {
+                if (cfg_worker.join(cfg_arena_ptr.allocator())) |cfg_part| {
+                    if (event_resolver.combineParts(sem_arena_ptr.allocator(), scope_part, cfg_part)) |sem_result| {
+                        var sem = sem_result;
+                        // computeLoopBodyExitability lives in semantic.zig; replicate the
+                        // single call here (previously inside analyzeWithOptions).
+                        semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
+                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+                            semantic_data_offset = off;
+                        } else |_| {}
+                    } else |_| {}
+                } else |_| {}
+            } else |_| {
+                // Scope failed — drain the worker so we don't leak its thread.
+                if (cfg_worker.join(cfg_arena_ptr.allocator())) |dropped| {
+                    var d = dropped; d.deinit(cfg_arena_ptr.allocator());
+                } else |_| {}
+            }
+        } else |_| {
+            // Worker spawn failed — fall back to sequential.
+            if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
+                var sem = sem_result;
+                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+                    semantic_data_offset = off;
+                } else |_| {}
+            } else |_| {}
+        }
+    } else {
+        if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
+            var sem = sem_result;
+            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
+                semantic_data_offset = off;
+            } else |_| {}
         } else |_| {}
-    } else |_| {}
+    }
 
     // Write comment positions into bump region (before UTF-16 conversion).
     // Comment positions are byte offsets that need the same UTF-16 conversion.
