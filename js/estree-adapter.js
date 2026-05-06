@@ -4280,6 +4280,7 @@ const CGH = {
   CFG_PHASE_AFTER_ENTER_STARTS: 136,
   CFG_PHASE_AFTER_ENTER_DATA: 140,
   CFG_NODE_BITS: 144,
+  CFG_SUBTREE_BITS: 148,
 };
 
 const CP_ORIGINS = ['program', 'function', 'class-field-initializer', 'class-static-block'];
@@ -4374,6 +4375,8 @@ class CfgGraph {
       this._cfgAfterEnterData   = _readData(this._cfgAfterEnterStarts, CGH.CFG_PHASE_AFTER_ENTER_DATA);
       const nbOff = dv.getUint32(off + CGH.CFG_NODE_BITS, true);
       this._cfgNodeBits = nbOff > 0 ? new Uint8Array(buffer, nbOff, cfgNc) : null;
+      const sbOff = dv.getUint32(off + CGH.CFG_SUBTREE_BITS, true);
+      this._cfgSubtreeBits = sbOff > 0 ? new Uint8Array(buffer, sbOff, cfgNc) : null;
       this._cfgPhaseNodeCount = cfgNc;
     } else {
       this._cfgEnterStarts = null; this._cfgEnterData = null;
@@ -4381,6 +4384,7 @@ class CfgGraph {
       this._cfgPostStarts = null; this._cfgPostData = null;
       this._cfgAfterEnterStarts = null; this._cfgAfterEnterData = null;
       this._cfgNodeBits = null;
+      this._cfgSubtreeBits = null;
       this._cfgPhaseNodeCount = 0;
     }
 

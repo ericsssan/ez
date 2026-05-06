@@ -6611,6 +6611,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const _cfgAfterEnterStarts = _cfgHasPhaseCsr ? _cfgGraph._cfgAfterEnterStarts : null;
   const _cfgAfterEnterData   = _cfgHasPhaseCsr ? _cfgGraph._cfgAfterEnterData   : null;
   const _cfgNodeBits         = _cfgHasPhaseCsr ? _cfgGraph._cfgNodeBits         : null;
+  const _cfgSubtreeBits      = _cfgHasPhaseCsr ? _cfgGraph._cfgSubtreeBits      : null;
   let _cfgCurrentCp = null;
   const _cfgCpStack = [];
 
@@ -6764,24 +6765,48 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Do NOT add ts_type_reference to relevantTag here — that would inflate _relevantCount
   // and disable subtree pruning for TS-heavy rules. The CSR pass uses _tagNodeStarts
   // to iterate ts_type_reference nodes directly without touching the DFS pruning logic.
-  const subtreeRelevant = new Uint8Array(ast.nodeCount);
   let _relevantCount = 0;
   for (let _ti = 0; _ti < relevantTag.length; _ti++) _relevantCount += relevantTag[_ti];
   const usePruning = canSkip && _relevantCount < tagCount * 0.5 && pd;
+  // Plan-level cache for `subtreeRelevant`. The result depends only on
+  // (rule-set's relevantTag mask, AST shape, AST's cfg-event nodes) — all
+  // stable across re-lints of the same file with the same plan. Memoize on
+  // _sharedCaches (which is keyed off the AST) using the plan as a sub-key
+  // so LSP / watch / fix-loop re-lints skip the post-order build.
+  let subtreeRelevant;
   if (usePruning) {
-    // Seed CfgGraph event nodes into subtreeRelevant so they aren't pruned.
-    if (_cfgNodeBits) {
-      for (let i = 0; i < ast.nodeCount; i++) {
-        if (_cfgNodeBits[i]) subtreeRelevant[i] = 1;
-      }
+    const _shared = context.sourceCode._sharedCaches;
+    let cache = _shared.subtreeRelevantByPlan;
+    if (cache === undefined) {
+      cache = _shared.subtreeRelevantByPlan = new WeakMap();
     }
-    for (let i = 0; i < postOrder.length; i++) {
-      const idx = postOrder[i];
-      if (relevantTag[nodeTags[idx]] || subtreeRelevant[idx]) {
-        subtreeRelevant[idx] = 1;
-        const p = pd[idx]; if (p !== NONE) subtreeRelevant[p] = 1;
+    subtreeRelevant = cache.get(plan);
+    if (subtreeRelevant === undefined) {
+      subtreeRelevant = new Uint8Array(ast.nodeCount);
+      // Seed cfg-event subtree bits from the Zig-baked CSR (avoids the per-call
+      // cfg-bit copy loop at this scope's nodes; the bake also propagates the
+      // bit up via parent_indices, so ancestors are pre-marked).
+      if (_cfgSubtreeBits) {
+        subtreeRelevant.set(_cfgSubtreeBits);
+      } else if (_cfgNodeBits) {
+        for (let i = 0; i < ast.nodeCount; i++) {
+          if (_cfgNodeBits[i]) subtreeRelevant[i] = 1;
+        }
       }
+      // Propagate rule-relevant tags up via post-order. Only this part is
+      // rule-set-dependent so it has to run in JS; the cfg portion is now
+      // handled by the seed above.
+      for (let i = 0; i < postOrder.length; i++) {
+        const idx = postOrder[i];
+        if (relevantTag[nodeTags[idx]] || subtreeRelevant[idx]) {
+          subtreeRelevant[idx] = 1;
+          const p = pd[idx]; if (p !== NONE) subtreeRelevant[p] = 1;
+        }
+      }
+      cache.set(plan, subtreeRelevant);
     }
+  } else {
+    subtreeRelevant = new Uint8Array(ast.nodeCount);
   }
 
   const skipSet = new RuleSkipSet();

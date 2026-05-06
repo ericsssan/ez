@@ -270,6 +270,7 @@ pub const CfgGraphHeader = extern struct {
     cfg_phase_after_enter_starts_offset: u32,
     cfg_phase_after_enter_data_offset: u32,
     cfg_node_bits_offset: u32,                  // u8[node_count] — 1 if node has any phase events
+    cfg_subtree_bits_offset: u32,               // u8[node_count] — 1 if subtree rooted at node contains any cfg-event node (own bit OR'd up via parents)
 };
 
 // ── Semantic Data Serializer ─────────────────────────────────────
@@ -735,7 +736,7 @@ pub fn writeSemanticData(
         .cfg_events_offset = 0, // legacy — replaced by cfg_graph_offset
         .cfg_events_count = 0,
 
-        .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr, node_count) catch 0; } break :blk 0; },
+        .cfg_graph_offset = blk: { if (sem.code_path_result) |cpr| { break :blk writeCfgGraph(buf, alloc, &cpr, node_count, parent_indices) catch 0; } break :blk 0; },
     };
 
     // Set new fields AFTER struct write to avoid bump-allocator interactions
@@ -777,6 +778,7 @@ fn writeCfgGraph(
     alloc: std.mem.Allocator,
     cpr: *const code_path_mod.CodePathBuilder.Result,
     node_count: u32,
+    parent_indices: []const u32,
 ) !u32 {
     const seg_count: u32 = cpr.seg_count;
     const cp_count: u32 = @intCast(cpr.codepaths.len);
@@ -1017,6 +1019,29 @@ fn writeCfgGraph(
         }
     }
 
+    // Subtree-cfg bits: 1 iff the subtree rooted at this node contains any
+    // cfg-event node. Used by the JS walker as the seed for `subtreeRelevant`
+    // pruning; eliminates the per-runPlugins seed-copy loop.
+    //
+    // Compute by walking up from each cfg-event node via parent_indices and
+    // marking each ancestor. Once a node is marked, the walk stops (early-exit
+    // on `subtree[p] != 0`), so total work is O(node_count) regardless of
+    // tree depth. parent_indices may be empty if the parent pass was skipped;
+    // in that case we leave subtree bits == own bits.
+    const subtree_cfg_bits = try alloc.alloc(u8, node_count);
+    @memcpy(subtree_cfg_bits, cfg_node_bits);
+    if (parent_indices.len == node_count) {
+        const none32: u32 = std.math.maxInt(u32);
+        for (0..node_count) |i| {
+            if (cfg_node_bits[i] == 0) continue;
+            var p = parent_indices[i];
+            while (p != none32 and p < node_count and subtree_cfg_bits[p] == 0) {
+                subtree_cfg_bits[p] = 1;
+                p = parent_indices[p];
+            }
+        }
+    }
+
     // ── Write CfgGraphHeader ────────────────────────────────
     const header_mem = try alloc.alloc(u8, @sizeOf(CfgGraphHeader));
     const header: *CfgGraphHeader = @ptrCast(@alignCast(header_mem.ptr));
@@ -1063,6 +1088,7 @@ fn writeCfgGraph(
         .cfg_phase_after_enter_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_starts[3].ptr))),
         .cfg_phase_after_enter_data_offset = if (phase_data[3].len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_data[3].ptr))) else 0,
         .cfg_node_bits_offset = ptrOffsetPub(buf, cfg_node_bits.ptr),
+        .cfg_subtree_bits_offset = ptrOffsetPub(buf, subtree_cfg_bits.ptr),
     };
 
     return ptrOffsetPub(buf, header_mem.ptr);
