@@ -7089,7 +7089,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
 
-      _fireCfgEvents(idx, 0);
+      if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 0);
       // ESLint fires CSS selector handlers (e.g. `:statement`) BEFORE type-specific handlers
       // (e.g. `BlockStatement`). This matches ESLint's NodeEventGenerator behavior where all
       // pseudo-class selectors are evaluated before direct-type dispatches for the same node.
@@ -7099,7 +7099,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       // Phase 3 (after_enter): fires after enter handler, before visiting children.
       // Used for SwitchCase segment starts so rules can set state in SwitchCase handler first.
-      _fireCfgEvents(idx, 3);
+      if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 3);
       // Synthesize ChainExpression enter for outermost optional chain nodes.
       if (hasChainSynth && chainEnterH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
@@ -7289,7 +7289,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       // TSLiteralType Literal:exit synthesis is handled in a post-DFS CSR pass (see below).
       // CfgGraph: code path exit events BEFORE rule exit handlers
-      _fireCfgEvents(idx, 1);
+      if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 1);
       // ESLint fires CSS selector exit handlers (e.g. `:statement:exit`) BEFORE type-specific
       // exit handlers (e.g. `BlockStatement:exit`), matching NodeEventGenerator behavior.
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
@@ -7362,7 +7362,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         }
       }
       if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
-      _fireCfgEvents(idx, 2);
+      if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 2);
     }
   }
 
