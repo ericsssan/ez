@@ -1014,7 +1014,9 @@ pub fn writeCfgGraph(
     // write cursor).
 
     // Pass 1: count events per (phase, node).
-    // Phases packed contiguously: counts[phase * node_count + node].
+    // Layout: counts[node * 4 + phase] — keeps all 4 phases of one node in
+    // a single cache line (16 bytes), turning random-by-node accesses into
+    // clustered ones when consecutive events touch the same/nearby nodes.
     const counts = try alloc.alloc(u32, 4 * node_count);
     @memset(counts, 0);
     var phase_totals: [4]u32 = .{ 0, 0, 0, 0 };
@@ -1027,11 +1029,13 @@ pub fn writeCfgGraph(
             .post => 2,
             .after_enter => 3,
         };
-        counts[phase * node_count + node_raw] += 1;
+        counts[node_raw * 4 + phase] += 1;
         phase_totals[phase] += 1;
     }
 
-    // Pass 2: allocate starts/data per phase, build prefix sums into starts.
+    // Pass 2: allocate starts/data per phase, build prefix sums + seed the
+    // scatter cursor into the same `counts` slots in a single fused pass per
+    // phase (saves a 4× node_count memcpy versus seeding cursors separately).
     var phase_starts: [4][]u32 = undefined;
     var phase_data: [4][]u32 = undefined;
     for (0..4) |p| {
@@ -1039,17 +1043,15 @@ pub fn writeCfgGraph(
         phase_data[p] = try alloc.alloc(u32, phase_totals[p] * 3);
         var sum: u32 = 0;
         for (0..node_count) |n| {
+            const c = counts[n * 4 + p];
             phase_starts[p][n] = sum;
-            sum += counts[p * node_count + n];
+            counts[n * 4 + p] = sum; // overwrite count with cursor
+            sum += c;
         }
         phase_starts[p][node_count] = sum;
     }
 
-    // Pass 3: scatter events. Reuse `counts` as per-(phase, node) write cursor:
-    // seed from phase_starts via memcpy (4× faster than element loop).
-    for (0..4) |p| {
-        @memcpy(counts[p * node_count ..][0..node_count], phase_starts[p][0..node_count]);
-    }
+    // Pass 3: scatter events. counts[n*4 + p] holds the next write cursor.
     for (0..ev_count) |i| {
         const node_raw = @intFromEnum(cpr.events[i].node);
         if (node_raw >= node_count) continue;
@@ -1059,11 +1061,11 @@ pub fn writeCfgGraph(
             .post => 2,
             .after_enter => 3,
         };
-        const slot = counts[phase * node_count + node_raw];
+        const slot = counts[node_raw * 4 + phase];
         phase_data[phase][slot * 3 + 0] = @intFromEnum(cpr.events[i].type);
         phase_data[phase][slot * 3 + 1] = cpr.events[i].data1;
         phase_data[phase][slot * 3 + 2] = cpr.events[i].data2;
-        counts[phase * node_count + node_raw] = slot + 1;
+        counts[node_raw * 4 + phase] = slot + 1;
     }
 
     // Per-node bits: 1 iff the node has any event in any phase.
