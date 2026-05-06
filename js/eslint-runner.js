@@ -6033,10 +6033,18 @@ function _remapList(ruleIds, key, handlerByKey) {
 // (no recursion; runPlugins is synchronous). Hoisting saves ~3 alloc/lint.
 const _walkAncestorsBuf = [];
 const _walkSegEventNode = {};
-const _walkMethodDefTagSet = new Set([
-  T.method_def, T.getter_def, T.setter_def, T.constructor_def,
-  T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
-]);
+// Tag-id-keyed bitmap (was a Set). Hot path: `getAncestorsFor` checks this
+// per ancestor walk step. Out-of-range reads return undefined (falsy) so no
+// bounds check is needed at the call site.
+const _walkMethodDefTagSet = (() => {
+  const tags = [
+    T.method_def, T.getter_def, T.setter_def, T.constructor_def,
+    T.computed_method_def, T.computed_getter_def, T.computed_setter_def,
+  ];
+  const arr = new Uint8Array(Math.max(...tags) + 1);
+  for (const t of tags) arr[t] = 1;
+  return arr;
+})();
 
 /**
  * Walk all AST nodes in DFS order: enter (pre-order) then exit (post-order).
@@ -6107,7 +6115,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // ESTree inserts a synthetic FunctionExpression between a method definition
       // and its non-key children (body, params). Insert it into the ancestors array
       // so selectors like `:function[async=false] > BlockStatement` work on method bodies.
-      if (_methodDefTagSet.has(ptag) && prevP !== ast.nodeLhs(p)) {
+      if (_methodDefTagSet[ptag] && prevP !== ast.nodeLhs(p)) {
         _ancestorsBuf[k++] = pNode.value; // synthetic FunctionExpression
       }
       _ancestorsBuf[k++] = pNode;
@@ -6984,17 +6992,19 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Label synthesis for optimized path (BreakStatement/ContinueStatement/LabeledStatement
   // use a bare label field that is not a real node).
   const needsLabelSynthOpt = visitorMap.has('Identifier') || visitorMap.has('Identifier:exit') || hasSelectors;
-  const _labelStmtTagSet = new Set();
+  // Tag-id-keyed bitmap (was a Set). Hot path: DFS body checks this on every
+  // node enter/exit when `needsLabelSynthOpt` is true. Set.has() → array index.
+  const _labelStmtTagSet = new Uint8Array(tagNames.length);
   for (let _ti = 0; _ti < tagNames.length; _ti++) {
     const _tn = tagNames[_ti];
-    if (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement') _labelStmtTagSet.add(_ti);
+    if (_tn === 'LabeledStatement' || _tn === 'BreakStatement' || _tn === 'ContinueStatement') _labelStmtTagSet[_ti] = 1;
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
   const _needsShorthandSynth = needsLabelSynthOpt; // true when Identifier visitors exist
   const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth || _hasTsInterfaceBodySynth || _hasTsModuleBlockSynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
-      if (needsLabelSynthOpt && _labelStmtTagSet.has(_ti)) _synthTagArr[_ti] = 1;
+      if (needsLabelSynthOpt && _labelStmtTagSet[_ti]) _synthTagArr[_ti] = 1;
       // PrivateIdentifier dispatch needs all Identifier-mapped tags
       if (hasPrivateIdOpt && _identTagBits[_ti]) _synthTagArr[_ti] = 1;
     }
@@ -7126,7 +7136,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Synthesize Identifier visits for synthetic label children (optimized path).
       // MemberExpression.property and import/export specifier names are now real
       // nodes in the buffer and get visited naturally via DFS.
-      if (needsLabelSynthOpt && _labelStmtTagSet.has(tag)) {
+      if (needsLabelSynthOpt && _labelStmtTagSet[tag]) {
         let synthNodes;
         const pn = nodeView(ast, idx);
         const lbl = pn.label;
@@ -7318,7 +7328,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       // Synthesize Identifier:exit for synthetic label children.
       // Specifiers and MemberExpression property are real nodes and exit naturally.
-      if (needsLabelSynthOpt && _labelStmtTagSet.has(tag)) {
+      if (needsLabelSynthOpt && _labelStmtTagSet[tag]) {
         const identExit = visitorMap.get('Identifier:exit');
         if (identExit) {
           const pn = nodeView(ast, idx);
