@@ -871,20 +871,11 @@ pub fn writeCfgGraph(
     if (seg_count == 0 and cp_count == 0) return 0;
 
     // ── Per-segment data ────────────────────────────────────
-    // Per-segment scalars — when CodePathBuilder allocated them in the bump,
-    // publish pointers directly. Otherwise allocate + memcpy.
-    var seg_reachable: []u8 = &.{};
-    var seg_codepath: []u32 = &.{};
-    if (cpr.bump_pools_active) {
-        seg_reachable = @constCast(cpr.seg_reachable);
-        seg_codepath = @constCast(cpr.seg_codepath);
-    } else {
-        seg_reachable = try alloc.alloc(u8, seg_count);
-        seg_codepath = try alloc.alloc(u32, seg_count);
-        for (0..seg_count) |i| {
-            seg_reachable[i] = cpr.seg_reachable[i];
-            seg_codepath[i] = cpr.seg_codepath[i];
-        }
+    const seg_reachable = try alloc.alloc(u8, seg_count);
+    const seg_codepath = try alloc.alloc(u32, seg_count);
+    for (0..seg_count) |i| {
+        seg_reachable[i] = cpr.seg_reachable[i];
+        seg_codepath[i] = cpr.seg_codepath[i];
     }
 
     // ── Adjacency lists (CSR format) ────────────────────────

@@ -464,37 +464,31 @@ pub const CodePathBuilder = struct {
     /// counts).  Over-estimation is fine — arena-backed, so unused capacity
     /// lives in the final arena reset.
     pub fn ensureCapacity(self: *CodePathBuilder, est_segments: u32, est_codepaths: u32) !void {
-        // Pool allocator: bump (JS buffer) when available, else arena. The
-        // bump path lets writeCfgGraph publish slice pointers directly with
-        // zero copy; the arena path is the legacy / non-streaming fallback.
-        const pa: std.mem.Allocator = if (self.bump_alloc) |ba| ba else self.allocator;
         if (self.bump_alloc != null) self.bump_pools_active = true;
 
-        // Per-segment data — sized to est_segments. Lives in bump so writeCfgGraph
-        // can publish seg_codepath / seg_reachable / seg_*_starts directly.
-        try self.segments.ensureTotalCapacity(pa, est_segments);
-        try self.seg_reachable.ensureTotalCapacity(pa, est_segments);
-        try self.seg_used.ensureTotalCapacity(pa, est_segments);
-        try self.seg_next.ensureTotalCapacity(pa, est_segments);
-        try self.codepaths.ensureTotalCapacity(pa, est_codepaths);
-        try self.events.ensureTotalCapacity(pa, est_segments);
+        // Most pools stay in the analyzer's arena — no bump-partition pressure.
+        // Only the JS-readable adjacency target pools get bump-allocated so
+        // writeCfgGraph can publish their offsets without copying.
+        // est_segments is parser ev_len (capacity ≈ 2-3× actual events).
+        try self.segments.ensureTotalCapacity(self.allocator, est_segments);
+        try self.seg_reachable.ensureTotalCapacity(self.allocator, est_segments);
+        try self.seg_used.ensureTotalCapacity(self.allocator, est_segments);
+        try self.seg_next.ensureTotalCapacity(self.allocator, est_segments);
+        try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
+        try self.events.ensureTotalCapacity(self.allocator, est_segments);
 
-        // Adjacency target pools — pre-sized to a worst-case upper bound on the
-        // bump path so appends can never grow (FBA can't grow non-last allocs).
-        const tgt_cap: u32 = if (self.bump_alloc != null) est_segments * 4 else est_segments;
-        const collapsed_cap: u32 = if (self.bump_alloc != null) est_segments * 4 else est_segments / 4;
-        try self.all_prev_targets.ensureTotalCapacity(pa, tgt_cap);
-        try self.prev_targets.ensureTotalCapacity(pa, tgt_cap);
-        try self.collapsed_prev_targets.ensureTotalCapacity(pa, collapsed_cap);
-        try self.all_next_targets.ensureTotalCapacity(pa, tgt_cap);
-        try self.next_targets.ensureTotalCapacity(pa, tgt_cap);
-        // Loop back-edges and cp pools scale with loop/function counts — smaller.
-        try self.looped_targets.ensureTotalCapacity(pa, est_codepaths * 8);
-        try self.cp_final_pool.ensureTotalCapacity(pa, est_codepaths * 2);
-        try self.cp_returned_pool.ensureTotalCapacity(pa, est_codepaths);
-        try self.cp_thrown_pool.ensureTotalCapacity(pa, est_codepaths / 4);
+        const target_alloc: std.mem.Allocator = if (self.bump_alloc) |ba| ba else self.allocator;
+        try self.all_prev_targets.ensureTotalCapacity(target_alloc, est_segments);
+        try self.prev_targets.ensureTotalCapacity(target_alloc, est_segments);
+        try self.collapsed_prev_targets.ensureTotalCapacity(target_alloc, if (self.bump_alloc != null) est_segments else est_segments / 4);
 
-        // Transient scratch — keeps using the arena (not read by JS).
+        try self.all_next_targets.ensureTotalCapacity(self.allocator, est_segments);
+        try self.next_targets.ensureTotalCapacity(self.allocator, est_segments);
+        try self.looped_targets.ensureTotalCapacity(self.allocator, est_codepaths * 8);
+        try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
+        try self.cp_returned_pool.ensureTotalCapacity(self.allocator, est_codepaths);
+        try self.cp_thrown_pool.ensureTotalCapacity(self.allocator, est_codepaths / 4);
+
         try self.seg_collapse_visit.ensureTotalCapacity(self.allocator, est_segments);
         try self.collapse_frontier.ensureTotalCapacity(self.allocator, 64);
         // ChoiceContext slab: 128 slots covers realistic nesting depth.
