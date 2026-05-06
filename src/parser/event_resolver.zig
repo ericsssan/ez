@@ -158,6 +158,11 @@ pub const Options = struct {
     /// `"off"`).  References to these names resolve to the pre-declared
     /// implicit-global symbol instead of remaining unresolved.
     globals: []const u8 = &.{},
+    /// When set, the CFG analyzer's adjacency target pools (prev_targets,
+    /// all_prev_targets, collapsed_prev_targets) are pre-allocated from this
+    /// allocator instead of the analyzer's transient arena. The pools end up
+    /// in the JS buffer so writeCfgGraph can publish their offsets directly.
+    cfg_pool_alloc: ?std.mem.Allocator = null,
     /// Streaming mode: when set, the producer (parser thread) is publishing
     /// events incrementally. The resolver walks the events slice via
     /// indexed access bounded by `events_published.load(.acquire)` and blocks
@@ -526,6 +531,7 @@ fn resolveFullImpl(
 
     var cpb = CodePathBuilder.init(allocator);
     cpb.allocator = cpb.arena.allocator();
+    cpb.bump_alloc = opts.cfg_pool_alloc;
     errdefer cpb.deinit();
 
     // Pre-size cpb ArrayLists.  ev_len is a safe upper bound for all per-event

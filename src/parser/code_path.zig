@@ -411,6 +411,15 @@ pub const CodePathBuilder = struct {
     seg_id_pool_top: u32,
     seg_id_pool_cap: u32,
 
+    // ── JS-buffer bump allocator (optional) ──────────────────────
+    // When set, the JS-readable adjacency pools (prev_targets,
+    // all_prev_targets, collapsed_prev_targets) are pre-allocated from this
+    // allocator to a worst-case capacity, so writeCfgGraph can publish their
+    // offsets directly without copying. Non-pool fields (HashMaps, scratch
+    // ArrayLists, etc.) still use `self.allocator` (arena).
+    bump_alloc: ?Allocator,
+    bump_pools_active: bool,
+
     pub fn init(alloc: Allocator) CodePathBuilder {
         return .{
             .arena = std.heap.ArenaAllocator.init(alloc),
@@ -445,6 +454,8 @@ pub const CodePathBuilder = struct {
             .seg_id_pool = undefined,
             .seg_id_pool_top = 0,
             .seg_id_pool_cap = 0,
+            .bump_alloc = null,
+            .bump_pools_active = false,
         };
     }
 
@@ -459,13 +470,27 @@ pub const CodePathBuilder = struct {
         try self.seg_next.ensureTotalCapacity(self.allocator, est_segments);
         try self.codepaths.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.events.ensureTotalCapacity(self.allocator, est_segments);
-        try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments);
-        try self.prev_targets.ensureTotalCapacity(self.allocator, est_segments);
+
+        // JS-buffer-resident pools when bump_alloc is set: pre-size to a
+        // safe upper bound from the bump partition so the items live in the
+        // shared buffer and writeCfgGraph can publish their offsets directly.
+        // Otherwise keep using the arena (legacy / non-streaming path).
+        if (self.bump_alloc) |ba| {
+            // Upper bound: each segment produces at most ~all_prev.len entries.
+            // est_segments × 4 covers worst-case branching factor with margin.
+            try self.all_prev_targets.ensureTotalCapacity(ba, est_segments * 4);
+            try self.prev_targets.ensureTotalCapacity(ba, est_segments * 4);
+            try self.collapsed_prev_targets.ensureTotalCapacity(ba, est_segments * 4);
+            self.bump_pools_active = true;
+        } else {
+            try self.all_prev_targets.ensureTotalCapacity(self.allocator, est_segments);
+            try self.prev_targets.ensureTotalCapacity(self.allocator, est_segments);
+            try self.collapsed_prev_targets.ensureTotalCapacity(self.allocator, est_segments / 4);
+        }
         try self.all_next_targets.ensureTotalCapacity(self.allocator, est_segments);
         try self.next_targets.ensureTotalCapacity(self.allocator, est_segments);
         // Loop back-edges and cp pools scale with loop/function counts — smaller.
         try self.looped_targets.ensureTotalCapacity(self.allocator, est_codepaths * 8);
-        try self.collapsed_prev_targets.ensureTotalCapacity(self.allocator, est_segments / 4);
         try self.seg_collapse_visit.ensureTotalCapacity(self.allocator, est_segments);
         try self.collapse_frontier.ensureTotalCapacity(self.allocator, 64);
         try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
@@ -548,11 +573,15 @@ pub const CodePathBuilder = struct {
     fn createSegment(self: *CodePathBuilder, all_prev: []const SegmentId, is_reachable: bool, _: bool) !SegmentId {
         const id: SegmentId = @intCast(self.segments.len);
         const alloc = self.allocator;
+        // When bump pools are active, the JS-buffer pools were pre-sized to a
+        // worst-case upper bound. Any growth would land in the wrong arena
+        // (and FBA can't grow non-last allocs anyway), so route to bump.
+        const pool_alloc = if (self.bump_alloc) |ba| ba else alloc;
 
         // Single fused pass over all_prev — one capacity check per target list,
         // no re-read of the input slice.
-        try self.all_prev_targets.ensureUnusedCapacity(alloc, all_prev.len);
-        try self.prev_targets.ensureUnusedCapacity(alloc, all_prev.len);
+        try self.all_prev_targets.ensureUnusedCapacity(pool_alloc, all_prev.len);
+        try self.prev_targets.ensureUnusedCapacity(pool_alloc, all_prev.len);
         const ap_start: u32 = @intCast(self.all_prev_targets.items.len);
         const p_start: u32 = @intCast(self.prev_targets.items.len);
         const reach_s = self.seg_reachable.items;
@@ -570,7 +599,7 @@ pub const CodePathBuilder = struct {
         // direct reachable-ancestor list (skips runtime walks).
         const cp_start: u32 = @intCast(self.collapsed_prev_targets.items.len);
         if (!is_reachable and all_prev.len > 0) {
-            try self.buildCollapsedPrev(alloc, all_prev);
+            try self.buildCollapsedPrev(pool_alloc, all_prev);
         }
         const cp_end: u32 = @intCast(self.collapsed_prev_targets.items.len);
 
@@ -1680,6 +1709,11 @@ pub const CodePathBuilder = struct {
     // ── Result extraction ────────────────────────────────────
 
     pub const Result = struct {
+        /// True iff prev_targets / all_prev_targets / collapsed_prev_targets
+        /// were allocated from a bump partition exposed via writeCfgGraph's
+        /// `buf` argument. When set, writeCfgGraph can publish their offsets
+        /// directly without copying.
+        bump_pools_active: bool = false,
         seg_count: u32,
         /// Segment fields as parallel slices (SoA).  Hot reads of individual
         /// fields avoid a 28-byte struct load.
@@ -1724,6 +1758,7 @@ pub const CodePathBuilder = struct {
     /// `Result.deinit()` frees the arena.
     pub fn finish(self: *CodePathBuilder) Result {
         const result: Result = .{
+            .bump_pools_active = self.bump_pools_active,
             .seg_count = @intCast(self.segments.len),
             .seg_codepath = self.segments.items(.codepath),
             .seg_all_prev_start = self.segments.items(.all_prev_start),

@@ -99,6 +99,9 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
                 .parse_done = ctx.parse_done,
                 .node_count_hint = ctx.cap_hint,
             },
+            // Allocate CFG adjacency pools from the worker's bump partition so
+            // writeCfgGraph can publish them in-place without a rebuild copy.
+            .cfg_pool_alloc = ctx.worker_backing.allocator(),
         },
     ) catch |e| {
         ctx.err = e;

@@ -898,28 +898,35 @@ pub fn writeCfgGraph(
     }
 
     const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_prev_targets = try alloc.alloc(u32, total_prev);
     const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_all_prev_targets = try alloc.alloc(u32, total_all_prev);
     const seg_looped_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_looped_targets = try alloc.alloc(u32, total_looped);
     const seg_collapsed_prev_starts = try alloc.alloc(u32, seg_count + 1);
-    const seg_collapsed_prev_targets = try alloc.alloc(u32, total_collapsed_prev);
-
-    // prev / all_prev / collapsed_prev: starts == cpr.seg_*_start (tight),
-    // targets == cpr.*_targets verbatim.  One memcpy each.
+    // When bump_pools_active, cpr's target pools already live in the JS buffer
+    // — publish their pointers directly. Otherwise allocate fresh in `alloc`
+    // and memcpy from cpr's arena-resident pools.
+    var seg_prev_targets: []u32 = &.{};
+    var seg_all_prev_targets: []u32 = &.{};
+    var seg_collapsed_prev_targets: []u32 = &.{};
+    if (cpr.bump_pools_active) {
+        seg_prev_targets = @constCast(cpr.prev_targets);
+        seg_all_prev_targets = @constCast(cpr.all_prev_targets);
+        seg_collapsed_prev_targets = @constCast(cpr.collapsed_prev_targets);
+    } else {
+        seg_prev_targets = try alloc.alloc(u32, total_prev);
+        seg_all_prev_targets = try alloc.alloc(u32, total_all_prev);
+        seg_collapsed_prev_targets = try alloc.alloc(u32, total_collapsed_prev);
+        if (total_prev > 0) @memcpy(seg_prev_targets, cpr.prev_targets);
+        if (total_all_prev > 0) @memcpy(seg_all_prev_targets, cpr.all_prev_targets);
+        if (total_collapsed_prev > 0) @memcpy(seg_collapsed_prev_targets, cpr.collapsed_prev_targets);
+    }
     if (seg_count > 0) {
         @memcpy(seg_prev_starts[0..seg_count], cpr.seg_prev_start);
         seg_prev_starts[seg_count] = total_prev;
-        if (total_prev > 0) @memcpy(seg_prev_targets, cpr.prev_targets);
-
         @memcpy(seg_all_prev_starts[0..seg_count], cpr.seg_all_prev_start);
         seg_all_prev_starts[seg_count] = total_all_prev;
-        if (total_all_prev > 0) @memcpy(seg_all_prev_targets, cpr.all_prev_targets);
-
         @memcpy(seg_collapsed_prev_starts[0..seg_count], cpr.seg_collapsed_prev_start);
         seg_collapsed_prev_starts[seg_count] = total_collapsed_prev;
-        if (total_collapsed_prev > 0) @memcpy(seg_collapsed_prev_targets, cpr.collapsed_prev_targets);
     }
 
     // Looped pool: per-seg compaction (markLooped's order isn't seg-ID-monotonic).
