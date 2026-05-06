@@ -562,7 +562,6 @@ pub fn writeSemanticData(
     var total_through: u32 = 0;
     if (scope_count > 0 and ref_count > 0) {
         @memset(scope_through_ref_counts, 0);
-        // Count pass
         for (0..ref_count) |i| {
             const rsc = sem.references.scope_ids.items[i];
             if (rsc == .none) continue;
@@ -885,15 +884,17 @@ pub fn writeCfgGraph(
     // simultaneously since FBA is bump-only — newly allocated output arrays
     // never alias source slices in cpr's pools.
     // next/all_next omitted — JS reconstructs them by inverting prev + loopedPrev.
-    var total_prev: u32 = 0;
-    var total_all_prev: u32 = 0;
+    // Pools are tight (CodePathBuilder appends in seg-ID order without
+    // interleaving) for prev / all_prev / collapsed_prev — so the rebuild
+    // collapses to a single memcpy per pool.  Looped is appended out-of-band
+    // by markLooped, so it still needs the per-seg compaction loop.
+    const total_prev: u32 = @intCast(cpr.prev_targets.len);
+    const total_all_prev: u32 = @intCast(cpr.all_prev_targets.len);
+    const total_collapsed_prev: u32 = @intCast(cpr.collapsed_prev_targets.len);
     var total_looped: u32 = 0;
-    var total_collapsed_prev: u32 = 0;
     for (0..seg_count) |i| {
-        if (cpr.seg_prev_end[i] > cpr.seg_prev_start[i]) total_prev += cpr.seg_prev_end[i] - cpr.seg_prev_start[i];
-        if (cpr.seg_all_prev_end[i] > cpr.seg_all_prev_start[i]) total_all_prev += cpr.seg_all_prev_end[i] - cpr.seg_all_prev_start[i];
-        if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i]) total_looped += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
-        if (cpr.seg_collapsed_prev_end[i] > cpr.seg_collapsed_prev_start[i]) total_collapsed_prev += cpr.seg_collapsed_prev_end[i] - cpr.seg_collapsed_prev_start[i];
+        if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i])
+            total_looped += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
     }
 
     const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
@@ -905,32 +906,36 @@ pub fn writeCfgGraph(
     const seg_collapsed_prev_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_collapsed_prev_targets = try alloc.alloc(u32, total_collapsed_prev);
 
+    // prev / all_prev / collapsed_prev: starts == cpr.seg_*_start (tight),
+    // targets == cpr.*_targets verbatim.  One memcpy each.
+    if (seg_count > 0) {
+        @memcpy(seg_prev_starts[0..seg_count], cpr.seg_prev_start);
+        seg_prev_starts[seg_count] = total_prev;
+        if (total_prev > 0) @memcpy(seg_prev_targets, cpr.prev_targets);
+
+        @memcpy(seg_all_prev_starts[0..seg_count], cpr.seg_all_prev_start);
+        seg_all_prev_starts[seg_count] = total_all_prev;
+        if (total_all_prev > 0) @memcpy(seg_all_prev_targets, cpr.all_prev_targets);
+
+        @memcpy(seg_collapsed_prev_starts[0..seg_count], cpr.seg_collapsed_prev_start);
+        seg_collapsed_prev_starts[seg_count] = total_collapsed_prev;
+        if (total_collapsed_prev > 0) @memcpy(seg_collapsed_prev_targets, cpr.collapsed_prev_targets);
+    }
+
+    // Looped pool: per-seg compaction (markLooped's order isn't seg-ID-monotonic).
     {
-        var p: u32 = 0;
-        var ap: u32 = 0;
         var lo: u32 = 0;
-        var cp: u32 = 0;
         for (0..seg_count) |i| {
-            seg_prev_starts[i] = p;
-            const ps = cpr.seg_prev_start[i]; const pe = cpr.seg_prev_end[i];
-            if (pe > ps) { const len = pe - ps; @memcpy(seg_prev_targets[p..][0..len], cpr.prev_targets[ps..pe]); p += len; }
-
-            seg_all_prev_starts[i] = ap;
-            const aps = cpr.seg_all_prev_start[i]; const ape = cpr.seg_all_prev_end[i];
-            if (ape > aps) { const len = ape - aps; @memcpy(seg_all_prev_targets[ap..][0..len], cpr.all_prev_targets[aps..ape]); ap += len; }
-
             seg_looped_starts[i] = lo;
-            const lps = cpr.seg_looped_prev_start[i]; const lpe = cpr.seg_looped_prev_end[i];
-            if (lpe > lps) { const len = lpe - lps; @memcpy(seg_looped_targets[lo..][0..len], cpr.looped_targets[lps..lpe]); lo += len; }
-
-            seg_collapsed_prev_starts[i] = cp;
-            const cps = cpr.seg_collapsed_prev_start[i]; const cpe = cpr.seg_collapsed_prev_end[i];
-            if (cpe > cps) { const len = cpe - cps; @memcpy(seg_collapsed_prev_targets[cp..][0..len], cpr.collapsed_prev_targets[cps..cpe]); cp += len; }
+            const lps = cpr.seg_looped_prev_start[i];
+            const lpe = cpr.seg_looped_prev_end[i];
+            if (lpe > lps) {
+                const len = lpe - lps;
+                @memcpy(seg_looped_targets[lo..][0..len], cpr.looped_targets[lps..lpe]);
+                lo += len;
+            }
         }
-        seg_prev_starts[seg_count] = p;
-        seg_all_prev_starts[seg_count] = ap;
         seg_looped_starts[seg_count] = lo;
-        seg_collapsed_prev_starts[seg_count] = cp;
     }
 
     // ── Per-codepath data ───────────────────────────────────
