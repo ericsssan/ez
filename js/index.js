@@ -39,7 +39,12 @@ let sharedBuffer = null;
 // (headers + node/token/extra arrays).  The 30x multiplier is a heuristic
 // worst-case inflation factor for AST output relative to source bytes.
 function ensureBuffer(sourceLen) {
-  return ensureBufferBytes(HEADER_SIZE + sourceLen * 30);
+  // 40× source size — needed because the streaming-sem path (NAPI parseImpl)
+  // pre-allocates the parser's MultiArrayList capacities aggressively (cap_hint
+  // = tokens.len + 64). Sequential workloads typically use ~25× source bytes;
+  // streaming uses ~30–35× because the parser pre-sizes events/extra_data
+  // arrays and the bump is partitioned between main thread and sem worker.
+  return ensureBufferBytes(HEADER_SIZE + sourceLen * 40);
 }
 
 // Ensure sharedBuffer has at least `totalBytes` capacity.  Used when the

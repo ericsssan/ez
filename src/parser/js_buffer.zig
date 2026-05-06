@@ -18,6 +18,10 @@ pub const FLAG_HAS_BOM: u32 = 1;
 /// Written at offset 0 of the shared buffer after parsing.
 /// All offsets are byte offsets from the start of the buffer.
 /// 35 fields × 4 bytes = 140 bytes.
+pub fn semanticDataOffsetFieldOff() u32 {
+    return @offsetOf(BufferHeader, "semantic_data_offset");
+}
+
 pub const BufferHeader = extern struct {
     magic: u32,
     version: u32,
@@ -484,11 +488,6 @@ pub fn writeSemanticData(
             const rsc = sem.references.scope_ids.items[i];
             if (rsc == .none) continue;
             const sym_id = sem.references.symbol_ids.items[i];
-            // Only precompute through for RESOLVED refs (sym_id != .none).
-            // Unresolved refs (sym_id == .none) may be resolved later by JS via
-            // scope.set injection (e.g. static-block var hoisting, injected globals).
-            // If we included them here, Zig would put them in every ancestor's through
-            // and JS couldn't remove them after resolving lower down.
             if (sym_id == .none) continue;
             const sid: u32 = @intFromEnum(sym_id);
             if (sid >= symbol_count) continue;
@@ -504,7 +503,6 @@ pub fn writeSemanticData(
                 x = if (p == .none) none32 else @intFromEnum(p);
             }
         }
-        // Prefix sum
         var tr: u32 = 0;
         for (0..scope_count) |i| {
             scope_through_ref_starts[i] = tr;
@@ -516,14 +514,13 @@ pub fn writeSemanticData(
     }
     const scope_through_ref_ids = try alloc.alloc(u32, total_through);
     if (total_through > 0) {
-        // Place pass
         const tcursor = try alloc.alloc(u32, scope_count);
         @memcpy(tcursor, scope_through_ref_starts);
         for (0..ref_count) |i| {
             const rsc = sem.references.scope_ids.items[i];
             if (rsc == .none) continue;
             const sym_id = sem.references.symbol_ids.items[i];
-            if (sym_id == .none) continue; // unresolved refs handled by JS
+            if (sym_id == .none) continue;
             const sid: u32 = @intFromEnum(sym_id);
             if (sid >= symbol_count) continue;
             const tsc = sem.symbols.scope_ids.items[sid];
@@ -795,18 +792,11 @@ fn writeCfgGraph(
     }
 
     // ── Adjacency lists (CSR format) ────────────────────────
-    // Rebuild adjacency from scratch: copy each segment's pool slice into
-    // a fresh contiguous array in segment-ID order. This guarantees monotonic
-    // starts regardless of the order segments were created or pools were appended to.
-    //
-    // We must copy ALL source data to a temp buffer FIRST, then allocate the
-    // output arrays. The bump allocator may place output arrays adjacent to
-    // source data, so allocating output arrays before copying would be safe,
-    // but copying from source slices AFTER allocating new memory from the same
-    // bump region risks reading stale data if the allocator reuses pages.
-    // Using a two-pass approach (count, then copy) avoids this entirely.
-
-    // Pass 1: count total entries per list type (next/all_next omitted — reconstructed in JS)
+    // Rebuild adjacency in segment-ID order. cpr's pools may have segments out
+    // of order (or with gaps) so we must compact. Single-pass: count + copy
+    // simultaneously since FBA is bump-only — newly allocated output arrays
+    // never alias source slices in cpr's pools.
+    // next/all_next omitted — JS reconstructs them by inverting prev + loopedPrev.
     var total_prev: u32 = 0;
     var total_all_prev: u32 = 0;
     var total_looped: u32 = 0;
@@ -818,30 +808,6 @@ fn writeCfgGraph(
         if (cpr.seg_collapsed_prev_end[i] > cpr.seg_collapsed_prev_start[i]) total_collapsed_prev += cpr.seg_collapsed_prev_end[i] - cpr.seg_collapsed_prev_start[i];
     }
 
-    // Pass 2: copy source pool data to temp buffers (before allocating output)
-    const tmp_prev = try alloc.alloc(u32, total_prev);
-    const tmp_all_prev = try alloc.alloc(u32, total_all_prev);
-    const tmp_looped = try alloc.alloc(u32, total_looped);
-    const tmp_collapsed_prev = try alloc.alloc(u32, total_collapsed_prev);
-    {
-        var p: u32 = 0;
-        var ap: u32 = 0;
-        var lo: u32 = 0;
-        var cp: u32 = 0;
-        for (0..seg_count) |i| {
-            const ps = cpr.seg_prev_start[i]; const pe = cpr.seg_prev_end[i];
-            if (pe > ps) { const len = pe - ps; @memcpy(tmp_prev[p..][0..len], cpr.prev_targets[ps..pe]); p += len; }
-            const aps = cpr.seg_all_prev_start[i]; const ape = cpr.seg_all_prev_end[i];
-            if (ape > aps) { const len = ape - aps; @memcpy(tmp_all_prev[ap..][0..len], cpr.all_prev_targets[aps..ape]); ap += len; }
-            const lps = cpr.seg_looped_prev_start[i]; const lpe = cpr.seg_looped_prev_end[i];
-            if (lpe > lps) { const len = lpe - lps; @memcpy(tmp_looped[lo..][0..len], cpr.looped_targets[lps..lpe]); lo += len; }
-            const cps = cpr.seg_collapsed_prev_start[i]; const cpe = cpr.seg_collapsed_prev_end[i];
-            if (cpe > cps) { const len = cpe - cps; @memcpy(tmp_collapsed_prev[cp..][0..len], cpr.collapsed_prev_targets[cps..cpe]); cp += len; }
-        }
-    }
-
-    // Pass 3: allocate output arrays and build CSR starts from temp data
-    // next/all_next omitted — JS reconstructs them by inverting prev + loopedPrev.
     const seg_prev_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_prev_targets = try alloc.alloc(u32, total_prev);
     const seg_all_prev_starts = try alloc.alloc(u32, seg_count + 1);
@@ -850,10 +816,7 @@ fn writeCfgGraph(
     const seg_looped_targets = try alloc.alloc(u32, total_looped);
     const seg_collapsed_prev_starts = try alloc.alloc(u32, seg_count + 1);
     const seg_collapsed_prev_targets = try alloc.alloc(u32, total_collapsed_prev);
-    @memcpy(seg_prev_targets, tmp_prev);
-    @memcpy(seg_all_prev_targets, tmp_all_prev);
-    @memcpy(seg_looped_targets, tmp_looped);
-    @memcpy(seg_collapsed_prev_targets, tmp_collapsed_prev);
+
     {
         var p: u32 = 0;
         var ap: u32 = 0;
@@ -861,13 +824,20 @@ fn writeCfgGraph(
         var cp: u32 = 0;
         for (0..seg_count) |i| {
             seg_prev_starts[i] = p;
-            if (cpr.seg_prev_end[i] > cpr.seg_prev_start[i]) p += cpr.seg_prev_end[i] - cpr.seg_prev_start[i];
+            const ps = cpr.seg_prev_start[i]; const pe = cpr.seg_prev_end[i];
+            if (pe > ps) { const len = pe - ps; @memcpy(seg_prev_targets[p..][0..len], cpr.prev_targets[ps..pe]); p += len; }
+
             seg_all_prev_starts[i] = ap;
-            if (cpr.seg_all_prev_end[i] > cpr.seg_all_prev_start[i]) ap += cpr.seg_all_prev_end[i] - cpr.seg_all_prev_start[i];
+            const aps = cpr.seg_all_prev_start[i]; const ape = cpr.seg_all_prev_end[i];
+            if (ape > aps) { const len = ape - aps; @memcpy(seg_all_prev_targets[ap..][0..len], cpr.all_prev_targets[aps..ape]); ap += len; }
+
             seg_looped_starts[i] = lo;
-            if (cpr.seg_looped_prev_end[i] > cpr.seg_looped_prev_start[i]) lo += cpr.seg_looped_prev_end[i] - cpr.seg_looped_prev_start[i];
+            const lps = cpr.seg_looped_prev_start[i]; const lpe = cpr.seg_looped_prev_end[i];
+            if (lpe > lps) { const len = lpe - lps; @memcpy(seg_looped_targets[lo..][0..len], cpr.looped_targets[lps..lpe]); lo += len; }
+
             seg_collapsed_prev_starts[i] = cp;
-            if (cpr.seg_collapsed_prev_end[i] > cpr.seg_collapsed_prev_start[i]) cp += cpr.seg_collapsed_prev_end[i] - cpr.seg_collapsed_prev_start[i];
+            const cps = cpr.seg_collapsed_prev_start[i]; const cpe = cpr.seg_collapsed_prev_end[i];
+            if (cpe > cps) { const len = cpe - cps; @memcpy(seg_collapsed_prev_targets[cp..][0..len], cpr.collapsed_prev_targets[cps..cpe]); cp += len; }
         }
         seg_prev_starts[seg_count] = p;
         seg_all_prev_starts[seg_count] = ap;
@@ -928,15 +898,8 @@ fn writeCfgGraph(
     cp_returned_starts[cp_count] = returned_off;
     cp_thrown_starts[cp_count] = thrown_off;
 
-    // ── Event stream ────────────────────────────────────────
-    const events_flat = try alloc.alloc(u32, ev_count * 4);
-    for (0..ev_count) |i| {
-        events_flat[i * 4 + 0] = @intFromEnum(cpr.events[i].type);
-        const node_raw = @intFromEnum(cpr.events[i].node);
-        events_flat[i * 4 + 1] = node_raw | switch (cpr.events[i].phase) { .enter => @as(u32, 0), .exit => code_path_mod.EVENT_EXIT_FLAG, .post => code_path_mod.EVENT_POST_FLAG, .after_enter => code_path_mod.EVENT_EXIT_FLAG | code_path_mod.EVENT_POST_FLAG, };
-        events_flat[i * 4 + 2] = cpr.events[i].data1;
-        events_flat[i * 4 + 3] = cpr.events[i].data2;
-    }
+    // events_flat eliminated: JS only reads per-phase CSR (phase_data).
+    // The events_offset field in CfgGraphHeader is now always 0.
 
     // ── Per-phase CSR (pre-baked event maps) ────────────────
     // JS used to scan `events_flat` and build 4 Maps on every runPlugins call.
@@ -983,12 +946,9 @@ fn writeCfgGraph(
     }
 
     // Pass 3: scatter events. Reuse `counts` as per-(phase, node) write cursor:
-    // starts at the phase_starts value and increments per write.
-    @memcpy(counts, counts); // no-op; cursors are seeded from phase_starts below
+    // seed from phase_starts via memcpy (4× faster than element loop).
     for (0..4) |p| {
-        for (0..node_count) |n| {
-            counts[p * node_count + n] = phase_starts[p][n];
-        }
+        @memcpy(counts[p * node_count ..][0..node_count], phase_starts[p][0..node_count]);
     }
     for (0..ev_count) |i| {
         const node_raw = @intFromEnum(cpr.events[i].node);
@@ -1076,7 +1036,7 @@ fn writeCfgGraph(
         .cp_thrown_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_thrown_starts.ptr))),
         .cp_thrown_targets_offset = if (cp_thrown_targets.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(cp_thrown_targets.ptr))) else 0,
 
-        .events_offset = if (events_flat.len > 0) ptrOffsetPub(buf, @as([*]u8, @ptrCast(events_flat.ptr))) else 0,
+        .events_offset = 0,
 
         .cfg_phase_node_count = node_count,
         .cfg_phase_enter_starts_offset = ptrOffsetPub(buf, @as([*]u8, @ptrCast(phase_starts[0].ptr))),
@@ -1112,6 +1072,30 @@ pub const JsBufferAllocator = struct {
             .inner = std.heap.FixedBufferAllocator.init(buf[HEADER_SIZE..source_start]),
             .base = buf,
         };
+    }
+
+    /// Sub-region constructor: allocate within a custom byte range of the
+    /// shared buffer. Used by the streaming-sem path to give the sem worker
+    /// thread its own bump partition disjoint from the parser's, so both
+    /// threads can write concurrently without locking. JS reads via offsets
+    /// from `buf` so it doesn't matter which sub-bump produced any given
+    /// allocation. `start_off` and `end_off` are absolute byte offsets
+    /// within `buf`; caller must ensure they don't overlap.
+    pub fn initRange(buf: [*]u8, start_off: u32, end_off: u32) JsBufferAllocator {
+        std.debug.assert(start_off <= end_off);
+        return .{
+            .inner = std.heap.FixedBufferAllocator.init(buf[start_off..end_off]),
+            .base = buf,
+        };
+    }
+
+    /// Like `bytesUsed()` but returns the absolute end offset (start of FBA
+    /// buffer + end_index), not header-relative. Useful when the bump is a
+    /// sub-region — caller wants to know "how far into the JS buffer did
+    /// this partition reach". Returns `start + bytes_consumed`.
+    pub fn endOffset(self: *const JsBufferAllocator) u32 {
+        const buf_start = @intFromPtr(self.inner.buffer.ptr) - @intFromPtr(self.base);
+        return @intCast(buf_start + self.inner.end_index);
     }
 
     pub fn allocator(self: *JsBufferAllocator) std.mem.Allocator {

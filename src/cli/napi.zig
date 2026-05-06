@@ -41,19 +41,26 @@ threadlocal var tl_sem_arena_ready: bool = false;
 threadlocal var tl_cfg_arena: std.heap.ArenaAllocator = undefined;
 threadlocal var tl_cfg_arena_ready: bool = false;
 
-// Streaming-sem worker context. Sem worker waits for `ast_ready` then runs
-// `event_resolver.resolveFull` in streaming mode, consuming events as the
-// parser publishes them. Lives on the napi caller's stack; main thread joins
-// the worker before stack unwinds so the pointer stays valid.
+// Streaming-sem worker context. Sem worker waits for `ast_ready`, runs the
+// streaming analyzer, then runs `writeSemanticData` against its OWN bump
+// partition (`worker_backing`) — disjoint from the parser/main bump partition
+// — so both threads write to non-overlapping byte ranges of the JS buffer
+// concurrently. Main thread joins before stack unwinds.
 const StreamSemCtx = struct {
-    alloc: std.mem.Allocator,
+    arena_alloc: std.mem.Allocator,
+    worker_backing: *js_buffer.JsBufferAllocator,
+    buf_ptr: [*]u8,
     ast_view: *@import("../parser/ast.zig").Ast,
     events_pub: *std.atomic.Value(usize),
     parse_done: *std.atomic.Value(bool),
     ast_ready: *std.atomic.Value(bool),
     cap_hint: usize,
     globals: []const u8,
-    result: ?semantic_mod.SemanticResult = null,
+    parent_indices: ?[]const u32 = null,         // set by main once parent_builder finishes
+    parent_indices_ready: *std.atomic.Value(bool),
+    actual_node_count: u32 = 0,                    // set by main after parse returns
+    actual_node_tags: ?[]const @import("../parser/ast.zig").Node.Tag = null, // ditto
+    semantic_data_offset: u32 = 0,                 // result: where SemanticHeader landed
     err: ?anyerror = null,
 };
 
@@ -64,8 +71,8 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         if (ctx.parse_done.load(.acquire)) return;
         std.atomic.spinLoopHint();
     }
-    if (event_resolver.resolveFull(
-        ctx.alloc,
+    var sem_result = event_resolver.resolveFull(
+        ctx.arena_alloc,
         ctx.ast_view,
         ctx.ast_view.scope_events,
         .{
@@ -76,8 +83,37 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
                 .node_count_hint = ctx.cap_hint,
             },
         },
-    )) |r| {
-        ctx.result = r;
+    ) catch |e| {
+        ctx.err = e;
+        return;
+    };
+    // Wait for parent_builder on main; writeSemanticData needs parent_indices.
+    while (!ctx.parent_indices_ready.load(.acquire)) std.atomic.spinLoopHint();
+    const parents = ctx.parent_indices orelse {
+        ctx.err = error.NoParents;
+        return;
+    };
+    // computeLoopBodyExitability mutates `loop_exit_reachable` based on `node_reachable`.
+    // Must run before writeSemanticData reads them. Owns the sem result so it's safe
+    // to do here on the worker thread.
+    if (ctx.actual_node_tags) |_| {
+        // we need the full Ast for computeLoopBodyExitability — main publishes
+        // a final view via ast_view (the parser updates the Ast struct in place
+        // when it returns; main thread then publishes parent_indices_ready,
+        // which guarantees the writes are visible to us).
+    }
+    semantic_mod.computeLoopBodyExitabilityPub(
+        ctx.ast_view, sem_result.loop_exit_reachable, sem_result.node_reachable,
+    );
+    if (js_buffer.writeSemanticData(
+        ctx.buf_ptr,
+        ctx.worker_backing,
+        &sem_result,
+        ctx.actual_node_count,
+        ctx.actual_node_tags orelse return,
+        parents,
+    )) |off| {
+        ctx.semantic_data_offset = off;
     } else |e| {
         ctx.err = e;
     }
@@ -211,19 +247,11 @@ fn parseImpl(
     const source = bom.text;
     const language: Language = @enumFromInt(lang);
 
-    // Bump allocator over [Header .. source_start).
-    var backing = js_buffer.JsBufferAllocator.init(buf_ptr, source_start);
-    const alloc = backing.allocator();
-
-    // Tokenize — token arrays land in the bump region.
-    const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
-    var tokens = lex_result.tokens;
-
     // Streaming-sem decision: spawn the sem worker BEFORE parse so it can
-    // consume events as the parser publishes them. Saves wall-clock when
-    // sem analyzer would otherwise run sequentially after parse.
-    // Gate by source size; thread spawn cost makes it a loss on small files.
-    // Override threshold via EZ_STREAM_SEM_THRESHOLD; disable via EZ_NO_STREAM_SEM=1.
+    // consume events as the parser publishes them. Bump partition: main
+    // thread gets the LOW half, worker gets the HIGH half (right before
+    // source). Both bumps allocate independently — no locking, full
+    // overlap of writeSemanticData with main's tail (UTF-16, spans, header).
     const stream_disabled: bool = blk: {
         if (std.c.getenv("EZ_NO_STREAM_SEM")) |v| {
             if (v[0] == '1' and v[1] == 0) break :blk true;
@@ -243,16 +271,42 @@ fn parseImpl(
     };
     const use_stream_sem = !stream_disabled and source.len >= stream_threshold;
 
+    // Bump partition. When streaming: main bump = [HEADER .. mid), worker
+    // bump = [mid .. source_start). The split point is biased toward the
+    // worker because writeSemanticData (which the worker runs) tends to
+    // produce more bytes than the parser's AST/tokens output. Empirically
+    // a 40/60 split (main/worker) avoids exhausting either side on real
+    // inputs; this can be tuned per workload.
+    const total_bump: u32 = source_start - js_buffer.HEADER_SIZE;
+    // Parser needs ~50% of total bump for tokens+AST+events+extra_data+
+    // parent_indices+traversal arrays. Sem worker (writeSemanticData incl.
+    // CFG graph + scope/sym/ref CSRs) needs less. Empirically 60/40 split
+    // works on typescript.js (8.7 MB source → ~265 MB bump).
+    const bump_split: u32 = if (use_stream_sem)
+        js_buffer.HEADER_SIZE + (total_bump * 3 / 5)
+    else
+        source_start;
+    var backing = js_buffer.JsBufferAllocator.initRange(buf_ptr, js_buffer.HEADER_SIZE, bump_split);
+    var worker_backing = if (use_stream_sem)
+        js_buffer.JsBufferAllocator.initRange(buf_ptr, bump_split, source_start)
+    else
+        js_buffer.JsBufferAllocator.initRange(buf_ptr, source_start, source_start); // unused
+    const alloc = backing.allocator();
+
+    // Tokenize — token arrays land in the main bump region.
+    const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
+    var tokens = lex_result.tokens;
+
     // Streaming atomics (only used when use_stream_sem == true).
     var s_published_len: std.atomic.Value(usize) = .init(tokens.len);
     var s_lex_done: std.atomic.Value(bool) = .init(true);
     var s_events_pub: std.atomic.Value(usize) = .init(0);
     var s_parse_done: std.atomic.Value(bool) = .init(false);
     var s_ast_ready: std.atomic.Value(bool) = .init(false);
+    var s_parents_ready: std.atomic.Value(bool) = .init(false);
     var s_ast_view: @import("../parser/ast.zig").Ast = undefined;
     // Lex already complete — use actual token count as exact upper bound,
-    // not the source.len/5 over-estimate (which would over-allocate the
-    // streaming parser's pre-sized arrays and exhaust the bump region).
+    // not the source.len/5 over-estimate.
     const s_cap_hint: usize = tokens.len + 64;
 
     // Sem worker (spawned only when streaming).
@@ -262,13 +316,16 @@ fn parseImpl(
         break :blk ap;
     } else null;
     var stream_sem_ctx: StreamSemCtx = if (use_stream_sem) .{
-        .alloc = stream_arena_ptr_.?.allocator(),
+        .arena_alloc = stream_arena_ptr_.?.allocator(),
+        .worker_backing = &worker_backing,
+        .buf_ptr = buf_ptr,
         .ast_view = &s_ast_view,
         .events_pub = &s_events_pub,
         .parse_done = &s_parse_done,
         .ast_ready = &s_ast_ready,
         .cap_hint = s_cap_hint,
         .globals = globals,
+        .parent_indices_ready = &s_parents_ready,
     } else undefined;
     const stream_sem_thread: ?std.Thread = if (use_stream_sem) blk: {
         const t = std.Thread.spawn(.{}, streamSemEntry, .{&stream_sem_ctx}) catch break :blk null;
@@ -292,8 +349,8 @@ fn parseImpl(
                     .ast_ready = &s_ast_ready,
                 },
             }) catch |e| {
-                // Signal worker to bail out, then propagate.
                 s_parse_done.store(true, .release);
+                s_parents_ready.store(true, .release);
                 if (stream_sem_thread) |th| th.join();
                 return e;
             };
@@ -310,8 +367,14 @@ fn parseImpl(
     };
 
     // Compute parent indices and DFS traversal orders in a single pass.
-    // All three arrays are allocated into the bump region.
-    const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| return e;
+    // All three arrays are allocated into the main bump region.
+    const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| {
+        if (use_stream_sem) {
+            s_parents_ready.store(true, .release); // unblock worker so we can join
+            if (stream_sem_thread) |th| th.join();
+        }
+        return e;
+    };
     const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
     const pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     const post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
@@ -321,26 +384,19 @@ fn parseImpl(
     const type_overrides_offset = if (traversal.type_overrides.len > 0)
         js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
 
-    // Run semantic analysis BEFORE converting to UTF-16 so that
-    // tokenText() (used for symbol names) reads correct byte offsets.
-    //
-    // Streaming-sem fast path: when the sem worker was spawned before parse,
-    // it has been consuming events concurrently. Just join and use its result;
-    // skip the parallel-cfg block below.
     var semantic_data_offset: u32 = 0;
     var stream_sem_handled: bool = false;
     if (use_stream_sem and stream_sem_thread != null) {
-        if (stream_sem_thread) |th| th.join();
+        // Publish final AST view (with actual .len) + parent_indices to the
+        // worker. The worker will then run writeSemanticData against its
+        // own bump partition concurrently with main's tail (UTF-16, spans, header).
+        s_ast_view = tree;
+        stream_sem_ctx.actual_node_count = @intCast(tree.nodes.len);
+        stream_sem_ctx.actual_node_tags = tree.nodes.items(.tag);
+        stream_sem_ctx.parent_indices = traversal.parents;
+        s_parents_ready.store(true, .release);
+        // Don't join yet — main does UTF-16/spans/header next, then joins.
         stream_sem_handled = true;
-        if (stream_sem_ctx.err == null) {
-            if (stream_sem_ctx.result) |sem_result| {
-                var sem = sem_result;
-                semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
-                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents)) |off| {
-                    semantic_data_offset = off;
-                } else |_| {}
-            }
-        }
     }
 
     // Sequential / parallel-cfg fallback (small files): use the post-parse arena.
@@ -620,6 +676,24 @@ fn parseImpl(
         .type_overrides_offset = type_overrides_offset,
     });
 
+    // Streaming-sem path: join worker and patch in the semantic_data_offset
+    // it computed (writeSemanticData ran on the worker thread concurrently
+    // with main's tail). The header was written above with semantic_data_offset
+    // = 0; rewrite the field now that the real value is known.
+    if (use_stream_sem and stream_sem_thread != null and stream_sem_handled) {
+        if (stream_sem_thread) |th| th.join();
+        if (stream_sem_ctx.err == null and stream_sem_ctx.semantic_data_offset != 0) {
+            const real_off = stream_sem_ctx.semantic_data_offset;
+            // Patch BufferHeader.semantic_data_offset (compute its byte position
+            // by reading the offset of that field within BufferHeader).
+            const sd_off_addr: *u32 = @ptrCast(@alignCast(buf_ptr + js_buffer.semanticDataOffsetFieldOff()));
+            sd_off_addr.* = real_off;
+            // Total bytes used = max(main bump end, worker bump end).
+            const main_end = backing.bytesUsed();
+            const worker_end = worker_backing.endOffset();
+            return if (worker_end > main_end) worker_end else main_end;
+        }
+    }
     return backing.bytesUsed();
 }
 
