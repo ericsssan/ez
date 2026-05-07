@@ -43,68 +43,6 @@ const CodePathBuilder = code_path_mod.CodePathBuilder;
 const Origin = code_path_mod.Origin;
 const SegmentId = code_path_mod.SegmentId;
 
-/// One top-level function's event range — the events from its scope_open
-/// through (and including) its matching scope_close. Nested functions inside
-/// stay within this range; they are NOT separately partitioned.
-pub const FunctionRange = struct {
-    start: u32,   // index of scope_open(.function) in events[]
-    end: u32,     // index AFTER the matching scope_close (exclusive)
-};
-
-/// Walk the event stream once to find top-level function ranges. A "top-level"
-/// function is one whose enclosing lexical scope (at scope_open time) is the
-/// program scope (.module / .global) — i.e., depth-1 in the scope stack.
-/// Returns a slice owned by `alloc` (caller frees / arena-resets).
-pub fn findTopLevelFunctionRanges(
-    alloc: std.mem.Allocator,
-    events: []const Event,
-) ![]FunctionRange {
-    var ranges = std.ArrayListUnmanaged(FunctionRange).empty;
-    errdefer ranges.deinit(alloc);
-
-    // Stack of (event_index, kind) for currently-open scopes. Depth ≤ 256.
-    var stack_idx: [256]u32 = undefined;
-    var stack_kind: [256]ScopeKind = undefined;
-    var sp: u32 = 0;
-
-    for (events, 0..) |e, i| {
-        switch (e.kind) {
-            .scope_open => {
-                const kind: ScopeKind = @enumFromInt(e.aux);
-                if (kind == .elided) continue; // no matching close
-                if (sp < stack_idx.len) {
-                    stack_idx[sp] = @intCast(i);
-                    stack_kind[sp] = kind;
-                    sp += 1;
-                }
-            },
-            .scope_close => {
-                if (sp == 0) continue;
-                sp -= 1;
-                const opened_kind = stack_kind[sp];
-                const opened_idx = stack_idx[sp];
-                if (opened_kind == .function) {
-                    // Top-level iff its parent on stack is .module/.global/.script.
-                    // After popping, stack top is the parent. sp now points at parent slot.
-                    const is_top_level = if (sp == 0) true else switch (stack_kind[sp - 1]) {
-                        .module, .global => true,
-                        else => false,
-                    };
-                    if (is_top_level) {
-                        try ranges.append(alloc, .{
-                            .start = opened_idx,
-                            .end = @intCast(i + 1),
-                        });
-                    }
-                }
-            },
-            else => {},
-        }
-    }
-
-    return ranges.toOwnedSlice(alloc);
-}
-
 /// Phase of the event-stream walk. Used to gate work in the unified resolver
 /// implementation so the same code can run as the full pass (default), or as
 /// either half of a parallel scope/CFG split.
