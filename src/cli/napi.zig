@@ -596,7 +596,9 @@ fn parseImpl(
     var gap_ends_u32: []u32 = &.{};
     var text_gap_node_indices: []u32 = &.{};
     var text_gap_starts_u32: []u32 = &.{};
-    {
+    // JSX nodes only exist in .jsx/.tsx files. For non-JSX languages (JS, TS),
+    // skip the full-tree scan — saves ~1-2ms on a 1M-node file.
+    if (language.isJsx()) {
         var gap_count: usize = 0;
         var text_gap_count: usize = 0;
         for (node_tag_items[0..node_count], node_data_items[0..node_count]) |nt, nd| {
@@ -669,29 +671,31 @@ fn parseImpl(
         node_count,
     );
 
-    // Override positions for jsx_gap_node and jsx_text_node.
+    // Override positions for jsx_gap_node and jsx_text_node.  Skip the full
+    // node-tag scan for non-JSX languages — they can't have JSX nodes.
     var needs_resort = false;
-    for (0..node_count) |i| {
-        const nt = node_tag_items[i];
-        const nd = node_data_items[i];
-        if (nt == .jsx_text_node) {
-            // lhs = next_tok_idx (always): end = tok_starts[lhs], absorbs trailing gap.
-            node_pos.ends[i] = tok_starts[nd.lhs.toInt()];
+    if (language.isJsx()) {
+        for (0..node_count) |i| {
+            const nt = node_tag_items[i];
+            const nd = node_data_items[i];
+            if (nt == .jsx_text_node) {
+                node_pos.ends[i] = tok_starts[nd.lhs.toInt()];
+                needs_resort = true;
+            }
+        }
+        if (gap_node_indices.len > 0) {
+            for (gap_node_indices, gap_starts_u32, gap_ends_u32) |ni, gs, ge| {
+                node_pos.starts[ni] = gs;
+                node_pos.ends[ni] = ge;
+            }
             needs_resort = true;
         }
-    }
-    if (gap_node_indices.len > 0) {
-        for (gap_node_indices, gap_starts_u32, gap_ends_u32) |ni, gs, ge| {
-            node_pos.starts[ni] = gs;
-            node_pos.ends[ni] = ge;
+        if (text_gap_node_indices.len > 0) {
+            for (text_gap_node_indices, text_gap_starts_u32) |ni, gs| {
+                node_pos.starts[ni] = gs;
+            }
+            needs_resort = true;
         }
-        needs_resort = true;
-    }
-    if (text_gap_node_indices.len > 0) {
-        for (text_gap_node_indices, text_gap_starts_u32) |ni, gs| {
-            node_pos.starts[ni] = gs;
-        }
-        needs_resort = true;
     }
     if (needs_resort) {
         // Re-sort sorted_by_start after position overrides.
