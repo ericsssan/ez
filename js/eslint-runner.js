@@ -3708,10 +3708,23 @@ class SourceCode {
   // Unicorn and other ESLint 9-targeting rules use these APIs extensively.
 
   /** ESLint 9: getLoc(node) → node.loc */
-  getLoc(node) { return node?.loc ?? null; }
+  getLoc(node) {
+    if (node == null) return null;
+    // Fast path: hit the cached `_loc` slot directly when populated; skip
+    // the prototype getter call. Plugin paths like
+    // unicorn/no-array-for-each → isFunctionParametersSafeToFix call this
+    // O(identifiers × forEach calls) per file, so the per-call wrapper
+    // savings dominate.
+    const cached = node._loc;
+    return cached !== null && cached !== undefined ? cached : node.loc;
+  }
 
   /** ESLint 9: getRange(node) → node.range */
-  getRange(node) { return node?.range ?? null; }
+  getRange(node) {
+    if (node == null) return null;
+    const cached = node._range;
+    return cached !== null && cached !== undefined ? cached : node.range;
+  }
 
   /**
    * ESLint 9: visitorKeys — map of node type name → child property names.
