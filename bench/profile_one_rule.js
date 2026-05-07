@@ -28,14 +28,30 @@ const filePath = path.isAbsolute(fixture) ? fixture : path.join(ROOT, fixture);
 const src = fs.readFileSync(filePath, "utf8");
 const filename = path.basename(filePath);
 
+// Plugin rules carry a `<pkg>/<rule>` prefix; add the package to
+// lintSource's `plugins` config so the rule loader can find it. Handles
+// scoped packages (`@typescript-eslint/eslint-plugin/...`).
+let plugins;
+const slash = ruleId.indexOf("/");
+if (slash > 0) {
+  if (ruleId.startsWith("@")) {
+    const second = ruleId.indexOf("/", slash + 1);
+    if (second > 0) plugins = [ruleId.slice(0, second)];
+  } else {
+    plugins = [ruleId.slice(0, slash)];
+  }
+}
+const cfg = { filename, rules: { [ruleId]: "error" } };
+if (plugins) cfg.plugins = plugins;
+
 (async () => {
   // Warmup — the first run pays parser-cache and rule-loader costs we don't
   // want polluting the profile.
-  await lintSource(src, { filename, rules: { [ruleId]: "error" } });
+  await lintSource(src, cfg);
 
   const t0 = performance.now();
   for (let i = 0; i < ITERS; i++) {
-    await lintSource(src, { filename, rules: { [ruleId]: "error" } });
+    await lintSource(src, cfg);
   }
   const ms = performance.now() - t0;
   const bytes = Buffer.byteLength(src, "utf8");

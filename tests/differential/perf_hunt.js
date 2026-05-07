@@ -104,6 +104,40 @@ else if (rulesArg) rules = rulesArg.split(",");
 else if (_flag("--all-rules")) rules = _commonRulesWithOxlint();
 else rules = _commonRulesWithOxlint();
 
+// Filter rules by fixture extension — same convention a real ESLint
+// flat config uses via `files: ["**/*.tsx", ...]`. Mirrors what
+// production users do; without it the bench measures bogus workloads
+// (e.g. eslint-plugin-react/no-array-index-key on the TypeScript
+// compiler's plain-JS source rescans every comment per CallExpression).
+//
+// Explicit --rule / --rules is honoured as-is — caller knows what
+// they're benching.
+if (!ruleArg && !rulesArg) {
+  const ext = path.extname(filePath).toLowerCase();
+  const isJsx = ext === ".jsx" || ext === ".tsx";
+  const isTs  = ext === ".ts"  || ext === ".tsx" || ext === ".mts" || ext === ".cts";
+  // Plugin → set of fixture extensions it applies to. A rule is kept if
+  // its plugin is allowed for the current extension. Plugins not listed
+  // here apply to every fixture.
+  const _isReactPlugin = (id) =>
+    id.startsWith("eslint-plugin-react/") ||
+    id.startsWith("eslint-plugin-react-hooks/") ||
+    id.startsWith("eslint-plugin-jsx-a11y/") ||
+    id.startsWith("react/") || id.startsWith("react-hooks/") || id.startsWith("jsx-a11y/");
+  const _isTsPlugin = (id) =>
+    id.startsWith("@typescript-eslint/") ||
+    id.startsWith("@typescript-eslint/eslint-plugin/");
+  const before = rules.length;
+  rules = rules.filter(id => {
+    if (_isReactPlugin(id) && !isJsx) return false; // jsx-only on .js / .ts
+    if (_isTsPlugin(id) && !isTs) return false;     // ts-eslint on JS
+    return true;
+  });
+  if (rules.length !== before) {
+    console.error(`  filtered ${before - rules.length} rules not applicable to ${path.basename(filePath)} (kept ${rules.length})`);
+  }
+}
+
 const {
   runEz, runOxlint,
   parseEzOnce, runEzOnAst, runEzAllOnAst,
