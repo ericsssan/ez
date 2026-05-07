@@ -3269,13 +3269,22 @@ class SourceCode {
         // the lazy `defs` getter just to read defType (which would allocate
         // a Definition object even though most variables never need merging).
         const symKinds = ast._symKinds;
+        const symScopeIds = ast._symScopeIds;
         for (const i of extendedIds) {
           const v = this._buildVariable(i);
           if (!v) continue;
           const defType = symKinds
             ? (_DEF_TYPE_FROM_KIND[symKinds[i]] ?? 'Variable')
             : (v.defs[0] ? v.defs[0].type : '');
-          const key = v.name + '\0' + defType;
+          // Key MUST include scope: a function node's `_declSymsForNode`
+          // returns block-scoped symbols too (e.g. two `let i` from two
+          // sibling `for` loops). Without scope in the key, name+defType
+          // collides and the merge incorrectly enriches the canonical
+          // Variable's defs with sibling-scope defs — surfacing as
+          // `defs.length > 1` for legit non-shadowing locals and tripping
+          // no-redeclare/no-dupe-args false positives across the file.
+          const scopeId = symScopeIds ? symScopeIds[i] : 0;
+          const key = scopeId + '\0' + v.name + '\0' + defType;
           const ex = mergeSet.get(key);
           if (ex) {
             // After Zig's sym_to_canonical routing, the sym_id with the
