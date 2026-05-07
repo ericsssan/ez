@@ -82,8 +82,9 @@ pub fn main(init: std.process.Init) !void {
     }
 
     for (files.items) |path| {
-        // Skip .d.ts and .tsx
-        if (std.mem.endsWith(u8, path, ".d.ts") or std.mem.endsWith(u8, path, ".tsx")) {
+        // Skip .d.ts (declaration files — no executable code, conformance handled elsewhere).
+        // .tsx files now parse through the .tsx language mode below.
+        if (std.mem.endsWith(u8, path, ".d.ts")) {
             skipped += 1;
             continue;
         }
@@ -106,7 +107,12 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        const lang: Token.Language = if (std.mem.endsWith(u8, path, ".ts")) .ts else .js;
+        const lang: Token.Language = if (std.mem.endsWith(u8, path, ".tsx"))
+            .tsx
+        else if (std.mem.endsWith(u8, path, ".ts"))
+            .ts
+        else
+            .js;
         const is_module = detectModuleMode(source);
         const is_strict = detectStrictMode(source);
         const is_experimental_decorators = detectExperimentalDecorators(source);

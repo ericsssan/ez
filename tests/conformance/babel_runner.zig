@@ -83,10 +83,21 @@ pub fn main(init: std.process.Init) !void {
         defer arena.deinit();
         const file_alloc = arena.allocator();
 
+        // Pick lexer/parser language from the plugins listed in options.json.
+        // Flow is filtered upstream (has_unsupported) so we never see it here.
+        const lang: ez.parser_root.token.Language = if (opts.is_jsx and opts.is_typescript)
+            .tsx
+        else if (opts.is_jsx)
+            .jsx
+        else if (opts.is_typescript)
+            .ts
+        else
+            .js;
+
         const parse_result = blk: {
-            var tokens = (tokenizeMaybe(file_alloc, source, .js, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" }).tokens;
+            var tokens = (tokenizeMaybe(file_alloc, source, lang, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "tokenize failed" }).tokens;
             defer tokens.deinit(file_alloc);
-            var tree = Parser.parseWithLanguageOpts(file_alloc, source, tokens.slice(), .js, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
+            var tree = Parser.parseWithLanguageOpts(file_alloc, source, tokens.slice(), lang, is_module, opts.annex_b) catch break :blk ParseResult{ .has_error = true, .first_error = "parse OOM" };
             defer tree.deinit(file_alloc);
             if (tree.errors.len > 0) break :blk ParseResult{ .has_error = true, .first_error = tree.errors[0].message };
 
@@ -97,7 +108,7 @@ pub fn main(init: std.process.Init) !void {
 
             // Run lint rules for must-reject tests to catch early errors via lint rules
             if (is_error_test) {
-                const lint_diags = ez.linter.lint(file_alloc, &tree, &sem, null, .js) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
+                const lint_diags = ez.linter.lint(file_alloc, &tree, &sem, null, lang) catch break :blk ParseResult{ .has_error = false, .first_error = "" };
                 if (lint_diags.len > 0) {
                     file_alloc.free(lint_diags);
                     break :blk ParseResult{ .has_error = true, .first_error = "lint error" };
@@ -153,7 +164,9 @@ const ParseResult = struct {
 
 fn shouldSkip(path: []const u8) bool {
     const skip_patterns = [_][]const u8{
-        "typescript", "flow", "jsx/", "decorators", "pipeline",
+        // typescript fixtures have their own runner; flow is unsupported.
+        // jsx/ used to be here — now handled via plugin detection.
+        "/typescript/", "flow", "decorators", "pipeline",
         "record-and-tuple", "v8intrinsic", "hack-pipes", "module-blocks",
         "defer", "source-phase", "import-attributes", "import-assertions",
         "placeholders", "discard-binding", "explicit-resource-management",
@@ -204,6 +217,9 @@ const OptionsResult = struct {
     source_type: SourceType,
     is_error: bool, // options.json contains "throws"
     annex_b: bool = true, // annexB option (default: true)
+    is_jsx: bool = false, // "jsx" plugin enabled
+    is_typescript: bool = false, // "typescript" plugin enabled
+    is_flow: bool = false, // "flow" plugin enabled (we don't support flow → skip)
 };
 
 /// Walk up the directory tree reading options.json files once.
@@ -246,6 +262,32 @@ fn readOptionsHierarchy(io: std.Io, allocator: std.mem.Allocator, input_path: []
             {
                 result.has_unsupported = true;
                 return result;
+            }
+
+            // Detect parser plugins so we can switch the lexer/parser into
+            // jsx/ts/tsx mode. Look ONLY inside the "plugins": [...] array,
+            // because "throws" messages frequently mention plugin names
+            // (e.g. `"throws": "...\"jsx\", \"flow\", \"typescript\"..."`).
+            const plugins_array = blk: {
+                const key = "\"plugins\"";
+                const k_at = std.mem.indexOf(u8, content, key) orelse break :blk @as(?[]const u8, null);
+                const lb = std.mem.indexOfScalarPos(u8, content, k_at + key.len, '[') orelse break :blk @as(?[]const u8, null);
+                const rb = std.mem.indexOfScalarPos(u8, content, lb + 1, ']') orelse break :blk @as(?[]const u8, null);
+                break :blk content[lb .. rb + 1];
+            };
+            if (plugins_array) |pa| {
+                if (std.mem.indexOf(u8, pa, "\"jsx\"") != null) result.is_jsx = true;
+                if (std.mem.indexOf(u8, pa, "\"typescript\"") != null) result.is_typescript = true;
+                if (std.mem.indexOf(u8, pa, "\"flow\"") != null) result.is_flow = true;
+                // We don't support Flow's type syntax. If a fixture is
+                // pure-Flow (no jsx/typescript escape hatch), skip it. Many
+                // Babel JSX fixtures inherit `["jsx", "flow"]` from the parent
+                // jsx/options.json — for those, fall through and parse as JSX
+                // (Flow-specific syntax in the input will fail naturally).
+                if (result.is_flow and !result.is_jsx and !result.is_typescript) {
+                    result.has_unsupported = true;
+                    return result;
+                }
             }
 
             // Check "throws" (only in the test's own directory)
