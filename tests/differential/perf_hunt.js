@@ -16,10 +16,13 @@
  *     buy anything for this comparison.
  *
  * Diagnostic-count check:
- *   The script always counts ez vs oxlint diagnostics per rule (a rule that
- *   produces 1M phantom reports vs oxlint's 19 looks fast in raw time but is
- *   broken).  Pass `--with-eslint` to also run ESLint as the oracle —
- *   ESLint is slow on the full corpus but the most authoritative.
+ *   ez per-rule diag counts are always shown — a rule that produces 1M
+ *   phantom reports vs oxlint's 19 looks fast in raw time but is broken.
+ *   For comparisons:
+ *     `--diag-counts`  — also collect oxlint counts (one extra `--format
+ *                        json` run; minutes on big fixtures × 500+ rules)
+ *     `--with-eslint`  — run ESLint as the oracle (implies --diag-counts;
+ *                        slow but authoritative)
  *
  * Workflow:
  *   1. Run this script. It prints a sorted table and a diag-count delta list.
@@ -113,7 +116,52 @@ const {
 // classic per-rule-cold-call mode regardless of count.
 const FORCE_AMORTIZE   = _flag("--amortize");
 const FORCE_NO_AMORTIZE = _flag("--no-amortize");
+// Diag-count comparisons need ONE extra oxlint invocation with
+// `--format json`, which on a large fixture × 500+ rules takes minutes
+// (oxlint serializes every diagnostic). `--with-eslint` implies it.
 const WITH_ESLINT      = _flag("--with-eslint");
+const WITH_DIAG_COUNTS = _flag("--diag-counts") || WITH_ESLINT;
+const SAVE_BASELINE    = _flag("--save-baseline");
+// Per-rule ms regression threshold: rule must change by ≥ this absolute
+// amount AND by ≥ 1.3× to be flagged. Avoids surfacing noise from
+// sub-millisecond rules.
+const _REGRESS_MS  = 5;
+const _REGRESS_RATIO = 1.3;
+
+function round1(x) { return Math.round(x * 10) / 10; }
+
+function compareToBaseline(prev, ezPerRule, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTotalDiags) {
+  const slower = []; // { ruleId, prevMs, curMs, ratio, deltaMs }
+  const faster = [];
+  const diagChanged = []; // { ruleId, prev, cur, delta }
+  for (const [ruleId, info] of Object.entries(prev.rules || {})) {
+    if (!ezPerRule.has(ruleId)) continue; // dropped
+    const cur = ezPerRule.get(ruleId);
+    const prevMs = info.ms;
+    const deltaMs = cur - prevMs;
+    if (Math.abs(deltaMs) >= _REGRESS_MS &&
+        Math.max(cur, prevMs) >= _REGRESS_RATIO * Math.max(0.001, Math.min(cur, prevMs))) {
+      const entry = { ruleId, prevMs: round1(prevMs), curMs: round1(cur),
+                      deltaMs: round1(deltaMs),
+                      ratio: prevMs > 0 ? cur / prevMs : Infinity };
+      if (deltaMs > 0) slower.push(entry); else faster.push(entry);
+    }
+    const prevD = info.diags ?? 0;
+    const curD = ezDiagCounts.get(ruleId) ?? 0;
+    if (curD !== prevD) diagChanged.push({ ruleId, prev: prevD, cur: curD, delta: curD - prevD });
+  }
+  slower.sort((a, b) => b.deltaMs - a.deltaMs);
+  faster.sort((a, b) => a.deltaMs - b.deltaMs);
+  diagChanged.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+  return {
+    slower, faster, diagChanged,
+    totals: {
+      ezAllInOneMs:    { prev: prev.totals?.ezAllInOneMs ?? 0,    cur: round1(ezAllInOneMs) },
+      oxBatchMs:       { prev: prev.totals?.oxBatchMs ?? 0,       cur: round1(oxBatchTotal) },
+      ezTotalDiags:    { prev: prev.totals?.ezTotalDiags ?? 0,    cur: ezTotalDiags },
+    },
+  };
+}
 
 (async () => {
   if (!fs.existsSync(filePath)) {
@@ -194,13 +242,17 @@ const WITH_ESLINT      = _flag("--with-eslint");
     const ezAllInOneMs = runEzAllOnAst(ctx2, rules).ms;
 
     // ── Diag counts ────────────────────────────────────────────────
-    // One non-timed oxlint run with --format json so we can compare
-    // diagnostic volume per rule. Phantom-report bugs in ez (e.g. a rule
-    // generating 1M reports vs oxlint's 19) get masked by raw timing,
-    // so surface counts here.
-    process.stderr.write(`\r${" ".repeat(80)}\r  oxlint diag counts ...`);
-    const oxDiagCounts = runOxlintBatchDiagCounts(filePath, rules).perRule;
-    process.stderr.write(`\r${" ".repeat(80)}\r`);
+    // ez always tracks per-rule diag counts (free — they come out of
+    // runEzOnAst). The oxlint side requires an extra `--format json`
+    // run that's slow on big fixtures (minutes on 8 MB × 500 rules)
+    // because oxlint serializes every diagnostic, so it's opt-in via
+    // `--diag-counts` (or `--with-eslint`, which implies it).
+    let oxDiagCounts = new Map();
+    if (WITH_DIAG_COUNTS) {
+      process.stderr.write(`\r${" ".repeat(80)}\r  oxlint diag counts ...`);
+      oxDiagCounts = runOxlintBatchDiagCounts(filePath, rules).perRule;
+      process.stderr.write(`\r${" ".repeat(80)}\r`);
+    }
 
     // ESLint as the diagnostic-count oracle. Opt-in via `--with-eslint`
     // because ESLint is slow on the full corpus (~ minutes on 8 MB) and
@@ -222,14 +274,13 @@ const WITH_ESLINT      = _flag("--with-eslint");
     for (const ruleId of rules) {
       const ezN = ezDiagCounts.get(ruleId) ?? 0;
       const shortId = _shortId(ruleId);
-      const oxN = oxDiagCounts.get(shortId) ?? 0;
+      const oxN = WITH_DIAG_COUNTS ? (oxDiagCounts.get(shortId) ?? 0) : null;
       const esN = esDiagCounts ? (esDiagCounts.get(ruleId) ?? 0) : null;
       ezTotalDiags += ezN;
-      if (oxKnownSet.has(ruleId)) oxTotalDiags += oxN;
+      if (oxN !== null && oxKnownSet.has(ruleId)) oxTotalDiags += oxN;
       if (esN !== null) esTotalDiags += esN;
-      // Flag mismatches. With ESLint as oracle: compare ez vs ESLint.
-      // Without: compare ez vs oxlint.
-      const ref = esN !== null ? esN : (oxKnownSet.has(ruleId) ? oxN : null);
+      // Flag mismatches. Prefer ESLint as oracle when present, else oxlint.
+      const ref = esN !== null ? esN : (oxN !== null && oxKnownSet.has(ruleId) ? oxN : null);
       if (ref !== null && Math.abs(ezN - ref) >= 5 &&
           Math.max(ezN, ref) >= 2 * Math.max(1, Math.min(ezN, ref))) {
         diagDeltas.push({ ruleId, ez: ezN, ox: oxN, es: esN, ratio: ref > 0 ? ezN / ref : Infinity });
@@ -243,6 +294,46 @@ const WITH_ESLINT      = _flag("--with-eslint");
                           ezTotalDiags, oxTotalDiags,
                           esTotalDiags, esRuleCount, esMs, esDropped,
                           diagDeltas };
+
+    // ── Baseline: load (compare) or save ──────────────────────────
+    // Per-fixture baseline file lives at bench/perf_hunt_baseline.<fixture>.json.
+    // Without --save-baseline, comparison runs print regressions vs the
+    // saved snapshot (ms time, diag counts). Threshold avoids flapping on
+    // sub-ms rules.
+    const baselineFile = path.join(ROOT, "bench", `perf_hunt_baseline.${filename.replace(/\W+/g, "_")}.json`);
+    if (SAVE_BASELINE) {
+      const snapshot = {
+        fixture: filename,
+        bytes,
+        ruleCount: rules.length,
+        savedAt: new Date().toISOString(),
+        totals: {
+          ezAllInOneMs: round1(ezAllInOneMs),
+          ezPerRuleSumMs: round1(results._amortized.ezTotalMs),
+          oxBatchMs: round1(oxBatchTotal),
+          oxBaselineMs: round1(oxBaseline),
+          ezTotalDiags,
+        },
+        rules: {},
+      };
+      for (const r of rules) {
+        snapshot.rules[r] = {
+          ms: round1(ezPerRule.get(r) ?? 0),
+          diags: ezDiagCounts.get(r) ?? 0,
+        };
+      }
+      fs.writeFileSync(baselineFile, JSON.stringify(snapshot, null, 2));
+      console.log(`\n→ baseline saved to ${path.relative(ROOT, baselineFile)} (${rules.length} rules)`);
+    } else if (fs.existsSync(baselineFile)) {
+      let prev;
+      try { prev = JSON.parse(fs.readFileSync(baselineFile, "utf8")); }
+      catch { prev = null; }
+      if (prev && prev.fixture === filename) {
+        results._baseline = compareToBaseline(prev, ezPerRule, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTotalDiags);
+        results._baseline.path = path.relative(ROOT, baselineFile);
+        results._baseline.savedAt = prev.savedAt;
+      }
+    }
   } else {
     for (let i = 0; i < rules.length; i++) {
       const ruleId = rules[i];
@@ -329,8 +420,12 @@ const WITH_ESLINT      = _flag("--with-eslint");
     if (a.esRuleCount > 0) {
       console.log(`  ESLint: ${a.esTotalDiags}  (${a.esRuleCount}/${rules.length} rules, ${a.esDropped} pruned, ${a.esMs.toFixed(0)} ms)`);
     }
-    const oxDelta = a.ezTotalDiags - a.oxTotalDiags;
-    console.log(`  oxlint: ${a.oxTotalDiags}${oxDelta === 0 ? "" : `  (ez delta ${oxDelta >= 0 ? "+" : ""}${oxDelta})`}`);
+    if (WITH_DIAG_COUNTS) {
+      const oxDelta = a.ezTotalDiags - a.oxTotalDiags;
+      console.log(`  oxlint: ${a.oxTotalDiags}${oxDelta === 0 ? "" : `  (ez delta ${oxDelta >= 0 ? "+" : ""}${oxDelta})`}`);
+    } else {
+      console.log(`  (oxlint counts skipped — pass --diag-counts to enable; slow on big fixtures)`);
+    }
     if (a.diagDeltas.length > 0) {
       const sorted = [...a.diagDeltas].sort((x, y) => {
         const refY = y.es != null ? y.es : y.ox;
@@ -346,6 +441,47 @@ const WITH_ESLINT      = _flag("--with-eslint");
       }
     }
     console.log("");
+    // ── Baseline comparison ───────────────────────────────────────
+    if (results._baseline) {
+      const b = results._baseline;
+      console.log(`vs baseline (${b.path}, saved ${b.savedAt}):`);
+      const fmtTotal = (label, t) => {
+        const delta = t.cur - t.prev;
+        const sign = delta > 0 ? "+" : "";
+        const pct = t.prev > 0 ? ` (${sign}${(100 * delta / t.prev).toFixed(1)}%)` : "";
+        return `  ${label.padEnd(20)} ${t.prev} → ${t.cur} ms${pct}`;
+      };
+      console.log(fmtTotal("ez all-in-one", b.totals.ezAllInOneMs));
+      console.log(fmtTotal("oxlint batch", b.totals.oxBatchMs));
+      const dt = b.totals.ezTotalDiags;
+      const dDelta = dt.cur - dt.prev;
+      console.log(`  ${"ez total diags".padEnd(20)} ${dt.prev} → ${dt.cur}${dDelta === 0 ? "" : `  (${dDelta > 0 ? "+" : ""}${dDelta})`}`);
+      if (b.slower.length > 0) {
+        console.log(`  rules slower (top ${Math.min(10, b.slower.length)}):`);
+        for (const r of b.slower.slice(0, 10)) {
+          console.log(`    ${r.ruleId.padEnd(50)} ${r.prevMs} → ${r.curMs} ms  (+${r.deltaMs}, ${r.ratio.toFixed(2)}×)`);
+        }
+      }
+      if (b.faster.length > 0) {
+        console.log(`  rules faster (top ${Math.min(5, b.faster.length)}):`);
+        for (const r of b.faster.slice(0, 5)) {
+          console.log(`    ${r.ruleId.padEnd(50)} ${r.prevMs} → ${r.curMs} ms  (${r.deltaMs})`);
+        }
+      }
+      if (b.diagChanged.length > 0) {
+        console.log(`  rules with diag-count changes (top ${Math.min(5, b.diagChanged.length)}):`);
+        for (const d of b.diagChanged.slice(0, 5)) {
+          console.log(`    ${d.ruleId.padEnd(50)} ${d.prev} → ${d.cur}  (${d.delta > 0 ? "+" : ""}${d.delta})`);
+        }
+      }
+      if (b.slower.length === 0 && b.faster.length === 0 && b.diagChanged.length === 0) {
+        console.log(`  no rule-level changes ≥ ${_REGRESS_MS}ms / ${_REGRESS_RATIO}×`);
+      }
+      console.log("");
+    } else if (!SAVE_BASELINE) {
+      console.log(`(no baseline at bench/perf_hunt_baseline.${filename.replace(/\W+/g, "_")}.json — pass --save-baseline to capture one)`);
+      console.log("");
+    }
     // Profile the heaviest ez rule
     const heaviest = results.filter(r => r.ezMs > 0).slice(0, TOP_N);
     if (heaviest.length > 0) {
