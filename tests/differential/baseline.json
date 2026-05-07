@@ -1,5 +1,257 @@
 {
   "corpus": {
+    "security/detect-eval-with-expression": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-pseudoRandomBytes": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-child-process": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 11,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-bidi-characters": {
+      "runner": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 5,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-non-literal-regexp": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-object-injection": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-unsafe-regex": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-non-literal-fs-filename": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 16,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-non-literal-require": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-new-buffer": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-disable-mustache-escape": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-no-csrf-before-method-override": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 1,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-buffer-noassert": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 29,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
+    "security/detect-possible-timing-attacks": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 2,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
     "n/handle-callback-err": {
       "runner": {
         "fn": 0,
@@ -20,7 +272,7 @@
     },
     "n/no-deprecated-api": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -31,7 +283,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -236,7 +488,7 @@
     },
     "n/no-unsupported-features/node-builtins": {
       "runner": {
-        "fn": 169,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -247,14 +499,14 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 169,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
     },
     "n/prefer-promises/fs": {
       "runner": {
-        "fn": 35,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -265,14 +517,14 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 35,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
     },
     "n/prefer-promises/dns": {
       "runner": {
-        "fn": 23,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -283,7 +535,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 23,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -326,7 +578,7 @@
     },
     "n/no-hide-core-modules": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -337,7 +589,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -686,7 +938,7 @@
     },
     "n/no-unsupported-features/es-syntax": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -697,7 +949,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       }
@@ -1010,8 +1262,8 @@
     },
     "@typescript-eslint/unified-signatures": {
       "runner": {
-        "fn": 10,
-        "fp": 6,
+        "fn": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1021,8 +1273,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 10,
-        "fp": 6,
+        "fn": 4,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -1087,13 +1339,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 10,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -1141,7 +1393,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 78,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1159,14 +1411,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 6,
-        "fp": 3,
+        "fn": 20,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 3,
+        "fn": 20,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -1483,13 +1735,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 25,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0
       }
@@ -1663,7 +1915,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1717,7 +1969,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -1789,8 +2041,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 4,
+        "fn": 13,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
@@ -1874,9 +2126,9 @@
     },
     "@typescript-eslint/explicit-member-accessibility": {
       "runner": {
-        "fn": 6,
-        "fp": 4,
-        "crash": 5
+        "fn": 3,
+        "fp": 5,
+        "crash": 0
       },
       "native": {
         "fn": 41,
@@ -1885,8 +2137,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 4,
+        "fn": 3,
+        "fp": 5,
         "crash": 0
       }
     },
@@ -1969,7 +2221,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 32,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2000,19 +2252,19 @@
     },
     "@typescript-eslint/no-shadow": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 33,
+        "fp": 2,
         "crash": 0
       },
       "native": {
-        "fn": 46,
+        "fn": 89,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 33,
+        "fp": 2,
         "crash": 0
       }
     },
@@ -2167,14 +2419,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 5,
+        "fn": 62,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 5,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -2185,7 +2437,7 @@
         "crash": 4
       },
       "native": {
-        "fn": 0,
+        "fn": 60,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2257,14 +2509,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 2,
+        "fn": 39,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 2,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -2347,14 +2599,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 2,
+        "fn": 4,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
-        "fp": 2,
+        "fn": 4,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2401,14 +2653,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 4,
+        "fn": 14,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
-        "fp": 4,
+        "fn": 3,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2473,14 +2725,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 11,
-        "fp": 13,
+        "fn": 30,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 11,
-        "fp": 13,
+        "fn": 30,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2527,7 +2779,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -2563,14 +2815,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 9,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 0,
+        "fn": 0,
+        "fp": 2,
         "crash": 0
       }
     },
@@ -2739,7 +2991,7 @@
     "@typescript-eslint/no-unused-private-class-members": {
       "runner": {
         "fn": 1,
-        "fp": 8,
+        "fp": 30,
         "crash": 0
       },
       "native": {
@@ -2750,7 +3002,7 @@
       },
       "hybrid": {
         "fn": 1,
-        "fp": 8,
+        "fp": 30,
         "crash": 0
       }
     },
@@ -2797,14 +3049,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 468,
-        "fp": 29,
+        "fn": 587,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 468,
-        "fp": 29,
+        "fn": 587,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -2941,14 +3193,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
-        "fp": 1,
+        "fn": 4,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3044,8 +3296,8 @@
     },
     "jsdoc/check-examples": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3055,8 +3307,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3296,8 +3548,8 @@
     },
     "jsdoc/require-param": {
       "runner": {
-        "fn": 14,
-        "fp": 5,
+        "fn": 10,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -3307,8 +3559,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 14,
-        "fp": 5,
+        "fn": 10,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -3350,8 +3602,8 @@
     },
     "jsdoc/require-returns": {
       "runner": {
-        "fn": 6,
-        "fp": 5,
+        "fn": 3,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -3361,15 +3613,15 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 5,
+        "fn": 3,
+        "fp": 2,
         "crash": 0
       }
     },
     "jsdoc/require-description": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3379,8 +3631,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3404,8 +3656,8 @@
     },
     "jsdoc/check-values": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3415,8 +3667,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3440,8 +3692,8 @@
     },
     "jsdoc/no-undefined-types": {
       "runner": {
-        "fn": 6,
-        "fp": 7,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -3451,8 +3703,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 7,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -3476,7 +3728,7 @@
     },
     "jsdoc/lines-before-block": {
       "runner": {
-        "fn": 14,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -3487,7 +3739,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 14,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -3530,8 +3782,8 @@
     },
     "jsdoc/require-returns-check": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3541,8 +3793,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3800,8 +4052,8 @@
     },
     "jsdoc/prefer-import-tag": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3811,8 +4063,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -3854,8 +4106,8 @@
     },
     "jsdoc/require-yields-check": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3865,8 +4117,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -4070,8 +4322,8 @@
     },
     "jsdoc/implements-on-classes": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4081,8 +4333,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -4142,8 +4394,8 @@
     },
     "jsdoc/require-jsdoc": {
       "runner": {
-        "fn": 29,
-        "fp": 28,
+        "fn": 7,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -4153,8 +4405,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 29,
-        "fp": 28,
+        "fn": 7,
+        "fp": 6,
         "crash": 0
       }
     },
@@ -4196,8 +4448,8 @@
     },
     "jsdoc/check-types": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -4207,8 +4459,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -5312,7 +5564,7 @@
     },
     "es-x/no-property-shorthands": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -5323,7 +5575,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       }
@@ -5384,7 +5636,7 @@
     },
     "es-x/no-class-fields": {
       "runner": {
-        "fn": 0,
+        "fn": 10,
         "fp": 0,
         "crash": 0
       },
@@ -5395,14 +5647,14 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 10,
         "fp": 0,
         "crash": 0
       }
     },
     "es-x/no-error-cause": {
       "runner": {
-        "fn": 32,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -5413,7 +5665,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 32,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -5652,6 +5904,24 @@
         "crash": 0
       }
     },
+    "es-x/no-string-prototype-iswellformed-towellformed": {
+      "runner": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      },
+      "native": {
+        "fn": 6,
+        "fp": 0,
+        "crash": 0,
+        "skip": 0
+      },
+      "hybrid": {
+        "fn": 0,
+        "fp": 0,
+        "crash": 0
+      }
+    },
     "es-x/no-generators": {
       "runner": {
         "fn": 0,
@@ -5798,7 +6068,7 @@
     },
     "es-x/no-private-in": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -5809,7 +6079,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -6968,8 +7238,8 @@
     },
     "es-x/no-arrow-functions": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -6979,8 +7249,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -8390,8 +8660,8 @@
     },
     "indent": {
       "runner": {
-        "fn": 99,
-        "fp": 135,
+        "fn": 38,
+        "fp": 74,
         "crash": 4
       },
       "native": {
@@ -8401,15 +8671,15 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 99,
-        "fp": 135,
+        "fn": 38,
+        "fp": 74,
         "crash": 0
       }
     },
     "array-callback-return": {
       "runner": {
         "fn": 3,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8420,14 +8690,14 @@
       },
       "hybrid": {
         "fn": 3,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       }
     },
     "no-unused-vars": {
       "runner": {
-        "fn": 3,
-        "fp": 7,
+        "fn": 0,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -8437,8 +8707,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 7,
+        "fn": 0,
+        "fp": 5,
         "crash": 0
       }
     },
@@ -8480,8 +8750,8 @@
     },
     "padding-line-between-statements": {
       "runner": {
-        "fn": 11,
-        "fp": 11,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8491,26 +8761,26 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 11,
-        "fp": 11,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
     "no-mixed-spaces-and-tabs": {
       "runner": {
         "fn": 0,
-        "fp": 25,
+        "fp": 7,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 19,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 7,
         "crash": 0
       }
     },
@@ -8534,7 +8804,7 @@
     },
     "no-useless-return": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 1,
         "crash": 0
       },
@@ -8545,7 +8815,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 0,
         "fp": 1,
         "crash": 0
       }
@@ -8553,7 +8823,7 @@
     "id-match": {
       "runner": {
         "fn": 0,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8564,7 +8834,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 5,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -8683,7 +8953,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -8719,7 +8989,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -8791,7 +9061,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 32,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -8840,12 +9110,12 @@
     },
     "no-new-symbol": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -8859,7 +9129,7 @@
     "no-trailing-spaces": {
       "runner": {
         "fn": 0,
-        "fp": 7,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8870,32 +9140,32 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 7,
+        "fp": 0,
         "crash": 0
       }
     },
     "no-fallthrough": {
       "runner": {
-        "fn": 5,
-        "fp": 18,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 7,
-        "fp": 1,
+        "fn": 30,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 7,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
     "array-bracket-newline": {
       "runner": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8906,7 +9176,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 2,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -8917,7 +9187,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -8966,8 +9236,8 @@
     },
     "prefer-object-spread": {
       "runner": {
-        "fn": 54,
-        "fp": 0,
+        "fn": 2,
+        "fp": 11,
         "crash": 0
       },
       "native": {
@@ -8977,15 +9247,15 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 54,
-        "fp": 0,
+        "fn": 2,
+        "fp": 11,
         "crash": 0
       }
     },
     "no-useless-call": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -8996,14 +9266,14 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
     "sort-imports": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9013,8 +9283,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -9074,8 +9344,8 @@
     },
     "prefer-promise-reject-errors": {
       "runner": {
-        "fn": 1,
-        "fp": 0,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -9085,8 +9355,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 0,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -9097,7 +9367,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9110,8 +9380,8 @@
     },
     "prefer-exponentiation-operator": {
       "runner": {
-        "fn": 142,
-        "fp": 0,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -9121,14 +9391,14 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 142,
-        "fp": 0,
+        "fn": 2,
+        "fp": 1,
         "crash": 0
       }
     },
     "prefer-named-capture-group": {
       "runner": {
-        "fn": 21,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -9139,7 +9409,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 21,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -9151,7 +9421,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 69,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9169,7 +9439,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9205,13 +9475,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 30,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -9254,7 +9524,7 @@
     },
     "no-inline-comments": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -9265,7 +9535,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -9277,7 +9547,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9295,7 +9565,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 43,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9349,7 +9619,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9363,18 +9633,18 @@
     "no-proto": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -9547,7 +9817,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 65,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9560,7 +9830,7 @@
     },
     "accessor-pairs": {
       "runner": {
-        "fn": 0,
+        "fn": 67,
         "fp": 0,
         "crash": 0
       },
@@ -9571,7 +9841,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 67,
         "fp": 0,
         "crash": 0
       }
@@ -9632,7 +9902,7 @@
     },
     "template-curly-spacing": {
       "runner": {
-        "fn": 14,
+        "fn": 2,
         "fp": 2,
         "crash": 0
       },
@@ -9643,7 +9913,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 14,
+        "fn": 2,
         "fp": 2,
         "crash": 0
       }
@@ -9655,7 +9925,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9727,7 +9997,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9799,7 +10069,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -9830,8 +10100,8 @@
     },
     "no-misleading-character-class": {
       "runner": {
-        "fn": 58,
-        "fp": 0,
+        "fn": 4,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -9841,8 +10111,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 58,
-        "fp": 0,
+        "fn": 4,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -9866,8 +10136,8 @@
     },
     "no-redeclare": {
       "runner": {
-        "fn": 3,
-        "fp": 5,
+        "fn": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -9877,8 +10147,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 5,
+        "fn": 0,
+        "fp": 2,
         "crash": 0
       }
     },
@@ -9921,42 +10191,42 @@
     "prefer-spread": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
     "no-prototype-builtins": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 20,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
     "no-native-reassign": {
       "runner": {
-        "fn": 9,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -9967,7 +10237,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 9,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -10069,7 +10339,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 34,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10087,13 +10357,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 7,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       }
@@ -10105,7 +10375,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 14,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10136,19 +10406,19 @@
     },
     "prefer-regex-literals": {
       "runner": {
-        "fn": 1,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 181,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -10159,7 +10429,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10173,8 +10443,8 @@
     "lines-around-comment": {
       "runner": {
         "fn": 0,
-        "fp": 1,
-        "crash": 1
+        "fp": 0,
+        "crash": 0
       },
       "native": {
         "fn": 74,
@@ -10184,7 +10454,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -10213,7 +10483,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10226,8 +10496,8 @@
     },
     "require-unicode-regexp": {
       "runner": {
-        "fn": 31,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -10237,8 +10507,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 31,
-        "fp": 0,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -10267,7 +10537,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10316,7 +10586,7 @@
     },
     "no-promise-executor-return": {
       "runner": {
-        "fn": 58,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -10327,7 +10597,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 58,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -10339,7 +10609,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10357,7 +10627,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 21,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10375,7 +10645,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10443,7 +10713,7 @@
     "prefer-destructuring": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 10,
         "crash": 0
       },
       "native": {
@@ -10454,7 +10724,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 10,
         "crash": 0
       }
     },
@@ -10519,7 +10789,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 18,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10551,7 +10821,7 @@
     "logical-assignment-operators": {
       "runner": {
         "fn": 2,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -10562,7 +10832,7 @@
       },
       "hybrid": {
         "fn": 2,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       }
     },
@@ -10586,7 +10856,7 @@
     },
     "no-undefined": {
       "runner": {
-        "fn": 16,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -10597,7 +10867,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 16,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -10622,7 +10892,7 @@
     },
     "no-setter-return": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -10633,7 +10903,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       }
@@ -10676,19 +10946,19 @@
     },
     "no-useless-assignment": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 7,
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 5,
+        "fn": 50,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
-        "fp": 5,
+        "fn": 0,
+        "fp": 7,
         "crash": 0
       }
     },
@@ -10731,17 +11001,17 @@
     "no-unreachable-loop": {
       "runner": {
         "fn": 0,
-        "fp": 56,
+        "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 828,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -10753,7 +11023,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10789,20 +11059,20 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
     },
     "preserve-caught-error": {
       "runner": {
-        "fn": 33,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -10813,7 +11083,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 33,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -10843,7 +11113,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -10987,7 +11257,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11005,7 +11275,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 78,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11041,7 +11311,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11054,18 +11324,18 @@
     },
     "no-array-constructor": {
       "runner": {
-        "fn": 40,
-        "fp": 0,
+        "fn": 3,
+        "fp": 4,
         "crash": 0
       },
       "native": {
-        "fn": 2,
-        "fp": 4,
+        "fn": 115,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
+        "fn": 3,
         "fp": 4,
         "crash": 0
       }
@@ -11077,7 +11347,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11090,19 +11360,19 @@
     },
     "prefer-object-has-own": {
       "runner": {
-        "fn": 33,
-        "fp": 0,
+        "fn": 0,
+        "fp": 7,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 33,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 7,
         "crash": 0
       }
     },
@@ -11126,7 +11396,7 @@
     },
     "grouped-accessor-pairs": {
       "runner": {
-        "fn": 0,
+        "fn": 27,
         "fp": 0,
         "crash": 0
       },
@@ -11137,7 +11407,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 27,
         "fp": 0,
         "crash": 0
       }
@@ -11162,7 +11432,7 @@
     },
     "no-object-constructor": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -11173,7 +11443,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -11198,8 +11468,8 @@
     },
     "indent-legacy": {
       "runner": {
-        "fn": 51,
-        "fp": 50,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11209,8 +11479,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 51,
-        "fp": 50,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -11234,8 +11504,8 @@
     },
     "implicit-arrow-linebreak": {
       "runner": {
-        "fn": 5,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11245,8 +11515,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -11275,7 +11545,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11311,7 +11581,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 29,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11360,7 +11630,7 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 44,
+        "fn": 42,
         "fp": 2,
         "crash": 0
       },
@@ -11371,7 +11641,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 44,
+        "fn": 42,
         "fp": 2,
         "crash": 0
       }
@@ -11414,12 +11684,12 @@
     },
     "valid-typeof": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 21,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11433,7 +11703,7 @@
     "no-unassigned-vars": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11444,7 +11714,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -11491,7 +11761,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 17,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11540,8 +11810,8 @@
     },
     "use-isnan": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11551,8 +11821,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -11581,7 +11851,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11617,7 +11887,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11649,7 +11919,7 @@
     "dot-notation": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -11660,7 +11930,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -11671,7 +11941,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 12,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11689,7 +11959,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11707,13 +11977,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 2,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -11743,14 +12013,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 71,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -11761,7 +12031,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 19,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11792,19 +12062,19 @@
     },
     "no-constant-condition": {
       "runner": {
-        "fn": 5,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 151,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
         "fn": 1,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -11869,7 +12139,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 26,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11941,7 +12211,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 60,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11977,7 +12247,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -11991,17 +12261,17 @@
     "prefer-numeric-literals": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 62,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 1,
         "crash": 0
       }
@@ -12031,7 +12301,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 55,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12044,8 +12314,8 @@
     },
     "max-len": {
       "runner": {
-        "fn": 6,
-        "fp": 10,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -12055,26 +12325,26 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 10,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       }
     },
     "prefer-const": {
       "runner": {
         "fn": 0,
-        "fp": 11,
+        "fp": 9,
         "crash": 0
       },
       "native": {
-        "fn": 10,
-        "fp": 2,
+        "fn": 69,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 10,
-        "fp": 2,
+        "fn": 0,
+        "fp": 9,
         "crash": 0
       }
     },
@@ -12103,7 +12373,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 41,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12152,12 +12422,12 @@
     },
     "no-new-wrappers": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12175,7 +12445,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 32,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12188,8 +12458,8 @@
     },
     "lines-around-directive": {
       "runner": {
-        "fn": 36,
-        "fp": 36,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12199,8 +12469,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 36,
-        "fp": 36,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -12247,7 +12517,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 8,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12278,8 +12548,8 @@
     },
     "radix": {
       "runner": {
-        "fn": 30,
-        "fp": 0,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -12289,8 +12559,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 30,
-        "fp": 0,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       }
     },
@@ -12332,8 +12602,8 @@
     },
     "max-lines": {
       "runner": {
-        "fn": 2,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12343,15 +12613,15 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
     "sort-keys": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12361,8 +12631,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -12386,12 +12656,12 @@
     },
     "no-new-func": {
       "runner": {
-        "fn": 10,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 10,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12409,7 +12679,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 21,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12459,7 +12729,7 @@
     "func-name-matching": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -12470,7 +12740,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 4,
         "crash": 0
       }
     },
@@ -12499,13 +12769,13 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
+        "fn": 31,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -12530,8 +12800,8 @@
     },
     "key-spacing": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12541,8 +12811,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -12571,7 +12841,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 16,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12602,7 +12872,7 @@
     },
     "no-unreachable": {
       "runner": {
-        "fn": 6,
+        "fn": 1,
         "fp": 4,
         "crash": 0
       },
@@ -12613,7 +12883,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
+        "fn": 1,
         "fp": 4,
         "crash": 0
       }
@@ -12621,7 +12891,7 @@
     "no-this-before-super": {
       "runner": {
         "fn": 4,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12632,7 +12902,7 @@
       },
       "hybrid": {
         "fn": 4,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -12643,7 +12913,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 27,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12657,7 +12927,7 @@
     "require-atomic-updates": {
       "runner": {
         "fn": 4,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12668,13 +12938,13 @@
       },
       "hybrid": {
         "fn": 4,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       }
     },
     "no-import-assign": {
       "runner": {
-        "fn": 11,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12685,7 +12955,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 11,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -12715,7 +12985,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 5,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12733,7 +13003,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12751,7 +13021,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12769,8 +13039,8 @@
         "crash": 0
       },
       "native": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 54,
+        "fp": 0,
         "crash": 0,
         "skip": 0
       },
@@ -12787,14 +13057,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 2,
+        "fn": 13,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
-        "fp": 0,
+        "fn": 0,
+        "fp": 4,
         "crash": 0
       }
     },
@@ -12805,7 +13075,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 15,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12913,7 +13183,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12967,7 +13237,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 11,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -12980,7 +13250,7 @@
     },
     "multiline-comment-style": {
       "runner": {
-        "fn": 81,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12991,7 +13261,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 81,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -13003,7 +13273,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 19,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13057,7 +13327,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13111,7 +13381,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13147,14 +13417,14 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 2,
+        "fp": 2,
         "crash": 0
       }
     },
@@ -13201,7 +13471,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13214,8 +13484,8 @@
     },
     "padded-blocks": {
       "runner": {
-        "fn": 6,
-        "fp": 4,
+        "fn": 3,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -13225,8 +13495,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 6,
-        "fp": 4,
+        "fn": 3,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -13255,7 +13525,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13286,7 +13556,7 @@
     },
     "no-restricted-globals": {
       "runner": {
-        "fn": 20,
+        "fn": 0,
         "fp": 4,
         "crash": 0
       },
@@ -13297,7 +13567,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 20,
+        "fn": 0,
         "fp": 4,
         "crash": 0
       }
@@ -13363,7 +13633,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13399,7 +13669,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13417,7 +13687,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 14,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13430,12 +13700,12 @@
     },
     "no-new-native-nonconstructor": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 4,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13453,7 +13723,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 3,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13502,8 +13772,8 @@
     },
     "newline-before-return": {
       "runner": {
-        "fn": 8,
-        "fp": 8,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13513,8 +13783,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 8,
-        "fp": 8,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -13543,7 +13813,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 7,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13561,7 +13831,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 6,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -13592,8 +13862,8 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 5,
-        "fp": 2,
+        "fn": 4,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -13603,8 +13873,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 5,
-        "fp": 2,
+        "fn": 4,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -13736,8 +14006,8 @@
     },
     "sonarjs/prefer-immediate-return": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13747,8 +14017,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -13772,8 +14042,8 @@
     },
     "sonarjs/fixme-tag": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13783,8 +14053,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -13934,8 +14204,8 @@
     },
     "sonarjs/no-globals-shadowing": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13945,8 +14215,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -13970,8 +14240,8 @@
     },
     "sonarjs/todo-tag": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13981,8 +14251,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -14006,7 +14276,7 @@
     },
     "sonarjs/no-fallthrough": {
       "runner": {
-        "fn": 13,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14017,7 +14287,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 13,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       }
@@ -14492,8 +14762,8 @@
     },
     "sonarjs/arguments-order": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -14503,8 +14773,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -14673,8 +14943,8 @@
     "sonarjs/no-dead-store": {
       "runner": {
         "fn": 4,
-        "fp": 23,
-        "crash": 2
+        "fp": 14,
+        "crash": 0
       },
       "native": {
         "fn": 27,
@@ -14684,7 +14954,7 @@
       },
       "hybrid": {
         "fn": 4,
-        "fp": 23,
+        "fp": 14,
         "crash": 0
       }
     },
@@ -14762,7 +15032,7 @@
     },
     "sonarjs/function-name": {
       "runner": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       },
@@ -14773,7 +15043,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 2,
         "fp": 0,
         "crash": 0
       }
@@ -15447,7 +15717,7 @@
     "sonarjs/no-unused-function-argument": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -15458,7 +15728,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -18457,7 +18727,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 280,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -18686,8 +18956,8 @@
     },
     "unicorn/no-accessor-recursion": {
       "runner": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -18697,8 +18967,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
-        "fp": 0,
+        "fn": 1,
+        "fp": 4,
         "crash": 0
       }
     },
@@ -18813,7 +19083,7 @@
     "unicorn/prefer-at": {
       "runner": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -18824,7 +19094,7 @@
       },
       "hybrid": {
         "fn": 0,
-        "fp": 0,
+        "fp": 1,
         "crash": 0
       }
     },
@@ -19082,8 +19352,8 @@
     },
     "unicorn/isolated-functions": {
       "runner": {
-        "fn": 3,
-        "fp": 8,
+        "fn": 2,
+        "fp": 7,
         "crash": 0
       },
       "native": {
@@ -19093,8 +19363,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 3,
-        "fp": 8,
+        "fn": 2,
+        "fp": 7,
         "crash": 0
       }
     },
@@ -19195,7 +19465,7 @@
         "crash": 0
       },
       "native": {
-        "fn": 0,
+        "fn": 173,
         "fp": 0,
         "crash": 0,
         "skip": 0
@@ -19640,7 +19910,7 @@
     },
     "unicorn/no-thenable": {
       "runner": {
-        "fn": 0,
+        "fn": 7,
         "fp": 0,
         "crash": 0
       },
@@ -19651,7 +19921,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 7,
         "fp": 0,
         "crash": 0
       }
@@ -20774,8 +21044,8 @@
     },
     "react/no-unused-prop-types": {
       "runner": {
-        "fn": 18,
-        "fp": 2,
+        "fn": 16,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -20785,8 +21055,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 18,
-        "fp": 2,
+        "fn": 16,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -21098,8 +21368,8 @@
     },
     "react/jsx-props-no-multi-spaces": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 1
       },
       "native": {
@@ -21109,8 +21379,8 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       }
     },
@@ -22160,7 +22430,7 @@
     },
     "react/jsx-no-undef": {
       "runner": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       },
@@ -22171,7 +22441,7 @@
         "skip": 0
       },
       "hybrid": {
-        "fn": 0,
+        "fn": 1,
         "fp": 0,
         "crash": 0
       }
@@ -22412,9 +22682,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 7914,
-    "runnerCasesPerSec": 13779,
-    "nativeCasesPerSec": 96182,
-    "totalCases": 79831
+    "totalElapsedMs": 10047,
+    "runnerCasesPerSec": 10078,
+    "nativeCasesPerSec": 94182,
+    "totalCases": 80149
   }
 }
