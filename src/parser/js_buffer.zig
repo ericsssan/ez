@@ -1529,6 +1529,14 @@ const token_mod = @import("token.zig");
 /// 1. Propagate max/min main_token through parent pointers
 /// 2. Bracket matching via token tags
 /// 3. Extend each node's end past maxTok to include trailing ; and matched brackets
+pub const NodeSpansResult = struct {
+    starts: []u32,
+    ends: []u32,
+    max_tok: []u32,
+    min_tok: []u32,
+    sorted_by_start: []u32,
+};
+
 pub fn buildNodeSpans(
     alloc: std.mem.Allocator,
     node_tags: []const ast_mod.Node.Tag,
@@ -1539,7 +1547,7 @@ pub fn buildNodeSpans(
     end_toks: []const u32,    // tree.node_end_toks: last consumed token per node
     min_tok_in: []const u32,  // traversal.min_tok: leftmost token per subtree
     node_count: u32,
-) !struct { starts: []u32, ends: []u32, max_tok: []u32, min_tok: []u32, sorted_by_start: []u32 } {
+) !NodeSpansResult {
     const n: usize = node_count;
 
     // min_tok: copy from traversal result (already bottom-up propagated there).

@@ -389,6 +389,7 @@ fn parseImpl(
     var s_tag_csr_ready: std.atomic.Value(bool) = .init(false);
     var s_analyzer_done: std.atomic.Value(bool) = .init(false);
     var s_cfg_done: std.atomic.Value(bool) = .init(false);
+    var s_utf16_done: std.atomic.Value(bool) = .init(false);
     var s_ast_view: @import("../parser/ast.zig").Ast = undefined;
     // Lex already complete — use actual token count as exact upper bound,
     // not the source.len/5 over-estimate.
@@ -461,20 +462,56 @@ fn parseImpl(
     // parents_ready — moving the spawn ~2.5 ms earlier directly shrinks the
     // trav_join wait.  buildTraversal needs only `tree` (final at parse_end);
     // it doesn't touch any of main's pre-fire outputs.
+    //
+    // Trav thread also runs buildNodeSpans after main signals s_utf16_done —
+    // fully removes node_spans (~3.2 ms) from main's critical path.
     const TraversalJob = struct {
         tree: *const @import("../parser/ast.zig").Ast,
         alloc: std.mem.Allocator,
+        node_count: u32 = 0,
+        tok_tags: []const @import("../parser/token.zig").Tag = &.{},
+        tok_starts: []u32 = &.{},
+        tok_ends_ptr: *[]u32,
+        utf16_done: ?*std.atomic.Value(bool) = null,
         result: parent_builder.TraversalResult = undefined,
+        node_pos: ?js_buffer.NodeSpansResult = null,
         err: ?anyerror = null,
         fn run(self: *@This()) void {
-            if (parent_builder.buildTraversal(self.tree, self.alloc)) |r| {
-                self.result = r;
-            } else |e| {
+            const r = parent_builder.buildTraversal(self.tree, self.alloc) catch |e| {
                 self.err = e;
+                return;
+            };
+            self.result = r;
+            if (self.utf16_done) |a| {
+                while (!a.load(.acquire)) std.atomic.spinLoopHint();
+                const np = js_buffer.buildNodeSpans(
+                    self.alloc,
+                    self.tree.nodes.items(.tag),
+                    self.tok_tags,
+                    self.tok_starts,
+                    self.tok_ends_ptr.*,
+                    r.pre_order,
+                    self.tree.node_end_toks,
+                    r.min_tok,
+                    self.node_count,
+                ) catch |e| {
+                    self.err = e;
+                    return;
+                };
+                self.node_pos = np;
             }
         }
     };
-    var trav_job: TraversalJob = .{ .tree = &tree, .alloc = alloc };
+    var trav_tok_ends_slot: []u32 = &.{};
+    var trav_job: TraversalJob = .{
+        .tree = &tree,
+        .alloc = alloc,
+        .node_count = @intCast(tree.nodes.len),
+        .tok_tags = tokens.slice().items(.tag),
+        .tok_starts = tokens.slice().items(.start),
+        .tok_ends_ptr = &trav_tok_ends_slot,
+        .utf16_done = if (use_stream_sem and stream_sem_thread != null) &s_utf16_done else null,
+    };
     const trav_thread: ?std.Thread = if (use_stream_sem and stream_sem_thread != null)
         std.Thread.spawn(.{}, TraversalJob.run, .{&trav_job}) catch null
     else
@@ -643,6 +680,8 @@ fn parseImpl(
     const tok_ends = try alloc.alloc(u32, tok_starts.len);
     for (tok_ends, tok_starts, tok_lens) |*te, ts, tl| te.* = ts + tl;
     const tok_ends_offset = if (tok_ends.len > 0) js_buffer.ptrOffsetPub(buf_ptr, tok_ends.ptr) else 0;
+    // Publish tok_ends to trav_thread (it'll read after s_utf16_done acquire).
+    if (use_stream_sem and stream_sem_thread != null) trav_tok_ends_slot = tok_ends;
 
     const line_starts = lex_result.line_starts;
     const line_starts_offset = if (line_starts.len > 0) js_buffer.ptrOffsetPub(buf_ptr, line_starts.ptr) else 0;
@@ -701,6 +740,10 @@ fn parseImpl(
     var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
     // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
+    // Signal trav_thread that tok_starts/tok_ends are now in UTF-16 — it will
+    // run buildNodeSpans now (~3.2 ms) parallel with main's tok_cmt_merge +
+    // writeCfgGraph + sem_join wait, removing node_spans from main's tail.
+    if (use_stream_sem and stream_sem_thread != null) s_utf16_done.store(true, .release);
 
     // Build the token+comment merge order BEFORE joining the traversal thread.
     // The merge depends only on token starts and comment starts (parse outputs),
@@ -798,8 +841,10 @@ fn parseImpl(
     type_overrides_offset = if (traversal.type_overrides.len > 0)
         js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
 
-    // Compute node start/end positions (UTF-16) — uses already-converted tok_starts/tok_ends.
-    const node_pos = try js_buffer.buildNodeSpans(
+    // Compute node start/end positions (UTF-16). When streaming-sem is on,
+    // trav_thread already ran buildNodeSpans after s_utf16_done — adopt its
+    // result.  Otherwise (sequential / parallel-cfg paths) compute here on main.
+    const node_pos = if (trav_job.node_pos) |np| np else try js_buffer.buildNodeSpans(
         alloc,
         tree.nodes.items(.tag),
         tokens.slice().items(.tag),
