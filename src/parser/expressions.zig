@@ -6402,7 +6402,19 @@ fn parseBindingProperty(p: *Parser) Error!NodeIndex {
         const key_expr = try parseAssignmentExpression(p);
         _ = try p.expect(.r_bracket);
         _ = try p.expect(.colon);
-        const value = try parseBindingElement(p);
+        // The outer object-pattern walk in emitDeclaresFromPatternImpl
+        // recurses into computed_property.rhs to emit binding declares.
+        // parseBindingElement also emits declares for its parsed pattern,
+        // so calling it here unsuppressed double-emits — same name, same
+        // decl_node, two distinct symbol IDs in the same scope. Suppress
+        // the inner emit and let the outer walker own it.
+        const saved_s1 = p.suppress_param_declares;
+        p.suppress_param_declares = true;
+        const value = parseBindingElement(p) catch |err| {
+            p.suppress_param_declares = saved_s1;
+            return err;
+        };
+        p.suppress_param_declares = saved_s1;
         return p.addNode(.{
             .tag = .computed_property,
             .main_token = key_tok,
@@ -6412,10 +6424,16 @@ fn parseBindingProperty(p: *Parser) Error!NodeIndex {
 
     const key = try parsePropertyName(p);
 
-    // key: pattern
+    // key: pattern — same double-emit reason as the computed-key branch.
     if (p.peek() == .colon) {
         _ = p.advance();
-        const value = try parseBindingElement(p);
+        const saved_s2 = p.suppress_param_declares;
+        p.suppress_param_declares = true;
+        const value = parseBindingElement(p) catch |err| {
+            p.suppress_param_declares = saved_s2;
+            return err;
+        };
+        p.suppress_param_declares = saved_s2;
         return p.addNode(.{
             .tag = .property,
             .main_token = key_tok,
