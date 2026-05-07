@@ -501,93 +501,150 @@ pub fn writeSemanticData(
         }
     }
 
-    // ── Scope → refs CSR + scope → through-refs CSR (fused) ────────
-    // Both CSRs iterate over refs[0..ref_count] with the same data loads
-    // (sem.references.scope_ids, sem.references.symbol_ids,
-    // sem.symbols.scope_ids).  Fusing the count and scatter passes halves
-    // the ref-loop iterations from 4 to 2 — saves ~1-2ms on worker.
+    // ── Scope → refs CSR + scope → through-refs CSR (parallel sub-thread) ──
+    // The scope_ref/through CSR build (~3 ms on typescript.js) runs on a
+    // sub-thread spawned here.  All output buffers are pre-allocated below
+    // (single-threaded) so the sub-thread does no allocations and there's
+    // no FBA race against this thread's later allocations.  The
+    // scope_through_ref_ids buffer uses a generous upper bound (ref_count*16)
+    // since total_through is unknown at alloc time; JS reads only the first
+    // total_through entries (via scope_through_ref_starts[scope_count]).
     const scope_ref_starts = try alloc.alloc(u32, scope_count);
     const scope_ref_counts = try alloc.alloc(u32, scope_count);
     const scope_ref_ids = try alloc.alloc(u32, ref_count);
     const scope_through_ref_starts = try alloc.alloc(u32, scope_count);
     const scope_through_ref_counts = try alloc.alloc(u32, scope_count);
-    var total_through: u32 = 0;
-    if (scope_count > 0 and ref_count > 0) {
-        @memset(scope_ref_counts, 0);
-        @memset(scope_through_ref_counts, 0);
-        // FUSED count pass — also walks scope chain for through-ref tally.
-        for (0..ref_count) |i| {
-            const rsc = sem.references.scope_ids.items[i];
-            const s = if (rsc == .none) none32 else @intFromEnum(rsc);
-            if (s < scope_count) scope_ref_counts[s] += 1;
+    // Upper bound: ref_count * 16 covers typescript.js (avg chain depth ≤ 4).
+    // If exceeded, sub-thread sets ScopeRefAuxJob.err.
+    const through_upper_bound: u32 = if (ref_count > 0) ref_count * 16 else 0;
+    const scope_through_ref_ids = try alloc.alloc(u32, through_upper_bound);
+    const scope_ref_cursor = try alloc.alloc(u32, scope_count);
+    const scope_through_ref_cursor = try alloc.alloc(u32, scope_count);
 
-            // Through-refs: only RESOLVED refs (sym_id != .none); unresolved
-            // refs may be re-resolved later via scope.set injection.
-            if (rsc == .none) continue;
-            const sym_id = sem.references.symbol_ids.items[i];
-            if (sym_id == .none) continue;
-            const sid: u32 = @intFromEnum(sym_id);
-            if (sid >= symbol_count) continue;
-            const tsc = sem.symbols.scope_ids.items[sid];
-            const target_scope: u32 = if (tsc == .none) none32 else @intFromEnum(tsc);
-            var x: u32 = @intFromEnum(rsc);
-            while (x != none32 and x != target_scope) {
-                if (x < scope_count) {
-                    scope_through_ref_counts[x] += 1;
-                    total_through += 1;
+    const ScopeRefAuxJob = struct {
+        sem: *const semantic_mod.SemanticResult,
+        scope_count: u32,
+        symbol_count: u32,
+        ref_count: u32,
+        scope_ref_starts: []u32,
+        scope_ref_counts: []u32,
+        scope_ref_ids: []u32,
+        scope_ref_cursor: []u32,
+        scope_through_ref_starts: []u32,
+        scope_through_ref_counts: []u32,
+        scope_through_ref_ids: []u32,
+        scope_through_ref_cursor: []u32,
+        through_upper_bound: u32,
+        total_through_out: *u32,
+        err: ?anyerror = null,
+        fn run(self: *@This()) void {
+            const none32_local: u32 = std.math.maxInt(u32);
+            const sc = self.scope_count;
+            const rc = self.ref_count;
+            const sym_c = self.symbol_count;
+            if (sc == 0 or rc == 0) {
+                @memset(self.scope_ref_starts, 0);
+                @memset(self.scope_ref_counts, 0);
+                @memset(self.scope_through_ref_starts, 0);
+                @memset(self.scope_through_ref_counts, 0);
+                self.total_through_out.* = 0;
+                return;
+            }
+            @memset(self.scope_ref_counts, 0);
+            @memset(self.scope_through_ref_counts, 0);
+            var total_through: u32 = 0;
+            // FUSED count pass — chain walks for through-ref tally.
+            for (0..rc) |i| {
+                const rsc = self.sem.references.scope_ids.items[i];
+                const s = if (rsc == .none) none32_local else @intFromEnum(rsc);
+                if (s < sc) self.scope_ref_counts[s] += 1;
+                if (rsc == .none) continue;
+                const sym_id = self.sem.references.symbol_ids.items[i];
+                if (sym_id == .none) continue;
+                const sid: u32 = @intFromEnum(sym_id);
+                if (sid >= sym_c) continue;
+                const tsc = self.sem.symbols.scope_ids.items[sid];
+                const target_scope: u32 = if (tsc == .none) none32_local else @intFromEnum(tsc);
+                var x: u32 = @intFromEnum(rsc);
+                while (x != none32_local and x != target_scope) {
+                    if (x < sc) {
+                        self.scope_through_ref_counts[x] += 1;
+                        total_through += 1;
+                    }
+                    const p = self.sem.scopes.parents.items[x];
+                    x = if (p == .none) none32_local else @intFromEnum(p);
                 }
-                const p = sem.scopes.parents.items[x];
-                x = if (p == .none) none32 else @intFromEnum(p);
             }
-        }
-        // Prefix sums for both CSRs.
-        var total_refs: u32 = 0;
-        for (0..scope_count) |i| {
-            scope_ref_starts[i] = total_refs;
-            total_refs += scope_ref_counts[i];
-        }
-        var tr: u32 = 0;
-        for (0..scope_count) |i| {
-            scope_through_ref_starts[i] = tr;
-            tr += scope_through_ref_counts[i];
-        }
-    } else {
-        @memset(scope_ref_starts, 0);
-        @memset(scope_ref_counts, 0);
-        @memset(scope_through_ref_starts, 0);
-        @memset(scope_through_ref_counts, 0);
-    }
-    // FUSED scatter pass — both CSRs use cursor arrays seeded from starts.
-    const scope_through_ref_ids = try alloc.alloc(u32, total_through);
-    if (scope_count > 0 and ref_count > 0) {
-        const cursor = try alloc.alloc(u32, scope_count);
-        @memcpy(cursor, scope_ref_starts);
-        const tcursor = try alloc.alloc(u32, scope_count);
-        @memcpy(tcursor, scope_through_ref_starts);
-        for (0..ref_count) |i| {
-            const rsc = sem.references.scope_ids.items[i];
-            const s = if (rsc == .none) none32 else @intFromEnum(rsc);
-            if (s < scope_count) {
-                scope_ref_ids[cursor[s]] = @intCast(i);
-                cursor[s] += 1;
+            self.total_through_out.* = total_through;
+            if (total_through > self.through_upper_bound) {
+                self.err = error.ThroughIdsBufferTooSmall;
+                return;
             }
-            if (rsc == .none) continue;
-            const sym_id = sem.references.symbol_ids.items[i];
-            if (sym_id == .none) continue;
-            const sid: u32 = @intFromEnum(sym_id);
-            if (sid >= symbol_count) continue;
-            const tsc = sem.symbols.scope_ids.items[sid];
-            const target_scope: u32 = if (tsc == .none) none32 else @intFromEnum(tsc);
-            var x: u32 = @intFromEnum(rsc);
-            while (x != none32 and x != target_scope) {
-                if (x < scope_count) {
-                    scope_through_ref_ids[tcursor[x]] = @intCast(i);
-                    tcursor[x] += 1;
+            // Prefix sums.
+            var total_refs: u32 = 0;
+            for (0..sc) |i| {
+                self.scope_ref_starts[i] = total_refs;
+                total_refs += self.scope_ref_counts[i];
+            }
+            var tr: u32 = 0;
+            for (0..sc) |i| {
+                self.scope_through_ref_starts[i] = tr;
+                tr += self.scope_through_ref_counts[i];
+            }
+            // Scatter pass.
+            @memcpy(self.scope_ref_cursor, self.scope_ref_starts);
+            @memcpy(self.scope_through_ref_cursor, self.scope_through_ref_starts);
+            for (0..rc) |i| {
+                const rsc = self.sem.references.scope_ids.items[i];
+                const s = if (rsc == .none) none32_local else @intFromEnum(rsc);
+                if (s < sc) {
+                    self.scope_ref_ids[self.scope_ref_cursor[s]] = @intCast(i);
+                    self.scope_ref_cursor[s] += 1;
                 }
-                const p = sem.scopes.parents.items[x];
-                x = if (p == .none) none32 else @intFromEnum(p);
+                if (rsc == .none) continue;
+                const sym_id = self.sem.references.symbol_ids.items[i];
+                if (sym_id == .none) continue;
+                const sid: u32 = @intFromEnum(sym_id);
+                if (sid >= sym_c) continue;
+                const tsc = self.sem.symbols.scope_ids.items[sid];
+                const target_scope: u32 = if (tsc == .none) none32_local else @intFromEnum(tsc);
+                var x: u32 = @intFromEnum(rsc);
+                while (x != none32_local and x != target_scope) {
+                    if (x < sc) {
+                        self.scope_through_ref_ids[self.scope_through_ref_cursor[x]] = @intCast(i);
+                        self.scope_through_ref_cursor[x] += 1;
+                    }
+                    const p = self.sem.scopes.parents.items[x];
+                    x = if (p == .none) none32_local else @intFromEnum(p);
+                }
             }
         }
+    };
+    var total_through: u32 = 0;
+    var scope_ref_aux: ScopeRefAuxJob = .{
+        .sem = sem,
+        .scope_count = scope_count,
+        .symbol_count = symbol_count,
+        .ref_count = ref_count,
+        .scope_ref_starts = scope_ref_starts,
+        .scope_ref_counts = scope_ref_counts,
+        .scope_ref_ids = scope_ref_ids,
+        .scope_ref_cursor = scope_ref_cursor,
+        .scope_through_ref_starts = scope_through_ref_starts,
+        .scope_through_ref_counts = scope_through_ref_counts,
+        .scope_through_ref_ids = scope_through_ref_ids,
+        .scope_through_ref_cursor = scope_through_ref_cursor,
+        .through_upper_bound = through_upper_bound,
+        .total_through_out = &total_through,
+    };
+    const scope_ref_aux_thread: ?std.Thread = std.Thread.spawn(
+        .{},
+        ScopeRefAuxJob.run,
+        .{&scope_ref_aux},
+    ) catch null;
+    if (scope_ref_aux_thread == null) {
+        // Spawn failed: run synchronously here.
+        ScopeRefAuxJob.run(&scope_ref_aux);
     }
 
     // ── Scope → symbols CSR (counting sort of symbols by scope) ───────
@@ -777,6 +834,12 @@ pub fn writeSemanticData(
                 cur = p;
             }
         }
+    }
+
+    // Join the scope_ref/through CSR sub-thread before reading its outputs.
+    if (scope_ref_aux_thread) |t| {
+        t.join();
+        if (scope_ref_aux.err) |e| return e;
     }
 
     // ── SemanticHeader ────────────────────────────────────────────
