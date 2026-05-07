@@ -77,6 +77,17 @@ const StreamSemCtx = struct {
     /// Main writes here when its writeCfgGraph finishes; worker reads at end of
     /// writeSem to populate the cfg_graph_offset header field.
     main_cfg_graph_offset: u32 = 0,
+    /// Worker stores `&sem_result` here right after `event_resolver.resolveFull`
+    /// returns, then signals `analyzer_done`. Main reads `cpr =
+    /// sem_result.code_path_result` (read-only after analyzer) and runs
+    /// writeCfgGraph in parallel with the trav_join wait, hiding the ~4 ms
+    /// CFG cost off the worker's tail.
+    analyzer_done: ?*std.atomic.Value(bool) = null,
+    sem_result_ptr: ?*const semantic_mod.SemanticResult = null,
+    /// Main signals after writeCfgGraph stores its offset in
+    /// `main_cfg_graph_offset`; worker spin-waits on this inside writeSem
+    /// just before its own writeCfgGraph call and adopts the offset.
+    cfg_done: ?*std.atomic.Value(bool) = null,
 };
 
 fn streamSemEntry(ctx: *StreamSemCtx) void {
@@ -113,6 +124,12 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         return;
     };
     _ = std.c.clock_gettime(.MONOTONIC, &ts2);
+    // Publish sem_result so main can run writeCfgGraph in parallel with main's
+    // trav_join wait. cpr is read-only after analyzer; main only reads it.
+    if (ctx.analyzer_done) |a| {
+        ctx.sem_result_ptr = &sem_result;
+        a.store(true, .release);
+    }
     // Wait for parent_builder on main; writeSemanticData needs parent_indices.
     while (!ctx.parent_indices_ready.load(.acquire)) std.atomic.spinLoopHint();
     const parents = ctx.parent_indices orelse {
@@ -147,6 +164,8 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         0,
         ctx.tag_csr_ready,
         if (ctx.tag_csr_ready != null) &ctx.tag_csr else null,
+        ctx.cfg_done,
+        if (ctx.cfg_done != null) &ctx.main_cfg_graph_offset else null,
     )) |off| {
         ctx.semantic_data_offset = off;
     } else |e| {
@@ -328,8 +347,11 @@ fn parseImpl(
     // parent_indices+traversal arrays. Sem worker (writeSemanticData incl.
     // CFG graph + scope/sym/ref CSRs) needs less. Empirically 60/40 split
     // works on typescript.js (8.7 MB source → ~265 MB bump).
+    // 75/25 split: main now also runs writeCfgGraph (~60 MB peak on
+    // typescript.js), so it needs the larger half.  Worker's remaining
+    // writeSem (scope CSRs, decl_sym, header) fits comfortably in 25%.
     const bump_split: u32 = if (use_stream_sem)
-        js_buffer.HEADER_SIZE + (total_bump * 3 / 5)
+        js_buffer.HEADER_SIZE + (total_bump * 3 / 4)
     else
         source_start;
     var backing = js_buffer.JsBufferAllocator.initRange(buf_ptr, js_buffer.HEADER_SIZE, bump_split);
@@ -365,6 +387,8 @@ fn parseImpl(
     var s_ast_ready: std.atomic.Value(bool) = .init(false);
     var s_parents_ready: std.atomic.Value(bool) = .init(false);
     var s_tag_csr_ready: std.atomic.Value(bool) = .init(false);
+    var s_analyzer_done: std.atomic.Value(bool) = .init(false);
+    var s_cfg_done: std.atomic.Value(bool) = .init(false);
     var s_ast_view: @import("../parser/ast.zig").Ast = undefined;
     // Lex already complete — use actual token count as exact upper bound,
     // not the source.len/5 over-estimate.
@@ -388,6 +412,8 @@ fn parseImpl(
         .globals = globals,
         .parent_indices_ready = &s_parents_ready,
         .tag_csr_ready = &s_tag_csr_ready,
+        .analyzer_done = &s_analyzer_done,
+        .cfg_done = &s_cfg_done,
     } else undefined;
     const stream_sem_thread: ?std.Thread = if (use_stream_sem) blk: {
         const t = std.Thread.spawn(.{}, streamSemEntry, .{&stream_sem_ctx}) catch break :blk null;
@@ -560,7 +586,7 @@ fn parseImpl(
                         // computeLoopBodyExitability lives in semantic.zig; replicate the
                         // single call here (previously inside analyzeWithOptions).
                         semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
-                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
+                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                             semantic_data_offset = off;
                         } else |_| {}
                     } else |_| {}
@@ -575,7 +601,7 @@ fn parseImpl(
             // Worker spawn failed — fall back to sequential.
             if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
                 var sem = sem_result;
-                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
+                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                     semantic_data_offset = off;
                 } else |_| {}
             } else |_| {}
@@ -583,7 +609,7 @@ fn parseImpl(
     } else if (!stream_sem_handled) {
         if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
             var sem = sem_result;
-            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
+            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
                 semantic_data_offset = off;
             } else |_| {}
         } else |_| {}
@@ -726,6 +752,27 @@ fn parseImpl(
         while (k < tail_run) : (k += 1) merged[mi + k] = ti + k;
         break :blk js_buffer.ptrOffsetPub(buf_ptr, merged.ptr);
     };
+
+    // ── Main-side writeCfgGraph (parallel with trav_thread / worker writeSem) ──
+    // The worker spin-waits on s_cfg_done at the writeCfgGraph point inside
+    // writeSemanticData and adopts our offset.  Hides the ~4 ms CFG cost off
+    // the worker's tail.  Falls back to a worker-side compute if cpr is null
+    // or the result is 0.
+    if (use_stream_sem and stream_sem_thread != null) {
+        // Wait for analyzer to publish sem_result.  Analyzer typically finishes
+        // ~at parse_end (it's been streaming during parse), so by the time we
+        // reach this line — after pre-fire + utf16 + tok_cmt (~6 ms post-parse)
+        // — the wait is essentially zero.
+        while (!s_analyzer_done.load(.acquire)) std.atomic.spinLoopHint();
+        if (stream_sem_ctx.sem_result_ptr) |sr_ptr| {
+            if (sr_ptr.code_path_result) |cpr| {
+                if (js_buffer.writeCfgGraph(buf_ptr, alloc, &cpr, @intCast(tree.nodes.len), stream_parents_for_worker)) |off| {
+                    stream_sem_ctx.main_cfg_graph_offset = off;
+                } else |_| {}
+            }
+        }
+        s_cfg_done.store(true, .release);
+    }
     const t_pre_trav_join = if (trace_main) TraceTs.now() else undefined;
 
     // Join the traversal thread now — buildNodeSpans below needs it.
@@ -961,7 +1008,7 @@ fn parseAndLintImpl(
         .build_parents = true,
     })) |sr| {
         sem_result_opt = sr;
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null, null, null)) |off| {
             semantic_data_offset = off;
         } else |_| {}
     } else |_| {}

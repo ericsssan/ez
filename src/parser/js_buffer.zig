@@ -391,6 +391,13 @@ pub fn writeSemanticData(
     /// of charging the 1.9 ms cost to the pre-fire chain.
     tag_csr_ready: ?*std.atomic.Value(bool),
     tag_csr_late: ?*const ?TagNodeCsrResult,
+    /// If non-null, the worker spin-waits on this atomic just before its own
+    /// writeCfgGraph call and reads the main-thread-computed CFG offset from
+    /// `cfg_offset_late.*`.  Lets main run writeCfgGraph during the trav_join
+    /// wait, hiding the ~4 ms cost off worker's tail.  Fallback: if
+    /// `cfg_offset_late.*` is 0 after the wait, worker computes itself.
+    cfg_done: ?*std.atomic.Value(bool),
+    cfg_offset_late: ?*const u32,
 ) !u32 {
     const alloc = backing.allocator();
     const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
@@ -825,6 +832,13 @@ pub fn writeSemanticData(
 
         .cfg_graph_offset = blk: {
             if (precomputed_cfg_graph_offset != 0) break :blk precomputed_cfg_graph_offset;
+            // Lazy main-side handoff: spin briefly for cfg_done; if main published
+            // a non-zero offset, adopt it.  Otherwise (main couldn't run cfg, or
+            // produced 0), fall through to worker computing it itself.
+            if (cfg_done) |a| {
+                while (!a.load(.acquire)) std.atomic.spinLoopHint();
+                if (cfg_offset_late) |p| if (p.* != 0) break :blk p.*;
+            }
             if (sem.code_path_result) |cpr| break :blk writeCfgGraph(buf, alloc, &cpr, node_count, parent_indices) catch 0;
             break :blk 0;
         },
