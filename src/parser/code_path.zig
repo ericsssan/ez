@@ -522,16 +522,24 @@ pub const CodePathBuilder = struct {
 
     fn newRootSegment(self: *CodePathBuilder) !SegmentId {
         const id: SegmentId = @intCast(self.segments.len);
+        // Capture CURRENT pool lengths — earlier root segments may have been
+        // created mid-pool (after other segments appended), so leaving these
+        // at 0 breaks the CSR-tight invariant that writeCfgGraph relies on
+        // (`seg_prev_start[i+1] == seg_prev_end[i]`).  Empty range at the
+        // current end is correct: this segment contributes 0 to each pool.
+        const ap_pos: u32 = @intCast(self.all_prev_targets.items.len);
+        const p_pos: u32 = @intCast(self.prev_targets.items.len);
+        const cp_pos: u32 = @intCast(self.collapsed_prev_targets.items.len);
         try self.segments.append(self.allocator, .{
             .codepath = self.current_codepath,
-            .all_prev_start = 0,
-            .all_prev_end = 0,
-            .prev_start = 0,
-            .prev_end = 0,
+            .all_prev_start = ap_pos,
+            .all_prev_end = ap_pos,
+            .prev_start = p_pos,
+            .prev_end = p_pos,
             .looped_prev_start = 0,
             .looped_prev_end = 0,
-            .collapsed_prev_start = 0,
-            .collapsed_prev_end = 0,
+            .collapsed_prev_start = cp_pos,
+            .collapsed_prev_end = cp_pos,
         });
         try self.seg_reachable.append(self.allocator, 1);
         try self.seg_used.append(self.allocator, 0);
