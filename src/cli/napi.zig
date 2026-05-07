@@ -428,24 +428,46 @@ fn parseImpl(
         s_parents_ready.store(true, .release);
     }
 
-    // Compute parent indices and DFS traversal orders in a single pass.
-    // (Also re-builds parents — for the streaming path, redundant with the
-    // quick parents above, but harmless: ~0.3ms overlapped with worker.)
-    const traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| {
-        if (use_stream_sem) {
-            s_parents_ready.store(true, .release); // unblock worker so we can join
-            if (stream_sem_thread) |th| th.join();
+    // Spawn buildTraversal on a dedicated thread when streaming-sem is on so
+    // it overlaps with this thread's UTF-16 / comments / jsx-gap / tok-ends
+    // work below. Two phases touch DISJOINT memory (traversal arrays vs
+    // token/comment/jsx arrays); cache contention is minimal.
+    const TraversalJob = struct {
+        tree: *const @import("../parser/ast.zig").Ast,
+        alloc: std.mem.Allocator,
+        result: parent_builder.TraversalResult = undefined,
+        err: ?anyerror = null,
+        fn run(self: *@This()) void {
+            if (parent_builder.buildTraversal(self.tree, self.alloc)) |r| {
+                self.result = r;
+            } else |e| {
+                self.err = e;
+            }
         }
-        return e;
     };
-    const parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
-    const pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
-    const post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
-    const dfs_events_offset = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
-    const resolved_parent_offset = if (traversal.resolved_parents.len > 0)
-        js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
-    const type_overrides_offset = if (traversal.type_overrides.len > 0)
-        js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
+    var trav_job: TraversalJob = .{ .tree = &tree, .alloc = alloc };
+    const trav_thread: ?std.Thread = if (use_stream_sem and stream_sem_thread != null)
+        std.Thread.spawn(.{}, TraversalJob.run, .{&trav_job}) catch null
+    else
+        null;
+    var traversal: parent_builder.TraversalResult = undefined;
+    if (trav_thread == null) {
+        traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| {
+            if (use_stream_sem) {
+                s_parents_ready.store(true, .release);
+                if (stream_sem_thread) |th| th.join();
+            }
+            return e;
+        };
+    }
+    // Offsets that depend on traversal are computed AFTER the join below
+    // (right before buildNodeSpans). Use undefined sentinel for now.
+    var parent_indices_offset: u32 = undefined;
+    var pre_order_offset: u32 = undefined;
+    var post_order_offset: u32 = undefined;
+    var dfs_events_offset: u32 = undefined;
+    var resolved_parent_offset: u32 = undefined;
+    var type_overrides_offset: u32 = undefined;
 
     var semantic_data_offset: u32 = 0;
     const stream_sem_handled: bool = use_stream_sem and stream_sem_thread != null;
@@ -613,6 +635,26 @@ fn parseImpl(
     var spans = [_][]u32{ tok_starts, tok_ends, cs, ce, line_starts, gap_starts_u32, gap_ends_u32, text_gap_starts_u32 };
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
     // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
+
+    // Join the traversal thread now — buildNodeSpans below needs it.
+    if (trav_thread) |t| {
+        t.join();
+        if (trav_job.err) |e| {
+            if (use_stream_sem) {
+                if (stream_sem_thread) |th| th.join();
+            }
+            return e;
+        }
+        traversal = trav_job.result;
+    }
+    parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
+    pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
+    post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
+    dfs_events_offset = js_buffer.ptrOffsetPub(buf_ptr, @as([*]const u8, @ptrCast(traversal.dfs_events.ptr)));
+    resolved_parent_offset = if (traversal.resolved_parents.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
+    type_overrides_offset = if (traversal.type_overrides.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
 
     // Compute node start/end positions (UTF-16) — uses already-converted tok_starts/tok_ends.
     const node_pos = try js_buffer.buildNodeSpans(
