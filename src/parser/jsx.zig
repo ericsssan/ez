@@ -48,6 +48,12 @@ pub fn parseJsxElement(p: *Parser) Error!NodeIndex {
     // Parse the closing element `</tag>`.
     const closing = try parseJsxClosingElement(p);
 
+    // Validate that the closing tag name matches the opening name.
+    // Babel rejects `<Foo></Bar>` with a name-mismatch error.
+    if (!jsxNameMatches(p, opening, closing)) {
+        try p.emitError("Expected corresponding JSX closing tag");
+    }
+
     // Build the full jsx_element node.
     const extra = try p.addExtra(ast.JsxElementData, .{
         .opening = opening,
@@ -178,6 +184,13 @@ fn parseJsxDottedName(p: *Parser) Error!NodeIndex {
 fn parseJsxSimpleName(p: *Parser) Error!NodeIndex {
     const tag = p.peek();
     if (tag == .identifier or tag.isKeyword()) {
+        // JSX tag/attribute names are matched by the runtime as plain
+        // strings against a fixed inventory — unicode escapes (`\uXXXX`)
+        // are not valid here. Babel rejects `<\u{2F804}></\u{2F804}>`.
+        if (p.has_escape_ptr[p.tok_i]) {
+            try p.emitError("Unexpected token");
+            return p.makeErrorNode();
+        }
         const tok = p.advance();
         return p.addNode(.{
             .tag = .jsx_identifier,
@@ -199,6 +212,11 @@ fn parseJsxHyphenatedIdent(p: *Parser) Error!NodeIndex {
     const tag = p.peek();
     if (tag != .identifier and !tag.isKeyword()) {
         try p.emitError("Expected JSX name");
+        return p.makeErrorNode();
+    }
+    // Reject unicode escapes in tag names (see parseJsxSimpleName).
+    if (p.has_escape_ptr[p.tok_i]) {
+        try p.emitError("Unexpected token");
         return p.makeErrorNode();
     }
     const first_tok = p.advance();
@@ -386,7 +404,24 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
                 continue;
             }
 
-            // `{...expr}` inside children.
+            // Spread child: `{...expr}` — JSXSpreadChild.
+            // Must come BEFORE the regular expression branch because `...`
+            // is not a valid expression starter.
+            if (p.peek() == .ellipsis) {
+                _ = p.advance(); // consume `...`
+                const expr = try p.parseAssignmentExpression();
+                _ = try p.expect(.r_brace);
+                const spread = try p.addNode(.{
+                    .tag = .jsx_spread_child,
+                    .main_token = brace_tok,
+                    .data = .{ .lhs = expr, .rhs = .none },
+                });
+                try p.scratchPush(spread);
+                last_child_was_text = false;
+                continue;
+            }
+
+            // `{expr}` inside children.
             const expr = try p.parseExpression();
             _ = try p.expect(.r_brace);
 
@@ -402,6 +437,16 @@ fn parseJsxChildren(p: *Parser) Error!SubRange {
 
         // EOF — bail out.
         if (tag == .eof) break;
+
+        // Bare `}` inside JSX text is a syntax error — Babel rejects
+        // `<div>}</div>` because closing braces only have meaning inside
+        // expression containers. The lexer can't catch this (it just
+        // emits an `r_brace` token); flag it here.
+        if (tag == .r_brace) {
+            try p.emitError("Unexpected token, expected jsx text or expression container");
+            _ = p.advance();
+            continue;
+        }
 
         // Text content: collect everything that isn't `<`, `{`, or eof into a single
         // JSXText node.  This includes:
@@ -584,6 +629,48 @@ fn parseJsxFragment(p: *Parser) Error!NodeIndex {
 // =====================================================================
 // Helpers
 // =====================================================================
+
+/// Compare opening (`jsx_opening_element` / `jsx_self_closing`) and
+/// closing (`jsx_closing_element`) tag names. Returns true if they
+/// refer to the same identifier / dotted member / namespaced name.
+/// Used by `parseJsxElement` to surface `<Foo></Bar>` mismatches.
+fn jsxNameMatches(p: *Parser, opening: NodeIndex, closing: NodeIndex) bool {
+    const open_idx = opening.toInt();
+    const open_tag = p.nodeTag(open_idx);
+    if (open_tag != .jsx_opening_element and open_tag != .jsx_self_closing) return true;
+    // JsxOpeningData has `name: NodeIndex` at offset 0. data.lhs is the extra index.
+    const open_extra: u32 = @intFromEnum(p.nodeData(open_idx).lhs);
+    const open_name = NodeIndex.fromInt(p.extra_data.items[open_extra]);
+
+    const close_idx = closing.toInt();
+    if (p.nodeTag(close_idx) != .jsx_closing_element) return true;
+    const close_name = p.nodeData(close_idx).lhs;
+
+    return jsxNameEql(p, open_name, close_name);
+}
+
+fn jsxNameEql(p: *Parser, a: NodeIndex, b: NodeIndex) bool {
+    const ai = a.toInt();
+    const bi = b.toInt();
+    const ta = p.nodeTag(ai);
+    const tb = p.nodeTag(bi);
+    if (ta != tb) return false;
+    switch (ta) {
+        .jsx_identifier => {
+            const at = p.tokenText(p.node_main_token_ptr[ai]);
+            const bt = p.tokenText(p.node_main_token_ptr[bi]);
+            return std.mem.eql(u8, at, bt);
+        },
+        .jsx_member_expr, .jsx_namespaced_name => {
+            const ad = p.nodeData(ai);
+            const bd = p.nodeData(bi);
+            return jsxNameEql(p, ad.lhs, bd.lhs) and jsxNameEql(p, ad.rhs, bd.rhs);
+        },
+        else => return true, // unrecognized — accept (recovery)
+    }
+}
+
+const std = @import("std");
 
 /// Emit a read reference for JSX component names.
 /// In JSX, uppercase-initial names (e.g. <Foo>, <Foo.Bar>) are variable

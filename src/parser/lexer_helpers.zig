@@ -778,7 +778,7 @@ pub fn tokenizeWithBuf(
                 if (pos + 1 < n and src[pos + 1] == '=') { tag = .slash_equal; end = pos + 2; }
                 // In JSX/TSX mode, `</tag>` must not have `/` tokenized as regex.
                 // `.less_than` before `/` means we are inside a closing tag.
-                else if (regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = regexEnd(src, pos); tag = .regex_literal; }
+                else if (regexAllowed(prev_kind) and !(language.isJsx() and (prev_kind == .less_than or prev_kind == .greater_than))) { end = regexEnd(src, pos); tag = .regex_literal; }
                 else { tag = .slash; end = pos + 1; }
             },
 

@@ -363,7 +363,7 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
         .jsx_spread_attribute => {
             sp(parents, lhs, idx);
         },
-        .jsx_expression_container => {
+        .jsx_expression_container, .jsx_spread_child => {
             sp(parents, lhs, idx);
         },
         .jsx_member_expr, .jsx_namespaced_name => {

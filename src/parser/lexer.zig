@@ -819,6 +819,14 @@ pub fn stringEndBMOpt(
                 const c = src[p];
                 if (c == quote) return p + 1;
                 if (is_jsx and c == '<') return p;
+                // JSX attribute strings (`<path d="M230 80\n\tA ...">`) span
+                // newlines. JS strings don't, but a JSX-mode source has no
+                // ambiguity here: the parser still classifies string usage,
+                // and JS-style fixtures live in non-JSX languages anyway.
+                if (is_jsx and (c == '\n' or c == '\r')) {
+                    hits &= hits - 1;
+                    continue;
+                }
                 if (c == '\\') {
                     // Line continuation: \<CRLF>, \<LS>, \<PS> consume the
                     // entire line-terminator sequence. Other escapes consume
@@ -1954,7 +1962,10 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (res.end < word_off + 64) { visit &= ~@as(u64, 0) << @as(u6, @intCast(res.end - word_off)); } else { visit = 0; }
                         continue;
                     }
-                    if (Lex.regexAllowed(prev_kind) and !(language.isJsx() and prev_kind == .less_than)) { end = Lex.regexEnd(src, p); tag = .regex_literal; }
+                    // JSX: `>` and `<` precede tag content / closing tags, never a
+                    // regex. `<div>/text</div>` would otherwise lex `/text</div>`
+                    // as a regex literal and swallow the closing tag.
+                    if (Lex.regexAllowed(prev_kind) and !(language.isJsx() and (prev_kind == .less_than or prev_kind == .greater_than))) { end = Lex.regexEnd(src, p); tag = .regex_literal; }
                     else if (next1 == '=') { tag = .slash_equal; end = p + 2; }
                     else { tag = .slash; end = p + 1; }
                 },

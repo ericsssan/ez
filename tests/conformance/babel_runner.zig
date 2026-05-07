@@ -220,6 +220,7 @@ const OptionsResult = struct {
     is_jsx: bool = false, // "jsx" plugin enabled
     is_typescript: bool = false, // "typescript" plugin enabled
     is_flow: bool = false, // "flow" plugin enabled (we don't support flow → skip)
+    plugins_set: bool = false, // closest options.json's plugins win (Babel semantics)
 };
 
 /// Walk up the directory tree reading options.json files once.
@@ -275,18 +276,25 @@ fn readOptionsHierarchy(io: std.Io, allocator: std.mem.Allocator, input_path: []
                 const rb = std.mem.indexOfScalarPos(u8, content, lb + 1, ']') orelse break :blk @as(?[]const u8, null);
                 break :blk content[lb .. rb + 1];
             };
+            // Closest options.json wins — once set, don't let a parent's
+            // plugins list (e.g. `jsx/options.json`'s ["jsx", "flow"]) leak
+            // into a child fixture that explicitly declares `"plugins": []`
+            // to test the no-plugin error path.
             if (plugins_array) |pa| {
-                if (std.mem.indexOf(u8, pa, "\"jsx\"") != null) result.is_jsx = true;
-                if (std.mem.indexOf(u8, pa, "\"typescript\"") != null) result.is_typescript = true;
-                if (std.mem.indexOf(u8, pa, "\"flow\"") != null) result.is_flow = true;
-                // We don't support Flow's type syntax. If a fixture is
-                // pure-Flow (no jsx/typescript escape hatch), skip it. Many
-                // Babel JSX fixtures inherit `["jsx", "flow"]` from the parent
-                // jsx/options.json — for those, fall through and parse as JSX
-                // (Flow-specific syntax in the input will fail naturally).
-                if (result.is_flow and !result.is_jsx and !result.is_typescript) {
-                    result.has_unsupported = true;
-                    return result;
+                if (!result.plugins_set) {
+                    result.plugins_set = true;
+                    if (std.mem.indexOf(u8, pa, "\"jsx\"") != null) result.is_jsx = true;
+                    if (std.mem.indexOf(u8, pa, "\"typescript\"") != null) result.is_typescript = true;
+                    if (std.mem.indexOf(u8, pa, "\"flow\"") != null) result.is_flow = true;
+                    // We don't support Flow's type syntax. If a fixture is
+                    // pure-Flow (no jsx/typescript escape hatch), skip it.
+                    // Many Babel JSX fixtures inherit `["jsx", "flow"]` from
+                    // the parent — for those, parse as JSX (Flow-specific
+                    // syntax in the input will fail naturally).
+                    if (result.is_flow and !result.is_jsx and !result.is_typescript) {
+                        result.has_unsupported = true;
+                        return result;
+                    }
                 }
             }
 

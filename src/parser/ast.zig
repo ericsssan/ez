@@ -472,6 +472,8 @@ pub const Node = struct {
         jsx_spread_attribute,
         /// {expr} inside JSX children. lhs = expression (or none for {})
         jsx_expression_container,
+        /// {...expr} inside JSX children — JSXSpreadChild. lhs = expression
+        jsx_spread_child,
         /// Raw text between JSX tags. main_token = jsx_text token
         jsx_text_node,
         /// <>children</>. lhs = extra SubRange of children
