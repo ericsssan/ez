@@ -477,7 +477,9 @@ fn parseImpl(
         node_pos: ?js_buffer.NodeSpansResult = null,
         err: ?anyerror = null,
         fn run(self: *@This()) void {
-            const r = parent_builder.buildTraversal(self.tree, self.alloc) catch |e| {
+            // Use parallel variant: aux phases (resolved_parents + type_overrides)
+            // run on a sub-thread while this thread does mintok→preorder→dfs.
+            const r = parent_builder.buildTraversalParallel(self.tree, self.alloc) catch |e| {
                 self.err = e;
                 return;
             };

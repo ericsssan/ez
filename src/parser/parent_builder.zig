@@ -461,6 +461,220 @@ pub fn buildParentsOnly(tree: *const Ast, alloc: std.mem.Allocator) ![]u32 {
     return parents;
 }
 
+/// Compute resolved_parents and type_overrides given the parents array.
+/// Independent of mintok/preorder/dfs — runs in parallel in
+/// buildTraversalParallel().  Both are per-node loops over disjoint output
+/// arrays; the only input is parents (read-only) plus tree fields.
+pub fn buildTraversalAux(
+    tree: *const Ast,
+    alloc: std.mem.Allocator,
+    parents: []const u32,
+) !struct { resolved_parents: []u32, type_overrides: []u8 } {
+    const n = tree.nodes.len;
+    const resolved_parents = try alloc.alloc(u32, n);
+    const type_overrides = try alloc.alloc(u8, n);
+    @memset(type_overrides, 0);
+
+    if (n == 0) return .{ .resolved_parents = resolved_parents, .type_overrides = type_overrides };
+
+    const tags = tree.nodes.items(.tag);
+
+    // Resolved parents — skip grouping_expr / ts_parenthesized_type ancestors.
+    for (0..n) |i| {
+        var p = parents[i];
+        var guard: u32 = 0;
+        while (p != NONE and (tags[p] == .grouping_expr or tags[p] == .ts_parenthesized_type)) {
+            p = parents[p];
+            guard += 1;
+            if (guard > 64) { p = NONE; break; }
+        }
+        resolved_parents[i] = p;
+    }
+
+    // Type overrides — pre-bake JS adapter's `_computeNodeType` switch.
+    const node_main_tokens = tree.nodes.items(.main_token);
+    const data = tree.nodes.items(.data);
+    const tok_starts = tree.tokens.items(.start);
+    const tok_lens = tree.tokens.items(.len);
+    const source = tree.source;
+    for (0..n) |i| {
+        switch (tags[i]) {
+            .identifier => {
+                const tok = node_main_tokens[i];
+                const start = tok_starts[tok];
+                if (start < source.len and source[start] == '#') {
+                    type_overrides[i] = @intFromEnum(TypeOverride.private_identifier);
+                }
+            },
+            .method_def => {
+                const p = parents[i];
+                if (p != NONE) {
+                    const ptag = tags[p];
+                    if (ptag == .object_literal or ptag == .object_pattern) {
+                        type_overrides[i] = @intFromEnum(TypeOverride.property);
+                    }
+                }
+            },
+            .import_decl => {
+                if (data[i].lhs == .none and data[i].rhs != .none) {
+                    type_overrides[i] = @intFromEnum(TypeOverride.ts_import_equals_declaration);
+                }
+            },
+            .block_stmt => {
+                const p = parents[i];
+                if (p != NONE) {
+                    const ptag = tags[p];
+                    if (ptag == .ts_namespace_decl or ptag == .ts_module_decl) {
+                        type_overrides[i] = @intFromEnum(TypeOverride.ts_module_block);
+                    }
+                }
+            },
+            .ts_type_reference => {
+                if (data[i].rhs == .none) {
+                    const tok = node_main_tokens[i];
+                    const start = tok_starts[tok];
+                    const len = tok_lens[tok];
+                    if (start + len <= source.len) {
+                        const text = source[start .. start + len];
+                        if (computeTsTypeRefOverride(text)) |ov| {
+                            type_overrides[i] = @intFromEnum(ov);
+                        }
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+
+    return .{ .resolved_parents = resolved_parents, .type_overrides = type_overrides };
+}
+
+/// Parallel variant of buildTraversal: spawns an aux sub-thread that runs
+/// resolved_parents + type_overrides while this thread runs the
+/// mintok→preorder→dfs chain.  Both finish in parallel; total wall time
+/// drops from sum (8.84 ms on typescript.js) to max(core, aux) ≈ 6.0 ms.
+pub fn buildTraversalParallel(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResult {
+    const n = tree.nodes.len;
+    if (n == 0) return buildTraversal(tree, alloc);
+
+    // Pre-allocate parents so aux can read it without extra sync.
+    const parents = try alloc.alloc(u32, n);
+    if (tree.parents.len == n) {
+        @memcpy(parents, tree.parents[0..n]);
+    } else {
+        @memset(parents, NONE);
+        const tags  = tree.nodes.items(.tag);
+        const data  = tree.nodes.items(.data);
+        const extra = tree.extra_data;
+        for (0..n) |i| {
+            setChildParents(parents, extra, tags[i], data[i], @intCast(i));
+        }
+    }
+
+    const AuxJob = struct {
+        tree: *const Ast,
+        alloc: std.mem.Allocator,
+        parents: []const u32,
+        resolved_parents: []u32 = &.{},
+        type_overrides: []u8 = &.{},
+        err: ?anyerror = null,
+        fn run(self: *@This()) void {
+            if (buildTraversalAux(self.tree, self.alloc, self.parents)) |r| {
+                self.resolved_parents = r.resolved_parents;
+                self.type_overrides = r.type_overrides;
+            } else |e| {
+                self.err = e;
+            }
+        }
+    };
+    var aux_job: AuxJob = .{ .tree = tree, .alloc = alloc, .parents = parents };
+    const aux_thread = std.Thread.spawn(.{}, AuxJob.run, .{&aux_job}) catch null;
+
+    // Core path: postorder + mintok + preorder + dfs (parents already done).
+    const pre_order = try alloc.alloc(u32, n);
+    const post_order = try alloc.alloc(u32, n);
+    const dfs_events = try alloc.alloc(i32, n * 2);
+
+    for (1..n) |i| post_order[i - 1] = @intCast(i);
+    post_order[n - 1] = 0;
+
+    const min_tok = try alloc.alloc(u32, n);
+    const main_tokens = tree.nodes.items(.main_token);
+    @memcpy(min_tok, main_tokens[0..n]);
+
+    const counts = try alloc.alloc(u32, tree.tokens.len + 1);
+    defer alloc.free(counts);
+    @memset(counts, 0);
+
+    var max_min_tok: u32 = 0;
+    for (1..n) |i| {
+        const v = min_tok[i];
+        max_min_tok = @max(max_min_tok, v);
+        counts[v] += 1;
+        const p = parents[i];
+        if (p != NONE) min_tok[p] = @min(min_tok[p], v);
+    }
+
+    {
+        var sum: u32 = 1;
+        for (counts[0..max_min_tok + 1]) |*c| { const old = c.*; c.* = sum; sum += old; }
+        pre_order[0] = 0;
+        var ii: usize = n;
+        while (ii > 1) {
+            ii -= 1;
+            const k = min_tok[ii];
+            pre_order[counts[k]] = @intCast(ii);
+            counts[k] += 1;
+        }
+    }
+
+    {
+        const stk = try alloc.alloc(u32, n);
+        defer alloc.free(stk);
+        var stk_top: usize = 0;
+        var ei: u32 = 0;
+        for (pre_order) |node| {
+            const parent = parents[node];
+            if (parent != NONE) {
+                while (stk_top > 0 and parent != stk[stk_top - 1]) {
+                    stk_top -= 1;
+                    dfs_events[ei] = ~@as(i32, @intCast(stk[stk_top]));
+                    ei += 1;
+                }
+            }
+            dfs_events[ei] = @intCast(node);
+            ei += 1;
+            stk[stk_top] = node;
+            stk_top += 1;
+        }
+        while (stk_top > 0) {
+            stk_top -= 1;
+            dfs_events[ei] = ~@as(i32, @intCast(stk[stk_top]));
+            ei += 1;
+        }
+    }
+
+    if (aux_thread) |t| {
+        t.join();
+        if (aux_job.err) |e| return e;
+    } else {
+        // Fallback: aux runs synchronously here.
+        const r = try buildTraversalAux(tree, alloc, parents);
+        aux_job.resolved_parents = r.resolved_parents;
+        aux_job.type_overrides = r.type_overrides;
+    }
+
+    return .{
+        .parents = parents,
+        .pre_order = pre_order,
+        .post_order = post_order,
+        .dfs_events = dfs_events,
+        .min_tok = min_tok,
+        .resolved_parents = aux_job.resolved_parents,
+        .type_overrides = aux_job.type_overrides,
+    };
+}
+
 pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResult {
     const n = tree.nodes.len;
     const parents    = try alloc.alloc(u32, n);
