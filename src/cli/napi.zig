@@ -455,6 +455,31 @@ fn parseImpl(
     };
     const t_parse_end = if (trace_main) TraceTs.now() else undefined;
 
+    // Spawn buildTraversal IMMEDIATELY after parse so it overlaps with main's
+    // pre-fire chain (parents_only + depths + tag_csr) and the subsequent
+    // UTF-16 / tok_cmt / writeCfgGraph block.  Was previously spawned after
+    // parents_ready — moving the spawn ~2.5 ms earlier directly shrinks the
+    // trav_join wait.  buildTraversal needs only `tree` (final at parse_end);
+    // it doesn't touch any of main's pre-fire outputs.
+    const TraversalJob = struct {
+        tree: *const @import("../parser/ast.zig").Ast,
+        alloc: std.mem.Allocator,
+        result: parent_builder.TraversalResult = undefined,
+        err: ?anyerror = null,
+        fn run(self: *@This()) void {
+            if (parent_builder.buildTraversal(self.tree, self.alloc)) |r| {
+                self.result = r;
+            } else |e| {
+                self.err = e;
+            }
+        }
+    };
+    var trav_job: TraversalJob = .{ .tree = &tree, .alloc = alloc };
+    const trav_thread: ?std.Thread = if (use_stream_sem and stream_sem_thread != null)
+        std.Thread.spawn(.{}, TraversalJob.run, .{&trav_job}) catch null
+    else
+        null;
+
     // Streaming-sem fast path: produce JUST the parents array first (~0.3ms),
     // unblock the worker so it can run writeSemanticData, then build the
     // remaining traversal data in parallel with the worker.
@@ -477,10 +502,10 @@ fn parseImpl(
             stream_sem_ctx.node_depths_offset = off;
         } else |_| {}
         if (trace_main) t_depths_end = TraceTs.now();
-        // Note: computeTagNodeCsr deferred to AFTER parents_ready — runs in
-        // parallel with worker scope CSRs and main UTF-16/tok_cmt instead of
-        // delaying the worker by 1.9 ms on the pre-fire chain.  Worker reads
-        // tag_csr lazily via the s_tag_csr_ready atomic.
+        // computeTagNodeCsr deferred to AFTER parents_ready — runs in parallel
+        // with worker scope CSRs and main UTF-16/tok_cmt instead of delaying
+        // the worker by 1.9 ms on the pre-fire chain.  Worker reads tag_csr
+        // lazily via the s_tag_csr_ready atomic.
         s_parents_ready.store(true, .release);
         if (js_buffer.computeTagNodeCsr(buf_ptr, &backing, tree.nodes.items(.tag))) |csr| {
             stream_sem_ctx.tag_csr = csr;
@@ -489,29 +514,6 @@ fn parseImpl(
         s_tag_csr_ready.store(true, .release);
     }
     const t_parents_ready = if (trace_main) TraceTs.now() else undefined;
-
-    // Spawn buildTraversal on a dedicated thread when streaming-sem is on so
-    // it overlaps with this thread's UTF-16 / comments / jsx-gap / tok-ends
-    // work below. Two phases touch DISJOINT memory (traversal arrays vs
-    // token/comment/jsx arrays); cache contention is minimal.
-    const TraversalJob = struct {
-        tree: *const @import("../parser/ast.zig").Ast,
-        alloc: std.mem.Allocator,
-        result: parent_builder.TraversalResult = undefined,
-        err: ?anyerror = null,
-        fn run(self: *@This()) void {
-            if (parent_builder.buildTraversal(self.tree, self.alloc)) |r| {
-                self.result = r;
-            } else |e| {
-                self.err = e;
-            }
-        }
-    };
-    var trav_job: TraversalJob = .{ .tree = &tree, .alloc = alloc };
-    const trav_thread: ?std.Thread = if (use_stream_sem and stream_sem_thread != null)
-        std.Thread.spawn(.{}, TraversalJob.run, .{&trav_job}) catch null
-    else
-        null;
     var traversal: parent_builder.TraversalResult = undefined;
     if (trav_thread == null) {
         traversal = parent_builder.buildTraversal(&tree, alloc) catch |e| {
