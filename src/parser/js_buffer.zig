@@ -1613,17 +1613,47 @@ pub fn buildNodeSpans(
 ) !NodeSpansResult {
     const n: usize = node_count;
 
-    // min_tok: copy from traversal result (already bottom-up propagated there).
+    // Pre-allocate ALL output arrays upfront so the sub-thread does no
+    // allocations and can't race against this thread's own allocations.
     const min_tok = try alloc.alloc(u32, n);
+    const max_tok = try alloc.alloc(u32, n);
+    const node_starts = try alloc.alloc(u32, n);
+    const node_ends = try alloc.alloc(u32, n);
+    const sorted_by_start = try alloc.alloc(u32, n);
+
+    // Spawn a sub-thread for node_ends + max_tok memcpy.  Both depend only
+    // on parse outputs (tok_ends + end_toks); they run in parallel with
+    // this thread's min_tok memcpy + node_starts gather + modifier scan
+    // + sorted_by_start equal-start-run reverse.  Saves ~1 ms on a 1M-node
+    // file by overlapping the two random-gather loops.
+    const NodeEndsJob = struct {
+        max_tok: []u32,
+        end_toks: []const u32,
+        node_ends: []u32,
+        tok_ends: []const u32,
+        n: usize,
+        fn run(self: *@This()) void {
+            @memcpy(self.max_tok, self.end_toks[0..self.n]);
+            for (0..self.n) |i| self.node_ends[i] = self.tok_ends[self.end_toks[i]];
+        }
+    };
+    var node_ends_job: NodeEndsJob = .{
+        .max_tok = max_tok,
+        .end_toks = end_toks,
+        .node_ends = node_ends,
+        .tok_ends = tok_ends,
+        .n = n,
+    };
+    const node_ends_thread: ?std.Thread = if (n >= 4096)
+        std.Thread.spawn(.{}, NodeEndsJob.run, .{&node_ends_job}) catch null
+    else
+        null;
+    if (node_ends_thread == null) NodeEndsJob.run(&node_ends_job);
+
+    // min_tok: copy from traversal result (already bottom-up propagated there).
     @memcpy(min_tok, min_tok_in[0..n]);
 
-    // max_tok = end_toks directly — the parser builds bottom-up left-to-right, so
-    // end_toks[parent] >= end_toks[child] >= main_token[child]; no propagation needed.
-    const max_tok = try alloc.alloc(u32, n);
-    @memcpy(max_tok, end_toks[0..n]);
-
     // node_starts = tok_starts[min_tok[i]]
-    const node_starts = try alloc.alloc(u32, n);
     for (node_starts, min_tok[0..n]) |*ns, mt| ns.* = tok_starts[mt];
 
     // Adjust MethodDefinition/PropertyDefinition start to include modifier keywords
@@ -1658,11 +1688,6 @@ pub fn buildNodeSpans(
         }
     }
 
-    // node_ends = tok_ends[end_toks[i]]. No propagation needed: same bottom-up
-    // invariant as max_tok means tok_ends[end_toks[parent]] >= tok_ends[end_toks[child]].
-    const node_ends = try alloc.alloc(u32, n);
-    for (0..n) |i| node_ends[i] = tok_ends[end_toks[i]];
-
     // ── Sorted index for getNodeByRangeIndex: no sort required ──
     //
     // pre_order is a DFS traversal in document order, so node_starts
@@ -1674,7 +1699,6 @@ pub fn buildNodeSpans(
     // starts as ranges are non-overlapping), so reversing each equal-start
     // run fixes the tie-break in O(n) total — no N log N sort, no
     // per-comparison indirection.
-    const sorted_by_start = try alloc.alloc(u32, n);
     {
         var p: usize = 0;
         while (p < n) {
@@ -1689,6 +1713,9 @@ pub fn buildNodeSpans(
             p = q;
         }
     }
+
+    // Join sub-thread before returning (its outputs go in the result).
+    if (node_ends_thread) |t| t.join();
 
     return .{ .starts = node_starts, .ends = node_ends, .max_tok = max_tok, .min_tok = min_tok, .sorted_by_start = sorted_by_start };
 }
