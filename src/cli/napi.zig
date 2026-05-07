@@ -65,6 +65,11 @@ const StreamSemCtx = struct {
     /// Pre-computed tag→nodes CSR. When non-null the worker uses these offsets
     /// directly instead of running its own counting sort over node_tags.
     tag_csr: ?js_buffer.TagNodeCsrResult = null,
+    /// If set, the worker spin-waits on this atomic before reading `tag_csr`.
+    /// Used when main runs computeTagNodeCsr AFTER signaling parents_ready
+    /// (in parallel with worker scope CSRs and main UTF-16/tok_cmt) — keeps
+    /// the 1.9 ms tag_csr cost off the critical pre-fire path.
+    tag_csr_ready: ?*std.atomic.Value(bool) = null,
     actual_node_count: u32 = 0,                    // set by main after parse returns
     actual_node_tags: ?[]const @import("../parser/ast.zig").Node.Tag = null, // ditto
     semantic_data_offset: u32 = 0,                 // result: where SemanticHeader landed
@@ -140,6 +145,8 @@ fn streamSemEntry(ctx: *StreamSemCtx) void {
         ctx.node_depths_offset,
         ctx.tag_csr,
         0,
+        ctx.tag_csr_ready,
+        if (ctx.tag_csr_ready != null) &ctx.tag_csr else null,
     )) |off| {
         ctx.semantic_data_offset = off;
     } else |e| {
@@ -332,8 +339,22 @@ fn parseImpl(
         js_buffer.JsBufferAllocator.initRange(buf_ptr, source_start, source_start); // unused
     const alloc = backing.allocator();
 
+    const trace_main: bool = std.c.getenv("EZ_TRACE_MAIN") != null;
+    const TraceTs = struct {
+        fn now() std.c.timespec {
+            var ts: std.c.timespec = undefined;
+            _ = std.c.clock_gettime(.MONOTONIC, &ts);
+            return ts;
+        }
+        fn ms(a: std.c.timespec, b: std.c.timespec) f64 {
+            return @as(f64, @floatFromInt((b.sec - a.sec) * std.time.ns_per_s + (b.nsec - a.nsec))) / 1e6;
+        }
+    };
+    const t_start = if (trace_main) TraceTs.now() else undefined;
+
     // Tokenize — token arrays land in the main bump region.
     const lex_result = tokenizeMaybeFused(alloc, source, language) catch |e| return e;
+    const t_lex_end = if (trace_main) TraceTs.now() else undefined;
     var tokens = lex_result.tokens;
 
     // Streaming atomics (only used when use_stream_sem == true).
@@ -343,6 +364,7 @@ fn parseImpl(
     var s_parse_done: std.atomic.Value(bool) = .init(false);
     var s_ast_ready: std.atomic.Value(bool) = .init(false);
     var s_parents_ready: std.atomic.Value(bool) = .init(false);
+    var s_tag_csr_ready: std.atomic.Value(bool) = .init(false);
     var s_ast_view: @import("../parser/ast.zig").Ast = undefined;
     // Lex already complete — use actual token count as exact upper bound,
     // not the source.len/5 over-estimate.
@@ -365,6 +387,7 @@ fn parseImpl(
         .cap_hint = s_cap_hint,
         .globals = globals,
         .parent_indices_ready = &s_parents_ready,
+        .tag_csr_ready = &s_tag_csr_ready,
     } else undefined;
     const stream_sem_thread: ?std.Thread = if (use_stream_sem) blk: {
         const t = std.Thread.spawn(.{}, streamSemEntry, .{&stream_sem_ctx}) catch break :blk null;
@@ -404,17 +427,22 @@ fn parseImpl(
             .emit_events = true,
         }) catch |e| return e;
     };
+    const t_parse_end = if (trace_main) TraceTs.now() else undefined;
 
     // Streaming-sem fast path: produce JUST the parents array first (~0.3ms),
     // unblock the worker so it can run writeSemanticData, then build the
     // remaining traversal data in parallel with the worker.
     var stream_parents_for_worker: []u32 = &.{};
+    var t_parents_only_end: std.c.timespec = undefined;
+    var t_depths_end: std.c.timespec = undefined;
+    var t_tag_csr_end: std.c.timespec = undefined;
     if (use_stream_sem and stream_sem_thread != null) {
         stream_parents_for_worker = parent_builder.buildParentsOnly(&tree, alloc) catch |e| {
             s_parents_ready.store(true, .release);
             if (stream_sem_thread) |th| th.join();
             return e;
         };
+        if (trace_main) t_parents_only_end = TraceTs.now();
         s_ast_view = tree;
         stream_sem_ctx.actual_node_count = @intCast(tree.nodes.len);
         stream_sem_ctx.actual_node_tags = tree.nodes.items(.tag);
@@ -422,11 +450,19 @@ fn parseImpl(
         if (js_buffer.computeNodeDepths(buf_ptr, &backing, stream_parents_for_worker, @intCast(tree.nodes.len))) |off| {
             stream_sem_ctx.node_depths_offset = off;
         } else |_| {}
+        if (trace_main) t_depths_end = TraceTs.now();
+        // Note: computeTagNodeCsr deferred to AFTER parents_ready — runs in
+        // parallel with worker scope CSRs and main UTF-16/tok_cmt instead of
+        // delaying the worker by 1.9 ms on the pre-fire chain.  Worker reads
+        // tag_csr lazily via the s_tag_csr_ready atomic.
+        s_parents_ready.store(true, .release);
         if (js_buffer.computeTagNodeCsr(buf_ptr, &backing, tree.nodes.items(.tag))) |csr| {
             stream_sem_ctx.tag_csr = csr;
         } else |_| {}
-        s_parents_ready.store(true, .release);
+        if (trace_main) t_tag_csr_end = TraceTs.now();
+        s_tag_csr_ready.store(true, .release);
     }
+    const t_parents_ready = if (trace_main) TraceTs.now() else undefined;
 
     // Spawn buildTraversal on a dedicated thread when streaming-sem is on so
     // it overlaps with this thread's UTF-16 / comments / jsx-gap / tok-ends
@@ -524,7 +560,7 @@ fn parseImpl(
                         // computeLoopBodyExitability lives in semantic.zig; replicate the
                         // single call here (previously inside analyzeWithOptions).
                         semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
-                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
+                        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
                             semantic_data_offset = off;
                         } else |_| {}
                     } else |_| {}
@@ -539,7 +575,7 @@ fn parseImpl(
             // Worker spawn failed — fall back to sequential.
             if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
                 var sem = sem_result;
-                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
+                if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
                     semantic_data_offset = off;
                 } else |_| {}
             } else |_| {}
@@ -547,7 +583,7 @@ fn parseImpl(
     } else if (!stream_sem_handled) {
         if (semantic_mod.SemanticAnalyzer.analyzeWithGlobals(sem_arena_ptr.allocator(), &tree, globals)) |sem_result| {
             var sem = sem_result;
-            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
+            if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
                 semantic_data_offset = off;
             } else |_| {}
         } else |_| {}
@@ -638,6 +674,60 @@ fn parseImpl(
     const utf16_len = js_buffer.convertMultiSpansToUtf16(source, &spans);
     // After this: gap_starts_u32, gap_ends_u32, text_gap_starts_u32 contain UTF-16 positions.
 
+    // Build the token+comment merge order BEFORE joining the traversal thread.
+    // The merge depends only on token starts and comment starts (parse outputs),
+    // not on traversal data, so it overlaps with buildTraversal on trav_thread —
+    // hides ~2 ms of merge cost behind the trav_join wait.
+    //
+    // Batched algorithm: comments are sparse (~35K vs 1.3M tokens on
+    // typescript.js).  Per comment, binary-search the boundary in tok_starts
+    // and SIMD-fill an identity run of token indices in between.
+    const tok_cmt_merge_offset = blk: {
+        const tok_count_u32: u32 = @intCast(tokens.len);
+        const total = tokens.len + comment_count;
+        if (total == 0) break :blk @as(u32, 0);
+        const merged = try alloc.alloc(u32, total);
+        var ti: u32 = 0;
+        var mi: u32 = 0;
+        const Vec4 = @Vector(4, u32);
+        const step4: Vec4 = .{ 4, 4, 4, 4 };
+        var ci: u32 = 0;
+        while (ci < comment_count) : (ci += 1) {
+            const c_start = cs[ci];
+            // Binary-search the boundary in tok_starts[ti..] where tok_starts[k] > c_start.
+            var lo: u32 = ti;
+            var hi: u32 = tok_count_u32;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (tok_starts[mid] <= c_start) lo = mid + 1 else hi = mid;
+            }
+            // SIMD-fill merged[mi..mi+(lo-ti)] with [ti, ti+1, ...].
+            const run = lo - ti;
+            var v: Vec4 = .{ ti, ti + 1, ti + 2, ti + 3 };
+            var k: u32 = 0;
+            while (k + 4 <= run) : (k += 4) {
+                merged[mi + k ..][0..4].* = v;
+                v += step4;
+            }
+            while (k < run) : (k += 1) merged[mi + k] = ti + k;
+            mi += run;
+            ti = lo;
+            merged[mi] = tok_count_u32 + ci;
+            mi += 1;
+        }
+        // Trailing token run (after last comment).
+        const tail_run = tok_count_u32 - ti;
+        var v: Vec4 = .{ ti, ti + 1, ti + 2, ti + 3 };
+        var k: u32 = 0;
+        while (k + 4 <= tail_run) : (k += 4) {
+            merged[mi + k ..][0..4].* = v;
+            v += step4;
+        }
+        while (k < tail_run) : (k += 1) merged[mi + k] = ti + k;
+        break :blk js_buffer.ptrOffsetPub(buf_ptr, merged.ptr);
+    };
+    const t_pre_trav_join = if (trace_main) TraceTs.now() else undefined;
+
     // Join the traversal thread now — buildNodeSpans below needs it.
     if (trav_thread) |t| {
         t.join();
@@ -649,6 +739,7 @@ fn parseImpl(
         }
         traversal = trav_job.result;
     }
+    const t_post_trav_join = if (trace_main) TraceTs.now() else undefined;
     parent_indices_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.parents.ptr);
     pre_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.pre_order.ptr);
     post_order_offset = js_buffer.ptrOffsetPub(buf_ptr, traversal.post_order.ptr);
@@ -670,6 +761,7 @@ fn parseImpl(
         traversal.min_tok,
         node_count,
     );
+    const t_node_spans_end = if (trace_main) TraceTs.now() else undefined;
 
     // Override positions for jsx_gap_node and jsx_text_node.  Skip the full
     // node-tag scan for non-JSX languages — they can't have JSX nodes.
@@ -719,60 +811,7 @@ fn parseImpl(
     const min_tok_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.min_tok.ptr) else 0;
     const sorted_by_start_offset = if (node_count > 0) js_buffer.ptrOffsetPub(buf_ptr, node_pos.sorted_by_start.ptr) else 0;
 
-    // Merge token + comment indices in ascending order of start position.
-    // Stored as u32[token_count + comment_count]:
-    //   value < token_count → token index
-    //   value >= token_count → comment index (value - token_count)
-    //
-    // Batched algorithm: comments are sparse (~35K vs 1.3M tokens on
-    // typescript.js).  Per comment, binary-search the boundary in
-    // tok_starts and then SIMD-fill an identity run of token indices.
-    // Replaces ~1.3M scalar compare-and-branch iters with 35K bsearches
-    // + a vector-fill loop — saves ~1ms on typescript.js.
-    const tok_cmt_merge_offset = blk: {
-        const tok_count_u32: u32 = @intCast(tokens.len);
-        const total = tokens.len + comment_count;
-        if (total == 0) break :blk @as(u32, 0);
-        const merged = try alloc.alloc(u32, total);
-        var ti: u32 = 0;
-        var mi: u32 = 0;
-        const Vec4 = @Vector(4, u32);
-        const step4: Vec4 = .{ 4, 4, 4, 4 };
-        var ci: u32 = 0;
-        while (ci < comment_count) : (ci += 1) {
-            const c_start = cs[ci];
-            // Binary-search the boundary in tok_starts[ti..] where tok_starts[k] > c_start.
-            var lo: u32 = ti;
-            var hi: u32 = tok_count_u32;
-            while (lo < hi) {
-                const mid = lo + (hi - lo) / 2;
-                if (tok_starts[mid] <= c_start) lo = mid + 1 else hi = mid;
-            }
-            // SIMD-fill merged[mi..mi+(lo-ti)] with [ti, ti+1, ...].
-            const run = lo - ti;
-            var v: Vec4 = .{ ti, ti + 1, ti + 2, ti + 3 };
-            var k: u32 = 0;
-            while (k + 4 <= run) : (k += 4) {
-                merged[mi + k ..][0..4].* = v;
-                v += step4;
-            }
-            while (k < run) : (k += 1) merged[mi + k] = ti + k;
-            mi += run;
-            ti = lo;
-            merged[mi] = tok_count_u32 + ci;
-            mi += 1;
-        }
-        // Trailing token run (after last comment).
-        const tail_run = tok_count_u32 - ti;
-        var v: Vec4 = .{ ti, ti + 1, ti + 2, ti + 3 };
-        var k: u32 = 0;
-        while (k + 4 <= tail_run) : (k += 4) {
-            merged[mi + k ..][0..4].* = v;
-            v += step4;
-        }
-        while (k < tail_run) : (k += 1) merged[mi + k] = ti + k;
-        break :blk js_buffer.ptrOffsetPub(buf_ptr, merged.ptr);
-    };
+    const t_tok_cmt_end = if (trace_main) TraceTs.now() else undefined;
 
     // Write the header at offset 0.
     js_buffer.writeHeader(buf_ptr, &tree, .{
@@ -804,11 +843,32 @@ fn parseImpl(
         .type_overrides_offset = type_overrides_offset,
     });
 
+    const t_header_end = if (trace_main) TraceTs.now() else undefined;
     // Streaming-sem path: spin on `analyzer_done`, run writeCfgGraph on main
     // in parallel with the worker's other writeSem phases. After both done,
     // patch the cfg_graph_offset and semantic_data_offset header fields.
     if (use_stream_sem and stream_sem_thread != null and stream_sem_handled) {
         if (stream_sem_thread) |th| th.join();
+        const t_sem_join_end = if (trace_main) TraceTs.now() else undefined;
+        if (trace_main) {
+            std.debug.print(
+                "[main] lex={d:.2} parse={d:.2} parents_only={d:.2} depths={d:.2} tag_csr={d:.2} | utf16+misc={d:.2} trav_join={d:.2} node_spans={d:.2} tok_cmt={d:.2} header={d:.2} sem_join={d:.2} | total={d:.2}\n",
+                .{
+                    TraceTs.ms(t_start, t_lex_end),
+                    TraceTs.ms(t_lex_end, t_parse_end),
+                    TraceTs.ms(t_parse_end, t_parents_only_end),
+                    TraceTs.ms(t_parents_only_end, t_depths_end),
+                    TraceTs.ms(t_depths_end, t_tag_csr_end),
+                    TraceTs.ms(t_parents_ready, t_pre_trav_join),
+                    TraceTs.ms(t_pre_trav_join, t_post_trav_join),
+                    TraceTs.ms(t_post_trav_join, t_node_spans_end),
+                    TraceTs.ms(t_node_spans_end, t_tok_cmt_end),
+                    TraceTs.ms(t_tok_cmt_end, t_header_end),
+                    TraceTs.ms(t_header_end, t_sem_join_end),
+                    TraceTs.ms(t_start, t_sem_join_end),
+                },
+            );
+        }
         if (stream_sem_ctx.err == null and stream_sem_ctx.semantic_data_offset != 0) {
             const real_off = stream_sem_ctx.semantic_data_offset;
             const sd_off_addr: *u32 = @ptrCast(@alignCast(buf_ptr + js_buffer.semanticDataOffsetFieldOff()));
@@ -901,7 +961,7 @@ fn parseAndLintImpl(
         .build_parents = true,
     })) |sr| {
         sem_result_opt = sr;
-        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0)) |off| {
+        if (js_buffer.writeSemanticData(buf_ptr, &backing, &sem_result_opt.?, @intCast(tree.nodes.len), tree.nodes.items(.tag), traversal.parents, 0, null, 0, null, null)) |off| {
             semantic_data_offset = off;
         } else |_| {}
     } else |_| {}

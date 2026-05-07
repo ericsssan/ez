@@ -385,6 +385,12 @@ pub fn writeSemanticData(
     /// If non-zero, skip writeCfgGraph and use this offset directly. Used when
     /// main thread runs writeCfgGraph in parallel with the worker.
     precomputed_cfg_graph_offset: u32,
+    /// If non-null, the worker spin-waits on this atomic before reading
+    /// `tag_csr_late.*`. Lets main run computeTagNodeCsr in parallel with
+    /// the worker's scope CSRs and main's own UTF-16/tok_cmt phases instead
+    /// of charging the 1.9 ms cost to the pre-fire chain.
+    tag_csr_ready: ?*std.atomic.Value(bool),
+    tag_csr_late: ?*const ?TagNodeCsrResult,
 ) !u32 {
     const alloc = backing.allocator();
     const scope_count: u32 = @intCast(sem.scopes.kinds.items.len);
@@ -648,10 +654,20 @@ pub fn writeSemanticData(
 
     // ── Tag → nodes CSR (counting sort on node tags) ──────────────
     // If main precomputed it, skip — those offsets feed the header directly.
+    // If main is computing tag_csr LATE (in parallel with our scope CSRs and
+    // main's UTF-16/tok_cmt phases), spin-wait on tag_csr_ready then read
+    // tag_csr_late.*.
     var tag_starts_off: u32 = 0;
     var tag_ids_off: u32 = 0;
     var tag_slots: u32 = 0;
-    if (precomputed_tag_csr) |c| {
+    var resolved_tag_csr: ?TagNodeCsrResult = precomputed_tag_csr;
+    if (resolved_tag_csr == null) {
+        if (tag_csr_ready) |a| {
+            while (!a.load(.acquire)) std.atomic.spinLoopHint();
+            if (tag_csr_late) |ptr| resolved_tag_csr = ptr.*;
+        }
+    }
+    if (resolved_tag_csr) |c| {
         tag_starts_off = c.starts_offset;
         tag_ids_off = c.ids_offset;
         tag_slots = c.tag_count;
