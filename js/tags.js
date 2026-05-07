@@ -6,9 +6,7 @@
 // These are part of the buffer ABI — stable unless the enum changes.
 
 const T = {
-  // Program
   root: 0,
-  // Statements
   block_stmt: 1,
   empty_stmt: 2,
   expression_stmt: 3,
@@ -34,7 +32,6 @@ const T = {
   catch_clause: 23,
   debugger_stmt: 24,
   with_stmt: 25,
-  // Declarations
   var_decl: 26,
   let_decl: 27,
   const_decl: 28,
@@ -44,7 +41,6 @@ const T = {
   generator_fn_decl: 32,
   async_generator_fn_decl: 33,
   class_decl: 34,
-  // Module
   import_decl: 35,
   import_specifier: 36,
   import_default_specifier: 37,
@@ -55,7 +51,6 @@ const T = {
   export_default_class: 42,
   export_all: 43,
   export_specifier: 44,
-  // Literals / Primitives
   identifier: 45,
   number_literal: 46,
   string_literal: 47,
@@ -65,7 +60,6 @@ const T = {
   bigint_literal: 51,
   this_expr: 52,
   super_expr: 53,
-  // Compound expressions
   array_literal: 54,
   object_literal: 55,
   property: 56,
@@ -75,7 +69,6 @@ const T = {
   template_literal: 60,
   tagged_template: 61,
   template_element: 62,
-  // Function / Class expressions
   fn_expr: 63,
   async_fn_expr: 64,
   generator_fn_expr: 65,
@@ -83,7 +76,6 @@ const T = {
   class_expr: 67,
   arrow_fn: 68,
   async_arrow_fn: 69,
-  // Unary expressions
   unary_plus: 70,
   unary_minus: 71,
   bitwise_not: 72,
@@ -98,14 +90,12 @@ const T = {
   await_expr: 81,
   yield_expr: 82,
   yield_delegate: 83,
-  // Binary arithmetic
   add: 84,
   subtract: 85,
   multiply: 86,
   divide: 87,
   modulo: 88,
   exponentiate: 89,
-  // Binary comparison
   equal: 90,
   not_equal: 91,
   strict_equal: 92,
@@ -116,18 +106,15 @@ const T = {
   greater_equal: 97,
   instanceof_expr: 98,
   in_expr: 99,
-  // Binary bitwise
   bitwise_and: 100,
   bitwise_or: 101,
   bitwise_xor: 102,
   shift_left: 103,
   shift_right: 104,
   unsigned_shift_right: 105,
-  // Binary logical
   logical_and: 106,
   logical_or: 107,
   nullish_coalesce: 108,
-  // Assignment
   assign: 109,
   add_assign: 110,
   sub_assign: 111,
@@ -144,7 +131,6 @@ const T = {
   logical_and_assign: 122,
   logical_or_assign: 123,
   nullish_assign: 124,
-  // Other expressions
   conditional: 125,
   call_expr: 126,
   new_expr: 127,
@@ -158,12 +144,10 @@ const T = {
   import_expr: 135,
   import_meta: 136,
   new_target: 137,
-  // Patterns
   array_pattern: 138,
   object_pattern: 139,
   assignment_pattern: 140,
   rest_element: 141,
-  // Class members
   method_def: 142,
   property_def: 143,
   static_block: 144,
@@ -175,14 +159,12 @@ const T = {
   computed_getter_def: 150,
   computed_setter_def: 151,
   formal_parameters: 152,
-  // TypeScript declarations
   ts_interface_decl: 153,
   ts_type_alias_decl: 154,
   ts_enum_decl: 155,
   ts_enum_member: 156,
   ts_namespace_decl: 157,
   ts_module_decl: 158,
-  // TypeScript types
   ts_type_annotation: 159,
   ts_type_reference: 160,
   ts_type_predicate: 161,
@@ -202,13 +184,11 @@ const T = {
   ts_template_literal_type: 175,
   ts_type_query: 176,
   ts_parenthesized_type: 177,
-  // TypeScript expressions
   ts_as_expr: 178,
   ts_satisfies_expr: 179,
   ts_non_null_expr: 180,
   ts_type_assertion: 181,
   ts_parameter_property: 182,
-  // JSX
   jsx_element: 183,
   jsx_self_closing: 184,
   jsx_opening_element: 185,
@@ -216,31 +196,26 @@ const T = {
   jsx_attribute: 187,
   jsx_spread_attribute: 188,
   jsx_expression_container: 189,
-  jsx_text_node: 190,
-  jsx_fragment: 191,
-  // Special
-  error_node: 192,
-  // Added at end to preserve existing ordinals for ABI compatibility
-  export_named_from: 193,
-  property_ident: 194,
-  property_literal: 195,
-  class_body: 196,
-  // Added at end to preserve existing ordinals for ABI compatibility
-  jsx_empty_expr: 197,
-  jsx_identifier: 198,
-  jsx_member_expr: 199,
-  jsx_namespaced_name: 200,
-  jsx_gap_node: 201,
-  // TypeScript interface member node tags (added at end to preserve ABI)
-  ts_call_signature: 202,
-  ts_construct_signature: 203,
-  ts_method_signature: 204,
-  ts_property_signature: 205,
-  ts_index_signature: 206,
-  // Decorator node tag
-  decorator: 207,
-  // TSDeclareFunction (added at end to preserve existing ordinals)
-  ts_declare_function: 208,
+  jsx_spread_child: 190,
+  jsx_text_node: 191,
+  jsx_fragment: 192,
+  error_node: 193,
+  export_named_from: 194,
+  property_ident: 195,
+  property_literal: 196,
+  class_body: 197,
+  jsx_empty_expr: 198,
+  jsx_identifier: 199,
+  jsx_member_expr: 200,
+  jsx_namespaced_name: 201,
+  jsx_gap_node: 202,
+  ts_call_signature: 203,
+  ts_construct_signature: 204,
+  ts_method_signature: 205,
+  ts_property_signature: 206,
+  ts_index_signature: 207,
+  decorator: 208,
+  ts_declare_function: 209,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.
