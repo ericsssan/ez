@@ -30,8 +30,11 @@ const _isMain = require.main === module;
 if (!_isMain) {
   module.exports = {
     get runEz() { return runEz; },
+    get runEzOnAst() { return runEzOnAst; },
+    get parseEzOnce() { return parseEzOnce; },
     get runEslint() { return runEslint; },
     get runOxlint() { return runOxlint; },
+    get runOxlintBatch() { return runOxlintBatch; },
   };
 }
 
@@ -121,6 +124,93 @@ async function runEz(src, ruleId, filename) {
   const diags = await lintSource(src, cfg);
   const ms = performance.now() - t0;
   return { ms, diags: diags.filter(d => d.ruleId === ruleId).map(d => d.line).sort((a, b) => a - b) };
+}
+
+// ── parse-reuse helpers (perf_hunt amortizes parse across rules) ────
+//
+// `parseEzOnce(src, filename)` parses the source ONCE and returns a context
+// for reused per-rule lint runs.  `runEzOnAst(ctx, ruleId)` runs only the
+// rule against the cached AST and times JUST the rule-checking work.
+//
+// Caveat: this trims away parse cost, so per-rule numbers are NOT
+// directly comparable to `runEz()` numbers (which include parse).  Use the
+// batched mode for cross-rule ranking on `--all-rules`; use `runEz()` when
+// each rule's "cold-start" cost matters (e.g. editor invocation modeling).
+const { parseSource, getNativeRules, buildNativeConfig, getTagNames, lintSourceNative } =
+  require(path.join(ROOT, "js/index.js"));
+const { runPlugins } = require(path.join(ROOT, "js/eslint-runner.js"));
+const { loadCoreRules, loadPlugin } = require(path.join(ROOT, "js/load-plugin.js"));
+
+const _coreRulesAll = loadCoreRules({ only: undefined });
+const _coreRulesByName = new Map(_coreRulesAll.map(d => [d.meta?.name, d]).filter(([n]) => n));
+const _nativeRules = getNativeRules();
+
+function parseEzOnce(src, filename) {
+  const ast = parseSource(src, { filename });
+  return { src, filename, ast, tagNames: getTagNames() };
+}
+
+/**
+ * Run ALL `ruleIds` against the cached AST in a SINGLE `runPlugins` call —
+ * matches what real ez lint does in a real lint pass.  Returns total wall
+ * time and the diagnostic-line lists per rule.  Use this to benchmark
+ * "real" ez throughput vs oxlint's batched throughput.
+ */
+function runEzAllOnAst(ctx, ruleIds) {
+  const descs = [];
+  const nativeRules = {};
+  for (const id of ruleIds) {
+    const desc = _coreRulesByName.get(id);
+    if (!desc) continue;
+    if (_nativeRules.has(id)) {
+      nativeRules[id] = _nativeRules.get(id).defaultSeverity;
+    } else {
+      descs.push(desc);
+    }
+  }
+  const t0 = performance.now();
+  let nativeDiags = [];
+  if (Object.keys(nativeRules).length > 0) {
+    const cfg = buildNativeConfig({ rules: nativeRules });
+    nativeDiags = lintSourceNative(ctx.src, { filename: ctx.filename, config: cfg });
+  }
+  let reports = [];
+  if (descs.length > 0) {
+    reports = runPlugins(ctx.ast, descs, {
+      tagNames: ctx.tagNames,
+      filename: ctx.filename,
+      ruleConfig: {},
+    });
+  }
+  const ms = performance.now() - t0;
+  return { ms, totalDiags: nativeDiags.length + reports.length };
+}
+
+if (!_isMain) module.exports.runEzAllOnAst = runEzAllOnAst;
+
+function runEzOnAst(ctx, ruleId) {
+  const desc = _coreRulesByName.get(ruleId);
+  if (!desc) return { ms: 0, diags: [], skipped: "unknown-core-rule" };
+  const isNative = _nativeRules.has(ruleId);
+  const t0 = performance.now();
+  let nativeDiags = [];
+  let reports = [];
+  if (isNative) {
+    const info = _nativeRules.get(ruleId);
+    const cfg = buildNativeConfig({ rules: { [ruleId]: info.defaultSeverity } });
+    nativeDiags = lintSourceNative(ctx.src, { filename: ctx.filename, config: cfg });
+  } else {
+    reports = runPlugins(ctx.ast, [desc], {
+      tagNames: ctx.tagNames,
+      filename: ctx.filename,
+      ruleConfig: {},
+    });
+  }
+  const ms = performance.now() - t0;
+  const lines = isNative
+    ? nativeDiags.filter(d => d.rule_id === ruleId || d.ruleId === ruleId).map(d => d.line || d.startLine).sort((a, b) => a - b)
+    : reports.filter(r => r.ruleId === ruleId).map(r => r.line).sort((a, b) => a - b);
+  return { ms, diags: lines };
 }
 
 // ── ESLint ───────────────────────────────────────────────────────────
@@ -227,6 +317,43 @@ function runOxlint(filePath, ruleId, opts = {}) {
   } catch {}
   return { ms, diags: lines.sort((a, b) => a - b) };
 }
+
+// ── oxlint batched ───────────────────────────────────────────────────
+//
+// Runs oxlint ONCE with multiple `-D` flags so all rules in `ruleIds` are
+// enabled in a single subprocess.  Returns { totalMs, perRuleMs } where
+// perRuleMs ≈ (totalMs - estimated_baseline) / known.length.
+//
+// Caveats:
+//   - Per-rule numbers are amortized — useful for cross-rule ranking,
+//     not for measuring absolute single-rule cost.
+//   - Unknown-to-oxlint rules are filtered out; the divisor uses only the
+//     rules oxlint actually ran.
+//   - Caller should subtract `runOxlintBaseline(filePath)` to discount
+//     subprocess startup + parse from `totalMs` for sharper per-rule
+//     numbers.
+function runOxlintBatch(filePath, ruleIds) {
+  const known = ruleIds.filter(id => oxlintRules().has(id));
+  if (known.length === 0) return { totalMs: 0, perRuleMs: 0, knownCount: 0 };
+  const args = [OXLINT_BIN, "-A", "all"];
+  for (const id of known) { args.push("-D"); args.push(id); }
+  args.push("--silent", filePath);
+  const t0 = performance.now();
+  Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
+  const totalMs = performance.now() - t0;
+  return { totalMs, perRuleMs: totalMs / known.length, knownCount: known.length };
+}
+
+// Baseline: oxlint with NO rules enabled — measures subprocess startup +
+// parse cost so callers can subtract it from batch totals.
+function runOxlintBaseline(filePath) {
+  const args = [OXLINT_BIN, "-A", "all", "--silent", filePath];
+  const t0 = performance.now();
+  Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
+  return performance.now() - t0;
+}
+
+if (!_isMain) module.exports.runOxlintBaseline = runOxlintBaseline;
 
 // ── stats ────────────────────────────────────────────────────────────
 function median(arr) {
