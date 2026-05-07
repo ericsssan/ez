@@ -93,6 +93,26 @@ function _ffiBufPtr(ast) {
   return p;
 }
 
+// Append `source` onto `target` in chunks of CHUNK so we stay under JSC's
+// Function.prototype.apply argument-count limit (~65K).  Falls back to a
+// single push.apply on small sources (the common case).  Used by the
+// variable-merge paths in `_buildScopeVarsAndSet` and
+// `_computeDeclaredVariables`, where the canonical sibling owns all refs
+// and can be arbitrarily large on bundled JS like typescript.js.
+const _APPEND_CHUNK = 8192;
+const _appendChunked = function(target, source) {
+  const n = source.length;
+  if (n === 0) return;
+  if (n <= _APPEND_CHUNK) {
+    Array.prototype.push.apply(target, source);
+    return;
+  }
+  for (let i = 0; i < n; i += _APPEND_CHUNK) {
+    const end = i + _APPEND_CHUNK < n ? i + _APPEND_CHUNK : n;
+    Array.prototype.push.apply(target, source.slice(i, end));
+  }
+};
+
 // ── FFI selector dispatcher ──────────────────────────────────────────────
 //
 // Delegates entirely to js/ffi-dispatch.js — that module owns the dylib binding,
@@ -2276,9 +2296,34 @@ class SourceCode {
       const v = this._buildVariable(rawSymId);
       const existing = set.get(v.name);
       if (existing) {
-        existing.identifiers.push(...v.identifiers);
-        existing.defs.push(...v.defs);
-        existing.references.push(...v.references);
+        // After the Zig analyzer's `sym_to_canonical` routing, the symbol
+        // with the LOWEST sym_id among (scope, name) siblings owns ALL
+        // refs.  Keep the canonical (lowest sym_id) as the entry, but
+        // merge defs + identifiers from siblings so rules like
+        // `no-redeclare` can see all declaration sites.  We deliberately
+        // skip merging `references` — refs are already on the canonical
+        // from Zig, and pushing the canonical's giant refs array onto a
+        // sibling target overflows JSC's Function.apply argument limit
+        // on bundled JS like typescript.js.
+        let canonical = existing;
+        let sibling = v;
+        if (rawSymId < existing._symId) {
+          // v is the canonical; swap roles.
+          canonical = v;
+          sibling = existing;
+          const idx = variables.indexOf(existing);
+          if (idx >= 0) variables[idx] = v;
+          set.set(v.name, v);
+        }
+        // Guard against double-merge if both this path and
+        // `_computeDeclaredVariables` enrich the same canonical.
+        if (!canonical._sibMerged) canonical._sibMerged = new Set();
+        if (!canonical._sibMerged.has(sibling._symId)) {
+          canonical._sibMerged.add(sibling._symId);
+          Array.prototype.push.apply(canonical.identifiers, sibling.identifiers);
+          Array.prototype.push.apply(canonical.defs, sibling.defs);
+        }
+        continue;
       } else {
         set.set(v.name, v);
         variables.push(v);
@@ -3206,14 +3251,26 @@ class SourceCode {
           const key = v.name + '\0' + defType;
           const ex = mergeSet.get(key);
           if (ex) {
-            // push.apply takes the source array directly without spread
-            // unpacking — JIT keeps a fast path for it on dense arrays
-            // even when source is large.  push-spread for variables with
-            // thousands of refs (e.g. globals) was 67 % of profile time.
-            const _ap = Array.prototype.push;
-            _ap.apply(ex.identifiers, v.identifiers);
-            _ap.apply(ex.defs,        v.defs);
-            _ap.apply(ex.references,  v.references);
+            // After Zig's sym_to_canonical routing, the sym_id with the
+            // LOWEST index among (scope, name) siblings is canonical and
+            // owns all refs.  Keep the canonical and merge sibling's
+            // defs + identifiers (NOT references — those would cascade
+            // and overflow JSC's Function.apply args limit).
+            let canonical = ex, sibling = v;
+            if (i < ex._symId) {
+              canonical = v;
+              sibling = ex;
+              const idx = mergeVars.indexOf(ex);
+              if (idx >= 0) mergeVars[idx] = v;
+              mergeSet.set(key, v);
+            }
+            if (!canonical._sibMerged) canonical._sibMerged = new Set();
+            if (!canonical._sibMerged.has(sibling._symId)) {
+              canonical._sibMerged.add(sibling._symId);
+              Array.prototype.push.apply(canonical.identifiers, sibling.identifiers);
+              Array.prototype.push.apply(canonical.defs, sibling.defs);
+            }
+            continue;
           } else {
             mergeSet.set(key, v);
             mergeVars.push(v);

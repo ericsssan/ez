@@ -476,6 +476,22 @@ fn resolveFullImpl(
     var hoist_map = std.HashMapUnmanaged(u64, SymbolId, NameHashCtx, 80){};
     try hoist_map.ensureTotalCapacity(sa, @intCast(est_syms / 4));
 
+    // Sibling-canonical map: when `var x` is redeclared in the same scope,
+    // ESLint scope analysis treats all such declarations as ONE Variable.
+    // The analyzer creates separate symbols (for distinct decl_node tracking),
+    // but every reference to `x` should resolve to the FIRST/canonical symbol
+    // so refs are not split across siblings.  Without this routing, the JS
+    // runner has to merge sibling Variables on every getDeclaredVariables
+    // call (see eslint-runner.js `_buildScopeVarsAndSet` and
+    // `_computeDeclaredVariables`), which on bundled JS like typescript.js
+    // accumulates so many array entries that `Array.prototype.push.apply`
+    // overflows JSC's argument limit and produces phantom plugin errors.
+    //
+    // sym_to_canonical[sym_id] = canonical symbol for that sym_id (defaults
+    // to sym_id itself; only set when a sibling is detected at declare time).
+    var sym_to_canonical = std.ArrayListUnmanaged(SymbolId){ .items = &.{}, .capacity = 0 };
+    try sym_to_canonical.ensureTotalCapacity(sa, @intCast(est_syms));
+
     // Direct-mapped L1 cache in front of scope_map.  Absorbs repeated lookups
     // for the same identifier (common in any function body) without hitting the
     // HashMap.  512 entries × 12 bytes = 6 KB — stays hot in L1D.
@@ -827,10 +843,18 @@ fn resolveFullImpl(
             const flags = symbol_mod.flagsFromBindingKind(kind);
             const decl_node: NodeIndex = @enumFromInt(e.node);
             const sym_id = try symbols.addSymbol(name, flags, kind, scope_id, decl_node);
+            // Default canonical = self.  Below we overwrite to the first sibling
+            // for var/function_decl redeclarations.
+            try sym_to_canonical.append(sa, sym_id);
             if (kind == .@"var" or kind == .function_decl) {
                 const hk = name_hash ^ (@as(u64, scope_id.toInt()) *% 0x9e3779b97f4a7c15);
                 const ghop = try hoist_map.getOrPut(sa, hk);
-                if (!ghop.found_existing) ghop.value_ptr.* = sym_id;
+                if (!ghop.found_existing) {
+                    ghop.value_ptr.* = sym_id;
+                } else {
+                    // Sibling redeclaration — route refs to the first one.
+                    sym_to_canonical.items[sym_id.toInt()] = ghop.value_ptr.*;
+                }
             }
             const gop = try scope_map.getOrPut(sa, name_hash);
             const prev: ?SymbolId = if (gop.found_existing) gop.value_ptr.* else null;
@@ -886,10 +910,11 @@ fn resolveFullImpl(
                 break :blk result;
             };
             if (sym_id) |sid| {
-                references.resolve(ref_id, sid);
-                if (ref_kind.isRead()) symbols.markRead(sid);
-                if (ref_kind.isWrite() and ref_kind != .write_init) symbols.markWritten(sid);
-                if (ref_kind == .type_of) symbols.markTypeOf(sid);
+                const csid = sym_to_canonical.items[sid.toInt()];
+                references.resolve(ref_id, csid);
+                if (ref_kind.isRead()) symbols.markRead(csid);
+                if (ref_kind.isWrite() and ref_kind != .write_init) symbols.markWritten(csid);
+                if (ref_kind == .type_of) symbols.markTypeOf(csid);
             } else {
                 // Unresolved → retry pass handles forward refs (hoisted var/function).
                 try unresolved_refs.append(sa, .{ .ref_id = ref_id, .name_hash = name_hash });
@@ -1174,6 +1199,7 @@ fn resolveFullImpl(
             // Skip duplicate names (same hash) — first one wins.
             if (global_lookup.contains(h)) continue;
             const sym_id = try symbols.addSymbol(name, implicit_flags, .implicit_global, global_scope_id, ast_mod.NodeIndex.none);
+            try sym_to_canonical.append(sa, sym_id);
             global_lookup.putAssumeCapacity(h, sym_id);
         }
 
