@@ -473,13 +473,28 @@ fn parseImpl(
         tok_starts: []u32 = &.{},
         tok_ends_ptr: *[]u32,
         utf16_done: ?*std.atomic.Value(bool) = null,
+        // tag_csr handoff: aux sub-thread inside buildTraversalParallel runs
+        // computeTagNodeCsr in parallel with main's pre-fire/utf16, signals
+        // tag_csr_ready early so worker doesn't spin.
+        buf_ptr: [*]u8 = undefined,
+        backing: ?*js_buffer.JsBufferAllocator = null,
+        tag_csr_out: ?*?js_buffer.TagNodeCsrResult = null,
+        tag_csr_ready: ?*std.atomic.Value(bool) = null,
         result: parent_builder.TraversalResult = undefined,
         node_pos: ?js_buffer.NodeSpansResult = null,
         err: ?anyerror = null,
         fn run(self: *@This()) void {
-            // Use parallel variant: aux phases (resolved_parents + type_overrides)
-            // run on a sub-thread while this thread does mintok→preorder→dfs.
-            const r = parent_builder.buildTraversalParallel(self.tree, self.alloc) catch |e| {
+            // Parallel buildTraversal: aux sub-thread runs tag_csr (early
+            // signal), then resolved_parents + type_overrides while this
+            // thread runs mintok→preorder→dfs.
+            const r = parent_builder.buildTraversalParallel(
+                self.tree,
+                self.alloc,
+                if (self.tag_csr_ready != null) self.buf_ptr else null,
+                self.backing,
+                self.tag_csr_out,
+                self.tag_csr_ready,
+            ) catch |e| {
                 self.err = e;
                 return;
             };
@@ -513,6 +528,10 @@ fn parseImpl(
         .tok_starts = tokens.slice().items(.start),
         .tok_ends_ptr = &trav_tok_ends_slot,
         .utf16_done = if (use_stream_sem and stream_sem_thread != null) &s_utf16_done else null,
+        .buf_ptr = buf_ptr,
+        .backing = if (use_stream_sem and stream_sem_thread != null) &backing else null,
+        .tag_csr_out = if (use_stream_sem and stream_sem_thread != null) &stream_sem_ctx.tag_csr else null,
+        .tag_csr_ready = if (use_stream_sem and stream_sem_thread != null) &s_tag_csr_ready else null,
     };
     const trav_thread: ?std.Thread = if (use_stream_sem and stream_sem_thread != null)
         std.Thread.spawn(.{}, TraversalJob.run, .{&trav_job}) catch null
@@ -541,16 +560,14 @@ fn parseImpl(
             stream_sem_ctx.node_depths_offset = off;
         } else |_| {}
         if (trace_main) t_depths_end = TraceTs.now();
-        // computeTagNodeCsr deferred to AFTER parents_ready — runs in parallel
-        // with worker scope CSRs and main UTF-16/tok_cmt instead of delaying
-        // the worker by 1.9 ms on the pre-fire chain.  Worker reads tag_csr
-        // lazily via the s_tag_csr_ready atomic.
+        // tag_csr now runs on trav_thread's aux sub-thread (in parallel with
+        // main's UTF-16 / tok_cmt / writeCfgGraph and worker scope CSRs).
+        // Main signals parents_ready immediately after parents_only + depths
+        // — worker starts ~1.9 ms sooner than when tag_csr was here.  The aux
+        // sub-thread signals s_tag_csr_ready when done; worker spin-waits on
+        // it inside writeSemanticData.
         s_parents_ready.store(true, .release);
-        if (js_buffer.computeTagNodeCsr(buf_ptr, &backing, tree.nodes.items(.tag))) |csr| {
-            stream_sem_ctx.tag_csr = csr;
-        } else |_| {}
-        if (trace_main) t_tag_csr_end = TraceTs.now();
-        s_tag_csr_ready.store(true, .release);
+        if (trace_main) t_tag_csr_end = t_depths_end;
     }
     const t_parents_ready = if (trace_main) TraceTs.now() else undefined;
     var traversal: parent_builder.TraversalResult = undefined;
