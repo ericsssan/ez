@@ -1254,10 +1254,6 @@ class SourceCode {
       this._tokenObjCache[i + 1] = null;
     }
     const ls = ast._lineStarts();
-    const startLine = _findLine(ls, start);
-    const startCol = start - ls[startLine - 1];
-    const endLine = _findLine(ls, end);
-    const endCol = end - ls[endLine - 1];
     const rawType = _tokType(ast._tokTags[i]);
     // If this token is JSX text content (main token of a non-gap jsx_text_node),
     // report type "JSXText" so spacing/punctuation rules don't flag it.
@@ -1269,12 +1265,31 @@ class SourceCode {
       type: isJsxText ? 'JSXText' : isModifierKw ? 'Keyword' : (src.charCodeAt(start) === 35 /* # */ ? 'PrivateIdentifier' : rawType),
       value,
       range: [start, end],
-      loc: {
-        start: { line: startLine, column: startCol },
-        end: { line: endLine, column: endCol },
+      // Lazy `loc` — many rules walk tokens for type/value/range checks
+      // without ever reading line/column. Computing two _findLine calls
+      // and allocating four nested objects per token costs ~6% of CPU on
+      // jsdoc/check-tag-names. Defer until first access. _loc/_ls/_start/
+      // _end are pre-declared in the literal so every token shares the
+      // same hidden class.
+      _loc: null,
+      _ls: ls, _start: start, _end: end,
+      get loc() {
+        if (this._loc !== null) return this._loc;
+        const sl = _findLine(this._ls, this._start);
+        const el = _findLine(this._ls, this._end);
+        this._loc = {
+          start: { line: sl, column: this._start - this._ls[sl - 1] },
+          end:   { line: el, column: this._end   - this._ls[el - 1] },
+        };
+        return this._loc;
       },
       // Allow getTokenBefore/After to use this as a position anchor
       mainToken: i,
+      // Position in the merged tokens-and-comments array, set when
+      // `_getTokensAndCommentsMerged` materializes it. Lets
+      // getTokenBefore/After short-circuit the binary search for the
+      // common `token = getTokenBefore(token, ...)` walk pattern.
+      _mergedIdx: undefined,
     };
     this._tokenObjCache[i] = tok;
     return tok;
@@ -1618,6 +1633,15 @@ class SourceCode {
       // Memoize the hot default path (no filter, no skip). Cleared in reset().
       // lintSource runs many rules on one SourceCode; jsdoc rules hit the same positions.
       if (!fn && skip === 0) {
+        // Fast path: when `node` is a token/comment we already produced
+        // (it carries `_mergedIdx`), the answer is just merged[idx-1].
+        // Skips the binary search for the common
+        // `token = getTokenBefore(token, {includeComments: true})`
+        // walking pattern in jsdoccomment / unicorn rules.
+        if (node._mergedIdx !== undefined) {
+          const merged = this._getTokensAndCommentsMerged();
+          return node._mergedIdx > 0 ? merged[node._mergedIdx - 1] : null;
+        }
         let cache = this._tokBeforeIcCache;
         if (!cache) cache = this._tokBeforeIcCache = new Map();
         if (cache.has(nodeStart)) return cache.get(nodeStart);
@@ -1925,10 +1949,13 @@ class SourceCode {
           if (tokTags[v] === 131) continue; // skip EOF
           const t = this._makeToken(v);
           if (t === null) continue; // shadowed (name part of #ident)
+          t._mergedIdx = mi;
           merged[mi++] = t;
         } else {
           const ci = v - tokenCount;
-          merged[mi++] = comments[rawCommentOffset + ci];
+          const cm = comments[rawCommentOffset + ci];
+          cm._mergedIdx = mi;
+          merged[mi++] = cm;
         }
       }
       merged.length = mi;
