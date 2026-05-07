@@ -782,6 +782,23 @@ pub fn stringEndBM(
     open: u32,
     n: u32,
 ) u32 {
+    return stringEndBMOpt(src, structural_bm, newline_bm, open, n, false);
+}
+
+/// Same as `stringEndBM` but terminates on `<` when `is_jsx` is true.
+/// Required for JSX text content where an apostrophe in a word like
+/// `I'm` would otherwise consume everything up to EOF — e.g. `<>I'm</>`
+/// must not be tokenized with a single 5-byte string `'m</>` ending at EOF.
+/// JSX attribute strings legally allow `<`, but in practice almost never
+/// contain it; terminating on `<` lets the malformed-text path recover.
+pub fn stringEndBMOpt(
+    src: []const u8,
+    structural_bm: []const u64,
+    newline_bm: []const u64,
+    open: u32,
+    n: u32,
+    is_jsx: bool,
+) u32 {
     const quote = src[open];
     var i: u32 = open + 1;
     while (i < n) {
@@ -801,6 +818,7 @@ pub fn stringEndBM(
                 if (p >= n) return n;
                 const c = src[p];
                 if (c == quote) return p + 1;
+                if (is_jsx and c == '<') return p;
                 if (c == '\\') {
                     // Line continuation: \<CRLF>, \<LS>, \<PS> consume the
                     // entire line-terminator sequence. Other escapes consume
@@ -1940,7 +1958,7 @@ pub fn tokenizeWithBufAndBitmaps(
                     else if (next1 == '=') { tag = .slash_equal; end = p + 2; }
                     else { tag = .slash; end = p + 1; }
                 },
-                '"', '\'' => { end = stringEndBM(src, bm.structural, bm.newline, p, n); tag = .string_literal; },
+                '"', '\'' => { end = stringEndBMOpt(src, bm.structural, bm.newline, p, n, language.isJsx()); tag = .string_literal; },
                 '`' => {
                     const res = Lex.templateChunkEnd(src, p);
                     end = res.end;
