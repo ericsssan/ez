@@ -35,6 +35,7 @@ if (!_isMain) {
     get runEslint() { return runEslint; },
     get runOxlint() { return runOxlint; },
     get runOxlintBatch() { return runOxlintBatch; },
+    get oxlintRules() { return oxlintRules; },
   };
 }
 
@@ -141,8 +142,36 @@ const { parseSource, getNativeRules, buildNativeConfig, getTagNames, lintSourceN
 const { runPlugins } = require(path.join(ROOT, "js/eslint-runner.js"));
 const { loadCoreRules, loadPlugin } = require(path.join(ROOT, "js/load-plugin.js"));
 
-const _coreRulesAll = loadCoreRules({ only: undefined });
-const _coreRulesByName = new Map(_coreRulesAll.map(d => [d.meta?.name, d]).filter(([n]) => n));
+// Rule registry: core (incl. deprecated) + every plugin we have locally.
+// Keyed by the full ez rule id (e.g. "no-unused-vars" or
+// "eslint-plugin-unicorn/no-array-for-each").  oxlint's `-D` argument and
+// `--rules` table use the SHORT name (the segment after the last "/"), so
+// `runOxlint*` strip the prefix before looking up / passing the flag.
+const _PLUGIN_PKGS = [
+  "@typescript-eslint/eslint-plugin",
+  "eslint-plugin-import",
+  "eslint-plugin-unicorn",
+  "eslint-plugin-react",
+  "eslint-plugin-react-hooks",
+  "eslint-plugin-n",
+  "eslint-plugin-promise",
+  "eslint-plugin-jsdoc",
+  "eslint-plugin-es-x",
+  "eslint-plugin-sonarjs",
+];
+function _shortName(id) {
+  const i = id.lastIndexOf("/");
+  return i < 0 ? id : id.slice(i + 1);
+}
+const _coreRulesAll = loadCoreRules({ only: undefined, includeDeprecated: true });
+const _allRulesByName = new Map(_coreRulesAll.map(d => [d.meta?.name, d]).filter(([n]) => n));
+for (const pkg of _PLUGIN_PKGS) {
+  let rules;
+  try { rules = loadPlugin(pkg); } catch { continue; }
+  for (const r of rules) if (r.meta?.name) _allRulesByName.set(r.meta.name, r);
+}
+// Back-compat alias — earlier callers used this name.
+const _coreRulesByName = _allRulesByName;
 const _nativeRules = getNativeRules();
 
 function parseEzOnce(src, filename) {
@@ -247,6 +276,115 @@ function runEslint(src, ruleId, filename) {
   return { ms, diags: diags.filter(d => d.ruleId === ruleId).map(d => d.line).sort((a, b) => a - b) };
 }
 
+// ── ESLint batched (oracle for diagnostic counts) ────────────────────
+//
+// Loads ESLint core + every plugin in PLUGIN_PKGS_FOR_ESLINT and runs
+// ALL `ruleIds` in one Linter.verify call. Type-aware @typescript-eslint
+// rules are pruned upfront because they require a configured TS program
+// which we don't set up; rules that fail to load on a probe source are
+// also dropped so a single bad rule doesn't poison the whole verify.
+//
+// Returns { ms, perRule: Map<ruleId, count>, total, droppedCount }.
+const _ESLINT_PLUGIN_ALIAS = {
+  "@typescript-eslint/eslint-plugin": "@typescript-eslint",
+  "eslint-plugin-import":             "import",
+  "eslint-plugin-unicorn":            "unicorn",
+  "eslint-plugin-react":              "react",
+  "eslint-plugin-react-hooks":        "react-hooks",
+  "eslint-plugin-n":                  "n",
+  "eslint-plugin-promise":            "promise",
+  "eslint-plugin-jsdoc":              "jsdoc",
+  "eslint-plugin-es-x":               "es-x",
+  "eslint-plugin-sonarjs":            "sonarjs",
+};
+
+let _eslintPlugins = null;
+let _eslintCoreNames = null;
+function _loadEslintPlugins() {
+  if (_eslintPlugins !== null) return { plugins: _eslintPlugins, coreNames: _eslintCoreNames };
+  _eslintPlugins = {};
+  _eslintCoreNames = new Set();
+  // Track core rule names so we know whether a bare ruleId is a core rule.
+  for (const r of _coreRulesAll) if (r.meta?.name) _eslintCoreNames.add(r.meta.name);
+  const resolveOpts = { paths: [path.join(ROOT, "js"), path.join(ROOT, "js/node_modules")] };
+  for (const [pkg, alias] of Object.entries(_ESLINT_PLUGIN_ALIAS)) {
+    let mod;
+    try { mod = require(require.resolve(pkg, resolveOpts)); } catch { continue; }
+    if (mod && !mod.rules && mod.default?.rules) mod = mod.default; // ESM unwrap
+    if (mod && mod.rules) _eslintPlugins[alias] = mod;
+  }
+  return { plugins: _eslintPlugins, coreNames: _eslintCoreNames };
+}
+
+function _toEslintRuleId(ruleId, coreNames) {
+  // Map ez rule ids to ESLint config keys.
+  // Core: bare name (e.g. "no-unused-vars") — use as-is if known.
+  if (coreNames.has(ruleId)) return ruleId;
+  // Plugin: "<pkg>/<rule>" → "<alias>/<rule>".
+  for (const [pkg, alias] of Object.entries(_ESLINT_PLUGIN_ALIAS)) {
+    if (ruleId.startsWith(pkg + "/")) return alias + "/" + ruleId.slice(pkg.length + 1);
+  }
+  return null; // unknown — caller drops
+}
+
+function runEslintAllOnce(src, ruleIds, filename) {
+  const { plugins, coreNames } = _loadEslintPlugins();
+  const isTs = /\.[mc]?tsx?$/.test(filename);
+  const tp = isTs ? tsParser() : null;
+  const baseLang = { ecmaVersion: 2022, sourceType: "module" };
+  if (tp) baseLang.parser = tp;
+
+  // Map ez rule ids to ESLint ids.
+  const ezToEs = new Map();
+  const esRules = {};
+  for (const id of ruleIds) {
+    const esId = _toEslintRuleId(id, coreNames);
+    if (esId) {
+      ezToEs.set(id, esId);
+      esRules[esId] = "error";
+    }
+  }
+
+  // Probe every rule on a tiny source first; drop any that throws or
+  // returns a fatal "rule load" diagnostic (most are typed-linting).
+  const probeLinter = new Linter();
+  const dropped = [];
+  for (const id of [...Object.keys(esRules)]) {
+    try {
+      const msgs = probeLinter.verify("var x = 1;\n",
+        { plugins, rules: { [id]: esRules[id] }, languageOptions: baseLang },
+        { filename: "probe.js" });
+      const fatal = msgs.find(m => m.fatal || (m.ruleId == null &&
+        /requires type information|Could not find|loading rule|plugin/i.test(m.message || "")));
+      if (fatal) { delete esRules[id]; dropped.push(id); }
+    } catch { delete esRules[id]; dropped.push(id); }
+  }
+
+  const linter = new Linter();
+  const t0 = performance.now();
+  let msgs;
+  try {
+    msgs = linter.verify(src, { plugins, rules: esRules, languageOptions: baseLang }, { filename });
+  } catch (e) {
+    return { ms: performance.now() - t0, perRule: new Map(), total: 0, droppedCount: dropped.length, error: e.message };
+  }
+  const ms = performance.now() - t0;
+  const perRule = new Map(); // keyed by ez rule id (caller-friendly)
+  let total = 0;
+  // Reverse map: ESLint rule id → ez rule id
+  const esToEz = new Map();
+  for (const [ezId, esId] of ezToEs) esToEz.set(esId, ezId);
+  for (const m of msgs) {
+    const ezId = esToEz.get(m.ruleId);
+    if (!ezId) continue;
+    perRule.set(ezId, (perRule.get(ezId) || 0) + 1);
+    total++;
+  }
+  return { ms, perRule, total, droppedCount: dropped.length };
+}
+
+if (!_isMain) module.exports.runEslintAllOnce = runEslintAllOnce;
+
 // ── oxlint ───────────────────────────────────────────────────────────
 const OXLINT_BIN = (() => { try { return Bun.which("oxlint") || "/opt/homebrew/bin/oxlint"; } catch { return "oxlint"; } })();
 
@@ -269,7 +407,10 @@ function oxlintRules() {
 }
 
 function runOxlint(filePath, ruleId, opts = {}) {
-  if (!oxlintRules().has(ruleId)) return { ms: 0, diags: [], skipped: "unknown-rule" };
+  // ez plugin rules carry a "<pkg>/<rule>" prefix; oxlint indexes them by
+  // SHORT name (last segment). Strip before lookup / -D arg.
+  const oxName = _shortName(ruleId);
+  if (!oxlintRules().has(oxName)) return { ms: 0, diags: [], skipped: "unknown-rule" };
   // -A all silences everything, then -D <rule> turns just the target on.
   // For TIMING-ONLY runs (default), we use `--silent` and discard stdout —
   // otherwise oxlint spends most of its time serializing JSON for high-diag
@@ -277,8 +418,8 @@ function runOxlint(filePath, ruleId, opts = {}) {
   // Callers that need diagnostic content (`--diff` mode) pass `wantDiags:true`.
   const wantDiags = !!opts.wantDiags;
   const args = wantDiags
-    ? [OXLINT_BIN, "-A", "all", "-D", ruleId, "--format", "json", filePath]
-    : [OXLINT_BIN, "-A", "all", "-D", ruleId, "--silent", filePath];
+    ? [OXLINT_BIN, "-A", "all", "-D", oxName, "--format", "json", filePath]
+    : [OXLINT_BIN, "-A", "all", "-D", oxName, "--silent", filePath];
   const t0 = performance.now();
   const proc = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
   const ms = performance.now() - t0;
@@ -333,16 +474,66 @@ function runOxlint(filePath, ruleId, opts = {}) {
 //     subprocess startup + parse from `totalMs` for sharper per-rule
 //     numbers.
 function runOxlintBatch(filePath, ruleIds) {
-  const known = ruleIds.filter(id => oxlintRules().has(id));
+  const known = ruleIds.map(_shortName).filter(n => oxlintRules().has(n));
   if (known.length === 0) return { totalMs: 0, perRuleMs: 0, knownCount: 0 };
   const args = [OXLINT_BIN, "-A", "all"];
-  for (const id of known) { args.push("-D"); args.push(id); }
+  for (const n of known) { args.push("-D"); args.push(n); }
   args.push("--silent", filePath);
   const t0 = performance.now();
   Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
   const totalMs = performance.now() - t0;
   return { totalMs, perRuleMs: totalMs / known.length, knownCount: known.length };
 }
+
+/// Batched diag-count run: same rule set as runOxlintBatch, but emits
+/// JSON so we can count diagnostics per rule. Slower than --silent (oxlint
+/// serializes every diagnostic) — caller should run this ONCE outside the
+/// timing loop. Returns { perRule: Map<shortName, count>, total }.
+function runOxlintBatchDiagCounts(filePath, ruleIds) {
+  const known = ruleIds.map(_shortName).filter(n => oxlintRules().has(n));
+  const perRule = new Map(known.map(n => [n, 0]));
+  if (known.length === 0) return { perRule, total: 0 };
+  const args = [OXLINT_BIN, "-A", "all"];
+  for (const n of known) { args.push("-D"); args.push(n); }
+  args.push("--format", "json", filePath);
+  const proc = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
+  const out = Buffer.from(proc.stdout).toString("utf8").trim();
+  if (!out) return { perRule, total: 0 };
+  let total = 0;
+  // oxlint JSON shape: top-level { diagnostics: [...] } or NDJSON per-line.
+  if (out.startsWith("{") && out.includes("\"diagnostics\"")) {
+    try {
+      const data = JSON.parse(out);
+      for (const d of data.diagnostics || []) {
+        const code = typeof d.code === "string" ? d.code : d.code?.value;
+        if (!code) continue;
+        // code is `eslint(no-unused-vars)` or `<plugin>(<rule>)`.
+        const m = code.match(/\(([^)]+)\)$/);
+        const short = m ? m[1] : code;
+        if (perRule.has(short)) {
+          perRule.set(short, perRule.get(short) + 1);
+          total++;
+        }
+      }
+    } catch {}
+  } else {
+    for (const ln of out.split("\n")) {
+      if (!ln.trim()) continue;
+      try {
+        const d = JSON.parse(ln);
+        const id = d.ruleId || d.code;
+        const short = typeof id === "string" ? _shortName(id) : null;
+        if (short && perRule.has(short)) {
+          perRule.set(short, perRule.get(short) + 1);
+          total++;
+        }
+      } catch {}
+    }
+  }
+  return { perRule, total };
+}
+
+if (!_isMain) module.exports.runOxlintBatchDiagCounts = runOxlintBatchDiagCounts;
 
 // Baseline: oxlint with NO rules enabled — measures subprocess startup +
 // parse cost so callers can subtract it from batch totals.
