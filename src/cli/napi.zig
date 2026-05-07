@@ -723,25 +723,54 @@ fn parseImpl(
     // Stored as u32[token_count + comment_count]:
     //   value < token_count → token index
     //   value >= token_count → comment index (value - token_count)
+    //
+    // Batched algorithm: comments are sparse (~35K vs 1.3M tokens on
+    // typescript.js).  Per comment, binary-search the boundary in
+    // tok_starts and then SIMD-fill an identity run of token indices.
+    // Replaces ~1.3M scalar compare-and-branch iters with 35K bsearches
+    // + a vector-fill loop — saves ~1ms on typescript.js.
     const tok_cmt_merge_offset = blk: {
+        const tok_count_u32: u32 = @intCast(tokens.len);
         const total = tokens.len + comment_count;
         if (total == 0) break :blk @as(u32, 0);
         const merged = try alloc.alloc(u32, total);
         var ti: u32 = 0;
-        var ci: u32 = 0;
         var mi: u32 = 0;
-        while (ti < tokens.len and ci < comment_count) {
-            if (tok_starts[ti] <= cs[ci]) {
-                merged[mi] = ti;
-                ti += 1;
-            } else {
-                merged[mi] = @as(u32, @intCast(tokens.len)) + ci;
-                ci += 1;
+        const Vec4 = @Vector(4, u32);
+        const step4: Vec4 = .{ 4, 4, 4, 4 };
+        var ci: u32 = 0;
+        while (ci < comment_count) : (ci += 1) {
+            const c_start = cs[ci];
+            // Binary-search the boundary in tok_starts[ti..] where tok_starts[k] > c_start.
+            var lo: u32 = ti;
+            var hi: u32 = tok_count_u32;
+            while (lo < hi) {
+                const mid = lo + (hi - lo) / 2;
+                if (tok_starts[mid] <= c_start) lo = mid + 1 else hi = mid;
             }
+            // SIMD-fill merged[mi..mi+(lo-ti)] with [ti, ti+1, ...].
+            const run = lo - ti;
+            var v: Vec4 = .{ ti, ti + 1, ti + 2, ti + 3 };
+            var k: u32 = 0;
+            while (k + 4 <= run) : (k += 4) {
+                merged[mi + k ..][0..4].* = v;
+                v += step4;
+            }
+            while (k < run) : (k += 1) merged[mi + k] = ti + k;
+            mi += run;
+            ti = lo;
+            merged[mi] = tok_count_u32 + ci;
             mi += 1;
         }
-        while (ti < tokens.len) : ({ ti += 1; mi += 1; }) merged[mi] = ti;
-        while (ci < comment_count) : ({ ci += 1; mi += 1; }) merged[mi] = @as(u32, @intCast(tokens.len)) + ci;
+        // Trailing token run (after last comment).
+        const tail_run = tok_count_u32 - ti;
+        var v: Vec4 = .{ ti, ti + 1, ti + 2, ti + 3 };
+        var k: u32 = 0;
+        while (k + 4 <= tail_run) : (k += 4) {
+            merged[mi + k ..][0..4].* = v;
+            v += step4;
+        }
+        while (k < tail_run) : (k += 1) merged[mi + k] = ti + k;
         break :blk js_buffer.ptrOffsetPub(buf_ptr, merged.ptr);
     };
 
