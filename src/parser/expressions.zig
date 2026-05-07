@@ -283,7 +283,18 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
             }
         }
 
-        left = try parseInfixExpression(p, left, infix_prec, tag);
+        // Inlined parseInfixExpression — saves a function call + branch chain
+        // per infix operator (binary is the overwhelmingly common case in the
+        // parse profile, ~95%+ of these calls).
+        if (tag == .question) {
+            left = try parseConditionalTail(p, left);
+        } else if (tag == .comma) {
+            left = try parseSequenceExpression(p, left);
+        } else if (tag.isAssignment()) {
+            left = try parseAssignment(p, left);
+        } else {
+            left = try parseBinaryExpression(p, left, infix_prec, tag);
+        }
     }
 
     return left;
