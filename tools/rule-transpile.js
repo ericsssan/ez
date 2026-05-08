@@ -285,42 +285,41 @@ async function main() {
           if (!isRuleFile && !fileFn) return undefined;
           const original = await Bun.file(args.path).text();
           let src = original;
-          let stage = "input";
-          // Apply file-transform (programmatic). Throws are caught and
-          // logged with the file path so the failure isn't silent.
+          // No silent fallback. If anything fails — a file-transform
+          // throws, the rewriter throws, or the rewriter produces
+          // text that doesn't parse — abort the build with a clear
+          // error message naming the file. A bundle with silently
+          // missing optimizations is worse than no bundle: it ships
+          // unverified code that the user thinks was rewritten.
           if (fileFn) {
-            stage = "file-transform";
             try {
               src = fileFn(src);
             } catch (err) {
-              process.stderr.write(`\n[ERROR] file-transform threw for ${args.path}\n  ${err.stack || err.message}\n`);
-              src = original; // revert to upstream so build keeps going
+              process.stderr.write(`\n[FATAL] file-transform threw for ${args.path}\n  ${err.stack || err.message}\n`);
+              process.exit(1);
             }
           }
-          // Apply generic pattern rewrites. Throws are caught; output
-          // is also validated by re-parsing — a buggy rewriter that
-          // produces malformed text would otherwise fail much later
-          // inside Bun.build with a confusing line number from the
-          // post-transform source. Validate up front and surface the
-          // problem with the upstream path + a syntax-error excerpt.
           if (isRuleFile) {
-            stage = "pattern-rewrite";
+            let r;
             try {
-              const r = applyPatternRewrite(src);
-              const candidate = r.src;
-              // Validate by parsing with ez's parser. Throws → revert.
-              try {
-                _ezParseSource(candidate, { filename: args.path });
-                src = candidate;
-                totalRewritten += r.matches;
-              } catch (parseErr) {
-                process.stderr.write(`\n[ERROR] rewriter produced invalid JS for ${args.path}\n  parse error: ${parseErr.message || parseErr}\n  matches that were attempted: ${r.matches}\n  reverting to upstream source\n`);
-                src = original;
-              }
+              r = applyPatternRewrite(src);
             } catch (err) {
-              process.stderr.write(`\n[ERROR] pattern-rewrite threw for ${args.path}\n  ${err.stack || err.message}\n`);
-              src = original;
+              process.stderr.write(`\n[FATAL] pattern-rewriter threw for ${args.path}\n  ${err.stack || err.message}\n`);
+              process.exit(1);
             }
+            // Validate the rewriter's output by re-parsing. A buggy
+            // detector or emitter that produces malformed source
+            // would otherwise fail much later inside Bun.build with a
+            // line number from the post-transform source — confusing
+            // to debug. Catch it here with the upstream path.
+            try {
+              _ezParseSource(r.src, { filename: args.path });
+            } catch (parseErr) {
+              process.stderr.write(`\n[FATAL] rewriter produced invalid JS for ${args.path}\n  parse error: ${parseErr.message || parseErr}\n  attempted matches: ${r.matches}\n`);
+              process.exit(1);
+            }
+            src = r.src;
+            totalRewritten += r.matches;
           }
           return { contents: src };
         });
@@ -341,7 +340,7 @@ async function main() {
         process.stderr.write(`         > ${l.position.lineText}\n`);
       }
     }
-    process.stderr.write(`\nIf this looks like a rewriter output bug, the offending file's pre-transform source was reverted on parse failure. Build was still aborted because some other file failed.\n`);
+    process.stderr.write(`\nNo silent fallback — fix the offending transform or rewriter and re-run.\n`);
     process.exit(1);
   }
 
