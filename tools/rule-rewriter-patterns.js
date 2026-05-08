@@ -825,6 +825,137 @@ function emitRestSpreadFanout(src, m) {
   return edits;
 }
 
+// Pattern: defaulted destructuring via spread.
+//
+//   const {a, b, c, d} = {                     →   const _o = OBJ || {};
+//     defaultA: 1,                                  const a = _o.a !== undefined ? _o.a : 1;
+//     defaultB: 2,                                  const b = _o.b !== undefined ? _o.b : 2;
+//     ...OBJ,                                       const c = _o.c;
+//   };                                              const d = _o.d;
+//
+// Matched on the all-rules typescript.js profile as ~7.6% of total
+// CPU (`copyDataProperties`). The `{ defaults, ...obj }` spread
+// allocates a fresh merged object on every call. Hot in unicorn's
+// `create()` helper (call-or-new-expression.js, is-method-call.js)
+// which is invoked from every CallExpression visit across dozens
+// of rules.
+//
+// Detection is conservative — bails on anything that isn't a plain
+// merge-and-destructure shape:
+//   - VariableDeclaration with exactly one declarator
+//   - declarator.id is ObjectPattern with shorthand or simple-rename
+//     properties (no inline defaults inside the pattern, no rest, no
+//     computed keys, no spread)
+//   - declarator.init is ObjectExpression whose properties are some
+//     mix of regular `Property` entries (defaults) and exactly one
+//     `SpreadElement` whose argument is a plain Identifier
+//   - the SpreadElement is the LAST element in the ObjectExpression
+//     (so spread overrides defaults — semantics we preserve)
+//   - default property keys are plain Identifier or string Literal,
+//     not computed
+//
+// Emit: a sequence of `<kind> NAME = ...;` declarations, one per
+// destructured name. Sources from the spread argument with an
+// undefined-check fallback to the default. Names not in defaults
+// are simple property reads.
+
+// Default-value expressions we know are safe to inline directly into
+// the conditional. The whitelist keeps us conservative — if something
+// has side effects (CallExpression, NewExpression, AssignmentExpression,
+// etc.) inlining it changes when it executes, so we bail.
+const _DEFAULTED_DESTRUCTURE_SAFE_DEFAULT_TYPES = new Set([
+  "Literal", "Identifier", "MemberExpression", "UnaryExpression",
+  "BinaryExpression", "LogicalExpression", "ConditionalExpression",
+  "ArrayExpression", "ObjectExpression",
+  "ArrowFunctionExpression", "FunctionExpression",
+  "ThisExpression",
+  // TemplateLiteral excluded — interpolation expressions could have
+  // side effects whose timing my rewrite changes.
+]);
+
+function detectDefaultedDestructurePattern(node) {
+  if (node.type !== "VariableDeclaration") return null;
+  if (!Array.isArray(node.declarations) || node.declarations.length !== 1) return null;
+  const dtor = node.declarations[0];
+  if (!dtor || dtor.type !== "VariableDeclarator") return null;
+  if (!dtor.id || dtor.id.type !== "ObjectPattern") return null;
+  if (!dtor.init || dtor.init.type !== "ObjectExpression") return null;
+
+  // Validate ObjectPattern: shorthand or simple rename, no defaults
+  // inside the pattern, no computed keys, no rest.
+  const destructured = []; // { name, sourceKey }
+  for (const p of dtor.id.properties) {
+    if (!p || p.type !== "Property") return null;
+    if (p.computed) return null;
+    if (p.key.type !== "Identifier" && !(p.key.type === "Literal" && typeof p.key.value === "string")) return null;
+    const keyName = p.key.type === "Identifier" ? p.key.name : p.key.value;
+    if (p.value.type === "Identifier") {
+      // Plain shorthand or simple rename. Local name is p.value.name; source key is keyName.
+      destructured.push({ localName: p.value.name, sourceKey: keyName });
+    } else {
+      // AssignmentPattern (default in destructure), nested patterns, etc. Bail.
+      return null;
+    }
+  }
+
+  // Validate ObjectExpression: 0+ regular Property defaults + exactly 1
+  // trailing SpreadElement(Identifier).
+  const initProps = dtor.init.properties;
+  if (!Array.isArray(initProps) || initProps.length === 0) return null;
+  let spreadIdent = null;
+  let spreadIdx = -1;
+  const defaults = new Map(); // sourceKey → expression node
+  for (let i = 0; i < initProps.length; i++) {
+    const p = initProps[i];
+    if (!p) return null;
+    if (p.type === "SpreadElement") {
+      if (spreadIdent !== null) return null; // multiple spreads — bail
+      if (!p.argument || p.argument.type !== "Identifier") return null;
+      spreadIdent = p.argument.name;
+      spreadIdx = i;
+    } else if (p.type === "Property") {
+      if (p.computed || p.method || p.shorthand === false && p.kind !== "init") return null;
+      if (p.kind !== "init") return null;
+      if (p.key.type !== "Identifier" && !(p.key.type === "Literal" && typeof p.key.value === "string")) return null;
+      const keyName = p.key.type === "Identifier" ? p.key.name : p.key.value;
+      if (!p.value || !_DEFAULTED_DESTRUCTURE_SAFE_DEFAULT_TYPES.has(p.value.type)) return null;
+      defaults.set(keyName, p.value);
+    } else {
+      return null;
+    }
+  }
+  if (spreadIdent === null) return null;
+  if (spreadIdx !== initProps.length - 1) return null; // spread must be last
+
+  return {
+    fullRange: node.range,
+    kind: node.kind, // "let" | "const" | "var"
+    spreadIdent,
+    destructured,
+    defaults,
+  };
+}
+
+function emitDefaultedDestructure(src, m) {
+  // Pick a unique-ish local for the source binding. `_o` is short and
+  // unlikely to collide; if a destructured name happens to be `_o`, fall
+  // back to `_ezDefaultedSrc`.
+  let srcVar = "_ezOpts";
+  for (const d of m.destructured) if (d.localName === srcVar) { srcVar = "_ezOpts$"; break; }
+  const lines = [];
+  lines.push(`${m.kind} ${srcVar} = ${m.spreadIdent} || {};`);
+  for (const d of m.destructured) {
+    const def = m.defaults.get(d.sourceKey);
+    if (def) {
+      const defText = src.slice(def.range[0], def.range[1]);
+      lines.push(`${m.kind} ${d.localName} = ${srcVar}.${d.sourceKey} !== undefined ? ${srcVar}.${d.sourceKey} : ${defText};`);
+    } else {
+      lines.push(`${m.kind} ${d.localName} = ${srcVar}.${d.sourceKey};`);
+    }
+  }
+  return [{ range: m.fullRange, text: lines.join("\n") }];
+}
+
 function rewrite(src) {
   const ast = parseFile(src);
   const arrTypeEqMatches = [];
@@ -833,6 +964,7 @@ function rewrite(src) {
   const parentTypeMatches = [];
   const accessorChainMatches = [];
   const restSpreadMatches = [];
+  const defaultedDestructureMatches = [];
   walk(ast, (n) => {
     const m = detectArrTypeEqPattern(n);
     if (m) arrTypeEqMatches.push(m);
@@ -856,9 +988,13 @@ function rewrite(src) {
       const r = detectRestSpreadFanoutPattern(n);
       if (r) restSpreadMatches.push(r);
     }
+    if (process.env.EZ_DISABLE_DEFAULTED_DESTRUCTURE !== "1") {
+      const d = detectDefaultedDestructurePattern(n);
+      if (d) defaultedDestructureMatches.push(d);
+    }
   });
 
-  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length + accessorChainMatches.length + restSpreadMatches.length;
+  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length + accessorChainMatches.length + restSpreadMatches.length + defaultedDestructureMatches.length;
   if (matches === 0) {
     return { src, matches: 0 };
   }
@@ -896,6 +1032,9 @@ function rewrite(src) {
   }
   for (const m of restSpreadMatches) {
     edits.push(...emitRestSpreadFanout(src, m));
+  }
+  for (const m of defaultedDestructureMatches) {
+    edits.push(...emitDefaultedDestructure(src, m));
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);
 

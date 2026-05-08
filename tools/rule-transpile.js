@@ -203,11 +203,33 @@ async function main() {
   let totalRules = 0;
   for (const t of targetSpecs) totalRules += t.ruleFiles.length;
 
-  // Build a Set of upstream paths we should transform — only files
-  // that ARE rule files in our targets, not anything else Bun pulls in
-  // via transitive imports.
+  // Two scopes:
+  //
+  //   ruleFileSet — files we register as rules (for the bundle's
+  //                 export shape). Filename ↔ rule name mapping
+  //                 is computed from these.
+  //
+  //   rewriteScopes — directory prefixes within which the pattern
+  //                   rewriter applies. Broader than ruleFileSet so
+  //                   plugin helper files (e.g. unicorn's
+  //                   `rules/ast/is-method-call.js` — used by every
+  //                   call-checking rule) also get rewritten. Without
+  //                   this, the `{ defaults, ...options }` pattern in
+  //                   helpers stayed unrewritten.
   const ruleFileSet = new Set();
-  for (const t of targetSpecs) for (const r of t.ruleFiles) ruleFileSet.add(r.abs);
+  const rewriteScopes = []; // directory paths
+  for (const t of targetSpecs) {
+    for (const r of t.ruleFiles) ruleFileSet.add(r.abs);
+    // Use the plugin's package root as the rewrite scope. We could
+    // narrow to subdirectories but rewriting helper code in the same
+    // package is the right granularity — config files / lib utilities
+    // benefit from the same pattern rewrites as rules.
+    rewriteScopes.push(t.base);
+  }
+  function _inRewriteScope(p) {
+    for (const scope of rewriteScopes) if (p.startsWith(scope + "/") || p.startsWith(scope)) return true;
+    return false;
+  }
 
   // Per-file programmatic transforms (replaces tools/overrides/).
   // Loaded eagerly so build failures surface immediately.
@@ -281,8 +303,9 @@ async function main() {
           // Either or both can apply. Other modules (helpers, plugin
           // internals pulled in via imports) bundle as-is.
           const isRuleFile = ruleFileSet.has(args.path);
+          const inRewriteScope = isRuleFile || _inRewriteScope(args.path);
           const fileFn = fileTransforms.get(args.path);
-          if (!isRuleFile && !fileFn) return undefined;
+          if (!inRewriteScope && !fileFn) return undefined;
           const original = await Bun.file(args.path).text();
           let src = original;
           // No silent fallback. If anything fails — a file-transform
@@ -299,7 +322,7 @@ async function main() {
               process.exit(1);
             }
           }
-          if (isRuleFile) {
+          if (inRewriteScope) {
             let r;
             try {
               r = applyPatternRewrite(src);
