@@ -597,6 +597,76 @@ function _isMemberAccess(node, propName) {
     && node.property.name === propName;
 }
 
+// Detector for `<expr>.<accessor>.<final> <op> <StringLiteral>`
+// where:
+//   - accessor in {callee, id, expression, left, right, argument, object}
+//   - final in {type, name}
+//
+// Maps to per-accessor helpers in `js/rewrite-helpers.js`. Each helper
+// reads the child's buffer index directly when the parent's tag has a
+// known shape — no NodeView allocation for the child.
+//
+// The detector returns null if the pattern doesn't apply or if the
+// chain doesn't match exactly one of the supported (accessor, final)
+// pairs. Compatible with the existing `parent` chain detector below.
+const _ACCESSOR_HELPERS = {
+  // accessor → { type: helperBaseName | null, name: helperBaseName | null }
+  callee:     { type: "calleeType",     name: "calleeName" },
+  id:         { type: null,             name: "idName" },
+  expression: { type: "expressionType", name: null },
+  left:       { type: "leftType",       name: null },
+  right:      { type: "rightType",      name: null },
+  argument:   { type: "argumentType",   name: null },
+  object:     { type: "objectType",     name: null },
+};
+
+function detectAccessorChainPattern(node) {
+  if (node.type !== "BinaryExpression") return null;
+  if (node.operator !== "===" && node.operator !== "!==") return null;
+  let chain, lit;
+  if (node.left && node.left.type === "MemberExpression" &&
+      node.right && node.right.type === "Literal" && typeof node.right.value === "string") {
+    chain = node.left; lit = node.right;
+  } else if (node.right && node.right.type === "MemberExpression" &&
+             node.left && node.left.type === "Literal" && typeof node.left.value === "string") {
+    chain = node.right; lit = node.left;
+  } else {
+    return null;
+  }
+  // chain.property must be `type` or `name` (not computed).
+  if (chain.computed) return null;
+  if (!chain.property || chain.property.type !== "Identifier") return null;
+  const final = chain.property.name;
+  if (final !== "type" && final !== "name") return null;
+  // chain.object must be `<expr>.<accessor>` — a non-computed MemberExpression
+  // whose property is one of the supported accessor names.
+  const accessorMember = chain.object;
+  if (!accessorMember || accessorMember.type !== "MemberExpression" || accessorMember.computed) return null;
+  if (!accessorMember.property || accessorMember.property.type !== "Identifier") return null;
+  const accessor = accessorMember.property.name;
+  const supported = _ACCESSOR_HELPERS[accessor];
+  if (!supported) return null;
+  const baseName = final === "type" ? supported.type : supported.name;
+  if (!baseName) return null;
+  // <expr> is whatever's behind the accessor — anything with a range.
+  const objExpr = accessorMember.object;
+  if (!objExpr || !objExpr.range) return null;
+  // Reject if the source expression is itself a `.parent` chain — that
+  // overlaps with the parent-chain detector and risks double-rewrite.
+  // The parent-chain detector takes precedence since its helpers are
+  // strictly cheaper for that shape.
+  if (objExpr.type === "MemberExpression" && !objExpr.computed &&
+      objExpr.property && objExpr.property.type === "Identifier" &&
+      objExpr.property.name === "parent") return null;
+  return {
+    fullRange: node.range,
+    objRange: objExpr.range,
+    litRange: lit.range,
+    operator: node.operator,
+    helperBase: baseName,
+  };
+}
+
 // Generic detector for `<expr>.parent{N}.type <op> <StringLiteral>`
 // where N is 1 or 2 (one-hop or two-hop). Returns `{ hops, ... }` or
 // null. Same shape rules: no computed, no optional chains, string
@@ -641,6 +711,7 @@ function rewrite(src) {
   const indexedLookupMatches = [];
   const genListenerMatches = [];
   const parentTypeMatches = [];
+  const accessorChainMatches = [];
   walk(ast, (n) => {
     const m = detectArrTypeEqPattern(n);
     if (m) arrTypeEqMatches.push(m);
@@ -656,9 +727,13 @@ function rewrite(src) {
       const p = detectParentChainTypePattern(n);
       if (p) parentTypeMatches.push(p);
     }
+    if (process.env.EZ_DISABLE_ACCESSOR_CHAIN !== "1") {
+      const a = detectAccessorChainPattern(n);
+      if (a) accessorChainMatches.push(a);
+    }
   });
 
-  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length;
+  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length + accessorChainMatches.length;
   if (matches === 0) {
     return { src, matches: 0 };
   }
@@ -689,6 +764,12 @@ function rewrite(src) {
     else if (m.hops === 2) helperName = eq ? "grandparentTypeEq" : "grandparentTypeNeq";
     else                   helperName = eq ? "greatGrandparentTypeEq" : "greatGrandparentTypeNeq";
     edits.push({ range: m.fullRange, text: `_ezHelpers.${helperName}(${objText}, ${litText})` });
+  }
+  for (const m of accessorChainMatches) {
+    const objText = src.slice(m.objRange[0], m.objRange[1]);
+    const litText = src.slice(m.litRange[0], m.litRange[1]);
+    const suffix = m.operator === "===" ? "Eq" : "Neq";
+    edits.push({ range: m.fullRange, text: `_ezHelpers.${m.helperBase}${suffix}(${objText}, ${litText})` });
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);
 

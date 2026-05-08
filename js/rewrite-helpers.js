@@ -129,10 +129,11 @@ function indexedByProp(arr, prop) {
 // itself self-checks before reading the buffer.
 
 const _NONE = 0xFFFFFFFF;
-let _nodeTypeAt = null;
-function _ensureAdapter() {
-  if (_nodeTypeAt === null) _nodeTypeAt = require("./estree-adapter").nodeTypeAt;
-}
+// Bind eagerly. There's no circular dependency (estree-adapter doesn't
+// import this module), and lazy-binding adds a per-call branch on the
+// hot path.
+const { nodeTypeAt: _nodeTypeAt, T: _T } = require("./estree-adapter");
+function _ensureAdapter() { /* no-op, kept for backwards compatibility with parent helpers */ }
 
 // `_parentKinds[i] === k` for k in 1..5 means the parent the rule sees
 // is a synthetic wrapper whose `.type` is determined entirely by `k`.
@@ -288,11 +289,230 @@ function greatGrandparentTypeNeq(node, expectedType) {
   return !greatGrandparentTypeEq(node, expectedType);
 }
 
+// ── Per-accessor type/name helpers ────────────────────────────────
+//
+// Substitutes `node.<accessor>.type === <Lit>` (and `name`, `!==`) for
+// hot accessor chains. Each helper:
+//   1. Bails to the public getter on non-NodeView inputs (synthetic
+//      wrappers, missing `_ast`, `_tag` undefined).
+//   2. For COMMON tag shapes where the child's buffer index is at a
+//      known lhs/rhs slot, reads the buffer directly — no NodeView
+//      allocation for the child.
+//   3. For unusual tag shapes (e.g. for-in/of's `left` is in extra
+//      data, not lhs), falls back to `node.<accessor>?.type === expected`.
+//
+// The buffer-direct path skips one `nodeView()` call per matched site,
+// which removes a pool lookup + (on cache miss) a `_NodeView` ctor.
+// Same correctness model as the parent.type helpers.
+
+function _isNodeView(node) {
+  return node && node._i !== undefined && node._tag !== undefined && node._ast;
+}
+
+// Helper: look up the type at a buffer node index. Returns undefined
+// if idx is _NONE.
+function _typeAt(ast, idx) {
+  if (idx === _NONE) return undefined;
+  return _nodeTypeAt(ast, idx);
+}
+
+// Helper: identifier name at idx, or undefined if not an identifier.
+function _identNameAt(ast, idx) {
+  if (idx === _NONE) return undefined;
+  const tag = ast._nodeTags[idx];
+  if (tag !== _T.identifier && tag !== _T.property_ident) return undefined;
+  return ast._identAt(ast._mainTokens[idx]);
+}
+
+// node.callee — CallExpression, NewExpression: callee is at lhs.
+//                TaggedTemplateExpression: tag is at lhs.
+// All three use `nodeView` (TaggedTemplate) or `nodeViewChain`. For the
+// ChainExpression-wrap case (callee is itself an optional chain) the
+// wrapper would re-route `.type` to "ChainExpression"; we approximate
+// by reading the inner callee's tag directly. If that produces wrong
+// answers for a specific rule, the fall-back to `node.callee?.type`
+// guards correctness — but the rewriter only emits the helper when
+// the rule does a static `=== "<X>"` compare; ChainExpression as the
+// expected literal is uncommon and still works (the inner is the
+// `_parentKinds`-flagged node so its type-as-rendered would be
+// "ChainExpression" anyway).
+function _calleeIdx(node) {
+  const t = node._tag;
+  const ast = node._ast;
+  if (t === _T.call_expr || t === _T.optional_call_expr || t === _T.new_expr) {
+    return ast.nodeLhs(node._i);
+  }
+  return -1;
+}
+
+function calleeTypeEq(node, expectedType) {
+  if (!_isNodeView(node)) return node?.callee?.type === expectedType;
+  const idx = _calleeIdx(node);
+  if (idx < 0) return node.callee?.type === expectedType;
+  return _typeAt(node._ast, idx) === expectedType;
+}
+function calleeTypeNeq(node, expectedType) { return !calleeTypeEq(node, expectedType); }
+
+function calleeNameEq(node, expectedName) {
+  if (!_isNodeView(node)) return node?.callee?.name === expectedName;
+  const idx = _calleeIdx(node);
+  if (idx < 0) return node.callee?.name === expectedName;
+  return _identNameAt(node._ast, idx) === expectedName;
+}
+function calleeNameNeq(node, expectedName) { return !calleeNameEq(node, expectedName); }
+
+// node.id — FunctionDeclaration, FunctionExpression, ClassDeclaration,
+//           ClassExpression, VariableDeclarator: id is at lhs of the
+//           function/class extra block, or directly at lhs.
+//           Function: lhs is FnData extra; id is FnData.id.
+//           VariableDeclarator: lhs is the id directly.
+//           Class: lhs is ClassData extra; id is ClassData.id.
+function _idIdx(node) {
+  const t = node._tag;
+  const ast = node._ast;
+  if (t === _T.fn_decl || t === _T.async_fn_decl ||
+      t === _T.generator_fn_decl || t === _T.async_generator_fn_decl ||
+      t === _T.fn_expr || t === _T.async_fn_expr ||
+      t === _T.generator_fn_expr || t === _T.async_generator_fn_expr ||
+      t === _T.ts_declare_function) {
+    const lhs = ast.nodeLhs(node._i);
+    if (lhs === _NONE) return _NONE;
+    const d = ast.extraFnData(lhs);
+    return d.id;
+  }
+  if (t === _T.class_decl || t === _T.class_expr) {
+    const lhs = ast.nodeLhs(node._i);
+    if (lhs === _NONE) return _NONE;
+    const d = ast.extraClassData(lhs);
+    return d.id;
+  }
+  if (t === _T.declarator) {
+    // VariableDeclarator: id is at lhs.
+    return ast.nodeLhs(node._i);
+  }
+  return -1;
+}
+
+function idNameEq(node, expectedName) {
+  if (!_isNodeView(node)) return node?.id?.name === expectedName;
+  const idx = _idIdx(node);
+  if (idx < 0) return node.id?.name === expectedName;
+  return _identNameAt(node._ast, idx) === expectedName;
+}
+function idNameNeq(node, expectedName) { return !idNameEq(node, expectedName); }
+
+// node.expression — ExpressionStatement: expression is at rhs.
+//                   ChainExpression (synthetic): expression is `.expression`
+//                     (the inner node), but ChainExpression is a wrapper
+//                     so synthetic-node check covers that.
+function _expressionIdx(node) {
+  const t = node._tag;
+  // ExpressionStatement: expression is at lhs (per the canonical
+  // accessor at js/estree-adapter.js:3328).
+  if (t === _T.expression_stmt) return node._ast.nodeLhs(node._i);
+  return -1;
+}
+
+function expressionTypeEq(node, expectedType) {
+  if (!_isNodeView(node)) return node?.expression?.type === expectedType;
+  const idx = _expressionIdx(node);
+  if (idx < 0) return node.expression?.type === expectedType;
+  return _typeAt(node._ast, idx) === expectedType;
+}
+function expressionTypeNeq(node, expectedType) { return !expressionTypeEq(node, expectedType); }
+
+// node.left / node.right — only safe for binary/logical/assign tags
+// where lhs/rhs map directly. For-in/of, AssignmentPattern have
+// indirect lookups; bail to slow path.
+function _leftIdx(node) {
+  const t = node._tag;
+  if (t >= _T.add && t <= _T.nullish_assign) return node._ast.nodeLhs(node._i);
+  if (t === _T.assignment_pattern) return node._ast.nodeLhs(node._i);
+  return -1;
+}
+function _rightIdx(node) {
+  const t = node._tag;
+  if (t >= _T.add && t <= _T.nullish_assign) return node._ast.nodeRhs(node._i);
+  return -1;
+}
+
+function leftTypeEq(node, expectedType) {
+  if (!_isNodeView(node)) return node?.left?.type === expectedType;
+  const idx = _leftIdx(node);
+  if (idx < 0) return node.left?.type === expectedType;
+  return _typeAt(node._ast, idx) === expectedType;
+}
+function leftTypeNeq(node, expectedType) { return !leftTypeEq(node, expectedType); }
+
+function rightTypeEq(node, expectedType) {
+  if (!_isNodeView(node)) return node?.right?.type === expectedType;
+  const idx = _rightIdx(node);
+  if (idx < 0) return node.right?.type === expectedType;
+  return _typeAt(node._ast, idx) === expectedType;
+}
+function rightTypeNeq(node, expectedType) { return !rightTypeEq(node, expectedType); }
+
+// node.argument — UnaryExpression, UpdateExpression, SpreadElement,
+//                 RestElement, ReturnStatement, ThrowStatement,
+//                 AwaitExpression, YieldExpression. Argument index
+//                 lives at lhs or rhs depending on tag — replicate
+//                 the existing accessor's logic for the common cases.
+function _argumentIdx(node) {
+  const t = node._tag;
+  const ast = node._ast;
+  // All of the following: argument is at LHS (verified against the
+  // canonical `get argument()` accessor at js/estree-adapter.js:1850).
+  if (t === _T.await_expr || t === _T.unary_plus || t === _T.unary_minus ||
+      t === _T.logical_not || t === _T.bitwise_not || t === _T.typeof_expr ||
+      t === _T.void_expr || t === _T.delete_expr ||
+      t === _T.prefix_inc || t === _T.prefix_dec ||
+      t === _T.postfix_inc || t === _T.postfix_dec ||
+      t === _T.spread_element || t === _T.rest_element ||
+      t === _T.yield_expr || t === _T.yield_delegate ||
+      t === _T.return_stmt || t === _T.throw_stmt ||
+      t === _T.ts_non_null_expr) {
+    return ast.nodeLhs(node._i);
+  }
+  return -1;
+}
+
+function argumentTypeEq(node, expectedType) {
+  if (!_isNodeView(node)) return node?.argument?.type === expectedType;
+  const idx = _argumentIdx(node);
+  if (idx < 0) return node.argument?.type === expectedType;
+  return _typeAt(node._ast, idx) === expectedType;
+}
+function argumentTypeNeq(node, expectedType) { return !argumentTypeEq(node, expectedType); }
+
+// node.object — MemberExpression family: object is at lhs.
+function _objectIdx(node) {
+  const t = node._tag;
+  if (t === _T.member_expr || t === _T.computed_member_expr ||
+      t === _T.optional_member_expr || t === _T.optional_computed_member_expr) {
+    return node._ast.nodeLhs(node._i);
+  }
+  return -1;
+}
+
+function objectTypeEq(node, expectedType) {
+  if (!_isNodeView(node)) return node?.object?.type === expectedType;
+  const idx = _objectIdx(node);
+  if (idx < 0) return node.object?.type === expectedType;
+  return _typeAt(node._ast, idx) === expectedType;
+}
+function objectTypeNeq(node, expectedType) { return !objectTypeEq(node, expectedType); }
+
 module.exports = {
   someTypeEq, everyTypeEq, findTypeEq, indexedByProp,
   parentTypeEq, parentTypeNeq,
   grandparentTypeEq, grandparentTypeNeq,
   greatGrandparentTypeEq, greatGrandparentTypeNeq,
+  calleeTypeEq, calleeTypeNeq, calleeNameEq, calleeNameNeq,
+  idNameEq, idNameNeq,
+  expressionTypeEq, expressionTypeNeq,
+  leftTypeEq, leftTypeNeq, rightTypeEq, rightTypeNeq,
+  argumentTypeEq, argumentTypeNeq,
+  objectTypeEq, objectTypeNeq,
 };
 
 // Bun's CJS↔ESM interop: when this file is loaded via `import * as _ezHelpers`,
