@@ -96,6 +96,23 @@ const DEFAULT_TARGETS = [
     base: resolve("/Users/ericsan/node_modules/eslint-plugin-jsdoc/dist"),
     glob: "**/*.{cjs,js,mjs}",
   },
+  {
+    key: "es-x",
+    base: resolve(ROOT, "js/node_modules/eslint-plugin-es-x/lib/rules"),
+    glob: "*.js",
+  },
+  {
+    // eslint-plugin-sonarjs ships rules under `cjs/<RuleId>/index.js`
+    // (e.g. `cjs/S5725/index.js`). The single index per directory IS
+    // the rule. Recursive glob picks them all up.
+    key: "sonarjs",
+    base: resolve(ROOT, "js/node_modules/eslint-plugin-sonarjs/cjs"),
+    glob: "**/*.js",
+  },
+  // Note on missing plugins:
+  //   eslint-plugin-react-hooks ships a single bundled
+  //   `cjs/eslint-plugin-react-hooks.{production,development}.js` —
+  //   no per-rule files to substitute granularly. Skipped.
 ];
 
 async function buildOne(target, manifestEntries) {
@@ -118,7 +135,11 @@ async function buildOne(target, manifestEntries) {
     let r;
     try {
       r = applyPatternRewrite(src);
-    } catch {
+    } catch (err) {
+      // Surface parse failures so silent skips don't hide regressions.
+      // Past audit: zero parse errors across all configured targets;
+      // the noisy log here is a tripwire for future build runs.
+      process.stderr.write(`  ${target.key}/${entry}: rewrite threw: ${err.message}\n`);
       continue;
     }
     if (r.matches === 0) continue;
