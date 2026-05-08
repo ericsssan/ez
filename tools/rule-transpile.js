@@ -33,6 +33,7 @@
 import { resolve, basename, dirname, join } from "node:path";
 import { readFileSync, statSync, existsSync, mkdirSync } from "node:fs";
 import { rewrite as applyPatternRewrite } from "./rule-rewriter-patterns.js";
+import { parseSource as _ezParseSource } from "../js/index.js";
 
 const ROOT = resolve(import.meta.dir, "..");
 // Output lives under `js/.ez-dist/` so the bundle's externalized
@@ -282,19 +283,43 @@ async function main() {
           const isRuleFile = ruleFileSet.has(args.path);
           const fileFn = fileTransforms.get(args.path);
           if (!isRuleFile && !fileFn) return undefined;
-          let src = await Bun.file(args.path).text();
+          const original = await Bun.file(args.path).text();
+          let src = original;
+          let stage = "input";
+          // Apply file-transform (programmatic). Throws are caught and
+          // logged with the file path so the failure isn't silent.
           if (fileFn) {
-            try { src = fileFn(src); } catch (err) {
-              process.stderr.write(`  file-transform ${args.path}: ${err.message}\n`);
+            stage = "file-transform";
+            try {
+              src = fileFn(src);
+            } catch (err) {
+              process.stderr.write(`\n[ERROR] file-transform threw for ${args.path}\n  ${err.stack || err.message}\n`);
+              src = original; // revert to upstream so build keeps going
             }
           }
+          // Apply generic pattern rewrites. Throws are caught; output
+          // is also validated by re-parsing — a buggy rewriter that
+          // produces malformed text would otherwise fail much later
+          // inside Bun.build with a confusing line number from the
+          // post-transform source. Validate up front and surface the
+          // problem with the upstream path + a syntax-error excerpt.
           if (isRuleFile) {
+            stage = "pattern-rewrite";
             try {
               const r = applyPatternRewrite(src);
-              src = r.src;
-              totalRewritten += r.matches;
+              const candidate = r.src;
+              // Validate by parsing with ez's parser. Throws → revert.
+              try {
+                _ezParseSource(candidate, { filename: args.path });
+                src = candidate;
+                totalRewritten += r.matches;
+              } catch (parseErr) {
+                process.stderr.write(`\n[ERROR] rewriter produced invalid JS for ${args.path}\n  parse error: ${parseErr.message || parseErr}\n  matches that were attempted: ${r.matches}\n  reverting to upstream source\n`);
+                src = original;
+              }
             } catch (err) {
-              process.stderr.write(`  pattern-rewrite ${args.path}: ${err.message}\n`);
+              process.stderr.write(`\n[ERROR] pattern-rewrite threw for ${args.path}\n  ${err.stack || err.message}\n`);
+              src = original;
             }
           }
           return { contents: src };
@@ -304,8 +329,19 @@ async function main() {
   });
 
   if (!result.success) {
-    process.stderr.write(`\n  build FAILED with ${result.logs.length} errors:\n`);
-    for (const l of result.logs.slice(0, 20)) process.stderr.write(`    ${l.message ?? l}\n`);
+    process.stderr.write(`\n[FATAL] Bun.build failed with ${result.logs.length} log entr${result.logs.length === 1 ? "y" : "ies"}:\n`);
+    for (const l of result.logs) {
+      // Each log is a BuildMessage — has level, message, position.
+      const lvl = l.level || "error";
+      const msg = l.message || String(l);
+      const pos = l.position ? ` at ${l.position.file ?? "?"}:${l.position.line ?? "?"}:${l.position.column ?? "?"}` : "";
+      process.stderr.write(`  [${lvl}] ${msg}${pos}\n`);
+      // Excerpt the offending line if available.
+      if (l.position && l.position.lineText) {
+        process.stderr.write(`         > ${l.position.lineText}\n`);
+      }
+    }
+    process.stderr.write(`\nIf this looks like a rewriter output bug, the offending file's pre-transform source was reverted on parse failure. Build was still aborted because some other file failed.\n`);
     process.exit(1);
   }
 
