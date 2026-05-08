@@ -85,9 +85,16 @@ const DEFAULT_TARGETS = [
     glob: "*.js",
   },
   {
+    // eslint-plugin-jsdoc dist ships `.cjs` files (rules under
+    // `dist/rules/*.cjs`) despite the package's `"type": "module"`.
+    // Use a recursive glob over both extensions so the rule files in
+    // the `rules/` subdirectory are picked up. Earlier builds had
+    // `glob: "*.js"` which matched zero files, leaving every jsdoc
+    // rule unsubstituted (~225ms × 10 jsdoc rules unrewritten on
+    // typescript.js).
     key: "jsdoc",
     base: resolve("/Users/ericsan/node_modules/eslint-plugin-jsdoc/dist"),
-    glob: "*.js",
+    glob: "**/*.{cjs,js,mjs}",
   },
 ];
 
@@ -117,11 +124,20 @@ async function buildOne(target, manifestEntries) {
     if (r.matches === 0) continue;
     const outPath = join(outDir, entry);
     await Bun.write(outPath, r.src);
+    // Per-file module type — extension overrides package `"type"` for
+    // `.cjs` and `.mjs` (Node/Bun semantics). Without this override,
+    // a CJS .cjs file inside an ESM-typed package (e.g. eslint-plugin-jsdoc
+    // ships `.cjs` rules under `"type": "module"`) gets labelled "esm",
+    // routes through Bun.plugin onLoad, and parses as ESM — `module.exports`
+    // is unbound, body silently no-ops, exported empty `{__esModule: true}`.
+    const isEntryCjs = entry.endsWith(".cjs");
+    const isEntryMjs = entry.endsWith(".mjs");
+    const fileModule = isEntryCjs ? "cjs" : isEntryMjs ? "esm" : (isEsm ? "esm" : "cjs");
     manifestEntries.push({
       key: target.key,
       file: entry,
       upstreamPath: inPath,
-      module: isEsm ? "esm" : "cjs",
+      module: fileModule,
     });
     written++;
     totalMatches += r.matches;
