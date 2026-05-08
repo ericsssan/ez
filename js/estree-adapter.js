@@ -3962,8 +3962,11 @@ const _TAG_DELETE_PROPS = {
   // Identifier: ESTree spec has no .left/.right. The compiled jsdocUtils.cjs checks
   // `'left' in param && 'typeAnnotation' in param.left` without a null guard, so
   // `'left' in identifier` returning true leads to `'typeAnnotation' in undefined` crash.
-  [T.identifier]:            ['left', 'right'],
-  [T.property_ident]:        ['left', 'right'],
+  // `name` is also deleted because we eager-fill it as an own data property in
+  // `_NodeView_LR`'s ctor (the prototype's getter would otherwise be readonly
+  // and block the assignment in strict mode).
+  [T.identifier]:            ['left', 'right', 'name'],
+  [T.property_ident]:        ['left', 'right', 'name'],
   // Property/shorthand_property/computed_property: ESTree spec has no .left/.right/.name.
   // jsdocUtils v2's compiled dist checks `'left' in prop && 'typeAnnotation' in prop.left`
   // and `'name' in prop` without null guards on Property nodes from ObjectPattern.properties.
@@ -4038,11 +4041,35 @@ function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
 }
-function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']
+// Identifier name extraction — pulled out of the `get name` getter so we
+// can eager-fill `name` as an own property at construction time for
+// identifier-tagged NodeViews. Profiles on typescript.js attributed ~11%
+// of total ez time to the `get name` getter dispatch + cache check (V8
+// IC pessimised by the prototype-getter shape); replacing it with a
+// plain own-property read drops that to a fast inline-cached load.
+function _computeIdentifierName(ast, idx) {
+  const tok = ast._mainTokens[idx];
+  const pos = ast._tokStarts[tok];
+  if (ast.source.charCodeAt(pos) === 35) { // '#' — private identifier
+    const nextTokStart = tok + 1 < ast.tokenCount ? ast._tokStarts[tok + 1] : pos + 1;
+    if (nextTokStart === pos + 1 && tok + 1 < ast.tokenCount) {
+      return _resolveUnicodeEscapes(ast._identAt(tok + 1));
+    }
+    return _resolveUnicodeEscapes(ast.source.slice(pos + 1, nextTokStart).replace(/\s+$/, ''));
+  }
+  return _resolveUnicodeEscapes(ast._identAt(tok));
+}
+
+function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifier, T.property_ident)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null; this._range = null;
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
-  this._cachedName = undefined; this._params = undefined;
+  // Eager `name` — every identifier instance gets a fixed shape with `name`
+  // as an own data property; rule code reads it without hitting the
+  // prototype getter. `_cachedName` is dropped from this ctor since the
+  // lazy-cache path is unreachable for these tags.
+  this.name = _computeIdentifierName(ast, idx);
+  this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
 }
 function _NodeView_N(ast, idx, tag, type) {    // ['name']

@@ -46,12 +46,19 @@ const fileArg = _arg("--file", "three.js");
 const filePath = path.isAbsolute(fileArg) ? fileArg : path.join(FIXTURES_DIR, fileArg);
 
 // Build the default rule set: every rule ez has that oxlint also has.
+//
+// `eslint-plugin-unicorn` is intentionally excluded from the perf_hunt
+// default — its rules use a generator-based fix-iteration wrapper
+// (`iterateFixOrProblems`) that runs on every rule even when nothing is
+// fixable, plus quadratic helpers like `isFunctionParametersSafeToFix` in
+// `no-array-for-each`. On typescript.js a single unicorn rule was ~28% of
+// total ez time, distorting the ez-vs-oxlint headline. Pass the rules
+// explicitly via `--rules` if you want them benchmarked.
 function _commonRulesWithOxlint() {
   const { loadCoreRules, loadPlugin } = require(path.join(ROOT, "js/load-plugin.js"));
   const PLUGIN_PKGS = [
     "@typescript-eslint/eslint-plugin",
     "eslint-plugin-import",
-    "eslint-plugin-unicorn",
     "eslint-plugin-react",
     "eslint-plugin-react-hooks",
     "eslint-plugin-n",
