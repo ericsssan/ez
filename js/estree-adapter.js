@@ -3013,15 +3013,23 @@ const NodeProto = {
   /**
    * node.elements — elements of ArrayExpression or ArrayPattern.
    * Holes are represented as null (matching ESLint's AST).
+   *
+   * Cached: rules like unicorn/no-array-for-each visit every Identifier
+   * and call `parent.elements.includes(node)` from `isNotReference`,
+   * which would otherwise rebuild the array per visit. Cache key is
+   * `_BODY_UNSET` (shared "not computed yet" sentinel) so non-array
+   * tags also short-circuit on subsequent reads.
    */
   get elements() {
+    if (this._elements !== _BODY_UNSET) return this._elements;
     const t = this._tag;
     const ast = this._ast;
+    let result = undefined;
     if (t === T.array_literal || t === T.array_pattern) {
       const lhs = ast.nodeLhs(this._i);
       const rhs = ast.nodeRhs(this._i);
       const slice = ast._extraData.subarray(lhs, rhs);
-      const result = [];
+      result = [];
       for (let j = 0; j < slice.length; j++) {
         const nodeIdx = slice[j];
         result.push(nodeIdx === NONE ? null : nodeView(ast, nodeIdx));
@@ -3035,9 +3043,9 @@ const NodeProto = {
           result.pop();
         }
       }
-      return result;
     }
-    return undefined;
+    this._elements = result;
+    return result;
   },
 
   /**
@@ -3102,16 +3110,25 @@ const NodeProto = {
 
   /**
    * node.properties — properties of ObjectExpression or ObjectPattern.
+   *
+   * Cached: hot via `parent.parent.properties.includes(parent)` in
+   * unicorn/ast/is-reference-identifier's Property case (one of several
+   * patterns that drive `_nodesFromRange` to ~17% self-time on
+   * typescript.js).
    */
   get properties() {
+    if (this._properties !== _BODY_UNSET) return this._properties;
     const t = this._tag;
     const ast = this._ast;
+    let result = undefined;
     if (t === T.object_literal || t === T.object_pattern) {
       const nodes = ast._nodesFromRange(ast.nodeLhs(this._i), ast.nodeRhs(this._i));
-      if (t !== T.object_pattern) return nodes;
+      if (t !== T.object_pattern) {
+        result = nodes;
+      } else {
       // ObjectPattern: wrap bare AssignmentPattern/Identifier/RestElement in
       // synthetic Property nodes — ESTree requires Property wrappers in patterns.
-      return nodes.map(n => {
+      result = nodes.map(n => {
         if (n.type === 'Property') return n;
         if (n.type === 'RestElement' || n.type === 'SpreadElement') return n;
         // Shorthand destructuring default: {a=1} → Property { key: a, value: AssignmentPattern }
@@ -3127,8 +3144,10 @@ const NodeProto = {
         }
         return n;
       });
+      }
     }
-    return undefined;
+    this._properties = result;
+    return result;
   },
 
   /**
@@ -4045,6 +4064,8 @@ function _NodeView(ast, idx, tag, type) {
   this._typeParameters = undefined;
   this._arguments = undefined;
   this._decorators = undefined;
+  this._elements = _BODY_UNSET;
+  this._properties = _BODY_UNSET;
 }
 _NodeView.prototype = NodeProto;
 
@@ -4063,6 +4084,7 @@ function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
 }
 // Identifier name extraction — pulled out of the `get name` getter so we
 // can eager-fill `name` as an own property at construction time for
@@ -4095,6 +4117,7 @@ function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifie
   this.name = _computeIdentifierName(ast, idx);
   this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
 }
 function _NodeView_N(ast, idx, tag, type) {    // ['name']  (T.assignment_pattern)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
@@ -4103,6 +4126,7 @@ function _NodeView_N(ast, idx, tag, type) {    // ['name']  (T.assignment_patter
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
 }
 function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation']  (T.ts_parameter_property)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
@@ -4111,6 +4135,7 @@ function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
+  this._elements = _BODY_UNSET; this._properties = _BODY_UNSET;
 }
 _NodeView_LRN.prototype = _getTypeProto(T.rest_element);
 _NodeView_LR.prototype  = _getTypeProto(T.identifier);
