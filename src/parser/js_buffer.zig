@@ -94,10 +94,16 @@ pub const BufferHeader = extern struct {
     // `_OVERRIDE_TYPES` (PrivateIdentifier, Property, TSImportEquals…, etc).
     // See parent_builder.TypeOverride for the mapping.
     type_overrides_offset: u32 = 0,
+    // v14: ESTree-shape parent-synthesis dispatch slot per node. u8[node_count].
+    // 0 = no synthesis (use resolved-parent NodeView directly); 1..6 select a
+    // synthetic-wrapper or redirect path in JS-side `get parent`. Replaces the
+    // post-resolve tag-pattern cascade with a single typed-array read.
+    // See parent_builder.ParentKind for the mapping.
+    parent_kind_offset: u32 = 0,
 };
 
 comptime {
-    std.debug.assert(@sizeOf(BufferHeader) == 148);
+    std.debug.assert(@sizeOf(BufferHeader) == 152);
 }
 
 // ── Semantic Data Header ─────────────────────────────────────────
@@ -1328,6 +1334,7 @@ pub const HeaderInfo = struct {
     tok_cmt_merge_offset: u32 = 0,
     resolved_parent_offset: u32 = 0,
     type_overrides_offset: u32 = 0,
+    parent_kind_offset: u32 = 0,
 };
 
 /// Write the buffer header at offset 0 after parsing is complete.
@@ -1375,6 +1382,7 @@ pub fn writeHeader(buf: [*]u8, tree: *const Ast, info: HeaderInfo) void {
         .tok_cmt_merge_offset = info.tok_cmt_merge_offset,
         .resolved_parent_offset = info.resolved_parent_offset,
         .type_overrides_offset = info.type_overrides_offset,
+        .parent_kind_offset = info.parent_kind_offset,
     };
 }
 

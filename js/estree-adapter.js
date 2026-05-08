@@ -171,6 +171,11 @@ const H = {
   // `_computeNodeType` switch. 0 = use TAG_NAMES[tag]; 1..19 = override
   // slot in `_OVERRIDE_TYPES`. See parent_builder.zig TypeOverride enum.
   TYPE_OVERRIDES_OFFSET: 144,
+  // v14: u8 parent-synthesis kind per node — pre-baked dispatch for the
+  // post-resolve cascade in `get parent`. 0 = no synthesis (use resolved
+  // parent NodeView directly); 1..6 select a synthetic-wrapper or redirect
+  // path. See parent_builder.zig ParentKind enum.
+  PARENT_KIND_OFFSET: 148,
 };
 
 // CfgGraphHeader: 25 u32 fields = 100 bytes
@@ -368,6 +373,13 @@ class AstView {
     const typeOverridesOff = dv.getUint32(H.TYPE_OVERRIDES_OFFSET, true);
     this._typeOverrides = typeOverridesOff > 0
       ? new Uint8Array(buffer, typeOverridesOff, this.nodeCount)
+      : null;
+    // v14: per-node parent-synthesis kind. 0 = no synthesis (return resolved
+    // parent NodeView directly); 1..6 select a synthetic-wrapper or redirect
+    // path. Replaces the post-resolve tag-pattern cascade in `get parent`.
+    const parentKindOff = dv.getUint32(H.PARENT_KIND_OFFSET, true);
+    this._parentKinds = parentKindOff > 0
+      ? new Uint8Array(buffer, parentKindOff, this.nodeCount)
       : null;
 
     // DFS traversal orders (v4 — pre-order and post-order, computed in Zig)
@@ -1190,132 +1202,104 @@ const NodeProto = {
   get parent() {
     if (this._parent !== _PARENT_UNSET) return this._parent;
     const ast = this._ast;
-    const pd = ast._parentData;
-    if (!pd) { this._parent = null; return null; }
-    // Resolved parent (post grouping_expr / ts_parenthesized_type skip) is
-    // pre-baked in the buffer by Zig's `parent_builder`. Skips the while-loop
-    // that used to walk the parent chain on every first access. JS fallback
-    // path runs the loop only when the buffer doesn't carry the v12 array.
-    let parentIdx;
-    if (ast._resolvedParentData) {
-      parentIdx = ast._resolvedParentData[this._i];
-    } else {
-      parentIdx = pd[this._i];
-      let _skipGuard = 0;
-      while (parentIdx !== NONE && (ast._nodeTags[parentIdx] === T.grouping_expr ||
-                                     ast._nodeTags[parentIdx] === T.ts_parenthesized_type)) {
-        parentIdx = pd[parentIdx];
-        if (++_skipGuard > 64) { parentIdx = NONE; break; }
-      }
-    }
-    let result = parentIdx === NONE ? null : nodeView(this._ast, parentIdx);
+    const parentIdx = ast._resolvedParentData[this._i];
+    if (parentIdx === NONE) { this._parent = null; return null; }
 
-    // If this node is the outermost of an optional chain (i.e., it's optional itself, not a non-optional
-    // chain middle), wrap it in a ChainExpression and return that as the parent.
-    // This ensures the parent chain matches ESTree structure where ChainExpression wraps the
-    // outermost optional node:
-    //   buffer: parentNode -> optionalNode
-    //   ESTree: parentNode -> ChainExpression { expression: optionalNode }
-    // Example: (Object?.prototype).p = 0
-    //   buffer: MemberExpression(.p) -> MemberExpression(.prototype, optional)
-    //   ESTree: MemberExpression(.p) -> ChainExpression -> MemberExpression(.prototype, optional)
-    const thisTag = this._tag; // own data field, no typed-array dispatch
-    if (result && _isOptionalTag(thisTag) && !_isChainChild(this._ast, this._i)) {
-      // This node is the outermost optional node — wrap parent in a ChainExpression.
-      // (Chain children should NOT get a ChainExpression parent; their parent is the
-      //  optional call/member that contains them.)
-      const chainExpr = _getChainExpr(this._ast, this._i);
-      // Store the actual parent so that chainExpr.parent returns the right value
-      Object.defineProperty(chainExpr, '_realParent', {
-        value: result,
-        writable: true,
-        enumerable: false,
-        configurable: true
-      });
-      this._parent = chainExpr;
-      return chainExpr;
+    // Pre-baked synthesis kind from Zig (see parent_builder.ParentKind).
+    // Common case: kind === 0 → return resolved-parent NodeView directly.
+    const kind = ast._parentKinds[this._i];
+    if (kind === 0) {
+      const r = nodeView(this._ast, parentIdx);
+      this._parent = r;
+      return r;
     }
 
-    // Method/getter/setter children: in ez the block body and params are direct
-    // children of method_def, but ESTree inserts a FunctionExpression between them.
-    // Return the synthetic FunctionExpression as parent for all non-key children
-    // so `isFunction(node.parent)` works for rules like no-empty/no-object-as-default-parameter.
-    if (result) {
-      const pt = result._tag;
-      if (pt === T.method_def || pt === T.getter_def || pt === T.setter_def ||
-          pt === T.constructor_def || pt === T.computed_method_def ||
-          pt === T.computed_getter_def || pt === T.computed_setter_def) {
-        // Exclude the key (lhs = method name identifier) — its parent should stay as MethodDefinition.
-        if (this._i !== this._ast.nodeLhs(result._i)) {
-          result = result.value; // .value getter returns the synthetic FunctionExpression
-        }
+    let result = nodeView(this._ast, parentIdx);
+    switch (kind) {
+      case 1: {
+        // ChainExpression wrap — this node is the outermost optional. Wrap
+        // the resolved parent in a synthetic ChainExpression and stash the
+        // real parent on it for ChainExpression's own parent lookup.
+        const chainExpr = _getChainExpr(this._ast, this._i);
+        Object.defineProperty(chainExpr, '_realParent', {
+          value: result, writable: true, enumerable: false, configurable: true,
+        });
+        this._parent = chainExpr;
+        return chainExpr;
       }
-    }
-    // ESTree requires ObjectPattern children to be wrapped in Property nodes.
-    // Ez stores AssignmentPattern/Identifier directly under ObjectPattern
-    // for destructuring defaults ({a=1}) and shorthand-less patterns.
-    // Synthesize a Property wrapper so parent-chain checks like
-    // `node.parent.parent.type === "ObjectPattern"` work correctly.
-    if (result && result._tag === T.object_pattern) {
-      const t = this._tag;
-      if (t === T.assignment_pattern || t === T.identifier) {
+      case 2: {
+        // Method/getter/setter non-key child — ESTree wants the synthetic
+        // FunctionExpression (parent.value) as the parent.
+        result = result.value;
+        this._parent = result;
+        return result;
+      }
+      case 3: {
+        // ObjectPattern child (assignment_pattern/identifier) — synthesize a
+        // Property wrapper so parent-chain checks find ObjectPattern correctly.
+        const t = this._tag;
         const key = t === T.assignment_pattern
-          ? (this._ast.nodeLhs(this._i) !== NONE ? nodeView(this._ast, this._ast.nodeLhs(this._i)) : this)
+          ? (this._ast.nodeLhs(this._i) !== NONE
+              ? nodeView(this._ast, this._ast.nodeLhs(this._i))
+              : this)
           : this;
-        result = {
+        const wrapper = {
           type: 'Property', key, value: this, kind: 'init', method: false,
           shorthand: true, computed: false,
           start: this.start, end: this.end, range: this.range, loc: this.loc,
           parent: result,
         };
+        this._parent = wrapper;
+        return wrapper;
+      }
+      case 4: {
+        // JSXOpeningElement wrap — jsx_attribute/jsx_spread_attribute under
+        // jsx_self_closing. ESTree expects JSXOpeningElement(selfClosing=true).
+        const selfClosingNode = result;
+        const ast2 = this._ast;
+        const d = ast2.extraJsxOpeningData(ast2.nodeLhs(selfClosingNode._i));
+        const openingEl = {
+          type: 'JSXOpeningElement',
+          selfClosing: true,
+          get name() { return d.name !== NONE ? nodeView(ast2, d.name) : null; },
+          get attributes() { return ast2._nodesFromRange(d.attrs_start, d.attrs_end); },
+          range: selfClosingNode.range,
+          loc: selfClosingNode.loc,
+          get start() { return selfClosingNode.start; },
+          get end() { return selfClosingNode.end; },
+          parent: selfClosingNode,
+        };
+        this._parent = openingEl;
+        return openingEl;
+      }
+      case 5: {
+        // TSEnumMember → synthetic TSEnumBody. Trigger the body getter so
+        // _syntheticEnumBody is populated on this node before returning.
+        if (this._syntheticEnumBody === undefined) void result.body;
+        const body = this._syntheticEnumBody;
+        if (body !== undefined) {
+          this._parent = body;
+          return body;
+        }
+        this._parent = result;
+        return result;
+      }
+      case 6: {
+        // TS interface member → synthetic TSInterfaceBody (cached on the
+        // parent NodeView via its `body` getter).
+        const ifaceBody = result.body;
+        if (ifaceBody) {
+          this._parent = ifaceBody;
+          return ifaceBody;
+        }
+        this._parent = result;
+        return result;
+      }
+      default: {
+        this._parent = result;
+        return result;
       }
     }
-    // JSX: for jsx_attribute/jsx_spread_attribute nodes whose Zig parent is jsx_self_closing,
-    // ESTree requires the parent to be JSXOpeningElement (selfClosing=true),
-    // not JSXElement. Synthesize a JSXOpeningElement wrapper so that rules
-    // checking node.parent.type === 'JSXOpeningElement' work correctly.
-    if (result && (this._tag === T.jsx_attribute || this._tag === T.jsx_spread_attribute) && result._tag === T.jsx_self_closing) {
-      const selfClosingNode = result;
-      const ast = this._ast;
-      const d = ast.extraJsxOpeningData(ast.nodeLhs(selfClosingNode._i));
-      const openingEl = {
-        type: 'JSXOpeningElement',
-        selfClosing: true,
-        get name() { return d.name !== NONE ? nodeView(ast, d.name) : null; },
-        get attributes() { return ast._nodesFromRange(d.attrs_start, d.attrs_end); },
-        range: selfClosingNode.range,
-        loc: selfClosingNode.loc,
-        get start() { return selfClosingNode.start; },
-        get end() { return selfClosingNode.end; },
-        parent: selfClosingNode,
-      };
-      result = openingEl;
-    }
-    // TSEnumMember: parent should be the synthetic TSEnumBody, not TSEnumDeclaration.
-    // ESLint rules use node.parent.parent to get from TSEnumMember → TSEnumBody → TSEnumDeclaration.
-    if (result && result._tag === T.ts_enum_decl && this._tag === T.ts_enum_member) {
-      // Trigger body getter to ensure _syntheticEnumBody is populated on this node.
-      if (this._syntheticEnumBody === undefined) void result.body;
-      if (this._syntheticEnumBody !== undefined) {
-        this._parent = this._syntheticEnumBody;
-        return this._syntheticEnumBody;
-      }
-    }
-    // TSInterfaceDeclaration members: parent should be the synthetic TSInterfaceBody.
-    // Rules like unified-signatures compare signature.parent === currentScope.parent
-    // where currentScope.parent is the TSInterfaceBody from node.body.
-    if (result && result._tag === T.ts_interface_decl &&
-        (this._tag === T.ts_method_signature || this._tag === T.ts_property_signature ||
-         this._tag === T.ts_call_signature || this._tag === T.ts_construct_signature ||
-         this._tag === T.ts_index_signature)) {
-      const ifaceBody = result.body; // cached synthetic TSInterfaceBody
-      if (ifaceBody) {
-        this._parent = ifaceBody;
-        return ifaceBody;
-      }
-    }
-    this._parent = result;
-    return result;
   },
   set parent(v) {
     this._parent = v;

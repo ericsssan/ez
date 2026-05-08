@@ -588,6 +588,7 @@ fn parseImpl(
     var dfs_events_offset: u32 = undefined;
     var resolved_parent_offset: u32 = undefined;
     var type_overrides_offset: u32 = undefined;
+    var parent_kind_offset: u32 = undefined;
 
     var semantic_data_offset: u32 = 0;
     const stream_sem_handled: bool = use_stream_sem and stream_sem_thread != null;
@@ -859,6 +860,8 @@ fn parseImpl(
         js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
     type_overrides_offset = if (traversal.type_overrides.len > 0)
         js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
+    parent_kind_offset = if (traversal.parent_kinds.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.parent_kinds.ptr) else 0;
 
     // Compute node start/end positions (UTF-16). When streaming-sem is on,
     // trav_thread already ran buildNodeSpans after s_utf16_done — adopt its
@@ -954,6 +957,7 @@ fn parseImpl(
         .tok_cmt_merge_offset = tok_cmt_merge_offset,
         .resolved_parent_offset = resolved_parent_offset,
         .type_overrides_offset = type_overrides_offset,
+        .parent_kind_offset = parent_kind_offset,
     });
 
     const t_header_end = if (trace_main) TraceTs.now() else undefined;
@@ -1062,6 +1066,8 @@ fn parseAndLintImpl(
         js_buffer.ptrOffsetPub(buf_ptr, traversal.resolved_parents.ptr) else 0;
     const type_overrides_offset = if (traversal.type_overrides.len > 0)
         js_buffer.ptrOffsetPub(buf_ptr, traversal.type_overrides.ptr) else 0;
+    const parent_kind_offset = if (traversal.parent_kinds.len > 0)
+        js_buffer.ptrOffsetPub(buf_ptr, traversal.parent_kinds.ptr) else 0;
 
     // Semantic analysis — keep result alive for lint below.
     var semantic_data_offset: u32 = 0;
@@ -1298,6 +1304,7 @@ fn parseAndLintImpl(
         .tok_cmt_merge_offset   = tok_cmt_merge_offset,
         .resolved_parent_offset = resolved_parent_offset,
         .type_overrides_offset  = type_overrides_offset,
+        .parent_kind_offset     = parent_kind_offset,
     });
 
     return backing.bytesUsed();

@@ -44,6 +44,47 @@ pub const TraversalResult = struct {
     /// per-node `_computeNodeType` switch + token text matching for the five
     /// disambiguation cases. See `TypeOverride` below for the slot layout.
     type_overrides: []u8,
+    /// parent_kinds[i] = ESTree-shape parent-synthesis dispatch slot for node i,
+    /// or 0 to mean "no synthesis; resolved_parents[i]'s NodeView is the parent
+    /// directly". Pre-bakes the per-node tag-pattern matching that JS-side
+    /// `get parent` runs after resolving the direct parent. See `ParentKind`
+    /// below for the slot layout.
+    parent_kinds: []u8,
+};
+
+/// ESTree-shape parent-synthesis IDs. Slot 0 means "no synthesis" — the JS
+/// adapter returns the resolved-parent NodeView unchanged. Slots 1..6 each
+/// trigger a specific synthetic-wrapper or redirect path in the JS `get
+/// parent` getter, replacing the per-node tag-pattern cascade with a single
+/// u8 lookup. Must stay in sync with the dispatch in `js/estree-adapter.js`'s
+/// `get parent`.
+pub const ParentKind = enum(u8) {
+    none = 0,
+    /// This node is the outermost optional in a chain — wrap parent NodeView
+    /// in a synthetic ChainExpression. Tag is one of optional_member_expr /
+    /// optional_computed_member_expr / optional_call_expr, and the direct
+    /// parent (post grouping_expr skip) does not extend the chain by using
+    /// this as object/callee.
+    chain_expression = 1,
+    /// Resolved parent is one of method_def / getter_def / setter_def /
+    /// constructor_def / computed_method_def / computed_getter_def /
+    /// computed_setter_def, and this node is NOT the method's key (lhs).
+    /// JS returns the synthetic FunctionExpression (`parent.value`) instead.
+    method_value = 2,
+    /// Resolved parent is object_pattern and this node is assignment_pattern
+    /// or identifier — JS synthesizes a Property wrapper around it.
+    object_pattern_property = 3,
+    /// Resolved parent is jsx_self_closing and this node is jsx_attribute or
+    /// jsx_spread_attribute — JS synthesizes a JSXOpeningElement wrapper.
+    jsx_opening_element = 4,
+    /// Resolved parent is ts_enum_decl and this node is ts_enum_member — JS
+    /// returns the synthetic TSEnumBody (cached on the parent NodeView).
+    ts_enum_body = 5,
+    /// Resolved parent is ts_interface_decl and this node is one of
+    /// ts_method_signature / ts_property_signature / ts_call_signature /
+    /// ts_construct_signature / ts_index_signature — JS returns the synthetic
+    /// TSInterfaceBody (cached on the parent NodeView).
+    ts_interface_body = 6,
 };
 
 /// ESTree-shape type override IDs. Must stay in sync with `_OVERRIDE_TYPES`
@@ -469,13 +510,15 @@ pub fn buildTraversalAux(
     tree: *const Ast,
     alloc: std.mem.Allocator,
     parents: []const u32,
-) !struct { resolved_parents: []u32, type_overrides: []u8 } {
+) !struct { resolved_parents: []u32, type_overrides: []u8, parent_kinds: []u8 } {
     const n = tree.nodes.len;
     const resolved_parents = try alloc.alloc(u32, n);
     const type_overrides = try alloc.alloc(u8, n);
+    const parent_kinds = try alloc.alloc(u8, n);
     @memset(type_overrides, 0);
+    @memset(parent_kinds, 0);
 
-    if (n == 0) return .{ .resolved_parents = resolved_parents, .type_overrides = type_overrides };
+    if (n == 0) return .{ .resolved_parents = resolved_parents, .type_overrides = type_overrides, .parent_kinds = parent_kinds };
 
     const tags = tree.nodes.items(.tag);
 
@@ -546,7 +589,94 @@ pub fn buildTraversalAux(
         }
     }
 
-    return .{ .resolved_parents = resolved_parents, .type_overrides = type_overrides };
+    // Parent-synthesis kinds — pre-bake the JS `get parent` post-resolve
+    // dispatch. Determined entirely from (this.tag, resolved_parent.tag,
+    // direct_parent.tag for chain detection, nodeLhs(parent)) — all static.
+    {
+        for (0..n) |i| {
+            const rp = resolved_parents[i];
+            if (rp == NONE) continue;
+            const this_tag = tags[i];
+
+            // Kind 1: ChainExpression wrap — this node is the outermost
+            // optional in its chain. Uses DIRECT parent (post grouping_expr
+            // skip only) per `_isChainChild` semantics in the JS adapter.
+            if (this_tag == .optional_member_expr or
+                this_tag == .optional_computed_member_expr or
+                this_tag == .optional_call_expr)
+            {
+                var dp = parents[i];
+                var dguard: u32 = 0;
+                while (dp != NONE and tags[dp] == .grouping_expr) {
+                    dp = parents[dp];
+                    dguard += 1;
+                    if (dguard > 64) { dp = NONE; break; }
+                }
+                var is_chain_child = false;
+                if (dp != NONE) {
+                    const dpt = tags[dp];
+                    const is_optional = dpt == .optional_member_expr or
+                        dpt == .optional_computed_member_expr or
+                        dpt == .optional_call_expr;
+                    const is_middle = dpt == .member_expr or
+                        dpt == .computed_member_expr or
+                        dpt == .call_expr;
+                    if ((is_optional or is_middle) and data[dp].lhs.toInt() == @as(u32, @intCast(i))) {
+                        is_chain_child = true;
+                    }
+                }
+                if (!is_chain_child) {
+                    parent_kinds[i] = @intFromEnum(ParentKind.chain_expression);
+                    continue;
+                }
+            }
+
+            const pt = tags[rp];
+
+            // Kind 2: method.value redirect — non-key child of a method-like.
+            switch (pt) {
+                .method_def, .getter_def, .setter_def, .constructor_def,
+                .computed_method_def, .computed_getter_def, .computed_setter_def => {
+                    if (data[rp].lhs.toInt() != @as(u32, @intCast(i))) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.method_value);
+                        continue;
+                    }
+                },
+                .object_pattern => {
+                    if (this_tag == .assignment_pattern or this_tag == .identifier) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.object_pattern_property);
+                        continue;
+                    }
+                },
+                .jsx_self_closing => {
+                    if (this_tag == .jsx_attribute or this_tag == .jsx_spread_attribute) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.jsx_opening_element);
+                        continue;
+                    }
+                },
+                .ts_enum_decl => {
+                    if (this_tag == .ts_enum_member) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.ts_enum_body);
+                        continue;
+                    }
+                },
+                .ts_interface_decl => {
+                    if (this_tag == .ts_method_signature or
+                        this_tag == .ts_property_signature or
+                        this_tag == .ts_call_signature or
+                        this_tag == .ts_construct_signature or
+                        this_tag == .ts_index_signature)
+                    {
+                        parent_kinds[i] = @intFromEnum(ParentKind.ts_interface_body);
+                        continue;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    return .{ .resolved_parents = resolved_parents, .type_overrides = type_overrides, .parent_kinds = parent_kinds };
 }
 
 /// Parallel variant of buildTraversal: spawns an aux sub-thread that runs
@@ -594,6 +724,7 @@ pub fn buildTraversalParallel(
         tag_csr_ready: ?*std.atomic.Value(bool) = null,
         resolved_parents: []u32 = &.{},
         type_overrides: []u8 = &.{},
+        parent_kinds: []u8 = &.{},
         err: ?anyerror = null,
         fn run(self: *@This()) void {
             // tag_csr first (if requested) — signal early so worker doesn't spin.
@@ -607,10 +738,11 @@ pub fn buildTraversalParallel(
                 }
             }
             if (self.tag_csr_ready) |a| a.store(true, .release);
-            // Then resolved_parents + type_overrides.
+            // Then resolved_parents + type_overrides + parent_kinds.
             if (buildTraversalAux(self.tree, self.alloc, self.parents)) |r| {
                 self.resolved_parents = r.resolved_parents;
                 self.type_overrides = r.type_overrides;
+                self.parent_kinds = r.parent_kinds;
             } else |e| {
                 self.err = e;
             }
@@ -709,6 +841,7 @@ pub fn buildTraversalParallel(
         const r = try buildTraversalAux(tree, alloc, parents);
         aux_job.resolved_parents = r.resolved_parents;
         aux_job.type_overrides = r.type_overrides;
+        aux_job.parent_kinds = r.parent_kinds;
     }
 
     return .{
@@ -719,6 +852,7 @@ pub fn buildTraversalParallel(
         .min_tok = min_tok,
         .resolved_parents = aux_job.resolved_parents,
         .type_overrides = aux_job.type_overrides,
+        .parent_kinds = aux_job.parent_kinds,
     };
 }
 
@@ -733,7 +867,8 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         const empty_min_tok = try alloc.alloc(u32, 0);
         const empty_resolved = try alloc.alloc(u32, 0);
         const empty_type_ov = try alloc.alloc(u8, 0);
-        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = empty_min_tok, .resolved_parents = empty_resolved, .type_overrides = empty_type_ov };
+        const empty_parent_kinds = try alloc.alloc(u8, 0);
+        return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = empty_min_tok, .resolved_parents = empty_resolved, .type_overrides = empty_type_ov, .parent_kinds = empty_parent_kinds };
     }
 
     // Post-order: trivial (bottom-up build → always [1..n-1, 0]).
@@ -910,7 +1045,92 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         }
     }
 
-    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = min_tok, .resolved_parents = resolved_parents, .type_overrides = type_overrides };
+    // ── Parent-synthesis kinds ─────────────────────────────────────────────
+    // Pre-bake the JS `get parent` post-resolve dispatch (see ParentKind).
+    const parent_kinds = try alloc.alloc(u8, n);
+    @memset(parent_kinds, 0);
+    {
+        const tags = tree.nodes.items(.tag);
+        const data = tree.nodes.items(.data);
+        for (0..n) |i| {
+            const rp = resolved_parents[i];
+            if (rp == NONE) continue;
+            const this_tag = tags[i];
+
+            if (this_tag == .optional_member_expr or
+                this_tag == .optional_computed_member_expr or
+                this_tag == .optional_call_expr)
+            {
+                var dp = parents[i];
+                var dguard: u32 = 0;
+                while (dp != NONE and tags[dp] == .grouping_expr) {
+                    dp = parents[dp];
+                    dguard += 1;
+                    if (dguard > 64) { dp = NONE; break; }
+                }
+                var is_chain_child = false;
+                if (dp != NONE) {
+                    const dpt = tags[dp];
+                    const is_optional = dpt == .optional_member_expr or
+                        dpt == .optional_computed_member_expr or
+                        dpt == .optional_call_expr;
+                    const is_middle = dpt == .member_expr or
+                        dpt == .computed_member_expr or
+                        dpt == .call_expr;
+                    if ((is_optional or is_middle) and data[dp].lhs.toInt() == @as(u32, @intCast(i))) {
+                        is_chain_child = true;
+                    }
+                }
+                if (!is_chain_child) {
+                    parent_kinds[i] = @intFromEnum(ParentKind.chain_expression);
+                    continue;
+                }
+            }
+
+            const pt = tags[rp];
+            switch (pt) {
+                .method_def, .getter_def, .setter_def, .constructor_def,
+                .computed_method_def, .computed_getter_def, .computed_setter_def => {
+                    if (data[rp].lhs.toInt() != @as(u32, @intCast(i))) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.method_value);
+                        continue;
+                    }
+                },
+                .object_pattern => {
+                    if (this_tag == .assignment_pattern or this_tag == .identifier) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.object_pattern_property);
+                        continue;
+                    }
+                },
+                .jsx_self_closing => {
+                    if (this_tag == .jsx_attribute or this_tag == .jsx_spread_attribute) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.jsx_opening_element);
+                        continue;
+                    }
+                },
+                .ts_enum_decl => {
+                    if (this_tag == .ts_enum_member) {
+                        parent_kinds[i] = @intFromEnum(ParentKind.ts_enum_body);
+                        continue;
+                    }
+                },
+                .ts_interface_decl => {
+                    if (this_tag == .ts_method_signature or
+                        this_tag == .ts_property_signature or
+                        this_tag == .ts_call_signature or
+                        this_tag == .ts_construct_signature or
+                        this_tag == .ts_index_signature)
+                    {
+                        parent_kinds[i] = @intFromEnum(ParentKind.ts_interface_body);
+                        continue;
+                    }
+                },
+                else => {},
+            }
+        }
+    }
+
+    return .{ .parents = parents, .pre_order = pre_order, .post_order = post_order, .dfs_events = dfs_events, .min_tok = min_tok, .resolved_parents = resolved_parents, .type_overrides = type_overrides, .parent_kinds = parent_kinds };
 }
 
 /// Match a TSTypeReference's main-token text against TS keyword type names
