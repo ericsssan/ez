@@ -568,11 +568,68 @@ function emitGeneratorListener(src, m) {
   return edits;
 }
 
+// Pattern: `<expr>.parent.type <op> <StringLiteral>` where op is === or !==.
+// Replaces a property chain that allocates the parent NodeView (just to
+// read .type) with a direct buffer-read helper.
+//
+// Detection:
+//   BinaryExpression {
+//     operator: "===" | "!==",
+//     left: MemberExpression {
+//       object: MemberExpression { object: <expr>, property.name: "parent", !computed },
+//       property.name: "type", !computed,
+//     },
+//     right: Literal { value: string },
+//   }
+//
+// Or with right and left swapped (rules use both `parent.type === "X"`
+// and `"X" === parent.type`).
+//
+// Emit:
+//   _ezHelpers.parentTypeEq(<expr>, "<S>")     for ===
+//   _ezHelpers.parentTypeNeq(<expr>, "<S>")   for !==
+//
+// Conservative — bails on anything weird. <expr> can be any expression
+// since it's evaluated once and passed into the helper.
+function _isMemberAccess(node, propName) {
+  return node && node.type === "MemberExpression" && !node.computed
+    && node.property && node.property.type === "Identifier"
+    && node.property.name === propName;
+}
+
+function detectParentTypeComparePattern(node) {
+  if (node.type !== "BinaryExpression") return null;
+  if (node.operator !== "===" && node.operator !== "!==") return null;
+  // Identify the chain side and the literal side.
+  let chain, lit;
+  if (node.left && node.left.type === "MemberExpression" &&
+      node.right && node.right.type === "Literal" && typeof node.right.value === "string") {
+    chain = node.left; lit = node.right;
+  } else if (node.right && node.right.type === "MemberExpression" &&
+             node.left && node.left.type === "Literal" && typeof node.left.value === "string") {
+    chain = node.right; lit = node.left;
+  } else {
+    return null;
+  }
+  // Chain must be `<expr>.parent.type` (no computed, no optional).
+  if (!_isMemberAccess(chain, "type")) return null;
+  if (!_isMemberAccess(chain.object, "parent")) return null;
+  const objExpr = chain.object.object;
+  if (!objExpr || !objExpr.range) return null;
+  return {
+    fullRange: node.range,
+    objRange: objExpr.range,
+    litRange: lit.range,
+    operator: node.operator,
+  };
+}
+
 function rewrite(src) {
   const ast = parseFile(src);
   const arrTypeEqMatches = [];
   const indexedLookupMatches = [];
   const genListenerMatches = [];
+  const parentTypeMatches = [];
   walk(ast, (n) => {
     const m = detectArrTypeEqPattern(n);
     if (m) arrTypeEqMatches.push(m);
@@ -584,9 +641,13 @@ function rewrite(src) {
       const g = detectGeneratorListenerPattern(n);
       if (g) genListenerMatches.push(g);
     }
+    if (process.env.EZ_DISABLE_PARENT_TYPE !== "1") {
+      const p = detectParentTypeComparePattern(n);
+      if (p) parentTypeMatches.push(p);
+    }
   });
 
-  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length;
+  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length;
   if (matches === 0) {
     return { src, matches: 0 };
   }
@@ -607,6 +668,12 @@ function rewrite(src) {
   for (const m of genListenerMatches) {
     const e = emitGeneratorListener(src, m);
     if (e) edits.push(...e);
+  }
+  for (const m of parentTypeMatches) {
+    const objText = src.slice(m.objRange[0], m.objRange[1]);
+    const litText = src.slice(m.litRange[0], m.litRange[1]);
+    const helper = m.operator === "===" ? "parentTypeEq" : "parentTypeNeq";
+    edits.push({ range: m.fullRange, text: `_ezHelpers.${helper}(${objText}, ${litText})` });
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);
 

@@ -4287,6 +4287,21 @@ function reset() {
  * Used by walkNodes in eslint-runner.js so visitor dispatch uses the same
  * type names as NodeProto.type.
  */
+// Compute the ESTree-shape `type` string for a node directly from the
+// buffer — no NodeView allocation. Mirrors `_computeNodeType`'s logic
+// (consult `_typeOverrides` for pre-baked disambiguations, fall back to
+// `TAG_NAMES[tag]`). Used by rule-rewriter helpers
+// (`parentTypeEq` etc.) that need only the parent's `.type` and don't
+// want to materialize the parent NodeView just to read one string.
+function nodeTypeAt(ast, idx) {
+  const overrides = ast._typeOverrides;
+  if (overrides) {
+    const slot = overrides[idx];
+    if (slot !== 0) return _OVERRIDE_TYPES[slot];
+  }
+  return TAG_NAMES ? TAG_NAMES[ast._nodeTags[idx]] : null;
+}
+
 function effectiveTypeName(ast, idx, rawTagName) {
   if (rawTagName === 'TSTypeReference' && ast.nodeRhs(idx) === NONE) {
     const tok = ast._mainTokens[idx];
@@ -4763,4 +4778,4 @@ function getChainExprIfOutermost(ast, idx) {
   return null;
 }
 
-module.exports = { AstView, NodeProto, nodeView, _nodeViewRaw, reset, setTagNames, NONE, T, effectiveTypeName, CfgGraph, CfgSegment, CfgCodePath, getChainExprIfOutermost };
+module.exports = { AstView, NodeProto, nodeView, _nodeViewRaw, reset, setTagNames, NONE, T, effectiveTypeName, nodeTypeAt, CfgGraph, CfgSegment, CfgCodePath, getChainExprIfOutermost };

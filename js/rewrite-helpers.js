@@ -104,7 +104,82 @@ function indexedByProp(arr, prop) {
   return m;
 }
 
-module.exports = { someTypeEq, everyTypeEq, findTypeEq, indexedByProp };
+// ── Direct buffer-read helpers ─────────────────────────────────────
+//
+// Rule bodies frequently do `node.parent.type === "FunctionDeclaration"`,
+// `node.parent.parent.type === "..."`, etc. Each `.parent` access goes
+// through a getter that materializes a fresh NodeView object (allocated
+// once per node-pair, then cached), then `.type` reads the wrapper.
+// But the answer is sitting in the Zig buffer:
+//   - `_parentKinds[i]`: u8, indicates synthetic wrapper kind
+//   - `_resolvedParentData[i]`: u32, resolved parent's node index
+//   - `_nodeTags[parentIdx]`: u8, parent's ez tag
+//   - `effectiveTypeName(tag, ast, idx)`: string ESTree type
+//
+// These helpers read those arrays directly. No NodeView allocation,
+// no getter dispatch — O(1) Uint8Array/Uint32Array reads. The
+// `effectiveTypeName` call is the existing string-returning helper
+// in estree-adapter.js (cached by tag for hot tags).
+//
+// Fallback path: when `node` isn't an ez NodeView (e.g. one of the
+// synthetic Property/JSXOpeningElement wrappers built inside the
+// `parent` getter), we don't have a buffer index and must fall back
+// to the original property chain. The rewriter only emits the helper
+// call when the LHS is a name that *could* be a NodeView; the helper
+// itself self-checks before reading the buffer.
+
+const _NONE = 0xFFFFFFFF;
+let _nodeTypeAt = null;
+function _ensureAdapter() {
+  if (_nodeTypeAt === null) _nodeTypeAt = require("./estree-adapter").nodeTypeAt;
+}
+
+// `_parentKinds[i] === k` for k in 1..5 means the parent the rule sees
+// is a synthetic wrapper whose `.type` is determined entirely by `k`.
+// Index 0 is unused (real parent path).
+const _PARENT_KIND_TYPE = [
+  null,                  // 0: real parent (look up tag)
+  "ChainExpression",     // 1: ChainExpression wrap
+  "FunctionExpression",  // 2: method-def synthetic FunctionExpression
+  "Property",            // 3: ObjectPattern child synthetic Property
+  "JSXOpeningElement",   // 4: jsx_self_closing wrap
+  "TSEnumBody",          // 5: TSEnumMember → TSEnumBody
+];
+
+/**
+ * Equivalent to `node.parent?.type === expectedType` without allocating
+ * the parent NodeView. Reads `_parentKinds[i]` and `_nodeTags[parentIdx]`
+ * directly from the buffer.
+ */
+function parentTypeEq(node, expectedType) {
+  // Bail to the public API for anything that isn't a real NodeView.
+  // Real NodeViews always have `_tag !== undefined` (set by ctors);
+  // synthetic wrappers (e.g. the FunctionExpression for method-def
+  // values, ChainExpression wrappers, TS synthetic nodes) have `_i`
+  // accidentally added by other paths but no `_tag` — relying on `_i`
+  // alone is unsafe. The wrapper's `.parent` is set as a regular
+  // property so the slow path is correct.
+  if (!node || node._i === undefined || node._tag === undefined) {
+    return node?.parent?.type === expectedType;
+  }
+  const ast = node._ast;
+  if (!ast) return node.parent?.type === expectedType;
+  const kind = ast._parentKinds ? ast._parentKinds[node._i] : 0;
+  if (kind !== 0) return _PARENT_KIND_TYPE[kind] === expectedType;
+  const pd = ast._resolvedParentData;
+  if (!pd) return node.parent?.type === expectedType;
+  const pIdx = pd[node._i];
+  if (pIdx === _NONE) return false;
+  _ensureAdapter();
+  return _nodeTypeAt(ast, pIdx) === expectedType;
+}
+
+/** Negation of `parentTypeEq`. */
+function parentTypeNeq(node, expectedType) {
+  return !parentTypeEq(node, expectedType);
+}
+
+module.exports = { someTypeEq, everyTypeEq, findTypeEq, indexedByProp, parentTypeEq, parentTypeNeq };
 
 // Bun's CJS↔ESM interop: when this file is loaded via `import * as _ezHelpers`,
 // Bun maps `module.exports`'s keys onto the namespace. Both forms work.
