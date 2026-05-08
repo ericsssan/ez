@@ -3652,6 +3652,27 @@ class SourceCode {
   }
 
   /**
+   * Returns the materialized ancestor-class bitmap for `node` — a u32
+   * encoding which structural classes appear on the path from `node` up
+   * to the root, plus `node`'s own class. See `ANC_*` constants exported
+   * from this module (`ANC_ASYNC_FN`, `ANC_LOOP`, `ANC_TRY`, etc).
+   *
+   * Replaces ancestor-walking checks like
+   *   `getAncestors(node).some(a => a.type === 'WhileStatement')`
+   * with a single bitwise AND. The bitmap is built lazily on first
+   * request and cached for the file.
+   *
+   * Returns 0 when the buffer doesn't carry pre-order data (callers
+   * should treat 0 as "unknown" / fall back to ancestor-walking).
+   */
+  getAncestorBits(node) {
+    if (!node || node._i === undefined) return 0;
+    const ast = this._ast;
+    const bits = _buildAncestorBits(ast);
+    return bits ? bits[node._i] : 0;
+  }
+
+  /**
    * Returns the innermost AST node whose range contains the given index.
    * Used by rules like no-extra-semi to find which node a token belongs to.
    */
@@ -5168,6 +5189,96 @@ function _extractRuleTagBitset(visitors, nameToTagIds, tagCount) {
     }
   }
   return bs;
+}
+
+// ── Materialized ancestor-class bitmaps (DB "materialized view" analog) ─
+//
+// Pre-compute, per AST node, a u32 of bits answering common ancestor
+// questions. Replaces `getAncestors().some(a => a.type === 'X')` walks
+// (1.8% self time on typescript.js per profile) with a single masked
+// load. Built lazily on first request and cached on the AstView.
+//
+// The propagation rule is: bits[i] = bits[parent(i)] | self_class(tag[i]).
+// Walking pre-order ensures the parent is computed before any descendant.
+// Works in O(N) total — one pass over `_preOrder`.
+//
+// Semantics: a node has its OWN class bit set, AND the bits of every
+// ancestor on its path to the root. So a `ReturnStatement` inside an
+// async function has `ANC_ASYNC_FN` set. The async-function node itself
+// also has `ANC_ASYNC_FN` set (it carries its own class) — most rule
+// queries care about "is this node within an async function or IS one"
+// which this representation answers correctly.
+//
+// Currently no rules consume this — the infrastructure is here for
+// (a) Tier B-rewrite passes that translate ancestor-walks to bit masks,
+// (b) native Zig rules that read the bitmap via NAPI,
+// (c) ad-hoc helpers we layer onto sourceCode for in-house rules.
+
+const ANC_FN            = 1 << 0;   // any function (decl, expr, arrow, method)
+const ANC_ASYNC_FN      = 1 << 1;   // async function variant
+const ANC_GENERATOR_FN  = 1 << 2;   // generator function variant
+const ANC_LOOP          = 1 << 3;   // for/for-in/for-of/while/do-while
+const ANC_TRY           = 1 << 4;   // try statement
+const ANC_CATCH         = 1 << 5;   // catch clause
+const ANC_SWITCH_CASE   = 1 << 6;   // switch case or default
+const ANC_CLASS_BODY    = 1 << 7;   // inside a class body (method/field scope)
+const ANC_BLOCK         = 1 << 8;   // inside a block statement
+
+function _selfAncestorClass(tag) {
+  // Hand-table — V8 turns `switch` on dense u8 keys into a jump table.
+  switch (tag) {
+    case T.fn_decl:                 return ANC_FN;
+    case T.async_fn_decl:           return ANC_FN | ANC_ASYNC_FN;
+    case T.generator_fn_decl:       return ANC_FN | ANC_GENERATOR_FN;
+    case T.async_generator_fn_decl: return ANC_FN | ANC_ASYNC_FN | ANC_GENERATOR_FN;
+    case T.fn_expr:                 return ANC_FN;
+    case T.async_fn_expr:           return ANC_FN | ANC_ASYNC_FN;
+    case T.generator_fn_expr:       return ANC_FN | ANC_GENERATOR_FN;
+    case T.async_generator_fn_expr: return ANC_FN | ANC_ASYNC_FN | ANC_GENERATOR_FN;
+    case T.arrow_fn:                return ANC_FN;
+    case T.async_arrow_fn:          return ANC_FN | ANC_ASYNC_FN;
+    case T.method_def:
+    case T.getter_def:
+    case T.setter_def:
+    case T.constructor_def:
+    case T.computed_method_def:
+    case T.computed_getter_def:
+    case T.computed_setter_def:     return ANC_FN; // async-ness via tokens, not tag
+    case T.while_stmt:
+    case T.do_while_stmt:
+    case T.for_stmt:
+    case T.for_in_stmt:
+    case T.for_of_stmt:
+    case T.for_await_of_stmt:       return ANC_LOOP;
+    case T.try_stmt:                return ANC_TRY;
+    case T.catch_clause:            return ANC_CATCH;
+    case T.switch_case:
+    case T.switch_default:          return ANC_SWITCH_CASE;
+    case T.class_body:              return ANC_CLASS_BODY;
+    case T.block_stmt:              return ANC_BLOCK;
+    default:                        return 0;
+  }
+}
+
+function _buildAncestorBits(ast) {
+  if (ast._ancestorBits) return ast._ancestorBits;
+  const n = ast.nodeCount;
+  if (n === 0) { ast._ancestorBits = new Uint32Array(0); return ast._ancestorBits; }
+  const tags = ast._nodeTags;
+  const pd = ast._parentData;
+  const preOrder = ast._preOrder;
+  if (!pd || !preOrder) return null; // can't build without buffer support
+  const bits = new Uint32Array(n);
+  // Pre-order traversal: parent comes before any descendant. Each node ORs
+  // its parent's accumulated bits with its own class bits.
+  for (let oi = 0; oi < n; oi++) {
+    const i = preOrder[oi];
+    const p = pd[i];
+    const parentBits = (p === NONE) ? 0 : bits[p];
+    bits[i] = parentBits | _selfAncestorClass(tags[i]);
+  }
+  ast._ancestorBits = bits;
+  return bits;
 }
 
 // ── Rule Query Optimizer: AST fingerprinting ────────────────────
@@ -7934,4 +8045,16 @@ module.exports = {
   computeGlobals,
   applyDisableDirectives,
   DEFAULT_ERROR_BUDGET,
+  // Materialized ancestor-class bitmap constants — for consumers that
+  // call `sourceCode.getAncestorBits(node)`. See `_selfAncestorClass`
+  // for the mapping from AST tag to bits.
+  ANC_FN,
+  ANC_ASYNC_FN,
+  ANC_GENERATOR_FN,
+  ANC_LOOP,
+  ANC_TRY,
+  ANC_CATCH,
+  ANC_SWITCH_CASE,
+  ANC_CLASS_BODY,
+  ANC_BLOCK,
 };
