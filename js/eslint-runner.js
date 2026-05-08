@@ -1,6 +1,6 @@
 "use strict";
 
-const { nodeView, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
+const { nodeView, _nodeViewRaw, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
 
 // Singleton — lazy-built on first rule registration. Reads per-plugin metadata files
@@ -6522,27 +6522,39 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   const _methodDefTagSet = _walkMethodDefTagSet;
 
+  // Hot-loop locals captured once so V8 reads them as direct stack
+  // refs inside `getAncestorsFor` instead of dispatching property
+  // loads on `ast` per ancestor. The walk hits this function once
+  // per selector-handler-with-ancestors per node visit; on
+  // typescript.js that's ~hundreds of thousands of calls.
+  const _astNodeTags = ast._nodeTags;
+  const _astNodeCount = ast.nodeCount;
+
   function getAncestorsFor(nodeIdx) {
     if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
-    // Pre-size to at most depth (actual count may be smaller due to grouping_expr skips).
-    const depth = _nodeDepths ? _nodeDepths[nodeIdx] : 0;
-    _ancestorsBuf.length = depth;
     // esquery expects ancestors[0] = immediate parent (closest first).
-    // Skip grouping_expr (ParenthesizedExpression) parents: nodeView unwraps them
-    // transparently, so they must not appear in the ancestors array either — otherwise
-    // a parenthesized child `(JSX)` inside a ternary would appear to have a JSXElement
-    // parent (the unwrapped self) rather than the ConditionalExpression.
+    // Skip grouping_expr (ParenthesizedExpression) parents: nodeView
+    // unwraps them transparently, so they must not appear in the
+    // ancestors array either — otherwise a parenthesized child `(JSX)`
+    // inside a ternary would appear to have a JSXElement parent rather
+    // than the ConditionalExpression.
+    //
+    // Optimisation: bypass `nodeView` and call `_nodeViewRaw` directly.
+    // `nodeView` exists to unwrap grouping_expr / ts_parenthesized_type,
+    // but the walk below already filters those tags, so the wrapper's
+    // unwrap loop is unreachable here. Skipping it saves one function
+    // call + one tag check per ancestor.
     let prevP = nodeIdx; // track which child we came from (for method key exclusion)
     let p = pd[nodeIdx];
     let k = 0;
-    const n = ast.nodeCount;
-    while (p !== NONE && p < n) {
-      const ptag = ast._nodeTags[p];
+    while (p !== NONE && p < _astNodeCount) {
+      const ptag = _astNodeTags[p];
       if (ptag === T.grouping_expr) { prevP = p; p = pd[p]; continue; }
-      const pNode = nodeView(ast, p);
-      // ESTree inserts a synthetic FunctionExpression between a method definition
-      // and its non-key children (body, params). Insert it into the ancestors array
-      // so selectors like `:function[async=false] > BlockStatement` work on method bodies.
+      const pNode = _nodeViewRaw(ast, p);
+      // ESTree inserts a synthetic FunctionExpression between a method
+      // definition and its non-key children (body, params). Insert it
+      // into the ancestors array so selectors like
+      // `:function[async=false] > BlockStatement` work on method bodies.
       if (_methodDefTagSet[ptag] && prevP !== ast.nodeLhs(p)) {
         _ancestorsBuf[k++] = pNode.value; // synthetic FunctionExpression
       }

@@ -4763,4 +4763,4 @@ function getChainExprIfOutermost(ast, idx) {
   return null;
 }
 
-module.exports = { AstView, NodeProto, nodeView, reset, setTagNames, NONE, T, effectiveTypeName, CfgGraph, CfgSegment, CfgCodePath, getChainExprIfOutermost };
+module.exports = { AstView, NodeProto, nodeView, _nodeViewRaw, reset, setTagNames, NONE, T, effectiveTypeName, CfgGraph, CfgSegment, CfgCodePath, getChainExprIfOutermost };
