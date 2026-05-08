@@ -4056,7 +4056,7 @@ class RuleFixer {
  * Core report logic — called from pre-bound per-rule report functions so that
  * ruleId/ruleMeta are captured at rule-load time, not mutated per handler call.
  */
-function _execReport(descriptor, ruleId, ruleMeta, ctx) {
+function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
   const { node, message, messageId, loc, data } = descriptor;
   let resolvedMsg = message;
   if (!resolvedMsg && messageId && ruleMeta?.messages) {
@@ -4116,18 +4116,20 @@ function _execReport(descriptor, ruleId, ruleMeta, ctx) {
   const newCount = (ctx._ruleErrors[ruleId] || 0) + 1;
   ctx._ruleErrors[ruleId] = newCount;
   if (newCount >= ctx._errorBudget && ctx._skipSet) {
-    ctx._skipSet.mark(ruleId);
+    ctx._skipSet.mark(ruleIdx);
   }
 }
 
 /**
  * Create a pre-bound report function for a specific rule.
- * Captures ruleId/ruleMeta via closure — no need to mutate context._currentRule
- * or context._currentRuleMeta before each handler invocation.
+ * Captures ruleId/ruleIdx/ruleMeta via closure — no need to mutate
+ * context._currentRule or context._currentRuleMeta before each handler
+ * invocation. `ruleIdx` is the rule's stable plugin index, used for
+ * O(1) skipSet lookups by the dispatcher.
  */
-function _makeBoundReport(ruleId, ruleMeta, masterCtx) {
+function _makeBoundReport(ruleId, ruleIdx, ruleMeta, masterCtx) {
   return function report(descriptor) {
-    _execReport(descriptor, ruleId, ruleMeta, masterCtx);
+    _execReport(descriptor, ruleId, ruleIdx, ruleMeta, masterCtx);
   };
 }
 
@@ -4140,16 +4142,16 @@ function _makeBoundReport(ruleId, ruleMeta, masterCtx) {
  * The wrapper also bakes in the skipSet check so _invokeFused needs no per-handler
  * guard — just iterates and calls.
  */
-function _makeSafeHandler(ruleId, context) {
+function _makeSafeHandler(ruleId, ruleIdx, context) {
   const state = { inner: null };
   function safeHandler(node) {
-    if (context._skipSet !== null && context._skipSet.has(ruleId)) return;
+    if (context._skipSet !== null && context._skipSet.has(ruleIdx)) return;
     let result;
     try { result = state.inner(node); }
     catch (err) { context._reports.push({ ruleId, message: `Plugin error: ${err.message}` }); return; }
     // ESLint 9: handlers may return a descriptor object instead of calling context.report().
     if (result && typeof result === 'object' && !Array.isArray(result) && result.messageId) {
-      _execReport(result, ruleId, null, context);
+      _execReport(result, ruleId, ruleIdx, null, context);
     }
   }
   safeHandler._state = state;
@@ -4249,7 +4251,11 @@ class RuleContext {
    * @param {object} descriptor - { node, message, loc? }
    */
   report(descriptor) {
-    _execReport(descriptor, this._currentRule, this._currentRuleMeta, this);
+    // `_currentRuleIdx` set by the dispatcher when entering a rule's handler;
+    // -1 sentinel = unknown index (rare legacy paths). RuleSkipSet.mark()
+    // ignores out-of-range indices, so the error-budget skip is just a no-op
+    // for these reports — acceptable since they're vanishingly rare.
+    _execReport(descriptor, this._currentRule, this._currentRuleIdx ?? -1, this._currentRuleMeta, this);
   }
 
   getSourceCode() {
@@ -4273,10 +4279,11 @@ class RuleContext {
     // Wrap handler to process ESLint 9 return-value diagnostic pattern.
     const ctx = this;
     const ruleId = this._currentRule;
+    const ruleIdx = this._currentRuleIdx ?? -1;
     const wrapped = function(node) {
       const result = handler(node);
       if (result && typeof result === 'object' && !Array.isArray(result) && result.messageId) {
-        _execReport(result, ruleId || ctx._currentRule, null, ctx);
+        _execReport(result, ruleId || ctx._currentRule, ruleIdx, null, ctx);
       }
     };
     for (const t of types) {
@@ -4548,7 +4555,8 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const strategyHistogram = Object.create(null);
   const metaIndex = ruleMetadataIndex();
 
-  for (const plugin of plugins) {
+  for (let pluginIdx = 0; pluginIdx < plugins.length; pluginIdx++) {
+    const plugin = plugins[pluginIdx];
     const ruleId = plugin.meta?.name || "unknown";
     const ruleMeta = plugin.meta || null;
     const shortName = ruleId.includes('/') ? ruleId.split('/').pop() : ruleId;
@@ -4564,7 +4572,8 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     const perRuleCtx = Object.create(context);
     perRuleCtx.options = ruleOptions;
     perRuleCtx.id = ruleId;
-    perRuleCtx.report = _makeBoundReport(ruleId, ruleMeta, context);
+    perRuleCtx._ruleIdx = pluginIdx;
+    perRuleCtx.report = _makeBoundReport(ruleId, pluginIdx, ruleMeta, context);
 
     // Stamp the rule's instantiation strategy onto its context. Consumed by the
     // hot-path dispatcher to decide whether create() can be skipped per file.
@@ -4611,7 +4620,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
           _selectorParseCache.set(selector, parsedSelector);
         }
         if (!parsedSelector) continue;
-        const slot = { selector, parsedSelector, isExit, handler, ruleId, ruleMeta, ruleOptions };
+        const slot = { selector, parsedSelector, isExit, handler, ruleId, _ruleIdx: pluginIdx, ruleMeta, ruleOptions };
         selectorSlots.push(slot);
         selectorHandlers.push(slot);
         recipe.push({ visitorKey, sel: true, numSlots: 1 });
@@ -4623,9 +4632,9 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
         if (!map.has(mapKey)) map.set(mapKey, []);
         // Safe handler wrapper (items 1+2): try/catch + skipSet check baked in,
         // inner reference updated per file with no new closure allocation.
-        const safe = _makeSafeHandler(ruleId, context);
+        const safe = _makeSafeHandler(ruleId, pluginIdx, context);
         safe._state.inner = handler;
-        const slot = { handler: safe, _state: safe._state, ruleId, ruleMeta, ruleOptions };
+        const slot = { handler: safe, _state: safe._state, ruleId, _ruleIdx: pluginIdx, ruleMeta, ruleOptions };
         handlerSlots.push(slot);
         map.get(mapKey).push(slot);
       }
@@ -4856,6 +4865,7 @@ function _fuseHandlers(handlers, typeName) {
       _state: h._state || null, // direct mutable state ref; inner called via _state.inner
       handler: h.handler,       // kept for compatibility (selectors, remapPlan fallback)
       ruleId: h.ruleId,
+      _ruleIdx: h._ruleIdx,     // stable plugin index — dispatcher uses for O(1) skipSet lookup
       ruleMeta: h.ruleMeta,
       ruleOptions: h.ruleOptions,
       cost: analysis.isTrivial ? 0 : analysis.cost,
@@ -4913,7 +4923,7 @@ function _invokeFused(desc, node, nodeIdx, context) {
   const skip = context._skipSet;
   // anySkipped: true only when at least one rule has exhausted its error budget.
   // null._set is never reached because skip===null short-circuits first.
-  const anySkipped = skip !== null && skip._set.size > 0;
+  const anySkipped = skip !== null && skip._count > 0;
 
   if (!desc._fused) {
     // Non-fused array of slots — all slots have _state set; call _state.inner directly.
@@ -4931,8 +4941,9 @@ function _invokeFused(desc, node, nodeIdx, context) {
         }
       }
     } else if (!skip._allSkipped) {
+      const skipArr = skip._arr;
       for (let h = 0; h < n; h++) {
-        if (skip.has(arr[h].ruleId)) continue;
+        if (skipArr[arr[h]._ruleIdx]) continue;
         try { arr[h]._state.inner(node); }
         catch (err) { context._reports.push({ ruleId: arr[h].ruleId, message: `Plugin error: ${err.message}` }); }
       }
@@ -4966,10 +4977,13 @@ function _invokeFused(desc, node, nodeIdx, context) {
       }
     }
   } else if (!skip.allSkipped) {
-    // Slow path: some rules exceeded budget
+    // Slow path: some rules exceeded budget OR are skipped via the file-level
+    // tag-bitset. Inline the skipSet's underlying Uint8Array for IC-friendly
+    // single-load per-handler skip check.
+    const skipArr = skip._arr;
     for (let h = 0; h < items.length; h++) {
       const item = items[h];
-      if (skip.has(item.ruleId)) continue;
+      if (skipArr[item._ruleIdx]) continue;
       if (item.parentGuard) {
         const guardKey = item._coalescedGuard !== undefined ? item._coalescedGuard : item.parentGuard.parentType;
         if (guardKey !== lastGuardKey) { lastGuardKey = guardKey; lastGuardResult = parentType === guardKey; }
@@ -5142,21 +5156,44 @@ function _coalesceByParentGuard(items) {
 // maintain a Set of exhausted ruleIds. Set.has() is O(1) and avoids
 // the property lookup + comparison on every handler invocation.
 
+// Index-based skip set: `_arr[ruleIdx]` is 0 (active) or 1 (skipped). Each
+// loaded rule is assigned a stable plugin index at recipe-build time and the
+// index is stamped onto every slot/handler. The dispatcher's per-handler
+// skip check goes from `Set<string>.has(ruleId)` (~50-100ns each) to a
+// single Uint8Array load (~5ns). Profile showed the old Set.has check at
+// 1.1% / 62ms on typescript.js when the file-level rule-skip leaves any
+// rule marked; this switch eliminates most of that.
+//
+// `mark()` and `has()` accept the ruleIdx (a small u32). The error-budget
+// path that previously called `mark(ruleId)` with a string now goes via
+// `markByIdx` thread-through (see `_execReport` / `_makeBoundReport`).
 class RuleSkipSet {
   constructor() {
-    this._set = new Set();
+    this._arr = null;          // Uint8Array(totalRules), allocated by init()
+    this._count = 0;           // number of marked rules — the "anySkipped" flag
     this._allSkipped = false;
     this._totalRules = 0;
   }
   init(totalRules) {
     this._totalRules = totalRules;
+    if (this._arr === null || this._arr.length < totalRules) {
+      this._arr = new Uint8Array(totalRules);
+    } else {
+      this._arr.fill(0, 0, totalRules);
+    }
+    this._count = 0;
+    this._allSkipped = false;
   }
-  mark(ruleId) {
-    this._set.add(ruleId);
-    if (this._set.size >= this._totalRules) this._allSkipped = true;
+  mark(ruleIdx) {
+    if (ruleIdx < 0 || ruleIdx >= this._totalRules) return;
+    if (this._arr[ruleIdx] === 0) {
+      this._arr[ruleIdx] = 1;
+      this._count++;
+      if (this._count >= this._totalRules) this._allSkipped = true;
+    }
   }
-  has(ruleId) {
-    return this._set.has(ruleId);
+  has(ruleIdx) {
+    return ruleIdx >= 0 && ruleIdx < this._totalRules && this._arr[ruleIdx] === 1;
   }
   get allSkipped() {
     return this._allSkipped;
@@ -6527,10 +6564,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
 
   function _runSelectorList(list) {
     const skip = context._skipSet;
-    const anySkipped = skip !== null && skip._set.size > 0;
+    const anySkipped = skip !== null && skip._count > 0;
     for (let h = 0; h < list.length; h++) {
       const sh = list[h];
-      if (anySkipped && skip.has(sh.ruleId)) continue;
+      if (anySkipped && skip._arr[sh._ruleIdx]) continue;
       try {
         const fm = sh._fastMatcher;
         if (fm) {
@@ -7199,13 +7236,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   const skipSet = new RuleSkipSet();
-  // Count unique ruleIds (not visitorMap keys which count per-type entries).
-  const _ruleIds = new Set();
-  for (const [, handlers] of visitorMap) {
-    const items = Array.isArray(handlers) ? handlers : (handlers.items || [handlers]);
-    for (const h of items) if (h.ruleId) _ruleIds.add(h.ruleId);
-  }
-  skipSet.init(_ruleIds.size);
+  // Size the skipSet's underlying bitmap to the plugin count (rule indices
+  // range 0 .. plugins.length-1 — see _ruleIdx stamping at recipe-build
+  // time). The previous Set<string> sizing by unique-ruleId-count is
+  // unnecessary now that we index by stable plugin position.
+  skipSet.init(plugins ? plugins.length : 0);
   context._skipSet = skipSet;
 
   // File-level rule skip via tag bitsets (oxlint technique). For each
@@ -7219,12 +7254,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const fileBitset = _buildFileTagBitset(ast, tagNames.length);
     if (fileBitset) {
       const bitsets = _cachedVM.pluginTagBitsets;
-      const ruleIds = _cachedVM.pluginRuleIds;
       for (let pi = 0; pi < bitsets.length; pi++) {
         const rb = bitsets[pi];
         if (rb && !_bitsetIntersects(rb, fileBitset)) {
-          const id = ruleIds[pi];
-          if (id) skipSet.mark(id);
+          skipSet.mark(pi);
         }
       }
     }
