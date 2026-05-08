@@ -4452,6 +4452,18 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   const perPluginRecipe = []; // fast-path recipe: per-plugin ordered list of {visitorKey, sel, numSlots}
   const pluginRuleIds = []; // cached rule ids (avoids meta?.name? lookup in hot path)
   const pluginShortNames = []; // cached short names (avoids split('/') in hot path)
+  // Per-plugin AST-tag bitset extracted from visitor keys (oxlint-style
+  // file-level rule skip). null = unbounded (rule has broad selectors,
+  // can't be skipped). Cached on _cachedVM and reused across files; the
+  // existing fast-path mismatch detection invalidates the whole cache
+  // when visitor shape changes, so the bitset stays consistent.
+  const pluginTagBitsets = [];
+  // _cachedTagNamesInput is set by runPlugins before this function runs.
+  const _bitsetTagNames = _cachedTagNamesInput;
+  const _bitsetTagCount = _bitsetTagNames ? _bitsetTagNames.length : 0;
+  const _bitsetNameToTagIds = _bitsetTagCount > 0
+    ? _ensureNameToTagIds(_bitsetTagNames)
+    : null;
 
   // Accumulate instantiation-strategy distribution for this config — surfaced
   // via EZ_DEBUG_STRATEGY=1 to validate the metadata pipeline before the Tier A/B
@@ -4494,11 +4506,23 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
     try {
       if (globalThis.__EZ_BENCH_CREATE_COUNTER__) globalThis.__EZ_BENCH_CREATE_COUNTER__(ruleId);
       visitors = plugin.create(perRuleCtx);
-    } catch { perPluginRecipe.push(recipe); continue; }
+    } catch { perPluginRecipe.push(recipe); pluginTagBitsets.push(null); continue; }
     if (!visitors || typeof visitors !== 'object') visitors = {};
     // Merge context.on() listeners (used by unicorn and ESLint 9 rules) into visitors.
     if (perRuleCtx._onListeners) Object.assign(visitors, perRuleCtx._onListeners);
-    if (Object.keys(visitors).length === 0) { perPluginRecipe.push(recipe); continue; }
+    if (Object.keys(visitors).length === 0) {
+      perPluginRecipe.push(recipe);
+      pluginTagBitsets.push(null); // empty visitors — no tags, but we don't skip empty rules
+      continue;
+    }
+    // Extract the rule's target-tag bitset from its visitor keys (oxlint
+    // technique). Cheap; misses fall back to "unbounded" (null) which
+    // means the rule is always considered relevant.
+    pluginTagBitsets.push(
+      _bitsetNameToTagIds
+        ? _extractRuleTagBitset(visitors, _bitsetNameToTagIds, _bitsetTagCount)
+        : null
+    );
     for (const [visitorKey, handler] of Object.entries(visitors)) {
       if (typeof handler !== 'function') continue;
       if (_isSelector(visitorKey)) {
@@ -4533,7 +4557,7 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
   }
 
   _cachedVMPlugins = plugins;
-  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe, pluginRuleIds, pluginShortNames, lastRuleConfig: ruleConfig };
+  _cachedVM = { map, selectorHandlers, handlerSlots, selectorSlots, pluginOptions, perRuleCtxs, perPluginRecipe, pluginRuleIds, pluginShortNames, pluginTagBitsets, lastRuleConfig: ruleConfig };
   // Cold-path rebuild creates fresh safeHandlers with new `_state` objects AND fresh selector
   // slot objects. All downstream plan caches reference the OLD handler/slot identities —
   // invalidate them so plans reconstruct against the fresh objects.
@@ -5060,6 +5084,90 @@ class RuleSkipSet {
   get allSkipped() {
     return this._allSkipped;
   }
+}
+
+// ── File-level rule skip via tag bitsets (oxlint technique) ─────────
+//
+// Each rule declares which AST node types it visits via its create()
+// return value (visitor keys like `Identifier`, `CallExpression:exit`,
+// `'Foo, Bar'`). We extract those keys into a per-rule tag bitset on
+// the cold path, build a per-file tag bitset from the Zig CSR, and
+// pre-populate the dispatcher's skipSet with rules whose bitsets don't
+// intersect — they have no nodes to visit on this file. Equivalent to
+// oxlint's `semantic.nodes().contains_any(rule.types_info())` check
+// (oxc PR #1783 / lib.rs in oxc_linter), adapted to ez's runtime
+// visitor-key extraction (no codegen needed: visitor keys are visible
+// when create() returns).
+//
+// Rules with broad selectors (`*`, `:matches(...)`, attribute selectors,
+// etc.) bail out to "unbounded" — never skipped, since we can't prove
+// they won't match. Only conservative skips.
+
+let _cachedNameToTagIdsKey = null;
+let _cachedNameToTagIds = null;
+
+function _ensureNameToTagIds(tagNames) {
+  if (_cachedNameToTagIdsKey === tagNames) return _cachedNameToTagIds;
+  const m = new Map();
+  for (let i = 0; i < tagNames.length; i++) {
+    const name = tagNames[i];
+    if (!name) continue;
+    const arr = m.get(name);
+    if (arr) arr.push(i);
+    else m.set(name, [i]);
+  }
+  _cachedNameToTagIdsKey = tagNames;
+  _cachedNameToTagIds = m;
+  return m;
+}
+
+function _newTagBitset(tagCount) {
+  return new Uint32Array((tagCount + 31) >>> 5);
+}
+
+function _bitsetIntersects(a, b) {
+  const len = a.length < b.length ? a.length : b.length;
+  for (let i = 0; i < len; i++) if ((a[i] & b[i]) !== 0) return true;
+  return false;
+}
+
+function _buildFileTagBitset(ast, tagCount) {
+  const starts = ast._tagNodeStarts;
+  if (!starts) return null;
+  const bs = _newTagBitset(tagCount);
+  const max = starts.length - 1;
+  for (let t = 0; t < max && t < tagCount; t++) {
+    if (starts[t + 1] - starts[t] > 0) bs[t >>> 5] |= (1 << (t & 31));
+  }
+  return bs;
+}
+
+// Returns null if the rule's visitor keys include any selector that
+// could match arbitrary tags (`*`, `:matches`, attribute filters, etc).
+// Otherwise returns a Uint32Array bitset of the targeted tag indices.
+function _extractRuleTagBitset(visitors, nameToTagIds, tagCount) {
+  const bs = _newTagBitset(tagCount);
+  for (const key of Object.keys(visitors)) {
+    if (typeof visitors[key] !== 'function') continue;
+    let baseKey = key;
+    if (baseKey.endsWith(':exit'))      baseKey = baseKey.slice(0, -5);
+    else if (baseKey.endsWith(':enter')) baseKey = baseKey.slice(0, -6);
+    const parts = baseKey.indexOf(',') >= 0 ? baseKey.split(',') : [baseKey];
+    for (let p = 0; p < parts.length; p++) {
+      const part = parts[p].trim();
+      if (part === '' || part === '*') return null;
+      // Anything beyond `[A-Za-z0-9_$]` (plus the `:` we already stripped)
+      // is a selector — esquery may match any type. Bail.
+      if (/[^A-Za-z0-9_$]/.test(part)) return null;
+      const tagIds = nameToTagIds.get(part);
+      if (!tagIds) return null; // unknown name; conservative
+      for (let i = 0; i < tagIds.length; i++) {
+        const t = tagIds[i];
+        bs[t >>> 5] |= (1 << (t & 31));
+      }
+    }
+  }
+  return bs;
 }
 
 // ── Rule Query Optimizer: AST fingerprinting ────────────────────
@@ -6251,8 +6359,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   let _shAncestors = null;
 
   function _runSelectorList(list) {
+    const skip = context._skipSet;
+    const anySkipped = skip !== null && skip._set.size > 0;
     for (let h = 0; h < list.length; h++) {
       const sh = list[h];
+      if (anySkipped && skip.has(sh.ruleId)) continue;
       try {
         const fm = sh._fastMatcher;
         if (fm) {
@@ -6929,6 +7040,28 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   skipSet.init(_ruleIds.size);
   context._skipSet = skipSet;
+
+  // File-level rule skip via tag bitsets (oxlint technique). For each
+  // plugin whose visitor keys target a fixed set of AST tags, skip the
+  // rule entirely if none of those tags appear in the parsed file. The
+  // existing _invokeFused / _runSelectorList skipSet checks bypass the
+  // marked rules' handler bodies. Bail-outs ("unbounded" — null bitset
+  // from rules with `*` / `:matches` / attribute selectors) keep the
+  // rule active. Saves dispatching no-op handlers on irrelevant files.
+  if (_cachedVM && _cachedVM.pluginTagBitsets && plugins) {
+    const fileBitset = _buildFileTagBitset(ast, tagNames.length);
+    if (fileBitset) {
+      const bitsets = _cachedVM.pluginTagBitsets;
+      const ruleIds = _cachedVM.pluginRuleIds;
+      for (let pi = 0; pi < bitsets.length; pi++) {
+        const rb = bitsets[pi];
+        if (rb && !_bitsetIntersects(rb, fileBitset)) {
+          const id = ruleIds[pi];
+          if (id) skipSet.mark(id);
+        }
+      }
+    }
+  }
 
   // Use Zig-precomputed tag→node CSR for getNodesByType and batch scan.
   const _tagNodeStarts = ast._tagNodeStarts; // Uint32Array[tag_count + 1] or undefined
