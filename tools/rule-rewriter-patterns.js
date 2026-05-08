@@ -597,10 +597,13 @@ function _isMemberAccess(node, propName) {
     && node.property.name === propName;
 }
 
-function detectParentTypeComparePattern(node) {
+// Generic detector for `<expr>.parent{N}.type <op> <StringLiteral>`
+// where N is 1 or 2 (one-hop or two-hop). Returns `{ hops, ... }` or
+// null. Same shape rules: no computed, no optional chains, string
+// literal on either side.
+function detectParentChainTypePattern(node) {
   if (node.type !== "BinaryExpression") return null;
   if (node.operator !== "===" && node.operator !== "!==") return null;
-  // Identify the chain side and the literal side.
   let chain, lit;
   if (node.left && node.left.type === "MemberExpression" &&
       node.right && node.right.type === "Literal" && typeof node.right.value === "string") {
@@ -611,16 +614,24 @@ function detectParentTypeComparePattern(node) {
   } else {
     return null;
   }
-  // Chain must be `<expr>.parent.type` (no computed, no optional).
   if (!_isMemberAccess(chain, "type")) return null;
-  if (!_isMemberAccess(chain.object, "parent")) return null;
-  const objExpr = chain.object.object;
-  if (!objExpr || !objExpr.range) return null;
+  // Walk down through `.parent` accesses, counting hops.
+  let cur = chain.object;
+  let hops = 0;
+  while (_isMemberAccess(cur, "parent") && hops < 2) {
+    cur = cur.object;
+    hops++;
+  }
+  if (hops === 0) return null;
+  if (!cur || !cur.range) return null;
+  // Reject if there are MORE `.parent` hops below (we only do 1 or 2).
+  if (_isMemberAccess(cur, "parent")) return null;
   return {
     fullRange: node.range,
-    objRange: objExpr.range,
+    objRange: cur.range,
     litRange: lit.range,
     operator: node.operator,
+    hops,
   };
 }
 
@@ -642,7 +653,7 @@ function rewrite(src) {
       if (g) genListenerMatches.push(g);
     }
     if (process.env.EZ_DISABLE_PARENT_TYPE !== "1") {
-      const p = detectParentTypeComparePattern(n);
+      const p = detectParentChainTypePattern(n);
       if (p) parentTypeMatches.push(p);
     }
   });
@@ -672,8 +683,10 @@ function rewrite(src) {
   for (const m of parentTypeMatches) {
     const objText = src.slice(m.objRange[0], m.objRange[1]);
     const litText = src.slice(m.litRange[0], m.litRange[1]);
-    const helper = m.operator === "===" ? "parentTypeEq" : "parentTypeNeq";
-    edits.push({ range: m.fullRange, text: `_ezHelpers.${helper}(${objText}, ${litText})` });
+    const helperName = m.hops === 1
+      ? (m.operator === "===" ? "parentTypeEq" : "parentTypeNeq")
+      : (m.operator === "===" ? "grandparentTypeEq" : "grandparentTypeNeq");
+    edits.push({ range: m.fullRange, text: `_ezHelpers.${helperName}(${objText}, ${litText})` });
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);
 

@@ -144,6 +144,7 @@ const _PARENT_KIND_TYPE = [
   "Property",            // 3: ObjectPattern child synthetic Property
   "JSXOpeningElement",   // 4: jsx_self_closing wrap
   "TSEnumBody",          // 5: TSEnumMember → TSEnumBody
+  "TSInterfaceBody",     // 6: TSInterfaceDeclaration member → TSInterfaceBody
 ];
 
 /**
@@ -179,7 +180,63 @@ function parentTypeNeq(node, expectedType) {
   return !parentTypeEq(node, expectedType);
 }
 
-module.exports = { someTypeEq, everyTypeEq, findTypeEq, indexedByProp, parentTypeEq, parentTypeNeq };
+/**
+ * Equivalent to `node.parent?.parent?.type === expectedType` without
+ * allocating either NodeView. The grandparent is determined entirely
+ * by `_parentKinds[node._i]` and `_resolvedParentData[]`:
+ *
+ *   nodeKind != 0 (synthetic parent wraps the buffer-parent):
+ *     ESTree chain is  node → synth → buffer-parent
+ *     so grandparent (in ESTree) = buffer-parent of node.
+ *     For all 6 synthesis kinds the wrapper's `.parent` is exactly the
+ *     resolved-parent NodeView, so `_resolvedParentData[node._i]` is
+ *     the grandparent.
+ *
+ *   nodeKind == 0 (real parent):
+ *     parentIdx = _resolvedParentData[node._i]
+ *     parentKind = _parentKinds[parentIdx]
+ *     if parentKind != 0, grandparent is the synthetic wrapper of
+ *       parent, type fully determined by parentKind.
+ *     else, grandparent = nodeTypeAt at _resolvedParentData[parentIdx].
+ *
+ * Same fall-back rules as `parentTypeEq`.
+ */
+function grandparentTypeEq(node, expectedType) {
+  if (!node || node._i === undefined || node._tag === undefined) {
+    return node?.parent?.parent?.type === expectedType;
+  }
+  const ast = node._ast;
+  if (!ast) return node.parent?.parent?.type === expectedType;
+  const pks = ast._parentKinds;
+  const pd = ast._resolvedParentData;
+  if (!pks || !pd) return node.parent?.parent?.type === expectedType;
+
+  const nodeKind = pks[node._i];
+  if (nodeKind !== 0) {
+    const gpIdx = pd[node._i];
+    if (gpIdx === _NONE) return false;
+    _ensureAdapter();
+    return _nodeTypeAt(ast, gpIdx) === expectedType;
+  }
+
+  const parentIdx = pd[node._i];
+  if (parentIdx === _NONE) return false;
+  const parentKind = pks[parentIdx];
+  if (parentKind !== 0) {
+    return _PARENT_KIND_TYPE[parentKind] === expectedType;
+  }
+  const gpIdx = pd[parentIdx];
+  if (gpIdx === _NONE) return false;
+  _ensureAdapter();
+  return _nodeTypeAt(ast, gpIdx) === expectedType;
+}
+
+/** Negation of `grandparentTypeEq`. */
+function grandparentTypeNeq(node, expectedType) {
+  return !grandparentTypeEq(node, expectedType);
+}
+
+module.exports = { someTypeEq, everyTypeEq, findTypeEq, indexedByProp, parentTypeEq, parentTypeNeq, grandparentTypeEq, grandparentTypeNeq };
 
 // Bun's CJS↔ESM interop: when this file is loaded via `import * as _ezHelpers`,
 // Bun maps `module.exports`'s keys onto the namespace. Both forms work.
