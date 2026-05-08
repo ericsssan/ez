@@ -615,16 +615,16 @@ function detectParentChainTypePattern(node) {
     return null;
   }
   if (!_isMemberAccess(chain, "type")) return null;
-  // Walk down through `.parent` accesses, counting hops.
+  // Walk down through `.parent` accesses, counting hops up to 3.
   let cur = chain.object;
   let hops = 0;
-  while (_isMemberAccess(cur, "parent") && hops < 2) {
+  while (_isMemberAccess(cur, "parent") && hops < 3) {
     cur = cur.object;
     hops++;
   }
   if (hops === 0) return null;
   if (!cur || !cur.range) return null;
-  // Reject if there are MORE `.parent` hops below (we only do 1 or 2).
+  // Reject if there are MORE `.parent` hops below (we cap at 3).
   if (_isMemberAccess(cur, "parent")) return null;
   return {
     fullRange: node.range,
@@ -683,9 +683,11 @@ function rewrite(src) {
   for (const m of parentTypeMatches) {
     const objText = src.slice(m.objRange[0], m.objRange[1]);
     const litText = src.slice(m.litRange[0], m.litRange[1]);
-    const helperName = m.hops === 1
-      ? (m.operator === "===" ? "parentTypeEq" : "parentTypeNeq")
-      : (m.operator === "===" ? "grandparentTypeEq" : "grandparentTypeNeq");
+    const eq = m.operator === "===";
+    let helperName;
+    if (m.hops === 1)      helperName = eq ? "parentTypeEq" : "parentTypeNeq";
+    else if (m.hops === 2) helperName = eq ? "grandparentTypeEq" : "grandparentTypeNeq";
+    else                   helperName = eq ? "greatGrandparentTypeEq" : "greatGrandparentTypeNeq";
     edits.push({ range: m.fullRange, text: `_ezHelpers.${helperName}(${objText}, ${litText})` });
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);

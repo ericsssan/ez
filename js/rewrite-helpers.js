@@ -236,7 +236,64 @@ function grandparentTypeNeq(node, expectedType) {
   return !grandparentTypeEq(node, expectedType);
 }
 
-module.exports = { someTypeEq, everyTypeEq, findTypeEq, indexedByProp, parentTypeEq, parentTypeNeq, grandparentTypeEq, grandparentTypeNeq };
+/**
+ * Equivalent to `node.parent?.parent?.parent?.type === expectedType`
+ * without allocating any wrapping NodeView. Generalises the same
+ * walker the one- and two-hop helpers use, three hops deep.
+ *
+ * Walker rule: at each step, `_parentKinds[curIdx]` says whether
+ * curIdx's ESTree parent is a synthetic wrapper (kind != 0) or the
+ * buffer's resolved-parent (kind == 0).
+ *   - kind == 0 → 1 ESTree hop = 1 buffer hop (curIdx ← pd[curIdx]).
+ *   - kind != 0, last hop  → answer determined by the kind alone
+ *     (the wrapper's type is `_PARENT_KIND_TYPE[kind]`).
+ *   - kind != 0, more hops → 2 ESTree hops cover (cur → wrapper →
+ *     resolved-parent), so curIdx ← pd[curIdx] and remaining -= 2.
+ *
+ * Same fallback rules as the shorter-hop helpers.
+ */
+function greatGrandparentTypeEq(node, expectedType) {
+  if (!node || node._i === undefined || node._tag === undefined) {
+    return node?.parent?.parent?.parent?.type === expectedType;
+  }
+  const ast = node._ast;
+  if (!ast) return node.parent?.parent?.parent?.type === expectedType;
+  const pks = ast._parentKinds;
+  const pd = ast._resolvedParentData;
+  if (!pks || !pd) return node.parent?.parent?.parent?.type === expectedType;
+
+  let curIdx = node._i;
+  let remaining = 3;
+  while (remaining > 0) {
+    const kind = pks[curIdx];
+    if (kind !== 0) {
+      if (remaining === 1) return _PARENT_KIND_TYPE[kind] === expectedType;
+      const next = pd[curIdx];
+      if (next === _NONE) return false;
+      curIdx = next;
+      remaining -= 2;
+    } else {
+      const next = pd[curIdx];
+      if (next === _NONE) return false;
+      curIdx = next;
+      remaining -= 1;
+    }
+  }
+  _ensureAdapter();
+  return _nodeTypeAt(ast, curIdx) === expectedType;
+}
+
+/** Negation of `greatGrandparentTypeEq`. */
+function greatGrandparentTypeNeq(node, expectedType) {
+  return !greatGrandparentTypeEq(node, expectedType);
+}
+
+module.exports = {
+  someTypeEq, everyTypeEq, findTypeEq, indexedByProp,
+  parentTypeEq, parentTypeNeq,
+  grandparentTypeEq, grandparentTypeNeq,
+  greatGrandparentTypeEq, greatGrandparentTypeNeq,
+};
 
 // Bun's CJS↔ESM interop: when this file is loaded via `import * as _ezHelpers`,
 // Bun maps `module.exports`'s keys onto the namespace. Both forms work.
