@@ -4276,21 +4276,46 @@ class RuleContext {
     const types = Array.isArray(type) ? type
       : (typeof type === 'string' && type.includes(',')) ? type.split(',').map(t => t.trim())
       : [type];
-    // Wrap handler to process ESLint 9 return-value diagnostic pattern.
+    // The wrap exists for the ESLint-9 return-value diagnostic pattern:
+    // a handler can `return { messageId: ... }` instead of calling
+    // `context.report(...)`. Most handlers DON'T do this — they use
+    // bare `return;` for early-exit and report via `context.report()`.
+    // For those, the wrap's per-call check is wasted work (~24% Total
+    // CPU on typescript.js attributable to the chain through this
+    // wrapper).
+    //
+    // Static check on `handler.toString()` source: skip the wrap when
+    // we can confidently see no `return <expr>` shape that could
+    // produce a problem-object. The check errs on the side of
+    // wrapping — false positives wrap unnecessarily (no harm), false
+    // negatives drop reports (BAD). Anything that returns SOMETHING
+    // non-trivial we wrap.
+    const handlerSrc = typeof handler === "function" ? handler.toString() : "";
+    // Only `return;` (bare) and no `return` at all are safe to skip.
+    // The regex looks for `return` followed by anything other than `;`,
+    // whitespace+`;`, end-of-source, or `}`. Uses a non-greedy boundary.
+    const hasReturnValue = /\breturn\b(?!\s*[;}]|\s*$)/.test(handlerSrc);
     const ctx = this;
     const ruleId = this._currentRule;
     const ruleIdx = this._currentRuleIdx ?? -1;
-    const wrapped = function(node) {
-      const result = handler(node);
-      if (result && typeof result === 'object' && !Array.isArray(result) && result.messageId) {
-        _execReport(result, ruleId || ctx._currentRule, ruleIdx, null, ctx);
-      }
-    };
+    let installed;
+    if (hasReturnValue) {
+      installed = function(node) {
+        const result = handler(node);
+        if (result && typeof result === "object" && !Array.isArray(result) && result.messageId) {
+          _execReport(result, ruleId || ctx._currentRule, ruleIdx, null, ctx);
+        }
+      };
+    } else {
+      // Handler doesn't return values worth checking — register raw.
+      // V8 can inline the call directly into the dispatcher.
+      installed = handler;
+    }
     for (const t of types) {
-      if (!this._onListeners[t]) this._onListeners[t] = wrapped;
+      if (!this._onListeners[t]) this._onListeners[t] = installed;
       else {
         const prev = this._onListeners[t];
-        this._onListeners[t] = function(node) { prev(node); wrapped(node); };
+        this._onListeners[t] = function(node) { prev(node); installed(node); };
       }
     }
   }
