@@ -371,10 +371,208 @@ function emitIndexedLookup(src, m) {
   ];
 }
 
+// Pattern: generator listener registered via `context.on(SEL, function * (...) {
+// ... yield X; ...})`. Unicorn's listener pipeline already (after the
+// substitute in `tools/overrides/unicorn-rule/unicorn-listeners.js`)
+// drains the listener's return value through `_drainAndReport`, which
+// handles arrays, single objects, undefined, and iterables uniformly.
+// We can rewrite the rule's own `function*` to a plain function that
+// returns an array — eliminating the per-call generator state allocation
+// that V8 attributes to `copyDataProperties` (args spread) and
+// `generatorResume`.
+//
+// Detection: the FunctionExpression argument has `generator: true` and
+// its body satisfies all of:
+//   - no `YieldExpression` with `delegate: true` (i.e., no `yield*`)
+//   - every `YieldExpression` is the direct expression of an
+//     `ExpressionStatement` (i.e., `yield X;` only — no `f(yield X)` or
+//     `var x = yield X`)
+//   - no `return <expr>` statements inside the listener (bare `return;`
+//     is OK; it just early-exits the function the same way)
+//   - no nested `function*` whose `yield`s would otherwise be confused
+//     with the outer one (the rewriter walks function-scope-aware)
+//
+// Emit (textual edits):
+//   1. Strip the `*` between `function` and `(`.
+//   2. Insert `const __ezOut = [];` after the opening `{` of the body.
+//   3. Replace each top-level `yield <expr>;` with `__ezOut.push(<expr>);`.
+//      `yield;` (no expr) becomes a no-op (just delete).
+//   4. Insert `return __ezOut;` before the closing `}` of the body.
+//
+// Result: the listener returns an array of problems on each call. The
+// override's `_drainAndReport` recurses over arrays and reports each
+// element. Same observable behavior; no generator state per call.
+
+const _LISTENER_REG_NAMES = new Set(["on", "onExit"]);
+
+function _isContextListenerCall(node) {
+  if (node.type !== "CallExpression") return false;
+  const callee = node.callee;
+  if (!callee || callee.type !== "MemberExpression" || callee.computed) return false;
+  if (!callee.property || callee.property.type !== "Identifier") return false;
+  if (!_LISTENER_REG_NAMES.has(callee.property.name)) return false;
+  // Allow any object identifier to match; rule code uses `context.on(...)`
+  // but some files alias context. The pattern fits any obj.on/onExit
+  // callable that takes a generator listener as last arg — false matches
+  // are bounded by the strict body checks below.
+  if (!callee.object || callee.object.type !== "Identifier") return false;
+  return true;
+}
+
+function _walkFnLocal(fnNode, visit) {
+  // Walk fnNode.body but DO NOT descend into nested function definitions
+  // (they have their own yield/return scope).
+  const NESTED = new Set(["FunctionExpression", "FunctionDeclaration", "ArrowFunctionExpression"]);
+  function descend(node) {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node)) { for (const c of node) descend(c); return; }
+    if (typeof node.type !== "string") return;
+    visit(node);
+    if (NESTED.has(node.type)) return;
+    const keys = visitorKeys[node.type];
+    if (!keys) return;
+    for (const k of keys) {
+      const child = node[k];
+      if (child == null) continue;
+      descend(child);
+    }
+  }
+  descend(fnNode.body);
+}
+
+function detectGeneratorListenerPattern(node) {
+  if (!_isContextListenerCall(node)) return null;
+  if (node.arguments.length === 0) return null;
+  const fn = node.arguments[node.arguments.length - 1];
+  if (!fn || fn.type !== "FunctionExpression" || !fn.generator) return null;
+  if (!fn.body || fn.body.type !== "BlockStatement") return null;
+  if (fn.async) return null;
+
+  // Map yield's parent ExpressionStatement so emit knows which range to replace.
+  const yieldStmts = []; // ExpressionStatement nodes wrapping `yield X;`
+  const yieldExprs = new Set(); // YieldExpression nodes that are kosher
+  const bareReturns = []; // ReturnStatement nodes with no argument (need rewrite)
+  let bail = false;
+
+  // First pass: walk to collect yields-in-expression-statement positions.
+  // Track parent during walk so we know when a YieldExpression is the
+  // direct child of ExpressionStatement.
+  function walkWithParent(n, parent) {
+    if (bail || !n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) walkWithParent(c, parent); return; }
+    if (typeof n.type !== "string") return;
+
+    if (n.type === "YieldExpression") {
+      if (n.delegate) { bail = true; return; }
+      // Must be ExpressionStatement(YieldExpression). Anything else is bail.
+      if (!parent || parent.type !== "ExpressionStatement" || parent.expression !== n) {
+        bail = true; return;
+      }
+      yieldStmts.push(parent);
+      yieldExprs.add(n);
+    }
+    if (n.type === "ReturnStatement") {
+      if (n.argument) {
+        // `return <expr>` semantics differ between generator (returns
+        // value as part of iterator protocol — yielded values already
+        // delivered) and plain function (returns synchronously, would
+        // discard our accumulated array). Bail.
+        bail = true; return;
+      }
+      // Bare `return;` — early-exits the listener. In a generator, any
+      // yields fired before the return have already been delivered. In
+      // our array-returning rewrite, those pushes are sitting in
+      // `__ezOut`, and a plain `return;` returns undefined, dropping
+      // them. Rewrite each bare `return;` to `return __ezOut;` so the
+      // accumulated array reaches the drainer.
+      bareReturns.push(n);
+    }
+
+    const NESTED = new Set(["FunctionExpression", "FunctionDeclaration", "ArrowFunctionExpression"]);
+    if (NESTED.has(n.type) && n !== fn) return; // skip into nested functions
+
+    const keys = visitorKeys[n.type];
+    if (!keys) return;
+    for (const k of keys) {
+      const child = n[k];
+      if (child == null) continue;
+      walkWithParent(child, n);
+    }
+  }
+  walkWithParent(fn.body, null);
+
+  if (bail) return null;
+  if (yieldStmts.length === 0) {
+    // Listener with no yields — still a generator returning nothing.
+    // Convert is safe but the win is small; still worth it because each
+    // call still allocates generator state. Continue.
+  }
+
+  // Locate the `function` keyword and the `*` byte. The function's range
+  // covers `function * (...) { ... }` (or `function*(...) {...}`).
+  // Find `function` at fn.range[0], then locate the next `*`.
+  return {
+    fn,
+    yieldStmts,
+    yieldExprs,
+    bareReturns,
+  };
+}
+
+function emitGeneratorListener(src, m) {
+  const fn = m.fn;
+  const fnStart = fn.range[0];
+  // Find the `*` after `function`. Robust to whitespace.
+  const fnSlice = src.slice(fnStart, fn.body.range[0]);
+  const starIdx = fnSlice.indexOf("*");
+  if (starIdx < 0) return null;
+  const starAbs = fnStart + starIdx;
+  // Compute the range covering the `*` and any single trailing space, so
+  // `function * (` becomes `function (` rather than `function  (`.
+  let starEnd = starAbs + 1;
+  if (src[starEnd] === " ") starEnd += 1;
+
+  const bodyOpen = fn.body.range[0]; // position of `{`
+  const bodyClose = fn.body.range[1]; // position after `}`
+  // After `{`, insert `const __ezOut = [];\n`.
+  const declInsertAt = bodyOpen + 1;
+  // Before `}`, insert `\nreturn __ezOut;\n`. (bodyClose is position after `}`.)
+  const returnInsertAt = bodyClose - 1;
+
+  const edits = [];
+  edits.push({ range: [starAbs, starEnd], text: "" });
+  edits.push({ range: [declInsertAt, declInsertAt], text: "\nconst __ezOut = [];" });
+
+  // For each yield ExpressionStatement, replace `yield X;` → `__ezOut.push(X);`.
+  // Range of the ExpressionStatement covers the whole `yield X;` including
+  // the trailing semicolon (or not, if missing — ASI). Replace its range.
+  for (const stmt of m.yieldStmts) {
+    const ye = stmt.expression; // YieldExpression
+    if (!ye.argument) {
+      // `yield;` — no payload; drop entirely.
+      edits.push({ range: stmt.range, text: ";" });
+      continue;
+    }
+    const argText = src.slice(ye.argument.range[0], ye.argument.range[1]);
+    edits.push({ range: stmt.range, text: `__ezOut.push(${argText});` });
+  }
+
+  // Bare `return;` → `return __ezOut;` so accumulated pushes reach the
+  // drainer when the listener early-exits.
+  for (const ret of (m.bareReturns || [])) {
+    edits.push({ range: ret.range, text: "return __ezOut;" });
+  }
+
+  edits.push({ range: [returnInsertAt, returnInsertAt], text: "\nreturn __ezOut;\n" });
+
+  return edits;
+}
+
 function rewrite(src) {
   const ast = parseFile(src);
   const arrTypeEqMatches = [];
   const indexedLookupMatches = [];
+  const genListenerMatches = [];
   walk(ast, (n) => {
     const m = detectArrTypeEqPattern(n);
     if (m) arrTypeEqMatches.push(m);
@@ -382,9 +580,13 @@ function rewrite(src) {
       const i = detectIndexedLookupPattern(n, ast);
       if (i) indexedLookupMatches.push(i);
     }
+    if (process.env.EZ_DISABLE_GEN_LISTENER !== "1") {
+      const g = detectGeneratorListenerPattern(n);
+      if (g) genListenerMatches.push(g);
+    }
   });
 
-  const matches = arrTypeEqMatches.length + indexedLookupMatches.length;
+  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length;
   if (matches === 0) {
     return { src, matches: 0 };
   }
@@ -401,6 +603,10 @@ function rewrite(src) {
   }
   for (const m of indexedLookupMatches) {
     edits.push(...emitIndexedLookup(src, m));
+  }
+  for (const m of genListenerMatches) {
+    const e = emitGeneratorListener(src, m);
+    if (e) edits.push(...e);
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);
 
