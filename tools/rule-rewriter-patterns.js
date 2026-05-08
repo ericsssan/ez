@@ -620,16 +620,50 @@ const _ACCESSOR_HELPERS = {
   object:     { type: "objectType",     name: null },
 };
 
+// Resolve the "type literal" position in `<chain>.<final> <op> <X>`.
+// `X` can be either:
+//   - A string Literal: e.g., "FunctionDeclaration"
+//   - An AST_NODE_TYPES enum reference: e.g., AST_NODE_TYPES.FunctionDeclaration
+//     (or `<obj>.AST_NODE_TYPES.FunctionDeclaration`, the form
+//     @typescript-eslint compiles to). The enum's value is the same as
+//     its key by convention (`AST_NODE_TYPES.X = "X"`), so the property
+//     name doubles as the comparison string.
+//
+// Returns `{ literalText, range }` if recognised, else null. The
+// `literalText` is what the emitted helper call should pass as the
+// expected-type argument (already quoted JSON for safety).
+function _resolveTypeLiteral(node) {
+  if (!node) return null;
+  if (node.type === "Literal" && typeof node.value === "string") {
+    return { literalText: JSON.stringify(node.value), range: node.range };
+  }
+  // AST_NODE_TYPES.X  or  <obj>.AST_NODE_TYPES.X  or  <a>.<b>.AST_NODE_TYPES.X
+  if (node.type === "MemberExpression" && !node.computed &&
+      node.property?.type === "Identifier") {
+    let inner = node.object;
+    // Walk down possible namespace prefixes (e.g. `utils_1.AST_NODE_TYPES`).
+    if (inner?.type === "MemberExpression" && !inner.computed &&
+        inner.property?.type === "Identifier" && inner.property.name === "AST_NODE_TYPES") {
+      return { literalText: JSON.stringify(node.property.name), range: node.range };
+    }
+    if (inner?.type === "Identifier" && inner.name === "AST_NODE_TYPES") {
+      return { literalText: JSON.stringify(node.property.name), range: node.range };
+    }
+  }
+  return null;
+}
+
 function detectAccessorChainPattern(node) {
   if (node.type !== "BinaryExpression") return null;
   if (node.operator !== "===" && node.operator !== "!==") return null;
   let chain, lit;
-  if (node.left && node.left.type === "MemberExpression" &&
-      node.right && node.right.type === "Literal" && typeof node.right.value === "string") {
-    chain = node.left; lit = node.right;
-  } else if (node.right && node.right.type === "MemberExpression" &&
-             node.left && node.left.type === "Literal" && typeof node.left.value === "string") {
-    chain = node.right; lit = node.left;
+  // Try left=chain right=literal-or-enum
+  let resolvedRight = node.right ? _resolveTypeLiteral(node.right) : null;
+  let resolvedLeft  = node.left  ? _resolveTypeLiteral(node.left)  : null;
+  if (node.left && node.left.type === "MemberExpression" && resolvedRight) {
+    chain = node.left; lit = resolvedRight;
+  } else if (node.right && node.right.type === "MemberExpression" && resolvedLeft) {
+    chain = node.right; lit = resolvedLeft;
   } else {
     return null;
   }
@@ -661,7 +695,7 @@ function detectAccessorChainPattern(node) {
   return {
     fullRange: node.range,
     objRange: objExpr.range,
-    litRange: lit.range,
+    litText: lit.literalText,
     operator: node.operator,
     helperBase: baseName,
   };
@@ -675,12 +709,12 @@ function detectParentChainTypePattern(node) {
   if (node.type !== "BinaryExpression") return null;
   if (node.operator !== "===" && node.operator !== "!==") return null;
   let chain, lit;
-  if (node.left && node.left.type === "MemberExpression" &&
-      node.right && node.right.type === "Literal" && typeof node.right.value === "string") {
-    chain = node.left; lit = node.right;
-  } else if (node.right && node.right.type === "MemberExpression" &&
-             node.left && node.left.type === "Literal" && typeof node.left.value === "string") {
-    chain = node.right; lit = node.left;
+  const resolvedRight = node.right ? _resolveTypeLiteral(node.right) : null;
+  const resolvedLeft  = node.left  ? _resolveTypeLiteral(node.left)  : null;
+  if (node.left && node.left.type === "MemberExpression" && resolvedRight) {
+    chain = node.left; lit = resolvedRight;
+  } else if (node.right && node.right.type === "MemberExpression" && resolvedLeft) {
+    chain = node.right; lit = resolvedLeft;
   } else {
     return null;
   }
@@ -699,7 +733,7 @@ function detectParentChainTypePattern(node) {
   return {
     fullRange: node.range,
     objRange: cur.range,
-    litRange: lit.range,
+    litText: lit.literalText,
     operator: node.operator,
     hops,
   };
@@ -757,19 +791,17 @@ function rewrite(src) {
   }
   for (const m of parentTypeMatches) {
     const objText = src.slice(m.objRange[0], m.objRange[1]);
-    const litText = src.slice(m.litRange[0], m.litRange[1]);
     const eq = m.operator === "===";
     let helperName;
     if (m.hops === 1)      helperName = eq ? "parentTypeEq" : "parentTypeNeq";
     else if (m.hops === 2) helperName = eq ? "grandparentTypeEq" : "grandparentTypeNeq";
     else                   helperName = eq ? "greatGrandparentTypeEq" : "greatGrandparentTypeNeq";
-    edits.push({ range: m.fullRange, text: `_ezHelpers.${helperName}(${objText}, ${litText})` });
+    edits.push({ range: m.fullRange, text: `_ezHelpers.${helperName}(${objText}, ${m.litText})` });
   }
   for (const m of accessorChainMatches) {
     const objText = src.slice(m.objRange[0], m.objRange[1]);
-    const litText = src.slice(m.litRange[0], m.litRange[1]);
     const suffix = m.operator === "===" ? "Eq" : "Neq";
-    edits.push({ range: m.fullRange, text: `_ezHelpers.${m.helperBase}${suffix}(${objText}, ${litText})` });
+    edits.push({ range: m.fullRange, text: `_ezHelpers.${m.helperBase}${suffix}(${objText}, ${m.litText})` });
   }
   edits.sort((a, b) => b.range[0] - a.range[0]);
 
