@@ -4010,6 +4010,18 @@ function _getTypeProto(tag) {
 // point it at NodeProto.) Used for the common case where
 // `_getTypeProto(tag) === NodeProto`; tags with `_TAG_DELETE_PROPS` overrides
 // take the object-literal slow path.
+// Tags whose `range` differs from `[_nodeStartPos, _nodeEndPos]` and
+// therefore can't be eager-filled in the ctor. The lazy `get range`
+// getter handles these: root (uses 0..sourceUtf16Len), jsx_identifier
+// (compound names use tokEnds[lhs]), sequence_expr (paren-wrapped end
+// adjustment), and statement tags (need trailing-semicolon extension
+// + the var/let/const-in-for-init parent check). The default ctor's
+// _range slot is left null for these so the getter fires.
+function _isSimpleRangeTag(tag) {
+  return tag !== T.root && tag !== T.jsx_identifier && tag !== T.sequence_expr &&
+         !_isStatementTag(tag);
+}
+
 function _NodeView(ast, idx, tag, type) {
   this._ast = ast;
   this._i = idx;
@@ -4017,7 +4029,14 @@ function _NodeView(ast, idx, tag, type) {
   this._parent = _PARENT_UNSET;
   this.type = type;
   this._loc = null;
-  this._range = null;
+  // Eager-fill _range cache for simple-tag nodes — most rules read
+  // `node.range` (for diagnostic spans), so paying ~2 typed-array
+  // reads at construction beats the getter dispatch + lazy compute on
+  // first access. Special tags (statements, root, jsx_identifier,
+  // sequence_expr) keep the null sentinel; the getter handles them.
+  this._range = _isSimpleRangeTag(tag)
+    ? [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]]
+    : null;
   this._body = _BODY_UNSET;
   this._value = _VALUE_UNSET;
   this._init = _INIT_UNSET;
@@ -4035,8 +4054,12 @@ _NodeView.prototype = NodeProto;
 // call. Bodies are intentionally identical to `_NodeView`'s — JSC's
 // allocation profile is per-constructor.
 function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
+  // None of the LRN tags (rest_element, object_pattern, array_pattern,
+  // property, shorthand_property, computed_property) need range
+  // adjustment — eager-fill unconditionally.
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
-  this.type = type; this._loc = null; this._range = null;
+  this.type = type; this._loc = null;
+  this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
@@ -4062,7 +4085,8 @@ function _computeIdentifierName(ast, idx) {
 
 function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifier, T.property_ident)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
-  this.type = type; this._loc = null; this._range = null;
+  this.type = type; this._loc = null;
+  this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   // Eager `name` — every identifier instance gets a fixed shape with `name`
   // as an own data property; rule code reads it without hitting the
@@ -4072,16 +4096,18 @@ function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifie
   this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
 }
-function _NodeView_N(ast, idx, tag, type) {    // ['name']
+function _NodeView_N(ast, idx, tag, type) {    // ['name']  (T.assignment_pattern)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
-  this.type = type; this._loc = null; this._range = null;
+  this.type = type; this._loc = null;
+  this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;
 }
-function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation']
+function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation']  (T.ts_parameter_property)
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
-  this.type = type; this._loc = null; this._range = null;
+  this.type = type; this._loc = null;
+  this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
   this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
   this._cachedName = undefined; this._params = undefined;
   this._typeParameters = undefined; this._arguments = undefined; this._decorators = undefined;

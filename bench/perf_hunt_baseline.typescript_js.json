@@ -1,13 +1,13 @@
 {
   "fixture": "typescript.js",
   "bytes": 9143423,
-  "ruleCount": 271,
-  "savedAt": "2026-05-08T03:12:57.017Z",
+  "ruleCount": 253,
+  "savedAt": "2026-05-08T03:29:19.204Z",
   "totals": {
-    "ezAllInOneMs": 4237.1,
-    "oxBatchMs": 723.9,
-    "oxBaselineMs": 124.3,
-    "ezTotalDiags": 187796
+    "ezAllInOneMs": 2774.1,
+    "oxBatchMs": 705.2,
+    "oxBaselineMs": 123.7,
+    "ezTotalDiags": 187328
   },
   "rules": {
     "no-var": {
@@ -716,60 +716,6 @@
       "diags": 0
     },
     "eslint-plugin-promise/spec-only": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/check-access": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/check-property-names": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/check-tag-names": {
-      "diags": 2
-    },
-    "eslint-plugin-jsdoc/empty-tags": {
-      "diags": 1
-    },
-    "eslint-plugin-jsdoc/implements-on-classes": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/no-defaults": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-param": {
-      "diags": 320
-    },
-    "eslint-plugin-jsdoc/require-param-description": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-param-name": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-param-type": {
-      "diags": 11
-    },
-    "eslint-plugin-jsdoc/require-property": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-property-description": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-property-name": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-property-type": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-returns": {
-      "diags": 134
-    },
-    "eslint-plugin-jsdoc/require-returns-description": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-returns-type": {
-      "diags": 0
-    },
-    "eslint-plugin-jsdoc/require-yields": {
       "diags": 0
     },
     "eslint-plugin-es-x/no-optional-chaining": {

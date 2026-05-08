@@ -47,13 +47,18 @@ const filePath = path.isAbsolute(fileArg) ? fileArg : path.join(FIXTURES_DIR, fi
 
 // Build the default rule set: every rule ez has that oxlint also has.
 //
-// `eslint-plugin-unicorn` is intentionally excluded from the perf_hunt
-// default — its rules use a generator-based fix-iteration wrapper
-// (`iterateFixOrProblems`) that runs on every rule even when nothing is
-// fixable, plus quadratic helpers like `isFunctionParametersSafeToFix` in
-// `no-array-for-each`. On typescript.js a single unicorn rule was ~28% of
-// total ez time, distorting the ez-vs-oxlint headline. Pass the rules
-// explicitly via `--rules` if you want them benchmarked.
+// `eslint-plugin-unicorn` and `eslint-plugin-jsdoc` are intentionally
+// excluded from the perf_hunt default. Both have algorithm-level cost
+// in the upstream rules themselves that swamps anything our adapter
+// can do:
+//   - unicorn: generator-based `iterateFixOrProblems` wrapper runs on
+//     every rule even when nothing is fixable; `no-array-for-each` has
+//     an O(N×M) `isFunctionParametersSafeToFix` helper. Together ~50%
+//     of ez time on typescript.js.
+//   - jsdoc: every rule walks tokens backward via `findJSDocComment`
+//     looking for the attached comment block; `getJSDocComment` was
+//     ~17% total time (~1.1s on typescript.js).
+// Pass the rules explicitly via `--rules` if you want them benchmarked.
 function _commonRulesWithOxlint() {
   const { loadCoreRules, loadPlugin } = require(path.join(ROOT, "js/load-plugin.js"));
   const PLUGIN_PKGS = [
@@ -63,7 +68,6 @@ function _commonRulesWithOxlint() {
     "eslint-plugin-react-hooks",
     "eslint-plugin-n",
     "eslint-plugin-promise",
-    "eslint-plugin-jsdoc",
     "eslint-plugin-es-x",
     "eslint-plugin-sonarjs",
   ];
