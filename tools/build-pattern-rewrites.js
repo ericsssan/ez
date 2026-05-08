@@ -156,6 +156,13 @@ const OVERRIDE_KEY_TO_UPSTREAM = {
     upstreamDir: resolve("/Users/ericsan/node_modules/eslint-plugin-unicorn/rules/rule"),
     module: "esm",
   },
+  // jsdoccomment is dual-built; eslint-plugin-jsdoc requires the CJS
+  // bundle (its rules ship as `.cjs` files), so the substitute targets
+  // dist/index.cjs.cjs and routes through require.cache.
+  "jsdoccomment": {
+    upstreamDir: resolve("/Users/ericsan/node_modules/@es-joy/jsdoccomment/dist"),
+    module: "cjs",
+  },
 };
 
 async function copyOverrides(manifestEntries) {
