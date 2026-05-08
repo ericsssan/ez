@@ -4380,10 +4380,14 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
       // Tier A short-circuit: skip create() + slot rewire for shared-handlers rules
       // when options haven't changed. Rule's cold-path visitors stay valid because
       // the rule's create() only reads options/settings (classified by tools/rule-analyzer.js).
-      // Tier B Proxy was tried (see git history of this file) — overhead exceeded
-      // savings at realistic scale. Removed in favor of rewrite path.
+      // Rewritten rules (`shared-handlers-via-rewrite`) get the same treatment — the
+      // rewriter has mechanically transformed their create() into Tier A shape (deleted
+      // file-state captures, inlined `context.X` reads at every reference site), so
+      // skipping create() is now safe. Tier B Proxy was tried (see git history) —
+      // overhead exceeded savings at realistic scale. Removed in favor of rewrite path.
       const strategy = perRuleCtxs[pi]._instantiationStrategy;
-      if (!tierADisabled && sameConfig && strategy === "shared-handlers") {
+      if (!tierADisabled && sameConfig
+          && (strategy === "shared-handlers" || strategy === "shared-handlers-via-rewrite")) {
         for (let r = 0; r < recipe.length; r++) {
           const step = recipe[r];
           if (step.sel) selIdx++;

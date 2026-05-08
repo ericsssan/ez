@@ -482,6 +482,37 @@ function collectContextAccesses(node, contextName, opts = {}) {
 }
 
 function detectCapture(initExpr, contextName, idNode) {
+  // Special: `const [{ A, B, ... }] = context.options;` — array-wrapping
+  // object pattern reading the options array's first element. ESLint
+  // configs always pass options as a 1-element array around the user's
+  // options object (or default). Bound names refer to per-rule, per-file
+  // option values. Each name can be safely re-read at handler time as
+  // `context.options[0].<name>`. Recognize ONLY simple shapes — no
+  // defaults, no renames (key !== value identifier), no nested patterns.
+  // Anything more complex falls through to the generic "<destructured>"
+  // unsafe path.
+  if (idNode.type === "ArrayPattern"
+      && idNode.elements.length === 1
+      && idNode.elements[0]
+      && idNode.elements[0].type === "ObjectPattern"
+      && initExpr.type === "MemberExpression" && !initExpr.computed
+      && initExpr.object.type === "Identifier" && initExpr.object.name === contextName
+      && initExpr.property.type === "Identifier" && initExpr.property.name === "options") {
+    const objPat = idNode.elements[0];
+    const allSimple = objPat.properties.length > 0 && objPat.properties.every(p =>
+      p.type === "Property" && !p.computed && p.shorthand
+      && p.key.type === "Identifier" && p.value.type === "Identifier"
+      && p.key.name === p.value.name);
+    if (allSimple) {
+      return {
+        varName: "<options-destructure>",
+        accessChain: ["options"],
+        callLike: false,
+        optionsBindings: objPat.properties.map(p => p.key.name),
+      };
+    }
+  }
+
   // Handle: const x = context.prop, const x = context.method(), const {x} = context.whatever()
   let cur = initExpr;
   let callLike = false;
@@ -762,6 +793,26 @@ function classifyRule(createFn) {
     let anyUnsafe = false;
     for (const c of nonPrimCaptures) {
       const prop = c.accessChain[0];
+
+      // Options-destructure capture: `const [{ A, B }] = context.options;`.
+      // Bindings are PRIMITIVE values (booleans, strings, numbers from the
+      // user's config object). Unlike non-primitive captures (where
+      // escape-via-call-arg could leak a stable reference across files),
+      // primitive values can't leak — passing `ignoreCase` to a helper
+      // captures the value at THAT call. Re-reading `context.options[0]
+      // .ignoreCase` per handler invocation always returns the current
+      // file's config. Therefore unconditionally rewritable; no per-
+      // binding escape analysis needed.
+      if (c.varName === "<options-destructure>") {
+        captureUsage.push({
+          varName: c.varName, kind: "rewritable", reason: "options-destructure",
+          optionsBindings: c.optionsBindings || [],
+        });
+        allDead = false;
+        // Don't penalize proxyCovered: rewritten directly, not via Proxy.
+        continue;
+      }
+
       if (!REWRITE_SAFE_TARGETS.has(prop)) proxyCovered = false;
 
       if (c.varName === "<destructured>") {
@@ -796,6 +847,7 @@ function classifyRule(createFn) {
       varName: c.varName,
       chain: c.accessChain,
       callLike: c.callLike,
+      ...(c.optionsBindings ? { optionsBindings: c.optionsBindings } : {}),
     })),
     captureUsage,
   };

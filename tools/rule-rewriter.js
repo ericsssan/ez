@@ -295,6 +295,39 @@ function findRewritableCaptures(createFn, ctxName) {
         }
       }
 
+      // Options destructure: `const [{ A, B, ... }] = context.options;`
+      // Each bound name resolves to `context.options[0].<name>` at each
+      // reference site; the entire declaration is removed. Only handles
+      // the simple shape (no defaults, no renames, no nested patterns).
+      if (decl.id.type === "ArrayPattern"
+          && decl.id.elements.length === 1
+          && decl.id.elements[0]
+          && decl.id.elements[0].type === "ObjectPattern"
+          && decl.init.type === "MemberExpression" && !decl.init.computed
+          && decl.init.object.type === "Identifier" && decl.init.object.name === ctxName
+          && decl.init.property.type === "Identifier" && decl.init.property.name === "options") {
+        const objPat = decl.id.elements[0];
+        const allSimple = objPat.properties.length > 0 && objPat.properties.every(p =>
+          p.type === "Property" && !p.computed && p.shorthand
+          && p.key.type === "Identifier" && p.value.type === "Identifier"
+          && p.key.name === p.value.name);
+        if (allSimple) {
+          for (let pi = 0; pi < objPat.properties.length; pi++) {
+            const prop = objPat.properties[pi];
+            caps.push({
+              kind: "options-destructure",
+              varName: prop.key.name,
+              replacement: ctxName + ".options[0]." + prop.key.name,
+              declaratorIndex: i,
+              declaratorRange: decl.range,
+              declarationRange: stmt.range,
+              declarations: decls,
+            });
+          }
+          continue;
+        }
+      }
+
       // Destructure: `{ sourceCode, scopeManager } = context`
       if (decl.id.type === "ObjectPattern"
           && decl.init.type === "Identifier" && decl.init.name === ctxName) {
@@ -414,20 +447,34 @@ function rewrite(src, originalDir) {
 
   // For each capture: delete the declarator (or statement) and replace each reference
   // site with the target's replacement expression.
+  // Options-destructure captures from the same VariableDeclaration share the
+  // declaration removal — dedupe via this set so we only push one removal edit.
+  const removedDecls = new Set();
   for (const cap of captures) {
-    const target = REWRITE_TARGETS[cap.targetProp];
-    if (!target) return { src, error: "unknown-target:" + cap.targetProp };
+    let replacement;
+    if (cap.kind === "options-destructure") {
+      replacement = cap.replacement;
+      const key = cap.declarationRange[0] + ":" + cap.declarationRange[1];
+      if (!removedDecls.has(key)) {
+        removedDecls.add(key);
+        edits.push({ range: cap.declarationRange, text: "" });
+      }
+    } else {
+      const target = REWRITE_TARGETS[cap.targetProp];
+      if (!target) return { src, error: "unknown-target:" + cap.targetProp };
+      replacement = target.replacement;
 
-    const removal = computeRemoval(cap, src);
-    if (!removal) return { src, error: "could-not-compute-removal" };
-    edits.push({ range: removal.range, text: removal.text });
+      const removal = computeRemoval(cap, src);
+      if (!removal) return { src, error: "could-not-compute-removal" };
+      edits.push({ range: removal.range, text: removal.text });
+    }
 
     // Replace references to the bound variable throughout the create body.
     const sites = findReferenceSites(createFn, cap.varName);
     for (const s of sites) {
       // Don't replace within the declarator we're already removing.
       if (s.range[0] >= cap.declaratorRange[0] && s.range[1] <= cap.declaratorRange[1]) continue;
-      edits.push({ range: s.range, text: target.replacement });
+      edits.push({ range: s.range, text: replacement });
     }
   }
 
