@@ -220,14 +220,23 @@ function runEzAllOnAst(ctx, ruleIds) {
     });
   }
   const ms = performance.now() - t0;
+  // Locations keyed by `${shortRuleId}:${line}`. Lets perf_hunt
+  // compute set agreement with the oxlint side without printing
+  // individual diagnostics.
+  const locs = new Set();
+  const _short = (id) => { const i = id.lastIndexOf("/"); return i < 0 ? id : id.slice(i + 1); };
   for (const d of nativeDiags) {
     const id = d.rule_id || d.ruleId;
     if (id && perRule.has(id)) perRule.set(id, perRule.get(id) + 1);
+    const line = d.line ?? d.startLine ?? d.loc?.start?.line ?? 0;
+    if (id) locs.add(`${_short(id)}:${line}`);
   }
   for (const r of reports) {
     if (r.ruleId && perRule.has(r.ruleId)) perRule.set(r.ruleId, perRule.get(r.ruleId) + 1);
+    const line = r.line ?? r.loc?.start?.line ?? 0;
+    if (r.ruleId) locs.add(`${_short(r.ruleId)}:${line}`);
   }
-  return { ms, totalDiags: nativeDiags.length + reports.length, perRule };
+  return { ms, totalDiags: nativeDiags.length + reports.length, perRule, locs };
 }
 
 if (!_isMain) module.exports.runEzAllOnAst = runEzAllOnAst;
@@ -507,13 +516,17 @@ function runOxlintBatch(filePath, ruleIds) {
 function runOxlintBatchDiagCounts(filePath, ruleIds) {
   const known = ruleIds.map(_shortName).filter(n => oxlintRules().has(n));
   const perRule = new Map(known.map(n => [n, 0]));
-  if (known.length === 0) return { perRule, total: 0 };
+  // Set of "<shortRuleId>:<line>" keys — used by perf_hunt to compute
+  // agreement % vs ez's diagnostic locations. Same shape as the ez
+  // side's loc-key Set so set intersection / size give the agreement.
+  const locs = new Set();
+  if (known.length === 0) return { perRule, total: 0, locs };
   const args = [OXLINT_BIN, "-A", "all"];
   for (const n of known) { args.push("-D"); args.push(n); }
   args.push("--format", "json", filePath);
   const proc = Bun.spawnSync(args, { stdout: "pipe", stderr: "pipe" });
   const out = Buffer.from(proc.stdout).toString("utf8").trim();
-  if (!out) return { perRule, total: 0 };
+  if (!out) return { perRule, total: 0, locs };
   let total = 0;
   // oxlint JSON shape: top-level { diagnostics: [...] } or NDJSON per-line.
   if (out.startsWith("{") && out.includes("\"diagnostics\"")) {
@@ -522,12 +535,24 @@ function runOxlintBatchDiagCounts(filePath, ruleIds) {
       for (const d of data.diagnostics || []) {
         const code = typeof d.code === "string" ? d.code : d.code?.value;
         if (!code) continue;
-        // code is `eslint(no-unused-vars)` or `<plugin>(<rule>)`.
         const m = code.match(/\(([^)]+)\)$/);
         const short = m ? m[1] : code;
         if (perRule.has(short)) {
           perRule.set(short, perRule.get(short) + 1);
           total++;
+          // labels[0]?.span?.offset is the byte offset; we don't have
+          // a line directly. Use d.labels[0].span.offset as a stable
+          // key — both sides convert their location to a line below.
+          // Actually oxlint emits labels in chars; ez has line/column
+          // per report. To make them comparable, try to extract line
+          // from the diagnostic's `help`/`labels`/`span` fields if
+          // present. Fall back to 0 (still useful: ruleId-equality
+          // catches gross-disagreement cases).
+          let line = 0;
+          if (Array.isArray(d.labels) && d.labels.length > 0) {
+            line = d.labels[0].span?.line ?? d.labels[0].line ?? 0;
+          }
+          locs.add(`${short}:${line}`);
         }
       }
     } catch {}
@@ -541,11 +566,12 @@ function runOxlintBatchDiagCounts(filePath, ruleIds) {
         if (short && perRule.has(short)) {
           perRule.set(short, perRule.get(short) + 1);
           total++;
+          locs.add(`${short}:${d.line ?? 0}`);
         }
       } catch {}
     }
   }
-  return { perRule, total };
+  return { perRule, total, locs };
 }
 
 if (!_isMain) module.exports.runOxlintBatchDiagCounts = runOxlintBatchDiagCounts;

@@ -175,6 +175,7 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
   const ezAllInOneMs = ezAll.ms;
   const ezDiagCounts = ezAll.perRule;
   const ezTotalDiags = ezAll.totalDiags;
+  const ezLocs = ezAll.locs;
   process.stderr.write(`\r${" ".repeat(80)}\r`);
 
   // ── oxlint side: one subprocess running all rules ──
@@ -194,9 +195,12 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
 
   // ── Optional oxlint diag counts (extra subprocess with --format json) ──
   let oxDiagCounts = new Map();
+  let oxLocs = null; // Set<"<shortRuleId>:<line>">
   if (WITH_DIAG_COUNTS) {
     process.stderr.write(`  oxlint diag counts ...`);
-    oxDiagCounts = runOxlintBatchDiagCounts(filePath, rules).perRule;
+    const r = runOxlintBatchDiagCounts(filePath, rules);
+    oxDiagCounts = r.perRule;
+    oxLocs = r.locs;
     process.stderr.write(`\r${" ".repeat(80)}\r`);
   }
 
@@ -246,6 +250,19 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
   if (WITH_DIAG_COUNTS) {
     const oxDelta = ezTotalDiags - oxTotalDiags;
     console.log(`  oxlint: ${oxTotalDiags}${oxDelta === 0 ? "" : `  (ez delta ${oxDelta >= 0 ? "+" : ""}${oxDelta})`}`);
+    // Force the harness to actually compare outputs, not just counts.
+    // Agreement = |ez ∩ ox| / |ez ∪ ox| (Jaccard) over keys
+    // `<shortRuleId>:<line>`. Catches cases where counts roughly
+    // match but the two engines disagree on which lines.
+    if (oxLocs && ezLocs) {
+      let inter = 0;
+      for (const k of ezLocs) if (oxLocs.has(k)) inter++;
+      const union = ezLocs.size + oxLocs.size - inter;
+      const ezOnly = ezLocs.size - inter;
+      const oxOnly = oxLocs.size - inter;
+      const pct = union === 0 ? 100 : (inter / union * 100);
+      console.log(`  agreement: ${pct.toFixed(1)}% jaccard  (matched=${inter}, ez-only=${ezOnly}, ox-only=${oxOnly})`);
+    }
   } else {
     console.log(`  (oxlint counts skipped — pass --diag-counts to enable; slow on big fixtures)`);
   }
