@@ -215,9 +215,22 @@ async function copyOverrides(manifestEntries) {
     for (const f of files) {
       if (!f.isFile()) continue;
       if (!/\.(?:js|cjs|mjs)$/.test(f.name)) continue;
-      const src = await Bun.file(join(inDir, f.name)).text();
+      let src = await Bun.file(join(inDir, f.name)).text();
+      // Run the pattern rewriter over override sources too. Overrides
+      // are checked-in, hand-written replacements; the rewriter layers
+      // generic optimizations (parent.type → buffer reads, rest+spread
+      // fan-out → positional args, etc.) on top so overrides stay
+      // human-readable while still picking up the shape-based rewrites.
+      let extraMatches = 0;
+      try {
+        const r = applyPatternRewrite(src);
+        src = r.src;
+        extraMatches = r.matches;
+      } catch (err) {
+        process.stderr.write(`  override ${k.name}/${f.name}: rewrite threw: ${err.message}\n`);
+      }
       await Bun.write(join(OUT_ROOT, k.name, f.name), src);
-      results.push({ key: k.name, file: f.name });
+      results.push({ key: k.name, file: f.name, rewriteMatches: extraMatches });
       if (meta) {
         manifestEntries.push({
           key: k.name,
@@ -259,7 +272,8 @@ async function main() {
     process.stderr.write(`\n  overrides:\n`);
     for (const r of overrideResults) {
       totalWritten += 1;
-      process.stderr.write(`    ${r.key.padEnd(22)} ${r.file}\n`);
+      const note = r.rewriteMatches > 0 ? `  (+${r.rewriteMatches} pattern rewrites)` : "";
+      process.stderr.write(`    ${r.key.padEnd(22)} ${r.file}${note}\n`);
     }
   }
   process.stderr.write(
