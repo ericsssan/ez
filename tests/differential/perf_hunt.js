@@ -54,17 +54,23 @@ const filePath = path.isAbsolute(fileArg) ? fileArg : path.join(FIXTURES_DIR, fi
 // rewrite work.
 function _commonRulesWithOxlint() {
   const { loadCoreRules, loadPlugin } = require(path.join(ROOT, "js/load-plugin.js"));
+  // Plugin packages whose rules the bench loads. Build-time substitution
+  // currently only reaches ESM packages (Bun 1.3.9 `Bun.plugin` onLoad
+  // can't return CJS). Until that changes, CJS plugins are commented out
+  // here so the bench focuses on what the rewriter can actually optimize.
+  // Re-enable individual entries when their package ships ESM, or when
+  // we add a non-Bun.plugin path for CJS substitution.
   const PLUGIN_PKGS = [
-    "@typescript-eslint/eslint-plugin",
-    "eslint-plugin-import",
-    "eslint-plugin-unicorn",
-    "eslint-plugin-react",
-    "eslint-plugin-react-hooks",
-    "eslint-plugin-n",
-    "eslint-plugin-promise",
-    "eslint-plugin-jsdoc",
-    "eslint-plugin-es-x",
-    "eslint-plugin-sonarjs",
+    // "@typescript-eslint/eslint-plugin",  // CJS
+    // "eslint-plugin-import",              // CJS
+    "eslint-plugin-unicorn",                 // ESM
+    // "eslint-plugin-react",               // CJS
+    // "eslint-plugin-react-hooks",         // CJS
+    // "eslint-plugin-n",                   // CJS
+    // "eslint-plugin-promise",             // CJS
+    // "eslint-plugin-jsdoc",               // .cjs files (CJS at runtime)
+    // "eslint-plugin-es-x",                // CJS
+    // "eslint-plugin-sonarjs",             // CJS
   ];
   const all = loadCoreRules({ includeDeprecated: true })
     .map(r => r.meta?.name).filter(Boolean);

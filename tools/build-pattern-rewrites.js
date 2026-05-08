@@ -130,12 +130,42 @@ async function directoryExists(p) {
   }
 }
 
+// Hand-written substitute files under `tools/overrides/<key>/<file>` are
+// copied verbatim to `.ez/rules-rewritten-patterns/<key>/<file>` and
+// served by the runtime loader via the same Bun.plugin mechanism as
+// pattern-detected rewrites. Use these when an upstream module is a
+// good fit for replacement but doesn't match a generic AST shape — e.g.
+// a small piece of plugin infrastructure where we want to swap the
+// implementation wholesale (unicorn's listener pipeline).
+const OVERRIDES_ROOT = resolve(ROOT, "tools/overrides");
+
+async function copyOverrides() {
+  const results = [];
+  if (!await directoryExists(OVERRIDES_ROOT)) return results;
+  const fsp = await import("node:fs/promises");
+  const keys = await fsp.readdir(OVERRIDES_ROOT, { withFileTypes: true });
+  for (const k of keys) {
+    if (!k.isDirectory()) continue;
+    const inDir = join(OVERRIDES_ROOT, k.name);
+    const files = await fsp.readdir(inDir, { withFileTypes: true });
+    for (const f of files) {
+      if (!f.isFile()) continue;
+      if (!/\.(?:js|cjs|mjs)$/.test(f.name)) continue;
+      const src = await Bun.file(join(inDir, f.name)).text();
+      await Bun.write(join(OUT_ROOT, k.name, f.name), src);
+      results.push({ key: k.name, file: f.name });
+    }
+  }
+  return results;
+}
+
 async function main() {
   const t0 = Bun.nanoseconds();
   const results = [];
   for (const target of DEFAULT_TARGETS) {
     results.push(await buildOne(target));
   }
+  const overrideResults = await copyOverrides();
   const elapsedMs = Math.round((Bun.nanoseconds() - t0) / 1_000_000);
   let totalAttempted = 0, totalWritten = 0, totalMatches = 0;
   for (const r of results) {
@@ -146,6 +176,13 @@ async function main() {
     process.stderr.write(
       `  ${r.key.padEnd(24)} attempted=${String(r.attempted).padStart(4)}  written=${String(r.written).padStart(3)}  matches=${String(r.totalMatches).padStart(4)}${note}\n`
     );
+  }
+  if (overrideResults.length > 0) {
+    process.stderr.write(`\n  overrides:\n`);
+    for (const r of overrideResults) {
+      totalWritten += 1;
+      process.stderr.write(`    ${r.key.padEnd(22)} ${r.file}\n`);
+    }
   }
   process.stderr.write(
     `\n  totals: written=${totalWritten}  pattern-matches=${totalMatches}  in ${elapsedMs}ms\n`

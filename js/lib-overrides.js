@@ -38,6 +38,7 @@ if (typeof Bun !== "undefined" && Bun.plugin && process.env.EZ_DISABLE_PATTERN_R
   // `lib/rules/utils/` is a subdirectory of `lib/rules/` and would
   // otherwise be ambiguous in the filter.
   const _LAYOUT_FOR_PLUGIN = {
+    "unicorn-rule":        /[\\/]eslint-plugin-unicorn[\\/]rules[\\/]rule[\\/]/,
     unicorn:               /[\\/]eslint-plugin-unicorn[\\/]rules[\\/]/,
     react:                 /[\\/]eslint-plugin-react[\\/]lib[\\/]rules[\\/]/,
     promise:               /[\\/]eslint-plugin-promise[\\/]rules[\\/]/,
