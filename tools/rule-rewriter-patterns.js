@@ -118,35 +118,312 @@ function detectArrTypeEqPattern(node) {
   };
 }
 
+// Pattern 2: linear-scan with property-equality filter inside a for-of loop.
+//
+// Source shape (the actual hot loop in unicorn/no-array-for-each):
+//
+//   for (const ELEM of ARR) {
+//     const {PROP} = ELEM;             // OR direct ELEM.PROP later
+//     <other binding statements...>
+//     if (
+//       PROP !== KEY                    // ← pivot disjunct
+//       || OTHER_COND_1
+//       || OTHER_COND_2
+//     ) {
+//       continue;
+//     }
+//     <body>
+//   }
+//
+// Validity preconditions:
+//   - ARR is referenced as a plain Identifier (closure-captured stable array)
+//   - The filter's pivot disjunct `PROP !== KEY` is one of the top-level
+//     `||` operands, where:
+//       * PROP is a previously-destructured local name OR `ELEM.PROP`
+//       * KEY is an Identifier (read from outer scope)
+//   - The destructure (if used) is `const {PROP} = ELEM` literally
+//   - ARR is not mutated within the same enclosing function (no `.push(`,
+//     `.pop(`, `.shift(`, `.unshift(`, `.splice(` calls on it)
+//
+// Emit:
+//
+//   const __ezMatches = _ezHelpers.indexedByProp(ARR, 'PROP').get(KEY);
+//   if (__ezMatches) for (let __i = 0, __n = __ezMatches.length; __i < __n; __i++) {
+//     const ELEM = __ezMatches[__i];
+//     const {PROP} = ELEM;              // preserved so later refs work
+//     <other binding statements...>
+//     if (
+//       OTHER_COND_1                    // ← pivot disjunct removed
+//       || OTHER_COND_2
+//     ) {
+//       continue;
+//     }
+//     <body>
+//   }
+//
+// Conservative — bails on anything weird. Returns the rewrite descriptor
+// or null.
+
+const _BAIL_ARRAY_MUTATING_METHODS = ["push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin"];
+
+function _isArrayMutatedInScope(scopeNode, arrName) {
+  // Conservative: walk the whole scope (function or module), look for
+  // `arrName.<mutator>(...)` call expressions. False positives possible
+  // (e.g., a local variable shadowing arrName), but those are rare and
+  // bailing is safe — pattern just doesn't fire.
+  let mutated = false;
+  walk(scopeNode, (n) => {
+    if (mutated) return;
+    if (n.type !== "CallExpression") return;
+    const callee = n.callee;
+    if (!callee || callee.type !== "MemberExpression" || callee.computed) return;
+    if (!callee.object || callee.object.type !== "Identifier") return;
+    if (callee.object.name !== arrName) return;
+    if (!callee.property || callee.property.type !== "Identifier") return;
+    if (_BAIL_ARRAY_MUTATING_METHODS.includes(callee.property.name)) {
+      mutated = true;
+    }
+  });
+  return mutated;
+}
+
+function _findEnclosing(rootAst, target) {
+  // Returns the nearest ancestor of `target` that is a function or program.
+  // We need this to validate "no mutation in the same scope".
+  let result = null;
+  walk(rootAst, (n) => {
+    if (n.type === "FunctionDeclaration" || n.type === "FunctionExpression"
+        || n.type === "ArrowFunctionExpression" || n.type === "Program") {
+      // Crude containment check via range comparison. Both ranges include the
+      // target's range → this is an ancestor. Smallest-range ancestor wins.
+      if (target.range && n.range
+          && n.range[0] <= target.range[0] && n.range[1] >= target.range[1]
+          && n !== target) {
+        if (!result || (n.range[1] - n.range[0]) < (result.range[1] - result.range[0])) {
+          result = n;
+        }
+      }
+    }
+  });
+  return result;
+}
+
+// Detect the pattern. `forNode` is a ForOfStatement.
+function detectIndexedLookupPattern(forNode, rootAst) {
+  if (forNode.type !== "ForOfStatement") return null;
+  // Iterator: `const ELEM of ARR`
+  if (!forNode.left || forNode.left.type !== "VariableDeclaration") return null;
+  if (forNode.left.declarations.length !== 1) return null;
+  const elemDecl = forNode.left.declarations[0];
+  if (!elemDecl.id || elemDecl.id.type !== "Identifier") return null;
+  const elemName = elemDecl.id.name;
+  if (!forNode.right || forNode.right.type !== "Identifier") return null;
+  const arrName = forNode.right.name;
+  // Body must be BlockStatement
+  if (!forNode.body || forNode.body.type !== "BlockStatement") return null;
+  const bodyStmts = forNode.body.body;
+  if (bodyStmts.length === 0) return null;
+
+  // Collect destructured locals from leading const-declarations off ELEM.
+  const destructuredFrom = new Map(); // localName -> propName (e.g. {name} = ELEM → "name" -> "name")
+  let firstNonBindingIdx = 0;
+  for (; firstNonBindingIdx < bodyStmts.length; firstNonBindingIdx++) {
+    const stmt = bodyStmts[firstNonBindingIdx];
+    if (stmt.type !== "VariableDeclaration" || stmt.kind !== "const") break;
+    if (stmt.declarations.length !== 1) break;
+    const d = stmt.declarations[0];
+    if (!d.init) break;
+    // Only track destructures whose init is ELEM directly. Other bindings
+    // (e.g. `const [s,e] = sourceCode.getRange(...)`) are fine but not
+    // destructures we care about.
+    if (d.init.type === "Identifier" && d.init.name === elemName
+        && d.id.type === "ObjectPattern") {
+      for (const prop of d.id.properties) {
+        if (prop.type !== "Property" || prop.computed) continue;
+        if (prop.key.type !== "Identifier") continue;
+        const propName = prop.key.name;
+        const localName = prop.value && prop.value.type === "Identifier"
+          ? prop.value.name : propName;
+        destructuredFrom.set(localName, propName);
+      }
+    }
+  }
+
+  // Look at the FIRST IfStatement after the binding statements.
+  if (firstNonBindingIdx >= bodyStmts.length) return null;
+  const ifStmt = bodyStmts[firstNonBindingIdx];
+  if (ifStmt.type !== "IfStatement") return null;
+  // Body must be `continue;` (possibly inside a BlockStatement)
+  let consequent = ifStmt.consequent;
+  if (consequent.type === "BlockStatement") {
+    if (consequent.body.length !== 1) return null;
+    consequent = consequent.body[0];
+  }
+  if (consequent.type !== "ContinueStatement" || consequent.label) return null;
+  if (ifStmt.alternate) return null;
+
+  // Walk the test's || disjuncts looking for `<PROP_REF> !== <Identifier>`
+  // where PROP_REF is either a destructured local or `ELEM.PROP`.
+  function flattenOr(node, out) {
+    if (node.type === "LogicalExpression" && node.operator === "||") {
+      flattenOr(node.left, out);
+      flattenOr(node.right, out);
+    } else {
+      out.push(node);
+    }
+  }
+  const disjuncts = [];
+  flattenOr(ifStmt.test, disjuncts);
+  let pivotIdx = -1, propName = null, keyExpr = null;
+  for (let i = 0; i < disjuncts.length; i++) {
+    const d = disjuncts[i];
+    if (d.type !== "BinaryExpression" || d.operator !== "!==") continue;
+    // Left could be a destructured-local Identifier, or ELEM.PROP
+    let p = null;
+    if (d.left.type === "Identifier" && destructuredFrom.has(d.left.name)) {
+      p = destructuredFrom.get(d.left.name);
+    } else if (d.left.type === "MemberExpression" && !d.left.computed
+        && d.left.object.type === "Identifier" && d.left.object.name === elemName
+        && d.left.property.type === "Identifier") {
+      p = d.left.property.name;
+    }
+    if (!p) continue;
+    // Right must be a simple Identifier (key from outer scope).
+    if (d.right.type !== "Identifier") continue;
+    pivotIdx = i;
+    propName = p;
+    keyExpr = d.right.name;
+    break;
+  }
+  if (pivotIdx < 0) return null;
+
+  // Validity: ARR not mutated in the enclosing function.
+  const enclosing = _findEnclosing(rootAst, forNode);
+  if (!enclosing) return null;
+  if (_isArrayMutatedInScope(enclosing, arrName)) return null;
+
+  return {
+    forNodeRange: forNode.range,
+    bodyRange: forNode.body.range,
+    elemName,
+    arrName,
+    propName,
+    keyExpr,
+    ifStmtRange: ifStmt.range,
+    ifTestRange: ifStmt.test.range,
+    pivotRange: disjuncts[pivotIdx].range,
+    disjuncts,
+    pivotIdx,
+  };
+}
+
+function emitIndexedLookup(src, m) {
+  // Reconstruct the new for-of header + a wrapping `if (matches)`.
+  // We rewrite the LOOP's iterator source AND the IfStatement's test,
+  // by emitting two precise ranged edits:
+  //   1. Replace `for (const E of ARR)` with the indexed-lookup prelude
+  //      and a `for (let __i...)` over matches, plus `const E = matches[__i]`
+  //      injected at the top of the body.
+  //   2. Replace the IfStatement's test with the original test minus the
+  //      pivot disjunct.
+  const arrIdent = m.arrName;
+  const propLit = JSON.stringify(m.propName);
+  const keyIdent = m.keyExpr;
+  const elemIdent = m.elemName;
+
+  // Build the pre-loop prelude + new for-loop header. Replaces
+  // `for (const ELEM of ARR) {` (the entire ForOfStatement up to and
+  // including the opening `{`).
+  // Note: we emit a synthetic block to scope __ezMatches/__i/__n.
+  const headerEnd = m.bodyRange[0] + 1; // includes the `{`
+  const preludeRange = [m.forNodeRange[0], headerEnd];
+  const prelude =
+    `{\n` +
+    `\t\tconst __ezMatches = _ezHelpers.indexedByProp(${arrIdent}, ${propLit}).get(${keyIdent});\n` +
+    `\t\tif (__ezMatches) for (let __ezI = 0, __ezN = __ezMatches.length; __ezI < __ezN; __ezI++) {\n` +
+    `\t\t\tconst ${elemIdent} = __ezMatches[__ezI];`;
+
+  // Closing: replace the `}` of the original for-of with `} }` (close the
+  // inner loop AND the synthetic block we opened).
+  const bodyClose = m.bodyRange[1]; // `}` of the for-of body
+  const bodyCloseEnd = m.forNodeRange[1]; // end of for-of statement (after `}`)
+  const closeRange = [bodyClose - 1, bodyCloseEnd];
+  const closeText = `}\n\t}`;
+
+  // Rewrite the if-test: drop the pivot disjunct.
+  let newTest;
+  if (m.disjuncts.length === 1) {
+    // Only the pivot — `if (PIVOT) continue;` becomes `if (false) continue;` →
+    // simpler: drop the whole IfStatement. But that's risky if some side effect
+    // is in the test. Pivot is `prop !== ident`, side-effect-free. Safe.
+    newTest = "false";
+  } else {
+    // Reconstruct from non-pivot disjuncts, joined by `||`.
+    const remaining = m.disjuncts.filter((_, i) => i !== m.pivotIdx);
+    newTest = remaining.map(d => src.slice(d.range[0], d.range[1])).join(" || ");
+  }
+  const testReplaceRange = m.ifTestRange;
+
+  return [
+    { range: preludeRange, text: prelude },
+    { range: testReplaceRange, text: newTest },
+    { range: closeRange, text: closeText },
+  ];
+}
+
 function rewrite(src) {
   const ast = parseFile(src);
-  const matches = [];
+  const arrTypeEqMatches = [];
+  const indexedLookupMatches = [];
   walk(ast, (n) => {
     const m = detectArrTypeEqPattern(n);
-    if (m) matches.push(m);
+    if (m) arrTypeEqMatches.push(m);
+    if (process.env.EZ_DISABLE_INDEXED_LOOKUP !== "1") {
+      const i = detectIndexedLookupPattern(n, ast);
+      if (i) indexedLookupMatches.push(i);
+    }
   });
 
-  if (matches.length === 0) {
+  const matches = arrTypeEqMatches.length + indexedLookupMatches.length;
+  if (matches === 0) {
     return { src, matches: 0 };
   }
 
-  // Apply edits in descending source order so earlier ranges aren't shifted.
-  matches.sort((a, b) => b.fullRange[0] - a.fullRange[0]);
-
-  let out = src;
-  for (const m of matches) {
+  // Build a flat edit list. Each pattern emits one or more
+  // {range, text} edits; we apply all of them in descending source-order so
+  // earlier-positioned edits don't shift later-positioned ranges.
+  const edits = [];
+  for (const m of arrTypeEqMatches) {
     const arrText = src.slice(m.arrRange[0], m.arrRange[1]);
     const typeText = src.slice(m.typeLiteralRange[0], m.typeLiteralRange[1]);
     const replacement = `_ezHelpers.${m.helperName}(${arrText}, ${typeText})`;
-    out = out.slice(0, m.fullRange[0]) + replacement + out.slice(m.fullRange[1]);
+    edits.push({ range: m.fullRange, text: replacement });
+  }
+  for (const m of indexedLookupMatches) {
+    edits.push(...emitIndexedLookup(src, m));
+  }
+  edits.sort((a, b) => b.range[0] - a.range[0]);
+
+  let out = src;
+  for (const e of edits) {
+    out = out.slice(0, e.range[0]) + e.text + out.slice(e.range[1]);
   }
 
-  // Inject the helpers import at the top, after any existing "use strict"
-  // directive. Idempotent — bail if the file already imports it.
+  // Inject the helpers import. ESM rules (`import ...`) need `import`-form;
+  // CommonJS rules (`require(...)` or no module syntax) use `require()`.
+  // Idempotent — bail if helpers already imported.
   if (!out.includes("rewrite-helpers")) {
-    const useStrictMatch = out.match(/^("use strict";|'use strict';)\s*\n/);
     const helpersPath = path.resolve(__dirname, "../js/rewrite-helpers.js");
-    const importLine = `const _ezHelpers = require(${JSON.stringify(helpersPath)});\n`;
+    // ESM detection: file has at least one top-level `import ` statement.
+    const isEsm = /^import\s/m.test(out);
+    let importLine;
+    if (isEsm) {
+      // Bun resolves the path; explicit URL form keeps the import unambiguous.
+      importLine = `import * as _ezHelpers from ${JSON.stringify(helpersPath)};\n`;
+    } else {
+      importLine = `const _ezHelpers = require(${JSON.stringify(helpersPath)});\n`;
+    }
+    const useStrictMatch = out.match(/^("use strict";|'use strict';)\s*\n/);
     if (useStrictMatch) {
       const idx = useStrictMatch[0].length;
       out = out.slice(0, idx) + importLine + out.slice(idx);
@@ -155,7 +432,7 @@ function rewrite(src) {
     }
   }
 
-  return { src: out, matches: matches.length };
+  return { src: out, matches };
 }
 
 // CLI

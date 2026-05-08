@@ -50,4 +50,61 @@ function findTypeEq(arr, type) {
   return undefined;
 }
 
-module.exports = { someTypeEq, everyTypeEq, findTypeEq };
+/**
+ * Build (or reuse) a Map<key, T[]> keyed by `arr[i][prop]`. Cached on the
+ * array itself via a non-enumerable property so repeated calls within a
+ * single rule run reuse the same index — turns
+ *
+ *     for (const x of arr) { if (x[prop] !== key) continue; ... }
+ *
+ * (an O(N×Q) scan when looped Q times) into
+ *
+ *     const matches = indexedByProp(arr, prop).get(key);
+ *     if (matches) for (const x of matches) { ... }
+ *
+ * (O(N) build amortized + O(matches) per query).
+ *
+ * Validity preconditions enforced by the rewriter (not by this helper):
+ *   - `arr` doesn't mutate during the rule's run (no push/pop/etc).
+ *   - Elements have a stable `[prop]` value matching JS `===`.
+ *
+ * The cached index lives on the array via a Symbol-keyed slot, one per
+ * (prop) value. Different rewriter sites indexing the same array on the
+ * same prop reuse one index; sites indexing on a different prop get a
+ * different one.
+ *
+ * @param {Array} arr
+ * @param {string} prop
+ * @returns {Map<any, Array>}
+ */
+const _IDX_SLOTS = Object.create(null);
+function indexedByProp(arr, prop) {
+  // Symbol-per-prop so multiple rewriter sites on different props on
+  // the same array don't clobber each other.
+  let slotKey = _IDX_SLOTS[prop];
+  if (!slotKey) {
+    slotKey = Symbol("ezIdx_" + prop);
+    _IDX_SLOTS[prop] = slotKey;
+  }
+  let m = arr[slotKey];
+  if (m) return m;
+  m = new Map();
+  for (let i = 0, n = arr.length; i < n; i++) {
+    const el = arr[i];
+    const k = el[prop];
+    let v = m.get(k);
+    if (!v) { v = []; m.set(k, v); }
+    v.push(el);
+  }
+  // Non-enumerable, configurable so a future GC sweep / rule reload can
+  // overwrite. Writable so the cache can be invalidated externally if needed.
+  Object.defineProperty(arr, slotKey, {
+    value: m, writable: true, enumerable: false, configurable: true,
+  });
+  return m;
+}
+
+module.exports = { someTypeEq, everyTypeEq, findTypeEq, indexedByProp };
+
+// Bun's CJS↔ESM interop: when this file is loaded via `import * as _ezHelpers`,
+// Bun maps `module.exports`'s keys onto the namespace. Both forms work.

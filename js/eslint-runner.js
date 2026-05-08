@@ -4577,9 +4577,14 @@ function buildVisitorMap(plugins, context, ruleConfig = {}) {
 
     // Stamp the rule's instantiation strategy onto its context. Consumed by the
     // hot-path dispatcher to decide whether create() can be skipped per file.
+    // EZ_DISABLE_RULE_METADATA=1 forces fresh-per-file for every rule (Tier
+    // A/B short-circuits off) — diagnostic mode for tracing whether the
+    // metadata-driven skip interacts with other rewrites.
     const pluginKey = pluginKeyFromRuleId(ruleId);
     const ruleName = ruleNameFromRuleId(ruleId);
-    const instantiationRecord = metaIndex.describeRule(pluginKey, ruleName);
+    const instantiationRecord = process.env.EZ_DISABLE_RULE_METADATA === "1"
+      ? { strategy: "fresh-per-file" }
+      : metaIndex.describeRule(pluginKey, ruleName);
     perRuleCtx._instantiationStrategy = instantiationRecord.strategy || DEFAULT_STRATEGY;
     perRuleCtx._instantiationRecord = instantiationRecord;
     strategyHistogram[perRuleCtx._instantiationStrategy] =
