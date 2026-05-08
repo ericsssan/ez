@@ -18,10 +18,33 @@
 //     → builds rewrites for a single plugin's rules dir
 
 import { rewrite as applyPatternRewrite } from "./rule-rewriter-patterns.js";
-import { resolve, basename, join } from "node:path";
+import { resolve, basename, dirname, join } from "node:path";
+import { readFileSync, statSync } from "node:fs";
 
 const ROOT = resolve(import.meta.dir, "..");
 const OUT_ROOT = resolve(ROOT, ".ez/rules-rewritten-patterns");
+
+// Bun 1.3.9's `Bun.plugin` `onLoad({ contents })` always parses the
+// returned source as ESM. CJS modules served through this path return
+// empty `module.exports`. Until Bun fixes that, the substitution
+// pipeline only works for ESM packages. We detect by walking up from
+// the source dir to the nearest package.json and checking `type`.
+function packageIsEsm(srcDir) {
+  let dir = srcDir;
+  for (let i = 0; i < 12; i++) {
+    const pj = join(dir, "package.json");
+    try {
+      if (statSync(pj).isFile()) {
+        const j = JSON.parse(readFileSync(pj, "utf8"));
+        return j.type === "module";
+      }
+    } catch {}
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return false;
+}
 
 // Each entry: { key (used in output dir), srcGlobBase, glob }. globs use
 // Bun.Glob — patterns relative to srcGlobBase.
@@ -72,6 +95,9 @@ async function buildOne(target) {
   if (!(await Bun.file(target.base).exists?.()) && !await directoryExists(target.base)) {
     return { key: target.key, attempted: 0, written: 0, totalMatches: 0, skipped: "missing" };
   }
+  if (!packageIsEsm(target.base)) {
+    return { key: target.key, attempted: 0, written: 0, totalMatches: 0, skipped: "cjs (Bun.plugin onLoad blocks CJS substitution in 1.3.9)" };
+  }
   const glob = new Bun.Glob(target.glob);
   let attempted = 0, written = 0, totalMatches = 0;
   const outDir = join(OUT_ROOT, target.key);
@@ -116,13 +142,13 @@ async function main() {
     totalAttempted += r.attempted;
     totalWritten += r.written;
     totalMatches += r.totalMatches;
-    const note = r.skipped ? ` (${r.skipped})` : "";
+    const note = r.skipped ? `  (${r.skipped})` : "";
     process.stderr.write(
       `  ${r.key.padEnd(24)} attempted=${String(r.attempted).padStart(4)}  written=${String(r.written).padStart(3)}  matches=${String(r.totalMatches).padStart(4)}${note}\n`
     );
   }
   process.stderr.write(
-    `\n  totals: attempted=${totalAttempted}  written=${totalWritten}  matches=${totalMatches}  in ${elapsedMs}ms\n`
+    `\n  totals: written=${totalWritten}  pattern-matches=${totalMatches}  in ${elapsedMs}ms\n`
   );
   process.stderr.write(`  output: ${OUT_ROOT}\n`);
 }
