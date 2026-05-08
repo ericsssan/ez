@@ -6,6 +6,12 @@
 const fs = require("fs");
 const path = require("path");
 
+// Install load-time overrides for hot helpers in libraries that ESLint rules
+// depend on (currently: ast-utils.getStaticPropertyName). Must run BEFORE any
+// rule is `require()`'d, since rules destructure helper names at top level
+// and capture references at that moment. Side-effecting import; no exports.
+require("./lib-overrides");
+
 const BUNDLED_RULES_DIR = path.join(__dirname, "node_modules/eslint/lib/rules");
 
 // Rewritten rule sources live under .ez/rules-rewritten/<plugin-key>/<rule>.js.
