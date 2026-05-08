@@ -2,1605 +2,1206 @@
   "fixture": "typescript.js",
   "bytes": 9143423,
   "ruleCount": 398,
-  "savedAt": "2026-05-07T15:22:19.747Z",
+  "savedAt": "2026-05-08T03:02:18.319Z",
   "totals": {
-    "ezAllInOneMs": 13801.7,
-    "ezPerRuleSumMs": 24953,
-    "oxBatchMs": 776,
-    "oxBaselineMs": 126.1,
-    "ezTotalDiags": 82190
+    "ezAllInOneMs": 13843.4,
+    "oxBatchMs": 777.8,
+    "oxBaselineMs": 125.7,
+    "ezTotalDiags": 205598
   },
   "rules": {
     "no-var": {
-      "ms": 37.2,
-      "diags": 200
+      "diags": 1997
     },
     "sort-vars": {
-      "ms": 34.2,
       "diags": 21
     },
     "no-compare-neg-zero": {
-      "ms": 17.2,
       "diags": 0
     },
     "dot-notation": {
-      "ms": 13.1,
-      "diags": 200
+      "diags": 2350
     },
     "complexity": {
-      "ms": 57.7,
-      "diags": 200
+      "diags": 429
     },
     "guard-for-in": {
-      "ms": 33,
       "diags": 8
     },
     "no-new-native-nonconstructor": {
-      "ms": 21.6,
       "diags": 0
     },
     "class-methods-use-this": {
-      "ms": 309.7,
       "diags": 132
     },
     "no-setter-return": {
-      "ms": 32.5,
       "diags": 0
     },
     "no-undef": {
-      "ms": 119.8,
       "diags": 77
     },
     "no-extra-label": {
-      "ms": 13.2,
       "diags": 2
     },
     "prefer-promise-reject-errors": {
-      "ms": 25.7,
       "diags": 1
     },
     "no-useless-escape": {
-      "ms": 33,
       "diags": 0
     },
     "no-unassigned-vars": {
-      "ms": 30.9,
       "diags": 2
     },
     "no-dupe-keys": {
-      "ms": 21.1,
       "diags": 0
     },
     "no-fallthrough": {
-      "ms": 64.9,
       "diags": 98
     },
     "no-lonely-if": {
-      "ms": 20.8,
       "diags": 61
     },
     "no-const-assign": {
-      "ms": 22.5,
       "diags": 0
     },
     "no-array-constructor": {
-      "ms": 24.7,
       "diags": 0
     },
     "no-div-regex": {
-      "ms": 32.3,
       "diags": 0
     },
     "no-irregular-whitespace": {
-      "ms": 19.7,
       "diags": 0
     },
     "array-callback-return": {
-      "ms": 61.5,
       "diags": 3
     },
     "no-empty-character-class": {
-      "ms": 49.1,
       "diags": 0
     },
     "no-implied-eval": {
-      "ms": 45.8,
       "diags": 0
     },
     "no-useless-rename": {
-      "ms": 25.5,
       "diags": 0
     },
     "for-direction": {
-      "ms": 28.7,
       "diags": 0
     },
     "no-empty-pattern": {
-      "ms": 12.2,
       "diags": 0
     },
     "max-params": {
-      "ms": 8.1,
-      "diags": 200
+      "diags": 1712
     },
     "prefer-object-has-own": {
-      "ms": 31.8,
       "diags": 0
     },
     "no-useless-concat": {
-      "ms": 14.8,
       "diags": 0
     },
     "no-constant-condition": {
-      "ms": 91.5,
       "diags": 1
     },
     "no-eval": {
-      "ms": 88.2,
       "diags": 0
     },
     "no-loop-func": {
-      "ms": 24.2,
       "diags": 11
     },
     "curly": {
-      "ms": 7.5,
-      "diags": 200
+      "diags": 2263
     },
     "no-new": {
-      "ms": 25.6,
       "diags": 0
     },
     "no-object-constructor": {
-      "ms": 25.2,
       "diags": 0
     },
     "no-label-var": {
-      "ms": 15.3,
       "diags": 0
     },
     "no-eq-null": {
-      "ms": 8.2,
-      "diags": 200
+      "diags": 1653
     },
     "no-shadow": {
-      "ms": 15,
       "diags": 1
     },
     "no-self-assign": {
-      "ms": 16.4,
       "diags": 0
     },
     "no-ternary": {
-      "ms": 6.9,
       "diags": 7727
     },
     "default-case-last": {
-      "ms": 12.4,
       "diags": 0
     },
     "no-new-wrappers": {
-      "ms": 11.7,
       "diags": 0
     },
     "no-unmodified-loop-condition": {
-      "ms": 90.5,
       "diags": 7
     },
     "no-param-reassign": {
-      "ms": 16.2,
-      "diags": 324
+      "diags": 1151
     },
     "no-nonoctal-decimal-escape": {
-      "ms": 23.3,
       "diags": 0
     },
     "no-magic-numbers": {
-      "ms": 7.8,
-      "diags": 200
+      "diags": 45936
     },
     "arrow-body-style": {
-      "ms": 35.9,
       "diags": 162
     },
     "no-obj-calls": {
-      "ms": 29.2,
       "diags": 0
     },
     "no-dupe-else-if": {
-      "ms": 39.9,
       "diags": 0
     },
     "preserve-caught-error": {
-      "ms": 29.1,
       "diags": 1
     },
     "no-warning-comments": {
-      "ms": 33.2,
       "diags": 49
     },
     "no-case-declarations": {
-      "ms": 21.8,
-      "diags": 200
+      "diags": 317
     },
     "no-unused-labels": {
-      "ms": 25,
       "diags": 0
     },
     "vars-on-top": {
-      "ms": 16.7,
-      "diags": 200
+      "diags": 1180
     },
     "no-extend-native": {
-      "ms": 29.8,
       "diags": 0
     },
     "use-isnan": {
-      "ms": 35,
       "diags": 0
     },
     "no-ex-assign": {
-      "ms": 24.9,
       "diags": 0
     },
     "handle-callback-err": {
-      "ms": 42.7,
       "diags": 0
     },
     "no-cond-assign": {
-      "ms": 35.6,
       "diags": 56
     },
     "no-constructor-return": {
-      "ms": 51.2,
       "diags": 0
     },
     "sort-keys": {
-      "ms": 150.9,
-      "diags": 200
+      "diags": 4929
     },
     "no-extra-bind": {
-      "ms": 30.9,
       "diags": 0
     },
     "prefer-exponentiation-operator": {
-      "ms": 29.2,
       "diags": 0
     },
     "eqeqeq": {
-      "ms": 19.5,
-      "diags": 200
+      "diags": 1653
     },
     "no-proto": {
-      "ms": 36.5,
       "diags": 0
     },
     "no-process-exit": {
-      "ms": 56.7,
       "diags": 1
     },
     "no-alert": {
-      "ms": 67.9,
       "diags": 0
     },
     "func-style": {
-      "ms": 10.4,
-      "diags": 200
+      "diags": 11073
     },
     "capitalized-comments": {
-      "ms": 75.1,
       "diags": 6624
     },
     "no-sparse-arrays": {
-      "ms": 14.9,
       "diags": 0
     },
     "no-unused-vars": {
-      "ms": 86.7,
-      "diags": 262
+      "diags": 259
     },
     "prefer-numeric-literals": {
-      "ms": 43.7,
       "diags": 0
     },
     "no-sequences": {
-      "ms": 14.2,
       "diags": 38
     },
     "no-duplicate-case": {
-      "ms": 20.9,
       "diags": 0
     },
     "yoda": {
-      "ms": 19.2,
       "diags": 44
     },
     "no-plusplus": {
-      "ms": 6.1,
-      "diags": 200
+      "diags": 888
     },
     "no-unsafe-finally": {
-      "ms": 28,
       "diags": 0
     },
     "no-throw-literal": {
-      "ms": 13.8,
       "diags": 0
     },
     "no-labels": {
-      "ms": 13.9,
       "diags": 45
     },
     "prefer-template": {
-      "ms": 23.4,
-      "diags": 200
+      "diags": 242
     },
     "no-loss-of-precision": {
-      "ms": 37,
       "diags": 0
     },
     "no-control-regex": {
-      "ms": 25.1,
       "diags": 7
     },
     "no-useless-backreference": {
-      "ms": 48.2,
       "diags": 0
     },
     "max-lines-per-function": {
-      "ms": 28,
-      "diags": 200
+      "diags": 716
     },
     "radix": {
-      "ms": 17,
       "diags": 5
     },
     "no-constant-binary-expression": {
-      "ms": 30.8,
       "diags": 1
     },
     "no-global-assign": {
-      "ms": 21.1,
       "diags": 0
     },
     "accessor-pairs": {
-      "ms": 21.9,
       "diags": 0
     },
     "no-path-concat": {
-      "ms": 22.7,
       "diags": 0
     },
     "no-prototype-builtins": {
-      "ms": 33,
       "diags": 0
     },
     "no-useless-call": {
-      "ms": 34.1,
       "diags": 1
     },
     "id-length": {
-      "ms": 11.4,
-      "diags": 200
+      "diags": 2254
     },
     "no-unsafe-optional-chaining": {
-      "ms": 45.1,
       "diags": 0
     },
     "no-caller": {
-      "ms": 35.9,
       "diags": 0
     },
     "consistent-return": {
-      "ms": 20,
-      "diags": 200
+      "diags": 1780
     },
     "no-duplicate-imports": {
-      "ms": 17.4,
       "diags": 0
     },
     "no-inner-declarations": {
-      "ms": 25.6,
       "diags": 1
     },
     "operator-assignment": {
-      "ms": 23.3,
       "diags": 29
     },
     "no-nested-ternary": {
-      "ms": 5,
       "diags": 850
     },
     "no-extra-boolean-cast": {
-      "ms": 36.2,
       "diags": 19
     },
     "default-case": {
-      "ms": 3.2,
       "diags": 397
     },
     "symbol-description": {
-      "ms": 20.7,
       "diags": 0
     },
     "block-scoped-var": {
-      "ms": 17.4,
-      "diags": 306
+      "diags": 9718
     },
     "default-param-last": {
-      "ms": 23.5,
       "diags": 74
     },
     "no-unreachable": {
-      "ms": 64.8,
       "diags": 1
     },
     "valid-typeof": {
-      "ms": 26.4,
       "diags": 0
     },
     "no-invalid-regexp": {
-      "ms": 32.7,
       "diags": 0
     },
     "require-yield": {
-      "ms": 19.8,
       "diags": 0
     },
     "no-new-require": {
-      "ms": 18.1,
       "diags": 0
     },
     "no-empty-function": {
-      "ms": 177.6,
       "diags": 6
     },
     "no-useless-constructor": {
-      "ms": 18.9,
       "diags": 4
     },
     "no-unexpected-multiline": {
-      "ms": 70.7,
       "diags": 0
     },
     "no-new-func": {
-      "ms": 21.6,
       "diags": 0
     },
     "no-void": {
-      "ms": 14,
-      "diags": 200
+      "diags": 8527
     },
     "no-process-env": {
-      "ms": 29.3,
       "diags": 6
     },
     "no-implicit-coercion": {
-      "ms": 17,
-      "diags": 200
+      "diags": 1300
     },
     "init-declarations": {
-      "ms": 7.1,
-      "diags": 200
+      "diags": 2436
     },
     "no-await-in-loop": {
-      "ms": 16,
       "diags": 2
     },
     "no-unused-expressions": {
-      "ms": 7.8,
       "diags": 399
     },
     "no-unsafe-negation": {
-      "ms": 15.6,
       "diags": 0
     },
     "no-async-promise-executor": {
-      "ms": 28.4,
       "diags": 0
     },
     "func-names": {
-      "ms": 35.3,
       "diags": 330
     },
     "no-restricted-imports": {
-      "ms": 0.2,
       "diags": 0
     },
     "no-unneeded-ternary": {
-      "ms": 16.1,
       "diags": 4
     },
     "no-use-before-define": {
-      "ms": 62.8,
       "diags": 18853
     },
     "no-debugger": {
-      "ms": 12.8,
       "diags": 1
     },
     "max-statements": {
-      "ms": 7.3,
-      "diags": 200
+      "diags": 2095
     },
     "prefer-spread": {
-      "ms": 26.9,
       "diags": 0
     },
     "no-lone-blocks": {
-      "ms": 26.7,
       "diags": 1
     },
     "getter-return": {
-      "ms": 37.4,
       "diags": 0
     },
     "no-empty": {
-      "ms": 19.7,
       "diags": 16
     },
     "no-shadow-restricted-names": {
-      "ms": 73.1,
       "diags": 0
     },
     "no-import-assign": {
-      "ms": 13.1,
       "diags": 0
     },
     "no-this-before-super": {
-      "ms": 73.8,
       "diags": 0
     },
     "prefer-object-spread": {
-      "ms": 16.9,
       "diags": 0
     },
     "no-undefined": {
-      "ms": 22.5,
       "diags": 0
     },
     "max-lines": {
-      "ms": 24.2,
       "diags": 1
     },
     "no-continue": {
-      "ms": 9.2,
-      "diags": 200
+      "diags": 423
     },
     "no-func-assign": {
-      "ms": 39.1,
       "diags": 328
     },
     "no-iterator": {
-      "ms": 26.3,
       "diags": 0
     },
     "no-else-return": {
-      "ms": 20.9,
-      "diags": 200
+      "diags": 289
     },
     "no-redeclare": {
-      "ms": 22.3,
-      "diags": 200
+      "diags": 0
     },
     "global-require": {
-      "ms": 32.3,
       "diags": 9
     },
     "no-useless-catch": {
-      "ms": 12.7,
       "diags": 0
     },
     "prefer-const": {
-      "ms": 22.5,
       "diags": 118
     },
     "no-console": {
-      "ms": 16.1,
       "diags": 5
     },
     "no-class-assign": {
-      "ms": 12.5,
       "diags": 0
     },
     "no-inline-comments": {
-      "ms": 27.5,
       "diags": 34035
     },
     "no-self-compare": {
-      "ms": 30.1,
       "diags": 0
     },
     "grouped-accessor-pairs": {
-      "ms": 19.6,
       "diags": 0
     },
     "no-multi-assign": {
-      "ms": 33.7,
       "diags": 46
     },
     "no-with": {
-      "ms": 12.5,
       "diags": 0
     },
     "no-empty-static-block": {
-      "ms": 12.5,
       "diags": 0
     },
     "constructor-super": {
-      "ms": 40.6,
       "diags": 0
     },
     "no-negated-condition": {
-      "ms": 11.1,
-      "diags": 200
+      "diags": 519
     },
     "no-script-url": {
-      "ms": 24.3,
       "diags": 0
     },
     "no-multi-str": {
-      "ms": 23.9,
       "diags": 0
     },
     "no-promise-executor-return": {
-      "ms": 33.1,
       "diags": 0
     },
     "no-unused-private-class-members": {
-      "ms": 40.7,
       "diags": 0
     },
     "max-classes-per-file": {
-      "ms": 13.7,
       "diags": 1
     },
     "no-bitwise": {
-      "ms": 6.8,
-      "diags": 200
+      "diags": 6081
     },
     "unicode-bom": {
-      "ms": 12.8,
       "diags": 0
     },
     "no-useless-return": {
-      "ms": 109.4,
       "diags": 49
     },
     "no-delete-var": {
-      "ms": 23,
       "diags": 0
     },
     "no-restricted-globals": {
-      "ms": 0.1,
       "diags": 0
     },
     "max-nested-callbacks": {
-      "ms": 20.3,
       "diags": 0
     },
     "new-cap": {
-      "ms": 36.5,
       "diags": 28
     },
     "no-regex-spaces": {
-      "ms": 51,
       "diags": 0
     },
     "prefer-rest-params": {
-      "ms": 26.1,
       "diags": 1
     },
     "no-template-curly-in-string": {
-      "ms": 28.2,
       "diags": 0
     },
     "prefer-destructuring": {
-      "ms": 11.4,
-      "diags": 200
+      "diags": 666
     },
     "sort-imports": {
-      "ms": 17.5,
       "diags": 0
     },
     "no-return-assign": {
-      "ms": 12.5,
-      "diags": 200
+      "diags": 265
     },
     "require-await": {
-      "ms": 24,
       "diags": 0
     },
     "no-dupe-class-members": {
-      "ms": 18.5,
       "diags": 0
     },
     "max-depth": {
-      "ms": 11.7,
-      "diags": 200
+      "diags": 344
     },
     "no-misleading-character-class": {
-      "ms": 48,
       "diags": 0
     },
     "no-useless-computed-key": {
-      "ms": 11.8,
-      "diags": 200
+      "diags": 476
     },
     "eslint-plugin-import/named": {
-      "ms": 19.9,
       "diags": 0
     },
     "eslint-plugin-import/default": {
-      "ms": 17.1,
       "diags": 0
     },
     "eslint-plugin-import/namespace": {
-      "ms": 36.3,
       "diags": 0
     },
     "eslint-plugin-import/no-namespace": {
-      "ms": 17,
       "diags": 0
     },
     "eslint-plugin-import/export": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-import/no-mutable-exports": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-import/extensions": {
-      "ms": 34.7,
       "diags": 0
     },
     "eslint-plugin-import/group-exports": {
-      "ms": 23.4,
       "diags": 3
     },
     "eslint-plugin-import/no-relative-parent-imports": {
-      "ms": 31.2,
       "diags": 0
     },
     "eslint-plugin-import/consistent-type-specifier-style": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-import/no-self-import": {
-      "ms": 38.1,
       "diags": 0
     },
     "eslint-plugin-import/no-cycle": {
-      "ms": 31.3,
       "diags": 0
     },
     "eslint-plugin-import/no-named-default": {
-      "ms": 17.4,
       "diags": 0
     },
     "eslint-plugin-import/no-named-as-default": {
-      "ms": 17.1,
       "diags": 0
     },
     "eslint-plugin-import/no-named-as-default-member": {
-      "ms": 38.3,
       "diags": 0
     },
     "eslint-plugin-import/no-anonymous-default-export": {
-      "ms": 17.8,
       "diags": 0
     },
     "eslint-plugin-import/no-commonjs": {
-      "ms": 46.5,
       "diags": 4
     },
     "eslint-plugin-import/no-amd": {
-      "ms": 37.3,
       "diags": 0
     },
     "eslint-plugin-import/no-duplicates": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-import/first": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-import/max-dependencies": {
-      "ms": 34.5,
       "diags": 0
     },
     "eslint-plugin-import/no-absolute-path": {
-      "ms": 33.7,
       "diags": 0
     },
     "eslint-plugin-import/no-nodejs-modules": {
-      "ms": 34.1,
       "diags": 7
     },
     "eslint-plugin-import/no-webpack-loader-syntax": {
-      "ms": 33.7,
       "diags": 0
     },
     "eslint-plugin-import/prefer-default-export": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-import/no-default-export": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-import/no-named-export": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-import/no-dynamic-require": {
-      "ms": 34.7,
       "diags": 1
     },
     "eslint-plugin-import/unambiguous": {
-      "ms": 18.3,
       "diags": 1
     },
     "eslint-plugin-import/no-unassigned-import": {
-      "ms": 25.4,
       "diags": 0
     },
     "eslint-plugin-import/no-empty-named-blocks": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-import/exports-last": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-import/no-deprecated": {
-      "ms": 82.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/catch-error-name": {
-      "ms": 114.8,
       "diags": 18
     },
     "eslint-plugin-unicorn/consistent-assert": {
-      "ms": 17.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/consistent-date-clone": {
-      "ms": 17.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/consistent-empty-array-spread": {
-      "ms": 23.8,
       "diags": 0
     },
     "eslint-plugin-unicorn/consistent-existence-index-check": {
-      "ms": 32.1,
       "diags": 12
     },
     "eslint-plugin-unicorn/consistent-function-scoping": {
-      "ms": 32.7,
-      "diags": 200
+      "diags": 2716
     },
     "eslint-plugin-unicorn/custom-error-definition": {
-      "ms": 35.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/empty-brace-spaces": {
-      "ms": 40.8,
       "diags": 23
     },
     "eslint-plugin-unicorn/error-message": {
-      "ms": 62.8,
       "diags": 1
     },
     "eslint-plugin-unicorn/escape-case": {
-      "ms": 58.6,
       "diags": 5
     },
     "eslint-plugin-unicorn/explicit-length-check": {
-      "ms": 180.7,
-      "diags": 200
+      "diags": 417
     },
     "eslint-plugin-unicorn/filename-case": {
-      "ms": 28.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/new-for-builtins": {
-      "ms": 146.7,
       "diags": 4
     },
     "eslint-plugin-unicorn/no-abusive-eslint-disable": {
-      "ms": 26.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-accessor-recursion": {
-      "ms": 31,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-anonymous-default-export": {
-      "ms": 32,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-array-callback-reference": {
-      "ms": 76.3,
       "diags": 147
     },
     "eslint-plugin-unicorn/no-array-for-each": {
-      "ms": 3284.1,
       "diags": 319
     },
     "eslint-plugin-unicorn/no-array-method-this-argument": {
-      "ms": 77.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-array-reduce": {
-      "ms": 100.8,
       "diags": 2
     },
     "eslint-plugin-unicorn/no-array-reverse": {
-      "ms": 55.7,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-array-sort": {
-      "ms": 61.7,
       "diags": 18
     },
     "eslint-plugin-unicorn/no-await-expression-member": {
-      "ms": 50.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-await-in-promise-methods": {
-      "ms": 63,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-console-spaces": {
-      "ms": 65.7,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-document-cookie": {
-      "ms": 27.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-empty-file": {
-      "ms": 24.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-hex-escape": {
-      "ms": 52,
       "diags": 31
     },
     "eslint-plugin-unicorn/no-immediate-mutation": {
-      "ms": 91.7,
       "diags": 23
     },
     "eslint-plugin-unicorn/no-instanceof-builtins": {
-      "ms": 213.5,
       "diags": 3
     },
     "eslint-plugin-unicorn/no-invalid-fetch-options": {
-      "ms": 51.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-invalid-remove-event-listener": {
-      "ms": 49.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-lonely-if": {
-      "ms": 25.9,
       "diags": 172
     },
     "eslint-plugin-unicorn/no-magic-array-flat-depth": {
-      "ms": 50,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-named-default": {
-      "ms": 15.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-negated-condition": {
-      "ms": 128.8,
-      "diags": 200
+      "diags": 519
     },
     "eslint-plugin-unicorn/no-negation-in-equality-check": {
-      "ms": 24.5,
       "diags": 5
     },
     "eslint-plugin-unicorn/no-nested-ternary": {
-      "ms": 13.7,
       "diags": 567
     },
     "eslint-plugin-unicorn/no-new-array": {
-      "ms": 21.6,
       "diags": 20
     },
     "eslint-plugin-unicorn/no-new-buffer": {
-      "ms": 15.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-null": {
-      "ms": 16.5,
-      "diags": 200
+      "diags": 1659
     },
     "eslint-plugin-unicorn/no-object-as-default-parameter": {
-      "ms": 16,
       "diags": 6
     },
     "eslint-plugin-unicorn/no-process-exit": {
-      "ms": 113.4,
       "diags": 1
     },
     "eslint-plugin-unicorn/no-single-promise-in-promise-methods": {
-      "ms": 53.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-static-only-class": {
-      "ms": 16.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-thenable": {
-      "ms": 308.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-this-assignment": {
-      "ms": 27.7,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-typeof-undefined": {
-      "ms": 28.1,
       "diags": 4
     },
     "eslint-plugin-unicorn/no-unnecessary-array-flat-depth": {
-      "ms": 51.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-unnecessary-array-splice-count": {
-      "ms": 48.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-unnecessary-await": {
-      "ms": 15.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-unnecessary-slice-end": {
-      "ms": 48.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-unreadable-array-destructuring": {
-      "ms": 16.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-unreadable-iife": {
-      "ms": 39.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-useless-collection-argument": {
-      "ms": 16.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-useless-error-capture-stack-trace": {
-      "ms": 37.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-useless-fallback-in-spread": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-useless-length-check": {
-      "ms": 78.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-useless-promise-resolve-reject": {
-      "ms": 54.8,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-useless-spread": {
-      "ms": 21.8,
       "diags": 2
     },
     "eslint-plugin-unicorn/no-useless-switch-case": {
-      "ms": 17.2,
       "diags": 6
     },
     "eslint-plugin-unicorn/no-useless-undefined": {
-      "ms": 241.3,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-zero-fractions": {
-      "ms": 39.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/number-literal-case": {
-      "ms": 39.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/numeric-separators-style": {
-      "ms": 7.9,
-      "diags": 200
+      "diags": 5635
     },
     "eslint-plugin-unicorn/prefer-add-event-listener": {
-      "ms": 100.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-array-find": {
-      "ms": 141,
       "diags": 11
     },
     "eslint-plugin-unicorn/prefer-array-flat": {
-      "ms": 113.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-array-flat-map": {
-      "ms": 53.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-array-index-of": {
-      "ms": 68.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-array-some": {
-      "ms": 69.7,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-at": {
-      "ms": 116,
       "diags": 77
     },
     "eslint-plugin-unicorn/prefer-bigint-literals": {
-      "ms": 45.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-blob-reading-methods": {
-      "ms": 51.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-class-fields": {
-      "ms": 26.9,
       "diags": 3
     },
     "eslint-plugin-unicorn/prefer-classlist-toggle": {
-      "ms": 35.7,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-code-point": {
-      "ms": 57.3,
-      "diags": 200
+      "diags": 261
     },
     "eslint-plugin-unicorn/prefer-date-now": {
-      "ms": 71.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-default-parameters": {
-      "ms": 42.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-dom-node-append": {
-      "ms": 50.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-dom-node-dataset": {
-      "ms": 80.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-dom-node-remove": {
-      "ms": 48.7,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-dom-node-text-content": {
-      "ms": 129.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-event-target": {
-      "ms": 114.8,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-global-this": {
-      "ms": 19.8,
       "diags": 2
     },
     "eslint-plugin-unicorn/prefer-includes": {
-      "ms": 66.1,
       "diags": 13
     },
     "eslint-plugin-unicorn/prefer-keyboard-event-key": {
-      "ms": 112.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-logical-operator-over-ternary": {
-      "ms": 22.4,
       "diags": 16
     },
     "eslint-plugin-unicorn/prefer-math-min-max": {
-      "ms": 144.6,
       "diags": 7
     },
     "eslint-plugin-unicorn/prefer-math-trunc": {
-      "ms": 147.2,
       "diags": 4
     },
     "eslint-plugin-unicorn/prefer-modern-dom-apis": {
-      "ms": 66.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-modern-math-apis": {
-      "ms": 67,
       "diags": 2
     },
     "eslint-plugin-unicorn/prefer-module": {
-      "ms": 123.3,
       "diags": 1
     },
     "eslint-plugin-unicorn/prefer-native-coercion-functions": {
-      "ms": 28.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-negative-index": {
-      "ms": 41.6,
       "diags": 5
     },
     "eslint-plugin-unicorn/prefer-node-protocol": {
-      "ms": 50.6,
       "diags": 7
     },
     "eslint-plugin-unicorn/prefer-number-properties": {
-      "ms": 21,
       "diags": 29
     },
     "eslint-plugin-unicorn/prefer-object-from-entries": {
-      "ms": 76.8,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-optional-catch-binding": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-prototype-methods": {
-      "ms": 79,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-query-selector": {
-      "ms": 52.3,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-reflect-apply": {
-      "ms": 59.3,
       "diags": 1
     },
     "eslint-plugin-unicorn/prefer-regexp-test": {
-      "ms": 67.9,
       "diags": 7
     },
     "eslint-plugin-unicorn/prefer-response-static-json": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-set-has": {
-      "ms": 130.8,
       "diags": 161
     },
     "eslint-plugin-unicorn/prefer-set-size": {
-      "ms": 46.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-spread": {
-      "ms": 145.8,
       "diags": 75
     },
     "eslint-plugin-unicorn/prefer-string-raw": {
-      "ms": 159.1,
       "diags": 38
     },
     "eslint-plugin-unicorn/prefer-string-replace-all": {
-      "ms": 55.1,
       "diags": 39
     },
     "eslint-plugin-unicorn/prefer-string-slice": {
-      "ms": 60,
       "diags": 180
     },
     "eslint-plugin-unicorn/prefer-string-starts-ends-with": {
-      "ms": 52.5,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-string-trim-start-end": {
-      "ms": 47,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-structured-clone": {
-      "ms": 65,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-ternary": {
-      "ms": 33.3,
       "diags": 128
     },
     "eslint-plugin-unicorn/prefer-top-level-await": {
-      "ms": 50.2,
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-type-error": {
-      "ms": 18.1,
       "diags": 1
     },
     "eslint-plugin-unicorn/relative-url-style": {
-      "ms": 37.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/require-array-join-separator": {
-      "ms": 64.5,
       "diags": 2
     },
     "eslint-plugin-unicorn/require-module-attributes": {
-      "ms": 17.6,
       "diags": 0
     },
     "eslint-plugin-unicorn/require-module-specifiers": {
-      "ms": 17.4,
       "diags": 0
     },
     "eslint-plugin-unicorn/require-number-to-fixed-digits-argument": {
-      "ms": 47.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/require-post-message-target-origin": {
-      "ms": 52.3,
       "diags": 0
     },
     "eslint-plugin-unicorn/switch-case-braces": {
-      "ms": 17.4,
-      "diags": 200
+      "diags": 4396
     },
     "eslint-plugin-unicorn/text-encoding-identifier-case": {
-      "ms": 43.7,
       "diags": 1
     },
     "eslint-plugin-unicorn/throw-new-error": {
-      "ms": 43.9,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-instanceof-array": {
-      "ms": 0.1,
       "diags": 0
     },
     "eslint-plugin-unicorn/no-length-as-slice-end": {
-      "ms": 0,
       "diags": 0
     },
     "eslint-plugin-n/global-require": {
-      "ms": 39.7,
       "diags": 9
     },
     "eslint-plugin-n/handle-callback-err": {
-      "ms": 31.1,
       "diags": 0
     },
     "eslint-plugin-n/no-exports-assign": {
-      "ms": 26.7,
       "diags": 0
     },
     "eslint-plugin-n/no-new-require": {
-      "ms": 17.5,
       "diags": 0
     },
     "eslint-plugin-n/no-path-concat": {
-      "ms": 21.7,
       "diags": 0
     },
     "eslint-plugin-n/no-process-env": {
-      "ms": 54.2,
       "diags": 6
     },
     "eslint-plugin-n/no-process-exit": {
-      "ms": 55.2,
       "diags": 1
     },
     "eslint-plugin-n/prefer-node-protocol": {
-      "ms": 35.2,
       "diags": 7
     },
     "eslint-plugin-promise/param-names": {
-      "ms": 18.4,
       "diags": 0
     },
     "eslint-plugin-promise/no-return-wrap": {
-      "ms": 57.3,
       "diags": 0
     },
     "eslint-plugin-promise/always-return": {
-      "ms": 135.2,
       "diags": 1
     },
     "eslint-plugin-promise/catch-or-return": {
-      "ms": 27.7,
       "diags": 1
     },
     "eslint-plugin-promise/prefer-await-to-callbacks": {
-      "ms": 31.5,
-      "diags": 200
+      "diags": 257
     },
     "eslint-plugin-promise/prefer-await-to-then": {
-      "ms": 93.1,
       "diags": 1
     },
     "eslint-plugin-promise/prefer-catch": {
-      "ms": 54.9,
       "diags": 1
     },
     "eslint-plugin-promise/no-callback-in-promise": {
-      "ms": 38.6,
       "diags": 0
     },
     "eslint-plugin-promise/no-promise-in-callback": {
-      "ms": 46,
       "diags": 0
     },
     "eslint-plugin-promise/no-nesting": {
-      "ms": 45.8,
       "diags": 0
     },
     "eslint-plugin-promise/avoid-new": {
-      "ms": 18,
       "diags": 1
     },
     "eslint-plugin-promise/no-new-statics": {
-      "ms": 18.1,
       "diags": 0
     },
     "eslint-plugin-promise/no-return-in-finally": {
-      "ms": 46.5,
       "diags": 0
     },
     "eslint-plugin-promise/valid-params": {
-      "ms": 45.9,
       "diags": 0
     },
     "eslint-plugin-promise/no-multiple-resolved": {
-      "ms": 189.2,
       "diags": 0
     },
     "eslint-plugin-promise/spec-only": {
-      "ms": 33.5,
       "diags": 0
     },
     "eslint-plugin-jsdoc/check-access": {
-      "ms": 539.6,
       "diags": 0
     },
     "eslint-plugin-jsdoc/check-property-names": {
-      "ms": 495,
       "diags": 0
     },
     "eslint-plugin-jsdoc/check-tag-names": {
-      "ms": 513,
       "diags": 2
     },
     "eslint-plugin-jsdoc/empty-tags": {
-      "ms": 481.2,
       "diags": 1
     },
     "eslint-plugin-jsdoc/implements-on-classes": {
-      "ms": 172.9,
       "diags": 0
     },
     "eslint-plugin-jsdoc/no-defaults": {
-      "ms": 172.3,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-param": {
-      "ms": 206.1,
-      "diags": 201
+      "diags": 320
     },
     "eslint-plugin-jsdoc/require-param-description": {
-      "ms": 168.4,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-param-name": {
-      "ms": 165.8,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-param-type": {
-      "ms": 165.6,
       "diags": 11
     },
     "eslint-plugin-jsdoc/require-property": {
-      "ms": 472.7,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-property-description": {
-      "ms": 471.8,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-property-name": {
-      "ms": 490.8,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-property-type": {
-      "ms": 481.6,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-returns": {
-      "ms": 167.4,
       "diags": 134
     },
     "eslint-plugin-jsdoc/require-returns-description": {
-      "ms": 165.7,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-returns-type": {
-      "ms": 166,
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-yields": {
-      "ms": 163.7,
       "diags": 0
     },
     "eslint-plugin-es-x/no-optional-chaining": {
-      "ms": 45.8,
       "diags": 0
     },
     "eslint-plugin-es-x/no-rest-spread-properties": {
-      "ms": 26.6,
       "diags": 182
     },
     "eslint-plugin-sonarjs/max-lines": {
-      "ms": 40.4,
       "diags": 1
     },
     "eslint-plugin-sonarjs/no-fallthrough": {
-      "ms": 66.5,
       "diags": 0
     },
     "eslint-plugin-sonarjs/max-lines-per-function": {
-      "ms": 230.3,
       "diags": 107
     },
     "eslint-plugin-sonarjs/no-labels": {
-      "ms": 18.2,
       "diags": 2
     },
     "eslint-plugin-sonarjs/no-unused-vars": {
-      "ms": 34.9,
       "diags": 6
     },
     "eslint-plugin-sonarjs/block-scoped-var": {
-      "ms": 32.7,
       "diags": 7
     },
     "eslint-plugin-sonarjs/no-empty-character-class": {
-      "ms": 55.6,
       "diags": 0
     },
     "eslint-plugin-sonarjs/no-useless-catch": {
-      "ms": 17.4,
       "diags": 0
     },
     "eslint-plugin-sonarjs/no-array-delete": {
-      "ms": 0,
       "diags": 0
     },
     "eslint-plugin-sonarjs/no-delete-var": {
-      "ms": 30.8,
       "diags": 0
     },
     "eslint-plugin-sonarjs/no-invalid-regexp": {
-      "ms": 32.1,
       "diags": 0
     },
     "eslint-plugin-sonarjs/no-misleading-character-class": {
-      "ms": 55.4,
       "diags": 0
     },
     "eslint-plugin-sonarjs/no-control-regex": {
-      "ms": 54.2,
       "diags": 1
     },
     "eslint-plugin-sonarjs/no-regex-spaces": {
-      "ms": 54.5,
       "diags": 0
     },
     "eslint-plugin-sonarjs/prefer-regexp-exec": {
-      "ms": 0.1,
       "diags": 0
     }
   }

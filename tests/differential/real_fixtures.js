@@ -182,15 +182,18 @@ function parseEzOnce(src, filename) {
 /**
  * Run ALL `ruleIds` against the cached AST in a SINGLE `runPlugins` call —
  * matches what real ez lint does in a real lint pass.  Returns total wall
- * time and the diagnostic-line lists per rule.  Use this to benchmark
- * "real" ez throughput vs oxlint's batched throughput.
+ * time, the global diagnostic count, AND a per-rule diagnostic-count map
+ * (attributed by `ruleId` on each report — free, no extra rule runs).
+ * Use this to benchmark "real" ez throughput vs oxlint's batched throughput.
  */
 function runEzAllOnAst(ctx, ruleIds) {
   const descs = [];
   const nativeRules = {};
+  const perRule = new Map();
   for (const id of ruleIds) {
     const desc = _coreRulesByName.get(id);
     if (!desc) continue;
+    perRule.set(id, 0);
     if (_nativeRules.has(id)) {
       nativeRules[id] = _nativeRules.get(id).defaultSeverity;
     } else {
@@ -209,10 +212,22 @@ function runEzAllOnAst(ctx, ruleIds) {
       tagNames: ctx.tagNames,
       filename: ctx.filename,
       ruleConfig: {},
+      // Disable the per-rule short-circuit so diag counts are honest and
+      // comparable to ESLint (which has no cap). Production users still
+      // get the default 200 cap via api.js / lintSource — this only
+      // affects benchmarking and correctness oracling.
+      errorBudget: Infinity,
     });
   }
   const ms = performance.now() - t0;
-  return { ms, totalDiags: nativeDiags.length + reports.length };
+  for (const d of nativeDiags) {
+    const id = d.rule_id || d.ruleId;
+    if (id && perRule.has(id)) perRule.set(id, perRule.get(id) + 1);
+  }
+  for (const r of reports) {
+    if (r.ruleId && perRule.has(r.ruleId)) perRule.set(r.ruleId, perRule.get(r.ruleId) + 1);
+  }
+  return { ms, totalDiags: nativeDiags.length + reports.length, perRule };
 }
 
 if (!_isMain) module.exports.runEzAllOnAst = runEzAllOnAst;
