@@ -966,11 +966,19 @@ const _scopeProto = {
 
   _ensureRefsThrough() {
     if (this._refs !== null) return;
-    if (this._refsBuilding) { this._refs = []; this._through = []; return; }
+    if (this._refsBuilding) {
+      // Cycle break — scope tree shouldn't actually cycle, but guard anyway.
+      this._refs = []; this._through = [];
+      this._throughResolved = []; this._throughUnresolved = [];
+      return;
+    }
     this._refsBuilding = true;
     const cs = this.childScopes;
     const rt = _activeBuilder._buildScopeRefsAndThrough(this._scopeId, this, cs);
-    this._refs = rt[0]; this._through = rt[1];
+    this._refs = rt[0];
+    this._throughResolved = rt[1];
+    this._throughUnresolved = rt[2];
+    this._through = null; // lazy-concat on first `.through` access
     // Populate FEN variable references: refs to the function-name from inside
     // the body resolve to the FEN var, not to whatever was up the scope chain.
     const fenVarRef = this._fenVarRef;
@@ -1019,7 +1027,20 @@ Object.defineProperties(_scopeProto, {
   variables:   { get() { this._ensureVarsSet();     return this._vars;     }, configurable: true, enumerable: true },
   set:         { get() { this._ensureVarsSet();     return this._set;      }, configurable: true, enumerable: true },
   references:  { get() { this._ensureRefsThrough(); return this._refs;     }, configurable: true, enumerable: true },
-  through:     { get() { this._ensureRefsThrough(); return this._through;  }, configurable: true, enumerable: true },
+  through:     { get() {
+    this._ensureRefsThrough();
+    // Lazy-concat the split through arrays (resolved-passthrough from Zig CSR
+    // + JS-bubbled unresolved). Most rules never iterate `.through`; the ones
+    // that do see a stable cached combined array. Optimization vs the prior
+    // single-array model: parent scopes' bubble-up loop iterates only the
+    // unresolved subset (typically <10 refs) instead of the full through
+    // (often hundreds). See _buildScopeRefsAndThrough comment for details.
+    if (this._through === null) {
+      const r = this._throughResolved, u = this._throughUnresolved;
+      this._through = r.length === 0 ? u : u.length === 0 ? r : [...r, ...u];
+    }
+    return this._through;
+  }, configurable: true, enumerable: true },
   childScopes: { get() { this._ensureChildren();    return this._children; }, configurable: true, enumerable: true },
   thisFound:   { get() { this._ensureThisFound();   return this._thisFound; }, configurable: true, enumerable: true },
 });
@@ -1033,6 +1054,10 @@ const _fenScopeProto = {
     this._fenInnerScope._ensureVarsSet();
     if (this._vars === null) { this._vars = []; this._set = new Map(); }
   },
+  // No-op: FEN scope has no refs of its own (refs live in `_fenInnerScope`).
+  // Provided so parent scopes' bubble-up loop can call this uniformly across
+  // every child. The own through arrays were initialized empty at construction.
+  _ensureRefsThrough() {},
 };
 Object.defineProperties(_fenScopeProto, {
   variables:   { get() { this._ensureVarsSet(); return this._vars; }, configurable: true, enumerable: true },
@@ -2214,6 +2239,8 @@ class SourceCode {
     scope._set = null;
     scope._refs = null;
     scope._through = null;
+    scope._throughResolved = null;
+    scope._throughUnresolved = null;
     scope._children = null;
     scope._thisFound = null;
     scope._refsBuilding = false;
@@ -2245,6 +2272,13 @@ class SourceCode {
       fenScope._set = null;
       fenScope.references = [];
       fenScope.through = [];
+      // Mirror the split-through arrays on the FEN scope so parent scopes'
+      // bubble-up loop reads `_throughUnresolved` directly without a method
+      // call (FEN scope has no `_ensureRefsThrough`). Always empty: a FEN
+      // wrapper scope contains no refs of its own — refs live in the inner
+      // body scope which sits below it.
+      fenScope._throughResolved = [];
+      fenScope._throughUnresolved = [];
 
       // Re-parent the body scope under the FEN wrapper, and expose the wrapper
       // to `_buildScopeChildren` so the parent's childScopes includes the FEN.
@@ -2570,13 +2604,26 @@ class SourceCode {
     const ast = this._ast;
     const NONE32 = 0xFFFFFFFF;
     const references = [];
-    const through = [];
+    // Split through into two arrays:
+    //   throughResolved   — refs with a resolved target in some ancestor scope.
+    //                       Sourced from the Zig precomputed scope_through_ref CSR.
+    //                       Parents iterate this only when the global scope-final
+    //                       resolution loop runs (for JS-injected-global shadowing).
+    //   throughUnresolved — refs with no resolution yet (own unresolved + bubbled
+    //                       from children). Parents bubble these up. Typically a
+    //                       small set (global-implicit names like NaN/console).
+    // Saves the prior "iterate ALL of child.through to filter resolved" loop that
+    // was ~9% of total ez time on typescript.js (475ms/2.83s).
+    const throughResolved = [];
+    const throughUnresolved = [];
     const _scopeRefStarts  = ast._scopeRefStarts;
     const _scopeRefCounts  = ast._scopeRefCounts;
     const _scopeRefIds     = ast._scopeRefIds;
     const _refSymbolIds    = ast._refSymbolIds;
     const _symScopeIds     = ast._symScopeIds;
-    if (!_scopeRefStarts || !_scopeRefCounts || !_scopeRefIds) return [references, through];
+    if (!_scopeRefStarts || !_scopeRefCounts || !_scopeRefIds) {
+      return [references, throughResolved, throughUnresolved];
+    }
 
     // Own refs → references list. Only the FEN case still needs per-ref classification;
     // all other through bubble-up is precomputed in the Zig scope_through_ref CSR.
@@ -2605,41 +2652,39 @@ class SourceCode {
       const symKind = ast._symKinds ? ast._symKinds[refSymId] : 0;
       if ((symKind === 3 || symKind === 13) && ast._scopeNodeIds) {
         const scopeNodeTag = ast._nodeTags[ast._scopeNodeIds[scopeId]];
-        if (scopeNodeTag >= 63 && scopeNodeTag <= 66) through.push(ref);
+        // FEN refs are resolved (to the FEN var) — go in the resolved bucket.
+        if (scopeNodeTag >= 63 && scopeNodeTag <= 66) throughResolved.push(ref);
       }
     }
 
-    // Through refs from Zig precomputed CSR (own unresolved + bubbled-up children's
-    // through that don't resolve at this scope).  Saves the O(children × through)
-    // JS bubble-up loop that dominated scope-heavy file linting.
+    // Through refs from Zig precomputed CSR — these are RESOLVED at some ancestor
+    // scope (Zig has already pushed each resolved ref into every passthrough scope).
+    // Goes in throughResolved; parents don't need to iterate these for bubble-up
+    // since their own Zig CSR already covers the same resolved refs at their level.
     if (hasZigThrough) {
       const thStart = _scopeThroughStarts[scopeId];
       const thCount = _scopeThroughCounts[scopeId];
       const _scopeThroughIdsArr = _scopeThroughIds;
       for (let j = 0; j < thCount; j++) {
         const refId = _scopeThroughIdsArr[thStart + j];
-        const ref = this._buildReference(refId);
-        through.push(ref);
-        // (Previously upgraded `ref.resolved` from thin→full here. With the
-        // ThinVariable collapse `_buildReference` already resolves to the full
-        // Variable, so no upgrade pass is needed.)
+        throughResolved.push(this._buildReference(refId));
       }
     } else {
       // Fallback: old JS path when Zig CSR is unavailable (older buffer format).
+      // Without Zig CSR we don't know which side is resolved vs unresolved at parse
+      // time; route all to unresolved so the bubble-up loop sees them.
       for (let j = 0; j < refCount; j++) {
         const refId = _scopeRefIds[refStart + j];
         const refSymId = _refSymbolIds ? _refSymbolIds[refId] : NONE32;
         if (refSymId === NONE32 || (_symScopeIds && _symScopeIds[refSymId] !== scopeId)) {
-          through.push(this._buildReference(refId));
+          throughUnresolved.push(this._buildReference(refId));
         }
       }
     }
 
     // Unresolved refs (symId=NONE) are excluded from the Zig through CSR because
     // JS may resolve them via scope.set injection (e.g. var hoisting, injected
-    // globals).  Handle them via bubble-up from children's through, exactly as
-    // old code did.  Only unresolved refs need this — resolved refs are covered
-    // by the Zig CSR above.
+    // globals). Handle via bubble-up from children's UNRESOLVED through.
     const set = scope.set; // triggers ensureVarsSet lazily
     if (hasZigThrough) {
       // Own unresolved refs first
@@ -2648,60 +2693,67 @@ class SourceCode {
         if (!_refSymbolIds) continue;
         const refSymId = _refSymbolIds[refId];
         if (refSymId !== NONE32) continue; // resolved — covered by Zig CSR
-        through.push(this._buildReference(refId));
+        throughUnresolved.push(this._buildReference(refId));
       }
-      // Bubble unresolved refs from children. With hasZigThrough, the Zig CSR already
-      // puts each resolved ref into every ancestor scope's through array directly, so
-      // we only bubble UNRESOLVED refs to avoid duplicates with the Zig CSR entries.
+      // Bubble unresolved refs from children. Iterate ONLY child._throughUnresolved
+      // (typically ~5 entries — global-implicit names) instead of the full
+      // child.through (which can be hundreds of resolved-passthrough refs whose
+      // names the parent's set won't match anyway).
       for (const child of childScopes) {
-        for (const ref of child.through) {
-          if (ref.identifier?.type === 'PrivateIdentifier') { through.push(ref); continue; }
+        // Trigger child's lazy build, then read split array directly.
+        child._ensureRefsThrough();
+        const childUnresolved = child._throughUnresolved;
+        if (!childUnresolved || childUnresolved.length === 0) continue;
+        for (let k = 0; k < childUnresolved.length; k++) {
+          const ref = childUnresolved[k];
+          if (ref.identifier?.type === 'PrivateIdentifier') { throughUnresolved.push(ref); continue; }
           const name = ref.identifier?.name;
           const variable = name ? set.get(name) : undefined;
           if (variable) {
             if (ref.resolved === null) variable.references.push(ref);
             ref.resolved = variable;
           } else if (ref.resolved === null) {
-            // Only bubble unresolved refs; resolved refs are already in the Zig CSR
-            // for this scope and will be added via the Zig through path above.
-            through.push(ref);
+            throughUnresolved.push(ref);
           }
         }
       }
     } else {
-      // Full fallback bubble-up
+      // Full fallback bubble-up — no Zig CSR, fall back to iterating combined
+      // child.through (preserves the prior fallback semantics).
       for (const child of childScopes) {
         for (const ref of child.through) {
-          if (ref.identifier?.type === 'PrivateIdentifier') { through.push(ref); continue; }
+          if (ref.identifier?.type === 'PrivateIdentifier') { throughUnresolved.push(ref); continue; }
           const name = ref.identifier?.name;
           const variable = name ? set.get(name) : undefined;
           if (variable) {
             if (ref.resolved === null) variable.references.push(ref);
             ref.resolved = variable;
           } else {
-            through.push(ref);
+            throughUnresolved.push(ref);
           }
         }
       }
     }
 
-    // Resolve remaining through refs against this scope's own variables — required
-    // at the global scope to match refs against JS-injected builtins (NaN, console,
-    // configured globals, CJS globals). Cheap: usually bounded by # of globals.
-    if (through.length > 0 && set.size > 0) {
-      for (let k = through.length - 1; k >= 0; k--) {
-        const ref = through[k];
+    // Resolve remaining unresolved refs against this scope's own variables —
+    // required at the global scope to match refs against JS-injected builtins
+    // (NaN, console, configured globals, CJS globals). Cheap: usually bounded
+    // by # of globals. Only iterates throughUnresolved (resolved refs already
+    // have their target).
+    if (throughUnresolved.length > 0 && set.size > 0) {
+      for (let k = throughUnresolved.length - 1; k >= 0; k--) {
+        const ref = throughUnresolved[k];
         const name = ref.identifier?.name;
         const variable = name ? set.get(name) : undefined;
         if (variable) {
           if (ref.resolved === null) variable.references.push(ref);
           ref.resolved = variable;
-          through.splice(k, 1);
+          throughUnresolved.splice(k, 1);
         }
       }
     }
 
-    return [references, through];
+    return [references, throughResolved, throughUnresolved];
   }
 
   /** Build childScopes[] for a scope from the Zig-precomputed scope→children CSR. */
