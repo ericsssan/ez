@@ -4141,20 +4141,26 @@ function _nodeViewRaw(ast, index) {
     // prototype; no setPrototypeDirect on any path.
     const Ctor = _NODE_CTOR[tag];
     n = new Ctor(ast, index, tag, _computeNodeType(ast, index, tag));
-    // Make regex/bigint own properties so Object.hasOwn() works (ESLint uses this)
+    // Eager-fill regex/bigint as own DATA properties so `Object.hasOwn(n,
+    // 'regex')` returns true (ESLint rules check) AND `n.regex` reads
+    // through a fast IC load instead of dispatching the prototype getter
+    // every access. Previously this installed an own getter that called
+    // through to the prototype getter — the `getOwnPropertyDescriptor`
+    // lookup alone was 1.4% of total ez time on typescript.js.
     if (tag === T.regex_literal) {
-      const _n = n;
-      const _regexGetter = Object.getOwnPropertyDescriptor(NodeProto, 'regex').get;
+      const src = ast._rawTokenText(ast._mainTokens[index]);
+      const lastSlash = src.lastIndexOf('/');
       Object.defineProperty(n, 'regex', {
-        get() { return _regexGetter.call(_n); },
-        configurable: true, enumerable: true,
+        value: lastSlash > 0
+          ? { pattern: src.slice(1, lastSlash), flags: src.slice(lastSlash + 1) }
+          : undefined,
+        writable: true, enumerable: true, configurable: true,
       });
     } else if (tag === T.bigint_literal) {
-      const _n = n;
-      const _bigintGetter = Object.getOwnPropertyDescriptor(NodeProto, 'bigint').get;
+      const src = ast._rawTokenText(ast._mainTokens[index]);
       Object.defineProperty(n, 'bigint', {
-        get() { return _bigintGetter.call(_n); },
-        configurable: true, enumerable: true,
+        value: src.endsWith('n') ? src.slice(0, -1) : src,
+        writable: true, enumerable: true, configurable: true,
       });
     }
     cache[index] = n;
