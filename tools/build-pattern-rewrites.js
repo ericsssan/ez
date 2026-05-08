@@ -91,13 +91,16 @@ const DEFAULT_TARGETS = [
   },
 ];
 
-async function buildOne(target) {
+async function buildOne(target, manifestEntries) {
   if (!(await Bun.file(target.base).exists?.()) && !await directoryExists(target.base)) {
     return { key: target.key, attempted: 0, written: 0, totalMatches: 0, skipped: "missing" };
   }
-  if (!packageIsEsm(target.base)) {
-    return { key: target.key, attempted: 0, written: 0, totalMatches: 0, skipped: "cjs (Bun.plugin onLoad blocks CJS substitution in 1.3.9)" };
-  }
+  // Bun 1.3.9's `Bun.plugin` `onLoad({ contents })` returns parse as
+  // ESM regardless of the file's package. ESM packages route through
+  // Bun.plugin at runtime; CJS packages use a `require.cache` install
+  // instead — both written here, the loader picks the right path
+  // based on the manifest's `module` field.
+  const isEsm = packageIsEsm(target.base);
   const glob = new Bun.Glob(target.glob);
   let attempted = 0, written = 0, totalMatches = 0;
   const outDir = join(OUT_ROOT, target.key);
@@ -114,10 +117,16 @@ async function buildOne(target) {
     if (r.matches === 0) continue;
     const outPath = join(outDir, entry);
     await Bun.write(outPath, r.src);
+    manifestEntries.push({
+      key: target.key,
+      file: entry,
+      upstreamPath: inPath,
+      module: isEsm ? "esm" : "cjs",
+    });
     written++;
     totalMatches += r.matches;
   }
-  return { key: target.key, attempted, written, totalMatches };
+  return { key: target.key, attempted, written, totalMatches, module: isEsm ? "esm" : "cjs" };
 }
 
 async function directoryExists(p) {
@@ -139,7 +148,17 @@ async function directoryExists(p) {
 // implementation wholesale (unicorn's listener pipeline).
 const OVERRIDES_ROOT = resolve(ROOT, "tools/overrides");
 
-async function copyOverrides() {
+// Map override `key` (directory under `tools/overrides/`) → upstream
+// dir + module type. The loader uses this to pick Bun.plugin (ESM) vs
+// require.cache (CJS) when wiring the substitute at runtime.
+const OVERRIDE_KEY_TO_UPSTREAM = {
+  "unicorn-rule": {
+    upstreamDir: resolve("/Users/ericsan/node_modules/eslint-plugin-unicorn/rules/rule"),
+    module: "esm",
+  },
+};
+
+async function copyOverrides(manifestEntries) {
   const results = [];
   if (!await directoryExists(OVERRIDES_ROOT)) return results;
   const fsp = await import("node:fs/promises");
@@ -147,6 +166,7 @@ async function copyOverrides() {
   for (const k of keys) {
     if (!k.isDirectory()) continue;
     const inDir = join(OVERRIDES_ROOT, k.name);
+    const meta = OVERRIDE_KEY_TO_UPSTREAM[k.name];
     const files = await fsp.readdir(inDir, { withFileTypes: true });
     for (const f of files) {
       if (!f.isFile()) continue;
@@ -154,6 +174,14 @@ async function copyOverrides() {
       const src = await Bun.file(join(inDir, f.name)).text();
       await Bun.write(join(OUT_ROOT, k.name, f.name), src);
       results.push({ key: k.name, file: f.name });
+      if (meta) {
+        manifestEntries.push({
+          key: k.name,
+          file: f.name,
+          upstreamPath: join(meta.upstreamDir, f.name),
+          module: meta.module,
+        });
+      }
     }
   }
   return results;
@@ -162,10 +190,16 @@ async function copyOverrides() {
 async function main() {
   const t0 = Bun.nanoseconds();
   const results = [];
+  const manifestEntries = [];
   for (const target of DEFAULT_TARGETS) {
-    results.push(await buildOne(target));
+    results.push(await buildOne(target, manifestEntries));
   }
-  const overrideResults = await copyOverrides();
+  const overrideResults = await copyOverrides(manifestEntries);
+  // Manifest: machine-readable list of all prebuilts, used by the
+  // runtime loader to wire each one (Bun.plugin for ESM, require.cache
+  // for CJS). Path keys are absolute so the loader never resolves a
+  // dependency itself.
+  await Bun.write(join(OUT_ROOT, "manifest.json"), JSON.stringify(manifestEntries, null, 2) + "\n");
   const elapsedMs = Math.round((Bun.nanoseconds() - t0) / 1_000_000);
   let totalAttempted = 0, totalWritten = 0, totalMatches = 0;
   for (const r of results) {
