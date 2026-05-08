@@ -271,25 +271,31 @@ async function main() {
           return { path: args.path, external: true };
         });
         b.onLoad({ filter: /\.(?:js|cjs|mjs)$/ }, async (args) => {
-          // Only transform files that belong to our target rule set.
-          // Other modules (helpers, plugin internals pulled in via
-          // imports) bundle as-is.
-          if (!ruleFileSet.has(args.path)) return undefined;
-          let src = await Bun.file(args.path).text();
-          // Per-file programmatic transform (if registered).
+          // Apply transforms in two scopes:
+          //   - Rule files (in `ruleFileSet`): generic AST shape
+          //     rewrites via `applyPatternRewrite`.
+          //   - Files with a registered programmatic transform (e.g.,
+          //     unicorn-listeners.js, jsdoccomment): apply the
+          //     transform's source-text edits.
+          // Either or both can apply. Other modules (helpers, plugin
+          // internals pulled in via imports) bundle as-is.
+          const isRuleFile = ruleFileSet.has(args.path);
           const fileFn = fileTransforms.get(args.path);
+          if (!isRuleFile && !fileFn) return undefined;
+          let src = await Bun.file(args.path).text();
           if (fileFn) {
             try { src = fileFn(src); } catch (err) {
               process.stderr.write(`  file-transform ${args.path}: ${err.message}\n`);
             }
           }
-          // Generic AST shape rewrites.
-          try {
-            const r = applyPatternRewrite(src);
-            src = r.src;
-            totalRewritten += r.matches;
-          } catch (err) {
-            process.stderr.write(`  pattern-rewrite ${args.path}: ${err.message}\n`);
+          if (isRuleFile) {
+            try {
+              const r = applyPatternRewrite(src);
+              src = r.src;
+              totalRewritten += r.matches;
+            } catch (err) {
+              process.stderr.write(`  pattern-rewrite ${args.path}: ${err.message}\n`);
+            }
           }
           return { contents: src };
         });
