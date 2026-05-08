@@ -956,6 +956,123 @@ function emitDefaultedDestructure(src, m) {
   return [{ range: m.fullRange, text: lines.join("\n") }];
 }
 
+// Pattern: `<arr>.forEach(<arrow>)` where arrow has no return value,
+// no async, no this — pure side-effect iteration. Replace with a
+// plain `for` loop. Eliminates closure allocation per call site +
+// the per-iteration callback frame.
+//
+// Detection (conservative):
+//   - CallExpression where callee is `<arr>.forEach` (non-computed)
+//     with exactly one ArrowFunctionExpression argument
+//   - arrow has 1 or 2 params, both plain Identifiers (no defaults,
+//     no destructuring, no rest)
+//   - arrow body is a BlockStatement (not an expression body)
+//   - arrow is not async, not generator
+//   - body contains no `this`, no top-level `return X` (bare `return`
+//     for early-exit-from-iteration is OK — converts to `continue`)
+//   - body has no nested function that uses `this`
+//   - no `arguments` reference (rare but breaks under for-loop)
+//
+// Emit (assuming `arr` is `<arr>` and `param` is `<x>`):
+//   for (let __ezI = 0, __ezN = (<arr>).length; __ezI < __ezN; __ezI++) {
+//     const <x> = (<arr>)[__ezI];                  // 1-arg form
+//     const __ezIdx = __ezI;                        // 2-arg form (index)
+//     <body, with bare `return;` → `continue;`>
+//   }
+function _walkInScope(rootFn, visit) {
+  const NESTED = new Set(["FunctionExpression", "FunctionDeclaration", "ArrowFunctionExpression"]);
+  function descend(n, parent) {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) { for (const c of n) descend(c, parent); return; }
+    if (typeof n.type !== "string") return;
+    if (NESTED.has(n.type) && n !== rootFn) return;
+    visit(n, parent);
+    const keys = visitorKeys[n.type];
+    if (!keys) return;
+    for (const k of keys) descend(n[k], n);
+  }
+  descend(rootFn.body, rootFn);
+}
+
+function detectForEachPattern(node) {
+  if (node.type !== "CallExpression") return null;
+  const callee = node.callee;
+  if (!callee || callee.type !== "MemberExpression" || callee.computed) return null;
+  if (!callee.property || callee.property.type !== "Identifier" || callee.property.name !== "forEach") return null;
+  if (node.arguments.length !== 1) return null;
+  const arrow = node.arguments[0];
+  if (!arrow || arrow.type !== "ArrowFunctionExpression") return null;
+  if (arrow.async || arrow.generator) return null;
+  if (!arrow.body || arrow.body.type !== "BlockStatement") return null;
+  if (!Array.isArray(arrow.params) || arrow.params.length === 0 || arrow.params.length > 2) return null;
+  for (const p of arrow.params) {
+    if (!p || p.type !== "Identifier") return null;
+  }
+  // Walk body for forbidden constructs.
+  let bail = false;
+  _walkInScope(arrow, (n, _parent) => {
+    if (bail) return;
+    if (n.type === "ThisExpression") { bail = true; return; }
+    if (n.type === "Identifier" && n.name === "arguments") { bail = true; return; }
+    if (n.type === "ReturnStatement" && n.argument) { bail = true; return; } // bare return OK; with value bail
+  });
+  if (bail) return null;
+  // Locate every bare `return;` so we can rewrite to `continue;`.
+  const bareReturns = [];
+  _walkInScope(arrow, (n) => {
+    if (n.type === "ReturnStatement" && !n.argument) bareReturns.push(n);
+  });
+  // The arr expression source must be capturable. Avoid sites where
+  // `<arr>` is itself an expression with side effects we'd evaluate
+  // twice. Simplest safe check: it's an Identifier or a non-call
+  // MemberExpression. Otherwise bail.
+  const arrExpr = callee.object;
+  if (!arrExpr || !arrExpr.range) return null;
+  const safeArrTypes = new Set(["Identifier", "MemberExpression", "ThisExpression"]);
+  if (!safeArrTypes.has(arrExpr.type)) return null;
+  // For MemberExpression, ensure it's not a CallExpression chain
+  // (e.g., `f().forEach(...)` — `f()` would be re-evaluated). Walk
+  // the arrExpr to verify no CallExpression / NewExpression nested.
+  let arrUnsafe = false;
+  walk(arrExpr, (n) => {
+    if (arrUnsafe) return;
+    if (n.type === "CallExpression" || n.type === "NewExpression") arrUnsafe = true;
+  });
+  if (arrUnsafe) return null;
+  return {
+    fullRange: node.range,
+    arrRange: arrExpr.range,
+    paramName: arrow.params[0].name,
+    indexName: arrow.params[1] ? arrow.params[1].name : null,
+    bodyRange: arrow.body.range,
+    bareReturns,
+  };
+}
+
+function emitForEach(src, m) {
+  const arrText = src.slice(m.arrRange[0], m.arrRange[1]);
+  const bodyText = src.slice(m.bodyRange[0] + 1, m.bodyRange[1] - 1); // strip outer { }
+  // Apply bare-return → continue rewrites by computing relative offsets.
+  const bodyStart = m.bodyRange[0] + 1;
+  const edits = [];
+  for (const r of m.bareReturns) {
+    edits.push({ relStart: r.range[0] - bodyStart, relEnd: r.range[1] - bodyStart, text: "continue;" });
+  }
+  edits.sort((a, b) => b.relStart - a.relStart);
+  let body = bodyText;
+  for (const e of edits) body = body.slice(0, e.relStart) + e.text + body.slice(e.relEnd);
+
+  const parens = m.arrRange.parens || ""; // not used; we wrap in parens defensively
+  const arrAccess = `__ezA`;
+  const indexLine = m.indexName ? `\nconst ${m.indexName} = __ezI;` : "";
+  // `let` (not `const`) for the param binding — the original arrow
+  // parameter is mutable; rules sometimes reassign it (e.g.
+  // `param = param.parameter`).
+  const replacement =
+    `(()=>{ const ${arrAccess} = (${arrText}); for (let __ezI = 0, __ezN = ${arrAccess}.length; __ezI < __ezN; __ezI++) { let ${m.paramName} = ${arrAccess}[__ezI];${indexLine}${body} } })()`;
+  return [{ range: m.fullRange, text: replacement }];
+}
+
 function rewrite(src) {
   const ast = parseFile(src);
   const arrTypeEqMatches = [];
@@ -965,6 +1082,7 @@ function rewrite(src) {
   const accessorChainMatches = [];
   const restSpreadMatches = [];
   const defaultedDestructureMatches = [];
+  const forEachMatches = [];
   walk(ast, (n) => {
     const m = detectArrTypeEqPattern(n);
     if (m) arrTypeEqMatches.push(m);
@@ -992,9 +1110,13 @@ function rewrite(src) {
       const d = detectDefaultedDestructurePattern(n);
       if (d) defaultedDestructureMatches.push(d);
     }
+    if (process.env.EZ_DISABLE_FOREACH !== "1") {
+      const f = detectForEachPattern(n);
+      if (f) forEachMatches.push(f);
+    }
   });
 
-  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length + accessorChainMatches.length + restSpreadMatches.length + defaultedDestructureMatches.length;
+  const matches = arrTypeEqMatches.length + indexedLookupMatches.length + genListenerMatches.length + parentTypeMatches.length + accessorChainMatches.length + restSpreadMatches.length + defaultedDestructureMatches.length + forEachMatches.length;
   if (matches === 0) {
     return { src, matches: 0 };
   }
@@ -1036,10 +1158,32 @@ function rewrite(src) {
   for (const m of defaultedDestructureMatches) {
     edits.push(...emitDefaultedDestructure(src, m));
   }
-  edits.sort((a, b) => b.range[0] - a.range[0]);
+  for (const m of forEachMatches) {
+    edits.push(...emitForEach(src, m));
+  }
+  // Filter out edits whose range is fully contained inside another
+  // edit's range. Apply order is descending start, but if we apply
+  // an inner edit first and then an outer edit covering it, the
+  // outer edit's range refers to ORIGINAL source positions — past
+  // the inner edit's modified text — and we'd consume garbage.
+  // Drop the inner edit (the outer rewrite covers the same code at
+  // a higher level). Same for exact-range duplicates: keep the
+  // first one inserted.
+  edits.sort((a, b) => a.range[0] - b.range[0] || b.range[1] - a.range[1]);
+  const filteredEdits = [];
+  let lastEnd = -1;
+  for (const e of edits) {
+    if (e.range[1] <= lastEnd) {
+      // contained — skip
+      continue;
+    }
+    filteredEdits.push(e);
+    lastEnd = e.range[1];
+  }
+  filteredEdits.sort((a, b) => b.range[0] - a.range[0]);
 
   let out = src;
-  for (const e of edits) {
+  for (const e of filteredEdits) {
     out = out.slice(0, e.range[0]) + e.text + out.slice(e.range[1]);
   }
 
