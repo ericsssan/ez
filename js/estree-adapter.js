@@ -550,8 +550,13 @@ class AstView {
       this._semRefCount = 0;
     }
 
-    // Per-parse node cache — ensures reference equality: nodeView(ast, i) === nodeView(ast, i)
-    this._nodeCache = null;
+    // Per-parse NodeView pool. Eagerly allocated so `_nodeViewRaw`
+    // skips the `cache === null` lazy-init branch on every call — the
+    // function is hit by every `node.parent` / array-getter access in
+    // every rule, so removing one branch per call is real. Sentinel
+    // for "not computed yet" stays `undefined` (matches downstream
+    // invalidation patterns like `nc[0] = undefined`).
+    this._nodeCache = new Array(this.nodeCount);
   }
 
   /** Decoded source text (lazy). */
@@ -4154,42 +4159,39 @@ _NODE_CTOR[T.ts_parameter_property] = _NodeView_LNT;
 
 /** Raw nodeView — returns per-type proto node, no ChainExpression wrapping. */
 function _nodeViewRaw(ast, index) {
-  let cache = ast._nodeCache;
-  if (cache === null) {
-    cache = new Array(ast.nodeCount);
-    ast._nodeCache = cache;
+  // Pool is eagerly allocated in AstView ctor as `new Array(nodeCount)`.
+  // Single branch per call: cached hit → return. Miss → construct,
+  // install, return. The `cache === null` lazy-init branch from the
+  // pre-eager-init version is gone.
+  const cache = ast._nodeCache;
+  const cached = cache[index];
+  if (cached !== undefined) return cached;
+  const tag = ast._nodeTags[index];
+  // Single dispatch through tag→ctor table. Each ctor has a fixed
+  // prototype; no setPrototypeDirect on any path.
+  const Ctor = _NODE_CTOR[tag];
+  const n = new Ctor(ast, index, tag, _computeNodeType(ast, index, tag));
+  // Eager-fill regex/bigint as own DATA properties so `Object.hasOwn(n,
+  // 'regex')` returns true (ESLint rules check) AND `n.regex` reads
+  // through a fast IC load instead of dispatching the prototype getter
+  // every access.
+  if (tag === T.regex_literal) {
+    const src = ast._rawTokenText(ast._mainTokens[index]);
+    const lastSlash = src.lastIndexOf('/');
+    Object.defineProperty(n, 'regex', {
+      value: lastSlash > 0
+        ? { pattern: src.slice(1, lastSlash), flags: src.slice(lastSlash + 1) }
+        : undefined,
+      writable: true, enumerable: true, configurable: true,
+    });
+  } else if (tag === T.bigint_literal) {
+    const src = ast._rawTokenText(ast._mainTokens[index]);
+    Object.defineProperty(n, 'bigint', {
+      value: src.endsWith('n') ? src.slice(0, -1) : src,
+      writable: true, enumerable: true, configurable: true,
+    });
   }
-  let n = cache[index];
-  if (n === undefined) {
-    const tag = ast._nodeTags[index];
-    // Single dispatch through tag→ctor table. Each ctor has a fixed
-    // prototype; no setPrototypeDirect on any path.
-    const Ctor = _NODE_CTOR[tag];
-    n = new Ctor(ast, index, tag, _computeNodeType(ast, index, tag));
-    // Eager-fill regex/bigint as own DATA properties so `Object.hasOwn(n,
-    // 'regex')` returns true (ESLint rules check) AND `n.regex` reads
-    // through a fast IC load instead of dispatching the prototype getter
-    // every access. Previously this installed an own getter that called
-    // through to the prototype getter — the `getOwnPropertyDescriptor`
-    // lookup alone was 1.4% of total ez time on typescript.js.
-    if (tag === T.regex_literal) {
-      const src = ast._rawTokenText(ast._mainTokens[index]);
-      const lastSlash = src.lastIndexOf('/');
-      Object.defineProperty(n, 'regex', {
-        value: lastSlash > 0
-          ? { pattern: src.slice(1, lastSlash), flags: src.slice(lastSlash + 1) }
-          : undefined,
-        writable: true, enumerable: true, configurable: true,
-      });
-    } else if (tag === T.bigint_literal) {
-      const src = ast._rawTokenText(ast._mainTokens[index]);
-      Object.defineProperty(n, 'bigint', {
-        value: src.endsWith('n') ? src.slice(0, -1) : src,
-        writable: true, enumerable: true, configurable: true,
-      });
-    }
-    cache[index] = n;
-  }
+  cache[index] = n;
   return n;
 }
 
