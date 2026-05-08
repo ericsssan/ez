@@ -141,16 +141,24 @@ export function transform(src) {
 
       const state = {};
 
-      // Per-rule callback closing over this rule's state. Invoked
-      // by the shared listener with (node, commentNode).
-      const onNode = (node, commentNode) => {
+      // Per-rule callback closing over this rule state. Two
+      // shapes split by whether the rule cares about non-comment
+      // nodes. Most jsdoc rules do not define nonComment, so on
+      // nodes without a leading JSDoc (over 99% of the AST) they
+      // are pure no-ops and we skip them entirely.
+      const onNodeWithComment = (node, commentNode) => {
         if (!ruleConfig.noTracking && trackedJsdocs.has(commentNode)) {
           return;
         }
+        trackedJsdocs.add(commentNode);
+        callIterator(context, node, [commentNode], state);
+      };
+      const onNodeAllNodes = (node, commentNode) => {
         if (!commentNode) {
-          if (ruleConfig.nonComment) {
-            ruleConfig.nonComment({ node, state });
-          }
+          ruleConfig.nonComment({ node, state });
+          return;
+        }
+        if (!ruleConfig.noTracking && trackedJsdocs.has(commentNode)) {
           return;
         }
         trackedJsdocs.add(commentNode);
@@ -170,7 +178,8 @@ export function transform(src) {
       if (!registry) {
         registry = {
           settings,
-          onNodeFns: [],
+          commentOnlyFns: [],
+          allNodeFns: [],
           onExitFns: [],
           installed: false,
         };
@@ -178,7 +187,11 @@ export function transform(src) {
           value: registry, writable: true, configurable: true, enumerable: false,
         });
       }
-      registry.onNodeFns.push(onNode);
+      if (ruleConfig.nonComment) {
+        registry.allNodeFns.push(onNodeAllNodes);
+      } else {
+        registry.commentOnlyFns.push(onNodeWithComment);
+      }
       registry.onExitFns.push(onProgramExit);
 
       if (registry.installed) {
@@ -186,13 +199,33 @@ export function transform(src) {
       }
       registry.installed = true;
       const sharedSettings = registry.settings;
-      const onNodeFns = registry.onNodeFns;
+      const commentOnlyFns = registry.commentOnlyFns;
+      const allNodeFns = registry.allNodeFns;
       const onExitFns = registry.onExitFns;
+      // Narrow the listener from *:not(Program) to the set of node
+      // types that JSDoc actually attaches to. Two wins:
+      //   1. The dispatcher routes plain type-union keys through the
+      //      direct map (fast path) instead of esquery selector
+      //      matching for *:not(Program).
+      //   2. Most non-declaration nodes (Identifier, Literal, etc.)
+      //      no longer trigger getJSDocComment, which was 10% Total
+      //      pre-narrowing.
+      // Types covered: declarations + class/object members + TS
+      // variants + import/export carriers (types that
+      // getReducedASTNode reduces, plus their containers from
+      // allowableCommentNode).
       return {
-        '*:not(Program)' (node) {
+        'ClassDeclaration, ClassExpression, FunctionDeclaration, FunctionExpression, ArrowFunctionExpression, MethodDefinition, PropertyDefinition, AccessorProperty, Property, VariableDeclaration, ExportNamedDeclaration, ExportDefaultDeclaration, ExportAllDeclaration, ExportSpecifier, ImportDeclaration, ObjectExpression, ExpressionStatement, AssignmentPattern, ReturnStatement, ObjectProperty, ClassProperty, TSInterfaceDeclaration, TSTypeAliasDeclaration, TSEnumDeclaration, TSEnumMember, TSDeclareFunction, TSEmptyBodyFunctionExpression, TSFunctionType, TSPropertySignature, TSMethodSignature, TSCallSignatureDeclaration, TSConstructSignatureDeclaration, TSIndexSignature, TSAbstractMethodDefinition, TSAbstractPropertyDefinition, TSAbstractAccessorProperty, TSModuleDeclaration' (node) {
           const commentNode = getJSDocComment(sourceCode, node, sharedSettings);
-          for (let i = 0, n = onNodeFns.length; i < n; i++) {
-            onNodeFns[i](node, commentNode);
+          if (commentNode) {
+            for (let i = 0, n = commentOnlyFns.length; i < n; i++) {
+              commentOnlyFns[i](node, commentNode);
+            }
+          }
+          if (allNodeFns.length) {
+            for (let i = 0, n = allNodeFns.length; i < n; i++) {
+              allNodeFns[i](node, commentNode);
+            }
           }
         },
         'Program:exit' () {
