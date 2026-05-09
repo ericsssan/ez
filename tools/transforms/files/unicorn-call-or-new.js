@@ -21,7 +21,11 @@
 // skips the `create()` call frame entirely — V8 inlines the type
 // check directly into the rule body.
 
-export const upstreamPath = "/Users/ericsan/Development/OpenSource/Ez/js/node_modules/eslint-plugin-unicorn/rules/ast/call-or-new-expression.js";
+// Bun.build resolves unicorn from the user-home node_modules (see TARGETS
+// in tools/rule-transpile.js — `base: /Users/ericsan/node_modules/...`).
+// The project-local copy is a duplicate install left over and not what
+// the bundler loads.
+export const upstreamPath = "/Users/ericsan/node_modules/eslint-plugin-unicorn/rules/ast/call-or-new-expression.js";
 
 export function transform(src) {
   if (!src.includes("function create(node, options, types)")) {
