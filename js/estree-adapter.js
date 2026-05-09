@@ -559,28 +559,22 @@ class AstView {
     this._nodeCache = new Array(this.nodeCount);
 
     // Pre-computed AST-shape bits, one byte per node. Lets hot
-    // helpers (`isMethodCall`, `isCallExpression`, `isMemberExpression`,
-    // `isUndefined`, etc.) short-circuit with a single buffer read
-    // instead of walking the NodeView wrappers + the property-getter
-    // chain. Computed in JS for now; matches the existing pattern of
-    // post-parse precomputation in this constructor (`_nodeCache`,
-    // `_resolvedParentData`, etc.). The single linear sweep over
-    // nodeCount is ~5 ms on typescript.js and amortises across all
-    // hot helper queries.
+    // helpers short-circuit a multi-step chain with a single buffer
+    // read instead of walking NodeView wrappers + property getters.
+    //
+    // Empirical lesson from wiring attempts: shape bits only pay
+    // when they replace a chain of >=2 checks. Single-property
+    // checks like `node?.type === 'X'` are already at V8's IC floor
+    // and adding `_shapeBits[i] & MASK` is parallel overhead, not a
+    // replacement. So the only bit kept is the one that fits this
+    // criterion in practice; isMemberExpression / isCallExpression /
+    // isUndefined wirings were tested and either neutral or slower,
+    // so they're not consumed here.
     //
     // Bit layout:
     //   0x01 — IS_METHOD_CALL_SHAPE: tag is one of the call_expr
     //          variants AND its lhs (callee) tag is one of the
-    //          member_expr variants. This is what unicorn's
-    //          `isMethodCall(node)` checks BEFORE the methods/optional
-    //          options work.
-    //   0x02 — IS_MEMBER_EXPRESSION_TAG: tag is any member_expr
-    //          variant (computed/optional/regular). One bit-test
-    //          replaces a ts/css-style chain.
-    //   0x04 — IS_CALL_EXPRESSION_TAG: tag is any call_expr variant
-    //          (including optional_call_expr).
-    //   0x08 — IS_UNDEFINED_IDENT: tag is identifier AND the main
-    //          token's text is exactly "undefined".
+    //          member_expr variants. Used by unicorn isMethodCall.
     {
       const nc = this.nodeCount;
       const bits = new Uint8Array(nc);
@@ -593,41 +587,17 @@ class AstView {
       const tCompMember = T.computed_member_expr;
       const tOptMember = T.optional_member_expr;
       const tOptCompMember = T.optional_computed_member_expr;
-      const tIdent = T.identifier;
-      const _mainToks = this._mainTokens;
-      const _tokStarts = this._tokStarts;
-      const _tokEnds = this._tokEnds;
-      const _srcBytes = this._sourceBytes;
-      // "undefined" as bytes — 9 chars, ASCII.
-      const UND0 = 117, UND1 = 110, UND2 = 100, UND3 = 101, UND4 = 102, UND5 = 105, UND6 = 110, UND7 = 101, UND8 = 100;
       for (let i = 0; i < nc; i++) {
         const t = tags[i];
-        let b = 0;
-        if (t === tMember || t === tCompMember || t === tOptMember || t === tOptCompMember) {
-          b |= 0x02;
-        }
         if (t === tCallExpr || t === tOptCallExpr) {
-          b |= 0x04;
-          // Read callee (lhs) and check its tag.
           const calleeIdx = dv2.getUint32(dataOff + i * 8, true);
           if (calleeIdx < nc) {
             const ct = tags[calleeIdx];
             if (ct === tMember || ct === tCompMember || ct === tOptMember || ct === tOptCompMember) {
-              b |= 0x01;
+              bits[i] = 0x01;
             }
           }
-        } else if (t === tIdent && _mainToks && _tokStarts && _tokEnds && _srcBytes) {
-          const tokIdx = _mainToks[i];
-          const s = _tokStarts[tokIdx];
-          const e = _tokEnds[tokIdx];
-          if (e - s === 9 &&
-              _srcBytes[s] === UND0 && _srcBytes[s + 1] === UND1 && _srcBytes[s + 2] === UND2 &&
-              _srcBytes[s + 3] === UND3 && _srcBytes[s + 4] === UND4 && _srcBytes[s + 5] === UND5 &&
-              _srcBytes[s + 6] === UND6 && _srcBytes[s + 7] === UND7 && _srcBytes[s + 8] === UND8) {
-            b |= 0x08;
-          }
         }
-        bits[i] = b;
       }
       this._shapeBits = bits;
     }
