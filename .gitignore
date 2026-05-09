@@ -71,3 +71,4 @@ profile.json.gz
 # Ad-hoc debug capture dir
 debug/
 .ez-dist/
+tests/differential/.oxlint-rules-cache.txt

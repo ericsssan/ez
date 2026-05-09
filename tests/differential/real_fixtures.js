@@ -414,17 +414,35 @@ const OXLINT_BIN = (() => { try { return Bun.which("oxlint") || "/opt/homebrew/b
 
 // Build the set of rule names oxlint actually knows so we don't waste a
 // subprocess per unknown rule. `oxlint --rules` prints a markdown-formatted
-// table; extract the first column.
+// table; extract the first column. Result is cached to disk keyed by the
+// oxlint binary's mtime so repeat bench/profile runs don't re-spawn — the
+// raw spawn was ~480ms and dominated CPU profiles even though it has
+// nothing to do with linting.
 let _oxlintRules = null;
 function oxlintRules() {
   if (_oxlintRules !== null) return _oxlintRules;
   const set = new Set();
+  const fs = require("fs");
+  const path = require("path");
+  const cachePath = path.join(__dirname, ".oxlint-rules-cache.txt");
+  let binMtime = 0;
+  try { binMtime = fs.statSync(OXLINT_BIN).mtimeMs | 0; } catch {}
+  try {
+    const cached = fs.readFileSync(cachePath, "utf8");
+    const nlIdx = cached.indexOf("\n");
+    if (nlIdx > 0 && Number(cached.slice(0, nlIdx)) === binMtime) {
+      for (const r of cached.slice(nlIdx + 1).split("\n")) if (r) set.add(r);
+      _oxlintRules = set;
+      return set;
+    }
+  } catch {}
   try {
     const out = Buffer.from(Bun.spawnSync([OXLINT_BIN, "--rules"], { stdout: "pipe" }).stdout).toString();
     for (const line of out.split("\n")) {
       const m = line.match(/^\|\s*([@a-z][\w/-]+)\s*\|/i);
       if (m) set.add(m[1]);
     }
+    try { fs.writeFileSync(cachePath, binMtime + "\n" + [...set].join("\n")); } catch {}
   } catch {}
   _oxlintRules = set;
   return set;
