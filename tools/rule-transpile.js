@@ -304,8 +304,8 @@ async function main() {
           // internals pulled in via imports) bundle as-is.
           const isRuleFile = ruleFileSet.has(args.path);
           const inRewriteScope = isRuleFile || _inRewriteScope(args.path);
-          const fileFn = fileTransforms.get(args.path);
-          if (!inRewriteScope && !fileFn) return undefined;
+          const fileEntry = fileTransforms.get(args.path);
+          if (!inRewriteScope && !fileEntry) return undefined;
           const original = await Bun.file(args.path).text();
           let src = original;
           // No silent fallback. If anything fails — a file-transform
@@ -314,9 +314,19 @@ async function main() {
           // error message naming the file. A bundle with silently
           // missing optimizations is worse than no bundle: it ships
           // unverified code that the user thinks was rewritten.
-          if (fileFn) {
+          if (fileEntry) {
             try {
-              src = fileFn(src);
+              const before = src;
+              src = fileEntry.fn(src);
+              fileEntry.invoked = true;
+              if (src === before) {
+                // Anchors matched (no exception thrown) but produced
+                // identical output. Either an idempotent re-run guard
+                // worked correctly OR the transform's replace() calls
+                // all silently failed. We can't distinguish, so just
+                // record the no-op for diagnostics.
+                fileEntry.noOp = true;
+              }
             } catch (err) {
               process.stderr.write(`\n[FATAL] file-transform threw for ${args.path}\n  ${err.stack || err.message}\n`);
               process.exit(1);
@@ -367,21 +377,57 @@ async function main() {
     process.exit(1);
   }
 
+  // Post-build verification: every registered transform must have
+  // been invoked. A registered-but-uninvoked transform is dead code
+  // — its upstreamPath either doesn't appear in the import graph or
+  // doesn't match the path Bun.build actually resolves the import
+  // to. This was the failure mode that hid the unicorn-call-or-new
+  // transform until a manual bundle audit. Fail loudly here so it
+  // surfaces in build output, not weeks later.
+  const dead = [];
+  for (const [path, entry] of fileTransforms) {
+    if (!entry.invoked) dead.push({ path, modPath: entry.modPath });
+  }
+  if (dead.length > 0) {
+    process.stderr.write(`\n[FATAL] ${dead.length} transform${dead.length === 1 ? " was" : "s were"} registered but never invoked:\n`);
+    for (const d of dead) {
+      process.stderr.write(`  - ${d.modPath}\n      upstreamPath: ${d.path}\n      Possible causes: path doesn't match Bun's resolution (e.g. project node_modules vs user-home), or the file isn't reachable from the bundle entry's import graph.\n`);
+    }
+    process.exit(1);
+  }
+
   const elapsedMs = Math.round((Bun.nanoseconds() - t0) / 1_000_000);
   const bundleSize = (await Bun.file(BUNDLE_OUT).size) || 0;
   process.stderr.write(`\n  bundle:    ${BUNDLE_OUT}\n`);
   process.stderr.write(`  size:      ${(bundleSize / 1024).toFixed(0)} KB\n`);
   process.stderr.write(`  rules:     ${totalRules}\n`);
   process.stderr.write(`  rewrites:  ${totalRewritten}\n`);
+  const tcount = fileTransforms.size;
+  const noOps = [...fileTransforms.values()].filter(e => e.noOp).length;
+  process.stderr.write(`  transforms: ${tcount} applied${noOps > 0 ? ` (${noOps} produced no change — anchors may be drifting)` : ""}\n`);
   process.stderr.write(`  elapsed:   ${elapsedMs}ms\n`);
 }
 
 async function loadFileTransforms() {
-  const map = new Map(); // upstream-path → transform-fn
-  if (!existsSync(FILE_TRANSFORMS_DIR)) return map;
   // Each transform module exports `{ upstreamPath, transform }`.
+  // Verification this function does:
+  //   - upstreamPath must exist on disk (else the transform points at
+  //     a path Bun.build will never load — silent dead code, exactly
+  //     the failure mode that hid the unicorn-call-or-new transform
+  //     for a session). Fail loudly here.
+  //   - bad-shape exports (missing fields or wrong types) are fatal,
+  //     not warnings — the rest of the bundle loses the optimisation
+  //     and we won't know unless we read the bundle by hand.
+  //   - duplicate upstreamPath across transforms is a bug; one would
+  //     silently overwrite the other. Fatal.
+  // Returns a Map<upstreamPath, { fn, modPath, invoked: bool }>; the
+  // invoked flag is flipped when Bun.build's onLoad calls the fn, and
+  // verified after the build completes.
+  const map = new Map();
+  if (!existsSync(FILE_TRANSFORMS_DIR)) return map;
   const fsp = await import("node:fs/promises");
   const entries = await fsp.readdir(FILE_TRANSFORMS_DIR, { withFileTypes: true });
+  const errors = [];
   for (const e of entries) {
     if (e.isDirectory()) continue;
     if (!e.name.endsWith(".js") && !e.name.endsWith(".mjs")) continue;
@@ -389,11 +435,24 @@ async function loadFileTransforms() {
     const mod = await import(modPath);
     const u = mod.upstreamPath;
     const fn = mod.transform;
-    if (typeof u === "string" && typeof fn === "function") {
-      map.set(u, fn);
-    } else {
-      process.stderr.write(`  bad transform shape: ${modPath}\n`);
+    if (typeof u !== "string" || typeof fn !== "function") {
+      errors.push(`${modPath}: missing or wrong-typed exports (upstreamPath: ${typeof u}, transform: ${typeof fn})`);
+      continue;
     }
+    if (!existsSync(u)) {
+      errors.push(`${modPath}: upstreamPath does not exist on disk:\n      ${u}\n    The transform will never be invoked. Check the path against the actual install location (${u.includes("/Development/") ? "user-home node_modules?" : "project node_modules?"}).`);
+      continue;
+    }
+    if (map.has(u)) {
+      errors.push(`${modPath}: duplicate upstreamPath, conflicts with ${map.get(u).modPath}:\n      ${u}`);
+      continue;
+    }
+    map.set(u, { fn, modPath, invoked: false });
+  }
+  if (errors.length > 0) {
+    process.stderr.write(`\n[FATAL] ${errors.length} transform configuration error${errors.length === 1 ? "" : "s"}:\n`);
+    for (const msg of errors) process.stderr.write(`  - ${msg}\n`);
+    process.exit(1);
   }
   return map;
 }
