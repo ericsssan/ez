@@ -6564,18 +6564,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // inside a ternary would appear to have a JSXElement parent rather
     // than the ConditionalExpression.
     //
-    // Optimisation: bypass `nodeView` and call `_nodeViewRaw` directly.
-    // `nodeView` exists to unwrap grouping_expr / ts_parenthesized_type,
-    // but the walk below already filters those tags, so the wrapper's
-    // unwrap loop is unreachable here. Skipping it saves one function
-    // call + one tag check per ancestor.
+    // Inline the NodeView pool lookup. Parents in DFS order have all
+    // been materialised already by the time a child visits, so the
+    // cache hit rate is effectively 100% — skipping the _nodeViewRaw
+    // function frame saves one call per ancestor. Fall back to
+    // _nodeViewRaw on the rare miss (e.g. handlers running inside a
+    // codepath segment closure where the parent wasn't visited yet).
+    const _cache = ast._nodeCache;
     let prevP = nodeIdx; // track which child we came from (for method key exclusion)
     let p = pd[nodeIdx];
     let k = 0;
     while (p !== NONE && p < _astNodeCount) {
       const ptag = _astNodeTags[p];
       if (ptag === T.grouping_expr) { prevP = p; p = pd[p]; continue; }
-      const pNode = _nodeViewRaw(ast, p);
+      const pNode = _cache[p] !== undefined ? _cache[p] : _nodeViewRaw(ast, p);
       // ESTree inserts a synthetic FunctionExpression between a method
       // definition and its non-key children (body, params). Insert it
       // into the ancestors array so selectors like
