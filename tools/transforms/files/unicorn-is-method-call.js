@@ -32,50 +32,55 @@ export function transform(src) {
     throw new Error("upstream isMethodCall string-normalisation shape changed");
   }
 
-  const fastPath = `\t// ez build-time fast-path. ~73% of calls reject at the first two
-\t// type checks (node not a CallExpression, or its callee not a
-\t// MemberExpression). For the remainder, inline the common option
-\t// shapes so we skip the isCallExpression / isMemberExpression /
-\t// create() chain entirely. Bail to upstream when an option that
-\t// we'd have to forward to create() is actually present.
-\tif (node?.type !== 'CallExpression') return false;
-\tconst _ez_callee = node.callee;
-\tif (_ez_callee?.type !== 'MemberExpression') return false;
-\tif (typeof options === 'string') {
-\t\tconst _p = _ez_callee.property;
-\t\treturn !_ez_callee.computed && _p.type === 'Identifier' && _p.name === options;
+  const fastPath = `\t// ez build-time fast-path. The hot rejection — node not a
+\t// CallExpression, or its callee not a MemberExpression — is
+\t// answered by one Uint8Array read from the precomputed shape
+\t// bits (bit 0x01 = is-method-call-shape). Replaces the
+\t// type+callee+type-getter chain. ~73% of calls reject here.
+\t// For NodeView inputs whose options are simple (methods/method,
+\t// optionalCall/optionalMember), inline the membership check.
+\t// Falls through to upstream for complex options or non-NodeView
+\t// inputs (test fixtures pass plain ESTree objects).
+\tif (node && node._ast) {
+\t\tif ((node._ast._shapeBits[node._i] & 0x01) === 0) return false;
+\t\tconst _ez_callee = node.callee;
+\t\tif (typeof options === 'string') {
+\t\t\tconst _p = _ez_callee.property;
+\t\t\treturn !_ez_callee.computed && _p.type === 'Identifier' && _p.name === options;
+\t\t}
+\t\tif (Array.isArray(options)) {
+\t\t\tconst _p = _ez_callee.property;
+\t\t\treturn !_ez_callee.computed && _p.type === 'Identifier' && options.includes(_p.name);
+\t\t}
+\t\tif (options !== undefined && options !== null
+\t\t\t&& options.argumentsLength === undefined
+\t\t\t&& options.minimumArguments === undefined
+\t\t\t&& options.maximumArguments === undefined
+\t\t\t&& options.allowSpreadElement === undefined
+\t\t\t&& options.object === undefined
+\t\t\t&& options.objects === undefined
+\t\t\t&& options.computed === undefined
+\t\t) {
+\t\t\tconst _optC = options.optionalCall;
+\t\t\tif (_optC === true && !node.optional) return false;
+\t\t\tif (_optC === false && node.optional) return false;
+\t\t\tconst _optM = options.optionalMember;
+\t\t\tif (_optM === true && !_ez_callee.optional) return false;
+\t\t\tif (_optM === false && _ez_callee.optional) return false;
+\t\t\tconst _m = options.method;
+\t\t\tconst _ms = options.methods;
+\t\t\tif (_m === undefined && (_ms === undefined || _ms.length === 0)) return true;
+\t\t\tconst _p = _ez_callee.property;
+\t\t\tif (_p.type !== 'Identifier') return false;
+\t\t\tif (_ez_callee.computed) return false;
+\t\t\tif (_m !== undefined && _m !== '' && _p.name !== _m) return false;
+\t\t\tif (_ms !== undefined && _ms.length > 0 && !_ms.includes(_p.name)) return false;
+\t\t\treturn true;
+\t\t}
+\t\t// Complex options (argumentsLength, object/objects, etc.) —
+\t\t// fall through to upstream which forwards to create() and
+\t\t// isMemberExpression with full option handling.
 \t}
-\tif (Array.isArray(options)) {
-\t\tconst _p = _ez_callee.property;
-\t\treturn !_ez_callee.computed && _p.type === 'Identifier' && options.includes(_p.name);
-\t}
-\tif (options !== undefined && options !== null
-\t\t&& options.argumentsLength === undefined
-\t\t&& options.minimumArguments === undefined
-\t\t&& options.maximumArguments === undefined
-\t\t&& options.allowSpreadElement === undefined
-\t\t&& options.object === undefined
-\t\t&& options.objects === undefined
-\t\t&& options.computed === undefined
-\t) {
-\t\tconst _optC = options.optionalCall;
-\t\tif (_optC === true && !node.optional) return false;
-\t\tif (_optC === false && node.optional) return false;
-\t\tconst _optM = options.optionalMember;
-\t\tif (_optM === true && !_ez_callee.optional) return false;
-\t\tif (_optM === false && _ez_callee.optional) return false;
-\t\tconst _m = options.method;
-\t\tconst _ms = options.methods;
-\t\tif (_m === undefined && (_ms === undefined || _ms.length === 0)) return true;
-\t\tconst _p = _ez_callee.property;
-\t\tif (_p.type !== 'Identifier') return false;
-\t\tif (_ez_callee.computed) return false;
-\t\tif (_m !== undefined && _m !== '' && _p.name !== _m) return false;
-\t\tif (_ms !== undefined && _ms.length > 0 && !_ms.includes(_p.name)) return false;
-\t\treturn true;
-\t}
-\t// Fall through to upstream slow path for option shapes with
-\t// argumentsLength, allowSpreadElement, object/objects, or computed.
 `;
 
   // Insert the fast-path right after the function opening brace.
