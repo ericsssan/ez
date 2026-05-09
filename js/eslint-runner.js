@@ -6767,12 +6767,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Reused second arg for segment events — rules that use onCodePathSegmentStart(seg, node)
   // receive this as `node`; most rules ignore it, but no-unreachable-loop uses isLoopingTarget(node).
   const _segEventNode = _walkSegEventNode;
-  // Pre-cache segment event handler arrays — eliminates visitorMap.get() on every branch point.
+  // Pre-cache CFG event handler arrays — eliminates visitorMap.get() on every event firing.
   const _segStartH    = visitorMap.get('onCodePathSegmentStart') || null;
   const _segEndH      = visitorMap.get('onCodePathSegmentEnd') || null;
   const _unreachStartH = visitorMap.get('onUnreachableCodePathSegmentStart') || null;
   const _unreachEndH  = visitorMap.get('onUnreachableCodePathSegmentEnd') || null;
   const _segLoopH     = visitorMap.get('onCodePathSegmentLoop') || null;
+  const _cpStartH     = visitorMap.get('onCodePathStart') || null;
+  const _cpEndH       = visitorMap.get('onCodePathEnd') || null;
 
   function _dispatchSeg(handlers, seg, node) {
     const nd = node || _segEventNode;
@@ -7142,12 +7144,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           if (cp) {
             _cfgCpStack.push(_cfgCurrentCp); _cfgCurrentCp = cp;
             cp.currentSegments = [cp.initialSegment];
-            const nt = node.type;
-            const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
-            const cpStartH = visitorMap.get('onCodePathStart');
-            if (cpStartH) for (let h = 0; h < cpStartH.length; h++) {
-              try { cpStartH[h]._state.inner(cp, cpNode); }
-              catch (e) { context._reports.push({ ruleId: cpStartH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+            if (_cpStartH) {
+              const nt = node.type;
+              const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+              const hn = _cpStartH.length;
+              let h = 0;
+              try {
+                for (; h < hn; h++) _cpStartH[h]._state.inner(cp, cpNode);
+              } catch (e) {
+                context._reports.push({ ruleId: _cpStartH[h].ruleId, message: `Plugin error: ${e.message}` });
+                for (let k = h + 1; k < hn; k++) {
+                  try { _cpStartH[k]._state.inner(cp, cpNode); }
+                  catch (e2) { context._reports.push({ ruleId: _cpStartH[k].ruleId, message: `Plugin error: ${e2.message}` }); }
+                }
+              }
             }
           }
           break;
@@ -7155,12 +7165,20 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         case 1: { // CODEPATH_END
           const cp = _cfgGraph.codepath(d1);
           if (cp) {
-            const nt2 = node.type;
-            const cpNode = (nt2 === 'MethodDefinition' || nt2 === 'Property') ? (node.value || node) : node;
-            const cpEndH = visitorMap.get('onCodePathEnd');
-            if (cpEndH) for (let h = 0; h < cpEndH.length; h++) {
-              try { cpEndH[h]._state.inner(cp, cpNode); }
-              catch (e) { context._reports.push({ ruleId: cpEndH[h].ruleId, message: `Plugin error: ${e.message}` }); }
+            if (_cpEndH) {
+              const nt = node.type;
+              const cpNode = (nt === 'MethodDefinition' || nt === 'Property') ? (node.value || node) : node;
+              const hn = _cpEndH.length;
+              let h = 0;
+              try {
+                for (; h < hn; h++) _cpEndH[h]._state.inner(cp, cpNode);
+              } catch (e) {
+                context._reports.push({ ruleId: _cpEndH[h].ruleId, message: `Plugin error: ${e.message}` });
+                for (let k = h + 1; k < hn; k++) {
+                  try { _cpEndH[k]._state.inner(cp, cpNode); }
+                  catch (e2) { context._reports.push({ ruleId: _cpEndH[k].ruleId, message: `Plugin error: ${e2.message}` }); }
+                }
+              }
             }
             _cfgCurrentCp = _cfgCpStack.pop() || null;
           }
