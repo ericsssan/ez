@@ -276,6 +276,36 @@ inline fn loadU64(buf: []const u8, comptime L: usize) u64 {
     return v;
 }
 
+/// Append a line-start entry for every newline in src[start..end).
+/// Used after consuming a token whose body may contain newlines (block
+/// comments, template literals, strings with line continuations) — the
+/// outer bitmap walk's `skip_until` jumps over the body, so newlines
+/// inside have to be registered here or `loc.start.line` will be too
+/// low downstream. Mirrors the unicode-line-separator handling in the
+/// main lex loop.
+fn scanRangeForNewlines(
+    ls: *std.ArrayListUnmanaged(u32),
+    alloc: std.mem.Allocator,
+    src: []const u8,
+    start: u32,
+    end: u32,
+) !void {
+    var q: u32 = start;
+    while (q < end) : (q += 1) {
+        const c = src[q];
+        if (c == '\n') {
+            try ls.append(alloc, q + 1);
+        } else if (c == '\r') {
+            const next_q = if (q + 1 < end and src[q + 1] == '\n') q + 2 else q + 1;
+            try ls.append(alloc, next_q);
+            q = next_q - 1; // -1 since loop increments
+        } else if (c == 0xE2 and q + 2 < end and src[q + 1] == 0x80 and (src[q + 2] == 0xA8 or src[q + 2] == 0xA9)) {
+            try ls.append(alloc, q + 3);
+            q += 2;
+        }
+    }
+}
+
 /// Cold helper: load up to 8 bytes from src[p..], zero-padding the rest.
 /// Used only for the last 1–2 bitmap words (word_safe = false).
 fn safeRaw8(src: []const u8, p: u32, n: u32) u64 {
@@ -1792,6 +1822,10 @@ pub fn tokenizeWithBufAndBitmaps(
                         if (!res.terminated) { tag = .invalid; }
                         else if (res.has_expr) { tag = .template_middle; }
                         else { tag = .template_tail; tmpl_depth -= 1; }
+                        // Template chunk between `}` and the next `${` or
+                        // backtick can span multiple lines — register
+                        // those breaks in `ls`.
+                        try scanRangeForNewlines(&ls, alloc, src, p + 1, end);
                     } else {
                         if (tmpl_depth > 0) brace_d[tmpl_depth - 1] -= 1;
                         tag = .r_brace; end = p + 1;
@@ -1969,7 +2003,14 @@ pub fn tokenizeWithBufAndBitmaps(
                     else if (next1 == '=') { tag = .slash_equal; end = p + 2; }
                     else { tag = .slash; end = p + 1; }
                 },
-                '"', '\'' => { end = stringEndBMOpt(src, bm.structural, bm.newline, p, n, language.isJsx()); tag = .string_literal; },
+                '"', '\'' => {
+                    end = stringEndBMOpt(src, bm.structural, bm.newline, p, n, language.isJsx());
+                    tag = .string_literal;
+                    // Strings with line continuations (`\<newline>`) span
+                    // multiple source lines. Register those breaks in `ls`
+                    // so loc.start.line matches ESLint downstream.
+                    try scanRangeForNewlines(&ls, alloc, src, p + 1, end);
+                },
                 '`' => {
                     const res = Lex.templateChunkEnd(src, p);
                     end = res.end;
@@ -1981,6 +2022,10 @@ pub fn tokenizeWithBufAndBitmaps(
                             tmpl_depth += 1;
                         }
                     } else { tag = .template_no_sub; }
+                    // Template literals may span multiple lines; same as
+                    // block comments above, register every newline inside
+                    // the chunk in `ls`.
+                    try scanRangeForNewlines(&ls, alloc, src, p + 1, end);
                 },
                 '0'...'9' => {
                     end = Lex.numberEnd(src, p);

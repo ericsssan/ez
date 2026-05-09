@@ -220,23 +220,36 @@ function runEzAllOnAst(ctx, ruleIds) {
     });
   }
   const ms = performance.now() - t0;
-  // Locations keyed by `${shortRuleId}:${line}`. Lets perf_hunt
-  // compute set agreement with the oxlint side without printing
-  // individual diagnostics.
+  // Two location indices:
+  //   - `locs`: Set<"shortRuleId:line"> — coarse, for jaccard agreement.
+  //   - `locsByRule`: Map<ruleId, Set<"line:col">> — fine-grained,
+  //     used by the harness's per-rule oracle comparison. ESLint
+  //     reports 1-based column; we store 0-based throughout so
+  //     consumers compare directly.
   const locs = new Set();
+  const locsByRule = new Map();
+  for (const id of ruleIds) locsByRule.set(id, new Set());
   const _short = (id) => { const i = id.lastIndexOf("/"); return i < 0 ? id : id.slice(i + 1); };
   for (const d of nativeDiags) {
     const id = d.rule_id || d.ruleId;
     if (id && perRule.has(id)) perRule.set(id, perRule.get(id) + 1);
     const line = d.line ?? d.startLine ?? d.loc?.start?.line ?? 0;
-    if (id) locs.add(`${_short(id)}:${line}`);
+    const col  = d.column ?? d.startColumn ?? d.loc?.start?.column ?? 0;
+    if (id) {
+      locs.add(`${_short(id)}:${line}`);
+      const set = locsByRule.get(id); if (set) set.add(`${line}:${col}`);
+    }
   }
   for (const r of reports) {
     if (r.ruleId && perRule.has(r.ruleId)) perRule.set(r.ruleId, perRule.get(r.ruleId) + 1);
     const line = r.line ?? r.loc?.start?.line ?? 0;
-    if (r.ruleId) locs.add(`${_short(r.ruleId)}:${line}`);
+    const col  = r.column ?? r.loc?.start?.column ?? 0;
+    if (r.ruleId) {
+      locs.add(`${_short(r.ruleId)}:${line}`);
+      const set = locsByRule.get(r.ruleId); if (set) set.add(`${line}:${col}`);
+    }
   }
-  return { ms, totalDiags: nativeDiags.length + reports.length, perRule, locs };
+  return { ms, totalDiags: nativeDiags.length + reports.length, perRule, locs, locsByRule };
 }
 
 if (!_isMain) module.exports.runEzAllOnAst = runEzAllOnAst;
@@ -394,6 +407,8 @@ function runEslintAllOnce(src, ruleIds, filename) {
   }
   const ms = performance.now() - t0;
   const perRule = new Map(); // keyed by ez rule id (caller-friendly)
+  const locsByRule = new Map();
+  for (const ezId of ezToEs.keys()) locsByRule.set(ezId, new Set());
   let total = 0;
   // Reverse map: ESLint rule id → ez rule id
   const esToEz = new Map();
@@ -402,9 +417,12 @@ function runEslintAllOnce(src, ruleIds, filename) {
     const ezId = esToEz.get(m.ruleId);
     if (!ezId) continue;
     perRule.set(ezId, (perRule.get(ezId) || 0) + 1);
+    // ESLint reports 1-based column; convert to 0-based to match ez.
+    const set = locsByRule.get(ezId);
+    if (set) set.add(`${m.line}:${m.column - 1}`);
     total++;
   }
-  return { ms, perRule, total, droppedCount: dropped.length };
+  return { ms, perRule, locsByRule, total, droppedCount: dropped.length };
 }
 
 if (!_isMain) module.exports.runEslintAllOnce = runEslintAllOnce;

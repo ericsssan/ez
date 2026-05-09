@@ -206,10 +206,12 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
 
   // ── Optional ESLint as the diag-count oracle ──
   let esDiagCounts = null, esRuleCount = 0, esMs = 0, esDropped = 0;
+  let esResultLocs = null; // Map<ruleId, Set<"line:col">>
   if (WITH_ESLINT) {
     process.stderr.write(`  eslint diag counts ...`);
     const r = runEslintAllOnce(src, rules, filename);
     esDiagCounts = r.perRule;
+    esResultLocs = r.locsByRule;
     esRuleCount = rules.length - r.droppedCount;
     esDropped = r.droppedCount;
     esMs = r.ms;
@@ -281,6 +283,41 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
     }
   }
   console.log("");
+
+  // ── Per-rule oracle conformance: ez locations must match ESLint ──
+  // Policy: ez runs the same JS rules as ESLint, so they MUST emit
+  // identical (line:col) sets per rule. Any deviation is a bug to fix
+  // in ez. The harness FAILS LOUDLY here so disagreements can't slip
+  // past unnoticed.
+  if (WITH_ESLINT) {
+    const ezAll2 = ezAll; // Map<ruleId, Set<"line:col">>
+    const esLocs = esResultLocs; // Map<ruleId, Set<"line:col">> from runEslintAllOnce
+    const failures = [];
+    for (const ruleId of rules) {
+      const ezL = ezAll2.locsByRule ? ezAll2.locsByRule.get(ruleId) : null;
+      const esL = esLocs ? esLocs.get(ruleId) : null;
+      if (!ezL || !esL) continue;
+      let ezOnly = 0, esOnly = 0;
+      for (const k of ezL) if (!esL.has(k)) ezOnly++;
+      for (const k of esL) if (!ezL.has(k)) esOnly++;
+      if (ezOnly !== 0 || esOnly !== 0) {
+        failures.push({ ruleId, ezN: ezL.size, esN: esL.size, ezOnly, esOnly });
+      }
+    }
+    if (failures.length === 0) {
+      console.log(`✓ ez ↔ ESLint location oracle: 100% match across ${rules.length} rules`);
+    } else {
+      failures.sort((a, b) => (b.ezOnly + b.esOnly) - (a.ezOnly + a.esOnly));
+      console.log(`✗ ez ↔ ESLint LOCATION ORACLE FAIL: ${failures.length}/${rules.length} rules disagree`);
+      console.log(`  (per the ez-runs-eslint-rules invariant, every miss is a bug to fix in ez)`);
+      console.log(`  rule${" ".repeat(36)}  ez   es  ez-only  es-only`);
+      for (const f of failures) {
+        console.log(`  ${f.ruleId.padEnd(40)}  ${f.ezN.toString().padStart(4)}  ${f.esN.toString().padStart(4)}  ${f.ezOnly.toString().padStart(7)}  ${f.esOnly.toString().padStart(7)}`);
+      }
+      process.exitCode = 1;
+    }
+    console.log("");
+  }
 
   // ── Baseline (load → compare, or save) ───────────────────────────
   const baselineFile = path.join(ROOT, "bench", `perf_hunt_baseline.${filename.replace(/\W+/g, "_")}.json`);
