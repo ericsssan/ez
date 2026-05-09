@@ -288,7 +288,24 @@ function runNativeForCase(code, ruleName, ruleConfig, hasCustomParser, hasOption
     const diags = ezLint(code, { config, lang });
     return diags
       .filter(d => d.ruleName === _nativeName)
-      .map(d => ({ rule: _nativeName, line: offsetToLine(code, d.offset) }));
+      .map(d => ({
+        rule: _nativeName,
+        line: offsetToLine(code, d.offset),
+        // Native diags carry start byte offset; reconstruct column from the
+        // last `\n` before the offset so we can compare on the column too.
+        column: (() => {
+          let lineStart = 0;
+          for (let i = d.offset - 1; i >= 0; i--) {
+            if (code.charCodeAt(i) === 10) { lineStart = i + 1; break; }
+          }
+          return d.offset - lineStart;
+        })(),
+        endLine: d.endLine ?? null,
+        endColumn: d.endColumn ?? null,
+        message: d.message ?? null,
+        messageId: d.messageId ?? null,
+        severity: d.severity ?? null,
+      }));
   } catch { return null; }
 }
 
@@ -334,11 +351,22 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     const results = [];
     for (const r of [...reports, ...crashReports]) {
       if (r.ruleId !== ruleName) continue;
-      const line = r.loc?.start?.line ?? r.loc?.line ?? r.line;
+      const loc = r.loc;
+      const line   = loc?.start?.line ?? loc?.line ?? r.line;
+      const column = loc?.start?.column ?? r.column;
+      const endLine   = loc?.end?.line ?? r.endLine;
+      const endColumn = loc?.end?.column ?? r.endColumn;
       if (r.message?.startsWith("Plugin error:")) {
-        results.push({ rule: r.ruleId, line, crash: r.message.slice("Plugin error: ".length) });
+        results.push({ rule: r.ruleId, line, column, endLine, endColumn, crash: r.message.slice("Plugin error: ".length) });
       } else {
-        results.push({ rule: r.ruleId, line, fix: r.fix || null });
+        results.push({
+          rule: r.ruleId,
+          line, column, endLine, endColumn,
+          message: r.message,
+          messageId: r.messageId,
+          severity: r.severity,
+          fix: r.fix || null,
+        });
       }
     }
     return results;
@@ -350,15 +378,43 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
 
 // ── Diff helper ───────────────────────────────────────────────
 
+// Match keys cover every dimension ESLint exposes per diagnostic.
+// Per the ez-runs-eslint-rules invariant, ez output must be
+// byte-identical to ESLint on each. Any mismatch is a bug. No
+// fallback to coarser comparison: if a rule's diagnostics differ
+// in column, message, severity, or fix output we want to surface it.
+//
+// Separator = "\x1e" (ASCII record separator) so rule-id slashes and
+// message punctuation can't collide with the field separator.
+const SEP = "\x1e";
+function _mkKey(d) {
+  const fixKey = d.fix
+    ? JSON.stringify(Array.isArray(d.fix) ? d.fix : [d.fix])
+    : "";
+  const msgKey = d.messageId != null ? `id:${d.messageId}` : `m:${d.message ?? ""}`;
+  return [
+    d.rule,
+    d.line ?? "",
+    d.column ?? "",
+    d.endLine ?? "",
+    d.endColumn ?? "",
+    msgKey,
+    d.severity ?? "",
+    fixKey,
+  ].join(SEP);
+}
+function _splitKey(k) {
+  const p = k.split(SEP);
+  return { rule: p[0], line: +p[1], column: p[2] ? +p[2] : null, endLine: p[3] ? +p[3] : null, endColumn: p[4] ? +p[4] : null };
+}
+
 function diff(reference, candidate) {
-  const refKeys  = new Set(reference.map(r => `${r.rule}:${r.line}`));
-  const candKeys = new Set(candidate.filter(r => !r.crash).map(r => `${r.rule}:${r.line}`));
+  const refKeys  = new Set(reference.map(_mkKey));
+  const candKeys = new Set(candidate.filter(r => !r.crash).map(_mkKey));
   const crashes  = candidate.filter(r => r.crash);
 
-  const fn = [...refKeys].filter(k => !candKeys.has(k))
-    .map(k => { const [rule, line] = k.split(":"); return { rule, line: +line }; });
-  const fp = [...candKeys].filter(k => !refKeys.has(k))
-    .map(k => { const [rule, line] = k.split(":"); return { rule, line: +line }; });
+  const fn = [...refKeys].filter(k => !candKeys.has(k)).map(_splitKey);
+  const fp = [...candKeys].filter(k => !refKeys.has(k)).map(_splitKey);
 
   return { fn, fp, crashes };
 }
@@ -510,7 +566,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
                 filename: meta.filename,
                 hasCustomParser: false,
                 isTypeScript: !!meta.isTypeScript,
-                eslintResult: (meta.oracleLines || []).map(line => ({ rule: fullName, line })),
+                eslintResult: (meta.oracleDiags || (meta.oracleLines || []).map(line => ({ rule: fullName, line }))).map(d => ({ ...d, rule: fullName })),
                 eslintFixes: meta.oracleFixes || null,
                 declaredKind: meta.kind,
                 declaredErrors: meta.declaredErrors,
@@ -541,7 +597,7 @@ if (fs.existsSync(ESLINT_ROOT)) {
                 allCases.push({
                   code, options: meta.options || [], languageOptions: langOpts,
                   filename: meta.filename, hasCustomParser: false, isTypeScript: !!meta.isTypeScript,
-                  eslintResult: (meta.oracleLines || []).map(line => ({ rule: fullName, line })),
+                  eslintResult: (meta.oracleDiags || (meta.oracleLines || []).map(line => ({ rule: fullName, line }))).map(d => ({ ...d, rule: fullName })),
                   eslintFixes: meta.oracleFixes || null, declaredKind: meta.kind,
                   declaredErrors: meta.declaredErrors, name: meta.name, output: meta.output,
                 });
@@ -687,8 +743,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
         }
       }
 
-      const espreeKeys = new Set(espreeResult.map(r => `${r.rule}:${r.line}`));
-      const runnerKeys = new Set(runnerNormal.map(r => `${r.rule}:${r.line}`));
+      const espreeKeys = new Set(espreeResult.map(_mkKey));
+      const runnerKeys = new Set(runnerNormal.map(_mkKey));
       const caseFn = [...espreeKeys].filter(k => !runnerKeys.has(k)).length;
       const caseFp = [...runnerKeys].filter(k => !espreeKeys.has(k)).length;
 
@@ -759,7 +815,10 @@ if (fs.existsSync(ESLINT_ROOT)) {
         nativeCases++;
         // Normalize to ruleName (not _nativeName) so keys match oracle keys.
         // @typescript-eslint/X maps to core native X, but oracle uses the full @typescript-eslint/X key.
-        const nativeKeys = new Set(nativeResult.map(r => `${ruleName}:${r.line}`));
+        // Native results carry the SAME extended fields as runner now;
+        // normalize ruleName so @typescript-eslint/X compares to its
+        // core counterpart's oracle entry.
+        const nativeKeys = new Set(nativeResult.map(r => _mkKey({ ...r, rule: ruleName })));
         const caseNativeFn = [...espreeKeys].filter(k => !nativeKeys.has(k)).length;
         const caseNativeFp = [...nativeKeys].filter(k => !espreeKeys.has(k)).length;
         if (caseNativeFn === 0 && caseNativeFp === 0) {

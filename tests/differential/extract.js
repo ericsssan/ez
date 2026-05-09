@@ -678,7 +678,17 @@ function installCorpusIntercept() {
     const filename = typeof options === "string" ? options : options?.filename;
     const eslintResult = result
       .filter(m => !m.fatal && m.ruleId === fullName)
-      .map(m => ({ rule: fullName, line: m.line }));
+      .map(m => ({
+        rule: fullName,
+        line: m.line,
+        column: m.column,
+        endLine: m.endLine,
+        endColumn: m.endColumn,
+        message: m.message,
+        messageId: m.messageId,
+        severity: m.severity,
+        fix: m.fix || null,
+      }));
     // Capture ESLint's autofix output for fix verification.
     const eslintFixes = result
       .filter(m => m.fix && m.ruleId === fullName)
@@ -850,7 +860,17 @@ function installCorpusIntercept() {
         if (m.fatal) { hasFatal = true; continue; }
         if (m.fix) hasFix = true;
         if (m.ruleId === fullRuleId || m.ruleId === ruleName) {
-          eslintResult.push({ rule: ruleName, line: m.line }); // short rule name for comparison
+          eslintResult.push({
+            rule: ruleName,
+            line: m.line,
+            column: m.column,
+            endLine: m.endLine,
+            endColumn: m.endColumn,
+            message: m.message,
+            messageId: m.messageId,
+            severity: m.severity,
+            fix: m.fix || null,
+          });
         }
       }
       if (hasFatal) return result; // parse error — skip
@@ -1247,7 +1267,11 @@ async function loadRuleCases(testsDir, baseName, { capturePrefix = null, capture
           parserOptions: tc.languageOptions?.parserOptions || null,
           output: tc.output !== undefined ? tc.output : null, // expected autofix output
           declaredErrors: tc.declaredErrors || [],           // test-author's expected errors
-          oracleLines: (tc.eslintResult || []).map(r => r.line), // what ESLint actually reported
+          // Full per-diagnostic record from ESLint — line, column,
+          // endLine, endColumn, message, messageId, severity, fix.
+          // run.js's diff() uses every field to build an exact-match
+          // key. Nothing is collapsed to a coarser key here.
+          oracleDiags: tc.eslintResult || [],
           oracleFixes: tc.eslintFixes || null,               // autofix output from ESLint
         };
         fs.writeFileSync(`${base}.json`, JSON.stringify(meta, null, 2));
