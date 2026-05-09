@@ -2353,24 +2353,24 @@ pub const Parser = struct {
         const range = try self.parseStatementList(.r_brace);
         _ = try self.expect(.r_brace);
 
-        // Determine keep_scope and check for duplicate lexical declarations.
+        // Always keep block scopes so reference.from === variable.scope
+        // matches eslint-scope semantics. ESLint creates a block scope
+        // for every BlockStatement (ES6+) regardless of declarations;
+        // rules like prefer-const compare reference.from to declaration
+        // scope identity to decide whether a write counts as a
+        // reassignment in the same scope. Eliding empty block scopes
+        // collapsed bare-block writes onto the parent scope so the
+        // identity check spuriously matched.
         //
-        // Fast path: block_has_lexical_decl is set by emitDeclare for block-level kinds
-        // (let/const/class_decl/function_decl/TS-decls). When false, no non-var decls
-        // were emitted directly in this block, so:
-        //   – keep_scope = false (scope can be elided).
-        //   – No dup check needed (nothing to dup).
-        // This skips the event-stream scan for the common case (if/while/try bodies
-        // with no lexical declarations).
-        //
-        // For TypeScript, dup detection is always skipped (TS type-checker handles it),
-        // so block_has_lexical_decl alone determines keep_scope — scan always omitted.
-        var keep_scope: bool = !self.emit_scope_events;
+        // The duplicate-name dup check below still runs only when
+        // block_has_lexical_decl is set — that's a separate validation,
+        // unrelated to scope identity.
+        var keep_scope: bool = true;
         if (self.emit_scope_events) {
             const has_decl = self.block_has_lexical_decl;
             if (!has_decl or self.is_ts) {
-                // Fast path: no dup check needed — block_has_lexical_decl is authoritative.
-                keep_scope = has_decl;
+                // No dup check needed — but we still keep the scope.
+                keep_scope = true;
             } else {
                 // JS mode with block-level declarations: use incremental scratch
                 // for dup detection. block_decl_scratch.items[block_decl_top..] holds
