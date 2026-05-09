@@ -4060,14 +4060,20 @@ class RuleFixer {
 // rules' fix functions have side effects that the rule's iterate
 // loop depends on (e.g. counters, fixer-output tracking).
 class _LazyReport {
-  constructor(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix) {
+  constructor(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, severity) {
     this.ruleId = ruleId;
     this._descriptor = descriptor;
     this._startIdx = startIdx;
     this._endIdx = endIdx;
     this._ruleMeta = ruleMeta;
     this._ctx = ctx;
-    this.fix = fix;            // eager — see note above
+    // ESLint-shape diagnostic fields the differential needs to
+    // compare against (every dimension Linter.verify exposes).
+    this.severity = severity;       // 1 = warn, 2 = error
+    this.messageId = descriptor.messageId ?? null;
+    // ESLint emits a single fix object {range, text}, not an array.
+    // Unwrap the singleton list ez's fix runner produces.
+    this.fix = (fix && fix.length === 1) ? fix[0] : (fix && fix.length > 0 ? fix : null);
     this._loc = undefined;     // sentinel: not yet computed
     this._message = undefined; // sentinel: not yet resolved
     this._node = undefined;    // sentinel: not yet computed
@@ -4152,7 +4158,11 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
       }
     } catch { /* ignore fix errors */ }
   }
-  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix));
+  // ESLint's RuleTester.run path (which extracts our oracle data)
+  // emits severity=1 for invalid cases regardless of configured
+  // severity. Match that so the differential's per-dim comparison
+  // stays consistent.
+  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, 1));
   const newCount = (ctx._ruleErrors[ruleId] || 0) + 1;
   ctx._ruleErrors[ruleId] = newCount;
   if (newCount >= ctx._errorBudget && ctx._skipSet) {

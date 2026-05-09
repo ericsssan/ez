@@ -117,6 +117,59 @@ function printCaseDiff(label, code, espreeLines, ourLines, indent = "  ") {
   printCodeSnippet(code, [...fn, ...fp], indent + "  ");
 }
 
+/**
+ * For each diagnostic that's missing or extra (per the strict
+ * 6-dim key), print which fields disagree. Helps tell at a glance
+ * whether a failure is location vs message vs fix vs severity.
+ *
+ * Mode A (FN only): ESLint emitted, ez missed. Print ESLint's record.
+ * Mode B (FP only): ez emitted, ESLint didn't. Print ez's record.
+ * Mode C (paired by line): both emitted on the same line — show
+ * which subset of (col, endLine, endCol, msg/id, sev, fix) differs.
+ */
+function printDiagDiff(esDiags, ourDiags, indent) {
+  const esByLine = new Map();
+  const ourByLine = new Map();
+  for (const d of esDiags)  { (esByLine.get(d.line) ?? esByLine.set(d.line, []).get(d.line)).push(d); }
+  for (const d of ourDiags) { (ourByLine.get(d.line) ?? ourByLine.set(d.line, []).get(d.line)).push(d); }
+  const lines = new Set([...esByLine.keys(), ...ourByLine.keys()]);
+  const fmt = (d) => {
+    if (!d) return "(missing)";
+    const id = d.messageId != null ? d.messageId : (d.message ?? "").slice(0, 60);
+    const fix = d.fix ? `fix=${JSON.stringify(d.fix).slice(0, 60)}` : "no-fix";
+    return `${d.line}:${d.column ?? "?"}-${d.endLine ?? "?"}:${d.endColumn ?? "?"} sev=${d.severity ?? "?"} id="${id}" ${fix}`;
+  };
+  const fieldDiff = (a, b) => {
+    const out = [];
+    for (const k of ["column", "endLine", "endColumn", "messageId", "message", "severity"]) {
+      const av = a[k], bv = b[k];
+      if (av !== bv && !(av == null && bv == null)) out.push(`${k}: es=${JSON.stringify(av)} ez=${JSON.stringify(bv)}`);
+    }
+    const af = a.fix ? JSON.stringify(a.fix) : null;
+    const bf = b.fix ? JSON.stringify(b.fix) : null;
+    if (af !== bf) out.push(`fix: es=${af ?? "null"} ez=${bf ?? "null"}`);
+    return out;
+  };
+  for (const ln of [...lines].sort((a, b) => a - b)) {
+    const esArr = esByLine.get(ln) || [];
+    const ourArr = ourByLine.get(ln) || [];
+    const max = Math.max(esArr.length, ourArr.length);
+    for (let i = 0; i < max; i++) {
+      const e = esArr[i], o = ourArr[i];
+      if (e && o) {
+        const diffs = fieldDiff(e, o);
+        if (diffs.length === 0) continue; // identical on this line — passed strict
+        console.log(`${indent}line ${ln}: differ on [${diffs.map(d => d.split(":")[0]).join(", ")}]`);
+        for (const d of diffs) console.log(`${indent}  ${d}`);
+      } else if (e) {
+        console.log(`${indent}line ${ln}: MISSING in ez   ${fmt(e)}`);
+      } else {
+        console.log(`${indent}line ${ln}: EXTRA   in ez   ${fmt(o)}`);
+      }
+    }
+  }
+}
+
 /** Convert a byte offset to a 1-based line number. */
 function offsetToLine(source, offset) {
   let line = 1;
@@ -353,9 +406,14 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
       if (r.ruleId !== ruleName) continue;
       const loc = r.loc;
       const line   = loc?.start?.line ?? loc?.line ?? r.line;
-      const column = loc?.start?.column ?? r.column;
+      // ez stores 0-based column on loc.start.column; ESLint's
+      // emitted message format is 1-based. Convert here so the
+      // strict-dim comparison sees the same number on both sides.
+      const colRaw = loc?.start?.column ?? r.column;
+      const column = colRaw != null ? colRaw + 1 : null;
       const endLine   = loc?.end?.line ?? r.endLine;
-      const endColumn = loc?.end?.column ?? r.endColumn;
+      const endColRaw = loc?.end?.column ?? r.endColumn;
+      const endColumn = endColRaw != null ? endColRaw + 1 : null;
       if (r.message?.startsWith("Plugin error:")) {
         results.push({ rule: r.ruleId, line, column, endLine, endColumn, crash: r.message.slice("Plugin error: ".length) });
       } else {
@@ -763,6 +821,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
             kind: "runner",
             espreeLines: espreeResult.map(r => r.line),
             ourLines:    runnerNormal.map(r => r.line),
+            espreeDiags: espreeResult,
+            ourDiags:    runnerNormal,
             code: tc.code,
             options: tc.options,
             sourceType,
@@ -836,6 +896,8 @@ if (fs.existsSync(ESLINT_ROOT)) {
               kind: "native",
               espreeLines: espreeResult.map(r => r.line),
               ourLines:    nativeResult.map(r => r.line),
+              espreeDiags: espreeResult,
+              ourDiags:    nativeResult.map(r => ({ ...r, rule: ruleName })),
               code: tc.code,
               options: tc.options,
               sourceType,
@@ -1037,6 +1099,10 @@ if (fs.existsSync(ESLINT_ROOT)) {
           const kindStr = c.kind === "native" ? " [native]" : "";
           console.log(`    [case ${c.tcIdx}${opts}${st}${fnStr}]${kindStr}  ESLint: ${espreeStr}  ours: ${oursStr}`);
           printCodeSnippet(c.code, [...c.espreeLines, ...c.ourLines], "    ");
+          // 6-dim breakdown: which fields disagree per diagnostic.
+          // Only print when full per-diag records are available
+          // (otherwise we'd just be repeating the lines summary).
+          if (c.espreeDiags && c.ourDiags) printDiagDiff(c.espreeDiags, c.ourDiags, "    ");
         }
       };
 
