@@ -3242,6 +3242,14 @@ class SourceCode {
    */
   getDeclaredVariables(node) {
     if (!node) return [];
+    // Make sure /*exported*/ comments and other _precomputeScopes
+    // side effects have run before resolving variables. Without this,
+    // a rule whose first interaction with the scope manager is via
+    // getDeclaredVariables (rather than getScope) sees Variables
+    // whose eslintUsed is still 0, even when /*exported foo*/ should
+    // have set it. prefer-const hits this — it never calls getScope
+    // for the declarator, just getDeclaredVariables.
+    if (!this._globalScope) this._precomputeScopes();
     // Per-lintSource cache. Rules like no-unused-vars's `isAfterLastUsedArg`
     // call `getDeclaredVariables(funcNode)` once per parameter being checked
     // — same function node, identical result each time. Without this cache
