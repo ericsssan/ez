@@ -5811,6 +5811,43 @@ function _compileAttrCheck(attr) {
   const op = attr.operator || null;
   const rawVal = attr.value != null ? attr.value.value : undefined;
 
+  // Specialise on path depth. The vast majority of selectors use a
+  // single-property path (`[type='Foo']`, `[name='bar']`), so unroll
+  // and bind the property name as a closure constant — V8 compiles
+  // this to a direct property load with no loop or extra frame.
+  // Two-part paths (`[callee.name='X']`) get their own unrolled
+  // shape; deeper paths fall back to the generic loop.
+  if (nameParts.length === 1) {
+    const p0 = nameParts[0];
+    if (!op) return (n) => n != null && n[p0] != null;
+    if (op === '=' && attr.value && attr.value.type === 'regexp' && rawVal instanceof RegExp) {
+      const rx = rawVal;
+      return (n) => { if (n == null) return false; const v = n[p0]; return v != null && rx.test(String(v)); };
+    }
+    if (op === '=')  { const sv = ''.concat(rawVal); return (n) => n != null && ''.concat(n[p0]) === sv; }
+    if (op === '!=') { const sv = ''.concat(rawVal); return (n) => n == null || ''.concat(n[p0]) !== sv; }
+    if (op === '<')  return (n) => n != null && n[p0] <  rawVal;
+    if (op === '>')  return (n) => n != null && n[p0] >  rawVal;
+    if (op === '<=') return (n) => n != null && n[p0] <= rawVal;
+    if (op === '>=') return (n) => n != null && n[p0] >= rawVal;
+    return null;
+  }
+  if (nameParts.length === 2) {
+    const p0 = nameParts[0], p1 = nameParts[1];
+    if (!op) return (n) => { if (n == null) return false; const a = n[p0]; return a != null && a[p1] != null; };
+    if (op === '=' && attr.value && attr.value.type === 'regexp' && rawVal instanceof RegExp) {
+      const rx = rawVal;
+      return (n) => { if (n == null) return false; const a = n[p0]; if (a == null) return false; const v = a[p1]; return v != null && rx.test(String(v)); };
+    }
+    if (op === '=')  { const sv = ''.concat(rawVal); return (n) => { if (n == null) return false; const a = n[p0]; return a != null && ''.concat(a[p1]) === sv; }; }
+    if (op === '!=') { const sv = ''.concat(rawVal); return (n) => { if (n == null) return true;  const a = n[p0]; return a == null || ''.concat(a[p1]) !== sv; }; }
+    if (op === '<')  return (n) => { if (n == null) return false; const a = n[p0]; return a != null && a[p1] <  rawVal; };
+    if (op === '>')  return (n) => { if (n == null) return false; const a = n[p0]; return a != null && a[p1] >  rawVal; };
+    if (op === '<=') return (n) => { if (n == null) return false; const a = n[p0]; return a != null && a[p1] <= rawVal; };
+    if (op === '>=') return (n) => { if (n == null) return false; const a = n[p0]; return a != null && a[p1] >= rawVal; };
+    return null;
+  }
+
   function accessPath(node) {
     let cur = node;
     for (const p of nameParts) {
