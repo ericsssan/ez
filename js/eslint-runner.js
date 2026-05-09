@@ -4052,67 +4052,107 @@ class RuleFixer {
 
 // ── Context ─────────────────────────────────────────────────────
 
+// Lazy report — matches oxlint's per-diagnostic shape: store raw byte
+// offsets and resolve line/column + message-template only when the
+// consumer reads them. Bench mode (which discards diagnostics) skips
+// the per-diagnostic getLocFromIndex × 2 binary search and the regex
+// template resolution. Fix closures are run EAGERLY because some
+// rules' fix functions have side effects that the rule's iterate
+// loop depends on (e.g. counters, fixer-output tracking).
+class _LazyReport {
+  constructor(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix) {
+    this.ruleId = ruleId;
+    this._descriptor = descriptor;
+    this._startIdx = startIdx;
+    this._endIdx = endIdx;
+    this._ruleMeta = ruleMeta;
+    this._ctx = ctx;
+    this.fix = fix;            // eager — see note above
+    this._loc = undefined;     // sentinel: not yet computed
+    this._message = undefined; // sentinel: not yet resolved
+    this._node = undefined;    // sentinel: not yet computed
+  }
+  get loc() {
+    if (this._loc !== undefined) return this._loc;
+    const desc = this._descriptor;
+    let resolved = desc.loc;
+    if (resolved && typeof resolved.start === 'number') {
+      const sc = this._ctx.sourceCode;
+      resolved = {
+        start: sc.getLocFromIndex(resolved.start),
+        end:   resolved.end != null ? sc.getLocFromIndex(resolved.end) : sc.getLocFromIndex(resolved.start),
+      };
+    } else if (!resolved) {
+      const sc = this._ctx.sourceCode;
+      resolved = {
+        start: sc.getLocFromIndex(this._startIdx),
+        end:   sc.getLocFromIndex(this._endIdx),
+      };
+    }
+    this._loc = resolved;
+    return resolved;
+  }
+  get message() {
+    if (this._message !== undefined) return this._message;
+    const desc = this._descriptor;
+    let m = desc.message;
+    if (!m && desc.messageId && this._ruleMeta?.messages) {
+      const tpl = this._ruleMeta.messages[desc.messageId] || desc.messageId;
+      m = desc.data
+        ? tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => desc.data[k] ?? `{{${k}}}`)
+        : tpl;
+    }
+    this._message = m || desc.messageId || 'Lint violation';
+    return this._message;
+  }
+  get node() {
+    if (this._node !== undefined) return this._node;
+    const n = this._descriptor.node;
+    this._node = n
+      ? { type: n.type, start: n.start != null ? n.start : (n.range ? n.range[0] : undefined) }
+      : undefined;
+    return this._node;
+  }
+}
+
 /**
  * Core report logic — called from pre-bound per-rule report functions so that
  * ruleId/ruleMeta are captured at rule-load time, not mutated per handler call.
  */
 function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
-  const { node, message, messageId, loc, data } = descriptor;
-  let resolvedMsg = message;
-  if (!resolvedMsg && messageId && ruleMeta?.messages) {
-    let tpl = ruleMeta.messages[messageId] || messageId;
-    resolvedMsg = data
-      ? tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => data[k] ?? `{{${k}}}`)
-      : tpl;
-  }
-  resolvedMsg = resolvedMsg || messageId || 'Lint violation';
-  let resolvedLoc = loc;
-  if (!resolvedLoc && node) {
-    const sc = ctx.sourceCode;
-    // node may be a NodeView (.start/.end) or a token object (.range[0]/.range[1]).
-    // When rules spread a NodeView ({...node, ...}), prototype getters like .start/.end
-    // are lost. Fall back to _i/_ast (own props copied by spread) to recover position.
-    let startIdx = node.start != null ? node.start : (node.range ? node.range[0] : null);
-    let endIdx   = node.end   != null ? node.end   : (node.range ? node.range[1] : null);
+  const node = descriptor.node;
+  let startIdx, endIdx;
+  if (descriptor.loc && typeof descriptor.loc.start === 'number') {
+    startIdx = descriptor.loc.start;
+    endIdx = descriptor.loc.end != null ? descriptor.loc.end : descriptor.loc.start;
+  } else if (node) {
+    startIdx = node.start != null ? node.start : (node.range ? node.range[0] : null);
+    endIdx   = node.end   != null ? node.end   : (node.range ? node.range[1] : null);
     if (startIdx == null && node._i != null && node._ast) {
       startIdx = node._ast._nodeStartPos(node._i);
       endIdx = node._ast._nodeEndPos(node._i);
     }
     startIdx = startIdx ?? 0;
     endIdx = endIdx ?? startIdx;
-    resolvedLoc = {
-      start: sc.getLocFromIndex(startIdx),
-      end:   sc.getLocFromIndex(endIdx),
-    };
-  } else if (resolvedLoc && typeof resolvedLoc.start === 'number') {
-    const sc = ctx.sourceCode;
-    resolvedLoc = {
-      start: sc.getLocFromIndex(resolvedLoc.start),
-      end: resolvedLoc.end != null
-        ? sc.getLocFromIndex(resolvedLoc.end)
-        : sc.getLocFromIndex(resolvedLoc.start),
-    };
+  } else {
+    startIdx = 0;
+    endIdx = 0;
   }
-  let fix = null;
+  // Run fix eagerly — some rules' fix closures mutate rule-internal
+  // state (counters, deduping sets) that the iterate loop relies on.
+  let fix;
   if (typeof descriptor.fix === 'function') {
     try {
       const fixer = new RuleFixer(ctx._ast.source);
-      const fixResult = descriptor.fix(fixer);
-      if (fixResult) {
-        fix = (typeof fixResult[Symbol.iterator] === 'function' && typeof fixResult.range === 'undefined')
-          ? [...fixResult]
-          : [fixResult];
-        fix = fix.filter(Boolean);
+      const r = descriptor.fix(fixer);
+      if (r) {
+        let arr = (typeof r[Symbol.iterator] === 'function' && typeof r.range === 'undefined') ? [...r] : [r];
+        arr = arr.filter(Boolean);
+        fix = arr.length > 0 ? arr : undefined;
       }
     } catch { /* ignore fix errors */ }
   }
-  ctx._reports.push({
-    ruleId,
-    message: resolvedMsg,
-    node: node ? { type: node.type, start: node.start != null ? node.start : (node.range ? node.range[0] : undefined) } : undefined,
-    loc: resolvedLoc,
-    fix: fix && fix.length > 0 ? fix : undefined,
-  });
+  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix));
   const newCount = (ctx._ruleErrors[ruleId] || 0) + 1;
   ctx._ruleErrors[ruleId] = newCount;
   if (newCount >= ctx._errorBudget && ctx._skipSet) {
