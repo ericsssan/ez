@@ -291,15 +291,19 @@ fn scanRangeForNewlines(
     end: u32,
 ) !void {
     var q: u32 = start;
-    while (q < end) : (q += 1) {
+    // Callers (string/template/comment scanners) sometimes pass an `end` that
+    // overshoots `src.len` for unterminated tokens at EOF. Bound the loop by
+    // the actual source length so we never index out of range.
+    const cap: u32 = @min(end, @as(u32, @intCast(src.len)));
+    while (q < cap) : (q += 1) {
         const c = src[q];
         if (c == '\n') {
             try ls.append(alloc, q + 1);
         } else if (c == '\r') {
-            const next_q = if (q + 1 < end and src[q + 1] == '\n') q + 2 else q + 1;
+            const next_q = if (q + 1 < cap and src[q + 1] == '\n') q + 2 else q + 1;
             try ls.append(alloc, next_q);
             q = next_q - 1; // -1 since loop increments
-        } else if (c == 0xE2 and q + 2 < end and src[q + 1] == 0x80 and (src[q + 2] == 0xA8 or src[q + 2] == 0xA9)) {
+        } else if (c == 0xE2 and q + 2 < cap and src[q + 1] == 0x80 and (src[q + 2] == 0xA8 or src[q + 2] == 0xA9)) {
             try ls.append(alloc, q + 3);
             q += 2;
         }

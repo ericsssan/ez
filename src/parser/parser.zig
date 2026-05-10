@@ -1906,6 +1906,11 @@ pub const Parser = struct {
             var names_n: usize = 0;
             const allow_fn_dup = !self.is_module and !self.in_strict and self.annex_b;
             for (evs) |ev| {
+                // Guard against corrupt enum bytes: reading past the live event count
+                // can land on uninitialized memory whose tag byte is not a valid
+                // EventKind. Skip such events instead of panicking the runner.
+                const ev_kind_int = @intFromEnum(ev.kind);
+                if (ev_kind_int >= @typeInfo(ScopeEventKind).@"enum".fields.len) continue;
                 switch (ev.kind) {
                     .scope_open => if (ev.aux != @intFromEnum(ScopeKindU8.elided)) { depth += 1; },
                     .scope_close => depth -= 1,
