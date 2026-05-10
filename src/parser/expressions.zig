@@ -2472,6 +2472,18 @@ pub fn parsePrimaryExpression(p: *Parser) Error!NodeIndex {
             });
         },
         .less_than => {
+            // TSX disambiguation: in `.tsx` files, `<T extends X>(...) => ...`,
+            // `<T,>(...) => ...`, and `<T = X>(...) => ...` are generic arrow
+            // functions, not JSX. Peek ahead before committing to JSX so we
+            // don't get an "expected JSX closing tag" error on a generic arrow.
+            if (p.is_jsx and p.is_ts) {
+                if (looksLikeTsxGenericArrow(p)) {
+                    return parseTsTypeAssertion(p);
+                }
+                const jsx_mod = @import("jsx.zig");
+                _ = p.advance(); // consume '<'
+                return jsx_mod.parseJsxElement(p);
+            }
             // JSX element: <tag> or <> fragment
             if (p.is_jsx) {
                 const jsx_mod = @import("jsx.zig");
@@ -7037,6 +7049,23 @@ fn skipBalancedParens(p: *Parser) void {
 /// Check if content after `(` looks like TS typed arrow parameters.
 /// Heuristic: first token is `identifier` followed by `:` or `?:`,
 /// or first token is `this` followed by `:`, or `...`, `{`, `[`.
+/// TSX-only disambiguator: in `.tsx` files at a `<` token, decide whether the
+/// upcoming syntax is a generic arrow function (`<T extends X>(...) => ...`,
+/// `<T,>(...)=>...`, `<T = X>(...)=>...`) versus a JSX element (`<Foo>...`).
+/// Looks 1–3 tokens past the `<` for unambiguous markers. False = treat as JSX.
+fn looksLikeTsxGenericArrow(p: *Parser) bool {
+    // Token at offset 0 is the `<`. Peek tokens 1+.
+    if (p.peekAt(1) != .identifier) return false;
+    const after = p.peekAt(2);
+    // `<T extends X>(...)` — TS generic with constraint.
+    if (after == .kw_extends) return true;
+    // `<T,...>(...)` — trailing/leading comma in type-param list (ESBuild's marker).
+    if (after == .comma) return true;
+    // `<T = X>(...)` — generic with default.
+    if (after == .equal) return true;
+    return false;
+}
+
 fn looksLikeTsArrowParams(p: *Parser) bool {
     const tag = p.peek();
     // (identifier : — typed param

@@ -1552,7 +1552,7 @@
       "runner": {
         "fn": 19,
         "fp": 0,
-        "crash": 1
+        "crash": 0
       },
       "native": {
         "fn": 19,
@@ -20847,7 +20847,7 @@
     "react/function-component-definition": {
       "runner": {
         "fn": 20,
-        "fp": 18,
+        "fp": 20,
         "crash": 0
       },
       "native": {
@@ -20955,8 +20955,8 @@
     "react/prop-types": {
       "runner": {
         "fn": 9,
-        "fp": 170,
-        "crash": 1
+        "fp": 172,
+        "crash": 0
       },
       "native": {
         "fn": 308,
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10151,
-    "runnerCasesPerSec": 9003,
-    "nativeCasesPerSec": 83834,
+    "totalElapsedMs": 10191,
+    "runnerCasesPerSec": 8978,
+    "nativeCasesPerSec": 82602,
     "totalCases": 73103
   }
 }

@@ -5845,14 +5845,11 @@ pub const Parser = struct {
                 }
                 _ = self.advance(); // eat name
                 _ = self.advance(); // eat '='
-                // TS1202: `import X = require("mod")` not allowed when targeting ECMAScript modules.
-                // Only apply to the CommonJS-style `require(...)` form, not namespace aliases like `import X = A.B`.
-                if (self.is_module and self.in_strict and
-                    self.peek() == .identifier and std.mem.eql(u8, self.tokenText(self.tokIdx()), "require") and
-                    self.peekAt(1) == .l_paren)
-                {
-                    try self.emitDiagnostic(self.currentSpan(), "Import assignment cannot be used when targeting ECMAScript modules. Consider using 'import * as ns from \"mod\"' instead", .{});
-                }
+                // TS1202 (`import X = require("mod")` requires module: commonjs) is a
+                // semantic error keyed off the compiler's `module` setting, not a parse
+                // error — it depends on tsconfig that the parser doesn't see. Files
+                // annotated `// @module: commonjs` (e.g. TS conformance fixtures) parse
+                // fine; let downstream type-aware tooling raise TS1202 when applicable.
                 // TS1005: `import X = module(...)` — old TS syntax; module cannot be called here.
                 // Only `require(...)` is valid as a call in import aliases.
                 if (self.peekAt(1) == .l_paren and (self.peek() == .kw_module or

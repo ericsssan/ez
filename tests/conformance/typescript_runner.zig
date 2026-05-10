@@ -92,9 +92,15 @@ pub fn main(init: std.process.Init) !void {
         const source = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(2 * 1024 * 1024)) catch continue;
         defer allocator.free(source);
 
-        // Skip multi-file tests
+        // Skip multi-file tests. The TS test harness splits these on
+        // `//@filename:` (with or without a space, with or without capitalization)
+        // before running each file individually. A single concatenated parse
+        // mis-parses (e.g. multiple top-level JSX expressions concatenated
+        // into one source). Match all four spellings.
         if (std.mem.indexOf(u8, source, "// @filename:") != null or
-            std.mem.indexOf(u8, source, "// @Filename:") != null)
+            std.mem.indexOf(u8, source, "// @Filename:") != null or
+            std.mem.indexOf(u8, source, "//@filename:") != null or
+            std.mem.indexOf(u8, source, "//@Filename:") != null)
         {
             skipped += 1;
             continue;
