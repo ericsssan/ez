@@ -4308,12 +4308,11 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
     }
     if (suggestions.length === 0) suggestions = undefined;
   }
-  // The conformance oracle (extracted via RuleTester.run in extract.js)
-  // emits severity=1 for invalid cases — that's the value the
-  // comparator sees on the ESLint side. Match it to keep the
-  // differential apples-to-apples. (Production callers can still
-  // override per rule via the configured severity in `ruleConfig`.)
-  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, 1, suggestions));
+  // ESLint Linter.verify stamps each message with the configured severity
+  // (1=warn, 2=error). Default to 2 when no severity map is provided so
+  // callers that omit it still get sensible output.
+  const severity = (ctx._ruleSeverities && ctx._ruleSeverities[ruleId]) || 2;
+  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, severity, suggestions));
   const newCount = (ctx._ruleErrors[ruleId] || 0) + 1;
   ctx._ruleErrors[ruleId] = newCount;
   if (newCount >= ctx._errorBudget && ctx._skipSet) {
@@ -8396,7 +8395,7 @@ let _nodeCachePoolOwner = null;
 let _nodeCachePoolUsed = 0;
 
 function runPlugins(ast, plugins, options = {}) {
-  const { filename = "<input>", tagNames, ruleConfig = {}, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
+  const { filename = "<input>", tagNames, ruleConfig = {}, ruleSeverities = null, errorBudget, sourceType, ecmaVersion, envGlobals = true, settings = {}, languageOptions = {} } = options;
 
   if (!tagNames) {
     throw new Error("runPlugins requires options.tagNames (call getTagNames() first)");
@@ -8468,6 +8467,9 @@ function runPlugins(ast, plugins, options = {}) {
     context = new RuleContext(ast, filename, ast.source, { parserServices, errorBudget, sourceType, ecmaVersion, envGlobals, settings, languageOptions });
     _cachedContext = context;
   }
+  // Stash configured severities on the context so _execReport can stamp the right
+  // severity on each LazyReport. Falls back to 2 ("error") when not provided.
+  context._ruleSeverities = ruleSeverities;
 
   const visitorMapResult = buildVisitorMap(plugins, context, ruleConfig);
   walkNodes(ast, visitorMapResult, context, _cachedInternedTagNames, plugins);

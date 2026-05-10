@@ -198,15 +198,19 @@ function _normalizeSeverity(val) {
 // ── Diagnostic format ───────────────────────────────────────────
 
 function _fromRunnerReport(r) {
+  // ESLint Linter.verify() returns 1-based columns even though ESTree node.loc
+  // is 0-based; convert at the API boundary so consumers get the ESLint shape.
+  const startCol = r.loc?.start?.column;
+  const endCol   = r.loc?.end?.column;
   const out = {
     ruleId: r.ruleId || null,
     message: r.message,
     severity: r.severity || 2,
     messageId: r.messageId ?? undefined,
     line: r.loc?.start?.line ?? 0,
-    column: r.loc?.start?.column ?? 0,
+    column: startCol != null ? startCol + 1 : 0,
     endLine: r.loc?.end?.line ?? undefined,
-    endColumn: r.loc?.end?.column ?? undefined,
+    endColumn: endCol != null ? endCol + 1 : undefined,
     fix: r.fix || undefined,
   };
   if (r.suggestions) out.suggestions = r.suggestions;
@@ -246,7 +250,7 @@ function applyFixes(source, fixes) {
 
 function _lintOne(filePath, resolved) {
   const tagNames = getTagNames();
-  const { jsPlugins, nativeConfig, ruleConfig } = resolved;
+  const { jsPlugins, nativeConfig, ruleConfig, ruleSeverities } = resolved;
 
   // Parse + native lint in one pass
   const { ast, diags: nativeDiags } = nativeConfig
@@ -254,7 +258,7 @@ function _lintOne(filePath, resolved) {
     : { ast: require("./index").parse(filePath), diags: [] };
 
   const rawReports = jsPlugins.length > 0
-    ? runPlugins(ast, jsPlugins, { tagNames, filename: filePath, ruleConfig })
+    ? runPlugins(ast, jsPlugins, { tagNames, filename: filePath, ruleConfig, ruleSeverities })
     : [];
   // ESLint suppresses violations covered by `eslint-disable*` comments. Apply the
   // same filter to runner reports so directives in the source actually take effect.
@@ -271,7 +275,7 @@ function _lintOne(filePath, resolved) {
 
 function _lintSourceOne(source, filename, resolved, opts = {}) {
   const tagNames = getTagNames();
-  const { jsPlugins, nativeConfig, ruleConfig } = resolved;
+  const { jsPlugins, nativeConfig, ruleConfig, ruleSeverities } = resolved;
 
   const ast = parseSource(source, { filename });
   const nativeDiags = nativeConfig ? lintSourceNative(source, { filename, config: nativeConfig }) : [];
@@ -281,6 +285,7 @@ function _lintSourceOne(source, filename, resolved, opts = {}) {
         tagNames,
         filename,
         ruleConfig,
+        ruleSeverities,
         // Pass through optional advanced flags. errorBudget controls the
         // per-rule short-circuit (default 200 in production); benchmarks
         // pass Infinity for honest counts.
