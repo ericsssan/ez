@@ -3199,8 +3199,14 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
 
     _ = try p.expect(.r_paren);
 
-    // TS: `(params): ReturnType => body` — return type annotation before arrow
-    if (p.is_ts and p.peek() == .colon) {
+    // TS: `(params): ReturnType => body` — return type annotation before arrow.
+    // Inside a conditional consequent (`cond ? (...) : alt`), the `:` is genuinely
+    // ambiguous: it could open the conditional alternate OR be a typed-arrow return
+    // annotation. Skip the typed-arrow speculation in this position — the `:`
+    // belongs to the conditional. This loses one case (`(p): T => p` as consequent
+    // where the conditional `:` follows the body) but fixes the much more common
+    // `cond ? (val) : arrow_alt` pattern.
+    if (p.is_ts and p.peek() == .colon and !p.in_conditional_consequent) {
         const saved_tok = p.tok_i;
         const saved_diag_len = p.diagnostics.items.len;
         const saved_nodes_len = p.nodes.len;
@@ -5824,10 +5830,16 @@ fn parseConditionalTail(p: *Parser, condition: NodeIndex) Error!NodeIndex {
     // event precedes any nested-ternary events in the resolver stream.
     try p.emitCondFork(condition);
     // Parse consequent at assignment level (commas are part of ternary, not grouping).
+    // Set in_conditional_consequent so paren-arrow parsing knows to leave the
+    // trailing `:` for the conditional alternate rather than consuming it as
+    // a TS return-type annotation. Restore after.
     const saved_in = p.allow_in;
+    const saved_cc = p.in_conditional_consequent;
     p.allow_in = true;
+    p.in_conditional_consequent = true;
     const consequent = try parseAssignmentExpression(p);
     p.allow_in = saved_in;
+    p.in_conditional_consequent = saved_cc;
     try p.emitCondAlt(consequent);
 
     _ = try p.expect(.colon);

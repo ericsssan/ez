@@ -111,29 +111,33 @@ const SegmentIter = struct {
     }
 };
 
-/// Whether a segment with this filename should be parsed as JS/TS source
-/// (versus skipped, e.g. `package.json`, `tsconfig.json`, `*.d.ts`).
+/// Whether a segment with this filename should be parsed as JS/TS source.
+/// Multi-file TS tests bundle non-source content too (`package.json`, declaration
+/// files, raw text in `.txt` files, sometimes binary data in extension-less files).
+/// Allowlist of known JS/TS source extensions; everything else is skipped.
 fn segmentIsParseable(name: []const u8) bool {
     if (name.len == 0) return true; // leading segment — parse with file's outer language
-    // Common non-source extensions in TS conformance multi-file tests.
-    // .d.ts variants (.d.cts, .d.mts) are declaration files — ambient syntax,
-    // can have `const x: T;` without initializer that the runtime parser rejects.
-    const ignored_exts = [_][]const u8{
-        ".json", ".d.ts", ".d.cts", ".d.mts", ".map", ".css", ".html", ".txt", ".lock",
-    };
-    for (ignored_exts) |ext| {
-        if (std.mem.endsWith(u8, name, ext)) return false;
-    }
-    // Arbitrary-extension declaration files (TS allowArbitraryExtensions): pattern
-    // `*.d.<ext>.ts` declares the module shape for files of `<ext>` type — same
-    // ambient syntax as plain `.d.ts`. Examples in conformance: `foo.d.html.ts`,
-    // `bar.d.json.ts`, `baz.d.css.ts`. Skip these too.
+    // Reject declaration files outright. Plain `*.d.ts` plus arbitrary-extension
+    // declarations (TS allowArbitraryExtensions) like `foo.d.html.ts` use ambient
+    // syntax (`const x: T;` without initializer) that the runtime parser rejects.
+    if (std.mem.endsWith(u8, name, ".d.ts") or
+        std.mem.endsWith(u8, name, ".d.cts") or
+        std.mem.endsWith(u8, name, ".d.mts")) return false;
     if (std.mem.endsWith(u8, name, ".ts")) {
-        // Look for `.d.` before the trailing `.ts` (i.e. anywhere in the stem).
         const stem = name[0 .. name.len - 3];
         if (std.mem.indexOf(u8, stem, ".d.") != null) return false;
     }
-    return true;
+    // Allowlist source extensions. Anything else (json, txt, css, no-extension,
+    // unknown) is treated as non-source data the test bundles for path-resolution
+    // checks; skip parsing.
+    const source_exts = [_][]const u8{
+        ".ts", ".tsx", ".cts", ".mts",
+        ".js", ".jsx", ".cjs", ".mjs",
+    };
+    for (source_exts) |ext| {
+        if (std.mem.endsWith(u8, name, ext)) return true;
+    }
+    return false;
 }
 
 /// Pick the parser language from a segment's filename, falling back to the
@@ -593,7 +597,9 @@ const semantic_only_codes = [_]u16{
           // Tests with explicit `"use strict"` directives are caught at parse time
           // (and would correctly classify as must-parse for the non-strict variant
           // of the parametric baseline anyway).
-    1200, // Line terminator not permitted before arrow (parser-level but not always)
+    // (TS1200 "Line terminator not permitted before arrow" IS a parse-time error
+    //  ez correctly emits — don't list it; tests with TS1200 should classify
+    //  as must-reject and ez passes them.)
     1255, // Definite assignment assertion semantic
     1323, // Dynamic imports require module=es2020+/commonjs/etc (target-dependent)
     1324, // Dynamic imports only support a second argument with newer module config

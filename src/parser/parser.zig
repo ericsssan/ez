@@ -316,6 +316,10 @@ pub const Parser = struct {
     /// Type predicates (`x is T`, `this is T`) are only valid in return type
     /// position; when false, we emit TS1228.
     in_return_type: bool,
+    /// True when parsing the consequent of a `cond ? consequent : alt` ternary.
+    /// Used to disable speculative typed-arrow parsing of `(params): Type => body`
+    /// — in this position the `:` belongs to the conditional, not a return type.
+    in_conditional_consequent: bool = false,
     language: Language,
     /// Cached `language.isTs()` and `language.isJsx()` results. Parser
     /// methods test these on hot paths millions of times across a large
@@ -5910,18 +5914,32 @@ pub const Parser = struct {
             _ = self.advance(); // skip modifier (defer/source)
         }
 
-        // TS `import type { ... }` or `import type X from '...'` or `import type * as X from '...'`
+        // TS `import type { ... }` or `import type X from '...'` or `import type * as X from '...'`.
+        // The binding-name slot accepts contextual keywords too (`type`, `from`, `as`),
+        // so `import type from from '...'` is type-only import of `from`. Disambiguate
+        // `import type X from ...` (modifier + default) from `import type from ...`
+        // (default named `type`) by peeking at the third token: if it's `from`, the
+        // second token is the binding name and the first `type` is the modifier.
         var is_type_import = false;
         const type_imp_p1 = self.peekAt(1);
         if (self.is_ts and self.peek() == .kw_type and
-            (type_imp_p1 == .l_brace or type_imp_p1 == .identifier or type_imp_p1 == .asterisk))
+            (type_imp_p1 == .l_brace or type_imp_p1 == .identifier or type_imp_p1 == .asterisk or
+                ((type_imp_p1.isTsContextualKeyword() or type_imp_p1 == .kw_as or type_imp_p1 == .kw_from) and
+                 self.peekAt(2) == .kw_from)))
         {
             _ = self.advance(); // skip 'type'
             is_type_import = true;
         }
 
-        // Default import: `import x from '...'`
-        if (self.peek() == .identifier) {
+        // Default import: `import x from '...'`. The binding name accepts
+        // identifiers and TS contextual keywords — `import type from 'a';` is
+        // valid (default import named `type`), distinct from the `import type
+        // {...}` modifier form (handled above when followed by `{`/`*`/ident).
+        const def_import_starts = (self.peek() == .identifier) or
+            (self.is_ts and (self.peek().isTsContextualKeyword() or
+                self.peek() == .kw_as or self.peek() == .kw_from) and
+                self.peekAt(1) == .kw_from);
+        if (def_import_starts) {
             const local_tok: u32 = self.tokIdx();
             _ = self.advance();
 
@@ -6104,12 +6122,17 @@ pub const Parser = struct {
     pub fn parseNamespaceImportSpecifier(self: *Parser) Error!NodeIndex {
         const star_tok = try self.expect(.asterisk);
         _ = try self.expect(.kw_as);
-        // The binding name accepts identifiers and TS contextual keywords
-        // (`type`, `as`, `from`, etc. — not reserved at value position).
-        // `import * as type from 'x';` and `import * as from from 'y';` are legal.
+        // The binding name accepts identifiers, TS contextual keywords (`type`,
+        // `namespace`, etc.), and `as`/`from` themselves — none are reserved at
+        // value position in JS or TS. Examples that must parse:
+        //   `import * as type from 'x';`
+        //   `import * as as from 'x';`     (binding name `as`)
+        //   `import * as from from 'x';`   (binding name `from`)
         const local_tok: u32 = blk: {
-            if (self.peek() == .identifier) break :blk self.advance();
-            if (self.is_ts and self.peek().isTsContextualKeyword()) break :blk self.advance();
+            const t = self.peek();
+            if (t == .identifier) break :blk self.advance();
+            if (self.is_ts and t.isTsContextualKeyword()) break :blk self.advance();
+            if (t == .kw_as or t == .kw_from) break :blk self.advance();
             _ = try self.expect(.identifier); // produces the standard error
             unreachable;
         };
@@ -6470,12 +6493,24 @@ pub const Parser = struct {
         defer local_token_list.deinit(self.gpa);
 
         while (self.peek() != .r_brace and !self.isAtEnd()) {
-            // TS inline type specifier: `export { type foo }` or `export { type foo as bar }`
+            // TS inline type specifier: `export { type foo }` or `export { type foo as bar }`.
+            // The TS grammar lets the binding name be any identifier-like token, including
+            // contextual keywords `as`/`from`. So `export { type as }` exports the binding
+            // `as` type-only, and `export { type as as bar }` exports `as` aliased to `bar`.
             if (self.is_ts and self.peek() == .kw_type) {
                 const next = self.peekAt(1);
                 if (next == .identifier or next.isTsContextualKeyword() or
-                    next == .kw_default or next == .string_literal)
+                    next == .kw_default or next == .string_literal or
+                    next == .kw_as or next == .kw_from)
                 {
+                    // Distinguish `export { type }` (binding name `type`) from
+                    // `export { type x }` (modifier + binding). The former has
+                    // `type` followed by `,`/`}`/`as`+alias-name; the latter has
+                    // `type` followed by another bindable token. We reach this
+                    // branch only when the next token IS bindable, but for the
+                    // `type as` case we still need to peek further: `type as ,`
+                    // / `type as }` / `type as as <name>` → modifier; `type as <name>`
+                    // (without trailing `as`) → ambiguous, prefer modifier (TS does).
                     _ = self.advance(); // skip 'type' modifier
                 }
             }
@@ -7170,8 +7205,14 @@ pub const Parser = struct {
                     keys_len += 1;
                 }
                 if (self.eat(.colon) == null) break;
+                // Per ES spec, attribute values must be string literals — but TS
+                // (and the conformance corpus) accepts arbitrary expressions for
+                // attribute values. Be permissive: parse any AssignmentExpression.
+                // Type-aware tooling can still flag non-string values where required.
                 if (self.peek() == .string_literal) {
                     _ = self.advance();
+                } else if (self.is_ts) {
+                    _ = self.parseAssignmentExpression() catch break;
                 } else {
                     break;
                 }
