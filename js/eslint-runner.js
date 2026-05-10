@@ -5187,6 +5187,19 @@ function _extractBatchScannable(visitorMap, tagNames, tagCount, tagEnterHandlers
       rulesWithNonTagEntries.add(h.ruleId);
     }
   }
+  // FunctionExpression and Property handlers depend on DFS-only synth/remap dispatch:
+  // method_def nodes (object shorthand methods) fire FE handlers via invokeMethodFnHandlers,
+  // and class/object method_def nodes fire Property handlers via remap. The batch-scan path
+  // iterates by tag name and skips those tags, so batched rules miss those nodes entirely.
+  // FunctionExpression / Property: see method_def synth/remap dispatch comment above.
+  // JSXOpeningElement: synthesized for self-closing JSX (jsx_self_closing has tagName
+  // 'JSXElement', not 'JSXOpeningElement', so the batch-scan path would never visit it).
+  for (const key of ['FunctionExpression', 'Property', 'JSXOpeningElement']) {
+    const hs = visitorMap.get(key);
+    if (!hs) continue;
+    const items = Array.isArray(hs) ? hs : (hs.items || []);
+    for (const h of items) rulesWithNonTagEntries.add(h.ruleId);
+  }
   // Rules with CSS selectors (e.g. ':matches(FunctionExpression, FunctionDeclaration)') have
   // DFS-order dependencies and must NOT be batch-scanned out of the DFS. The selector
   // handlers live in selectorHandlers, not in visitorMap, so we must add their ruleIds here.
@@ -5439,6 +5452,27 @@ function _extractRuleTagBitset(visitors, nameToTagIds, tagCount) {
       for (let i = 0; i < tagIds.length; i++) {
         const t = tagIds[i];
         bs[t >>> 5] |= (1 << (t & 31));
+      }
+      // Some visitor keys fire via DFS synth/remap dispatch on a different tag than
+      // their own name. The file-level skip uses bitset intersection, so the bitset
+      // must include those source tags or the rule gets disabled on files that
+      // only contain the synthetic-source nodes.
+      //   - FunctionExpression / Property → MethodDefinition (object/class methods carry
+      //     method_def tag; FE fires via invokeMethodFnHandlers, Property via type-override remap)
+      //   - JSXOpeningElement → JSXElement (jsx_self_closing has tagName 'JSXElement';
+      //     the runtime forwards JSXOpeningElement handlers onto it at line ~6539)
+      let synthSourceName = null;
+      if (part === 'FunctionExpression' || part === 'Property') synthSourceName = 'MethodDefinition';
+      else if (part === 'JSXOpeningElement') synthSourceName = 'JSXElement';
+      else if (part === 'Literal') synthSourceName = 'TSTypeReference'; // post-DFS Literal synth on TSLiteralType
+      if (synthSourceName) {
+        const synthIds = nameToTagIds.get(synthSourceName);
+        if (synthIds) {
+          for (let i = 0; i < synthIds.length; i++) {
+            const t = synthIds[i];
+            bs[t >>> 5] |= (1 << (t & 31));
+          }
+        }
       }
     }
   }
@@ -6772,6 +6806,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // per node. invokeSelectorHandlers sets these at the top of each call.
   let _shNode = null, _shNodeIdx = 0;
   let _shAncestors = null;
+  // For synth dispatches (e.g. FE on method_def), the synth node's logical parent
+  // differs from `pd[_shNodeIdx]`: the synth FE's parent is methodNode itself, not
+  // methodNode's AST parent. _shSynthParentIdx lets synth dispatch override the
+  // requiredParentTagIdxs fast-filter's parent lookup. -1 means "use pd[_shNodeIdx]".
+  let _shSynthParentIdx = -1;
 
   function _runSelectorList(list) {
     const skip = context._skipSet;
@@ -6783,7 +6822,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
         const fm = sh._fastMatcher;
         if (fm) {
           if (fm.requiredParentTagIdxs !== undefined && fm.requiredParentTagIdxs.length > 0) {
-            const pIdx = pd ? pd[_shNodeIdx] : NONE;
+            const pIdx = (_shSynthParentIdx >= 0) ? _shSynthParentIdx : (pd ? pd[_shNodeIdx] : NONE);
             if (pIdx === NONE || pIdx >= nodeTags.length) continue;
             const pTag = nodeTags[pIdx];
             const ptIdxs = fm.requiredParentTagIdxs;
@@ -7028,8 +7067,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       const savedShNode = _shNode;
       const savedShNodeIdx = _shNodeIdx;
       const savedShAncestors = _shAncestors;
+      const savedShSynthParentIdx = _shSynthParentIdx;
       _shNode = fnExpr;
       _shNodeIdx = methodNodeIdx;
+      // The synth FE's logical parent is methodNode (Property/MethodDefinition), not
+      // methodNode's AST parent. Override the fast-filter's parent lookup so selectors
+      // like `Property > FunctionExpression` match. Slow-path esq.matches uses
+      // _shAncestors which we pre-build with methodNode at the front.
+      _shSynthParentIdx = methodNodeIdx;
       _shAncestors = null;
       const tag = nodeTags[methodNodeIdx];
       const byTag = isExit ? selectorsByTagExit : selectorsByTagEnter;
@@ -7038,11 +7083,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // already fire from the main DFS event for this same node.
       const feTag = T.fn_expr;
       const handlers = (feTag !== undefined && byTag) ? byTag[feTag] : null;
-      if (handlers && handlers.length > 0) _runSelectorList(handlers);
-      if (universal && universal.length > 0) _runSelectorList(universal);
+      if ((handlers && handlers.length > 0) || (universal && universal.length > 0)) {
+        // Pre-build ancestors: prepend methodNode so esq.matches sees FE.parent === Property.
+        _shAncestors = [methodNode, ...getAncestorsFor(methodNodeIdx)];
+        if (handlers && handlers.length > 0) _runSelectorList(handlers);
+        if (universal && universal.length > 0) _runSelectorList(universal);
+      }
       _shNode = savedShNode;
       _shNodeIdx = savedShNodeIdx;
       _shAncestors = savedShAncestors;
+      _shSynthParentIdx = savedShSynthParentIdx;
     }
     // Fire onCodePathEnd for the synthetic code path (exit path for object methods).
     if (isObjectMethod && isExit) {
@@ -7372,10 +7422,16 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const chainExitH  = visitorMap.get('ChainExpression:exit') || null;
   const hasChainSynth = chainEnterH !== null || chainExitH !== null;
   if (hasChainSynth) {
-    // Mark optional chain tags relevant so they're not pruned
-    if (T.optional_call_expr < relevantTag.length)          relevantTag[T.optional_call_expr] = 1;
-    if (T.optional_member_expr < relevantTag.length)        relevantTag[T.optional_member_expr] = 1;
+    // Mark optional chain tags relevant so they're not pruned. Chain "middle" tags
+    // (regular member/call) can also be the outermost ChainExpression when they wrap
+    // an optional access (e.g. `a?.b.c` outermost is a regular MemberExpression),
+    // so they need to participate in the DFS too.
+    if (T.optional_call_expr < relevantTag.length)            relevantTag[T.optional_call_expr] = 1;
+    if (T.optional_member_expr < relevantTag.length)          relevantTag[T.optional_member_expr] = 1;
     if (T.optional_computed_member_expr < relevantTag.length) relevantTag[T.optional_computed_member_expr] = 1;
+    if (T.member_expr < relevantTag.length)                   relevantTag[T.member_expr] = 1;
+    if (T.computed_member_expr < relevantTag.length)          relevantTag[T.computed_member_expr] = 1;
+    if (T.call_expr < relevantTag.length)                     relevantTag[T.call_expr] = 1;
   }
   // JSXOpeningFragment / JSXClosingFragment are synthetic — emitted during JSXFragment enter/exit.
   const jsxOpeningFragH  = visitorMap.get('JSXOpeningFragment') || null;
@@ -7708,9 +7764,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     }
     // ChainExpression synthesis needs optional chain tags
     if (hasChainSynth) {
-      if (T.optional_call_expr < _synthTagArr.length)          _synthTagArr[T.optional_call_expr] = 1;
-      if (T.optional_member_expr < _synthTagArr.length)        _synthTagArr[T.optional_member_expr] = 1;
+      if (T.optional_call_expr < _synthTagArr.length)            _synthTagArr[T.optional_call_expr] = 1;
+      if (T.optional_member_expr < _synthTagArr.length)          _synthTagArr[T.optional_member_expr] = 1;
       if (T.optional_computed_member_expr < _synthTagArr.length) _synthTagArr[T.optional_computed_member_expr] = 1;
+      // Chain middle tags must also pass the DFS skip check so the synth dispatch
+      // can fire on outermost regular member/call wrapping an optional chain.
+      if (T.member_expr < _synthTagArr.length)                   _synthTagArr[T.member_expr] = 1;
+      if (T.computed_member_expr < _synthTagArr.length)          _synthTagArr[T.computed_member_expr] = 1;
+      if (T.call_expr < _synthTagArr.length)                     _synthTagArr[T.call_expr] = 1;
     }
     // Shorthand VALUE synthesis: shorthand_property nodes must not be skipped when
     // Identifier visitors exist, because we synthesize a second VALUE Identifier visit.
@@ -7794,8 +7855,14 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // Phase 3 (after_enter): fires after enter handler, before visiting children.
       // Used for SwitchCase segment starts so rules can set state in SwitchCase handler first.
       if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 3);
-      // Synthesize ChainExpression enter for outermost optional chain nodes.
-      if (hasChainSynth && chainEnterH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
+      // Synthesize ChainExpression enter for outermost chain nodes. The outermost can be
+      // either an optional tag (e.g. `a?.b`) OR a regular member/call wrapping an optional
+      // chain (e.g. `a?.b.c` — outer is a regular member_expr; the chain extends through it).
+      // getChainExprIfOutermost returns null for non-chain nodes, so the regular tags pay
+      // only an O(1) `_astHasOptionalChain` check on files without optional chains.
+      if (hasChainSynth && chainEnterH && (
+          tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr ||
+          tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
         if (_chainNode) _invokeFused(chainEnterH, _chainNode, idx, context);
       }
@@ -7990,8 +8057,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
-      // Synthesize ChainExpression:exit for outermost optional chain nodes.
-      if (hasChainSynth && chainExitH && (tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr)) {
+      // Synthesize ChainExpression:exit for outermost chain nodes (regular member/call
+      // wrapping an optional chain qualifies — see enter-side comment for rationale).
+      if (hasChainSynth && chainExitH && (
+          tag === T.optional_call_expr || tag === T.optional_member_expr || tag === T.optional_computed_member_expr ||
+          tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
         if (_chainNode) _invokeFused(chainExitH, _chainNode, idx, context);
       }
