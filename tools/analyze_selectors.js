@@ -722,8 +722,13 @@ function* findVisitors(ast) {
       const fnArg = n.arguments[1];
       if (keyArg?.type === "Literal" && typeof keyArg.value === "string"
           && fnArg && (fnArg.type === "FunctionExpression" || fnArg.type === "ArrowFunctionExpression")) {
+        // keyRange is the span of the WHOLE literal node — including the
+        // surrounding quotes. The transform replaces this span with a
+        // re-quoted selector, preserving the original quote style.
+        const keyRange = keyArg.range;
         yield {
           keyLiteral: keyArg.value,
+          keyRange: keyRange ? [keyRange[0], keyRange[1]] : null,
           isExit: n.callee.property.name === "onExit",
           fn: fnArg,
           line: n.loc?.start?.line ?? -1,
@@ -740,8 +745,15 @@ function* findVisitors(ast) {
       for (const prop of n.properties) {
         if (prop?.type !== "Property") continue;
         let keyText = null;
-        if (prop.key?.type === "Identifier" && !prop.computed) keyText = prop.key.name;
-        else if (prop.key?.type === "Literal" && typeof prop.key.value === "string") keyText = prop.key.value;
+        let keyRange = null;
+        if (prop.key?.type === "Identifier" && !prop.computed) {
+          keyText = prop.key.name;
+          // The Identifier's range is just the bare name (no quotes).
+          keyRange = prop.key.range ? [prop.key.range[0], prop.key.range[1]] : null;
+        } else if (prop.key?.type === "Literal" && typeof prop.key.value === "string") {
+          keyText = prop.key.value;
+          keyRange = prop.key.range ? [prop.key.range[0], prop.key.range[1]] : null;
+        }
         if (!keyText) continue;
         if (!looksLikeVisitorKey(keyText)) continue;
         const fn = prop.value;
@@ -749,6 +761,8 @@ function* findVisitors(ast) {
         const isExit = keyText.endsWith(":exit");
         yield {
           keyLiteral: isExit ? keyText.slice(0, -5) : keyText,
+          keyRange,
+          keyKind: prop.key?.type === "Identifier" ? "ident" : "literal",
           isExit,
           fn,
           line: prop.loc?.start?.line ?? -1,
@@ -862,18 +876,113 @@ function analyzeFile(filePath) {
     const promoted = promoteSelector(v.keyLiteral, cand);
     if (!promoted) continue;
     if (promoted === v.keyLiteral + (v.isExit ? ":exit" : "")) continue;
+    if (!v.keyRange) continue;  // need source range to emit a transform
     findings.push({
       line: v.line,
       from: v.keyLiteral + (v.isExit ? ":exit" : ""),
       to: promoted + (v.isExit ? ":exit" : ""),
       parentType: cand.parentType ?? null,
       name: cand.name ?? null,
+      keyRange: v.keyRange,
+      keyKind: v.keyKind ?? "literal", // "literal" → has surrounding quotes; "ident" → bare name
+      isExit: v.isExit,
     });
   }
   return { findings };
 }
 
-(function main() {
+// ── Public API for the build pipeline ─────────────────────────────
+//
+// Build a list of analyzer-derived transforms that the rule-transpile
+// pipeline can splice in alongside its hand-written `tools/transforms/files/`
+// entries. Each transform rewrites the original source by replacing the
+// listener-key literal at the captured byte range.
+//
+// Returns Map<absPath, { upstreamPath, transform: (src) => newSrc, findings }>.
+//
+// Design notes
+// ------------
+//   • The transform applies findings in REVERSE byte-order so earlier
+//     ranges remain valid as later ranges shift.
+//   • If the source byte-range no longer matches the original literal
+//     (upstream patched the file between scan and build), we skip that
+//     finding and emit a warning. Conservatively keeping the original
+//     source is safer than guessing.
+//   • Identifier-style keys (`{ Identifier(node) {...} }`) are rewritten
+//     to a string-literal form (`"Foo > Identifier"`(node) {...}`). For
+//     the common case where the listener key contains selector syntax
+//     (`>`, `[`, etc.), the Property must use a string-literal key; the
+//     bare-Identifier shorthand can't carry it.
+
+function _gatherFindings(opts = {}) {
+  const all = [];
+  for (const dir of PLUGIN_DIRS) for (const f of walkJsFiles(dir)) all.push(f);
+  const byFile = new Map();
+  for (const f of all) {
+    if (opts.filter && !opts.filter(f)) continue;
+    const r = analyzeFile(f);
+    if (r.skipped || !r.findings.length) continue;
+    byFile.set(f, r.findings);
+  }
+  return byFile;
+}
+
+function generateAutoTransforms(opts = {}) {
+  const byFile = _gatherFindings(opts);
+  const transforms = new Map();
+  for (const [absPath, findings] of byFile) {
+    const transform = _makeTransformFn(absPath, findings);
+    transforms.set(absPath, {
+      upstreamPath: absPath,
+      transform,
+      findings,
+    });
+  }
+  return transforms;
+}
+
+function _makeTransformFn(absPath, findings) {
+  // Sort by start byte ascending; we apply in REVERSE so later edits
+  // don't disturb earlier ranges.
+  const sorted = [...findings].sort((a, b) => a.keyRange[0] - b.keyRange[0]);
+  return function transform(src) {
+    let out = src;
+    let applied = 0, skipped = 0;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      const f = sorted[i];
+      const [start, end] = f.keyRange;
+      const original = out.slice(start, end);
+      const expected = f.keyKind === "ident"
+        ? f.from.replace(/:exit$/, "")          // bare Identifier key: no quotes
+        : null;                                  // literal: quote style varies
+      let oldOk = false;
+      if (f.keyKind === "ident") {
+        oldOk = original === expected;
+      } else {
+        // Accept either `'X'`, `"X"`, or `'X:exit'`/`"X:exit"`.
+        const inner = f.from;
+        oldOk = original === `'${inner}'` || original === `"${inner}"`;
+      }
+      if (!oldOk) { skipped++; continue; }
+      // For Identifier-style keys, switching to a selector string requires
+      // wrapping in quotes. We always emit a single-quoted string.
+      const replacement = `'${f.to}'`;
+      out = out.slice(0, start) + replacement + out.slice(end);
+      applied++;
+    }
+    if (applied === 0 && skipped > 0) {
+      // Nothing applied; signal the build pipeline that this transform
+      // was a no-op so the caller can warn (matches the convention used
+      // by file transforms — see rule-transpile.js).
+      transform.noOp = true;
+    }
+    return out;
+  };
+}
+
+module.exports = { generateAutoTransforms, analyzeFile };
+
+if (require.main === module) (function main() {
   const wantJson = process.argv.includes("--json");
   const all = [];
   for (const dir of PLUGIN_DIRS) for (const f of walkJsFiles(dir)) all.push(f);

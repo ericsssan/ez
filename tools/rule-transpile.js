@@ -235,6 +235,38 @@ async function main() {
   // Loaded eagerly so build failures surface immediately.
   const fileTransforms = await loadFileTransforms();
 
+  // Analyzer-derived transforms. The selector-promotion analyzer
+  // (tools/analyze_selectors.js) statically detects rule visitors whose
+  // bodies start with an early-bail predicate that could be expressed in
+  // the selector instead, and produces a transform per rule that rewrites
+  // the listener-key literal at the captured byte range.
+  //
+  // Manual transforms in tools/transforms/files/ take precedence over
+  // analyzer-derived rewrites for the same upstream path — that way an
+  // operator-written transform can override or compose around the
+  // automatic one without a flag.
+  let autoAdded = 0, autoSkippedManual = 0;
+  try {
+    const { generateAutoTransforms } = require(resolve(ROOT, "tools/analyze_selectors.js"));
+    const autoTransforms = generateAutoTransforms();
+    for (const [absPath, t] of autoTransforms) {
+      if (fileTransforms.has(absPath)) { autoSkippedManual++; continue; }
+      if (!existsSync(absPath)) continue;
+      fileTransforms.set(absPath, {
+        fn: t.transform,
+        modPath: `<auto:analyze_selectors n=${t.findings.length}>`,
+        invoked: false,
+      });
+      autoAdded++;
+    }
+  } catch (err) {
+    // Analyzer is best-effort: a failure here must not block the build.
+    process.stderr.write(`  (analyzer unavailable: ${err.message})\n`);
+  }
+  if (autoAdded > 0 || autoSkippedManual > 0) {
+    process.stderr.write(`  auto:      ${autoAdded} analyzer-derived${autoSkippedManual > 0 ? ` (${autoSkippedManual} deferred to manual)` : ""}\n`);
+  }
+
   const result = await Bun.build({
     entrypoints: [entryPath],
     outdir: OUT_DIR,
