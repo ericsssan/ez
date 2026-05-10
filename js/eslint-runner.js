@@ -7938,6 +7938,24 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     if (baseWork || (tagExitHandlers[_t]  != null)) _exitMustProcess[_t]  = 1;
   }
 
+  // Pre-pass: assign synthetic parent to orphan ts_type_reference nodes
+  // (pd[i] === NONE) BEFORE DFS so dispatch sees a non-null parent on the
+  // first visit. Without this, DFS fires once with parent===undefined and
+  // the post-DFS orphan pass would fire again with synthetic parent set —
+  // causing duplicate dispatch and `node.parent.type` crashes in rules like
+  // @typescript-eslint/no-invalid-void-type on the first call.
+  if (pd && _hasTsKwRemap && _tsTypeRefTagNum >= 0) {
+    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [],
+      parent: { type: 'TSTypeReference', typeParameters: null } };
+    const _n = ast.nodeCount;
+    for (let i = 1; i < _n; i++) {
+      if (pd[i] !== NONE) continue;
+      if (nodeTags[i] !== _tsTypeRefTagNum) continue;
+      if (ast.nodeRhs(i) !== NONE) continue;
+      nodeView(ast, i)._parent = _synthParent;
+    }
+  }
+
   const { events: dfsEvents, count: dfsCount } = getDFSEvents();
   for (let i = 0; i < dfsCount; i++) {
     if (skipSet._allSkipped) break; // direct field access skips getter dispatch
@@ -8336,34 +8354,9 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // Synthetic parent: orphaned nodes have no parent pointer, but rules like no-explicit-any
   // call node.parent.type unconditionally. Assign a minimal synthetic parent so those checks
   // don't crash. TSTypeParameterInstantiation is the natural parent for type-arg positions.
-  if (pd && _hasTsKwRemap && _tsTypeRefTagNum >= 0) {
-    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [],
-      parent: { type: 'TSTypeReference', typeParameters: null } };
-    const n = ast.nodeCount;
-    for (let i = 1; i < n; i++) {
-      if (pd[i] !== NONE) continue;
-      const tag = nodeTags[i];
-      if (tag !== _tsTypeRefTagNum) continue;
-      // Only keyword/literal type refs (rhs === NONE) need remapping here.
-      if (ast.nodeRhs(i) !== NONE) continue;
-      const nv = nodeView(ast, i);
-      // Set synthetic parent so rule handlers don't crash on node.parent.type.
-      // pd[i] === NONE so the real parent getter would return null; override it
-      // with a non-null stub. Use a non-TSTypeOperator type so keyof-any suggestions
-      // are not triggered (we can't reconstruct the exact parent here).
-      nv._parent = _synthParent;
-      const handlers = _resolveHandlers(tagEnterHandlers, tag, i);
-      if (handlers) {
-        context._currentNodeIdx = i;
-        _invokeFused(handlers, nv, i, context);
-      }
-      const xHandlers = _resolveHandlers(tagExitHandlers, tag, i);
-      if (xHandlers) {
-        context._currentNodeIdx = i;
-        _invokeFused(xHandlers, nv, i, context);
-      }
-    }
-  }
+  // Synthetic parent for orphan ts_type_reference nodes is now assigned in
+  // the pre-DFS pass above; DFS dispatches them with the synth parent on the
+  // first visit. No post-DFS retry needed.
 
   // ── Execute file-level exit rules (after DFS) ─────────────────
   if (fileLevelExit.length > 0) {
