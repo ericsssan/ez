@@ -4198,12 +4198,17 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
         arr = arr.filter(Boolean);
         fix = arr.length > 0 ? arr : undefined;
       }
-    } catch { /* ignore fix errors */ }
+    } catch (err) {
+      if (process.env.EZ_DEBUG_FIX) {
+        console.error(`FIX-THROW [${ruleId}] ${err.message}`);
+      }
+    }
   }
-  // ESLint's RuleTester.run path (which extracts our oracle data)
-  // emits severity=1 for invalid cases regardless of configured
-  // severity. Match that so the differential's per-dim comparison
-  // stays consistent.
+  // The conformance oracle (extracted via RuleTester.run in extract.js)
+  // emits severity=1 for invalid cases — that's the value the
+  // comparator sees on the ESLint side. Match it to keep the
+  // differential apples-to-apples. (Production callers can still
+  // override per rule via the configured severity in `ruleConfig`.)
   ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, 1));
   const newCount = (ctx._ruleErrors[ruleId] || 0) + 1;
   ctx._ruleErrors[ruleId] = newCount;

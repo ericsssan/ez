@@ -469,6 +469,9 @@ function _mkKey(d) {
   const fixKey = d.fix
     ? JSON.stringify(Array.isArray(d.fix) ? d.fix : [d.fix])
     : "";
+  // Prefer messageId (stable across ESLint versions and locales) when
+  // both sides emit it. Fall back to message text only when one side
+  // lacks the id.
   const msgKey = d.messageId != null ? `id:${d.messageId}` : `m:${d.message ?? ""}`;
   return [
     d.rule,
@@ -477,7 +480,11 @@ function _mkKey(d) {
     d.endLine ?? "",
     d.endColumn ?? "",
     msgKey,
-    d.severity ?? "",
+    // `severity` intentionally OMITTED from the key. It's a *config*
+    // concern (warn vs error) — not a correctness signal. ESLint's
+    // RuleTester normalises invalid cases to 1 while Linter.verify
+    // emits 2, and ez has its own default; comparing on it produced
+    // thousands of FN+FP that didn't represent real bugs.
     fixKey,
   ].join(SEP);
 }
