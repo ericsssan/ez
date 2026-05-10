@@ -79,6 +79,14 @@ function* walkJsFiles(dir) {
 
 const NODE_TAG = (n) => n && n.type;
 
+// Unwrap a ChainExpression wrapper. `a?.b` parses as
+// ChainExpression(MemberExpression(a, b, optional=true)) — the
+// MemberExpression itself is what we want to inspect.
+function unwrapChain(node) {
+  while (node?.type === "ChainExpression") node = node.expression;
+  return node;
+}
+
 function isLiteralStringEq(node, name, str) {
   // Matches `<receiver>.<name> === '<str>'` or `<receiver>.<name> !== '<str>'`
   if (!node) return null;
@@ -105,10 +113,12 @@ function isParamRef(node, paramName) {
 }
 
 function isParamProp(node, paramName, propName) {
-  // `<paramName>.<propName>` (non-computed, single hop)
+  // `<paramName>.<propName>` or `<paramName>?.<propName>`. ChainExpression
+  // wraps the optional-chain MemberExpression — unwrap before inspecting.
+  node = unwrapChain(node);
   return node?.type === "MemberExpression"
     && !node.computed
-    && isParamRef(node.object, paramName)
+    && isParamRef(unwrapChain(node.object), paramName)
     && node.property?.type === "Identifier"
     && node.property.name === propName;
 }
@@ -127,14 +137,21 @@ function isParamParentDotType(node, paramName) {
 //   (b) `if (<cond>) { ...work... }` and the if is the ONLY top-level
 //        statement                                ← guarded work (¬cond → bail)
 //
-// Returns { ifStmt, polarity } where polarity = 'bailIf' for (a) or
-// 'bailIfNot' for (b).
+// Leading `const`/`let` declarations are skipped — many visitors
+// destructure or alias before the guard, e.g.
+//   node => { const { type } = node; if (type !== 'X') return; ... }
+//
+// Returns { ifStmt, polarity, isOnlyAfterDecls } or null.
 function leadingGuardIf(body) {
   if (!body) return null;
   if (body.type !== "BlockStatement") return null;
   const stmts = body.body;
   if (!stmts || stmts.length === 0) return null;
-  const head = stmts[0];
+
+  let i = 0;
+  while (i < stmts.length && stmts[i]?.type === "VariableDeclaration") i++;
+  if (i >= stmts.length) return null;
+  const head = stmts[i];
   if (head?.type !== "IfStatement") return null;
   if (head.alternate) return null;
   const cons = head.consequent;
@@ -145,9 +162,9 @@ function leadingGuardIf(body) {
       && isBareReturn(cons.body[0])) {
     return { ifStmt: head, polarity: "bailIf" };
   }
-  // Form (b): the if is the only top-level statement → falling through
-  // does nothing. Equivalent to `if (!cond) return;`.
-  if (stmts.length === 1) {
+  // Form (b): the if is the only non-decl top-level statement → falling
+  // through does nothing. Equivalent to `if (!cond) return;`.
+  if (i === stmts.length - 1) {
     return { ifStmt: head, polarity: "bailIfNot" };
   }
   return null;
@@ -162,8 +179,11 @@ function extractLitEq(node, paramName, expectedOp) {
   if (!node) return null;
   if (node.type !== "BinaryExpression") return null;
   if (node.operator !== expectedOp) return null;
+  // Unwrap ChainExpression wrappers on either side: `node?.parent.type`
+  // and `node?.name` show up after optional-chain helpers.
+  const left = unwrapChain(node.left);
+  const right = unwrapChain(node.right);
   let memberSide = null, litSide = null;
-  const { left, right } = node;
   if (left?.type === "MemberExpression" && right?.type === "Literal") {
     memberSide = left; litSide = right;
   } else if (right?.type === "MemberExpression" && left?.type === "Literal") {
@@ -176,22 +196,364 @@ function extractLitEq(node, paramName, expectedOp) {
   // node.name
   if (memberSide.property?.type === "Identifier"
       && memberSide.property.name === "name"
-      && isParamRef(memberSide.object, paramName)) {
+      && isParamRef(unwrapChain(memberSide.object), paramName)) {
     return { kind: "name", value: litSide.value };
   }
   // node.parent.type
   if (memberSide.property?.type === "Identifier"
       && memberSide.property.name === "type"
-      && isParamProp(memberSide.object, paramName, "parent")) {
+      && isParamProp(unwrapChain(memberSide.object), paramName, "parent")) {
     return { kind: "parentType", value: litSide.value };
   }
   return null;
 }
 
+// Find module-scope predicate helpers — both intra-file definitions and
+// cross-file via `import` resolution.
+//
+// IMPORTANT: ez's parseSource shares a single output buffer across calls,
+// so an AstView from an earlier parse is invalidated as soon as another
+// file is parsed. To inline helpers from imported files we therefore
+// EXTRACT clause data (a plain-JS list of selector-promotable assertions)
+// from each helper body immediately after parsing, and never hold AST
+// references across parses.
+//
+// Helper "clauses" returned by this pass are: [{ kind: 'name'|'parentType'|'type', value }, ...].
+// We use them in collectClauses by lookup, not by re-walking AST.
+//
+// Returns Map<localName, { paramName, clauses }>.
+
+// Cache extracted helper clauses keyed by `absPath::exportName` so a
+// helper file shared across many rules is parsed once.
+const _helperCache = new Map();
+const _helperCacheNeg = Symbol("not-resolved");
+function _helperCacheKey(absPath, exportName) {
+  return `${absPath}::${exportName}`;
+}
+
+// Resolve a relative import path against `fromFile`. Tries common extensions.
+function _resolveImport(fromFile, spec) {
+  if (!spec.startsWith(".") && !spec.startsWith("/")) return null;  // bare = ignore
+  const base = path.resolve(path.dirname(fromFile), spec);
+  const tryPaths = [
+    base,
+    base + ".js", base + ".mjs", base + ".cjs",
+    path.join(base, "index.js"),
+    path.join(base, "index.mjs"),
+    path.join(base, "index.cjs"),
+  ];
+  for (const p of tryPaths) {
+    try { if (fs.statSync(p).isFile()) return p; } catch { /* not a file */ }
+  }
+  return null;
+}
+
+// Extract a flat clause list from a helper body (LogicalExpression && chain
+// of literal-eq tests on `paramName`). No nested helper inlining — that
+// would require AST access to other helper files, which has expired.
+//
+// Used both during intra-file helper extraction (where we have the rule's
+// AST live) and during cross-file helper extraction (where we're inside a
+// fresh parse of the helper module). Plain-data output → safe across parses.
+function extractClausesPlain(body, paramName) {
+  const clauses = [];
+  function visit(n) {
+    if (!n) return;
+    if (n.type === "LogicalExpression" && n.operator === "&&") {
+      visit(n.left);
+      visit(n.right);
+      return;
+    }
+    // Reuse extractLitEq with '===' polarity (matches "=== literal").
+    const eq = extractLitEq(n, paramName, "===");
+    if (eq) { clauses.push(eq); return; }
+    // Also extract `node.type === 'X'`. extractLitEq doesn't yield this
+    // because the listener key is the type — but inside a helper body
+    // (whose param is a stand-in), `paramRef.type === 'X'` IS useful when
+    // promoting a generic listener. Currently the listener is the same
+    // type so this is redundant; record anyway for future use.
+    if (n.type === "BinaryExpression" && n.operator === "===") {
+      const left = unwrapChain(n.left), right = unwrapChain(n.right);
+      let memberSide = null, litSide = null;
+      if (left?.type === "MemberExpression" && right?.type === "Literal") { memberSide = left; litSide = right; }
+      else if (right?.type === "MemberExpression" && left?.type === "Literal") { memberSide = right; litSide = left; }
+      if (memberSide && !memberSide.computed
+          && memberSide.property?.type === "Identifier"
+          && memberSide.property.name === "type"
+          && isParamRef(unwrapChain(memberSide.object), paramName)
+          && typeof litSide.value === "string") {
+        clauses.push({ kind: "type", value: litSide.value });
+      }
+    }
+  }
+  visit(body);
+  return clauses;
+}
+
+// Reap a function's params/body shape and immediately convert to clauses.
+// Returns { paramName, clauses } | null.
+function reapHelperToClauses(fn) {
+  if (!fn) return null;
+  if (fn.type !== "ArrowFunctionExpression"
+      && fn.type !== "FunctionExpression"
+      && fn.type !== "FunctionDeclaration") return null;
+  if (fn.params?.length !== 1) return null;
+  if (fn.params[0]?.type !== "Identifier") return null;
+  const paramName = fn.params[0].name;
+  let bodyExpr = null;
+  if (fn.body?.type === "BlockStatement") {
+    if (fn.body.body?.length === 1
+        && fn.body.body[0]?.type === "ReturnStatement"
+        && fn.body.body[0].argument) {
+      bodyExpr = fn.body.body[0].argument;
+    }
+  } else if (fn.body) {
+    bodyExpr = fn.body;
+  }
+  if (!bodyExpr) return null;
+  return { paramName, clauses: extractClausesPlain(bodyExpr, paramName) };
+}
+
+// Resolve a relative import path against `fromFile`. Tries common extensions.
+function _resolveImport(fromFile, spec) {
+  if (!spec.startsWith(".") && !spec.startsWith("/")) return null;  // bare = ignore
+  const base = path.resolve(path.dirname(fromFile), spec);
+  const tryPaths = [
+    base,
+    base + ".js", base + ".mjs", base + ".cjs",
+    path.join(base, "index.js"),
+    path.join(base, "index.mjs"),
+    path.join(base, "index.cjs"),
+  ];
+  for (const p of tryPaths) {
+    try { if (fs.statSync(p).isFile()) return p; } catch { /* not a file */ }
+  }
+  return null;
+}
+
+// Parse a helper file in isolation and extract a single export's clauses.
+// MAX_DEPTH bounds re-export following.
+function _extractHelperFromFile(absPath, exportName, depth = 0, visiting = new Set()) {
+  if (depth > 4) return null;
+  const key = _helperCacheKey(absPath, exportName);
+  if (_helperCache.has(key)) {
+    const v = _helperCache.get(key);
+    return v === _helperCacheNeg ? null : v;
+  }
+  if (visiting.has(key)) return null;  // cycle guard
+  visiting.add(key);
+
+  let src;
+  try { src = fs.readFileSync(absPath, "utf8"); }
+  catch { _helperCache.set(key, _helperCacheNeg); return null; }
+
+  let program;
+  try {
+    const view = parseSource(src, { filename: absPath, sourceType: "module" });
+    program = view.root();
+  } catch { _helperCache.set(key, _helperCacheNeg); return null; }
+  if (!program || program.type !== "Program") {
+    _helperCache.set(key, _helperCacheNeg);
+    return null;
+  }
+
+  // Find the matching export. While we have this AST live, eagerly extract
+  // the helper's clauses. Local re-export chains may need a recursive call,
+  // which will re-parse a different file — but our local AST is no longer
+  // needed once we've returned the clause list.
+  let result = null;
+  let pendingChain = null;  // { absPath, exportName }
+  let pendingLocalName = null;
+
+  for (const stmt of program.body) {
+    if (exportName === "default") {
+      if (stmt.type === "ExportDefaultDeclaration") {
+        const decl = stmt.declaration;
+        if (decl?.type === "FunctionDeclaration"
+            || decl?.type === "FunctionExpression"
+            || decl?.type === "ArrowFunctionExpression") {
+          result = reapHelperToClauses(decl);
+        } else if (decl?.type === "Identifier") {
+          pendingLocalName = decl.name;
+        }
+        break;
+      }
+      continue;
+    }
+    // Named export.
+    if (stmt.type === "ExportNamedDeclaration") {
+      // export { foo } from './x.js';
+      if (stmt.source?.type === "Literal" && typeof stmt.source.value === "string") {
+        for (const s of stmt.specifiers || []) {
+          if (s.type === "ExportSpecifier"
+              && s.exported?.type === "Identifier"
+              && s.exported.name === exportName) {
+            const fwdLocal = s.local?.name ?? exportName;
+            pendingChain = { spec: stmt.source.value, exportName: fwdLocal };
+            break;
+          }
+        }
+        if (pendingChain) break;
+        continue;
+      }
+      // export function NAME() {...}
+      if (stmt.declaration?.type === "FunctionDeclaration"
+          && stmt.declaration.id?.name === exportName) {
+        result = reapHelperToClauses(stmt.declaration);
+        break;
+      }
+      // export const NAME = ...;
+      if (stmt.declaration?.type === "VariableDeclaration") {
+        for (const decl of stmt.declaration.declarations) {
+          if (decl.id?.type === "Identifier"
+              && decl.id.name === exportName
+              && decl.init) {
+            result = reapHelperToClauses(decl.init);
+            if (result) break;
+          }
+        }
+        if (result) break;
+        continue;
+      }
+      // export { foo };  → look up `foo` locally
+      for (const s of stmt.specifiers || []) {
+        if (s.type === "ExportSpecifier"
+            && s.exported?.type === "Identifier"
+            && s.exported.name === exportName) {
+          pendingLocalName = s.local?.name ?? exportName;
+          break;
+        }
+      }
+      if (pendingLocalName) break;
+    }
+  }
+
+  if (!result && pendingLocalName) {
+    // Resolve the local name in this same file.
+    for (const stmt of program.body) {
+      if (stmt.type === "FunctionDeclaration"
+          && stmt.id?.name === pendingLocalName) {
+        result = reapHelperToClauses(stmt);
+        if (result) break;
+      }
+      if (stmt.type === "VariableDeclaration") {
+        for (const decl of stmt.declarations) {
+          if (decl.id?.type === "Identifier"
+              && decl.id.name === pendingLocalName
+              && decl.init) {
+            result = reapHelperToClauses(decl.init);
+            if (result) break;
+          }
+        }
+        if (result) break;
+      }
+      if (stmt.type === "ImportDeclaration" && stmt.source?.type === "Literal") {
+        for (const s of stmt.specifiers || []) {
+          if (s.local?.type === "Identifier" && s.local.name === pendingLocalName) {
+            const next = _resolveImport(absPath, stmt.source.value);
+            if (!next) continue;
+            pendingChain = {
+              spec: null, absPath: next,
+              exportName: s.type === "ImportDefaultSpecifier" ? "default" : s.imported?.name,
+            };
+            break;
+          }
+        }
+        if (pendingChain) break;
+      }
+    }
+  }
+
+  // Cache before recursing so cycles see negative entry.
+  if (result) _helperCache.set(key, result);
+  else if (!pendingChain) _helperCache.set(key, _helperCacheNeg);
+
+  if (!result && pendingChain) {
+    const nextAbs = pendingChain.absPath ?? _resolveImport(absPath, pendingChain.spec);
+    if (nextAbs) {
+      result = _extractHelperFromFile(nextAbs, pendingChain.exportName, depth + 1, visiting);
+    }
+    _helperCache.set(key, result || _helperCacheNeg);
+  }
+
+  visiting.delete(key);
+  return result;
+}
+
+function findHelpers(program, fromFile) {
+  const helpers = new Map();
+  // PASS 1 (live AST): walk this file's program and extract intra-file
+  // helper clauses now, while the AST is still valid. Also collect import
+  // specs as plain data so PASS 2 can re-parse helper files independently
+  // without needing this AST.
+  const pendingImports = [];
+
+  for (const stmt of program.body) {
+    if (stmt.type === "VariableDeclaration") {
+      for (const decl of stmt.declarations) {
+        if (decl.id?.type !== "Identifier") continue;
+        const init = decl.init;
+        if (!init) continue;
+        const reaped = reapHelperToClauses(init);
+        if (reaped) helpers.set(decl.id.name, reaped);
+      }
+    } else if (stmt.type === "FunctionDeclaration"
+               && stmt.id?.type === "Identifier") {
+      const reaped = reapHelperToClauses(stmt);
+      if (reaped) helpers.set(stmt.id.name, reaped);
+    } else if (stmt.type === "ExportNamedDeclaration") {
+      if (stmt.declaration?.type === "FunctionDeclaration"
+          && stmt.declaration.id?.type === "Identifier") {
+        const reaped = reapHelperToClauses(stmt.declaration);
+        if (reaped) helpers.set(stmt.declaration.id.name, reaped);
+      }
+      if (stmt.declaration?.type === "VariableDeclaration") {
+        for (const decl of stmt.declaration.declarations) {
+          if (decl.id?.type !== "Identifier") continue;
+          if (!decl.init) continue;
+          const reaped = reapHelperToClauses(decl.init);
+          if (reaped) helpers.set(decl.id.name, reaped);
+        }
+      }
+    } else if (stmt.type === "ExportDefaultDeclaration"
+               && stmt.declaration?.type === "FunctionDeclaration"
+               && stmt.declaration.id?.type === "Identifier") {
+      const reaped = reapHelperToClauses(stmt.declaration);
+      if (reaped) helpers.set(stmt.declaration.id.name, reaped);
+    } else if (stmt.type === "ImportDeclaration" && fromFile) {
+      const spec = stmt.source?.value;
+      if (typeof spec !== "string") continue;
+      const absPath = _resolveImport(fromFile, spec);
+      if (!absPath) continue;
+      for (const s of stmt.specifiers || []) {
+        if (s.type === "ImportDefaultSpecifier" && s.local?.type === "Identifier") {
+          pendingImports.push({ localName: s.local.name, absPath, exportName: "default" });
+        } else if (s.type === "ImportSpecifier"
+                   && s.local?.type === "Identifier"
+                   && s.imported?.type === "Identifier") {
+          pendingImports.push({ localName: s.local.name, absPath, exportName: s.imported.name });
+        }
+      }
+    }
+  }
+
+  // pendingImports is plain data — safe to act on after this AST dies.
+  // Caller (analyzeFile) re-parses the rule file AFTER this returns so
+  // its rule walk uses a freshly-valid AST.
+  return { helpers, pendingImports };
+}
+
 // Walk a logical-and chain and collect promotable clauses.
 // `bailIf` polarity:    we want clauses whose op is '!==' (bail unless equal)
 // `bailIfNot` polarity: we want clauses whose op is '===' (bail unless equal — same shape, opposite encoding)
-function collectClauses(testNode, paramName, polarity) {
+//
+// `helpers` is an optional Map<helperName, { paramName, body }> of intra-file
+// helpers we may inline. Inlining is only valid in `bailIfNot` polarity:
+// in that mode the test must be true for the visitor to do work, so the
+// helper's `&&`-chained literal-eq clauses must all hold. In `bailIf`
+// polarity the helper appearing in the test means "skip if helper true",
+// which doesn't yield individual must-hold clauses for the matching path.
+function collectClauses(testNode, paramName, polarity, helpers) {
   const wanted = polarity === "bailIf" ? "!==" : "===";
   const out = [];
   function visit(n) {
@@ -201,6 +563,21 @@ function collectClauses(testNode, paramName, polarity) {
       visit(n.right);
       return;
     }
+    // Helper call: helperName(<paramRef>) — splice its pre-extracted
+    // clauses when we need ALL clauses to hold (bailIfNot polarity).
+    // Only `===`-polarity clauses (the helper's stored shape) translate
+    // to "must hold" for the visitor's positive guard.
+    if (polarity === "bailIfNot"
+        && helpers
+        && n.type === "CallExpression"
+        && n.callee?.type === "Identifier"
+        && helpers.has(n.callee.name)
+        && n.arguments?.length === 1
+        && isParamRef(unwrapChain(n.arguments[0]), paramName)) {
+      const h = helpers.get(n.callee.name);
+      for (const c of h.clauses) out.push(c);
+      return;
+    }
     const eq = extractLitEq(n, paramName, wanted);
     if (eq) out.push(eq);
   }
@@ -208,13 +585,17 @@ function collectClauses(testNode, paramName, polarity) {
   return out;
 }
 
-// Choose the strictest single-promotion target. Prefer parentType
-// (highest selectivity) over name. If multiple of the same kind, take
-// the first.
+// Build a combined promotion: at most one parentType + at most one name
+// (the strictest two filters that ez's fastMatcher can answer cheaply).
+// Returns { parentType?: string, name?: string } | null.
 function chooseCandidate(clauses) {
-  for (const c of clauses) if (c.kind === "parentType") return c;
-  for (const c of clauses) if (c.kind === "name") return c;
-  return null;
+  let parentType = null, name = null;
+  for (const c of clauses) {
+    if (!parentType && c.kind === "parentType") parentType = c.value;
+    else if (!name && c.kind === "name") name = c.value;
+  }
+  if (!parentType && !name) return null;
+  return { parentType, name };
 }
 
 // Find the parameter name of a function/arrow expression node.
@@ -230,13 +611,14 @@ function getFirstParamName(fnNode) {
 }
 
 // Detect a visitor body's leading early-bail and return its promotion
-// candidate. `fnNode` is the visitor function's AST node.
-function analyzeVisitor(fnNode) {
+// candidate. `fnNode` is the visitor function's AST node. `helpers` is
+// the file-level helper map (passed through for inlining).
+function analyzeVisitor(fnNode, helpers) {
   const paramName = getFirstParamName(fnNode);
   if (!paramName) return null;
   const guard = leadingGuardIf(fnNode.body);
   if (!guard) return null;
-  const clauses = collectClauses(guard.ifStmt.test, paramName, guard.polarity);
+  const clauses = collectClauses(guard.ifStmt.test, paramName, guard.polarity, helpers);
   return chooseCandidate(clauses);
 }
 
@@ -376,6 +758,36 @@ function* findVisitors(ast) {
   }
 }
 
+// ESTree tautological parents: child types whose only legal parent is
+// the listed type. Adding such a parent constraint to the selector
+// rules out nothing — the parent is already implied — so the promotion
+// would be wasted dispatch work. (Drawn from the ESTree visitor-keys
+// table; conservative — only types whose grammar truly admits one parent.)
+const TAUTOLOGICAL_PARENT = new Map([
+  ["VariableDeclarator", "VariableDeclaration"],
+  ["SwitchCase", "SwitchStatement"],
+  ["CatchClause", "TryStatement"],
+  ["ImportSpecifier", "ImportDeclaration"],
+  ["ImportDefaultSpecifier", "ImportDeclaration"],
+  ["ImportNamespaceSpecifier", "ImportDeclaration"],
+  ["ExportSpecifier", "ExportNamedDeclaration"],
+  ["MethodDefinition", "ClassBody"],
+  ["PropertyDefinition", "ClassBody"],
+  ["AccessorProperty", "ClassBody"],
+  ["StaticBlock", "ClassBody"],
+  ["TemplateElement", "TemplateLiteral"],
+]);
+
+function isTautologicalPromotion(originalKey, candidate) {
+  // Only the parent constraint can be tautological.
+  if (!candidate.parentType) return false;
+  // If the only filter is the tautological parent and there's no name
+  // filter to tighten things further, drop the whole promotion.
+  if (candidate.name) return false;
+  const expected = TAUTOLOGICAL_PARENT.get(originalKey);
+  return expected === candidate.parentType;
+}
+
 // A visitor key is a PascalCase ESTree node type (or one with a selector
 // suffix). Camel/lower-case identifiers are config-object methods like
 // `getNodes`, not actual ESLint listener keys — drop those.
@@ -391,36 +803,62 @@ function looksLikeVisitorKey(key) {
 }
 
 // Promote a key + classification into the selector string we'd recommend.
+//   ParentType?  parentType + ' > '
+//   + originalKey
+//   + Name?      '[name="..."]'
 function promoteSelector(originalKey, candidate) {
-  // Only promote if originalKey is a single bare type. Composite selectors
-  // (e.g., 'CallExpression > MemberExpression') need different rewriting.
-  if (/^[A-Z][A-Za-z0-9]*$/.test(originalKey)) {
-    if (candidate.kind === "name") {
-      return `${originalKey}[name="${candidate.value}"]`;
-    }
-    if (candidate.kind === "parentType") {
-      return `${candidate.value} > ${originalKey}`;
-    }
-  }
-  return null;
+  if (!/^[A-Z][A-Za-z0-9]*$/.test(originalKey)) return null;
+  let s = "";
+  if (candidate.parentType) s += candidate.parentType + " > ";
+  s += originalKey;
+  if (candidate.name) s += `[name="${candidate.name}"]`;
+  return s === originalKey ? null : s;
 }
 
 // ── Driver ────────────────────────────────────────────────────────
 
 function analyzeFile(filePath) {
   const src = fs.readFileSync(filePath, "utf8");
+
+  // PASS 1: parse the rule file once to collect intra-file helpers and
+  // pending-import descriptors. The AST is invalidated by subsequent
+  // parses; we only retain plain data from this pass.
   let astView;
   try {
     astView = parseSource(src, { filename: filePath, sourceType: "module" });
   } catch (e) {
     return { skipped: true, reason: String(e.message).slice(0, 80) };
   }
-  const program = astView.root();
+  let program = astView.root();
   if (!program || program.type !== "Program") return { skipped: true, reason: "no Program root" };
+  const { helpers, pendingImports } = findHelpers(program, filePath);
+
+  // PASS 2: resolve cross-file helpers (each parses its source file in
+  // isolation and stores plain clause data, never holding ASTs across
+  // parses). The cache means a helper file shared by many rules is
+  // walked once.
+  for (const imp of pendingImports) {
+    if (helpers.has(imp.localName)) continue;
+    const reaped = _extractHelperFromFile(imp.absPath, imp.exportName, 0);
+    if (reaped) helpers.set(imp.localName, reaped);
+  }
+
+  // PASS 3: re-parse the rule file (its AST was invalidated by helper
+  // parses). This time the AST is the LAST parse, so it stays valid for
+  // the listener walk.
+  try {
+    astView = parseSource(src, { filename: filePath, sourceType: "module" });
+  } catch (e) {
+    return { skipped: true, reason: String(e.message).slice(0, 80) };
+  }
+  program = astView.root();
+  if (!program || program.type !== "Program") return { skipped: true, reason: "no Program root" };
+
   const findings = [];
   for (const v of findVisitors(program)) {
-    const cand = analyzeVisitor(v.fn);
+    const cand = analyzeVisitor(v.fn, helpers);
     if (!cand) continue;
+    if (isTautologicalPromotion(v.keyLiteral, cand)) continue;
     const promoted = promoteSelector(v.keyLiteral, cand);
     if (!promoted) continue;
     if (promoted === v.keyLiteral + (v.isExit ? ":exit" : "")) continue;
@@ -428,8 +866,8 @@ function analyzeFile(filePath) {
       line: v.line,
       from: v.keyLiteral + (v.isExit ? ":exit" : ""),
       to: promoted + (v.isExit ? ":exit" : ""),
-      kind: cand.kind,
-      value: cand.value,
+      parentType: cand.parentType ?? null,
+      name: cand.name ?? null,
     });
   }
   return { findings };
@@ -443,7 +881,7 @@ function analyzeFile(filePath) {
 
   let candidates = 0;
   let parsed = 0, skipped = 0;
-  const byKind = { name: 0, parentType: 0 };
+  let nName = 0, nParent = 0, nBoth = 0;
   const rows = [];
   for (const f of all) {
     const r = analyzeFile(f);
@@ -451,12 +889,14 @@ function analyzeFile(filePath) {
     parsed++;
     for (const finding of r.findings) {
       candidates++;
-      byKind[finding.kind]++;
+      if (finding.parentType && finding.name) nBoth++;
+      else if (finding.name) nName++;
+      else if (finding.parentType) nParent++;
       rows.push({ file: f, ...finding });
     }
   }
   console.error(`parsed ${parsed}, skipped ${skipped} (parse error)`);
-  console.error(`candidates: ${candidates}  (name=${byKind.name}, parentType=${byKind.parentType})`);
+  console.error(`candidates: ${candidates}  (name-only=${nName}, parent-only=${nParent}, both=${nBoth})`);
 
   if (wantJson) {
     process.stdout.write(JSON.stringify(rows, null, 2));
@@ -474,7 +914,10 @@ function analyzeFile(filePath) {
     const rel = file.replace(/^\/Users\/ericsan\/(node_modules\/|Development\/OpenSource\/Ez\/js\/node_modules\/)/, "");
     console.log(rel);
     for (const r of frows) {
-      console.log(`  L${r.line}  '${r.from}' → '${r.to}'  (${r.kind}=${JSON.stringify(r.value)})`);
+      const parts = [];
+      if (r.parentType) parts.push(`parent=${JSON.stringify(r.parentType)}`);
+      if (r.name) parts.push(`name=${JSON.stringify(r.name)}`);
+      console.log(`  L${r.line}  '${r.from}' → '${r.to}'  (${parts.join(", ")})`);
     }
   }
 })();
