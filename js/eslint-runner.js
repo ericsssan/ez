@@ -2591,11 +2591,33 @@ class SourceCode {
 
     // Function scope: add implicit 'arguments' variable (not for arrow functions).
     // Use SF_HAS_ARGUMENTS flag set by Zig for non-arrow function scopes only.
+    //
+    // Same drift class as builtin globals (see _mkGlobalVar): the
+    // implicit `arguments` symbol isn't in the Zig CSR, so refs to it
+    // populate only via `_buildScopeRefsAndThrough`'s late-resolution
+    // loop. Install a `references` getter that triggers the cascade
+    // on first read so `prefer-rest-params` (which reads
+    // argumentsVar.references) sees the same data whether it runs
+    // first or after another rule has touched scope.through.
     const flags16 = ast._scopeFlags ? ast._scopeFlags[scopeId] : 0;
     if (kind === 2 && (flags16 & SF_HAS_ARGUMENTS) !== 0 && !set.has('arguments')) {
-      const argsVar = { name: 'arguments', defs: [], references: [], identifiers: [],
+      const argsVar = { name: 'arguments', defs: [], identifiers: [],
         scope, eslintUsed: false, writeable: false,
-        isRead: () => false, isWritten: () => false };
+        isRead: () => false, isWritten: () => false,
+        _refs: null };
+      Object.defineProperty(argsVar, "references", {
+        get() {
+          if (this._refs === null) {
+            this._refs = [];
+            const s = this.scope;
+            if (s && typeof s._ensureRefsThrough === "function") s._ensureRefsThrough();
+          }
+          return this._refs;
+        },
+        set(v) { this._refs = v; },
+        configurable: true,
+        enumerable: true,
+      });
       set.set('arguments', argsVar);
       variables.push(argsVar);
     }

@@ -846,8 +846,21 @@ fn resolveFullImpl(
             // Default canonical = self.  Below we overwrite to the first sibling
             // for var/function_decl redeclarations.
             try sym_to_canonical.append(sa, sym_id);
+            // hoist_map is consulted by the retry pass at end-of-resolve to
+            // patch up forward-references (refs that fired before their
+            // binding was visible in the live scope_map).  Two flavours:
+            //
+            //   • var / function_decl: keyed by (name_hash, var-scope id) —
+            //     the retry walks var-scope ancestors. Sibling redeclarations
+            //     route to the first sym (canonical-by-source-order).
+            //   • let / const / class / etc.: keyed by (name_hash, lexical
+            //     scope id) — the retry's lexical walk handles the
+            //     "closure captures a let declared later in source" case.
+            //     E.g. `let x; const cb = () => { x = 1; };` where the
+            //     callback's body fires its `.reference` event before the
+            //     `let x` declare event in the parent scope.
+            const hk = name_hash ^ (@as(u64, scope_id.toInt()) *% 0x9e3779b97f4a7c15);
             if (kind == .@"var" or kind == .function_decl) {
-                const hk = name_hash ^ (@as(u64, scope_id.toInt()) *% 0x9e3779b97f4a7c15);
                 const ghop = try hoist_map.getOrPut(sa, hk);
                 if (!ghop.found_existing) {
                     ghop.value_ptr.* = sym_id;
@@ -855,6 +868,14 @@ fn resolveFullImpl(
                     // Sibling redeclaration — route refs to the first one.
                     sym_to_canonical.items[sym_id.toInt()] = ghop.value_ptr.*;
                 }
+            } else {
+                // First-write wins for non-redeclarable decls — preserves
+                // the canonical-by-source-order property for downstream
+                // resolution. Subsequent same-name decls in the same scope
+                // are duplicate-decl errors (the parser handles those
+                // separately) and shouldn't shadow the original entry.
+                const ghop = try hoist_map.getOrPut(sa, hk);
+                if (!ghop.found_existing) ghop.value_ptr.* = sym_id;
             }
             const gop = try scope_map.getOrPut(sa, name_hash);
             const prev: ?SymbolId = if (gop.found_existing) gop.value_ptr.* else null;
@@ -1145,7 +1166,10 @@ fn resolveFullImpl(
                 }
             }
 
-            // Walk var-scope ancestors, O(1) hash lookup per level.
+            // Walk var-scope ancestors first — O(1) hash lookup per level.
+            // This catches forward refs to var/function_decl (their decl_map
+            // entries are keyed by var-scope id).
+            var resolved_in_var_walk = false;
             while (vsid.toInt() < scope_count) {
                 const hk = name_hash ^ (@as(u64, vsid.toInt()) *% 0x9e3779b97f4a7c15);
                 if (hoist_map.get(hk)) |sym_id| {
@@ -1154,6 +1178,7 @@ fn resolveFullImpl(
                     if (rk.isRead()) symbols.markRead(sym_id);
                     if (rk.isWrite() and rk != .write_init) symbols.markWritten(sym_id);
                     if (rk == .type_of) symbols.markTypeOf(sym_id);
+                    resolved_in_var_walk = true;
                     break;
                 }
                 var p = scopes.parent(vsid);
@@ -1171,6 +1196,32 @@ fn resolveFullImpl(
                 }
                 if (p.toInt() == vsid.toInt()) break;
                 vsid = p;
+            }
+
+            // If the var-scope walk didn't resolve, walk the FULL lexical
+            // ancestor chain — block scopes too. This catches forward refs
+            // to let/const/class bindings (their decl_map entries are
+            // keyed by lexical scope id, not the enclosing var-scope id).
+            // Pattern this fixes: `compilerHost = { writeFile: (n,t) => {
+            // sourceMapText = t; }, ... }; let sourceMapText;` — the
+            // closure captures the let-declared var even though the
+            // .reference fires before the .declare in source order.
+            if (!resolved_in_var_walk) {
+                var lid = ref_scope;
+                while (lid.toInt() < scope_count) {
+                    const hk = name_hash ^ (@as(u64, lid.toInt()) *% 0x9e3779b97f4a7c15);
+                    if (hoist_map.get(hk)) |sym_id| {
+                        references.resolve(ref_id, sym_id);
+                        const rk = references.getKind(ref_id);
+                        if (rk.isRead()) symbols.markRead(sym_id);
+                        if (rk.isWrite() and rk != .write_init) symbols.markWritten(sym_id);
+                        if (rk == .type_of) symbols.markTypeOf(sym_id);
+                        break;
+                    }
+                    const p = scopes.parent(lid);
+                    if (!p.isValid() or p.toInt() == lid.toInt()) break;
+                    lid = p;
+                }
             }
         }
     }
