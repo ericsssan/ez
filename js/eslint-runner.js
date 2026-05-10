@@ -5006,6 +5006,15 @@ function _fuseHandlers(handlers, typeName) {
  * Predicate hoisting: context._skipSet null check done ONCE outside the loop,
  * not N times inside.
  */
+// Hot inner loop, intentionally free of try/catch. V8/JSC don't inline rule
+// bodies through a `try` boundary; pulling the loop into a dedicated function
+// lets each engine pick the best optimisation tier for the inner calls. The
+// CALLER wraps `_runItemsBare(...)` in try/catch, but the inner function's
+// own optimisation is independent of whatever the caller does with its result.
+function _runItemsBare(inners, n, node) {
+  for (let h = 0; h < n; h++) inners[h](node);
+}
+
 function _invokeFused(desc, node, nodeIdx, context) {
   context._currentNodeIdx = nodeIdx;
   const skip = context._skipSet;
@@ -5030,14 +5039,18 @@ function _invokeFused(desc, node, nodeIdx, context) {
       arr._inners = inners;
     }
     if (!anySkipped) {
-      let h = 0;
+      // Hot loop is extracted into _runItemsBare (no per-iteration
+      // try/catch). The outer try wraps the function call. On a rule
+      // throw, snapshot+rollback keeps diagnostic correctness without
+      // duplicating reports.
+      const reportsBefore = context._reports.length;
       try {
-        for (; h < n; h++) inners[h](node);
+        _runItemsBare(inners, n, node);
       } catch (err) {
-        context._reports.push({ ruleId: arr[h].ruleId, message: `Plugin error: ${err.message}` });
-        for (let k = h + 1; k < n; k++) {
-          try { inners[k](node); }
-          catch (e) { context._reports.push({ ruleId: arr[k].ruleId, message: `Plugin error: ${e.message}` }); }
+        context._reports.length = reportsBefore;
+        for (let h = 0; h < n; h++) {
+          try { inners[h](node); }
+          catch (e) { context._reports.push({ ruleId: arr[h].ruleId, message: `Plugin error: ${e.message}` }); }
         }
       }
     } else if (!skip._allSkipped) {
