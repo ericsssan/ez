@@ -629,25 +629,38 @@ fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []co
     // Check for syntax error codes: TS1xxx (1000-1999, exactly 4 digits after TS).
     // Must NOT match TS1xxxx (5+ digit codes like TS18050 which are semantic errors).
     // Skip codes that are semantic/type-checker/target-dependent (not implementable at parse time).
+    // Also recognize a small allowlist of 5-digit codes that ARE parse errors
+    // (currently just TS18007 — JSX comma-in-expression-container).
+    const syntactic_5digit = [_]u32{ 18007 };
     var i: usize = 0;
     while (i + 6 < content.len) : (i += 1) {
-        if (content[i] == 'T' and content[i + 1] == 'S' and content[i + 2] == '1' and
-            isDigit(content[i + 3]) and isDigit(content[i + 4]) and isDigit(content[i + 5]) and
-            (i + 6 >= content.len or !isDigit(content[i + 6])))
-        {
-            // Parse the 4-digit code.
-            const d1 = content[i + 2] - '0';
+        if (content[i] != 'T' or content[i + 1] != 'S') continue;
+        // Walk forward grabbing digits.
+        var j: usize = i + 2;
+        while (j < content.len and isDigit(content[j])) j += 1;
+        const ndigits = j - (i + 2);
+        if (ndigits == 4) {
+            // 4-digit TS1xxx code.
+            if (content[i + 2] != '1') { i = j; continue; }
             const d2 = content[i + 3] - '0';
             const d3 = content[i + 4] - '0';
             const d4 = content[i + 5] - '0';
-            const code: u16 = @as(u16, d1) * 1000 + @as(u16, d2) * 100 + @as(u16, d3) * 10 + d4;
-            // Skip semantic-only / target-dependent codes.
+            const code: u16 = 1000 + @as(u16, d2) * 100 + @as(u16, d3) * 10 + d4;
             var is_semantic = false;
             for (semantic_only_codes) |sc| {
                 if (sc == code) { is_semantic = true; break; }
             }
             if (!is_semantic) return true;
+        } else if (ndigits == 5) {
+            // 5-digit code — check the allowlist.
+            var code5: u32 = 0;
+            var k: usize = i + 2;
+            while (k < j) : (k += 1) code5 = code5 * 10 + (content[k] - '0');
+            for (syntactic_5digit) |sc| {
+                if (sc == code5) return true;
+            }
         }
+        i = j;
     }
     return false;
 }
