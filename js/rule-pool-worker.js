@@ -29,7 +29,24 @@ const path = require("path");
 let _lintSource = null;
 let _ready = false;
 
-self.onmessage = async ({ data }) => {
+// Top-level rejection guard. An uncaught throw inside the async handler
+// resolves to an unhandled rejection and the lint request hangs forever.
+// Catch here so the main thread always sees a result message.
+self.onmessage = (msg) => {
+  _handle(msg.data).catch((err) => {
+    if (msg.data?.type === "lint") {
+      self.postMessage({
+        type: "result",
+        reqId: msg.data.reqId,
+        compact: null,
+        crashMsg: `Worker handler error: ${err?.message ?? err}`,
+        ms: 0,
+      });
+    }
+  });
+};
+
+async function _handle(data) {
   if (data.type === "init") {
     // Eager-load api.js so the first lint message hits warm modules.
     // The big cost (~310 ms with bytecode cache) is the rules.bundle
@@ -99,4 +116,4 @@ self.onmessage = async ({ data }) => {
       ms: performance.now() - t0,
     });
   }
-};
+}

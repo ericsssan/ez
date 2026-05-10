@@ -45,38 +45,54 @@ function _initPool(nWorkers) {
   let nextId = 0;
   let rr = 0;
 
+  // Wait until every worker has signalled `ready` (post-init). Errors
+  // during init reject the init promise — otherwise a silent worker
+  // crash on bundle load would leave callers awaiting a `ready` that
+  // never arrives.
+  const initPromises = [];
   for (let i = 0; i < nWorkers; i++) {
     const w = new Worker(WORKER_PATH);
-    w.addEventListener("message", ({ data }) => {
-      if (data.type !== "result") return;
-      const cb = pending.get(data.reqId);
-      if (!cb) return;
-      pending.delete(data.reqId);
-      cb.resolve({ compact: data.compact, crashMsg: data.crashMsg, ms: data.ms });
-    });
-    w.addEventListener("error", (e) => {
-      // Surface to whichever request is in flight on this worker —
-      // imperfect attribution but at least it's not silent.
-      for (const [id, cb] of pending) {
-        cb.reject(new Error(`Worker error: ${String(e?.message ?? e)}`));
-        pending.delete(id);
-      }
-    });
+    initPromises.push(new Promise((resolve, reject) => {
+      let initialised = false;
+      w.addEventListener("message", ({ data }) => {
+        if (data.type === "ready" && !initialised) {
+          initialised = true;
+          resolve();
+          return;
+        }
+        if (data.type !== "result") return;
+        const cb = pending.get(data.reqId);
+        if (!cb) return;
+        pending.delete(data.reqId);
+        cb.resolve({ compact: data.compact, crashMsg: data.crashMsg, ms: data.ms });
+      });
+      w.addEventListener("error", (e) => {
+        const msg = `Worker error: ${String(e?.message ?? e)}`;
+        if (!initialised) { reject(new Error(`init failed — ${msg}`)); return; }
+        // Errored after init: surface to in-flight requests on this
+        // worker (best-effort attribution).
+        for (const [id, cb] of pending) {
+          cb.reject(new Error(msg));
+          pending.delete(id);
+        }
+      });
+      // Belt + suspenders: timeout the init so a wedged worker doesn't
+      // hang lintWithPool callers forever. 30s is generous (cold bundle
+      // import is ~310 ms with the JSC bytecode cache, ~440 ms without).
+      const t = setTimeout(() => {
+        if (!initialised) {
+          initialised = true; // prevent double-reject from a late "ready"
+          reject(new Error(`Worker init timeout (${WORKER_PATH})`));
+        }
+      }, 30_000);
+      // Don't anchor the event loop on the timeout itself.
+      if (typeof t.unref === "function") t.unref();
+      w.postMessage({ type: "init" });
+    }));
     workers.push(w);
   }
 
-  // Wait until every worker has signalled `ready` (post-init).
-  const ready = Promise.all(
-    workers.map((w) => new Promise((resolve) => {
-      const onReady = ({ data }) => {
-        if (data.type === "ready") { w.removeEventListener("message", onReady); resolve(); }
-      };
-      w.addEventListener("message", onReady);
-      w.postMessage({ type: "init" });
-    })),
-  );
-
-  return ready.then(() => ({
+  return Promise.all(initPromises).then(() => ({
     workers,
     pending,
     nextId() { return nextId++; },
@@ -130,7 +146,22 @@ async function lintWithPool(source, options = {}) {
     if (rulesPart === null) return Promise.resolve({ compact: null, crashMsg: null, ms: 0 });
     const reqId = pool.nextId();
     return new Promise((resolve, reject) => {
-      pool.register(reqId, resolve, reject);
+      // Watchdog: if a worker never replies (uncaught throw, abnormal
+      // exit) within REQ_TIMEOUT_MS, reject so the caller surfaces
+      // failure rather than hanging the process. 60 s is generous —
+      // typescript.js takes ~2.5 s parallel; anything past 10 s means
+      // the worker is wedged.
+      const timer = setTimeout(() => {
+        const cb = pool.pending.get(reqId);
+        if (!cb) return;
+        pool.pending.delete(reqId);
+        cb.reject(new Error(`rule-pool: worker request ${reqId} timed out after 60 s`));
+      }, 60_000);
+      if (typeof timer.unref === "function") timer.unref();
+      pool.register(reqId,
+        (val) => { clearTimeout(timer); resolve(val); },
+        (err) => { clearTimeout(timer); reject(err); },
+      );
       pool.nextWorker().postMessage({
         type: "lint",
         reqId,
