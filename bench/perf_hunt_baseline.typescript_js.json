@@ -2,12 +2,12 @@
   "fixture": "typescript.js",
   "bytes": 9143423,
   "ruleCount": 396,
-  "savedAt": "2026-05-10T04:56:42.051Z",
+  "savedAt": "2026-05-10T09:25:46.496Z",
   "totals": {
-    "ezAllInOneMs": 4524.9,
-    "oxBatchMs": 795.3,
-    "oxBaselineMs": 132.4,
-    "ezTotalDiags": 199976
+    "ezAllInOneMs": 2450.6,
+    "oxBatchMs": 860.6,
+    "oxBaselineMs": 138.2,
+    "ezTotalDiags": 201515
   },
   "rules": {
     "accessor-pairs": {
@@ -59,7 +59,7 @@
       "diags": 0
     },
     "func-names": {
-      "diags": 330
+      "diags": 178
     },
     "func-style": {
       "diags": 11073
@@ -140,7 +140,7 @@
       "diags": 56
     },
     "no-console": {
-      "diags": 5
+      "diags": 0
     },
     "no-const-assign": {
       "diags": 0
@@ -227,7 +227,7 @@
       "diags": 98
     },
     "no-func-assign": {
-      "diags": 328
+      "diags": 1
     },
     "no-global-assign": {
       "diags": 0
@@ -245,7 +245,7 @@
       "diags": 29096
     },
     "no-inner-declarations": {
-      "diags": 1
+      "diags": 0
     },
     "no-invalid-regexp": {
       "diags": 0
@@ -392,7 +392,7 @@
       "diags": 0
     },
     "no-unassigned-vars": {
-      "diags": 2
+      "diags": 4
     },
     "no-undef": {
       "diags": 77
@@ -500,7 +500,7 @@
       "diags": 1
     },
     "prefer-rest-params": {
-      "diags": 1
+      "diags": 0
     },
     "prefer-spread": {
       "diags": 0
@@ -512,7 +512,7 @@
       "diags": 1
     },
     "radix": {
-      "diags": 5
+      "diags": 0
     },
     "require-await": {
       "diags": 0
@@ -959,7 +959,7 @@
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-set-has": {
-      "diags": 160
+      "diags": 126
     },
     "eslint-plugin-unicorn/prefer-set-size": {
       "diags": 0
@@ -1022,7 +1022,7 @@
       "diags": 0
     },
     "eslint-plugin-n/global-require": {
-      "diags": 9
+      "diags": 18
     },
     "eslint-plugin-n/handle-callback-err": {
       "diags": 0
@@ -1037,10 +1037,10 @@
       "diags": 0
     },
     "eslint-plugin-n/no-process-env": {
-      "diags": 6
+      "diags": 12
     },
     "eslint-plugin-n/no-process-exit": {
-      "diags": 1
+      "diags": 2
     },
     "eslint-plugin-n/prefer-node-protocol": {
       "diags": 7
@@ -1100,10 +1100,10 @@
       "diags": 0
     },
     "eslint-plugin-jsdoc/check-tag-names": {
-      "diags": 2
+      "diags": 0
     },
     "eslint-plugin-jsdoc/empty-tags": {
-      "diags": 1
+      "diags": 0
     },
     "eslint-plugin-jsdoc/implements-on-classes": {
       "diags": 0
@@ -1154,7 +1154,7 @@
       "diags": 182
     },
     "eslint-plugin-sonarjs/max-lines": {
-      "diags": 1
+      "diags": 2
     },
     "eslint-plugin-sonarjs/no-fallthrough": {
       "diags": 0
@@ -1163,13 +1163,13 @@
       "diags": 106
     },
     "eslint-plugin-sonarjs/no-labels": {
-      "diags": 2
+      "diags": 4
     },
     "eslint-plugin-sonarjs/no-unused-vars": {
-      "diags": 6
+      "diags": 12
     },
     "eslint-plugin-sonarjs/block-scoped-var": {
-      "diags": 7
+      "diags": 14
     },
     "eslint-plugin-sonarjs/no-empty-character-class": {
       "diags": 0
