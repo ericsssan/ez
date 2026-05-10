@@ -20199,8 +20199,8 @@
     "react/jsx-props-no-multi-spaces": {
       "runner": {
         "fn": 0,
-        "fp": 0,
-        "crash": 1
+        "fp": 1,
+        "crash": 0
       },
       "native": {
         "fn": 34,
@@ -20828,9 +20828,9 @@
     },
     "react/jsx-max-props-per-line": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
-        "crash": 2
+        "crash": 0
       },
       "native": {
         "fn": 42,
@@ -21135,8 +21135,8 @@
     "react/jsx-first-prop-new-line": {
       "runner": {
         "fn": 1,
-        "fp": 0,
-        "crash": 1
+        "fp": 1,
+        "crash": 0
       },
       "native": {
         "fn": 17,
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10191,
-    "runnerCasesPerSec": 8978,
-    "nativeCasesPerSec": 82602,
+    "totalElapsedMs": 9939,
+    "runnerCasesPerSec": 9243,
+    "nativeCasesPerSec": 84123,
     "totalCases": 73103
   }
 }

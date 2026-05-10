@@ -640,7 +640,7 @@ const semantic_only_codes = [_]u16{
     1363, // Type-only export-equals (verbatimModuleSyntax)
     1380, // 'import =' / 'export =' (verbatimModuleSyntax)
     1392, // Import attribute resolution-mode (config)
-    1434, // 'import.meta' meta property requires config (target)
+    // (TS1434 is class-member parse error in some contexts — keep as syntactic.)
     1453, // 'resolution-mode' attribute (config)
     1454, // 'resolution-mode' attribute (config)
     1455, // 'resolution-mode' attribute (config)
@@ -661,9 +661,10 @@ fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []co
     // Check for syntax error codes: TS1xxx (1000-1999, exactly 4 digits after TS).
     // Must NOT match TS1xxxx (5+ digit codes like TS18050 which are semantic errors).
     // Skip codes that are semantic/type-checker/target-dependent (not implementable at parse time).
-    // Also recognize a small allowlist of 5-digit codes that ARE parse errors
-    // (currently just TS18007 — JSX comma-in-expression-container).
-    const syntactic_5digit = [_]u32{ 18007 };
+    // Also recognize a small allowlist of 5-digit codes that ARE parse errors:
+    //   TS17021 — Unicode escape sequence cannot appear here (JSX tag name)
+    //   TS18007 — JSX expressions may not use the comma operator
+    const syntactic_5digit = [_]u32{ 17021, 18007 };
     var i: usize = 0;
     while (i + 6 < content.len) : (i += 1) {
         if (content[i] != 'T' or content[i + 1] != 'S') continue;

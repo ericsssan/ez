@@ -88,6 +88,31 @@ fn parseJsxOpeningElement(p: *Parser) Error!NodeIndex {
     // For member expressions like <Foo.Bar />, only the root <Foo> is a variable.
     try emitJsxComponentRef(p, name_node);
 
+    // TS-only: `<Foo<T> />` — JSX type arguments after the tag name. Speculate
+    // so we don't break invalid forms; on failure, restore state and let attribute
+    // parsing handle whatever follows.
+    if (p.is_ts and p.peek() == .less_than) {
+        const saved_tok = p.tok_i;
+        const saved_diag = p.diagnostics.items.len;
+        const saved_nodes = p.nodes.len;
+        const saved_extra = p.extra_data.items.len;
+        const typescript = @import("typescript.zig");
+        const ok = blk: {
+            _ = typescript.parseTypeArguments(p) catch break :blk false;
+            break :blk true;
+        };
+        // After type args, the next token should be `>` (open) or `/` (self-close)
+        // or whitespace+attribute. If we land on something unexpected, backtrack.
+        if (!ok or (p.peek() != .greater_than and p.peek() != .slash and
+                    p.peek() != .identifier and !p.peek().isKeyword()))
+        {
+            p.tok_i = saved_tok;
+            p.diagnostics.shrinkRetainingCapacity(saved_diag);
+            p.nodes.len = @intCast(saved_nodes);
+            p.extra_data.shrinkRetainingCapacity(saved_extra);
+        }
+    }
+
     // Parse attributes until `>` or `/>`.
     const scratch_top = p.scratchLen();
 
@@ -187,9 +212,10 @@ fn parseJsxSimpleName(p: *Parser) Error!NodeIndex {
         // JSX tag/attribute names are matched by the runtime as plain
         // strings against a fixed inventory — unicode escapes (`\uXXXX`)
         // are not valid here. Babel rejects `<\u{2F804}></\u{2F804}>`.
+        // Emit the diagnostic but consume the token so the rest of the
+        // element parses (error recovery — see parseJsxHyphenatedIdent).
         if (p.has_escape_ptr[p.tok_i]) {
             try p.emitError("Unexpected token");
-            return p.makeErrorNode();
         }
         const tok = p.advance();
         return p.addNode(.{
@@ -214,10 +240,11 @@ fn parseJsxHyphenatedIdent(p: *Parser) Error!NodeIndex {
         try p.emitError("Expected JSX name");
         return p.makeErrorNode();
     }
-    // Reject unicode escapes in tag names (see parseJsxSimpleName).
+    // Reject unicode escapes in tag names (see parseJsxSimpleName) — but consume
+    // the offending token so the rest of the JSX element still parses. Without
+    // advancing, the caller would re-enter on the same token and loop.
     if (p.has_escape_ptr[p.tok_i]) {
         try p.emitError("Unexpected token");
-        return p.makeErrorNode();
     }
     const first_tok = p.advance();
 
