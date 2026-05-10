@@ -3202,15 +3202,21 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
     // TS: `(params): ReturnType => body` — return type annotation before arrow.
     // Inside a conditional consequent (`cond ? (...) : alt`), the `:` is genuinely
     // ambiguous: it could open the conditional alternate OR be a typed-arrow return
-    // annotation. Skip the typed-arrow speculation in this position — the `:`
-    // belongs to the conditional. This loses one case (`(p): T => p` as consequent
-    // where the conditional `:` follows the body) but fixes the much more common
-    // `cond ? (val) : arrow_alt` pattern.
-    if (p.is_ts and p.peek() == .colon and !p.in_conditional_consequent) {
+    // annotation. Speculate the typed-arrow path; if we're in conditional context
+    // and the parsed body doesn't leave a `:` for the conditional alternate, the
+    // `:` we ate was the conditional separator — backtrack.
+    if (p.is_ts and p.peek() == .colon) {
         const saved_tok = p.tok_i;
         const saved_diag_len = p.diagnostics.items.len;
         const saved_nodes_len = p.nodes.len;
         const saved_extra_len = p.extra_data.items.len;
+        // Snapshot scratch contents so we can restore even after scratchPop.
+        const params_count = p.scratch.items.len - scratch_top;
+        var params_snapshot: [16]u32 = undefined;
+        const can_snapshot = params_count <= params_snapshot.len;
+        if (can_snapshot) {
+            @memcpy(params_snapshot[0..params_count], p.scratch.items[scratch_top..]);
+        }
         _ = p.advance(); // eat ':'
         const typescript = @import("typescript.zig");
         const prev_in_rt_spec = p.in_return_type;
@@ -3221,7 +3227,6 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
         };
         p.in_return_type = prev_in_rt_spec;
         if (type_ok and p.peek() == .arrow and !p.isOnNewLine()) {
-            // It's an arrow with return type — reinterpret params and build arrow
             const params = p.scratchSlice(scratch_top);
             for (params) |node_raw| {
                 reinterpretAsPattern(p, NodeIndex.fromInt(node_raw));
@@ -3236,26 +3241,48 @@ fn parseParenthesized(p: *Parser) Error!NodeIndex {
             p.syncYieldLex();
             defer p.in_function = saved_fn5;
             defer { p.in_generator = saved_gen5; p.syncYieldLex(); }
+            // Body parses outside this conditional's consequent context; nested
+            // conditionals inside the body should NOT re-trigger our backtrack.
+            const saved_cc = p.in_conditional_consequent;
+            p.in_conditional_consequent = false;
             const body = if (p.peek() == .l_brace)
                 try parseBlockBodyWithStrictChecks(p, params_range, .none)
             else
                 try parseAssignmentExpression(p);
-            const extra = try p.addExtra(ast.ArrowData, .{
-                .params_start = params_range.start,
-                .params_end = params_range.end,
-                .body = body,
-            });
-            return p.addNode(.{
-                .tag = .arrow_fn,
-                .main_token = open_paren,
-                .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
-            });
+            p.in_conditional_consequent = saved_cc;
+            // If we were in conditional consequent and no `:` follows the body,
+            // the typed-arrow interpretation stole the conditional separator.
+            // Backtrack to bare-paren and let the caller see `:` again.
+            if (saved_cc and p.peek() != .colon and can_snapshot) {
+                p.tok_i = saved_tok;
+                p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
+                p.nodes.len = @intCast(saved_nodes_len);
+                p.extra_data.shrinkRetainingCapacity(saved_extra_len);
+                // Restore scratch contents (scratchPop above truncated to scratch_top).
+                p.scratch.shrinkRetainingCapacity(scratch_top);
+                for (params_snapshot[0..params_count]) |raw| {
+                    try p.scratch.append(p.gpa, raw);
+                }
+                // Fall through to the bare-paren interpretation below.
+            } else {
+                const extra = try p.addExtra(ast.ArrowData, .{
+                    .params_start = params_range.start,
+                    .params_end = params_range.end,
+                    .body = body,
+                });
+                return p.addNode(.{
+                    .tag = .arrow_fn,
+                    .main_token = open_paren,
+                    .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+                });
+            }
+        } else {
+            // Type didn't parse or no `=>` — backtrack the type annotation only.
+            p.tok_i = saved_tok;
+            p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
+            p.nodes.len = @intCast(saved_nodes_len);
+            p.extra_data.shrinkRetainingCapacity(saved_extra_len);
         }
-        // Not an arrow — backtrack the type annotation
-        p.tok_i = saved_tok;
-        p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
-        p.nodes.len = @intCast(saved_nodes_len);
-        p.extra_data.shrinkRetainingCapacity(saved_extra_len);
     }
 
     // If `=>` follows, reinterpret as arrow parameters.
