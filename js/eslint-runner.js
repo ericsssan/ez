@@ -6670,29 +6670,28 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   // typescript.js that's ~hundreds of thousands of calls.
   const _astNodeTags = ast._nodeTags;
   const _astNodeCount = ast.nodeCount;
+  // Resolved-parent CSR (Zig-baked, v12+): grouping_expr / ts_parenthesized_type
+  // parents are already skipped. Using it eliminates the per-iteration
+  // T.grouping_expr branch + retry loop in the ancestor walk.
+  const _resolvedPD = ast._resolvedParentData || pd;
 
   function getAncestorsFor(nodeIdx) {
     if (!pd) { _ancestorsBuf.length = 0; return _ancestorsBuf; }
     // esquery expects ancestors[0] = immediate parent (closest first).
-    // Skip grouping_expr (ParenthesizedExpression) parents: nodeView
-    // unwraps them transparently, so they must not appear in the
-    // ancestors array either — otherwise a parenthesized child `(JSX)`
-    // inside a ternary would appear to have a JSXElement parent rather
-    // than the ConditionalExpression.
+    // The resolved-parent CSR walks past parenthesised wrappers
+    // transparently — no ancestors array entry for them, matching the
+    // unwrap that nodeView does at materialisation time.
     //
-    // Inline the NodeView pool lookup. Parents in DFS order have all
-    // been materialised already by the time a child visits, so the
-    // cache hit rate is effectively 100% — skipping the _nodeViewRaw
-    // function frame saves one call per ancestor. Fall back to
-    // _nodeViewRaw on the rare miss (e.g. handlers running inside a
-    // codepath segment closure where the parent wasn't visited yet).
+    // NodeView pool lookup is inlined: parents in DFS order have
+    // all been materialised already, so the cache hit rate is
+    // effectively 100% — skipping the _nodeViewRaw function frame
+    // saves a call per ancestor.
     const _cache = ast._nodeCache;
     let prevP = nodeIdx; // track which child we came from (for method key exclusion)
-    let p = pd[nodeIdx];
+    let p = _resolvedPD[nodeIdx];
     let k = 0;
     while (p !== NONE && p < _astNodeCount) {
       const ptag = _astNodeTags[p];
-      if (ptag === T.grouping_expr) { prevP = p; p = pd[p]; continue; }
       const pNode = _cache[p] !== undefined ? _cache[p] : _nodeViewRaw(ast, p);
       // ESTree inserts a synthetic FunctionExpression between a method
       // definition and its non-key children (body, params). Insert it
@@ -6703,7 +6702,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       }
       _ancestorsBuf[k++] = pNode;
       prevP = p;
-      p = pd[p];
+      p = _resolvedPD[p];
     }
     _ancestorsBuf.length = k;
     return _ancestorsBuf;
