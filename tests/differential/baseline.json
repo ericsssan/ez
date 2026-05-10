@@ -7472,8 +7472,8 @@
     },
     "rest-spread-spacing": {
       "runner": {
-        "fn": 40,
-        "fp": 40,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -7544,8 +7544,8 @@
     },
     "keyword-spacing": {
       "runner": {
-        "fn": 229,
-        "fp": 227,
+        "fn": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -7958,8 +7958,8 @@
     },
     "no-trailing-spaces": {
       "runner": {
-        "fn": 41,
-        "fp": 41,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -7994,8 +7994,8 @@
     },
     "array-bracket-newline": {
       "runner": {
-        "fn": 63,
-        "fp": 63,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8138,8 +8138,8 @@
     },
     "yield-star-spacing": {
       "runner": {
-        "fn": 12,
-        "fp": 12,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8480,8 +8480,8 @@
     },
     "computed-property-spacing": {
       "runner": {
-        "fn": 90,
-        "fp": 90,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8552,8 +8552,8 @@
     },
     "arrow-spacing": {
       "runner": {
-        "fn": 25,
-        "fp": 25,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8606,8 +8606,8 @@
     },
     "no-undef-init": {
       "runner": {
-        "fn": 8,
-        "fp": 8,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8732,8 +8732,8 @@
     },
     "template-curly-spacing": {
       "runner": {
-        "fn": 66,
-        "fp": 66,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8768,8 +8768,8 @@
     },
     "space-unary-ops": {
       "runner": {
-        "fn": 19,
-        "fp": 19,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9668,8 +9668,8 @@
     },
     "generator-star-spacing": {
       "runner": {
-        "fn": 86,
-        "fp": 30,
+        "fn": 56,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9812,8 +9812,8 @@
     },
     "object-curly-spacing": {
       "runner": {
-        "fn": 39,
-        "fp": 39,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10046,8 +10046,8 @@
     },
     "space-before-blocks": {
       "runner": {
-        "fn": 38,
-        "fp": 36,
+        "fn": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10208,8 +10208,8 @@
     },
     "space-in-parens": {
       "runner": {
-        "fn": 50,
-        "fp": 50,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10568,8 +10568,8 @@
     },
     "no-multiple-empty-lines": {
       "runner": {
-        "fn": 29,
-        "fp": 29,
+        "fn": 1,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -10694,8 +10694,8 @@
     },
     "semi-spacing": {
       "runner": {
-        "fn": 32,
-        "fp": 32,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10856,8 +10856,8 @@
     },
     "no-extra-label": {
       "runner": {
-        "fn": 15,
-        "fp": 15,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10874,8 +10874,8 @@
     },
     "function-paren-newline": {
       "runner": {
-        "fn": 57,
-        "fp": 55,
+        "fn": 2,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11234,8 +11234,8 @@
     },
     "object-curly-newline": {
       "runner": {
-        "fn": 59,
-        "fp": 59,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11288,8 +11288,8 @@
     },
     "lines-around-directive": {
       "runner": {
-        "fn": 85,
-        "fp": 77,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11522,8 +11522,8 @@
     },
     "array-bracket-spacing": {
       "runner": {
-        "fn": 39,
-        "fp": 39,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11630,8 +11630,8 @@
     },
     "key-spacing": {
       "runner": {
-        "fn": 66,
-        "fp": 66,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11792,8 +11792,8 @@
     },
     "block-spacing": {
       "runner": {
-        "fn": 50,
-        "fp": 50,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11936,8 +11936,8 @@
     },
     "switch-colon-spacing": {
       "runner": {
-        "fn": 12,
-        "fp": 12,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12278,8 +12278,8 @@
     },
     "multiline-ternary": {
       "runner": {
-        "fn": 26,
-        "fp": 26,
+        "fn": 4,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -12476,8 +12476,8 @@
     },
     "func-call-spacing": {
       "runner": {
-        "fn": 30,
-        "fp": 30,
+        "fn": 3,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9942,
-    "runnerCasesPerSec": 9223,
-    "nativeCasesPerSec": 82789,
+    "totalElapsedMs": 9897,
+    "runnerCasesPerSec": 9266,
+    "nativeCasesPerSec": 87549,
     "totalCases": 73103
   }
 }

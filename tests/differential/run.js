@@ -390,7 +390,24 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // Re-use the caller-provided plugin identity (same object → buildVisitorMap fast path),
     // or create a fresh one (cold path, for backward compatibility if called standalone).
     const plugin = rulePlugin || {
-      meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
+      meta: {
+        name: ruleName,
+        defaultOptions: ruleModule.meta?.defaultOptions,
+        schema: ruleModule.meta?.schema,
+        // Forward `messages` so the runner can render messageId-style
+        // reports against the same templates ESLint uses. Stripping
+        // them was causing modern rules (`context.report({ messageId,
+        // data })`) to surface the messageId as the message text — the
+        // strict diagnostic comparison then saw a text mismatch and
+        // counted every such case as both FN and FP.
+        messages: ruleModule.meta?.messages,
+        // Same goes for `fixable`: rule-context.report's fix-fn slot
+        // is only invoked when the rule meta declares the rule as
+        // fixable. Without this, fix output is dropped on the ez side
+        // and the comparator's fix-key mismatches even when the rule
+        // computed the right fix.
+        fixable: ruleModule.meta?.fixable,
+      },
       create: ruleModule.create,
     };
     const _pl0 = Date.now();
@@ -719,8 +736,19 @@ if (fs.existsSync(ESLINT_ROOT)) {
 
     // Create plugin once per rule so runPlugins can take the fast path on all subsequent cases.
     // The fast path skips _cachedVM rebuild and updates options per-case via ruleConfig.
+    // Forward messages + fixable so the runner renders messageId-style
+    // reports identically to ESLint and surfaces fix output. (Without
+    // these, modern rules' diagnostics surface the messageId as the
+    // message text and fix functions never run, producing thousands
+    // of bogus FN+FP in the comparison.)
     const rulePlugin = {
-      meta: { name: ruleName, defaultOptions: ruleModule.meta?.defaultOptions, schema: ruleModule.meta?.schema },
+      meta: {
+        name: ruleName,
+        defaultOptions: ruleModule.meta?.defaultOptions,
+        schema: ruleModule.meta?.schema,
+        messages: ruleModule.meta?.messages,
+        fixable: ruleModule.meta?.fixable,
+      },
       create: ruleModule.create,
     };
 

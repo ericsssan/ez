@@ -4064,6 +4064,11 @@ class RuleFixer {
     return { range, text };
   }
 
+  /** Remove the source text in a range [start, end]. */
+  removeRange(range) {
+    return { range, text: "" };
+  }
+
   /** Insert text before a node or token. */
   insertTextBefore(nodeOrToken, text) {
     const [start] = this._rangeOf(nodeOrToken);
