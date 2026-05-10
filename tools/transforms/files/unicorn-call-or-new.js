@@ -36,9 +36,14 @@ export function transform(src) {
   }
 
   // 1. Fast-path inside `create()` when options is undefined.
+  //    Plus: short-circuit string and array name-only options without
+  //    constructing the options-object wrapper or running the generic
+  //    option-merging path. Most rules call `isCallExpression(node, "foo")`
+  //    or `isCallExpression(node, ["foo", "bar"])`. Both reduce to a
+  //    callee Identifier-name check.
   src = src.replace(
     "function create(node, options, types) {\n\tif (!types.includes(node?.type)) {\n\t\treturn false;\n\t}",
-    "function create(node, options, types) {\n\tif (!types.includes(node?.type)) {\n\t\treturn false;\n\t}\n\tif (options === undefined) {\n\t\treturn true;\n\t}"
+    `function create(node, options, types) {\n\tif (!types.includes(node?.type)) {\n\t\treturn false;\n\t}\n\tif (options === undefined) {\n\t\treturn true;\n\t}\n\t// ez fast-path: string / string[] options reduce to a name match\n\t// on a non-computed Identifier callee. Skips the options-object\n\t// allocation and the generic argument/length checks.\n\tif (typeof options === 'string') {\n\t\tconst _c = node.callee;\n\t\treturn _c !== null && _c !== undefined && _c.type === 'Identifier' && _c.name === options;\n\t}\n\tif (Array.isArray(options)) {\n\t\tconst _c = node.callee;\n\t\treturn _c !== null && _c !== undefined && _c.type === 'Identifier' && options.includes(_c.name);\n\t}`
   );
 
   // 2. Inline the no-options branch of the three exported wrappers.
