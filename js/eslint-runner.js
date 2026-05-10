@@ -3620,9 +3620,20 @@ class SourceCode {
     const sc = this;
     // Add tokens/comments directly on the root node instance so that
     // rules using sourceCode.ast.tokens/body/comments all work correctly.
-    root.comments = []; // no comments in ez yet
     Object.defineProperty(root, 'tokens', {
       get() { return sc._getAllTokens(); },
+      configurable: true, enumerable: true,
+    });
+    Object.defineProperty(root, 'comments', {
+      get() {
+        // Lazily build the full comment list from the buffer's CSR. Espree exposes
+        // every parsed comment on Program.comments; rules like max-len, capitalized-comments,
+        // spaced-comment iterate over this list.
+        if (sc._allComments !== undefined) return sc._allComments;
+        const ast = sc._ast;
+        sc._allComments = ast.commentsInRange ? ast.commentsInRange(0, ast.sourceLen) : [];
+        return sc._allComments;
+      },
       configurable: true, enumerable: true,
     });
     this._astObj = root;
