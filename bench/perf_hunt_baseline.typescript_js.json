@@ -2,11 +2,11 @@
   "fixture": "typescript.js",
   "bytes": 9143423,
   "ruleCount": 396,
-  "savedAt": "2026-05-10T03:15:31.191Z",
+  "savedAt": "2026-05-10T03:28:59.163Z",
   "totals": {
-    "ezAllInOneMs": 4555,
-    "oxBatchMs": 781.6,
-    "oxBaselineMs": 128.1,
+    "ezAllInOneMs": 4519.5,
+    "oxBatchMs": 782.2,
+    "oxBaselineMs": 131.2,
     "ezTotalDiags": 199976
   },
   "rules": {
