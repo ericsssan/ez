@@ -2507,10 +2507,12 @@ class SourceCode {
             const v = set.get(name);
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
             v.eslintExplicitGlobalComments.push(syntheticComment);
+            v.eslintExplicitGlobal = true;
             if (isWritable) v.writeable = true;
           } else {
             const globalVar = { name, defs: [], references: [], identifiers: [],
               scope: globalScopeRef, eslintUsed: false, writeable: isWritable,
+              eslintExplicitGlobal: true,
               eslintExplicitGlobalComments: [syntheticComment],
               isRead: () => false, isWritten: () => false };
             set.set(name, globalVar);
@@ -2556,6 +2558,7 @@ class SourceCode {
           if (gVar.eslintExplicitGlobalComments) {
             if (!v.eslintExplicitGlobalComments) v.eslintExplicitGlobalComments = [];
             v.eslintExplicitGlobalComments.push(...gVar.eslintExplicitGlobalComments);
+            v.eslintExplicitGlobal = true;
           }
           // Propagate writeable so no-implicit-globals skips user vars shadowing writable globals.
           if (gVar.writeable !== undefined && v.writeable === undefined) {
@@ -4155,7 +4158,7 @@ class RuleFixer {
 // rules' fix functions have side effects that the rule's iterate
 // loop depends on (e.g. counters, fixer-output tracking).
 class _LazyReport {
-  constructor(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, severity) {
+  constructor(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, severity, suggestions) {
     this.ruleId = ruleId;
     this._descriptor = descriptor;
     this._startIdx = startIdx;
@@ -4169,6 +4172,7 @@ class _LazyReport {
     // _mergeFixes (called by the runner before _LazyReport) already returns the
     // canonical ESLint fix shape: a single {range,text} or undefined. Pass through.
     this.fix = fix || null;
+    this.suggestions = suggestions || null;
     this._loc = undefined;     // sentinel: not yet computed
     this._message = undefined; // sentinel: not yet resolved
     this._node = undefined;    // sentinel: not yet computed
@@ -4264,12 +4268,52 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
       }
     }
   }
+  // Suggestions: opt-in code actions that aren't auto-applied. Each suggest entry
+  // has its own messageId/desc + fix. ESLint emits these as `message.suggestions`,
+  // with each suggestion's fix in the same merged-shape as descriptor.fix.
+  let suggestions;
+  if (Array.isArray(descriptor.suggest) && descriptor.suggest.length > 0) {
+    suggestions = [];
+    for (let si = 0; si < descriptor.suggest.length; si++) {
+      const s = descriptor.suggest[si];
+      if (!s) continue;
+      let sFix;
+      if (typeof s.fix === 'function') {
+        try {
+          const fixer = new RuleFixer(ctx._ast.source);
+          const r = s.fix(fixer);
+          if (r) {
+            let arr = (typeof r[Symbol.iterator] === 'function' && typeof r.range === 'undefined') ? [...r] : [r];
+            arr = arr.filter(Boolean);
+            sFix = _mergeFixes(arr, ctx._ast.source);
+          }
+        } catch (err) { /* fall through with sFix=undefined */ }
+      }
+      // Resolve description: prefer explicit `desc`, then messageId lookup.
+      let sDesc = s.desc;
+      if (sDesc === undefined && s.messageId && ruleMeta?.messages) {
+        const tpl = ruleMeta.messages[s.messageId] || s.messageId;
+        sDesc = s.data ? tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => s.data[k] ?? `{{${k}}}`) : tpl;
+      }
+      // Mirror ESLint's `{...suggestInfo, desc, fix}` shape so JSON.stringify
+      // compares equal. Spread original (keeping the user's `fix` function in
+      // the same key position) so `out.fix = sFix` replaces it in place — that
+      // preserves the {messageId, fix, desc} order ESLint emits when only
+      // messageId is provided. Then `out.desc = ...` appends desc if absent.
+      const out = { ...s };
+      if (sDesc !== undefined) out.desc = sDesc;
+      if (sFix !== undefined) out.fix = sFix;
+      else delete out.fix; // strip the user's fix function if we couldn't resolve a fix
+      suggestions.push(out);
+    }
+    if (suggestions.length === 0) suggestions = undefined;
+  }
   // The conformance oracle (extracted via RuleTester.run in extract.js)
   // emits severity=1 for invalid cases — that's the value the
   // comparator sees on the ESLint side. Match it to keep the
   // differential apples-to-apples. (Production callers can still
   // override per rule via the configured severity in `ruleConfig`.)
-  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, 1));
+  ctx._reports.push(new _LazyReport(ruleId, descriptor, startIdx, endIdx, ruleMeta, ctx, fix, 1, suggestions));
   const newCount = (ctx._ruleErrors[ruleId] || 0) + 1;
   ctx._ruleErrors[ruleId] = newCount;
   if (newCount >= ctx._errorBudget && ctx._skipSet) {

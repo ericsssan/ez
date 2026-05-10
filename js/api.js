@@ -198,16 +198,19 @@ function _normalizeSeverity(val) {
 // ── Diagnostic format ───────────────────────────────────────────
 
 function _fromRunnerReport(r) {
-  return {
+  const out = {
     ruleId: r.ruleId || null,
     message: r.message,
     severity: r.severity || 2,
+    messageId: r.messageId ?? undefined,
     line: r.loc?.start?.line ?? 0,
     column: r.loc?.start?.column ?? 0,
     endLine: r.loc?.end?.line ?? undefined,
     endColumn: r.loc?.end?.column ?? undefined,
     fix: r.fix || undefined,
   };
+  if (r.suggestions) out.suggestions = r.suggestions;
+  return out;
 }
 
 function _fromNativeDiag(d) {
