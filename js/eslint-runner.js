@@ -3044,6 +3044,21 @@ class SourceCode {
       const weIdx = ast._refWriteExprIds ? ast._refWriteExprIds[refIdx] : NONE32;
       writeExpr = (weIdx !== undefined && weIdx !== NONE32 && weIdx < ast.nodeCount)
         ? nodeView(ast, weIdx) : null;
+      // Buffer fallback: when the parser didn't pre-bake writeExpr (notably for plain
+      // `x = expr` reassignments outside declarators), derive it from the AST so rules
+      // like prefer-const/no-multi-assign that read ref.writeExpr still work.
+      if (!writeExpr && refNode) {
+        const par = refNode.parent;
+        if (par) {
+          if (par.type === 'AssignmentExpression' && par.left === refNode) {
+            writeExpr = par.right;
+          } else if (par.type === 'VariableDeclarator' && par.id === refNode) {
+            writeExpr = par.init || null;
+          } else if (par.type === 'AssignmentPattern' && par.left === refNode) {
+            writeExpr = par.right;
+          }
+        }
+      }
     }
     // typescript-eslint scope-manager marks export-specifier locals as type
     // references so rules like no-use-before-define can skip UBD checks under

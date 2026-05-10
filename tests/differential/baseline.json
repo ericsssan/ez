@@ -1352,8 +1352,8 @@
     },
     "@typescript-eslint/explicit-module-boundary-types": {
       "runner": {
-        "fn": 21,
-        "fp": 21,
+        "fn": 20,
+        "fp": 22,
         "crash": 0
       },
       "native": {
@@ -10353,7 +10353,7 @@
     "consistent-this": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12746,8 +12746,8 @@
     },
     "sonarjs/no-redundant-assignments": {
       "runner": {
-        "fn": 9,
-        "fp": 0,
+        "fn": 1,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -12800,7 +12800,7 @@
     },
     "sonarjs/encryption": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12890,7 +12890,7 @@
     },
     "sonarjs/weak-ssl": {
       "runner": {
-        "fn": 17,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12962,7 +12962,7 @@
     },
     "sonarjs/no-control-regex": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -12980,7 +12980,7 @@
     },
     "sonarjs/insecure-cookie": {
       "runner": {
-        "fn": 20,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13052,7 +13052,7 @@
     },
     "sonarjs/no-mixed-content": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13268,7 +13268,7 @@
     },
     "sonarjs/file-uploads": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13359,7 +13359,7 @@
     "sonarjs/constructor-for-side-effects": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13394,7 +13394,7 @@
     },
     "sonarjs/no-weak-cipher": {
       "runner": {
-        "fn": 9,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13574,7 +13574,7 @@
     },
     "sonarjs/sockets": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13628,7 +13628,7 @@
     },
     "sonarjs/sql-queries": {
       "runner": {
-        "fn": 14,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13682,7 +13682,7 @@
     },
     "sonarjs/xpath": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13700,7 +13700,7 @@
     },
     "sonarjs/content-length": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13773,7 +13773,7 @@
     "sonarjs/no-dead-store": {
       "runner": {
         "fn": 4,
-        "fp": 14,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -13916,7 +13916,7 @@
     },
     "sonarjs/xml-parser-xxe": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13952,7 +13952,7 @@
     },
     "sonarjs/cookie-no-httponly": {
       "runner": {
-        "fn": 20,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -13970,7 +13970,7 @@
     },
     "sonarjs/no-mime-sniff": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14024,7 +14024,7 @@
     },
     "sonarjs/production-debug": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14096,7 +14096,7 @@
     },
     "sonarjs/unverified-certificate": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14114,7 +14114,7 @@
     },
     "sonarjs/no-misleading-character-class": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14204,7 +14204,7 @@
     },
     "sonarjs/file-permissions": {
       "runner": {
-        "fn": 30,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14240,7 +14240,7 @@
     },
     "sonarjs/strict-transport-security": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14384,7 +14384,7 @@
     },
     "sonarjs/confidential-information-logging": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14402,7 +14402,7 @@
     },
     "sonarjs/x-powered-by": {
       "runner": {
-        "fn": 8,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14421,7 +14421,7 @@
     "sonarjs/no-reference-error": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -14492,7 +14492,7 @@
     },
     "sonarjs/no-weak-keys": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14510,7 +14510,7 @@
     },
     "sonarjs/unverified-hostname": {
       "runner": {
-        "fn": 10,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14672,7 +14672,7 @@
     },
     "sonarjs/os-command": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14690,7 +14690,7 @@
     },
     "sonarjs/content-security-policy": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14744,7 +14744,7 @@
     },
     "sonarjs/reduce-initial-value": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14762,7 +14762,7 @@
     },
     "sonarjs/no-clear-text-protocols": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14798,7 +14798,7 @@
     },
     "sonarjs/no-unsafe-unzip": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14852,7 +14852,7 @@
     },
     "sonarjs/hidden-files": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14906,8 +14906,8 @@
     },
     "sonarjs/csrf": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -14924,7 +14924,7 @@
     },
     "sonarjs/stateful-regex": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15050,7 +15050,7 @@
     },
     "sonarjs/session-regeneration": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15068,7 +15068,7 @@
     },
     "sonarjs/encryption-secure-mode": {
       "runner": {
-        "fn": 58,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15122,7 +15122,7 @@
     },
     "sonarjs/regex-complexity": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15176,7 +15176,7 @@
     },
     "sonarjs/no-referrer-policy": {
       "runner": {
-        "fn": 6,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15194,7 +15194,7 @@
     },
     "sonarjs/dns-prefetching": {
       "runner": {
-        "fn": 3,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15482,7 +15482,7 @@
     },
     "sonarjs/frame-ancestors": {
       "runner": {
-        "fn": 5,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15500,7 +15500,7 @@
     },
     "sonarjs/certificate-transparency": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15644,7 +15644,7 @@
     },
     "sonarjs/pseudo-random": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -15770,7 +15770,7 @@
     },
     "sonarjs/insecure-jwt-token": {
       "runner": {
-        "fn": 16,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -16058,7 +16058,7 @@
     },
     "sonarjs/no-ip-forward": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -16202,8 +16202,8 @@
     },
     "sonarjs/no-parameter-reassignment": {
       "runner": {
-        "fn": 32,
-        "fp": 21,
+        "fn": 11,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -20288,7 +20288,7 @@
     },
     "react/jsx-max-depth": {
       "runner": {
-        "fn": 12,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10112,
-    "runnerCasesPerSec": 9012,
-    "nativeCasesPerSec": 88717,
+    "totalElapsedMs": 10151,
+    "runnerCasesPerSec": 9003,
+    "nativeCasesPerSec": 83834,
     "totalCases": 73103
   }
 }
