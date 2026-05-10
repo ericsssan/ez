@@ -736,6 +736,72 @@ function* findVisitors(ast) {
       }
     }
 
+    // Cases-array pattern (V2): ObjectExpression with sibling
+    //   `selector: 'KEY'` or `selectors: ['KEY1', 'KEY2']`
+    // and a function-valued property whose first parameter is the node.
+    // The visitor's effective key is the sibling string literal — not
+    // the function's property key. ez's runtime registers the function
+    // under the selector by iterating the cases array; statically we
+    // can attribute the function's body to each selector literal.
+    //
+    // Each `selectors` array element yields one visitor entry. The
+    // transform rewrites the corresponding string-literal range.
+    if (n.type === "ObjectExpression") {
+      let selectorLits = null;        // Array of { value, range } for "selector"/"selectors"
+      let getNodesFn = null;          // The function-valued property
+      for (const prop of n.properties) {
+        if (prop?.type !== "Property" || prop.computed) continue;
+        if (prop.key?.type !== "Identifier") continue;
+        const k = prop.key.name;
+        if (k === "selector"
+            && prop.value?.type === "Literal"
+            && typeof prop.value.value === "string"
+            && looksLikeVisitorKey(prop.value.value)) {
+          const r = prop.value.range;
+          const line = prop.value.loc?.start?.line ?? -1;
+          selectorLits = r ? [{ value: prop.value.value, range: [r[0], r[1]], line }] : null;
+        } else if (k === "selectors"
+            && prop.value?.type === "ArrayExpression") {
+          const arr = [];
+          for (const el of prop.value.elements) {
+            if (el?.type !== "Literal" || typeof el.value !== "string") continue;
+            if (!looksLikeVisitorKey(el.value)) continue;
+            const r = el.range;
+            if (!r) continue;
+            const line = el.loc?.start?.line ?? -1;
+            arr.push({ value: el.value, range: [r[0], r[1]], line });
+          }
+          if (arr.length > 0) selectorLits = arr;
+        } else if (prop.value
+            && (prop.value.type === "FunctionExpression"
+                || prop.value.type === "ArrowFunctionExpression")
+            && prop.value.params?.length >= 1
+            && prop.value.params[0]?.type === "Identifier") {
+          // Avoid clobbering an already-found generator `getNodes` with
+          // a later property like `messageId`'s nested fn — first hit wins.
+          if (!getNodesFn) getNodesFn = prop.value;
+        }
+      }
+      if (selectorLits && getNodesFn) {
+        for (const lit of selectorLits) {
+          const isExit = lit.value.endsWith(":exit");
+          yield {
+            keyLiteral: isExit ? lit.value.slice(0, -5) : lit.value,
+            keyRange: lit.range,
+            keyKind: "literal",
+            isExit,
+            fn: getNodesFn,
+            line: lit.line,
+          };
+        }
+        // Don't fall through to the regular object-method scan below —
+        // we already attributed the visitor through the sibling
+        // selector, and the function-valued prop's own key (e.g.
+        // `getNodes`) wouldn't pass `looksLikeVisitorKey` anyway.
+        continue;
+      }
+    }
+
     // ObjectExpression with method/property whose key is a string literal: { 'KEY'(node) {...} }
     // and { Identifier(node) {...} } — the latter has Identifier-typed key.
     // Filter: only consider keys that look like ESLint visitor keys
