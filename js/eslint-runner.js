@@ -8112,6 +8112,11 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
       // ESLint fires CSS selector exit handlers (e.g. `:statement:exit`) BEFORE type-specific
       // exit handlers (e.g. `BlockStatement:exit`), matching NodeEventGenerator behavior.
       if (flags & FLAG_SELECTOR) invokeSelectorHandlers(idx, true);
+      // FE:exit on method_def fires BEFORE the MD:exit (or Property:exit via remap)
+      // because in espree the synthetic FE is visited as a child of MD/Property — its
+      // exit nests inside the parent's exit. Without this ordering, rules that pair
+      // FE-enter with FE-exit see the parent's exit interleaved.
+      if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
       if (handlers) {
         _invokeFused(handlers, nodeView(ast, idx), idx, context);
       }
@@ -8189,7 +8194,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           }
         }
       }
-      if (flags & FLAG_METHOD_FN) invokeMethodFnHandlers(idx, true);
+      // (FE:exit synth fired earlier — see note above the regular exit-handler block.)
       if (_cfgNodeBits !== null && _cfgNodeBits[idx]) _fireCfgEvents(idx, 2);
     }
   }
