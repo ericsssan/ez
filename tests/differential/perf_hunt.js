@@ -169,8 +169,14 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
   console.log("");
 
   // ── ez side: parse once, run all rules in ONE runPlugins call ──
-  process.stderr.write(`  ez all-rules ...`);
+  // First call triggers V8/JSC JIT compilation of rule bodies and
+  // dispatch hot paths (~300 ms warmup cost on typescript.js). Run a
+  // throwaway warmup pass first so the measured number reflects
+  // steady-state perf — what an LSP / long-running linter sees.
+  process.stderr.write(`  ez all-rules (warmup) ...`);
   const ctx = parseEzOnce(src, filename);
+  runEzAllOnAst(ctx, rules);
+  process.stderr.write(`\r${" ".repeat(80)}\r  ez all-rules ...`);
   const ezAll = runEzAllOnAst(ctx, rules);
   const ezAllInOneMs = ezAll.ms;
   const ezDiagCounts = ezAll.perRule;
