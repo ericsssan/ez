@@ -549,7 +549,15 @@ pub fn buildTraversalAux(
                     type_overrides[i] = @intFromEnum(TypeOverride.private_identifier);
                 }
             },
-            .method_def => {
+            .method_def, .getter_def, .setter_def,
+            .computed_method_def, .computed_getter_def, .computed_setter_def,
+            => {
+                // Class-body members are tagged identically to object-literal
+                // properties in ez (method_def/getter_def/setter_def). ESTree
+                // distinguishes them by node type: MethodDefinition in classes,
+                // Property in object literals. Apply the type-override when the
+                // parent is an object literal (or pattern) so rules like
+                // accessor-pairs see node.value.parent.type === "Property".
                 const p = parents[i];
                 if (p != NONE) {
                     const ptag = tags[p];
@@ -1004,7 +1012,11 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
                         type_overrides[i] = @intFromEnum(TypeOverride.private_identifier);
                     }
                 },
-                .method_def => {
+                .method_def, .getter_def, .setter_def,
+                .computed_method_def, .computed_getter_def, .computed_setter_def,
+                => {
+                    // Same as the streaming-path arm above: getters/setters in
+                    // object literals are Property nodes, not MethodDefinitions.
                     const p = parents[i];
                     if (p != NONE) {
                         const ptag = tags[p];

@@ -686,7 +686,7 @@
     },
     "n/no-unsupported-features/es-syntax": {
       "runner": {
-        "fn": 12,
+        "fn": 11,
         "fp": 11,
         "crash": 0
       },
@@ -3243,7 +3243,7 @@
     "jsdoc/require-jsdoc": {
       "runner": {
         "fn": 26,
-        "fp": 27,
+        "fp": 28,
         "crash": 0
       },
       "native": {
@@ -4412,7 +4412,7 @@
     },
     "es-x/no-property-shorthands": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -8067,7 +8067,7 @@
     "prefer-object-spread": {
       "runner": {
         "fn": 2,
-        "fp": 11,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -8660,8 +8660,8 @@
     },
     "accessor-pairs": {
       "runner": {
-        "fn": 95,
-        "fp": 1,
+        "fn": 3,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -9722,7 +9722,7 @@
     },
     "no-setter-return": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -10226,8 +10226,8 @@
     },
     "grouped-accessor-pairs": {
       "runner": {
-        "fn": 32,
-        "fp": 0,
+        "fn": 1,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -13862,7 +13862,7 @@
     },
     "sonarjs/function-name": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -14547,7 +14547,7 @@
     "sonarjs/no-unused-function-argument": {
       "runner": {
         "fn": 2,
-        "fp": 3,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -18740,7 +18740,7 @@
     },
     "unicorn/no-thenable": {
       "runner": {
-        "fn": 7,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9939,
-    "runnerCasesPerSec": 9243,
-    "nativeCasesPerSec": 84123,
+    "totalElapsedMs": 10189,
+    "runnerCasesPerSec": 8970,
+    "nativeCasesPerSec": 92535,
     "totalCases": 73103
   }
 }
