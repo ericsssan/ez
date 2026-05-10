@@ -819,12 +819,15 @@ pub fn stringEndBM(
     return stringEndBMOpt(src, structural_bm, newline_bm, open, n, false);
 }
 
-/// Same as `stringEndBM` but terminates on `<` when `is_jsx` is true.
-/// Required for JSX text content where an apostrophe in a word like
-/// `I'm` would otherwise consume everything up to EOF — e.g. `<>I'm</>`
-/// must not be tokenized with a single 5-byte string `'m</>` ending at EOF.
-/// JSX attribute strings legally allow `<`, but in practice almost never
-/// contain it; terminating on `<` lets the malformed-text path recover.
+/// JSX-aware string scanner. Two orthogonal flags:
+///   `is_jsx` — JSX context (inside the file's JSX, not inside `{...}` braces).
+///     Terminates the string at `<` (so `<>I'm</>` doesn't swallow `'m</>`),
+///     and allows newlines inside the string (JSX attribute strings legally
+///     span multiple lines, e.g. `<path d="M0 0\n L 10 10">`).
+///   `jsx_no_escape` — JSX attribute string (`<div attr="x\"`/>`). In JSX,
+///     `\` is a literal character, so the first `"` after `\` closes the
+///     string. JS strings (including those inside `{...}`) follow standard
+///     escape rules and consume `\<next>` as one unit.
 pub fn stringEndBMOpt(
     src: []const u8,
     structural_bm: []const u64,
@@ -832,6 +835,19 @@ pub fn stringEndBMOpt(
     open: u32,
     n: u32,
     is_jsx: bool,
+) u32 {
+    return stringEndBMOptFull(src, structural_bm, newline_bm, open, n, is_jsx, is_jsx);
+}
+
+/// Underlying implementation with separate JSX-context and no-escape flags.
+pub fn stringEndBMOptFull(
+    src: []const u8,
+    structural_bm: []const u64,
+    newline_bm: []const u64,
+    open: u32,
+    n: u32,
+    is_jsx: bool,
+    jsx_no_escape: bool,
 ) u32 {
     const quote = src[open];
     var i: u32 = open + 1;
@@ -862,7 +878,14 @@ pub fn stringEndBMOpt(
                     continue;
                 }
                 if (c == '\\') {
-                    // Line continuation: \<CRLF>, \<LS>, \<PS> consume the
+                    // JSX attribute strings don't support escape sequences — `\` is
+                    // a literal character. So `<div attr="x\"`/>` ends at the first
+                    // `"`. JS strings (including those inside JSX `{...}`) escape.
+                    if (jsx_no_escape) {
+                        i = p + 1;
+                        break;
+                    }
+                    // JS line continuation: \<CRLF>, \<LS>, \<PS> consume the
                     // entire line-terminator sequence. Other escapes consume
                     // a single byte after the backslash.
                     if (p + 2 < n and src[p + 1] == '\r' and src[p + 2] == '\n') {
@@ -2008,7 +2031,14 @@ pub fn tokenizeWithBufAndBitmaps(
                     else { tag = .slash; end = p + 1; }
                 },
                 '"', '\'' => {
-                    end = stringEndBMOpt(src, bm.structural, bm.newline, p, n, language.isJsx());
+                    // JSX semantics differ for attribute strings vs JS expression
+                    // strings (inside `{}` or outside JSX). Always pass is_jsx=true
+                    // for the file-level mode (so `<` terminates `<>I'm</>` text
+                    // apostrophes), but only disable escape sequences when the
+                    // string is in attribute-value position — `prev_kind == .equal`
+                    // is the unambiguous discriminator there.
+                    const jsx_attr = language.isJsx() and prev_kind == .equal;
+                    end = stringEndBMOptFull(src, bm.structural, bm.newline, p, n, language.isJsx(), jsx_attr);
                     tag = .string_literal;
                     // Strings with line continuations (`\<newline>`) span
                     // multiple source lines. Register those breaks in `ls`

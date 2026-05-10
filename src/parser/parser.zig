@@ -6104,7 +6104,15 @@ pub const Parser = struct {
     pub fn parseNamespaceImportSpecifier(self: *Parser) Error!NodeIndex {
         const star_tok = try self.expect(.asterisk);
         _ = try self.expect(.kw_as);
-        const local_tok = try self.expect(.identifier);
+        // The binding name accepts identifiers and TS contextual keywords
+        // (`type`, `as`, `from`, etc. — not reserved at value position).
+        // `import * as type from 'x';` and `import * as from from 'y';` are legal.
+        const local_tok: u32 = blk: {
+            if (self.peek() == .identifier) break :blk self.advance();
+            if (self.is_ts and self.peek().isTsContextualKeyword()) break :blk self.advance();
+            _ = try self.expect(.identifier); // produces the standard error
+            unreachable;
+        };
 
         const local_node = try self.addNode(.{
             .tag = .identifier,
@@ -6131,9 +6139,14 @@ pub const Parser = struct {
 
         switch (self.peek()) {
             .kw_default => {
-                // TS1319: A default export can only be used in an ECMAScript-style module.
-                // Namespace bodies have is_module=true but are not ECMAScript modules.
-                if (self.is_ts and self.in_ts_namespace) {
+                // TS1319: "A default export can only be used in an ECMAScript-style module"
+                // — emitted in TS namespace bodies. Ambient module declarations
+                // (`declare module 'x' { export default y; }`) are ECMAScript modules
+                // and must be accepted, but they're nested inside `in_ts_namespace`
+                // bookkeeping. Use `in_ts_ambient` as the carve-out: ambient module
+                // bodies are real ES modules; only "real" namespaces (`namespace N {}`)
+                // should reject `export default`.
+                if (self.is_ts and self.in_ts_namespace and !self.in_ts_ambient) {
                     try self.emitDiagnostic(self.currentSpan(), "A default export can only be used in an ECMAScript-style module", .{});
                 }
                 return self.parseExportDefault(export_tok);
@@ -6241,10 +6254,10 @@ pub const Parser = struct {
             if (self.in_ts_namespace and !self.in_ts_ambient) {
                 try self.emitDiagnostic(self.currentSpan(), "An export assignment cannot be used in a namespace", .{});
             }
-            // TS1203: Export assignment cannot be used when targeting ECMAScript modules.
-            if (self.is_module and self.in_strict and !self.in_ts_namespace) {
-                try self.emitDiagnostic(self.currentSpan(), "Export assignment cannot be used when targeting ECMAScript modules. Consider using 'export default' or another module format instead", .{});
-            }
+            // TS1203 (`export =` requires module: commonjs/amd/etc) is a SEMANTIC
+            // error keyed off the compiler's `module` setting — same family as TS1202
+            // for `import =`. The parser doesn't see tsconfig, so we can't reliably
+            // raise it here; downstream type-aware tooling can.
             _ = self.advance(); // eat '='
             const expr = try self.parseAssignmentExpression();
             _ = self.eat(.semicolon);
@@ -7710,8 +7723,12 @@ pub const Parser = struct {
     }
 
     /// Check strict-mode assignment target: no eval/arguments as assignment targets.
+    /// TS does NOT make this restriction stricter than ES — TS1100 fires only in
+    /// strict mode (per `"use strict"` directive, module file, class body, or
+    /// `alwaysStrict` config). Earlier code treated all TS as strict here, which
+    /// rejected legitimate non-strict TS like a bare `eval++;` statement.
     pub fn checkStrictAssignTarget(self: *Parser, tok: TokenIndex) !void {
-        if (!self.in_strict and !self.is_ts) return;
+        if (!self.in_strict) return;
         const tag = self.tokenTagAt(tok);
         if (tag == .identifier) {
             const text = self.tokenText(tok);

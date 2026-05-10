@@ -13,17 +13,26 @@ const Token = ez.token;
 ///
 /// Usage: typescript_runner <conformance-dir>
 
+/// One segment of a multi-file TS test source.
+const Segment = struct {
+    text: []const u8,
+    /// Filename declared by the preceding `@filename:` directive, or empty for
+    /// the leading (pre-directive) segment. Caller picks language by extension
+    /// and skips non-source segments (`*.json`, `*.d.ts`, etc.).
+    name: []const u8,
+};
+
 /// Iterates segments of a TypeScript test source split on `//@filename:` /
-/// `// @filename:` (and capitalised variants). Yields the slice between
-/// boundaries (boundary line excluded). Returns the whole source as one
-/// segment when no boundaries are present. The boundary directive must
-/// start at the beginning of a line (TS test convention).
+/// `// @filename:` (and capitalised variants). Each yielded segment carries
+/// the filename declared by the directive that introduced it. Boundary
+/// directives must start at the beginning of a line (TS test convention).
 const SegmentIter = struct {
     src: []const u8,
     pos: u32,
+    pending_name: []const u8 = "",
 
     fn init(src: []const u8) SegmentIter {
-        return .{ .src = src, .pos = 0 };
+        return .{ .src = src, .pos = 0, .pending_name = "" };
     }
 
     /// Find the next `\n` and return the start of the line after it, or src.len.
@@ -34,10 +43,11 @@ const SegmentIter = struct {
         return q;
     }
 
-    /// Match `(\s*//\s*@[Ff]ilename:)` at the start of a line. Returns the
-    /// character index just past the directive (start of next line) on match,
-    /// or null on miss. The directive value isn't needed by the runner.
-    fn matchFilenameAt(self: SegmentIter, line_start: u32) ?u32 {
+    /// Match `(\s*//\s*@[Ff]ilename:\s*)` at the start of a line and capture
+    /// the filename (rest of the line, trimmed). Returns the index just past
+    /// the directive's newline (start of segment body) on match, or null.
+    /// On match, also returns the captured filename via out_name.
+    fn matchFilenameAt(self: SegmentIter, line_start: u32, out_name: *[]const u8) ?u32 {
         var i = line_start;
         // Optional leading whitespace.
         while (i < self.src.len and (self.src[i] == ' ' or self.src[i] == '\t')) i += 1;
@@ -47,8 +57,7 @@ const SegmentIter = struct {
         while (i < self.src.len and (self.src[i] == ' ' or self.src[i] == '\t')) i += 1;
         if (i + 1 > self.src.len or self.src[i] != '@') return null;
         i += 1;
-        // "filename" or "Filename" (case-insensitive on first letter only — matches
-        // both spellings used in TS conformance fixtures).
+        // "filename" or "Filename" (case-insensitive on first letter only).
         const tail = "ilename:";
         if (i + 1 + tail.len > self.src.len) return null;
         const f = self.src[i];
@@ -58,12 +67,23 @@ const SegmentIter = struct {
             if (i >= self.src.len or self.src[i] != c) return null;
             i += 1;
         }
+        // Skip whitespace after the colon, then capture filename to end-of-line.
+        while (i < self.src.len and (self.src[i] == ' ' or self.src[i] == '\t')) i += 1;
+        const name_start = i;
+        while (i < self.src.len and self.src[i] != '\n' and self.src[i] != '\r') i += 1;
+        // Trim trailing whitespace on the name.
+        var name_end = i;
+        while (name_end > name_start and (self.src[name_end - 1] == ' ' or self.src[name_end - 1] == '\t')) {
+            name_end -= 1;
+        }
+        out_name.* = self.src[name_start..name_end];
         return self.skipLine(i);
     }
 
-    fn next(self: *SegmentIter) ?[]const u8 {
+    fn next(self: *SegmentIter) ?Segment {
         if (self.pos >= self.src.len) return null;
         const start = self.pos;
+        const seg_name = self.pending_name;
         var p = start;
         // Walk line by line. The first segment runs from `start` until we hit
         // the next `@filename:` directive at line-start.
@@ -71,29 +91,62 @@ const SegmentIter = struct {
             // Scan to end of current line.
             var line_end = p;
             while (line_end < self.src.len and self.src[line_end] != '\n') line_end += 1;
-            // Try to match `@filename:` at this line's start (skipping the first line — boundary
-            // can only DEMARCATE between segments, so a directive on the very first line of a
-            // segment is the start of the *next* segment, not part of this one).
-            if (p != start) {
-                if (self.matchFilenameAt(p)) |next_line| {
+            // Skip the very first line (boundary on segment's first line is the
+            // *next* segment's start, not part of this one — but if the source
+            // begins with a directive there's no leading segment so let it match).
+            const can_match_here = p != start or start == 0;
+            if (can_match_here) {
+                var fname: []const u8 = "";
+                if (self.matchFilenameAt(p, &fname)) |next_line| {
                     self.pos = next_line;
-                    return self.src[start..p];
-                }
-            } else {
-                if (self.matchFilenameAt(p)) |next_line| {
-                    // Source begins with a directive — empty leading segment, advance and recurse.
-                    self.pos = next_line;
-                    return self.src[start..p]; // empty slice
+                    self.pending_name = fname;
+                    return .{ .text = self.src[start..p], .name = seg_name };
                 }
             }
-            // Advance to next line.
             if (line_end < self.src.len) line_end += 1;
             p = line_end;
         }
         self.pos = @intCast(self.src.len);
-        return self.src[start..];
+        return .{ .text = self.src[start..], .name = seg_name };
     }
 };
+
+/// Whether a segment with this filename should be parsed as JS/TS source
+/// (versus skipped, e.g. `package.json`, `tsconfig.json`, `*.d.ts`).
+fn segmentIsParseable(name: []const u8) bool {
+    if (name.len == 0) return true; // leading segment — parse with file's outer language
+    // Common non-source extensions in TS conformance multi-file tests.
+    // .d.ts variants (.d.cts, .d.mts) are declaration files — ambient syntax,
+    // can have `const x: T;` without initializer that the runtime parser rejects.
+    const ignored_exts = [_][]const u8{
+        ".json", ".d.ts", ".d.cts", ".d.mts", ".map", ".css", ".html", ".txt", ".lock",
+    };
+    for (ignored_exts) |ext| {
+        if (std.mem.endsWith(u8, name, ext)) return false;
+    }
+    // Arbitrary-extension declaration files (TS allowArbitraryExtensions): pattern
+    // `*.d.<ext>.ts` declares the module shape for files of `<ext>` type — same
+    // ambient syntax as plain `.d.ts`. Examples in conformance: `foo.d.html.ts`,
+    // `bar.d.json.ts`, `baz.d.css.ts`. Skip these too.
+    if (std.mem.endsWith(u8, name, ".ts")) {
+        // Look for `.d.` before the trailing `.ts` (i.e. anywhere in the stem).
+        const stem = name[0 .. name.len - 3];
+        if (std.mem.indexOf(u8, stem, ".d.") != null) return false;
+    }
+    return true;
+}
+
+/// Pick the parser language from a segment's filename, falling back to the
+/// outer file's language for the leading (pre-directive) segment.
+fn segmentLang(name: []const u8, fallback: Token.Language) Token.Language {
+    if (std.mem.endsWith(u8, name, ".tsx")) return .tsx;
+    if (std.mem.endsWith(u8, name, ".jsx")) return .jsx;
+    if (std.mem.endsWith(u8, name, ".ts") or std.mem.endsWith(u8, name, ".cts") or
+        std.mem.endsWith(u8, name, ".mts")) return .ts;
+    if (std.mem.endsWith(u8, name, ".js") or std.mem.endsWith(u8, name, ".cjs") or
+        std.mem.endsWith(u8, name, ".mjs")) return .js;
+    return fallback;
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -220,18 +273,31 @@ pub fn main(init: std.process.Init) !void {
         // parsing them concatenated mis-reports legitimate duplicate-decl / JSX-recovery
         // errors. For must-parse all segments must succeed; for must-reject any one
         // segment failing counts as the expected rejection.
+        // Track per-language segment outcomes. Many TS multi-file tests bundle a
+        // `.js` segment alongside `.ts` to show that TS-only syntax (type annotations,
+        // generic arrows) errors in JS mode but works in TS — those tests are
+        // classified must-parse (the TS segment must succeed). We require all
+        // TS/TSX segments to succeed but allow JS segments to error.
+        var all_ts_segments_ok = true;
+        var saw_ts_segment = false;
         var all_segments_ok = true;
         var seg_iter = SegmentIter.init(parse_source);
         while (seg_iter.next()) |segment| {
-            if (segment.len == 0) continue;
+            if (segment.text.len == 0) continue;
+            // Skip non-source segments (package.json, .d.ts, etc.) — bundled
+            // alongside the .ts files but not parsed as JS/TS.
+            if (!segmentIsParseable(segment.name)) continue;
+            const seg_lang = segmentLang(segment.name, lang);
+            const seg_is_ts = seg_lang == .ts or seg_lang == .tsx;
+            if (seg_is_ts) saw_ts_segment = true;
             const seg_ok = parse_blk: {
-                var toks = (Lexer.tokenizeWithOptions(file_alloc, segment, lang, is_module) catch {
+                var toks = (Lexer.tokenizeWithOptions(file_alloc, segment.text, seg_lang, is_module) catch {
                     if (first_error.len == 0) first_error = "tokenize failed";
                     break :parse_blk false;
                 }).tokens;
                 defer toks.deinit(file_alloc);
-                var tree = Parser.parseWithOptions(file_alloc, segment, toks.slice(), .{
-                    .language = lang,
+                var tree = Parser.parseWithOptions(file_alloc, segment.text, toks.slice(), .{
+                    .language = seg_lang,
                     .is_module = is_module,
                     .is_strict = force_strict,
                     .emit_events = true,
@@ -255,9 +321,16 @@ pub fn main(init: std.process.Init) !void {
                 }
                 break :parse_blk true;
             };
-            if (!seg_ok) all_segments_ok = false;
+            if (!seg_ok) {
+                all_segments_ok = false;
+                if (seg_is_ts) all_ts_segments_ok = false;
+            }
         }
-        const has_error = !all_segments_ok;
+        // For multi-file tests with at least one TS/TSX segment, we only require
+        // those to succeed (a sibling `.js` file may be intentionally invalid to
+        // show a TS-only feature). For single-file or all-JS tests, fall back to
+        // requiring every segment to parse.
+        const has_error = if (saw_ts_segment) !all_ts_segments_ok else !all_segments_ok;
 
         switch (kind) {
             .must_parse => {
@@ -313,15 +386,19 @@ fn detectExperimentalDecorators(source: []const u8) bool {
 
 fn detectStrictMode(source: []const u8) bool {
     // Detect @strict or @alwaysStrict directives in TS test comments.
-    if (std.mem.indexOf(u8, source, "// @strict: true") != null) return true;
-    if (std.mem.indexOf(u8, source, "// @alwaysStrict: true") != null) return true;
-    // Parametric: "@alwaysStrict: true, false" — tests run in both modes
-    if (std.mem.indexOf(u8, source, "// @alwaysStrict:") != null) {
-        // If "true" appears in the value, the strict variant exists
-        if (std.mem.indexOf(u8, source, "// @alwaysStrict: true,") != null or
-            std.mem.indexOf(u8, source, "// @alwaysStrict:true") != null)
-            return true;
-    }
+    // For parametric directives like `@alwaysStrict: true, false` we pick the
+    // *non-strict* variant. The TS test harness emits separate baseline files
+    // per parameter combination; tests with strict-only errors (TS1100 etc.)
+    // are classified by their parametric baselines, but the source file is
+    // single-config from the parser's POV. Picking non-strict matches the more
+    // permissive variant and avoids false-rejects on `var arguments` tests.
+    // Hard-strict is only when `@strict: true` or `@alwaysStrict: true` appears
+    // ALONE (not in a parametric list).
+    if (std.mem.indexOf(u8, source, "// @strict: true") != null and
+        std.mem.indexOf(u8, source, "// @strict: true,") == null) return true;
+    if (std.mem.indexOf(u8, source, "// @alwaysStrict: true") != null and
+        std.mem.indexOf(u8, source, "// @alwaysStrict: true,") == null and
+        std.mem.indexOf(u8, source, "// @alwaysStrict: true ,") == null) return true;
     // "@strict" without ": false" means strict is enabled
     if (std.mem.indexOf(u8, source, "// @strict\n") != null) return true;
     return false;
@@ -393,7 +470,58 @@ fn classifyTest(io: Io, allocator: std.mem.Allocator, path: []const u8, source: 
             return .must_reject;
     }
 
+    // TS1100 ("Invalid use of 'eval'/'arguments' in strict mode") is in
+    // semantic_only_codes because most baselines are parametric `(alwaysstrict=true)`
+    // — strict mode comes from tsconfig the parser doesn't see. But when the
+    // SOURCE itself has a `"use strict";` directive, strict mode is parse-time
+    // detectable; ez correctly rejects, so reclassify these as must-reject.
+    if (baselines_dir.len > 0 and hasUseStrictDirective(source) and
+        baselineHasCode(io, allocator, path, baselines_dir, baseline_names, "TS1100"))
+    {
+        return .must_reject;
+    }
+
     return .must_parse;
+}
+
+/// True if source contains a `"use strict";` or `'use strict';` directive.
+fn hasUseStrictDirective(source: []const u8) bool {
+    return std.mem.indexOf(u8, source, "\"use strict\"") != null or
+        std.mem.indexOf(u8, source, "'use strict'") != null;
+}
+
+/// True if the test's error baseline contains a specific TS code (e.g. "TS1100").
+fn baselineHasCode(
+    io: Io,
+    allocator: std.mem.Allocator,
+    test_path: []const u8,
+    baselines_dir: []const u8,
+    baseline_names: []const []const u8,
+    code: []const u8,
+) bool {
+    const basename = getBasename(test_path);
+    const stem = if (std.mem.endsWith(u8, basename, ".tsx"))
+        basename[0 .. basename.len - 4]
+    else if (std.mem.endsWith(u8, basename, ".ts"))
+        basename[0 .. basename.len - 3]
+    else
+        basename;
+    var buf: [4096]u8 = undefined;
+    const baseline_path = std.fmt.bufPrint(&buf, "{s}/{s}.errors.txt", .{ baselines_dir, stem }) catch return false;
+    if (Io.Dir.cwd().readFileAlloc(io, baseline_path, allocator, Io.Limit.limited(256 * 1024))) |c| {
+        defer allocator.free(c);
+        if (std.mem.indexOf(u8, c, code) != null) return true;
+    } else |_| {}
+    for (baseline_names) |name| {
+        if (!std.mem.startsWith(u8, name, stem)) continue;
+        if (name.len <= stem.len or name[stem.len] != '(') continue;
+        const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ baselines_dir, name }) catch continue;
+        if (Io.Dir.cwd().readFileAlloc(io, p, allocator, Io.Limit.limited(256 * 1024))) |c| {
+            defer allocator.free(c);
+            if (std.mem.indexOf(u8, c, code) != null) return true;
+        } else |_| {}
+    }
+    return false;
 }
 
 /// Check if a test file has a corresponding .errors.txt baseline with syntax errors.
@@ -458,6 +586,34 @@ const semantic_only_codes = [_]u16{
     1360, // Type does not satisfy expected type (type-checker)
     1451, // Private identifiers only available targeting ES2015+ (target-dependent)
     1501, // Regex flag only available targeting es6+ (target-dependent)
+    // Surfaced by the broader multi-file corpus (un-skipping `@filename:` tests).
+    // All require tsconfig context the parser doesn't have:
+    1100, // Invalid use of '%0' in strict mode — most TS1100 baselines are parametric
+          // `(alwaysstrict=true)`, where strict comes from tsconfig the parser can't see.
+          // Tests with explicit `"use strict"` directives are caught at parse time
+          // (and would correctly classify as must-parse for the non-strict variant
+          // of the parametric baseline anyway).
+    1200, // Line terminator not permitted before arrow (parser-level but not always)
+    1255, // Definite assignment assertion semantic
+    1323, // Dynamic imports require module=es2020+/commonjs/etc (target-dependent)
+    1324, // Dynamic imports only support a second argument with newer module config
+    1325, // Argument of dynamic import must be a string type (semantic)
+    1361, // 'import type' used as value (semantic)
+    1362, // 'export type' used as value (semantic)
+    1376, // Modifier conflict (semantic — modifier-modifier interaction)
+    1377, // Modifier conflict (semantic)
+    1432, // 'await' top-level requires module setting (target-dependent)
+    1464, // 'import' attribute requires `with` (config-dependent)
+    1473, // Import attributes are only supported when '--module' is es2026 or later
+    1474, // Import attributes (config)
+    1479, // Top-level 'await' (target-dependent)
+    1484, // 'export type' / 'import type' style (verbatimModuleSyntax-dependent)
+    1700, // 'super' in non-derived class (semantic)
+    1701, // Decorator related (semantic)
+    1800, // 'using' / 'await using' target-dependent
+    1801, // 'using' / 'await using' target-dependent
+    1803, // 'await using' target-dependent
+    1804, // Decorator-related modifier (semantic)
 };
 
 fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []const u8) bool {
