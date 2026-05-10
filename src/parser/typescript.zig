@@ -311,11 +311,17 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         // ── typeof T ─────────────────────────────────────────────
         .kw_typeof => {
             const tok = p.advance(); // consume `typeof`
-            // `typeof import("foo")` — dynamic import type
+            // `typeof import("foo"[, options])` — dynamic-import-type-of expression.
+            // Same shape as the bare `import(...)` type below; just consume any
+            // second argument (resolution-mode attributes) as an expression.
             if (p.peek() == .kw_import and p.peekAt(1) == .l_paren) {
                 _ = p.advance(); // eat `import`
                 _ = p.advance(); // eat `(`
                 if (p.peek() == .string_literal) _ = p.advance();
+                if (p.peek() == .comma) {
+                    _ = p.advance();
+                    _ = p.parseAssignmentExpression() catch {};
+                }
                 _ = try p.expect(.r_paren);
                 // Optional `.member` access
                 while (p.peek() == .dot) {
@@ -492,20 +498,26 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
             return try parseParenthesizedOrFunctionType(p);
         },
 
-        // ── import("module") type ─────────────────────────────────
+        // ── import("module"[, options]) type ─────────────────────
+        // TS supports an optional second argument to import-type for resolution-mode
+        // attributes: `import("pkg", { with: { "resolution-mode": "require" } }).T`.
+        // The argument is an attribute-style object literal; here we just consume
+        // it as a generic expression to advance past the closing paren.
         .kw_import => {
             const tok = p.advance(); // consume `import`
             if (p.peek() == .l_paren) {
                 _ = p.advance(); // consume `(`
-                // Skip the module specifier (string literal)
                 if (p.peek() == .string_literal) _ = p.advance();
+                if (p.peek() == .comma) {
+                    _ = p.advance(); // consume `,`
+                    // Consume the attribute-options object as an expression.
+                    _ = p.parseAssignmentExpression() catch {};
+                }
                 _ = try p.expect(.r_paren);
-                // Optional `.member` access
                 while (p.peek() == .dot) {
                     _ = p.advance();
                     if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
                 }
-                // Optional type arguments
                 if (p.peek() == .less_than) {
                     _ = try parseTypeArguments(p);
                 }
