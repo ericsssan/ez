@@ -168,8 +168,12 @@ fn shouldSkip(path: []const u8) bool {
         // jsx/ used to be here — now handled via plugin detection.
         "/typescript/", "flow", "decorators", "pipeline",
         "record-and-tuple", "v8intrinsic", "hack-pipes", "module-blocks",
-        "defer", "source-phase", "import-attributes", "import-assertions",
-        "placeholders", "discard-binding", "explicit-resource-management",
+        "defer", "source-phase", "import-assertions",
+        // experimental/import-attributes-createImportExpression-false uses a babel
+        // option we don't model; the standardized es2025/import-attributes corpus
+        // is supported. Skip only the experimental form.
+        "experimental/import-attributes",
+        "placeholders", "discard-binding",
         "do-expression", "partial-application", "throw-expression",
         "function-sent", "async-do-expression", "module-string-names",
         "export-extensions", "decimal", "module-attributes",

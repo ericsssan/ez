@@ -13,6 +13,88 @@ const Token = ez.token;
 ///
 /// Usage: typescript_runner <conformance-dir>
 
+/// Iterates segments of a TypeScript test source split on `//@filename:` /
+/// `// @filename:` (and capitalised variants). Yields the slice between
+/// boundaries (boundary line excluded). Returns the whole source as one
+/// segment when no boundaries are present. The boundary directive must
+/// start at the beginning of a line (TS test convention).
+const SegmentIter = struct {
+    src: []const u8,
+    pos: u32,
+
+    fn init(src: []const u8) SegmentIter {
+        return .{ .src = src, .pos = 0 };
+    }
+
+    /// Find the next `\n` and return the start of the line after it, or src.len.
+    fn skipLine(self: SegmentIter, p: u32) u32 {
+        var q = p;
+        while (q < self.src.len and self.src[q] != '\n') q += 1;
+        if (q < self.src.len) q += 1;
+        return q;
+    }
+
+    /// Match `(\s*//\s*@[Ff]ilename:)` at the start of a line. Returns the
+    /// character index just past the directive (start of next line) on match,
+    /// or null on miss. The directive value isn't needed by the runner.
+    fn matchFilenameAt(self: SegmentIter, line_start: u32) ?u32 {
+        var i = line_start;
+        // Optional leading whitespace.
+        while (i < self.src.len and (self.src[i] == ' ' or self.src[i] == '\t')) i += 1;
+        if (i + 2 > self.src.len or self.src[i] != '/' or self.src[i + 1] != '/') return null;
+        i += 2;
+        // Optional spaces.
+        while (i < self.src.len and (self.src[i] == ' ' or self.src[i] == '\t')) i += 1;
+        if (i + 1 > self.src.len or self.src[i] != '@') return null;
+        i += 1;
+        // "filename" or "Filename" (case-insensitive on first letter only — matches
+        // both spellings used in TS conformance fixtures).
+        const tail = "ilename:";
+        if (i + 1 + tail.len > self.src.len) return null;
+        const f = self.src[i];
+        if (f != 'f' and f != 'F') return null;
+        i += 1;
+        for (tail) |c| {
+            if (i >= self.src.len or self.src[i] != c) return null;
+            i += 1;
+        }
+        return self.skipLine(i);
+    }
+
+    fn next(self: *SegmentIter) ?[]const u8 {
+        if (self.pos >= self.src.len) return null;
+        const start = self.pos;
+        var p = start;
+        // Walk line by line. The first segment runs from `start` until we hit
+        // the next `@filename:` directive at line-start.
+        while (p < self.src.len) {
+            // Scan to end of current line.
+            var line_end = p;
+            while (line_end < self.src.len and self.src[line_end] != '\n') line_end += 1;
+            // Try to match `@filename:` at this line's start (skipping the first line — boundary
+            // can only DEMARCATE between segments, so a directive on the very first line of a
+            // segment is the start of the *next* segment, not part of this one).
+            if (p != start) {
+                if (self.matchFilenameAt(p)) |next_line| {
+                    self.pos = next_line;
+                    return self.src[start..p];
+                }
+            } else {
+                if (self.matchFilenameAt(p)) |next_line| {
+                    // Source begins with a directive — empty leading segment, advance and recurse.
+                    self.pos = next_line;
+                    return self.src[start..p]; // empty slice
+                }
+            }
+            // Advance to next line.
+            if (line_end < self.src.len) line_end += 1;
+            p = line_end;
+        }
+        self.pos = @intCast(self.src.len);
+        return self.src[start..];
+    }
+};
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -92,19 +174,11 @@ pub fn main(init: std.process.Init) !void {
         const source = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(2 * 1024 * 1024)) catch continue;
         defer allocator.free(source);
 
-        // Skip multi-file tests. The TS test harness splits these on
-        // `//@filename:` (with or without a space, with or without capitalization)
-        // before running each file individually. A single concatenated parse
-        // mis-parses (e.g. multiple top-level JSX expressions concatenated
-        // into one source). Match all four spellings.
-        if (std.mem.indexOf(u8, source, "// @filename:") != null or
-            std.mem.indexOf(u8, source, "// @Filename:") != null or
-            std.mem.indexOf(u8, source, "//@filename:") != null or
-            std.mem.indexOf(u8, source, "//@Filename:") != null)
-        {
-            skipped += 1;
-            continue;
-        }
+        // Multi-file tests are split by the TS test harness on `//@filename:`.
+        // Walk the source once to find the segment boundaries; if any are present,
+        // parse each segment independently and combine the results. If parsing the
+        // whole source as a single file would fail (concatenated top-level JSX,
+        // duplicate declarations across files, etc.), per-segment parsing recovers it.
 
         // Classify using error baselines
         const kind = classifyTest(io, allocator, path, source, baselines_dir, baseline_names.items);
@@ -141,41 +215,49 @@ pub fn main(init: std.process.Init) !void {
             break :blk buf;
         } else source;
 
-        const parse_ok = parse_blk: {
-            var toks = (Lexer.tokenizeWithOptions(file_alloc, parse_source, lang, is_module) catch {
-                first_error = "tokenize failed";
-                break :parse_blk false;
-            }).tokens;
-            defer toks.deinit(file_alloc);
-            var tree = Parser.parseWithOptions(file_alloc, parse_source, toks.slice(), .{
-                .language = lang,
-                .is_module = is_module,
-                .is_strict = force_strict,
-                .emit_events = true,
-                .experimental_decorators = is_experimental_decorators,
-            }) catch {
-                first_error = "parse OOM";
-                break :parse_blk false;
-            };
-            if (tree.errors.len > 0) {
-                first_error = tree.errors[0].message;
-                break :parse_blk false;
-            }
-
-            // Run semantic analysis for must-reject tests only.
-            // TS allows redeclarations/patterns that JS doesn't, so skip for must-parse.
-            if (kind == .must_reject) {
-                var sem = ez.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :parse_blk true;
-                defer sem.deinit(file_alloc);
-                if (sem.diagnostics.len > 0) {
-                    first_error = "semantic error";
+        // Split into segments at `//@filename:` directives. Each segment is parsed
+        // independently — multi-file tests bundle multiple files in one source and
+        // parsing them concatenated mis-reports legitimate duplicate-decl / JSX-recovery
+        // errors. For must-parse all segments must succeed; for must-reject any one
+        // segment failing counts as the expected rejection.
+        var all_segments_ok = true;
+        var seg_iter = SegmentIter.init(parse_source);
+        while (seg_iter.next()) |segment| {
+            if (segment.len == 0) continue;
+            const seg_ok = parse_blk: {
+                var toks = (Lexer.tokenizeWithOptions(file_alloc, segment, lang, is_module) catch {
+                    if (first_error.len == 0) first_error = "tokenize failed";
+                    break :parse_blk false;
+                }).tokens;
+                defer toks.deinit(file_alloc);
+                var tree = Parser.parseWithOptions(file_alloc, segment, toks.slice(), .{
+                    .language = lang,
+                    .is_module = is_module,
+                    .is_strict = force_strict,
+                    .emit_events = true,
+                    .experimental_decorators = is_experimental_decorators,
+                }) catch {
+                    if (first_error.len == 0) first_error = "parse OOM";
+                    break :parse_blk false;
+                };
+                if (tree.errors.len > 0) {
+                    if (first_error.len == 0) first_error = tree.errors[0].message;
                     break :parse_blk false;
                 }
-            }
-
-            break :parse_blk true;
-        };
-        const has_error = !parse_ok;
+                // Semantic analysis (must-reject only — TS allows redeclarations JS doesn't).
+                if (kind == .must_reject) {
+                    var sem = ez.semantic.SemanticAnalyzer.analyze(file_alloc, &tree) catch break :parse_blk true;
+                    defer sem.deinit(file_alloc);
+                    if (sem.diagnostics.len > 0) {
+                        if (first_error.len == 0) first_error = "semantic error";
+                        break :parse_blk false;
+                    }
+                }
+                break :parse_blk true;
+            };
+            if (!seg_ok) all_segments_ok = false;
+        }
+        const has_error = !all_segments_ok;
 
         switch (kind) {
             .must_parse => {
