@@ -2,12 +2,12 @@
   "fixture": "typescript.js",
   "bytes": 9143423,
   "ruleCount": 396,
-  "savedAt": "2026-05-10T09:25:46.496Z",
+  "savedAt": "2026-05-10T11:07:50.025Z",
   "totals": {
-    "ezAllInOneMs": 2450.6,
-    "oxBatchMs": 860.6,
-    "oxBaselineMs": 138.2,
-    "ezTotalDiags": 201515
+    "ezAllInOneMs": 2208.7,
+    "oxBatchMs": 801.7,
+    "oxBaselineMs": 130.2,
+    "ezTotalDiags": 199780
   },
   "rules": {
     "accessor-pairs": {
@@ -59,7 +59,7 @@
       "diags": 0
     },
     "func-names": {
-      "diags": 178
+      "diags": 3
     },
     "func-style": {
       "diags": 11073
@@ -317,7 +317,7 @@
       "diags": 0
     },
     "no-param-reassign": {
-      "diags": 1151
+      "diags": 824
     },
     "no-path-concat": {
       "diags": 0
@@ -959,7 +959,7 @@
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-set-has": {
-      "diags": 126
+      "diags": 160
     },
     "eslint-plugin-unicorn/prefer-set-size": {
       "diags": 0

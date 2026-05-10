@@ -911,7 +911,22 @@ const _scopeProto = {
     const vs = _activeBuilder._buildScopeVarsAndSet(this._scopeId, this, this._kind);
     this._vars = vs[0]; this._set = vs[1];
     // FEN extraction: when this scope is the body of a named FunctionExpression,
-    // hoist the function-name def into the FEN wrapper scope.
+    // hoist the function-name var from the body scope into the synthetic FEN
+    // wrapper scope.
+    //
+    // Zig's symbol analyser already binds the FE-name as a `fn_expr_name`
+    // symbol in the body scope and resolves intra-body name-matching refs
+    // against it via `scope_map`. The Variable.references getter builds
+    // from the CSR — so the canonical `_buildVariable(fenSymId)` already
+    // sees every FE-name self-reference. The previous version constructed
+    // a separate synthetic var and manually pushed refs onto it, which
+    // (a) duplicated work the CSR already does and (b) created a drift
+    // because the manual push only ran once a rule triggered _ensureVarsSet
+    // on the FE body — meaning rules that read `variable.references`
+    // before that saw incomplete data.
+    //
+    // Fix: reuse the canonical Variable as the FEN scope's binding. No
+    // manual push, no synthetic object, no order-dependent state.
     const fenScope = this._fenScope;
     if (!fenScope) return;
     const fenName = fenScope._fenName;
@@ -920,45 +935,14 @@ const _scopeProto = {
       const v = this._vars[fenVarIdx];
       const feDefIdx = v.defs.findIndex(d => d.node !== null && d.node.type === 'FunctionExpression');
       if (feDefIdx >= 0) {
-        const feDef = v.defs[feDefIdx];
-        const feIdentifier = feDef.name;
-        const fenVar = {
-          name: fenName,
-          defs: [feDef],
-          identifiers: feIdentifier ? [feIdentifier] : [],
-          references: [],
-          scope: fenScope,
-          eslintUsed: false,
-          isRead: _FALSE,
-          isWritten: _FALSE,
-          isValueVariable: true,
-          isTypeVariable: false,
-        };
-        fenScope._vars = [fenVar];
-        fenScope._set = new Map([[fenName, fenVar]]);
-        this._fenVarRef = fenVar;
-        const ast = this._ast;
-        if (ast._scopeRefStarts && ast._scopeRefCounts && ast._scopeRefIds) {
-          const refStart = ast._scopeRefStarts[this._scopeId];
-          const refCount = ast._scopeRefCounts[this._scopeId];
-          for (let ri = 0; ri < refCount; ri++) {
-            const refId = ast._scopeRefIds[refStart + ri];
-            const ref = _activeBuilder._buildReference(refId);
-            if (ref.identifier?.name === fenName) {
-              fenVar.references.push(ref);
-              ref.resolved = fenVar;
-            }
-          }
-        }
-        v.defs.splice(feDefIdx, 1);
-        if (feIdentifier) {
-          const idIdx = v.identifiers.indexOf(feIdentifier);
-          if (idIdx >= 0) v.identifiers.splice(idIdx, 1);
-        }
-        if (v.defs.length === 0 && v.identifiers.length === 0) {
-          this._vars.splice(fenVarIdx, 1);
-          this._set.delete(fenName);
-        }
+        // Re-home the canonical var: it now lives in the FEN scope.
+        v.scope = fenScope;
+        fenScope._vars = [v];
+        fenScope._set = new Map([[fenName, v]]);
+        this._fenVarRef = v;
+        // Remove from the body scope (FEN-name shouldn't appear in body's variables).
+        this._vars.splice(fenVarIdx, 1);
+        this._set.delete(fenName);
       }
     }
     if (fenScope._vars === null) { fenScope._vars = []; fenScope._set = new Map(); }
@@ -979,18 +963,14 @@ const _scopeProto = {
     this._throughResolved = rt[1];
     this._throughUnresolved = rt[2];
     this._through = null; // lazy-concat on first `.through` access
-    // Populate FEN variable references: refs to the function-name from inside
-    // the body resolve to the FEN var, not to whatever was up the scope chain.
-    const fenVarRef = this._fenVarRef;
-    if (fenVarRef) {
-      const fenName = fenVarRef.name;
-      for (const ref of this._refs) {
-        if (ref.identifier?.name === fenName && !fenVarRef.references.includes(ref)) {
-          fenVarRef.references.push(ref);
-          ref.resolved = fenVarRef;
-        }
-      }
-    }
+    // FEN-ref population that used to live here (manual push of body-local
+    // refs whose name matches the FE name onto a synthetic fenVar) is now
+    // unnecessary — Zig's symbol resolver binds the FE name as a
+    // `fn_expr_name` symbol in the body scope's `scope_map`, so refs
+    // matching the FE name resolve to the FEN sym directly via the CSR.
+    // The Variable.references getter then surfaces them through the same
+    // path as any other var. See `_ensureVarsSet` (FEN extraction) for the
+    // rest of the wiring.
   },
 
   _ensureChildren() {
