@@ -2972,8 +2972,8 @@
     },
     "jsdoc/no-missing-syntax": {
       "runner": {
-        "fn": 7,
-        "fp": 7,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16742,8 +16742,8 @@
     },
     "import/enforce-node-protocol-usage": {
       "runner": {
-        "fn": 26,
-        "fp": 26,
+        "fn": 17,
+        "fp": 17,
         "crash": 0
       },
       "native": {
@@ -16922,8 +16922,8 @@
     },
     "import/consistent-type-specifier-style": {
       "runner": {
-        "fn": 10,
-        "fp": 10,
+        "fn": 8,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -17354,8 +17354,8 @@
     },
     "unicorn/string-content": {
       "runner": {
-        "fn": 27,
-        "fp": 27,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9813,
-    "runnerCasesPerSec": 9377,
-    "nativeCasesPerSec": 86410,
+    "totalElapsedMs": 10075,
+    "runnerCasesPerSec": 9059,
+    "nativeCasesPerSec": 90586,
     "totalCases": 73103
   }
 }

@@ -17,7 +17,7 @@ const {
   parseSource, parseAndLintNative, lintSourceNative, discoverFiles,
   getTagNames, getNativeRules, buildNativeConfig, detectLang, LANG,
 } = require("./index");
-const { runPlugins } = require("./eslint-runner");
+const { runPlugins, applyDisableDirectives } = require("./eslint-runner");
 const { loadCoreRules, loadPlugin } = require("./load-plugin");
 
 // Type-aware services init is deferred — eslint-runner calls ts-services
@@ -250,9 +250,12 @@ function _lintOne(filePath, resolved) {
     ? parseAndLintNative(filePath, { config: nativeConfig })
     : { ast: require("./index").parse(filePath), diags: [] };
 
-  const reports = jsPlugins.length > 0
+  const rawReports = jsPlugins.length > 0
     ? runPlugins(ast, jsPlugins, { tagNames, filename: filePath, ruleConfig })
     : [];
+  // ESLint suppresses violations covered by `eslint-disable*` comments. Apply the
+  // same filter to runner reports so directives in the source actually take effect.
+  const reports = rawReports.length > 0 ? applyDisableDirectives(ast.source, rawReports) : rawReports;
 
   // Merge diagnostics
   const diagnostics = [
@@ -270,7 +273,7 @@ function _lintSourceOne(source, filename, resolved, opts = {}) {
   const ast = parseSource(source, { filename });
   const nativeDiags = nativeConfig ? lintSourceNative(source, { filename, config: nativeConfig }) : [];
 
-  const reports = jsPlugins.length > 0
+  const rawReports = jsPlugins.length > 0
     ? runPlugins(ast, jsPlugins, {
         tagNames,
         filename,
@@ -281,6 +284,7 @@ function _lintSourceOne(source, filename, resolved, opts = {}) {
         errorBudget: opts.errorBudget,
       })
     : [];
+  const reports = rawReports.length > 0 ? applyDisableDirectives(source, rawReports) : rawReports;
 
   return [
     ...nativeDiags.map(_fromNativeDiag),

@@ -4170,12 +4170,16 @@ class _LazyReport {
   get message() {
     if (this._message !== undefined) return this._message;
     const desc = this._descriptor;
-    let m = desc.message;
-    if (!m && desc.messageId && this._ruleMeta?.messages) {
-      const tpl = this._ruleMeta.messages[desc.messageId] || desc.messageId;
-      m = desc.data
-        ? tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => desc.data[k] ?? `{{${k}}}`)
-        : tpl;
+    let tpl = desc.message;
+    if (!tpl && desc.messageId && this._ruleMeta?.messages) {
+      tpl = this._ruleMeta.messages[desc.messageId] || desc.messageId;
+    }
+    // ESLint interpolates `{{name}}` placeholders for BOTH `message:` and
+    // `messageId:` forms when `data` is provided. Earlier code only interpolated
+    // for messageId, leaving raw-message rules with literal "{{name}}".
+    let m = tpl;
+    if (m && desc.data) {
+      m = m.replace(/\{\{(\w+)\}\}/g, (_, k) => desc.data[k] ?? `{{${k}}}`);
     }
     this._message = m || desc.messageId || 'Lint violation';
     return this._message;
