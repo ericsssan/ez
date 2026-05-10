@@ -5017,14 +5017,26 @@ function _invokeFused(desc, node, nodeIdx, context) {
     // Non-fused array of slots — all slots have _state set; call _state.inner directly.
     const arr = desc;
     const n = arr.length;
+    // Pre-flatten the per-slot `_state.inner` into a parallel Function[] so
+    // the hot loop reads ONE property (`inners[h]`) instead of three
+    // (`arr[h]._state.inner`). _state.inner is stable per linter run —
+    // _buildPlan sets it once at plan-finalize time. Cache lazily on the
+    // descriptor; invalidates only on a fresh plan rebuild (which would
+    // produce a new `arr`).
+    let inners = arr._inners;
+    if (inners === undefined || inners.length !== n) {
+      inners = new Array(n);
+      for (let i = 0; i < n; i++) inners[i] = arr[i]._state.inner;
+      arr._inners = inners;
+    }
     if (!anySkipped) {
       let h = 0;
       try {
-        for (; h < n; h++) arr[h]._state.inner(node);
+        for (; h < n; h++) inners[h](node);
       } catch (err) {
         context._reports.push({ ruleId: arr[h].ruleId, message: `Plugin error: ${err.message}` });
         for (let k = h + 1; k < n; k++) {
-          try { arr[k]._state.inner(node); }
+          try { inners[k](node); }
           catch (e) { context._reports.push({ ruleId: arr[k].ruleId, message: `Plugin error: ${e.message}` }); }
         }
       }
@@ -5032,7 +5044,7 @@ function _invokeFused(desc, node, nodeIdx, context) {
       const skipArr = skip._arr;
       for (let h = 0; h < n; h++) {
         if (skipArr[arr[h]._ruleIdx]) continue;
-        try { arr[h]._state.inner(node); }
+        try { inners[h](node); }
         catch (err) { context._reports.push({ ruleId: arr[h].ruleId, message: `Plugin error: ${err.message}` }); }
       }
     }
@@ -5040,6 +5052,15 @@ function _invokeFused(desc, node, nodeIdx, context) {
   }
 
   const items = desc.items;
+  const itemsLen = items.length;
+  // Pre-flatten inners on the items array (same trick as the non-fused
+  // branch above). One property read per call site instead of two.
+  let itemInners = items._inners;
+  if (itemInners === undefined || itemInners.length !== itemsLen) {
+    itemInners = new Array(itemsLen);
+    for (let i = 0; i < itemsLen; i++) itemInners[i] = items[i]._state.inner;
+    items._inners = itemInners;
+  }
   const parentType = node.parent ? node.parent.type : null;
   let lastGuardKey = undefined;
   let lastGuardResult = false;
@@ -5048,19 +5069,19 @@ function _invokeFused(desc, node, nodeIdx, context) {
     // Fast path: one try/catch for all handlers (SQL operator-level error handling)
     let h = 0;
     try {
-      for (; h < items.length; h++) {
+      for (; h < itemsLen; h++) {
         const item = items[h];
         if (item.parentGuard) {
           const guardKey = item._coalescedGuard !== undefined ? item._coalescedGuard : item.parentGuard.parentType;
           if (guardKey !== lastGuardKey) { lastGuardKey = guardKey; lastGuardResult = parentType === guardKey; }
           if (!lastGuardResult) continue;
         }
-        item._state.inner(node);
+        itemInners[h](node);
       }
     } catch (err) {
       context._reports.push({ ruleId: items[h].ruleId, message: `Plugin error: ${err.message}` });
-      for (let k = h + 1; k < items.length; k++) {
-        try { items[k]._state.inner(node); }
+      for (let k = h + 1; k < itemsLen; k++) {
+        try { itemInners[k](node); }
         catch (e) { context._reports.push({ ruleId: items[k].ruleId, message: `Plugin error: ${e.message}` }); }
       }
     }
@@ -5069,7 +5090,7 @@ function _invokeFused(desc, node, nodeIdx, context) {
     // tag-bitset. Inline the skipSet's underlying Uint8Array for IC-friendly
     // single-load per-handler skip check.
     const skipArr = skip._arr;
-    for (let h = 0; h < items.length; h++) {
+    for (let h = 0; h < itemsLen; h++) {
       const item = items[h];
       if (skipArr[item._ruleIdx]) continue;
       if (item.parentGuard) {
@@ -5077,7 +5098,7 @@ function _invokeFused(desc, node, nodeIdx, context) {
         if (guardKey !== lastGuardKey) { lastGuardKey = guardKey; lastGuardResult = parentType === guardKey; }
         if (!lastGuardResult) continue;
       }
-      try { item._state.inner(node); }
+      try { itemInners[h](node); }
       catch (err) { context._reports.push({ ruleId: item.ruleId, message: `Plugin error: ${err.message}` }); }
     }
   }
