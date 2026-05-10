@@ -3532,15 +3532,18 @@ fn parseArrowFunctionBody(p: *Parser, param_tok: TokenIndex, is_async: bool) Err
     // Check strict-mode restrictions on the single parameter
     try p.checkStrictBinding(param_tok);
 
-    const arrow_tok = p.advance(); // consume `=>`
-    _ = arrow_tok;
-
-    // Create a parameter node (identifier).
+    // Create the parameter node BEFORE advancing past `=>`, so its end_tok
+    // records the identifier (not the arrow). Without this, sourceCode.getText
+    // on the param returns "name => " — breaks rules like unicorn/no-array-for-each
+    // which extract the parameter source to build a fix.
     const param_node = try p.addNode(.{
         .tag = .identifier,
         .main_token = param_tok,
         .data = .{ .lhs = .none, .rhs = .none },
     });
+
+    const arrow_tok = p.advance(); // consume `=>`
+    _ = arrow_tok;
 
     const params = try p.addSlice(&[_]u32{param_node.toInt()});
 

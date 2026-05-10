@@ -4491,10 +4491,16 @@ class RuleContext {
     // negatives drop reports (BAD). Anything that returns SOMETHING
     // non-trivial we wrap.
     const handlerSrc = typeof handler === "function" ? handler.toString() : "";
+    // Generator handlers (`function*() { yield problem; }`) — unicorn rules
+    // use this pattern to emit multiple problems from one onExit listener.
+    // Calling the generator returns an iterator; we must iterate to collect
+    // each yielded descriptor.
+    const isGenerator = typeof handler === "function" &&
+        (handler.constructor && handler.constructor.name === "GeneratorFunction");
     // Only `return;` (bare) and no `return` at all are safe to skip.
     // The regex looks for `return` followed by anything other than `;`,
     // whitespace+`;`, end-of-source, or `}`. Uses a non-greedy boundary.
-    const hasReturnValue = /\breturn\b(?!\s*[;}]|\s*$)/.test(handlerSrc);
+    const hasReturnValue = isGenerator || /\breturn\b(?!\s*[;}]|\s*$)/.test(handlerSrc);
     const ctx = this;
     const ruleId = this._currentRule;
     const ruleIdx = this._currentRuleIdx ?? -1;
@@ -4502,7 +4508,21 @@ class RuleContext {
     if (hasReturnValue) {
       installed = function(node) {
         const result = handler(node);
-        if (result && typeof result === "object" && !Array.isArray(result) && result.messageId) {
+        if (!result) return;
+        // Generator return: rules like unicorn/no-array-for-each yield problems
+        // from a `context.on('Program:exit', function* () { yield problem; })`
+        // handler. Iterate and report each yielded descriptor.
+        if (typeof result === "object" && typeof result.next === "function" &&
+            typeof result[Symbol.iterator] === "function")
+        {
+          for (const item of result) {
+            if (item && typeof item === "object" && item.messageId) {
+              _execReport(item, ruleId || ctx._currentRule, ruleIdx, null, ctx);
+            }
+          }
+          return;
+        }
+        if (typeof result === "object" && !Array.isArray(result) && result.messageId) {
           _execReport(result, ruleId || ctx._currentRule, ruleIdx, null, ctx);
         }
       };

@@ -1352,8 +1352,8 @@
     },
     "@typescript-eslint/explicit-module-boundary-types": {
       "runner": {
-        "fn": 20,
-        "fp": 22,
+        "fn": 10,
+        "fp": 12,
         "crash": 0
       },
       "native": {
@@ -6068,8 +6068,8 @@
     },
     "es-x/no-arrow-functions": {
       "runner": {
-        "fn": 5,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -7148,8 +7148,8 @@
     },
     "promise/param-names": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -7526,8 +7526,8 @@
     },
     "no-unused-vars": {
       "runner": {
-        "fn": 1,
-        "fp": 9,
+        "fn": 0,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -8426,8 +8426,8 @@
     },
     "arrow-parens": {
       "runner": {
-        "fn": 12,
-        "fp": 13,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -10460,8 +10460,8 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 59,
-        "fp": 17,
+        "fn": 52,
+        "fp": 10,
         "crash": 0
       },
       "native": {
@@ -14546,8 +14546,8 @@
     },
     "sonarjs/no-unused-function-argument": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16220,8 +16220,8 @@
     },
     "sonarjs/arrow-function-convention": {
       "runner": {
-        "fn": 3,
-        "fp": 2,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -17552,8 +17552,8 @@
     },
     "unicorn/no-array-for-each": {
       "runner": {
-        "fn": 76,
-        "fp": 76,
+        "fn": 18,
+        "fp": 18,
         "crash": 0
       },
       "native": {
@@ -18614,8 +18614,8 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 29,
-        "fp": 10,
+        "fn": 27,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -18632,8 +18632,8 @@
     },
     "unicorn/prefer-object-from-entries": {
       "runner": {
-        "fn": 34,
-        "fp": 35,
+        "fn": 1,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -19280,8 +19280,8 @@
     },
     "unicorn/catch-error-name": {
       "runner": {
-        "fn": 19,
-        "fp": 17,
+        "fn": 3,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10189,
-    "runnerCasesPerSec": 8970,
-    "nativeCasesPerSec": 92535,
+    "totalElapsedMs": 10054,
+    "runnerCasesPerSec": 9112,
+    "nativeCasesPerSec": 84512,
     "totalCases": 73103
   }
 }
