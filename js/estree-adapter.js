@@ -3801,7 +3801,7 @@ const NodeProto = {
 
   // ── JSX getters ─────────────────────────────────────────────
 
-  /** JSXElement.openingElement (jsx_element → opening child, jsx_self_closing → self) */
+  /** JSXElement.openingElement (jsx_element → opening child, jsx_self_closing → synth) */
   get openingElement() {
     const t = this._tag;
     const ast = this._ast;
@@ -3809,8 +3809,36 @@ const NodeProto = {
       const d = ast.extraJsxElementData(ast.nodeLhs(this._i));
       return d.opening !== NONE ? nodeView(ast, d.opening) : null;
     }
-    // Self-closing: the element IS its own opening element
-    if (t === T.jsx_self_closing) return this;
+    // Self-closing: synthesize a JSXOpeningElement(selfClosing=true) view that aliases
+    // this node's range. ESTree rules expect node.openingElement.type === 'JSXOpeningElement',
+    // and rules like jsx-tag-spacing read node.range/loc on it for fix positioning.
+    if (t === T.jsx_self_closing) {
+      let cached = this._syntheticOpeningElement;
+      if (cached !== undefined) return cached;
+      const selfNode = this;
+      const d = ast.extraJsxOpeningData(ast.nodeLhs(this._i));
+      // The synth carries selfNode's _i and _ast so SourceCode helpers (getTokens,
+      // getLastTokens, getFirstToken, etc.) that key off _i still find tokens via the
+      // jsx_self_closing node's token range. Without _i, getTokens returns [].
+      cached = {
+        type: 'JSXOpeningElement',
+        selfClosing: true,
+        _i: selfNode._i,
+        _ast: ast,
+        _tag: T.jsx_self_closing,
+        get name() { return d.name !== NONE ? nodeView(ast, d.name) : null; },
+        get attributes() { return ast._nodesFromRange(d.attrs_start, d.attrs_end); },
+        get typeArguments() { return undefined; },
+        get typeParameters() { return undefined; },
+        get range() { return selfNode.range; },
+        get loc() { return selfNode.loc; },
+        get start() { return selfNode.start; },
+        get end() { return selfNode.end; },
+        parent: selfNode,
+      };
+      this._syntheticOpeningElement = cached;
+      return cached;
+    }
     return undefined;
   },
 

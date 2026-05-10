@@ -6535,22 +6535,13 @@ function _buildPlan(visitorMap, tagNames, tagCount, hasCodePath, hasMethodFn, ca
     }
   }
 
-  // JSX: self-closing elements (jsx_self_closing) have no JSXOpeningElement child.
-  // They serve as their own opening element — fire JSXOpeningElement handlers on them too.
-  {
-    let _jsxOpeningTag = -1, _jsxSelfClosingTag = -1, _jsxElemCount = 0;
-    for (let t = 0; t < tagCount; t++) {
-      const tn = tagNames[t];
-      if (tn === 'JSXOpeningElement' && _jsxOpeningTag < 0) _jsxOpeningTag = t;
-      if (tn === 'JSXElement' && ++_jsxElemCount === 2) _jsxSelfClosingTag = t;
-    }
-    if (_jsxSelfClosingTag >= 0 && _jsxOpeningTag >= 0) {
-      const oh = visitorMap.get('JSXOpeningElement');
-      const ox = visitorMap.get('JSXOpeningElement:exit');
-      if (oh) tagEnterHandlers[_jsxSelfClosingTag] = tagEnterHandlers[_jsxSelfClosingTag] ? [...tagEnterHandlers[_jsxSelfClosingTag], ...oh] : [...oh];
-      if (ox) tagExitHandlers[_jsxSelfClosingTag]  = tagExitHandlers[_jsxSelfClosingTag]  ? [...tagExitHandlers[_jsxSelfClosingTag],  ...ox] : [...ox];
-    }
-  }
+  // JSX: self-closing elements (jsx_self_closing) have no separate JSXOpeningElement
+  // node in the buffer. The adapter exposes a synth JSXOpeningElement view via
+  // node.openingElement (see _typeOverrides case 4 in estree-adapter.js); the runtime
+  // fires JSXOpeningElement handlers on that synth view at DFS time (see DFS loop).
+  // Note: we do NOT inline JSXOpeningElement handlers into the jsx_self_closing
+  // tag's enter/exit lists — that would pass the JSXElement node (type='JSXElement')
+  // to the handler, which expects a node with type='JSXOpeningElement'.
 
   // Relevant tag set
   const relevantTag = new Uint8Array(tagCount);
@@ -7441,6 +7432,17 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   const hasFragSynth = jsxOpeningFragH !== null || jsxOpeningFragExH !== null ||
                        jsxClosingFragH !== null || jsxClosingFragExH !== null;
   if (hasFragSynth && T.jsx_fragment < relevantTag.length) relevantTag[T.jsx_fragment] = 1;
+  // JSXOpeningElement on jsx_self_closing — fire a synth view (type='JSXOpeningElement')
+  // since the buffer reuses the JSXElement node for self-closing forms. Without this,
+  // rules like jsx-tag-spacing/jsx-closing-bracket-location receive a JSXElement node
+  // when they expect a JSXOpeningElement, producing wrong fix positions.
+  const jsxOpeningElemH  = visitorMap.get('JSXOpeningElement') || null;
+  const jsxOpeningElemExH = visitorMap.get('JSXOpeningElement:exit') || null;
+  const hasJsxSelfCloseSynth = (jsxOpeningElemH !== null || jsxOpeningElemExH !== null) &&
+                               T.jsx_self_closing !== undefined;
+  if (hasJsxSelfCloseSynth && T.jsx_self_closing < relevantTag.length) {
+    relevantTag[T.jsx_self_closing] = 1;
+  }
   // TSInterfaceBody synthesis (early setup for relevantTag marking — also used in DFS loop).
   // TSInterfaceBody is a synthetic wrapper; fire enter/exit around ts_interface_decl traversal.
   const _tsInterfaceDeclTagNumE = tagNames.indexOf('TSInterfaceDeclaration');
@@ -7755,7 +7757,7 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
   // Build tag bitfield for nodes that need synthetic visits (must not be skipped)
   const _needsShorthandSynth = needsLabelSynthOpt; // true when Identifier visitors exist
-  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth || _hasTsInterfaceBodySynth || _hasTsModuleBlockSynth) ? new Uint8Array(tagNames.length) : null;
+  const _synthTagArr = (needsLabelSynthOpt || hasPrivateIdOpt || hasChainSynth || _needsShorthandSynth || hasFragSynth || hasJsxSelfCloseSynth || _hasTsInterfaceBodySynth || _hasTsModuleBlockSynth) ? new Uint8Array(tagNames.length) : null;
   if (_synthTagArr) {
     for (let _ti = 0; _ti < tagNames.length; _ti++) {
       if (needsLabelSynthOpt && _labelStmtTagSet[_ti]) _synthTagArr[_ti] = 1;
@@ -7781,6 +7783,10 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     // JSXFragment synthesis needs jsx_fragment tag
     if (hasFragSynth && T.jsx_fragment < _synthTagArr.length) {
       _synthTagArr[T.jsx_fragment] = 1;
+    }
+    // JSX self-closing synth dispatch fires JSXOpeningElement on jsx_self_closing tag
+    if (hasJsxSelfCloseSynth && T.jsx_self_closing < _synthTagArr.length) {
+      _synthTagArr[T.jsx_self_closing] = 1;
     }
     // TSInterfaceBody synthesis needs ts_interface_decl tag
     if (_hasTsInterfaceBodySynth && _tsInterfaceDeclTagNum >= 0 && _tsInterfaceDeclTagNum < _synthTagArr.length) {
@@ -7865,6 +7871,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
         if (_chainNode) _invokeFused(chainEnterH, _chainNode, idx, context);
+      }
+      // Synthesize JSXOpeningElement enter on jsx_self_closing — pass the synth view
+      // (type='JSXOpeningElement', selfClosing=true) so rules see the right type.
+      if (hasJsxSelfCloseSynth && jsxOpeningElemH && tag === T.jsx_self_closing) {
+        const _selfClose = nodeView(ast, idx);
+        const _openEl = _selfClose.openingElement;
+        if (_openEl) _invokeFused(jsxOpeningElemH, _openEl, idx, context);
       }
       // Synthesize JSXOpeningFragment enter/exit for JSXFragment nodes.
       if (hasFragSynth && tag === T.jsx_fragment) {
@@ -8064,6 +8077,12 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
           tag === T.member_expr || tag === T.computed_member_expr || tag === T.call_expr)) {
         const _chainNode = getChainExprIfOutermost(ast, idx);
         if (_chainNode) _invokeFused(chainExitH, _chainNode, idx, context);
+      }
+      // Synthesize JSXOpeningElement:exit on jsx_self_closing — same synth view as enter.
+      if (hasJsxSelfCloseSynth && jsxOpeningElemExH && tag === T.jsx_self_closing) {
+        const _selfClose = nodeView(ast, idx);
+        const _openEl = _selfClose.openingElement;
+        if (_openEl) _invokeFused(jsxOpeningElemExH, _openEl, idx, context);
       }
       // Synthesize JSXClosingFragment enter/exit for JSXFragment nodes.
       if (hasFragSynth && tag === T.jsx_fragment) {

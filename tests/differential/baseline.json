@@ -21062,8 +21062,8 @@
     },
     "react/jsx-indent": {
       "runner": {
-        "fn": 20,
-        "fp": 50,
+        "fn": 2,
+        "fp": 16,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9988,
-    "runnerCasesPerSec": 9189,
-    "nativeCasesPerSec": 89477,
+    "totalElapsedMs": 10041,
+    "runnerCasesPerSec": 9110,
+    "nativeCasesPerSec": 83930,
     "totalCases": 73103
   }
 }
