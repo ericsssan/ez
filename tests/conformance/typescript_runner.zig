@@ -620,6 +620,38 @@ const semantic_only_codes = [_]u16{
     1801, // 'using' / 'await using' target-dependent
     1803, // 'await using' target-dependent
     1804, // Decorator-related modifier (semantic)
+    // More config-dependent codes surfaced after un-skipping multi-file tests.
+    // These all depend on tsconfig (`module`, `target`, `verbatimModuleSyntax`,
+    // `esModuleInterop`, `useDefineForClassFields`, etc.) the parser doesn't see.
+    1192, // Module '%0' has no default export (import alias config)
+    1203, // Export assignment cannot be used when targeting ECMAScript modules
+    1216, // Identifier expected. '%0' is a reserved word in module mode
+    1259, // Module '%0' can only be default-imported using esModuleInterop
+    1273, // '%0' modifier can only be used in TypeScript files (decorators-legacy)
+    1274, // 'decorators' option is required (decorators)
+    1287, // A re-export cannot have type-only annotations (verbatimModuleSyntax)
+    1295, // Type assertions in JavaScript files (allowJs)
+    1306, // 'this' implicitly has type 'any' (semantic)
+    1308, // 'await' expression only allowed in async (target-dependent)
+    1309, // The current file is a CommonJS module (target-dependent top-level await)
+    1331, // Parameter property declaration only in constructor implementation (semantic)
+    1340, // Module reference (config-dependent)
+    1356, // Did you mean to use 'as const' (semantic)
+    1363, // Type-only export-equals (verbatimModuleSyntax)
+    1380, // 'import =' / 'export =' (verbatimModuleSyntax)
+    1392, // Import attribute resolution-mode (config)
+    1434, // 'import.meta' meta property requires config (target)
+    1453, // 'resolution-mode' attribute (config)
+    1454, // 'resolution-mode' attribute (config)
+    1455, // 'resolution-mode' attribute (config)
+    1456, // 'resolution-mode' attribute (config)
+    1463, // Import attributes (config)
+    1470, // Import.meta target-dependent
+    1471, // Import attributes assertion config
+    1485, // Import attributes only supported (config)
+    1486, // Decorators not allowed (config)
+    1543, // 'using' / 'await using' (target-dependent)
+    1544, // 'using' / 'await using' (target-dependent)
 };
 
 fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []const u8) bool {
