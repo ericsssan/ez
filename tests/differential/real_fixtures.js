@@ -254,6 +254,85 @@ function runEzAllOnAst(ctx, ruleIds) {
 
 if (!_isMain) module.exports.runEzAllOnAst = runEzAllOnAst;
 
+/**
+ * Parallel version of `runEzAllOnAst`. Each worker re-parses the source
+ * itself (NAPI is fast and runs concurrently) and runs an assigned subset
+ * of the JS rules; native rules still run on the main thread. Wall-clock
+ * is the max worker time + native + merge.
+ *
+ * Lazy-spawns the rule-pool on first call; subsequent calls reuse it.
+ *
+ * Returns the same `{ ms, totalDiags, perRule, locs, locsByRule }` shape
+ * as `runEzAllOnAst` so callers can swap implementations.
+ */
+async function runEzAllOnAstParallel(ctx, ruleIds) {
+  const { lintWithPool } = require(path.join(ROOT, "js/rule-pool.js"));
+  const ruleConfig = {};
+  const nativeRules = {};
+  const perRule = new Map();
+  for (const id of ruleIds) {
+    const desc = _coreRulesByName.get(id);
+    if (!desc) continue;
+    perRule.set(id, 0);
+    if (_nativeRules.has(id)) {
+      nativeRules[id] = _nativeRules.get(id).defaultSeverity;
+    } else {
+      ruleConfig[id] = "error";
+    }
+  }
+  const t0 = performance.now();
+  let nativeDiags = [];
+  if (Object.keys(nativeRules).length > 0) {
+    const cfg = buildNativeConfig({ rules: nativeRules });
+    nativeDiags = lintSourceNative(ctx.src, { filename: ctx.filename, config: cfg });
+  }
+  const poolResult = Object.keys(ruleConfig).length > 0
+    ? await lintWithPool(ctx.src, {
+        filename: ctx.filename,
+        rules: ruleConfig,
+        plugins: _PLUGIN_PKGS,
+        // Bench/oracle path: honest counts (no per-rule short-circuit).
+        // Production lintSource keeps the default 200 cap.
+        errorBudget: Infinity,
+      })
+    : { compact: [], crashes: [], totalDiags: 0 };
+  const ms = performance.now() - t0;
+
+  const locs = new Set();
+  const locsByRule = new Map();
+  for (const id of ruleIds) locsByRule.set(id, new Set());
+  const _short = (id) => { const i = id.lastIndexOf("/"); return i < 0 ? id : id.slice(i + 1); };
+  for (const d of nativeDiags) {
+    const id = d.rule_id || d.ruleId;
+    if (id && perRule.has(id)) perRule.set(id, perRule.get(id) + 1);
+    const line = d.line ?? d.startLine ?? d.loc?.start?.line ?? 0;
+    const col  = d.column ?? d.startColumn ?? d.loc?.start?.column ?? 0;
+    if (id) {
+      locs.add(`${_short(id)}:${line}`);
+      const set = locsByRule.get(id); if (set) set.add(`${line}:${col}`);
+    }
+  }
+  // Compact pool results: parallel arrays per worker partition.
+  for (const c of poolResult.compact) {
+    const ids = c.ruleIds, lns = c.lines, cls = c.cols;
+    for (let i = 0; i < ids.length; i++) {
+      const id = ids[i];
+      if (!id) continue;
+      if (perRule.has(id)) perRule.set(id, perRule.get(id) + 1);
+      const line = lns[i], col = cls[i];
+      locs.add(`${_short(id)}:${line}`);
+      const set = locsByRule.get(id); if (set) set.add(`${line}:${col}`);
+    }
+  }
+  return {
+    ms,
+    totalDiags: nativeDiags.length + poolResult.totalDiags,
+    perRule, locs, locsByRule,
+  };
+}
+
+if (!_isMain) module.exports.runEzAllOnAstParallel = runEzAllOnAstParallel;
+
 function runEzOnAst(ctx, ruleId) {
   const desc = _coreRulesByName.get(ruleId);
   if (!desc) return { ms: 0, diags: [], skipped: "unknown-core-rule" };

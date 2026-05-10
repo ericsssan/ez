@@ -126,7 +126,7 @@ if (!ruleArg && !rulesArg) {
 }
 
 const {
-  parseEzOnce, runEzAllOnAst,
+  parseEzOnce, runEzAllOnAst, runEzAllOnAstParallel,
   runOxlintBatch, runOxlintBaseline, runOxlintBatchDiagCounts,
   runEslintAllOnce, oxlintRules,
 } = require(path.join(ROOT, "tests/differential/real_fixtures.js"));
@@ -134,6 +134,9 @@ const {
 const WITH_ESLINT      = _flag("--with-eslint");
 const WITH_DIAG_COUNTS = _flag("--diag-counts") || WITH_ESLINT;
 const SAVE_BASELINE    = _flag("--save-baseline");
+// Parallel rule-pool by default. Opt out via --no-pool when isolating
+// the single-thread cost.
+const USE_POOL         = !_flag("--no-pool");
 
 function round1(x) { return Math.round(x * 10) / 10; }
 
@@ -173,11 +176,16 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
   // dispatch hot paths (~300 ms warmup cost on typescript.js). Run a
   // throwaway warmup pass first so the measured number reflects
   // steady-state perf — what an LSP / long-running linter sees.
+  //
+  // When --no-pool isn't passed, the parallel rule-pool runs the JS
+  // rules across N worker threads (default 4). The warmup pass also
+  // primes the pool so the timed call sees warm workers.
   process.stderr.write(`  ez all-rules (warmup) ...`);
   const ctx = parseEzOnce(src, filename);
-  runEzAllOnAst(ctx, rules);
+  if (USE_POOL) await runEzAllOnAstParallel(ctx, rules);
+  else runEzAllOnAst(ctx, rules);
   process.stderr.write(`\r${" ".repeat(80)}\r  ez all-rules ...`);
-  const ezAll = runEzAllOnAst(ctx, rules);
+  const ezAll = USE_POOL ? await runEzAllOnAstParallel(ctx, rules) : runEzAllOnAst(ctx, rules);
   const ezAllInOneMs = ezAll.ms;
   const ezDiagCounts = ezAll.perRule;
   const ezTotalDiags = ezAll.totalDiags;
@@ -378,5 +386,14 @@ function compareToBaseline(prev, ezDiagCounts, ezAllInOneMs, oxBatchTotal, ezTot
     }
   } else {
     console.log(`(no baseline at bench/perf_hunt_baseline.${filename.replace(/\W+/g, "_")}.json — pass --save-baseline to capture one)`);
+  }
+
+  // The rule-pool's workers keep the event loop alive after the lint
+  // promises resolve. Terminate explicitly so the script exits cleanly.
+  if (USE_POOL) {
+    try {
+      const { terminatePool } = require(path.join(ROOT, "js/rule-pool.js"));
+      terminatePool();
+    } catch { /* pool not loaded — bench used --no-pool */ }
   }
 })();

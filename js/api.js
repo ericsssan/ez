@@ -263,7 +263,7 @@ function _lintOne(filePath, resolved) {
   return { diagnostics, ast };
 }
 
-function _lintSourceOne(source, filename, resolved) {
+function _lintSourceOne(source, filename, resolved, opts = {}) {
   const tagNames = getTagNames();
   const { jsPlugins, nativeConfig, ruleConfig } = resolved;
 
@@ -271,7 +271,15 @@ function _lintSourceOne(source, filename, resolved) {
   const nativeDiags = nativeConfig ? lintSourceNative(source, { filename, config: nativeConfig }) : [];
 
   const reports = jsPlugins.length > 0
-    ? runPlugins(ast, jsPlugins, { tagNames, filename, ruleConfig })
+    ? runPlugins(ast, jsPlugins, {
+        tagNames,
+        filename,
+        ruleConfig,
+        // Pass through optional advanced flags. errorBudget controls the
+        // per-rule short-circuit (default 200 in production); benchmarks
+        // pass Infinity for honest counts.
+        errorBudget: opts.errorBudget,
+      })
     : [];
 
   return [
@@ -349,7 +357,7 @@ async function lint(targets, config = {}) {
 async function lintSource(source, config = {}) {
   const resolved = await _resolveConfig(config);
   const filename = config.filename || "<input>";
-  return _lintSourceOne(source, filename, resolved);
+  return _lintSourceOne(source, filename, resolved, { errorBudget: config.errorBudget });
 }
 
 /**
