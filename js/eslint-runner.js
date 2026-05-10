@@ -705,11 +705,38 @@ const _FALSE = () => false;
 // expected as "Keyword" type tokens by @typescript-eslint rules.
 const _TS_MODIFIER_KWS = new Set(['public', 'private', 'protected']);
 
+// Builtin / implicit globals carry refs that the Zig CSR can't resolve
+// (their symbols don't exist in the symbol table). Refs to them populate
+// only via the late-resolution loop in `_buildScopeRefsAndThrough` —
+// which fires when SOMETHING touches `scope.through`. Without this lazy
+// trigger, a rule that reads `consoleVar.references` first sees an
+// empty array; a rule that reads it AFTER another rule touched
+// `scope.through` sees the populated array. Same drift class as the
+// FEN bug; same shape of fix (read-side late-resolution trigger).
 function _mkGlobalVar(name, scope, writeable, implicitSetting) {
-  return { name, defs: [], references: [], identifiers: [],
+  const v = { name, defs: [], identifiers: [],
     scope, eslintUsed: false, writeable,
     eslintImplicitGlobalSetting: implicitSetting,
-    isRead: _FALSE, isWritten: _FALSE };
+    isRead: _FALSE, isWritten: _FALSE,
+    _refs: null };
+  Object.defineProperty(v, "references", {
+    get() {
+      if (this._refs === null) {
+        // Set _refs to [] BEFORE triggering the cascade. The late-resolution
+        // loop pushes via `variable.references.push(ref)`, which calls this
+        // getter recursively; with _refs already set, the getter returns
+        // the array directly and the push appends in place.
+        this._refs = [];
+        const s = this.scope;
+        if (s && typeof s._ensureRefsThrough === "function") s._ensureRefsThrough();
+      }
+      return this._refs;
+    },
+    set(val) { this._refs = val; },
+    configurable: true,
+    enumerable: true,
+  });
+  return v;
 }
 
 function _removeGlobal(name, set, variables) {
