@@ -1954,7 +1954,10 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
         name_node = try p.parseExpression();
         _ = try p.expect(.r_bracket);
     } else if (p.peek() == .hash) {
-        // Private names in interface/type members are semantic errors (TS18016), not parse errors.
+        // Private identifiers in interface/type-literal members are TS18016 — a
+        // SEMANTIC error per the TS compiler (not TS1xxx), so the parser accepts.
+        // Babel rejects this at parse time; that's a babel-specific stricture we
+        // intentionally don't replicate. Downstream type-aware tooling can raise it.
         const hash_tok = p.advance();
         if (p.peek() == .identifier or p.peek().isKeyword()) _ = p.advance();
         name_node = try p.addNode(.{
