@@ -35,6 +35,28 @@ export function transform(src) {
   if (!src.includes("const findJSDocComment = (")) throw new Error("upstream findJSDocComment declaration shape changed");
   if (!src.includes("const getJSDocComment = function (")) throw new Error("upstream getJSDocComment declaration shape changed");
 
+  // Inline anti-pattern fix: `getTokensAfterIgnoringSemis` originally calls
+  // `sourceCode.getTokensAfter(tokenAfter, {includeComments: true})` and
+  // immediately destructures the FIRST element. `getTokensAfter` builds a
+  // JS Token object for every token after the position — for jsdoc nodes
+  // deep into a large file this allocates thousands of unused tokens per
+  // call. The CPU profile attributed ~9 % of total ez-jsdoc time to this
+  // single line. Replace with the singular `getTokenAfter` accessor.
+  const SEMIS_ANCHOR = `      [tokenAfter] = sourceCode.getTokensAfter(tokenAfter, {
+        includeComments: true
+      });`;
+  if (src.includes(SEMIS_ANCHOR)) {
+    src = src.replace(
+      SEMIS_ANCHOR,
+`      // === ez transform: getTokensAfter→getTokenAfter (only first token used) ===
+      tokenAfter = sourceCode.getTokenAfter(tokenAfter, {
+        includeComments: true
+      });`,
+    );
+  } else {
+    throw new Error("getTokensAfterIgnoringSemis anchor shape changed");
+  }
+
   src = src.replace("const findJSDocComment = (", "let findJSDocComment = (");
   src = src.replace("const getJSDocComment = function (", "let getJSDocComment = function (");
 
