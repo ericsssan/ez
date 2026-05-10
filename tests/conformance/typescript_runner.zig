@@ -662,9 +662,12 @@ fn checkBaselineForSyntaxErrors(io: Io, allocator: std.mem.Allocator, path: []co
     // Must NOT match TS1xxxx (5+ digit codes like TS18050 which are semantic errors).
     // Skip codes that are semantic/type-checker/target-dependent (not implementable at parse time).
     // Also recognize a small allowlist of 5-digit codes that ARE parse errors:
+    //   TS17012 — Invalid meta-property for `import` keyword
     //   TS17021 — Unicode escape sequence cannot appear here (JSX tag name)
     //   TS18007 — JSX expressions may not use the comma operator
-    const syntactic_5digit = [_]u32{ 17021, 18007 };
+    //   TS18058 — Default imports not allowed in a deferred import
+    //   TS18059 — Named imports not allowed in a deferred import
+    const syntactic_5digit = [_]u32{ 17012, 17021, 18007, 18058, 18059 };
     var i: usize = 0;
     while (i + 6 < content.len) : (i += 1) {
         if (content[i] != 'T' or content[i + 1] != 'S') continue;

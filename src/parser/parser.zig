@@ -5664,6 +5664,17 @@ pub const Parser = struct {
                     try self.emitDiagnostic(self.currentSpan(), "Decorators are not valid here.", .{});
                 }
                 _ = self.advance(); // skip '@'
+                // Decorator arguments execute in the enclosing scope, so `await`
+                // inside them is technically a TS1308 (semantic) error. TS's
+                // parser accepts `@dec(await value)` syntactically and lets the
+                // type-checker flag it; ez does the same by temporarily relaxing
+                // `in_async` and `in_fn_params` while parsing decorator expressions.
+                const _saved_in_async = self.in_async;
+                const _saved_in_fn_params = self.in_fn_params;
+                self.in_async = true;
+                self.in_fn_params = false;
+                defer self.in_async = _saved_in_async;
+                defer self.in_fn_params = _saved_in_fn_params;
                 if (self.peek() == .l_paren) {
                     // @(expr) — parse the expression so await/yield errors surface.
                     _ = self.advance(); // eat '('
@@ -6722,10 +6733,12 @@ pub const Parser = struct {
         // Note: TypeScript allows `using` at the top level even in script mode (non-module),
         // only emitting a type error (TS2853) for `await using` without module context.
         // Spec: both `using` and `await using` are disallowed at Script top-level.
-        // TypeScript allows bare `using` at top-level script (only emits a type error TS2853),
-        // so we skip the check for `!is_await` when in TS mode.
+        // TypeScript classifies BOTH as semantic errors (TS2852 for `await using`,
+        // TS2853 for `using`) — its parser accepts them at script top level and
+        // the type-checker rejects. Match TS in TS mode; keep the strict ES check
+        // for plain JS where these are syntactic.
         const at_script_top_level = !self.is_module and !self.in_block and !self.in_function and !self.in_loop and !self.in_static_block;
-        if (at_script_top_level and (is_await or !self.is_ts)) {
+        if (at_script_top_level and !self.is_ts) {
             const msg = if (is_await) "'await using' declaration not allowed at top level of a Script" else "'using' declaration not allowed at top level of a Script";
             try self.emitDiagnostic(self.currentSpan(), "{s}", .{msg});
             // Emit diagnostic but continue parsing so the binding is established.
