@@ -274,6 +274,11 @@ async function main() {
     // CJS so the runtime can `require()` it synchronously — `loadCoreRules`
     // and `loadPlugin` are sync APIs in the rest of the codebase.
     format: "cjs",
+    // JSC bytecode cache: a sidecar file (rules.bundle.jsc) is emitted
+    // alongside the source. On `require()`, Bun loads the bytecode cache
+    // directly when present, skipping the parse step that otherwise
+    // dominates first-call startup (~440 ms on the 12.7 MB bundle).
+    bytecode: true,
     naming: "rules.bundle.[ext]",
     // Externalize peer deps that rule files import indirectly.
     // Their resolution stays at runtime via the host's normal module
