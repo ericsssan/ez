@@ -3962,10 +3962,35 @@ function _isChainChild(ast, idx) {
 }
 
 /**
+ * Cache "does this AST contain ANY optional-chain node?" (one tag-CSR check
+ * per AST). When false — overwhelmingly common in pre-transpiled bundles
+ * like typescript.js — `_isChainNode` returns false in O(1).
+ */
+function _astHasOptionalChain(ast) {
+  if (ast._hasOptionalChain !== undefined) return ast._hasOptionalChain;
+  const starts = ast._tagNodeStarts;
+  let has = false;
+  if (starts) {
+    const tags = [T.optional_call_expr, T.optional_member_expr, T.optional_computed_member_expr];
+    for (const t of tags) {
+      if (t == null || t < 0 || t >= starts.length - 1) continue;
+      if (starts[t + 1] - starts[t] > 0) { has = true; break; }
+    }
+  }
+  ast._hasOptionalChain = has;
+  return has;
+}
+
+/**
  * Return true if node `idx` belongs to an optional chain (i.e., is optional itself,
  * or is a non-optional member/call whose lhs transitively leads to an optional chain node).
+ *
+ * Hot path: when the AST has no optional-chain nodes at all, return false
+ * without inspecting `idx`. Pre-bundled JS (typescript.js, lodash, etc.)
+ * almost never contains `?.` and dominates real workloads.
  */
 function _isChainNode(ast, idx) {
+  if (!_astHasOptionalChain(ast)) return false;
   // Iterative traversal to avoid call stack depth issues on deep chains.
   let cur = idx;
   while (cur !== NONE) {
