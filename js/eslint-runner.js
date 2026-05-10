@@ -4034,6 +4034,33 @@ class SourceCode {
 // ── Fixer ────────────────────────────────────────────────────────
 
 /**
+ * Merge zero or more fix descriptors into ESLint's canonical single-fix shape:
+ * `{range:[start,end], text}` spanning the union of ranges with original source
+ * filling the gaps between fixes. Multiple fixes are sorted by start, then
+ * concatenated; overlapping fixes are detected (silently dropped — ESLint asserts).
+ */
+function _mergeFixes(arr, sourceText) {
+  if (arr.length === 0) return undefined;
+  if (arr.length === 1) return arr[0];
+  arr.sort((a, b) => (a.range[0] - b.range[0]) || (a.range[1] - b.range[1]));
+  const start = arr[0].range[0];
+  const end = arr[arr.length - 1].range[1];
+  let text = '';
+  let lastPos = Number.MIN_SAFE_INTEGER;
+  for (let i = 0; i < arr.length; i++) {
+    const f = arr[i];
+    if (f.range[0] < lastPos) return undefined; // overlapping fixes — ESLint would assert; we drop
+    if (f.range[0] >= 0) {
+      text += sourceText.slice(Math.max(0, start, lastPos), f.range[0]);
+    }
+    text += f.text;
+    lastPos = f.range[1];
+  }
+  text += sourceText.slice(Math.max(0, start, lastPos), end);
+  return { range: [start, end], text };
+}
+
+/**
  * ESLint-compatible fixer object passed to rule fix() functions.
  * Each method returns a { range: [start, end], text: string } fix descriptor.
  */
@@ -4113,9 +4140,9 @@ class _LazyReport {
     // compare against (every dimension Linter.verify exposes).
     this.severity = severity;       // 1 = warn, 2 = error
     this.messageId = descriptor.messageId ?? null;
-    // ESLint emits a single fix object {range, text}, not an array.
-    // Unwrap the singleton list ez's fix runner produces.
-    this.fix = (fix && fix.length === 1) ? fix[0] : (fix && fix.length > 0 ? fix : null);
+    // _mergeFixes (called by the runner before _LazyReport) already returns the
+    // canonical ESLint fix shape: a single {range,text} or undefined. Pass through.
+    this.fix = fix || null;
     this._loc = undefined;     // sentinel: not yet computed
     this._message = undefined; // sentinel: not yet resolved
     this._node = undefined;    // sentinel: not yet computed
@@ -4192,11 +4219,14 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
   if (typeof descriptor.fix === 'function') {
     try {
       const fixer = new RuleFixer(ctx._ast.source);
-      const r = descriptor.fix(fixer);
+      const r = fixer && descriptor.fix(fixer);
       if (r) {
         let arr = (typeof r[Symbol.iterator] === 'function' && typeof r.range === 'undefined') ? [...r] : [r];
         arr = arr.filter(Boolean);
-        fix = arr.length > 0 ? arr : undefined;
+        // ESLint merges multiple fixes into a single {range,text} spanning the
+        // union of ranges, with original source filling the gaps. Match that so
+        // diagnostic.fix has the same shape regardless of how the rule wrote it.
+        fix = _mergeFixes(arr, ctx._ast.source);
       }
     } catch (err) {
       if (process.env.EZ_DEBUG_FIX) {
