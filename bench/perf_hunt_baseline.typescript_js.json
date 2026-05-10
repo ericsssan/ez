@@ -2,12 +2,12 @@
   "fixture": "typescript.js",
   "bytes": 9143423,
   "ruleCount": 396,
-  "savedAt": "2026-05-10T11:07:50.025Z",
+  "savedAt": "2026-05-10T12:38:00.443Z",
   "totals": {
-    "ezAllInOneMs": 2208.7,
-    "oxBatchMs": 801.7,
-    "oxBaselineMs": 130.2,
-    "ezTotalDiags": 199780
+    "ezAllInOneMs": 2379.8,
+    "oxBatchMs": 874,
+    "oxBaselineMs": 141.2,
+    "ezTotalDiags": 201166
   },
   "rules": {
     "accessor-pairs": {
@@ -20,7 +20,7 @@
       "diags": 162
     },
     "block-scoped-var": {
-      "diags": 9718
+      "diags": 9762
     },
     "capitalized-comments": {
       "diags": 6624
@@ -92,7 +92,7 @@
       "diags": 344
     },
     "max-lines-per-function": {
-      "diags": 717
+      "diags": 712
     },
     "max-lines": {
       "diags": 1
@@ -140,7 +140,7 @@
       "diags": 56
     },
     "no-console": {
-      "diags": 0
+      "diags": 5
     },
     "no-const-assign": {
       "diags": 0
@@ -392,7 +392,7 @@
       "diags": 0
     },
     "no-unassigned-vars": {
-      "diags": 4
+      "diags": 2
     },
     "no-undef": {
       "diags": 77
@@ -404,7 +404,7 @@
       "diags": 0
     },
     "no-unmodified-loop-condition": {
-      "diags": 7
+      "diags": 20
     },
     "no-unneeded-ternary": {
       "diags": 4
@@ -452,7 +452,7 @@
       "diags": 0
     },
     "no-useless-constructor": {
-      "diags": 4
+      "diags": 5
     },
     "no-useless-escape": {
       "diags": 0
@@ -500,7 +500,7 @@
       "diags": 1
     },
     "prefer-rest-params": {
-      "diags": 0
+      "diags": 1
     },
     "prefer-spread": {
       "diags": 0
@@ -512,7 +512,7 @@
       "diags": 1
     },
     "radix": {
-      "diags": 0
+      "diags": 5
     },
     "require-await": {
       "diags": 0
@@ -668,7 +668,7 @@
       "diags": 0
     },
     "eslint-plugin-unicorn/empty-brace-spaces": {
-      "diags": 0
+      "diags": 72
     },
     "eslint-plugin-unicorn/error-message": {
       "diags": 0
@@ -959,7 +959,7 @@
       "diags": 0
     },
     "eslint-plugin-unicorn/prefer-set-has": {
-      "diags": 160
+      "diags": 126
     },
     "eslint-plugin-unicorn/prefer-set-size": {
       "diags": 0
@@ -1112,7 +1112,7 @@
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-param": {
-      "diags": 320
+      "diags": 319
     },
     "eslint-plugin-jsdoc/require-param-description": {
       "diags": 0
@@ -1136,7 +1136,7 @@
       "diags": 0
     },
     "eslint-plugin-jsdoc/require-returns": {
-      "diags": 134
+      "diags": 133
     },
     "eslint-plugin-jsdoc/require-returns-description": {
       "diags": 0
@@ -1160,7 +1160,7 @@
       "diags": 0
     },
     "eslint-plugin-sonarjs/max-lines-per-function": {
-      "diags": 106
+      "diags": 102
     },
     "eslint-plugin-sonarjs/no-labels": {
       "diags": 4
@@ -1169,7 +1169,7 @@
       "diags": 12
     },
     "eslint-plugin-sonarjs/block-scoped-var": {
-      "diags": 14
+      "diags": 36
     },
     "eslint-plugin-sonarjs/no-empty-character-class": {
       "diags": 0
