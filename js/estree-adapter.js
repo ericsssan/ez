@@ -1134,7 +1134,18 @@ function _computeNodeType(ast, index, tag) {
   if (overrides) {
     const slot = overrides[index];
     if (slot !== 0) return _OVERRIDE_TYPES[slot];
-    return TAG_NAMES[tag];
+  }
+  // Abstract class members become TSAbstractPropertyDefinition /
+  // TSAbstractMethodDefinition in the ESTree shape (typescript-eslint
+  // splits abstract from concrete via the node TYPE, not a flag). The
+  // parent_builder doesn't pre-bake this because the abstract bit is
+  // already on the modifier byte — check it here.
+  if (tag === T.property_def || tag === T.computed_property_def ||
+      tag === T.method_def || tag === T.computed_method_def) {
+    if (_nodeMods(ast, index) & MOD_ABSTRACT) {
+      if (tag === T.property_def || tag === T.computed_property_def) return 'TSAbstractPropertyDefinition';
+      return 'TSAbstractMethodDefinition';
+    }
   }
   return TAG_NAMES ? TAG_NAMES[tag] : String(tag);
 }

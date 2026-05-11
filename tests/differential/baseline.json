@@ -1856,7 +1856,7 @@
     },
     "@typescript-eslint/member-ordering": {
       "runner": {
-        "fn": 11,
+        "fn": 9,
         "fp": 5,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9896,
-    "runnerCasesPerSec": 9260,
-    "nativeCasesPerSec": 89477,
+    "totalElapsedMs": 10035,
+    "runnerCasesPerSec": 9109,
+    "nativeCasesPerSec": 85102,
     "totalCases": 73103
   }
 }
