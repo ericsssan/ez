@@ -160,6 +160,13 @@ function _deepMergeArrays(first, second) {
 // Compute the effective rule options: merge defaultOptions with user-supplied options.
 function _mergeRuleOptions(defaultOptions, configured) {
   if (configured === undefined) return defaultOptions ?? [];
+  // ESLint accepts bare severity strings/numbers as the entire config (`"error"`,
+  // `2`). Those mean "no options" — return defaults directly. Without this guard,
+  // `_deepMergeArrays(['record'], 'error')` would treat the string as iterable
+  // and produce `['e', 'r', 'r', 'o', 'r']`.
+  if (typeof configured === 'string' || typeof configured === 'number') {
+    return defaultOptions ?? [];
+  }
   return _deepMergeArrays(defaultOptions ?? [], configured);
 }
 
