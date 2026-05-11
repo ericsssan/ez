@@ -2658,6 +2658,27 @@ const NodeProto = {
       if (pv.end > rangeEnd) rangeEnd = pv.end;
       params.push(pv);
     }
+    // Include the angle brackets in the declaration's range — ESTree's
+    // TSTypeParameterDeclaration spans `<…>`, not just the inner params.
+    // Rules like @typescript-eslint/method-signature-style emit
+    // `sourceCode.getText(typeParameters)` into their autofix; without the
+    // brackets the fix produces `f: T(a: T) => T` instead of `f: <T>(…)`.
+    if (rangeStart !== Infinity) {
+      const src = ast.source;
+      let s = rangeStart - 1;
+      while (s >= 0 && (src.charCodeAt(s) === 32 /* space */ ||
+        src.charCodeAt(s) === 9 /* tab */ ||
+        src.charCodeAt(s) === 10 /* lf */ ||
+        src.charCodeAt(s) === 13 /* cr */)) s--;
+      if (s >= 0 && src.charCodeAt(s) === 60 /* < */) rangeStart = s;
+      const srcLen = src.length;
+      let e = rangeEnd;
+      while (e < srcLen && (src.charCodeAt(e) === 32 ||
+        src.charCodeAt(e) === 9 ||
+        src.charCodeAt(e) === 10 ||
+        src.charCodeAt(e) === 13)) e++;
+      if (e < srcLen && src.charCodeAt(e) === 62 /* > */) rangeEnd = e + 1;
+    }
     const result = _syntheticNode('TSTypeParameterDeclaration',
       rangeStart === Infinity ? this.start : rangeStart,
       rangeEnd === 0 ? this.end : rangeEnd,
