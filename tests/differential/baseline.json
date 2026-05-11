@@ -9741,7 +9741,7 @@
     "no-implicit-globals": {
       "runner": {
         "fn": 50,
-        "fp": 44,
+        "fp": 41,
         "crash": 0
       },
       "native": {
@@ -10460,7 +10460,7 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 44,
+        "fn": 41,
         "fp": 2,
         "crash": 0
       },
@@ -10893,7 +10893,7 @@
     "no-constant-condition": {
       "runner": {
         "fn": 1,
-        "fp": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -12387,7 +12387,7 @@
     "no-restricted-globals": {
       "runner": {
         "fn": 0,
-        "fp": 5,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -21260,7 +21260,7 @@
     },
     "react/jsx-no-undef": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10101,
-    "runnerCasesPerSec": 9074,
-    "nativeCasesPerSec": 83930,
+    "totalElapsedMs": 10096,
+    "runnerCasesPerSec": 9057,
+    "nativeCasesPerSec": 82977,
     "totalCases": 73103
   }
 }

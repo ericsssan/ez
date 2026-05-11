@@ -2308,7 +2308,6 @@ class SourceCode {
     const isTopLevel = upper === null;
     const scopeTypeName = (this._globalReturn && isTopLevel && this._sourceType !== 'module') ? 'function'
       : (kind === 1 && this._sourceType !== 'module') ? 'global'
-      : (kind === 0 && this._sourceType === 'module' && upper === null) ? 'module'
       : (_SCOPE_KIND_NAMES[kind] || 'block');
 
     // Allocate via shared prototype so V8 sees one hidden class for every scope.

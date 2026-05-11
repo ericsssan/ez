@@ -1799,6 +1799,19 @@ pub const Parser = struct {
         self.checkDirectivePrologue();
 
         // Open module/global scope for event stream.
+        //
+        // In module mode, ESLint's scope-manager creates TWO top-level scopes:
+        // an outer GLOBAL (holding builtins) and an inner MODULE (holding
+        // user declarations). Mirror that hierarchy here so rules that walk
+        // `scope.upper` from the module scope (e.g. no-shadow with
+        // builtinGlobals: true, no-restricted-globals via implicit-global
+        // tracking) can reach the builtin set.  The global wrapper holds no
+        // declarations of its own at parse time — JS-side scope building
+        // populates it with builtins / config globals at scope-construction.
+        const wrapper_global_ev: u32 = if (self.is_module)
+            try self.emitScopeOpen(.global, .root)
+        else
+            0;
         const program_scope_ev = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
         // Streaming: publish the initial scope_open immediately so a concurrent
         // sem thread sees the global code path before any other events.
@@ -1996,6 +2009,11 @@ pub const Parser = struct {
 
         // Close module/global scope for event stream.
         try self.emitScopeClose(.root);
+        // In module mode, also close the synthetic global wrapper.
+        if (self.is_module) {
+            _ = wrapper_global_ev; // silence unused capture if optimizer needs it
+            try self.emitScopeClose(.root);
+        }
     }
 
     // ────────────────────────────────────────────────────────────
