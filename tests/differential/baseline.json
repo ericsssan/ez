@@ -956,8 +956,8 @@
     },
     "@typescript-eslint/explicit-function-return-type": {
       "runner": {
-        "fn": 5,
-        "fp": 4,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1010,8 +1010,8 @@
     },
     "@typescript-eslint/consistent-generic-constructors": {
       "runner": {
-        "fn": 17,
-        "fp": 2,
+        "fn": 15,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1064,8 +1064,8 @@
     },
     "@typescript-eslint/parameter-properties": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1352,8 +1352,8 @@
     },
     "@typescript-eslint/explicit-module-boundary-types": {
       "runner": {
-        "fn": 8,
-        "fp": 10,
+        "fn": 5,
+        "fp": 7,
         "crash": 0
       },
       "native": {
@@ -1424,8 +1424,8 @@
     },
     "@typescript-eslint/explicit-member-accessibility": {
       "runner": {
-        "fn": 12,
-        "fp": 12,
+        "fn": 7,
+        "fp": 7,
         "crash": 0
       },
       "native": {
@@ -1586,8 +1586,8 @@
     },
     "@typescript-eslint/class-methods-use-this": {
       "runner": {
-        "fn": 26,
-        "fp": 26,
+        "fn": 4,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -1802,8 +1802,8 @@
     },
     "@typescript-eslint/no-inferrable-types": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 1,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -1820,8 +1820,8 @@
     },
     "@typescript-eslint/no-useless-constructor": {
       "runner": {
-        "fn": 1,
-        "fp": 3,
+        "fn": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -1856,8 +1856,8 @@
     },
     "@typescript-eslint/member-ordering": {
       "runner": {
-        "fn": 79,
-        "fp": 73,
+        "fn": 11,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -2396,7 +2396,7 @@
     },
     "jsdoc/require-param": {
       "runner": {
-        "fn": 10,
+        "fn": 7,
         "fp": 3,
         "crash": 0
       },
@@ -2450,7 +2450,7 @@
     },
     "jsdoc/require-returns": {
       "runner": {
-        "fn": 3,
+        "fn": 2,
         "fp": 2,
         "crash": 0
       },
@@ -2558,8 +2558,8 @@
     },
     "jsdoc/convert-to-jsdoc-comments": {
       "runner": {
-        "fn": 2,
-        "fp": 1,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3242,8 +3242,8 @@
     },
     "jsdoc/require-jsdoc": {
       "runner": {
-        "fn": 16,
-        "fp": 18,
+        "fn": 8,
+        "fp": 10,
         "crash": 0
       },
       "native": {
@@ -3386,7 +3386,7 @@
     },
     "jsdoc/informative-docs": {
       "runner": {
-        "fn": 4,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -10838,8 +10838,8 @@
     },
     "class-methods-use-this": {
       "runner": {
-        "fn": 30,
-        "fp": 30,
+        "fn": 5,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -11882,8 +11882,8 @@
     },
     "no-useless-constructor": {
       "runner": {
-        "fn": 1,
-        "fp": 5,
+        "fn": 0,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10378,
-    "runnerCasesPerSec": 8842,
-    "nativeCasesPerSec": 81771,
+    "totalElapsedMs": 10249,
+    "runnerCasesPerSec": 8950,
+    "nativeCasesPerSec": 83261,
     "totalCases": 73103
   }
 }

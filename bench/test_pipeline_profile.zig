@@ -55,6 +55,7 @@ pub fn main(init: std.process.Init) !void {
             tree.node_end_toks,
             traversal.min_tok,
             @intCast(tree.nodes.len),
+            source,
         );
         var spans = [_][]u32{ tok_starts, tok_ends, line_starts };
         _ = js_buffer.convertMultiSpansToUtf16(source, &spans);

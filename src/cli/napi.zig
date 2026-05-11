@@ -472,6 +472,7 @@ fn parseImpl(
         tok_tags: []const @import("../parser/token.zig").Tag = &.{},
         tok_starts: []u32 = &.{},
         tok_ends_ptr: *[]u32,
+        source: []const u8 = "",
         utf16_done: ?*std.atomic.Value(bool) = null,
         // tag_csr handoff: aux sub-thread inside buildTraversalParallel runs
         // computeTagNodeCsr in parallel with main's pre-fire/utf16, signals
@@ -511,6 +512,7 @@ fn parseImpl(
                     self.tree.node_end_toks,
                     r.min_tok,
                     self.node_count,
+                    self.source,
                 ) catch |e| {
                     self.err = e;
                     return;
@@ -527,6 +529,7 @@ fn parseImpl(
         .tok_tags = tokens.slice().items(.tag),
         .tok_starts = tokens.slice().items(.start),
         .tok_ends_ptr = &trav_tok_ends_slot,
+        .source = source,
         .utf16_done = if (use_stream_sem and stream_sem_thread != null) &s_utf16_done else null,
         .buf_ptr = buf_ptr,
         .backing = if (use_stream_sem and stream_sem_thread != null) &backing else null,
@@ -876,6 +879,7 @@ fn parseImpl(
         tree.node_end_toks,
         traversal.min_tok,
         node_count,
+        source,
     );
     const t_node_spans_end = if (trace_main) TraceTs.now() else undefined;
 
@@ -1208,6 +1212,7 @@ fn parseAndLintImpl(
         tree.node_end_toks,
         traversal.min_tok,
         node_count,
+        source,
     );
 
     // Override positions for jsx_gap_node and jsx_text_node.

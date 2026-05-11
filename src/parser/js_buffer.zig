@@ -1618,6 +1618,7 @@ pub fn buildNodeSpans(
     end_toks: []const u32,    // tree.node_end_toks: last consumed token per node
     min_tok_in: []const u32,  // traversal.min_tok: leftmost token per subtree
     node_count: u32,
+    source: []const u8,       // source text — used to detect identifier-text modifiers (public/private/protected/accessor) and decorators (@...)
 ) !NodeSpansResult {
     const n: usize = node_count;
 
@@ -1664,8 +1665,13 @@ pub fn buildNodeSpans(
     // node_starts = tok_starts[min_tok[i]]
     for (node_starts, min_tok[0..n]) |*ns, mt| ns.* = tok_starts[mt];
 
-    // Adjust MethodDefinition/PropertyDefinition start to include modifier keywords
-    // (get/set/static/async/*) that precede the name and aren't any child's main_token.
+    // Adjust MethodDefinition/PropertyDefinition start to include modifier
+    // keywords (get/set/static/async/*) AND TS modifiers (public/private/
+    // protected/readonly/abstract/override/declare/accessor) AND decorators
+    // (@...) that precede the name and aren't any child's main_token. Rules
+    // like @typescript-eslint/member-ordering report `node: member` and expect
+    // the range to start at the leftmost modifier (column 3 for indented
+    // `public static G()`), not at the method name.
     // JSX element/fragment: `<` is consumed by the caller, not tracked in min_tok.
     for (0..n) |i| {
         switch (node_tags[i]) {
@@ -1678,11 +1684,68 @@ pub fn buildNodeSpans(
                 var t = min_tok[i];
                 while (t > 0) {
                     const pt = tok_tags[t - 1];
-                    if (pt == .kw_get or pt == .kw_set or pt == .kw_static or
-                        pt == .kw_async or pt == .asterisk)
-                    {
+                    var is_modifier = pt == .kw_get or pt == .kw_set or
+                        pt == .kw_static or pt == .kw_async or
+                        pt == .asterisk or
+                        pt == .kw_readonly or pt == .kw_abstract or
+                        pt == .kw_override or pt == .kw_declare;
+                    // Identifier-text modifiers: public/private/protected/accessor.
+                    if (!is_modifier and pt == .identifier) {
+                        const ts = tok_starts[t - 1];
+                        const te = tok_ends[t - 1];
+                        if (te <= source.len) {
+                            const txt = source[ts..te];
+                            if (std.mem.eql(u8, txt, "public") or
+                                std.mem.eql(u8, txt, "private") or
+                                std.mem.eql(u8, txt, "protected") or
+                                std.mem.eql(u8, txt, "accessor"))
+                            {
+                                is_modifier = true;
+                            }
+                        }
+                    }
+                    if (is_modifier) {
                         t -= 1;
-                    } else break;
+                        continue;
+                    }
+                    // Decorator: walk back across `r_paren … l_paren` argument list,
+                    // then over a dotted identifier chain, then over the `@`.
+                    if (pt == .r_paren) {
+                        // Find matching `(` by depth-counting.
+                        var depth: i32 = 1;
+                        var k: i64 = @as(i64, @intCast(t)) - 2;
+                        while (k >= 0 and depth > 0) : (k -= 1) {
+                            const kt = tok_tags[@intCast(k)];
+                            if (kt == .r_paren) depth += 1
+                            else if (kt == .l_paren) depth -= 1;
+                        }
+                        if (depth != 0) break; // unbalanced — give up
+                        // k now points one before the matching `(`. Continue walking
+                        // back over the dotted identifier chain.
+                        var walk: i64 = k;
+                        while (walk >= 0) : (walk -= 1) {
+                            const wt = tok_tags[@intCast(walk)];
+                            if (wt == .identifier or wt == .dot) continue;
+                            break;
+                        }
+                        if (walk < 0 or tok_tags[@intCast(walk)] != .at_sign) break;
+                        t = @intCast(walk);
+                        continue;
+                    }
+                    // Decorator with no args: @Name or @ns.Name
+                    if (pt == .identifier) {
+                        var walk: i64 = @as(i64, @intCast(t)) - 1;
+                        while (walk >= 0) : (walk -= 1) {
+                            const wt = tok_tags[@intCast(walk)];
+                            if (wt == .identifier or wt == .dot) continue;
+                            break;
+                        }
+                        if (walk >= 0 and tok_tags[@intCast(walk)] == .at_sign) {
+                            t = @intCast(walk);
+                            continue;
+                        }
+                    }
+                    break;
                 }
                 if (t != min_tok[i]) node_starts[i] = tok_starts[t];
             },
