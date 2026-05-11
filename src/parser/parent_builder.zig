@@ -624,10 +624,36 @@ pub fn buildTraversalAux(
             // Kind 1: ChainExpression wrap — this node is the outermost
             // optional in its chain. Uses DIRECT parent (post grouping_expr
             // skip only) per `_isChainChild` semantics in the JS adapter.
-            if (this_tag == .optional_member_expr or
+            //
+            // Also fires for regular member_expr/call_expr/computed_member_expr
+            // when their callee/object chain reaches an optional `?.`. ESLint
+            // wraps the OUTERMOST node of the chain in ChainExpression — that
+            // outermost node may be a regular call/member if the optional is
+            // nested inside (e.g. `a?.b(c).d` — outer member_expr is the wrap).
+            const is_optional_self = this_tag == .optional_member_expr or
                 this_tag == .optional_computed_member_expr or
-                this_tag == .optional_call_expr)
+                this_tag == .optional_call_expr;
+            var chain_contains_optional = is_optional_self;
+            if (!is_optional_self and (this_tag == .member_expr or
+                this_tag == .computed_member_expr or this_tag == .call_expr))
             {
+                // Walk down the lhs chain (skipping grouping_expr) looking for
+                // an optional_* node. If we find one, this regular node may be
+                // the chain wrapper.
+                var c = data[i].lhs;
+                var cguard: u32 = 0;
+                while (c != .none and cguard < 128) : (cguard += 1) {
+                    const ci = c.toInt();
+                    const ct = tags[ci];
+                    if (ct == .optional_member_expr or ct == .optional_computed_member_expr or
+                        ct == .optional_call_expr) { chain_contains_optional = true; break; }
+                    if (ct == .grouping_expr or ct == .member_expr or
+                        ct == .computed_member_expr or ct == .call_expr)
+                    { c = data[ci].lhs; continue; }
+                    break;
+                }
+            }
+            if (chain_contains_optional) {
                 var dp = parents[i];
                 var dguard: u32 = 0;
                 while (dp != NONE and tags[dp] == .grouping_expr) {
@@ -1092,10 +1118,28 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
             if (rp == NONE) continue;
             const this_tag = tags[i];
 
-            if (this_tag == .optional_member_expr or
+            // Mirror of the kind=1 detection in the streaming arm above.
+            const is_optional_self_p = this_tag == .optional_member_expr or
                 this_tag == .optional_computed_member_expr or
-                this_tag == .optional_call_expr)
+                this_tag == .optional_call_expr;
+            var chain_contains_optional_p = is_optional_self_p;
+            if (!is_optional_self_p and (this_tag == .member_expr or
+                this_tag == .computed_member_expr or this_tag == .call_expr))
             {
+                var c2 = data[i].lhs;
+                var cguard2: u32 = 0;
+                while (c2 != .none and cguard2 < 128) : (cguard2 += 1) {
+                    const ci2 = c2.toInt();
+                    const ct2 = tags[ci2];
+                    if (ct2 == .optional_member_expr or ct2 == .optional_computed_member_expr or
+                        ct2 == .optional_call_expr) { chain_contains_optional_p = true; break; }
+                    if (ct2 == .grouping_expr or ct2 == .member_expr or
+                        ct2 == .computed_member_expr or ct2 == .call_expr)
+                    { c2 = data[ci2].lhs; continue; }
+                    break;
+                }
+            }
+            if (chain_contains_optional_p) {
                 var dp = parents[i];
                 var dguard: u32 = 0;
                 while (dp != NONE and tags[dp] == .grouping_expr) {
