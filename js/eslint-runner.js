@@ -4078,6 +4078,16 @@ class SourceCode {
  * filling the gaps between fixes. Multiple fixes are sorted by start, then
  * concatenated; overlapping fixes are detected (silently dropped — ESLint asserts).
  */
+function _flattenFixes(r, out) {
+  if (!r) return;
+  // Plain fix descriptor: has `range` (array) and `text` (string).
+  if (typeof r === 'object' && Array.isArray(r.range)) { out.push(r); return; }
+  // Iterable (Array / Generator): recurse on each entry.
+  if (typeof r[Symbol.iterator] === 'function') {
+    for (const item of r) _flattenFixes(item, out);
+  }
+}
+
 function _mergeFixes(arr, sourceText) {
   if (arr.length === 0) return undefined;
   if (arr.length === 1) return arr[0];
@@ -4272,8 +4282,13 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
       const fixer = new RuleFixer(ctx._ast.source);
       const r = fixer && descriptor.fix(fixer);
       if (r) {
-        let arr = (typeof r[Symbol.iterator] === 'function' && typeof r.range === 'undefined') ? [...r] : [r];
-        arr = arr.filter(Boolean);
+        // Flatten nested generators/iterables: rules often `yield gen()` an
+        // inner generator (e.g. unicorn/no-array-for-each yields the result
+        // of removeParentheses, which itself yields multiple fixes). ESLint
+        // recursively iterates these; ez was leaving inner generators as
+        // `{}` objects in the fix list and missing the inner fixes.
+        const arr = [];
+        _flattenFixes(r, arr);
         // ESLint merges multiple fixes into a single {range,text} spanning the
         // union of ranges, with original source filling the gaps. Match that so
         // diagnostic.fix has the same shape regardless of how the rule wrote it.
