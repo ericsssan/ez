@@ -1566,10 +1566,28 @@ const NodeProto = {
         const isGenerator = !!(mods & MOD_GENERATOR);
         const params = ast._nodesFromRange(md.params_start, md.params_end);
         const returnType = md.return_type === NONE ? undefined : nodeView(ast, md.return_type);
-        // Use the method node's own range/loc so ESLint's SourceCode token
-        // lookups (getFirstToken, getTokenBefore) work on this synthetic node.
-        const myRange = this.range;
-        const myLoc = this.loc;
+        // FunctionExpression range starts at the `(` of params (NOT at the
+        // method's start, which includes the key). ESLint rules like
+        // object-shorthand's makeFunctionLongform use sourceCode.getTokensBetween(
+        // key, value) to locate the `]` of computed keys; if value starts at the
+        // method's start they get an empty range and crash.
+        const methodRange = this.range;
+        const src = ast.source;
+        let fnStart = methodRange[0];
+        const keyIdx = ast.nodeLhs(this._i);
+        const keyEnd = keyIdx !== NONE ? ast._nodeEndPos(keyIdx) : methodRange[0];
+        let probe = keyEnd;
+        while (probe < src.length && src.charCodeAt(probe) !== 0x28 /* ( */) probe++;
+        if (probe < src.length) fnStart = probe;
+        const myRange = [fnStart, methodRange[1]];
+        const ls = ast._lineStarts();
+        const _lineAt = (p) => { let lo = 0, hi = ls.length - 1; while (lo < hi) { const m = (lo + hi + 1) >> 1; if (ls[m] <= p) lo = m; else hi = m - 1; } return lo + 1; };
+        const sl = _lineAt(myRange[0]);
+        const el = _lineAt(myRange[1]);
+        const myLoc = {
+          start: { line: sl, column: myRange[0] - ls[sl - 1] },
+          end:   { line: el, column: myRange[1] - ls[el - 1] },
+        };
         // For TS overload/abstract methods: body is NONE.
         // Use type 'TSEmptyBodyFunctionExpression' (not 'FunctionExpression') so that
         // @typescript-eslint/no-useless-constructor skips it (its check is type === 'FunctionExpression').

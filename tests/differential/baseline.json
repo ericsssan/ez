@@ -434,8 +434,8 @@
     },
     "n/exports-style": {
       "runner": {
-        "fn": 3,
-        "fp": 5,
+        "fn": 0,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -686,8 +686,8 @@
     },
     "n/no-unsupported-features/es-syntax": {
       "runner": {
-        "fn": 9,
-        "fp": 9,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1352,8 +1352,8 @@
     },
     "@typescript-eslint/explicit-module-boundary-types": {
       "runner": {
-        "fn": 10,
-        "fp": 12,
+        "fn": 9,
+        "fp": 11,
         "crash": 0
       },
       "native": {
@@ -3242,8 +3242,8 @@
     },
     "jsdoc/require-jsdoc": {
       "runner": {
-        "fn": 26,
-        "fp": 28,
+        "fn": 16,
+        "fp": 18,
         "crash": 0
       },
       "native": {
@@ -4754,8 +4754,8 @@
     },
     "es-x/no-generators": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -5744,8 +5744,8 @@
     },
     "es-x/no-async-functions": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -6428,8 +6428,8 @@
     },
     "es-x/no-async-iteration": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8660,8 +8660,8 @@
     },
     "accessor-pairs": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9902,8 +9902,8 @@
     },
     "preserve-caught-error": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9992,8 +9992,8 @@
     },
     "max-statements": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10226,8 +10226,8 @@
     },
     "grouped-accessor-pairs": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -19982,8 +19982,8 @@
     },
     "react/display-name": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -20630,8 +20630,8 @@
     },
     "react/async-server-action": {
       "runner": {
-        "fn": 6,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21080,8 +21080,8 @@
     },
     "react/no-multi-comp": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9912,
-    "runnerCasesPerSec": 9258,
-    "nativeCasesPerSec": 85401,
+    "totalElapsedMs": 10033,
+    "runnerCasesPerSec": 9141,
+    "nativeCasesPerSec": 82977,
     "totalCases": 73103
   }
 }
