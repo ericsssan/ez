@@ -868,7 +868,7 @@
       "runner": {
         "fn": 21,
         "fp": 30,
-        "crash": 6
+        "crash": 2
       },
       "native": {
         "fn": 56,
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10288,
-    "runnerCasesPerSec": 8915,
-    "nativeCasesPerSec": 79202,
+    "totalElapsedMs": 10139,
+    "runnerCasesPerSec": 9081,
+    "nativeCasesPerSec": 84708,
     "totalCases": 73103
   }
 }

@@ -2649,6 +2649,34 @@ const NodeProto = {
     return this._ast._nodesFromRange(lhs, rhs);
   },
 
+  /** TSConditionalType.checkType / extendsType / trueType / falseType — the
+   * 4 child types of `T extends U ? X : Y`. Stored as a packed extra-data
+   * range [check, extends, true, false] (see typescript.zig). */
+  get checkType() {
+    if (this._tag !== T.ts_conditional_type) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    const idx = this._ast._extraData[lhs];
+    return idx === NONE ? null : nodeView(this._ast, idx);
+  },
+  get extendsType() {
+    if (this._tag !== T.ts_conditional_type) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    const idx = this._ast._extraData[lhs + 1];
+    return idx === NONE ? null : nodeView(this._ast, idx);
+  },
+  get trueType() {
+    if (this._tag !== T.ts_conditional_type) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    const idx = this._ast._extraData[lhs + 2];
+    return idx === NONE ? null : nodeView(this._ast, idx);
+  },
+  get falseType() {
+    if (this._tag !== T.ts_conditional_type) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    const idx = this._ast._extraData[lhs + 3];
+    return idx === NONE ? null : nodeView(this._ast, idx);
+  },
+
   /**
    * node.typeParameters — TSTypeParameterDeclaration for generic declarations.
    * Used by: TSTypeAliasDeclaration, TSInterfaceDeclaration, function declarations, class declarations.
