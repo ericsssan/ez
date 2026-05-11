@@ -4360,7 +4360,13 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
  * O(1) skipSet lookups by the dispatcher.
  */
 function _makeBoundReport(ruleId, ruleIdx, ruleMeta, masterCtx) {
-  return function report(descriptor) {
+  return function report(descriptor, legacyMessage) {
+    // Legacy 2-arg form: context.report(node, message[, data]). Older plugins
+    // (e.g. eslint-plugin-import) still call this signature. Normalize to the
+    // modern descriptor shape.
+    if (legacyMessage !== undefined && descriptor && (descriptor.type !== undefined || descriptor._i !== undefined)) {
+      descriptor = { node: descriptor, message: typeof legacyMessage === 'string' ? legacyMessage : String(legacyMessage), data: arguments[2] };
+    }
     _execReport(descriptor, ruleId, ruleIdx, ruleMeta, masterCtx);
   };
 }

@@ -16382,8 +16382,8 @@
     },
     "import/no-mutable-exports": {
       "runner": {
-        "fn": 9,
-        "fp": 9,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16400,8 +16400,8 @@
     },
     "import/no-unresolved": {
       "runner": {
-        "fn": 105,
-        "fp": 105,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16454,8 +16454,8 @@
     },
     "import/no-amd": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16598,8 +16598,8 @@
     },
     "import/max-dependencies": {
       "runner": {
-        "fn": 6,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16814,8 +16814,8 @@
     },
     "import/no-nodejs-modules": {
       "runner": {
-        "fn": 10,
-        "fp": 10,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16940,8 +16940,8 @@
     },
     "import/no-extraneous-dependencies": {
       "runner": {
-        "fn": 13,
-        "fp": 13,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16958,8 +16958,8 @@
     },
     "import/no-webpack-loader-syntax": {
       "runner": {
-        "fn": 8,
-        "fp": 8,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -17012,8 +17012,8 @@
     },
     "import/no-unused-modules": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9831,
-    "runnerCasesPerSec": 9381,
-    "nativeCasesPerSec": 91953,
+    "totalElapsedMs": 9857,
+    "runnerCasesPerSec": 9291,
+    "nativeCasesPerSec": 84026,
     "totalCases": 73103
   }
 }
