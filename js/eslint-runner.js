@@ -4236,7 +4236,7 @@ class _LazyReport {
     // for messageId, leaving raw-message rules with literal "{{name}}".
     let m = tpl;
     if (m && desc.data) {
-      m = m.replace(/\{\{(\w+)\}\}/g, (_, k) => desc.data[k] ?? `{{${k}}}`);
+      m = m.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => desc.data[k] ?? `{{${k}}}`);
     }
     this._message = m || desc.messageId || 'Lint violation';
     return this._message;
@@ -4325,7 +4325,7 @@ function _execReport(descriptor, ruleId, ruleIdx, ruleMeta, ctx) {
       let sDesc = s.desc;
       if (sDesc === undefined && s.messageId && ruleMeta?.messages) {
         const tpl = ruleMeta.messages[s.messageId] || s.messageId;
-        sDesc = s.data ? tpl.replace(/\{\{(\w+)\}\}/g, (_, k) => s.data[k] ?? `{{${k}}}`) : tpl;
+        sDesc = s.data ? tpl.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, k) => s.data[k] ?? `{{${k}}}`) : tpl;
       }
       // Mirror ESLint's `{...suggestInfo, desc, fix}` shape so JSON.stringify
       // compares equal. Spread original (keeping the user's `fix` function in
