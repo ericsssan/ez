@@ -1312,7 +1312,14 @@ pub fn tokenizeWithBufAndBitmaps(
                 if (byte == '\n') {
                     try ls.append(alloc, p + 1);
                 } else if (byte == '\r') {
-                    try ls.append(alloc, if (p + 1 < n and src[p + 1] == '\n') p + 2 else p + 1);
+                    if (p + 1 < n and src[p + 1] == '\n') {
+                        try ls.append(alloc, p + 2);
+                        // CRLF is a single line terminator — skip the trailing
+                        // `\n` so the next iteration doesn't append again.
+                        skip_until = p + 2;
+                    } else {
+                        try ls.append(alloc, p + 1);
+                    }
                 } else {
                     // LS (U+2028, E2 80 A8) or PS (U+2029, E2 80 A9): lead byte set in
                     // newline bitmap by buildBitmaps; continuation bytes cleared from ident.
