@@ -2978,9 +2978,13 @@ class SourceCode {
         }
       }
       if (implMap.size > 0) {
-        // Set on the scope returned by getScope(Program) in script mode (cached scope 1 = wrapper)
-        const targetScope = (this._scopeCache && this._scopeCache[1]) || globalScope;
-        targetScope.implicit = { variables: [...implMap.values()] };
+        // Always set on the global scope (scope 0) — that's what
+        // getScope(Program) returns in script mode and what no-implicit-globals
+        // iterates. The previous heuristic of preferring scopeCache[1] was a
+        // bug: scope 1 in our analyzer is often a nested function scope
+        // (e.g. for `foo = function(){}`'s FunctionExpression body), not the
+        // script wrapper. Setting implicit there hid it from the rule.
+        globalScope.implicit = { variables: [...implMap.values()] };
       }
     }
 

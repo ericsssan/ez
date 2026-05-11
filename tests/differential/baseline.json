@@ -9740,7 +9740,7 @@
     },
     "no-implicit-globals": {
       "runner": {
-        "fn": 48,
+        "fn": 35,
         "fp": 39,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10307,
-    "runnerCasesPerSec": 8858,
-    "nativeCasesPerSec": 86105,
+    "totalElapsedMs": 10226,
+    "runnerCasesPerSec": 8909,
+    "nativeCasesPerSec": 84220,
     "totalCases": 73103
   }
 }
