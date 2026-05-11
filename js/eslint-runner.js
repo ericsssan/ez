@@ -1348,8 +1348,11 @@ class SourceCode {
       }
       while (end > start && src.charCodeAt(end - 1) <= 32) end--;
     }
-    const lo = beforeCount > 0 ? Math.max(0, start - beforeCount) : start;
-    const hi = afterCount  > 0 ? Math.min(src.length, end + afterCount) : end;
+    // ESLint: positive count expands outward, negative count shrinks inward
+    // (matches `start - beforeCount` / `end + afterCount` semantics). Rules
+    // use `getText(node, -1, -1)` to strip surrounding brackets/quotes.
+    const lo = beforeCount ? Math.max(0, start - beforeCount) : start;
+    const hi = afterCount  ? Math.min(src.length, end + afterCount) : end;
     return src.slice(lo, hi);
   }
 
