@@ -4187,6 +4187,13 @@ class _LazyReport {
         start: sc.getLocFromIndex(resolved.start),
         end:   resolved.end != null ? sc.getLocFromIndex(resolved.end) : sc.getLocFromIndex(resolved.start),
       };
+    } else if (resolved && typeof resolved.line === 'number' && !resolved.start) {
+      // ESLint accepts a flat `{line, column}` loc as a point — normalize to
+      // {start} so downstream consumers (Linter format, runner diff) can read
+      // start.line/column the same as the structured form. Leave end absent
+      // to match ESLint's behavior when the rule didn't supply one.
+      const point = { line: resolved.line, column: resolved.column ?? 0 };
+      resolved = { start: point };
     } else if (!resolved) {
       const sc = this._ctx.sourceCode;
       resolved = {

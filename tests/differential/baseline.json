@@ -686,8 +686,8 @@
     },
     "n/no-unsupported-features/es-syntax": {
       "runner": {
-        "fn": 11,
-        "fp": 11,
+        "fn": 9,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -3980,8 +3980,8 @@
     },
     "es-x/no-json-superset": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9506,8 +9506,8 @@
     },
     "consistent-return": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -9956,8 +9956,8 @@
     },
     "eol-last": {
       "runner": {
-        "fn": 6,
-        "fp": 6,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10298,8 +10298,8 @@
     },
     "indent-legacy": {
       "runner": {
-        "fn": 36,
-        "fp": 36,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10730,8 +10730,8 @@
     },
     "unicode-bom": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11306,8 +11306,8 @@
     },
     "no-spaced-func": {
       "runner": {
-        "fn": 13,
-        "fp": 13,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15302,8 +15302,8 @@
     },
     "sonarjs/call-argument-line": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15338,8 +15338,8 @@
     },
     "sonarjs/file-header": {
       "runner": {
-        "fn": 7,
-        "fp": 7,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15392,8 +15392,8 @@
     },
     "sonarjs/max-lines": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15518,8 +15518,8 @@
     },
     "sonarjs/no-tab": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15986,8 +15986,8 @@
     },
     "sonarjs/no-empty-test-file": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16670,8 +16670,8 @@
     },
     "import/newline-after-import": {
       "runner": {
-        "fn": 40,
-        "fp": 35,
+        "fn": 11,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -16940,8 +16940,8 @@
     },
     "import/no-extraneous-dependencies": {
       "runner": {
-        "fn": 15,
-        "fp": 15,
+        "fn": 13,
+        "fp": 13,
         "crash": 0
       },
       "native": {
@@ -17858,8 +17858,8 @@
     },
     "unicorn/filename-case": {
       "runner": {
-        "fn": 57,
-        "fp": 50,
+        "fn": 7,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -19658,8 +19658,8 @@
     },
     "react/jsx-curly-spacing": {
       "runner": {
-        "fn": 72,
-        "fp": 72,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -19820,8 +19820,8 @@
     },
     "react/no-unescaped-entities": {
       "runner": {
-        "fn": 12,
-        "fp": 10,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -20018,8 +20018,8 @@
     },
     "react/jsx-closing-bracket-location": {
       "runner": {
-        "fn": 118,
-        "fp": 118,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -20774,8 +20774,8 @@
     },
     "react/jsx-tag-spacing": {
       "runner": {
-        "fn": 4,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21368,8 +21368,8 @@
     },
     "react/jsx-child-element-spacing": {
       "runner": {
-        "fn": 16,
-        "fp": 16,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9909,
-    "runnerCasesPerSec": 9270,
-    "nativeCasesPerSec": 86105,
+    "totalElapsedMs": 9928,
+    "runnerCasesPerSec": 9243,
+    "nativeCasesPerSec": 89368,
     "totalCases": 73103
   }
 }
