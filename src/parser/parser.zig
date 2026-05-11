@@ -6051,6 +6051,21 @@ pub const Parser = struct {
                 _ = try self.expectIdentifierOrKeyword();
             }
 
+            // Create imported_node BEFORE consuming `as local` so its end_tok
+            // records only the imported name (matches ESTree shape).
+            const imported_node = if (imported_is_string)
+                try self.addNode(.{
+                    .tag = .property_literal,
+                    .main_token = imported_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                })
+            else
+                try self.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = imported_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+
             // `as` alias — local binding can be identifier or contextual keyword
             var local_tok = imported_tok;
             var has_alias = false;
@@ -6079,21 +6094,6 @@ pub const Parser = struct {
                 }
             }
 
-            // Create real nodes for imported/local.
-            // - imported can be string_literal (ES2022 `import {"foo" as bar}`) or identifier
-            // - local is always an identifier (it's a binding)
-            const imported_node = if (imported_is_string)
-                try self.addNode(.{
-                    .tag = .property_literal,
-                    .main_token = imported_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
-                })
-            else
-                try self.addNode(.{
-                    .tag = .property_ident,
-                    .main_token = imported_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
-                });
             // local binding: if no alias and imported was an identifier, reuse imported as local.
             // Otherwise, create a fresh identifier node for the local binding.
             const local_node = if (!has_alias and !imported_is_string)
@@ -6536,6 +6536,23 @@ pub const Parser = struct {
             }
             try local_token_list.append(self.gpa, local_tok);
 
+            // Create the local identifier node BEFORE consuming `as exported`
+            // so its end_tok records only the local name. Otherwise rules like
+            // no-useless-rename's sourceCode.getText(node.local) returns the
+            // whole "foo as foo" instead of just "foo".
+            const local_node = if (local_is_string)
+                try self.addNode(.{
+                    .tag = .property_literal,
+                    .main_token = local_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                })
+            else
+                try self.addNode(.{
+                    .tag = .property_ident,
+                    .main_token = local_tok,
+                    .data = .{ .lhs = .none, .rhs = .none },
+                });
+
             var exported_tok = local_tok;
             var exported_is_string = local_is_string;
             if (self.eat(.kw_as) != null) {
@@ -6549,18 +6566,6 @@ pub const Parser = struct {
                 }
             }
 
-            const local_node = if (local_is_string)
-                try self.addNode(.{
-                    .tag = .property_literal,
-                    .main_token = local_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
-                })
-            else
-                try self.addNode(.{
-                    .tag = .property_ident,
-                    .main_token = local_tok,
-                    .data = .{ .lhs = .none, .rhs = .none },
-                });
             const exported_node = if (exported_is_string)
                 try self.addNode(.{
                     .tag = .property_literal,
