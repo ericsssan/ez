@@ -7266,9 +7266,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
     const fnExpr = methodNode.value;
     if (!fnExpr || fnExpr.type !== 'FunctionExpression') return;
     fnExpr.parent = methodNode;
-    fnExpr.end = methodNode.end;
-    fnExpr.range = methodNode.range;
-    fnExpr.loc = methodNode.loc;
+    // Don't overwrite fnExpr.range/end/loc — the synthetic FunctionExpression's
+    // range is the function's `( params ) { body }` slice, not the method's
+    // outer range (which includes the key and any modifiers). Rules like
+    // object-shorthand's makeFunctionLongform use `node.value.range` /
+    // `getTokensBetween(key, value)` to locate the `]` of computed keys; if
+    // value.range starts at the method's `[` they get an empty between-range
+    // and the fix crashes.
     fnExpr._ast = ast;
     fnExpr._i = methodNodeIdx;
     // Synthesize onCodePathStart/End for object-literal shorthand methods that lack a Zig code path.

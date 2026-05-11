@@ -3242,8 +3242,8 @@
     },
     "jsdoc/require-jsdoc": {
       "runner": {
-        "fn": 8,
-        "fp": 10,
+        "fn": 4,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -8786,8 +8786,8 @@
     },
     "object-shorthand": {
       "runner": {
-        "fn": 29,
-        "fp": 8,
+        "fn": 23,
+        "fp": 2,
         "crash": 2
       },
       "native": {
@@ -18308,8 +18308,8 @@
     },
     "unicorn/prefer-native-coercion-functions": {
       "runner": {
-        "fn": 5,
-        "fp": 8,
+        "fn": 0,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10180,
-    "runnerCasesPerSec": 8952,
-    "nativeCasesPerSec": 89368,
+    "totalElapsedMs": 9896,
+    "runnerCasesPerSec": 9260,
+    "nativeCasesPerSec": 89477,
     "totalCases": 73103
   }
 }
