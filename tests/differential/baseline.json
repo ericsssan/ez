@@ -1226,7 +1226,7 @@
     },
     "@typescript-eslint/no-use-before-define": {
       "runner": {
-        "fn": 9,
+        "fn": 5,
         "fp": 3,
         "crash": 0
       },
@@ -9524,8 +9524,8 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 19,
-        "fp": 16,
+        "fn": 15,
+        "fp": 18,
         "crash": 0
       },
       "native": {
@@ -12387,7 +12387,7 @@
     "no-restricted-globals": {
       "runner": {
         "fn": 0,
-        "fp": 4,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9857,
-    "runnerCasesPerSec": 9291,
-    "nativeCasesPerSec": 84026,
+    "totalElapsedMs": 9909,
+    "runnerCasesPerSec": 9232,
+    "nativeCasesPerSec": 83451,
     "totalCases": 73103
   }
 }

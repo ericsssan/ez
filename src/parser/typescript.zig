@@ -619,6 +619,26 @@ fn parseTypeReference(p: *Parser) Error!NodeIndex {
         .main_token = name_tok,
         .data = .{ .lhs = .none, .rhs = .none },
     });
+    // Emit a `read` reference so the type name resolves to its declaration —
+    // but only for non-keyword type references. Built-in TS keyword types
+    // (`string`, `bigint`, `void`, etc.) become TS*Keyword nodes in ESTree,
+    // not Identifier references, so they shouldn't appear in scope.through.
+    const name_text = p.tokenText(name_tok);
+    const is_ts_kw_type =
+        std.mem.eql(u8, name_text, "any") or
+        std.mem.eql(u8, name_text, "bigint") or
+        std.mem.eql(u8, name_text, "boolean") or
+        std.mem.eql(u8, name_text, "intrinsic") or
+        std.mem.eql(u8, name_text, "never") or
+        std.mem.eql(u8, name_text, "null") or
+        std.mem.eql(u8, name_text, "number") or
+        std.mem.eql(u8, name_text, "object") or
+        std.mem.eql(u8, name_text, "string") or
+        std.mem.eql(u8, name_text, "symbol") or
+        std.mem.eql(u8, name_text, "undefined") or
+        std.mem.eql(u8, name_text, "unknown") or
+        std.mem.eql(u8, name_text, "void");
+    if (!is_ts_kw_type) try p.emitReference(.read, name_node);
 
     // Qualified names: `Foo.Bar.Baz` or `Foo?.Bar` (optional chain, TS error but parseable)
     while (p.peek() == .dot or p.peek() == .question_dot) {

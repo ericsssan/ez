@@ -3073,15 +3073,52 @@ class SourceCode {
         }
       }
     }
-    // typescript-eslint scope-manager marks export-specifier locals as type
-    // references so rules like no-use-before-define can skip UBD checks under
-    // ignoreTypeReferences. Compute the flag before construction so the shape
-    // is fixed.
+    // typescript-eslint scope-manager marks references as type-only when the
+    // identifier appears in TS type syntax. Rules like
+    // @typescript-eslint/consistent-type-imports and no-use-before-define's
+    // ignoreTypeReferences filter on this flag.
     let isTypeRef = false;
     if (refNode && kind === 0 /* read */) {
       const parent = refNode.parent;
       if (parent && parent.type === 'ExportSpecifier' && parent.local === refNode) {
         isTypeRef = true;
+      } else if (parent) {
+        // Walk up the parent chain through TS type-syntax nodes.
+        let p = parent, child = refNode, inType = false;
+        while (p) {
+          const pt = p.type;
+          if (pt === 'TSTypeReference' || pt === 'TSTypeAnnotation' ||
+              pt === 'TSTypeQuery' || pt === 'TSExpressionWithTypeArguments' ||
+              pt === 'TSInterfaceHeritage' || pt === 'TSClassImplements' ||
+              pt === 'TSTypeAliasDeclaration' ||
+              pt === 'TSPropertySignature' || pt === 'TSIndexSignature' ||
+              pt === 'TSMethodSignature' || pt === 'TSCallSignatureDeclaration' ||
+              pt === 'TSConstructSignatureDeclaration' || pt === 'TSFunctionType' ||
+              pt === 'TSConstructorType' || pt === 'TSUnionType' ||
+              pt === 'TSIntersectionType' || pt === 'TSArrayType' ||
+              pt === 'TSTupleType' || pt === 'TSNamedTupleMember' ||
+              pt === 'TSOptionalType' || pt === 'TSRestType' ||
+              pt === 'TSConditionalType' || pt === 'TSInferType' ||
+              pt === 'TSMappedType' || pt === 'TSTemplateLiteralType' ||
+              pt === 'TSLiteralType' || pt === 'TSTypeOperator' ||
+              pt === 'TSIndexedAccessType' || pt === 'TSTypePredicate' ||
+              pt === 'TSTypeLiteral' || pt === 'TSTypeParameter' ||
+              pt === 'TSTypeParameterDeclaration' || pt === 'TSTypeParameterInstantiation' ||
+              pt === 'TSImportType' ||
+              ((pt === 'TSAsExpression' || pt === 'TSSatisfiesExpression' || pt === 'TSTypeAssertion') && p.typeAnnotation === child)) {
+            inType = true;
+            break;
+          } else if (pt === 'TSQualifiedName' || pt === 'MemberExpression') {
+            // ez parses `Foo.Bar` in type position as MemberExpression; keep
+            // walking — we only count as type-context if we eventually reach
+            // a type-y wrapper above.
+          } else {
+            break;
+          }
+          child = p;
+          p = p.parent;
+        }
+        if (inType) isTypeRef = true;
       }
     }
 
