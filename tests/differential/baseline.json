@@ -1208,7 +1208,7 @@
     },
     "@typescript-eslint/no-extraneous-class": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -10839,7 +10839,7 @@
     "class-methods-use-this": {
       "runner": {
         "fn": 30,
-        "fp": 33,
+        "fp": 31,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10033,
-    "runnerCasesPerSec": 9141,
-    "nativeCasesPerSec": 82977,
+    "totalElapsedMs": 9886,
+    "runnerCasesPerSec": 9245,
+    "nativeCasesPerSec": 89041,
     "totalCases": 73103
   }
 }

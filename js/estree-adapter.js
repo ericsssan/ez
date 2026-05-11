@@ -4469,6 +4469,15 @@ function _methodFlags(ast, mainToken) {
     if (tag === TOK_ASYNC)  { isAsync = true;     i--; continue; }
     if (tag === TOK_STATIC) { isStatic = true;    i--; continue; }
     if (tag >= 9 && tag <= 71) { i--; continue; }
+    // Skip TS contextual modifier identifiers (override/readonly/declare/
+    // abstract/accessor/public/private/protected) — they're tokenized as
+    // plain identifiers but precede `static`/`async`/the name in class members.
+    if (tag === 8 /* identifier */) {
+      const text = ast._rawTokenText(i);
+      if (text === 'accessor' || text === 'override' || text === 'readonly' ||
+          text === 'declare' || text === 'abstract' || text === 'public' ||
+          text === 'private' || text === 'protected') { i--; continue; }
+    }
     break;
   }
   return { async: isAsync, generator: isGenerator, static: isStatic };
