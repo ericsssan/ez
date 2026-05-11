@@ -4340,9 +4340,14 @@ pub const Parser = struct {
 
         // Class declaration binds its name in the enclosing scope, then opens
         // a class scope for members (plus an inner body scope, but ESLint's
-        // model uses just one class scope for declarations).
+        // model uses just one class scope for declarations). The name is ALSO
+        // declared inside the class's own scope (per ESLint's scope-manager
+        // model — the class name is a self-reference visible inside the
+        // class body). Rules like unicorn/prevent-abbreviations rely on
+        // seeing both copies (outer + inner) of the class name.
         if (name != .none) try self.emitDeclare(.class_decl, name);
         const class_scope_ev = try self.emitScopeOpen(.class, .none);
+        if (name != .none) try self.emitDeclare(.class_decl, name);
 
         // TS type parameters: class Foo<T, U>
         const class_type_params = if (self.is_ts and self.peek() == .less_than) blk: {

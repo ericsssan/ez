@@ -18614,7 +18614,7 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 24,
+        "fn": 16,
         "fp": 5,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10035,
-    "runnerCasesPerSec": 9109,
-    "nativeCasesPerSec": 85102,
+    "totalElapsedMs": 10101,
+    "runnerCasesPerSec": 9074,
+    "nativeCasesPerSec": 83930,
     "totalCases": 73103
   }
 }
