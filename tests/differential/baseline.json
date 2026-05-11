@@ -74,8 +74,8 @@
     },
     "n/prefer-node-protocol": {
       "runner": {
-        "fn": 13,
-        "fp": 13,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -362,8 +362,8 @@
     },
     "n/no-missing-import": {
       "runner": {
-        "fn": 28,
-        "fp": 28,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -578,8 +578,8 @@
     },
     "n/no-unpublished-import": {
       "runner": {
-        "fn": 14,
-        "fp": 14,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -614,8 +614,8 @@
     },
     "n/no-restricted-import": {
       "runner": {
-        "fn": 11,
-        "fp": 11,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16418,8 +16418,8 @@
     },
     "import/no-internal-modules": {
       "runner": {
-        "fn": 2,
-        "fp": 1,
+        "fn": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16688,8 +16688,8 @@
     },
     "import/no-duplicates": {
       "runner": {
-        "fn": 56,
-        "fp": 56,
+        "fn": 2,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -16724,8 +16724,8 @@
     },
     "import/extensions": {
       "runner": {
-        "fn": 3,
-        "fp": 3,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16742,8 +16742,8 @@
     },
     "import/enforce-node-protocol-usage": {
       "runner": {
-        "fn": 17,
-        "fp": 17,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -16922,8 +16922,8 @@
     },
     "import/consistent-type-specifier-style": {
       "runner": {
-        "fn": 8,
-        "fp": 8,
+        "fn": 5,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9934,
-    "runnerCasesPerSec": 9256,
-    "nativeCasesPerSec": 81954,
+    "totalElapsedMs": 9912,
+    "runnerCasesPerSec": 9258,
+    "nativeCasesPerSec": 85401,
     "totalCases": 73103
   }
 }

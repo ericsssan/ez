@@ -5892,14 +5892,15 @@ pub const Parser = struct {
         // Bare import: `import 'module';` or `import 'module' with { ... };`
         if (self.peek() == .string_literal) {
             const source_tok = self.advance();
-            try self.skipImportAttributes();
-            try self.expectSemicolon();
-
+            // Create source_node BEFORE consuming attributes/semicolon so its
+            // end_tok records only the string literal (rules report on node.source).
             const source_node = try self.addNode(.{
                 .tag = .string_literal,
                 .main_token = source_tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });
+            try self.skipImportAttributes();
+            try self.expectSemicolon();
             const extra = try self.addExtra(ast.ImportData, .{
                 .specifiers_start = 0,
                 .specifiers_end = 0,
@@ -6002,18 +6003,19 @@ pub const Parser = struct {
         // `from 'source'`
         _ = try self.expect(.kw_from);
         const source_tok = try self.expect(.string_literal);
+        // Create source_node BEFORE consuming attributes/semicolon so its
+        // end_tok records only the string literal.
+        const source_node = try self.addNode(.{
+            .tag = .string_literal,
+            .main_token = source_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
         // Optional import attributes: `with { key: "value" }` or `assert { key: "value" }`
         try self.skipImportAttributes();
         try self.expectSemicolon();
 
         const specs = self.scratch.items[scratch_top..];
         const range = try self.listToSubRange(specs);
-
-        const source_node = try self.addNode(.{
-            .tag = .string_literal,
-            .main_token = source_tok,
-            .data = .{ .lhs = .none, .rhs = .none },
-        });
         const extra = try self.addExtra(ast.ImportData, .{
             .specifiers_start = range.start,
             .specifiers_end = range.end,
@@ -6602,8 +6604,16 @@ pub const Parser = struct {
         // reserved keywords are allowed as specifier names.
         const has_from = self.eat(.kw_from) != null;
         var source_tok: TokenIndex = 0;
+        var source_node: NodeIndex = .none;
         if (has_from) {
             source_tok = try self.expect(.string_literal);
+            // Create source_node BEFORE consuming attributes/semicolon so its
+            // end_tok records only the string literal.
+            source_node = try self.addNode(.{
+                .tag = .string_literal,
+                .main_token = source_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             try self.skipImportAttributes();
         }
 
@@ -6632,12 +6642,8 @@ pub const Parser = struct {
         const range = try self.listToSubRange(specs);
 
         if (has_from) {
-            // Re-export: store via ImportData (same layout: specifiers + source)
-            const source_node = try self.addNode(.{
-                .tag = .string_literal,
-                .main_token = source_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
+            // Re-export: store via ImportData (same layout: specifiers + source).
+            // source_node is already created above (before semicolon consumption).
             const extra = try self.addExtra(ast.ImportData, .{
                 .specifiers_start = range.start,
                 .specifiers_end = range.end,
