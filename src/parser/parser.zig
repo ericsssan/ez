@@ -3550,6 +3550,13 @@ pub const Parser = struct {
         // Label must be on the same line (no ASI between break and label).
         if (self.peek() == .identifier and !self.isOnNewLine()) {
             const label_tok = self.advance();
+            // Create the label node BEFORE consuming `;` so its end_tok
+            // records only the identifier (rules report on node.label range).
+            const label_node = try self.addNode(.{
+                .tag = .property_ident,
+                .main_token = label_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             const label_name = self.tokenText(label_tok);
             // TS1107/TS1116: validate label target
             if (self.is_ts) {
@@ -3570,12 +3577,6 @@ pub const Parser = struct {
                     try self.emitDiagnosticAtToken(label_tok, "A 'break' statement can only jump to a label of an enclosing statement", .{});
                 }
             }
-            // Create a real identifier node for the label so rules can walk it.
-            const label_node = try self.addNode(.{
-                .tag = .property_ident,
-                .main_token = label_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
             try self.expectSemicolon();
             const node = try self.addNode(.{
                 .tag = .break_label,
@@ -3610,6 +3611,13 @@ pub const Parser = struct {
         // Label must be on the same line (no ASI between continue and label).
         if (self.peek() == .identifier and !self.isOnNewLine()) {
             const label_tok = self.advance();
+            // Create the label node BEFORE consuming `;` so its end_tok
+            // records only the identifier.
+            const label_node = try self.addNode(.{
+                .tag = .property_ident,
+                .main_token = label_tok,
+                .data = .{ .lhs = .none, .rhs = .none },
+            });
             const label_name = self.tokenText(label_tok);
             // TS1107/TS1115: validate label target
             if (self.is_ts) {
@@ -3630,11 +3638,6 @@ pub const Parser = struct {
                     try self.emitDiagnosticAtToken(label_tok, "A 'continue' statement can only jump to a label of an enclosing iteration statement", .{});
                 }
             }
-            const label_node = try self.addNode(.{
-                .tag = .property_ident,
-                .main_token = label_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
             try self.expectSemicolon();
             const node = try self.addNode(.{
                 .tag = .continue_label,
@@ -3661,14 +3664,15 @@ pub const Parser = struct {
     /// Parse `label: statement`.
     pub fn parseLabeledStatement(self: *Parser) Error!NodeIndex {
         const label_tok = self.advance(); // eat identifier (the label)
-        _ = try self.expect(.colon); // eat ':'
-
-        // Create a real identifier node for the label.
+        // Create the label node BEFORE consuming `:` so its end_tok records
+        // only the identifier. Otherwise rules reporting on node.label (e.g.
+        // no-unused-labels) get endColumn past the colon.
         const label_node = try self.addNode(.{
             .tag = .property_ident,
             .main_token = label_tok,
             .data = .{ .lhs = .none, .rhs = .none },
         });
+        _ = try self.expect(.colon); // eat ':'
 
         const label_name = self.tokenText(label_tok);
 

@@ -7904,8 +7904,8 @@
     },
     "id-blacklist": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -11612,8 +11612,8 @@
     },
     "id-denylist": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -11972,8 +11972,8 @@
     },
     "camelcase": {
       "runner": {
-        "fn": 1,
-        "fp": 1,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -12098,8 +12098,8 @@
     },
     "no-unused-labels": {
       "runner": {
-        "fn": 29,
-        "fp": 29,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -14222,8 +14222,8 @@
     },
     "sonarjs/label-position": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15410,8 +15410,8 @@
     },
     "sonarjs/no-case-label-in-switch": {
       "runner": {
-        "fn": 5,
-        "fp": 5,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -15428,8 +15428,8 @@
     },
     "sonarjs/no-labels": {
       "runner": {
-        "fn": 8,
-        "fp": 8,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9926,
-    "runnerCasesPerSec": 9254,
-    "nativeCasesPerSec": 83166,
+    "totalElapsedMs": 9934,
+    "runnerCasesPerSec": 9256,
+    "nativeCasesPerSec": 81954,
     "totalCases": 73103
   }
 }
