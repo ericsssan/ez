@@ -1838,8 +1838,8 @@
     },
     "@typescript-eslint/class-literal-property-style": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -1857,7 +1857,7 @@
     "@typescript-eslint/member-ordering": {
       "runner": {
         "fn": 79,
-        "fp": 84,
+        "fp": 73,
         "crash": 0
       },
       "native": {
@@ -9002,8 +9002,8 @@
     },
     "complexity": {
       "runner": {
-        "fn": 3,
-        "fp": 4,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -9507,7 +9507,7 @@
     "consistent-return": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9525,7 +9525,7 @@
     "no-use-before-define": {
       "runner": {
         "fn": 15,
-        "fp": 18,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -12692,7 +12692,7 @@
     },
     "constructor-super": {
       "runner": {
-        "fn": 5,
+        "fn": 2,
         "fp": 4,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9976,
-    "runnerCasesPerSec": 9121,
-    "nativeCasesPerSec": 90699,
+    "totalElapsedMs": 10378,
+    "runnerCasesPerSec": 8842,
+    "nativeCasesPerSec": 81771,
     "totalCases": 73103
   }
 }
