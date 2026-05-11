@@ -1514,7 +1514,7 @@
     },
     "@typescript-eslint/no-shadow": {
       "runner": {
-        "fn": 2,
+        "fn": 0,
         "fp": 2,
         "crash": 0
       },
@@ -10460,7 +10460,7 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 33,
+        "fn": 31,
         "fp": 3,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10399,
-    "runnerCasesPerSec": 8792,
-    "nativeCasesPerSec": 82602,
+    "totalElapsedMs": 10288,
+    "runnerCasesPerSec": 8915,
+    "nativeCasesPerSec": 79202,
     "totalCases": 73103
   }
 }

@@ -2445,6 +2445,27 @@ class SourceCode {
       const v = this._buildVariable(rawSymId);
       const existing = set.get(v.name);
       if (existing) {
+        // fn_expr_name (binding kind 15) lives in the function-expression-name
+        // scope (a wrapper between body and outer), NOT in the function body.
+        // Keep them as separate Variables so the JS-side FEN hoist correctly
+        // routes one to the FEN wrapper and the other (e.g. a `function a(){}`
+        // declaration inside the body with the same name) to the body scope.
+        // Without this, rules like no-shadow can't detect inner-shadows-outer.
+        const symKinds = ast._symKinds;
+        const newKind = symKinds ? symKinds[rawSymId] : -1;
+        const existingKind = symKinds ? symKinds[existing._symId] : -1;
+        if (newKind === 15 || existingKind === 15) {
+          // Don't merge. Push as a separate entry — but `set` can only map
+          // one entry per name, so keep `set` pointing at the non-FEN one
+          // (the inner binding rules normally resolve against). The FEN var
+          // is recoverable via `variables` array and gets hoisted to the
+          // wrapper scope in the FEN extraction loop below.
+          variables.push(v);
+          if (existingKind === 15 && newKind !== 15) {
+            set.set(v.name, v);
+          }
+          continue;
+        }
         // After the Zig analyzer's `sym_to_canonical` routing, the symbol
         // with the LOWEST sym_id among (scope, name) siblings owns ALL
         // refs.  Keep the canonical (lowest sym_id) as the entry, but

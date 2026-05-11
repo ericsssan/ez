@@ -4526,15 +4526,16 @@ fn parseFunctionExpression(p: *Parser) Error!NodeIndex {
     // scope.  We emit the declare AFTER emitting scope_open so the consumer
     // places the binding in the inner scope, not the enclosing one.
     const fn_expr_ev = try p.emitScopeOpen(.function, .none);
-    // Named function expression: emit as `.fn_expr_name` when the name
-    // matches the enclosing `var`/`let`/`const` binding name (ESLint's
-    // fn_expr_exceptions rule — affects no-shadow).  Otherwise `.function_decl`.
+    // Named function expression: always emit as `.fn_expr_name`. The name
+    // binds only inside the function's own scope (it's a self-reference,
+    // not a declaration in the enclosing scope). ESLint's scope-manager
+    // puts this binding in a separate "function-expression-name" scope
+    // above the body — JS-side scope construction extracts it. Without the
+    // distinct binding kind, the FE-name and any same-named inner
+    // declaration (e.g. `(function a() { function a(){} })()`) merge into
+    // one Variable and rules like no-shadow can't detect the inner shadow.
     if (name_node != .none) {
-        const nm_tok = p.node_main_token_ptr[name_node.toInt()];
-        const nm_text = p.tokenText(nm_tok);
-        const matches_outer = p.decl_name_text.len > 0 and
-            std.mem.eql(u8, nm_text, p.decl_name_text);
-        try p.emitDeclare(if (matches_outer) .fn_expr_name else .function_decl, name_node);
+        try p.emitDeclare(.fn_expr_name, name_node);
     }
     // Reset decl_name_text: don't propagate outer binding name into this fn's body.
     const saved_decl_name_fn = p.decl_name_text;
