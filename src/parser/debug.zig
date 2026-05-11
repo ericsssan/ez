@@ -689,6 +689,14 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             // lhs = expression node
             try dumpNode(tree, data.lhs, child_indent, writer);
         },
+        .ts_instantiation_expr => {
+            // lhs = expression, rhs = extra index to SubRange of type args
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            if (data.rhs != .none) {
+                const sr = tree.extraData(SubRange, @intFromEnum(data.rhs));
+                try dumpSubRange(tree, sr, child_indent, writer);
+            }
+        },
     }
 }
 

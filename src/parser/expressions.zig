@@ -209,7 +209,8 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
         // TS: `<` has relational prec in the table but may open a generic
         // type-argument list — check before treating it as a binary operator.
         if (is_ts and tag == .less_than) {
-            if (tryParseTsTypeArguments(p)) {
+            const lt_tok: TokenIndex = @intCast(p.tok_i);
+            if (tryParseTsTypeArguments(p)) |type_args_range| {
                 // TS1477: An instantiation expression cannot be followed by a property access.
                 if (p.peek() == .dot or p.peek() == .question_dot) {
                     try p.emitError("An instantiation expression cannot be followed by a property access");
@@ -222,6 +223,17 @@ fn parseExpressionPrec(p: *Parser, min_prec: Precedence) Error!NodeIndex {
                     try p.emitError("'super' must be followed by an argument list or member access");
                     return error.ParseError;
                 }
+                // Wrap `left` in a ts_instantiation_expr so the type-arg nodes
+                // have a real parent. The wrapper is the new callee/operand and
+                // remains visible to estree-adapter as TSInstantiationExpression.
+                // If the next token is `(` the outer call/new parses normally
+                // with this wrapper as its callee.
+                const range_extra = try p.addExtra(ast.SubRange, type_args_range);
+                left = try p.addNode(.{
+                    .tag = .ts_instantiation_expr,
+                    .main_token = lt_tok,
+                    .data = .{ .lhs = left, .rhs = NodeIndex.fromInt(range_extra) },
+                });
                 continue;
             }
         }
@@ -7029,9 +7041,9 @@ test "isYieldTerminator" {
 // ── TS arrow function helpers ─────────────────────────────────────
 
 /// Try to parse `<Type, Type>` as type arguments in expression position.
-/// Returns true if successfully parsed, false if it's actually a comparison.
+/// Returns the SubRange of type args on success, null if it's actually a comparison.
 /// Uses token position save/restore for backtracking.
-fn tryParseTsTypeArguments(p: *Parser) bool {
+fn tryParseTsTypeArguments(p: *Parser) ?ast.SubRange {
     const saved_tok = p.tok_i;
     const saved_diag_len = p.diagnostics.items.len;
     const saved_nodes_len = p.nodes.len;
@@ -7039,7 +7051,7 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
 
     // Try parsing type arguments
     const typescript = @import("typescript.zig");
-    _ = typescript.parseTypeArguments(p) catch {
+    const range = typescript.parseTypeArguments(p) catch {
         // Failed — backtrack.
         // Free any diagnostic messages allocated during the failed attempt
         // before shrinking the list; shrinkRetainingCapacity does not free them.
@@ -7048,7 +7060,7 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
         p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
         p.nodes.len = @intCast(saved_nodes_len);
         p.extra_data.shrinkRetainingCapacity(saved_extra_len);
-        return false;
+        return null;
     };
 
     // Check what follows — if it's a valid continuation for type arguments, accept
@@ -7064,7 +7076,7 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
         next == .bang or next == .l_brace or next == .kw_implements or
         next == .kw_extends)
     {
-        return true;
+        return range;
     }
 
     // Not a valid type argument context — backtrack
@@ -7072,7 +7084,7 @@ fn tryParseTsTypeArguments(p: *Parser) bool {
     p.diagnostics.shrinkRetainingCapacity(saved_diag_len);
     p.nodes.len = @intCast(saved_nodes_len);
     p.extra_data.shrinkRetainingCapacity(saved_extra_len);
-    return false;
+    return null;
 }
 
 /// Skip balanced parentheses, consuming from `(` to matching `)`.

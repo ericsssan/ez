@@ -478,6 +478,13 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
         .decorator => {
             sp(parents, lhs, idx);
         },
+        .ts_instantiation_expr => {
+            sp(parents, lhs, idx);
+            if (rhs != .none) {
+                const sr = extraData(ast_mod.SubRange, extra, @intFromEnum(rhs));
+                spSub(parents, extra, sr.start, sr.end, idx);
+            }
+        },
     }
 }
 

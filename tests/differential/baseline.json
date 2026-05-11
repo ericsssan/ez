@@ -1371,7 +1371,7 @@
     "@typescript-eslint/no-array-constructor": {
       "runner": {
         "fn": 0,
-        "fp": 4,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -1606,7 +1606,7 @@
       "runner": {
         "fn": 0,
         "fp": 0,
-        "crash": 4
+        "crash": 0
       },
       "native": {
         "fn": 65,
@@ -1910,9 +1910,9 @@
     },
     "@typescript-eslint/no-invalid-void-type": {
       "runner": {
-        "fn": 14,
-        "fp": 26,
-        "crash": 17
+        "fn": 13,
+        "fp": 28,
+        "crash": 11
       },
       "native": {
         "fn": 48,
@@ -10155,7 +10155,7 @@
     "no-array-constructor": {
       "runner": {
         "fn": 3,
-        "fp": 4,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -18632,8 +18632,8 @@
     },
     "unicorn/prefer-object-from-entries": {
       "runner": {
-        "fn": 1,
-        "fp": 2,
+        "fn": 0,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -18993,7 +18993,7 @@
     "unicorn/no-immediate-mutation": {
       "runner": {
         "fn": 3,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -19874,7 +19874,7 @@
     },
     "react/no-unused-prop-types": {
       "runner": {
-        "fn": 16,
+        "fn": 15,
         "fp": 1,
         "crash": 0
       },
@@ -20955,7 +20955,7 @@
     "react/prop-types": {
       "runner": {
         "fn": 9,
-        "fp": 172,
+        "fp": 16,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10054,
-    "runnerCasesPerSec": 9112,
-    "nativeCasesPerSec": 84512,
+    "totalElapsedMs": 10080,
+    "runnerCasesPerSec": 9107,
+    "nativeCasesPerSec": 82602,
     "totalCases": 73103
   }
 }

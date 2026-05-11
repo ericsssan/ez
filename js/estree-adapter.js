@@ -1936,11 +1936,20 @@ const NodeProto = {
   get callee() {
     const t = this._tag;
     if (t === T.call_expr || t === T.optional_call_expr || t === T.new_expr) {
-      const idx = this._ast.nodeLhs(this._i);
+      let idx = this._ast.nodeLhs(this._i);
+      if (idx === NONE) return null;
+      // TS: `Promise<void>(...)` and `new Foo<T>(...)` — when the callee is a
+      // TSInstantiationExpression, @typescript-eslint exposes the underlying
+      // expression on CallExpression.callee and lifts typeArguments to the
+      // call/new directly. Unwrap here for ESLint-rule compatibility.
+      if (this._ast._nodeTags[idx] === T.ts_instantiation_expr) {
+        const inner = this._ast.nodeLhs(idx);
+        if (inner !== NONE) idx = inner;
+      }
       // Use nodeViewChain so optional chain callees are wrapped in ChainExpression.
       // ESLint rules (no-unsafe-optional-chaining, no-prototype-builtins, etc.) use
       // astUtils.skipChainExpression(node.callee) to handle ChainExpression.
-      return idx === NONE ? null : nodeViewChain(this._ast, idx);
+      return nodeViewChain(this._ast, idx);
     }
     return undefined;
   },
@@ -2481,7 +2490,25 @@ const NodeProto = {
 
   get typeArguments() {
     if (this._typeArgs !== undefined) return this._typeArgs;
-    if (this._tag !== T.ts_type_reference) { this._typeArgs = undefined; return undefined; }
+    const tag = this._tag;
+    // CallExpression / NewExpression with a TSInstantiationExpression callee:
+    // hoist typeArguments from the wrapper to match @typescript-eslint shape.
+    if (tag === T.call_expr || tag === T.optional_call_expr || tag === T.new_expr) {
+      const lhs = this._ast.nodeLhs(this._i);
+      if (lhs !== NONE && this._ast._nodeTags[lhs] === T.ts_instantiation_expr) {
+        const wrapperRhs = this._ast.nodeRhs(lhs);
+        if (wrapperRhs === NONE) { this._typeArgs = null; return null; }
+        const sub = this._ast.extraSubRange(wrapperRhs);
+        const params = this._ast._nodesFromRange(sub.start, sub.end);
+        const synth = _syntheticNode('TSTypeParameterInstantiation', this.start, this.end, { params, parent: this }, this._ast);
+        for (const p of params) p._parent = synth;
+        this._typeArgs = synth;
+        return synth;
+      }
+      this._typeArgs = null;
+      return null;
+    }
+    if (tag !== T.ts_type_reference && tag !== T.ts_instantiation_expr) { this._typeArgs = undefined; return undefined; }
     const rhs = this._ast.nodeRhs(this._i);
     if (rhs === NONE) { this._typeArgs = null; return null; }
     const sub = this._ast.extraSubRange(rhs);
@@ -3401,6 +3428,11 @@ const NodeProto = {
     }
     // TSNonNullExpression: expression = lhs (already handled by argument getter, also expose here)
     if (t === T.ts_non_null_expr) {
+      const idx = this._ast.nodeLhs(this._i);
+      return idx === NONE ? null : nodeView(this._ast, idx);
+    }
+    // TSInstantiationExpression: expression = lhs (the value being instantiated)
+    if (t === T.ts_instantiation_expr) {
       const idx = this._ast.nodeLhs(this._i);
       return idx === NONE ? null : nodeView(this._ast, idx);
     }

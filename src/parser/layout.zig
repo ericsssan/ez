@@ -197,6 +197,7 @@ fn estreeNameForTag(tag: NodeTag) [*:0]const u8 {
 
         // ── TypeScript Declare ─────────────────────────────────
         .ts_declare_function => "TSDeclareFunction",
+        .ts_instantiation_expr => "TSInstantiationExpression",
     };
 }
 

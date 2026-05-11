@@ -528,6 +528,8 @@ pub const Node = struct {
         decorator,
         /// declare function / overload signature (no body). lhs = extra index to FnData
         ts_declare_function,
+        /// expr<TypeArgs> — TS instantiation expression. lhs = expression, rhs = extra index to SubRange of type args
+        ts_instantiation_expr,
     };
 };
 
