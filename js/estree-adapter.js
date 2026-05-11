@@ -2130,11 +2130,11 @@ const NodeProto = {
     if (t !== T.property_def && t !== T.computed_property_def &&
         t !== T.method_def && t !== T.computed_method_def) return undefined;
     const mt = this.mainToken;
-    for (let i = mt - 1; i >= 0 && i >= mt - 5; i--) {
+    for (let i = mt - 1; i >= 0 && i >= mt - 6; i--) {
       const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds ? ast._tokEnds[i] : ast._tokStarts[i + 1]);
       if (val === 'readonly') return true;
       if (val !== 'static' && val !== 'public' && val !== 'private' && val !== 'protected' &&
-          val !== 'override' && val !== 'abstract' && val !== 'declare') break;
+          val !== 'override' && val !== 'abstract' && val !== 'declare' && val !== 'accessor') break;
     }
     return false;
   },
@@ -2157,12 +2157,12 @@ const NodeProto = {
         t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def) return undefined;
     const mt = this.mainToken;
     // Scan backwards for 'override' keyword before the method name
-    for (let i = mt - 1; i >= 0 && i >= mt - 4; i--) {
+    for (let i = mt - 1; i >= 0 && i >= mt - 6; i--) {
       const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
       if (val === 'override') return true;
       if (val !== 'static' && val !== 'async' && val !== 'get' && val !== 'set' && val !== '*' &&
           val !== 'public' && val !== 'private' && val !== 'protected' && val !== 'readonly' &&
-          val !== 'abstract' && val !== 'declare') break;
+          val !== 'abstract' && val !== 'declare' && val !== 'accessor') break;
     }
     return false;
   },
@@ -2187,11 +2187,12 @@ const NodeProto = {
         t !== T.computed_property_def && t !== T.getter_def && t !== T.setter_def &&
         t !== T.computed_getter_def && t !== T.computed_setter_def && t !== T.constructor_def) return undefined;
     const mt = this.mainToken;
-    for (let i = mt - 1; i >= 0 && i >= mt - 4; i--) {
+    for (let i = mt - 1; i >= 0 && i >= mt - 5; i--) {
       const val = ast.source.slice(ast._tokStarts[i], ast._tokEnds[i]);
       if (val === 'public' || val === 'private' || val === 'protected') return val;
       if (val !== 'static' && val !== 'async' && val !== 'override' && val !== 'readonly' &&
-          val !== 'abstract' && val !== 'declare' && val !== '*' && val !== 'get' && val !== 'set') break;
+          val !== 'abstract' && val !== 'declare' && val !== 'accessor' &&
+          val !== '*' && val !== 'get' && val !== 'set') break;
     }
     return undefined;
   },

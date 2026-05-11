@@ -1425,7 +1425,7 @@
     "@typescript-eslint/explicit-member-accessibility": {
       "runner": {
         "fn": 12,
-        "fp": 14,
+        "fp": 12,
         "crash": 0
       },
       "native": {
@@ -1587,7 +1587,7 @@
     "@typescript-eslint/class-methods-use-this": {
       "runner": {
         "fn": 26,
-        "fp": 27,
+        "fp": 26,
         "crash": 0
       },
       "native": {
@@ -1964,7 +1964,7 @@
     },
     "@typescript-eslint/no-unused-private-class-members": {
       "runner": {
-        "fn": 1,
+        "fn": 0,
         "fp": 6,
         "crash": 0
       },
@@ -10839,7 +10839,7 @@
     "class-methods-use-this": {
       "runner": {
         "fn": 30,
-        "fp": 31,
+        "fp": 30,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9783,
-    "runnerCasesPerSec": 9392,
-    "nativeCasesPerSec": 91953,
+    "totalElapsedMs": 9853,
+    "runnerCasesPerSec": 9316,
+    "nativeCasesPerSec": 84123,
     "totalCases": 73103
   }
 }
