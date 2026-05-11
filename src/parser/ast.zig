@@ -530,6 +530,9 @@ pub const Node = struct {
         ts_declare_function,
         /// expr<TypeArgs> — TS instantiation expression. lhs = expression, rhs = extra index to SubRange of type args
         ts_instantiation_expr,
+        /// TS type parameter: `T extends C = D`. main_token = name identifier,
+        /// lhs = constraint (or .none), rhs = default (or .none).
+        ts_type_parameter,
     };
 };
 

@@ -1344,6 +1344,19 @@ const NodeProto = {
         this._parent = result;
         return result;
       }
+      case 7: {
+        // ts_type_parameter → synthetic TSTypeParameterDeclaration (cached on
+        // the resolved parent's `typeParameters` getter, which also installs
+        // `_parent` on each param. After it runs, `this._parent` is the wrapper.)
+        const decl = result.typeParameters;
+        if (decl && this._parent !== _PARENT_UNSET) return this._parent;
+        if (decl) {
+          this._parent = decl;
+          return decl;
+        }
+        this._parent = result;
+        return result;
+      }
       default: {
         this._parent = result;
         return result;
@@ -1433,6 +1446,16 @@ const NodeProto = {
     if (t === T.jsx_namespaced_name) {
       const idx = this._ast.nodeRhs(this._i);
       return idx !== NONE ? nodeView(this._ast, idx) : null;
+    }
+    // TSTypeParameter.name — synthetic Identifier from main_token
+    if (t === T.ts_type_parameter) {
+      const ast = this._ast;
+      const tok = ast._mainTokens[this._i];
+      const ps = ast._tokStarts[tok];
+      const pe = ast._tokEnds ? ast._tokEnds[tok] : ps + ast._identAt(tok).length;
+      const nameStr = _resolveUnicodeEscapes(ast._identAt(tok));
+      const id = _syntheticNode('Identifier', ps, pe, { name: nameStr, parent: this }, ast);
+      return id;
     }
     return undefined;
   },
@@ -2570,27 +2593,36 @@ const NodeProto = {
     let rangeStart = Infinity, rangeEnd = 0;
     for (let i = tp_start; i < tp_end; i++) {
       const paramIdx = ast._extraData[i];
-      const nameTok = ast._mainTokens[paramIdx];
-      const nameStr = ast._identAt(nameTok);
-      const ps = ast._tokStarts[nameTok];
-      const pe = ast._tokEnds ? ast._tokEnds[nameTok] : ps + nameStr.length;
-      if (ps < rangeStart) rangeStart = ps;
-      if (pe > rangeEnd) rangeEnd = pe;
-      const nameNode = _syntheticNode('Identifier', ps, pe, { name: nameStr }, ast);
-      const constraintIdx = ast.nodeLhs(paramIdx);
-      const defaultIdx = ast.nodeRhs(paramIdx);
-      params.push(_syntheticNode('TSTypeParameter', ps, pe, {
-        name: nameNode,
-        constraint: constraintIdx !== NONE ? nodeView(ast, constraintIdx) : undefined,
-        default: defaultIdx !== NONE ? nodeView(ast, defaultIdx) : undefined,
-      }, ast));
+      const pv = nodeView(ast, paramIdx);
+      if (pv.start < rangeStart) rangeStart = pv.start;
+      if (pv.end > rangeEnd) rangeEnd = pv.end;
+      params.push(pv);
     }
     const result = _syntheticNode('TSTypeParameterDeclaration',
       rangeStart === Infinity ? this.start : rangeStart,
       rangeEnd === 0 ? this.end : rangeEnd,
-      { params }, ast);
+      { params, parent: this }, ast);
+    for (const p of params) p._parent = result;
     this._typeParameters = result;
     return result;
+  },
+
+  /**
+   * node.constraint — TSTypeParameter constraint clause (`extends T`).
+   */
+  get constraint() {
+    if (this._tag !== T.ts_type_parameter) return undefined;
+    const lhs = this._ast.nodeLhs(this._i);
+    return lhs === NONE ? undefined : nodeView(this._ast, lhs);
+  },
+
+  /**
+   * node.default — TSTypeParameter default value (`= T`).
+   */
+  get default() {
+    if (this._tag !== T.ts_type_parameter) return undefined;
+    const rhs = this._ast.nodeRhs(this._i);
+    return rhs === NONE ? undefined : nodeView(this._ast, rhs);
   },
 
   /**

@@ -697,6 +697,11 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
                 try dumpSubRange(tree, sr, child_indent, writer);
             }
         },
+        .ts_type_parameter => {
+            // lhs = constraint (or none), rhs = default (or none)
+            try dumpNode(tree, data.lhs, child_indent, writer);
+            try dumpNode(tree, data.rhs, child_indent, writer);
+        },
     }
 }
 

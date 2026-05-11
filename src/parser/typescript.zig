@@ -1432,10 +1432,10 @@ fn parseTypeParameterListImpl(p: *Parser, allow_const: bool) Error!SubRange {
             default_type = try parseType(p);
         }
 
-        // Create a ts_type_annotation node to represent the type parameter.
-        // lhs = constraint (or none), rhs = default (or none).
+        // Create a ts_type_parameter node. main_token = name identifier,
+        // lhs = constraint (or .none), rhs = default (or .none).
         const param_node = try p.addNode(.{
-            .tag = .ts_type_annotation,
+            .tag = .ts_type_parameter,
             .main_token = param_tok,
             .data = .{ .lhs = constraint, .rhs = default_type },
         });

@@ -1910,9 +1910,9 @@
     },
     "@typescript-eslint/no-invalid-void-type": {
       "runner": {
-        "fn": 13,
+        "fn": 7,
         "fp": 28,
-        "crash": 11
+        "crash": 7
       },
       "native": {
         "fn": 48,
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10080,
-    "runnerCasesPerSec": 9107,
-    "nativeCasesPerSec": 82602,
+    "totalElapsedMs": 10062,
+    "runnerCasesPerSec": 9119,
+    "nativeCasesPerSec": 87027,
     "totalCases": 73103
   }
 }

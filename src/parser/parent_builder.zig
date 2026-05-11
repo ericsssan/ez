@@ -85,6 +85,10 @@ pub const ParentKind = enum(u8) {
     /// ts_construct_signature / ts_index_signature — JS returns the synthetic
     /// TSInterfaceBody (cached on the parent NodeView).
     ts_interface_body = 6,
+    /// This node is a ts_type_parameter whose resolved parent owns a
+    /// type_params SubRange. JS synthesizes a TSTypeParameterDeclaration
+    /// wrapper around the SubRange and returns it as the parent.
+    ts_type_parameter_declaration = 7,
 };
 
 /// ESTree-shape type override IDs. Must stay in sync with `_OVERRIDE_TYPES`
@@ -485,6 +489,10 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
                 spSub(parents, extra, sr.start, sr.end, idx);
             }
         },
+        .ts_type_parameter => {
+            sp(parents, lhs, idx);
+            sp(parents, rhs, idx);
+        },
     }
 }
 
@@ -687,6 +695,14 @@ pub fn buildTraversalAux(
                     }
                 },
                 else => {},
+            }
+
+            // Kind 7: TSTypeParameterDeclaration wrap — all ts_type_parameter
+            // nodes are inside a type_params SubRange of their resolved parent;
+            // JS synthesizes the TSTypeParameterDeclaration wrapper.
+            if (this_tag == .ts_type_parameter) {
+                parent_kinds[i] = @intFromEnum(ParentKind.ts_type_parameter_declaration);
+                continue;
             }
         }
     }
@@ -1145,6 +1161,11 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
                     }
                 },
                 else => {},
+            }
+
+            if (this_tag == .ts_type_parameter) {
+                parent_kinds[i] = @intFromEnum(ParentKind.ts_type_parameter_declaration);
+                continue;
             }
         }
     }
