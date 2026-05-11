@@ -2528,6 +2528,12 @@ class SourceCode {
         } else if (markBuiltins) {
           const existing = set.get(name);
           if (!existing.eslintImplicitGlobalSetting) existing.eslintImplicitGlobalSetting = 'writable';
+          // Mark the user variable as having a builtin override: rules like
+          // no-shadow's builtinGlobals path check `"writeable" in shadowed`
+          // to detect user vars that shadow a builtin. ESLint's scope-manager
+          // merges the builtin's `writeable=false` onto the user's Variable;
+          // mirror that so the property is present and falsy.
+          if (existing.writeable === undefined) existing.writeable = false;
         }
       }
       if (this._envGlobals) {
