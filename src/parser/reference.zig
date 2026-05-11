@@ -46,11 +46,17 @@ pub const ReferenceKind = enum {
     /// but does NOT set `is_written` on the symbol — so `prefer-const` can still
     /// detect variables that are never reassigned after their declaration.
     write_init,
+    /// Identifier used in a TypeScript type-syntax position: type annotation,
+    /// `extends`/`implements`, type alias body, etc. The reference resolves
+    /// like a normal read (so unused-vars stops complaining about
+    /// type-only imports), but rules can filter on `isTypeReference` to
+    /// distinguish from runtime value uses.
+    type_read,
 
     /// Returns true when this reference reads from the symbol.
     pub fn isRead(self: ReferenceKind) bool {
         return switch (self) {
-            .read, .read_write, .type_of => true,
+            .read, .read_write, .type_of, .type_read => true,
             .write, .write_init => false,
         };
     }
@@ -59,8 +65,13 @@ pub const ReferenceKind = enum {
     pub fn isWrite(self: ReferenceKind) bool {
         return switch (self) {
             .write, .read_write, .write_init => true,
-            .read, .type_of => false,
+            .read, .type_of, .type_read => false,
         };
+    }
+
+    /// Returns true when this reference appears in a TS type position.
+    pub fn isTypeRef(self: ReferenceKind) bool {
+        return self == .type_read;
     }
 };
 

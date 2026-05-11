@@ -142,7 +142,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
                 .write_init => init_writes += 1,
                 .write => plain_writes += 1,
                 .read_write => compound_writes += 1,
-                .read, .type_of => {},
+                .read, .type_of, .type_read => {},
             }
         }
 

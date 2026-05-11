@@ -317,7 +317,7 @@ fn analyzeSymbol(
             while (ri > rstart) {
                 ri -= 1;
                 switch (refs.getKind(flat_refs[ri])) {
-                    .read, .type_of => live = true,
+                    .read, .type_of, .type_read => live = true,
                     .write, .write_init => live = false,
                     .read_write => live = true,
                 }
@@ -358,7 +358,7 @@ fn analyzeSymbol(
             const ref_id = flat_refs[ri];
             const ref_node = refs.getNode(ref_id);
             switch (refs.getKind(ref_id)) {
-                .read, .type_of => live = true,
+                .read, .type_of, .type_read => live = true,
                 .write, .write_init => {
                     if (!live and ctx.nodeReachable(ref_node) and !isInTryBody(ctx, ref_node)) {
                         ctx.report(ref_node);

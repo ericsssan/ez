@@ -1119,6 +1119,7 @@ const _OVERRIDE_TYPES = [
   'TSUndefinedKeyword',          // 17
   'TSUnknownKeyword',            // 18
   'TSVoidKeyword',               // 19
+  'TSQualifiedName',             // 20 — member_expr in type position
 ];
 
 // Compute the ESTree-shape `type` string for a node at construction time.
@@ -3994,9 +3995,13 @@ const NodeProto = {
     return undefined;
   },
 
-  /** JSXOpeningElement.attributes / JSXElement(self-closing).attributes */
+  /** JSXOpeningElement.attributes / JSXElement(self-closing).attributes /
+   *  ImportDeclaration.attributes (TS5+ import attributes — ez doesn't parse
+   *  them yet, but ESLint/typescript-eslint expect this property to exist
+   *  as an array for rules like @typescript-eslint/consistent-type-imports). */
   get attributes() {
     const t = this._tag;
+    if (t === T.import_decl || t === T.export_named_from || t === T.export_all) return [];
     if (t !== T.jsx_opening_element && t !== T.jsx_self_closing) return undefined;
     const ast = this._ast;
     const d = ast.extraJsxOpeningData(ast.nodeLhs(this._i));

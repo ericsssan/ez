@@ -114,6 +114,7 @@ pub const TypeOverride = enum(u8) {
     ts_undefined_keyword = 17,
     ts_unknown_keyword = 18,
     ts_void_keyword = 19,
+    ts_qualified_name = 20,
 };
 
 /// Called by Parser.addNode to record parent→child edges incrementally.

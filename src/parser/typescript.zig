@@ -638,7 +638,7 @@ fn parseTypeReference(p: *Parser) Error!NodeIndex {
         std.mem.eql(u8, name_text, "undefined") or
         std.mem.eql(u8, name_text, "unknown") or
         std.mem.eql(u8, name_text, "void");
-    if (!is_ts_kw_type) try p.emitReference(.read, name_node);
+    if (!is_ts_kw_type) try p.emitReference(.type_read, name_node);
 
     // Qualified names: `Foo.Bar.Baz` or `Foo?.Bar` (optional chain, TS error but parseable)
     while (p.peek() == .dot or p.peek() == .question_dot) {
