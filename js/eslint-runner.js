@@ -75,6 +75,35 @@ function tsServices() {
   }
   return _tsServices;
 }
+let _tsSynth = null;
+function tsSynth() {
+  if (!_tsSynth) {
+    try { _tsSynth = require("./ts-synth"); } catch { _tsSynth = null; }
+  }
+  return _tsSynth;
+}
+
+// Build the "light" parserServices object handed to rules via
+// context.sourceCode.parserServices. The `esTreeNodeToTSNodeMap` is a lazy
+// synthesizer (ts-synth.js) that produces TS-shaped nodes on demand, so rule
+// autofixes inspecting `tsNode.parent.kind` / `tsNode.operatorToken.kind` /
+// etc. for precedence work without us shipping a real Program.
+function _makeLightParserServices(sourceCode) {
+  const synth = tsSynth();
+  const map = synth ? synth.buildEsTreeNodeToTSNodeMap(sourceCode.text) : null;
+  // Fall back to an empty WeakMap when typescript isn't installed — the
+  // @typescript-eslint/utils getParserServices patch only needs the map to
+  // be non-null; rule fixes that try to read tsNode properties will catch
+  // the resulting TypeError and emit fix=null (the prior behavior).
+  return {
+    __ez_light__: true,
+    esTreeNodeToTSNodeMap: map || new WeakMap(),
+    tsNodeToESTreeNodeMap: new WeakMap(),
+    program: null,
+    emitDecoratorMetadata: false,
+    experimentalDecorators: false,
+  };
+}
 let _esquery = null;
 function esquery() {
   if (!_esquery) {
@@ -1143,19 +1172,13 @@ class SourceCode {
     this._eslintUsedBits = new Uint8Array(ast._semSymbolCount || 256);
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
-    // ez's "light" parserServices — empty WeakMaps so the patched
-    // @typescript-eslint/utils getParserServices accepts them, with `program`
-    // left null so rules that require true type info still bail. The
-    // __ez_light__ sentinel lets the patch distinguish ez's services from
-    // a real @typescript-eslint/parser's.
-    this.parserServices = {
-      __ez_light__: true,
-      esTreeNodeToTSNodeMap: new WeakMap(),
-      tsNodeToESTreeNodeMap: new WeakMap(),
-      program: null,
-      emitDecoratorMetadata: false,
-      experimentalDecorators: false,
-    };
+    // ez's "light" parserServices — synthetic esTreeNodeToTSNodeMap (provides
+    // TS-shaped nodes lazily; see ts-synth.js) so rule autofixes that traverse
+    // `tsNode.parent.kind` etc. for syntactic context work, while `program`
+    // stays null so rules that strictly require type info still bail. The
+    // __ez_light__ sentinel lets the @typescript-eslint/utils getParserServices
+    // patch distinguish ez's services from a real @typescript-eslint/parser's.
+    this.parserServices = _makeLightParserServices(this);
     _activeBuilder = this;
   }
 
@@ -1191,19 +1214,9 @@ class SourceCode {
     this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
     this._nodesByType = null;
-    // ez's "light" parserServices — empty WeakMaps so the patched
-    // @typescript-eslint/utils getParserServices accepts them, with `program`
-    // left null so rules that require true type info still bail. The
-    // __ez_light__ sentinel lets the patch distinguish ez's services from
-    // a real @typescript-eslint/parser's.
-    this.parserServices = {
-      __ez_light__: true,
-      esTreeNodeToTSNodeMap: new WeakMap(),
-      tsNodeToESTreeNodeMap: new WeakMap(),
-      program: null,
-      emitDecoratorMetadata: false,
-      experimentalDecorators: false,
-    };
+    // Same light parserServices for the reset path — keep this in sync with
+    // the constructor above.
+    this.parserServices = _makeLightParserServices(this);
     // _declSymIndex / _varScopeNameIndex are file-specific — clear so they
     // rebuild for the new AST. (Phase B: the heavy decl→sym Map is now Zig-
     // baked; only the lighter var-scope-name Map is still rebuilt here.)

@@ -1082,8 +1082,8 @@
     },
     "@typescript-eslint/consistent-type-assertions": {
       "runner": {
-        "fn": 25,
-        "fp": 21,
+        "fn": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10143,
-    "runnerCasesPerSec": 9053,
-    "nativeCasesPerSec": 84905,
+    "totalElapsedMs": 10180,
+    "runnerCasesPerSec": 8952,
+    "nativeCasesPerSec": 89368,
     "totalCases": 73103
   }
 }
