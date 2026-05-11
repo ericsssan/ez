@@ -1965,7 +1965,7 @@
     "@typescript-eslint/no-unused-private-class-members": {
       "runner": {
         "fn": 1,
-        "fp": 28,
+        "fp": 6,
         "crash": 0
       },
       "native": {
@@ -4484,7 +4484,7 @@
     },
     "es-x/no-class-fields": {
       "runner": {
-        "fn": 10,
+        "fn": 0,
         "fp": 0,
         "crash": 0
       },
@@ -8067,7 +8067,7 @@
     "prefer-object-spread": {
       "runner": {
         "fn": 2,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8085,7 +8085,7 @@
     "no-useless-call": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8175,7 +8175,7 @@
     "prefer-promise-reject-errors": {
       "runner": {
         "fn": 2,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -8211,7 +8211,7 @@
     "prefer-exponentiation-operator": {
       "runner": {
         "fn": 3,
-        "fp": 2,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -8463,7 +8463,7 @@
     "no-proto": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9021,7 +9021,7 @@
     "prefer-spread": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9039,7 +9039,7 @@
     "no-prototype-builtins": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9237,7 +9237,7 @@
     "prefer-regex-literals": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9327,7 +9327,7 @@
     "require-unicode-regexp": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9543,7 +9543,7 @@
     "prefer-destructuring": {
       "runner": {
         "fn": 0,
-        "fp": 10,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -9651,7 +9651,7 @@
     "logical-assignment-operators": {
       "runner": {
         "fn": 3,
-        "fp": 3,
+        "fp": 1,
         "crash": 0
       },
       "native": {
@@ -10191,7 +10191,7 @@
     "prefer-object-has-own": {
       "runner": {
         "fn": 0,
-        "fp": 7,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -10749,7 +10749,7 @@
     "dot-notation": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11091,7 +11091,7 @@
     "prefer-numeric-literals": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11379,7 +11379,7 @@
     "radix": {
       "runner": {
         "fn": 0,
-        "fp": 3,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -11559,7 +11559,7 @@
     "func-name-matching": {
       "runner": {
         "fn": 0,
-        "fp": 4,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -17786,8 +17786,8 @@
     },
     "unicorn/no-accessor-recursion": {
       "runner": {
-        "fn": 1,
-        "fp": 4,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -17913,7 +17913,7 @@
     "unicorn/prefer-at": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -19460,8 +19460,8 @@
     },
     "unicorn/prefer-class-fields": {
       "runner": {
-        "fn": 2,
-        "fp": 2,
+        "fn": 0,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10096,
-    "runnerCasesPerSec": 9082,
-    "nativeCasesPerSec": 86821,
+    "totalElapsedMs": 9979,
+    "runnerCasesPerSec": 9212,
+    "nativeCasesPerSec": 84415,
     "totalCases": 73103
   }
 }

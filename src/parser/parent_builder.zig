@@ -557,7 +557,7 @@ pub fn buildTraversalAux(
     const source = tree.source;
     for (0..n) |i| {
         switch (tags[i]) {
-            .identifier => {
+            .identifier, .property_ident => {
                 const tok = node_main_tokens[i];
                 const start = tok_starts[tok];
                 if (start < source.len and source[start] == '#') {
@@ -1028,7 +1028,7 @@ pub fn buildTraversal(tree: *const Ast, alloc: std.mem.Allocator) !TraversalResu
         const source = tree.source;
         for (0..n) |i| {
             switch (tags[i]) {
-                .identifier => {
+                .identifier, .property_ident => {
                     const tok = node_main_tokens[i];
                     const start = tok_starts[tok];
                     if (start < source.len and source[start] == '#') {
