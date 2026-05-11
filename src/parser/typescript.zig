@@ -1989,9 +1989,11 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
 
     // ── Method signature: `name<T>(params): ReturnType` ──────
     if (p.peek() == .less_than or p.peek() == .l_paren) {
-        // Optional type parameters
+        // Optional type parameters — store as SubRange so adapter can expose
+        // node.typeParameters to rules like @typescript-eslint/method-signature-style.
+        var type_params_range: ast.SubRange = .{ .start = 0, .end = 0 };
         if (p.peek() == .less_than) {
-            _ = try parseTypeParameterList(p);
+            type_params_range = try parseTypeParameterList(p);
         }
 
         _ = try p.expect(.l_paren);
@@ -2027,6 +2029,8 @@ pub fn parseInterfaceMember(p: *Parser) Error!NodeIndex {
             .params_end = params_range.end,
             .return_type = return_type,
             .kind = method_kind,
+            .type_params = type_params_range.start,
+            .type_params_end = type_params_range.end,
         });
         return p.addNode(.{
             .tag = .ts_method_signature,

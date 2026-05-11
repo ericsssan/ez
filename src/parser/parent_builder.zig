@@ -468,6 +468,7 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
         .ts_call_signature, .ts_construct_signature, .ts_method_signature => {
             const ed = extraData(ast_mod.InterfaceSigData, extra, @intFromEnum(lhs));
             if (tag == .ts_method_signature) sp(parents, ed.key, idx);
+            spSub(parents, extra, ed.type_params, ed.type_params_end, idx);
             spSub(parents, extra, ed.params_start, ed.params_end, idx);
             sp(parents, ed.return_type, idx);
         },

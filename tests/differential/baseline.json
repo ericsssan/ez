@@ -1928,8 +1928,8 @@
     },
     "@typescript-eslint/method-signature-style": {
       "runner": {
-        "fn": 20,
-        "fp": 20,
+        "fn": 12,
+        "fp": 12,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10023,
-    "runnerCasesPerSec": 9164,
-    "nativeCasesPerSec": 84415,
+    "totalElapsedMs": 9783,
+    "runnerCasesPerSec": 9392,
+    "nativeCasesPerSec": 91953,
     "totalCases": 73103
   }
 }

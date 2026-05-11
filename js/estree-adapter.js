@@ -829,10 +829,10 @@ class AstView {
     return { name: e[i], members_start: e[i + 1], members_end: e[i + 2] };
   }
 
-  /** InterfaceSigData { key, params_start, params_end, return_type } */
+  /** InterfaceSigData { key, params_start, params_end, return_type, kind, type_params, type_params_end } */
   extraInterfaceSigData(i) {
     const e = this._extraData;
-    return { key: e[i], params_start: e[i + 1], params_end: e[i + 2], return_type: e[i + 3], kind: e[i + 4] };
+    return { key: e[i], params_start: e[i + 1], params_end: e[i + 2], return_type: e[i + 3], kind: e[i + 4], type_params: e[i + 5], type_params_end: e[i + 6] };
   }
 
   // ── Token text helpers ─────────────────────────────────────────
@@ -2093,10 +2093,21 @@ const NodeProto = {
   get computed() {
     const t = this._tag;
     if (t === T.jsx_member_expr) return false;
-    return t === T.computed_member_expr || t === T.optional_computed_member_expr ||
-           t === T.computed_property || t === T.computed_method_def ||
-           t === T.computed_property_def || t === T.computed_getter_def ||
-           t === T.computed_setter_def;
+    if (t === T.computed_member_expr || t === T.optional_computed_member_expr ||
+        t === T.computed_property || t === T.computed_method_def ||
+        t === T.computed_property_def || t === T.computed_getter_def ||
+        t === T.computed_setter_def) return true;
+    // TS interface members: detect computed-key signatures (`['f'](): void`,
+    // `[Symbol.iterator]: T`) by checking whether the byte before the key is `[`.
+    if (t === T.ts_method_signature || t === T.ts_property_signature) {
+      const ast = this._ast;
+      const key = this.key;
+      if (!key) return false;
+      const keyStart = key.start ?? key.range?.[0];
+      if (keyStart == null || keyStart <= 0) return false;
+      return ast.source.charCodeAt(keyStart - 1) === 0x5B /* [ */;
+    }
+    return false;
   },
 
   /**
@@ -2626,6 +2637,11 @@ const NodeProto = {
     } else if (t === T.class_decl || t === T.class_expr) {
       if (lhs === NONE) return null;
       const d = ast.extraClassData(lhs);
+      tp_start = d.type_params; tp_end = d.type_params_end;
+    } else if (t === T.ts_method_signature || t === T.ts_call_signature ||
+               t === T.ts_construct_signature) {
+      if (lhs === NONE) return null;
+      const d = ast.extraInterfaceSigData(lhs);
       tp_start = d.type_params; tp_end = d.type_params_end;
     } else {
       return null;

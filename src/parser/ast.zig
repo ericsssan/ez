@@ -650,6 +650,9 @@ pub const InterfaceSigData = struct {
     return_type: NodeIndex = .none,
     /// 0=method, 1=get, 2=set
     kind: u32 = 0,
+    /// Type parameters SubRange (`name<T>(...)` in interface methods).
+    type_params: ExtraIndex = 0,
+    type_params_end: ExtraIndex = 0,
 };
 
 // ── TypeScript ExtraData structs ────────────────────────────
