@@ -1010,8 +1010,8 @@
     },
     "@typescript-eslint/consistent-generic-constructors": {
       "runner": {
-        "fn": 28,
-        "fp": 13,
+        "fn": 17,
+        "fp": 2,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10028,
-    "runnerCasesPerSec": 9142,
-    "nativeCasesPerSec": 88076,
+    "totalElapsedMs": 9926,
+    "runnerCasesPerSec": 9254,
+    "nativeCasesPerSec": 83166,
     "totalCases": 73103
   }
 }

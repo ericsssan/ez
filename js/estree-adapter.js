@@ -2523,7 +2523,17 @@ const NodeProto = {
         if (wrapperRhs === NONE) { this._typeArgs = null; return null; }
         const sub = this._ast.extraSubRange(wrapperRhs);
         const params = this._ast._nodesFromRange(sub.start, sub.end);
-        const synth = _syntheticNode('TSTypeParameterInstantiation', this.start, this.end, { params, parent: this }, this._ast);
+        const src = this._ast.source;
+        let tStart = this.start, tEnd = this.end;
+        if (params.length > 0) {
+          tStart = params[0].start;
+          while (tStart > 0 && src.charCodeAt(tStart - 1) !== 0x3C) tStart--;
+          if (tStart > 0) tStart--;
+          tEnd = params[params.length - 1].end;
+          while (tEnd < src.length && src.charCodeAt(tEnd) !== 0x3E) tEnd++;
+          if (tEnd < src.length) tEnd++;
+        }
+        const synth = _syntheticNode('TSTypeParameterInstantiation', tStart, tEnd, { params, parent: this }, this._ast);
         for (const p of params) p._parent = synth;
         this._typeArgs = synth;
         return synth;
@@ -2536,7 +2546,21 @@ const NodeProto = {
     if (rhs === NONE) { this._typeArgs = null; return null; }
     const sub = this._ast.extraSubRange(rhs);
     const params = this._ast._nodesFromRange(sub.start, sub.end);
-    const synth = _syntheticNode('TSTypeParameterInstantiation', this.start, this.end, { params, parent: this }, this._ast);
+    // Range = the `<...>` slice, not the whole TSTypeReference. Walk back from
+    // the first param's start to find `<` and forward from the last param's end
+    // to find `>` so sourceCode.getText(typeArguments) returns just `<args>`.
+    const src = this._ast.source;
+    let tStart = this.start;
+    let tEnd = this.end;
+    if (params.length > 0) {
+      tStart = params[0].start;
+      while (tStart > 0 && src.charCodeAt(tStart - 1) !== 0x3C /* < */) tStart--;
+      if (tStart > 0) tStart--; // include the `<`
+      tEnd = params[params.length - 1].end;
+      while (tEnd < src.length && src.charCodeAt(tEnd) !== 0x3E /* > */) tEnd++;
+      if (tEnd < src.length) tEnd++; // include the `>`
+    }
+    const synth = _syntheticNode('TSTypeParameterInstantiation', tStart, tEnd, { params, parent: this }, this._ast);
     // Set each param's parent to the TSTypeParameterInstantiation
     for (const p of params) p._parent = synth;
     this._typeArgs = synth;
