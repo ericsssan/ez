@@ -5070,19 +5070,23 @@ fn containsOptionalChain(p: *Parser, node: NodeIndex) bool {
 fn parseNewExpression(p: *Parser) Error!NodeIndex {
     const new_tok = p.advance(); // consume `new`
 
-    // new.target
+    // new.target — create the `new` meta identifier BEFORE consuming
+    // subsequent tokens so its end_tok records the `new` keyword only,
+    // not the trailing `.target`. Otherwise sourceCode.getTokenBefore /
+    // getFirstTokenBetween produce wrong tokens and crash rules like
+    // indent that compute offsets relative to MetaProperty.meta.
     if (p.peek() == .dot) {
+        const meta_node = try p.addNode(.{
+            .tag = .property_ident,
+            .main_token = new_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
         _ = p.advance(); // consume `.`
         if (p.peek() == .kw_target or (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tokIdx()), "target"))) {
             const target_tok = p.advance(); // consume `target`
             if (!p.new_target_allowed and !p.in_class and !p.is_ts) {
                 try p.emitError("'new.target' is only valid inside functions or class members");
             }
-            const meta_node = try p.addNode(.{
-                .tag = .property_ident,
-                .main_token = new_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
             const prop_node = try p.addNode(.{
                 .tag = .property_ident,
                 .main_token = target_tok,
@@ -5423,6 +5427,13 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
 
     // import.meta / import.source(...) / import.defer(...)
     if (p.peek() == .dot) {
+        // Create the `import` meta identifier BEFORE consuming `.meta`
+        // so its end_tok records only the `import` keyword.
+        const meta_id_node = try p.addNode(.{
+            .tag = .property_ident,
+            .main_token = import_tok,
+            .data = .{ .lhs = .none, .rhs = .none },
+        });
         _ = p.advance(); // consume `.`
         if (p.peek() == .kw_meta or
             (p.peek() == .identifier and std.mem.eql(u8, p.tokenText(p.tokIdx()), "meta")))
@@ -5431,11 +5442,6 @@ fn parseImportExpression(p: *Parser) Error!NodeIndex {
             if (!p.is_module and !p.is_ts) {
                 try p.emitError("'import.meta' is only valid in modules");
             }
-            const meta_id_node = try p.addNode(.{
-                .tag = .property_ident,
-                .main_token = import_tok,
-                .data = .{ .lhs = .none, .rhs = .none },
-            });
             const prop_node = try p.addNode(.{
                 .tag = .property_ident,
                 .main_token = meta_tok,

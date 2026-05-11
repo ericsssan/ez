@@ -7490,9 +7490,9 @@
     },
     "indent": {
       "runner": {
-        "fn": 14,
+        "fn": 12,
         "fp": 62,
-        "crash": 4
+        "crash": 0
       },
       "native": {
         "fn": 862,
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10062,
-    "runnerCasesPerSec": 9119,
-    "nativeCasesPerSec": 87027,
+    "totalElapsedMs": 9909,
+    "runnerCasesPerSec": 9270,
+    "nativeCasesPerSec": 86105,
     "totalCases": 73103
   }
 }

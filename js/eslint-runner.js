@@ -7939,14 +7939,13 @@ function walkNodes(ast, visitorMapResult, context, tagNames, plugins) {
   }
 
   // Pre-pass: assign synthetic parent to orphan ts_type_reference nodes
-  // (pd[i] === NONE) BEFORE DFS so dispatch sees a non-null parent on the
-  // first visit. Without this, DFS fires once with parent===undefined and
-  // the post-DFS orphan pass would fire again with synthetic parent set —
-  // causing duplicate dispatch and `node.parent.type` crashes in rules like
-  // @typescript-eslint/no-invalid-void-type on the first call.
+  // (pd[i] === NONE) BEFORE DFS. These are leftover speculative-parse nodes
+  // not connected to the tree by parent_builder. Provide a multi-level
+  // synthetic ancestry so `node.parent.parent.parent` walks don't crash.
   if (pd && _hasTsKwRemap && _tsTypeRefTagNum >= 0) {
-    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [],
-      parent: { type: 'TSTypeReference', typeParameters: null } };
+    const _synthRoot = { type: 'Program', body: [], parent: null };
+    const _synthTypeRef = { type: 'TSTypeReference', typeName: null, typeArguments: null, parent: _synthRoot };
+    const _synthParent = { type: 'TSTypeParameterInstantiation', params: [], parent: _synthTypeRef };
     const _n = ast.nodeCount;
     for (let i = 1; i < _n; i++) {
       if (pd[i] !== NONE) continue;
