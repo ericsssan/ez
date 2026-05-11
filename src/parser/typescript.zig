@@ -1529,6 +1529,18 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
     else
         try p.expect(.identifier);
 
+    // Build the name Identifier IMMEDIATELY so its end_tok matches name_tok
+    // (addNode records end_tok = tok_i - 1 at the time of call). Declare it
+    // as a TypeVariable in the enclosing scope so rules walking
+    // scope.variables (e.g. @typescript-eslint/consistent-indexed-object-style's
+    // circular-reference check via findVariable + isTypeVariable) find it.
+    const name_ident = try p.addNode(.{
+        .tag = .identifier,
+        .main_token = name_tok,
+        .data = .{ .lhs = .none, .rhs = .none },
+    });
+    try p.emitDeclare(.interface_decl, name_ident);
+
     // Optional type parameters: `<T, U>` — `const` modifier not allowed on interface type params
     var type_params_range = SubRange{ .start = 0, .end = 0 };
     if (p.peek() == .less_than) {
@@ -1585,7 +1597,7 @@ pub fn parseInterfaceDeclaration(p: *Parser) Error!NodeIndex {
     return p.addNode(.{
         .tag = .ts_interface_decl,
         .main_token = iface_tok,
-        .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+        .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = name_ident },
     });
 }
 
@@ -1599,6 +1611,15 @@ pub fn parseTypeAliasDeclaration(p: *Parser) Error!NodeIndex {
 
     // Type alias name
     const name_tok = try p.expect(.identifier);
+
+    // Build the name Identifier IMMEDIATELY so end_tok matches name_tok.
+    // Declare as TypeVariable so circular-reference rules can resolve it.
+    const name_ident = try p.addNode(.{
+        .tag = .identifier,
+        .main_token = name_tok,
+        .data = .{ .lhs = .none, .rhs = .none },
+    });
+    try p.emitDeclare(.type_decl, name_ident);
 
     // Optional type parameters: `<T, U>` — `const` modifier not allowed on type alias type params
     var type_params_range = SubRange{ .start = 0, .end = 0 };
@@ -1625,7 +1646,7 @@ pub fn parseTypeAliasDeclaration(p: *Parser) Error!NodeIndex {
     return p.addNode(.{
         .tag = .ts_type_alias_decl,
         .main_token = type_tok,
-        .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = .none },
+        .data = .{ .lhs = NodeIndex.fromInt(extra), .rhs = name_ident },
     });
 }
 
@@ -2140,7 +2161,13 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
     // Parameter name — stored in lhs so JS can expose `parameters: [identifier]`
     const param_ident = try p.parseIdentifier();
 
-    // Colon and key type
+    // Colon and key type. ESTree shape: the parameter Identifier carries a
+    // typeAnnotation (TSTypeAnnotation wrapping the type). Wrap it here and
+    // attach to param_ident.rhs so the adapter's Identifier.typeAnnotation
+    // getter returns it — rules like
+    // @typescript-eslint/consistent-indexed-object-style read
+    // parameter.typeAnnotation and silently bail when it's missing.
+    const key_colon_tok: u32 = p.tokIdx();
     _ = try p.expect(.colon);
     // TS1268: index signature parameter type must be string, number, symbol, or a template literal type.
     const key_type_tok: u32 = p.tokIdx();
@@ -2157,23 +2184,36 @@ pub fn parseIndexSignature(p: *Parser) Error!NodeIndex {
         .template_head, .template_no_sub => true, // template literal type
         else => false,
     };
-    _ = try parseType(p);
+    const key_type = try parseType(p);
     if (!valid_key_type) {
         try p.emitDiagnosticAtToken(key_type_tok, "An index signature parameter type must be 'string', 'number', 'symbol', or a template literal type", .{});
     }
+    const key_type_annotation = try p.addNode(.{
+        .tag = .ts_type_annotation,
+        .main_token = key_colon_tok,
+        .data = .{ .lhs = key_type, .rhs = .none },
+    });
+    p.node_data_ptr[param_ident.toInt()].rhs = key_type_annotation;
 
     _ = try p.expect(.r_bracket);
 
-    // Colon and value type
+    // Colon and value type. Wrap in TSTypeAnnotation so member.typeAnnotation
+    // returns the wrapper (ESTree shape), not the bare value type.
+    const value_colon_tok: u32 = p.tokIdx();
     _ = try p.expect(.colon);
     const value_type = try parseType(p);
+    const value_type_annotation = try p.addNode(.{
+        .tag = .ts_type_annotation,
+        .main_token = value_colon_tok,
+        .data = .{ .lhs = value_type, .rhs = .none },
+    });
 
     try consumeMemberSeparator(p);
 
     return p.addNode(.{
         .tag = .ts_index_signature,
         .main_token = bracket_tok,
-        .data = .{ .lhs = param_ident, .rhs = value_type },
+        .data = .{ .lhs = param_ident, .rhs = value_type_annotation },
     });
 }
 

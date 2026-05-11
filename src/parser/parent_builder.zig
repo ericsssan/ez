@@ -371,11 +371,13 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
             spSub(parents, extra, ed.type_params,   ed.type_params_end, idx);
             spSub(parents, extra, ed.extends_start, ed.extends_end,     idx);
             spSub(parents, extra, ed.body_start,    ed.body_end,        idx);
+            sp(parents, rhs, idx); // rhs = name Identifier
         },
         .ts_type_alias_decl => {
             const ed = extraData(ast_mod.TypeAliasData, extra, @intFromEnum(lhs));
             spSub(parents, extra, ed.type_params, ed.type_params_end, idx);
             sp(parents, ed.type_node, idx);
+            sp(parents, rhs, idx); // rhs = name Identifier
         },
         .ts_enum_decl => {
             const ed = extraData(ast_mod.EnumData, extra, @intFromEnum(lhs));

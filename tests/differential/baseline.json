@@ -740,7 +740,7 @@
     },
     "@typescript-eslint/no-unsafe-declaration-merging": {
       "runner": {
-        "fn": 6,
+        "fn": 3,
         "fp": 0,
         "crash": 0
       },
@@ -866,9 +866,9 @@
     },
     "@typescript-eslint/consistent-indexed-object-style": {
       "runner": {
-        "fn": 48,
-        "fp": 1,
-        "crash": 0
+        "fn": 21,
+        "fp": 30,
+        "crash": 6
       },
       "native": {
         "fn": 56,
@@ -885,7 +885,7 @@
     "@typescript-eslint/consistent-type-imports": {
       "runner": {
         "fn": 31,
-        "fp": 36,
+        "fp": 33,
         "crash": 0
       },
       "native": {
@@ -1136,7 +1136,7 @@
     },
     "@typescript-eslint/no-redeclare": {
       "runner": {
-        "fn": 10,
+        "fn": 5,
         "fp": 0,
         "crash": 0
       },
@@ -1443,7 +1443,7 @@
     "@typescript-eslint/no-wrapper-object-types": {
       "runner": {
         "fn": 2,
-        "fp": 4,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -1946,8 +1946,8 @@
     },
     "@typescript-eslint/naming-convention": {
       "runner": {
-        "fn": 3,
-        "fp": 5,
+        "fn": 1,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -2541,7 +2541,7 @@
     "jsdoc/no-undefined-types": {
       "runner": {
         "fn": 0,
-        "fp": 1,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -3243,7 +3243,7 @@
     "jsdoc/require-jsdoc": {
       "runner": {
         "fn": 4,
-        "fp": 6,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -9524,7 +9524,7 @@
     },
     "no-use-before-define": {
       "runner": {
-        "fn": 15,
+        "fn": 14,
         "fp": 6,
         "crash": 0
       },
@@ -10460,8 +10460,8 @@
     },
     "no-shadow": {
       "runner": {
-        "fn": 41,
-        "fp": 2,
+        "fn": 33,
+        "fp": 3,
         "crash": 0
       },
       "native": {
@@ -18525,7 +18525,7 @@
     "unicorn/prefer-export-from": {
       "runner": {
         "fn": 7,
-        "fp": 10,
+        "fp": 9,
         "crash": 0
       },
       "native": {
@@ -18614,7 +18614,7 @@
     },
     "unicorn/prevent-abbreviations": {
       "runner": {
-        "fn": 16,
+        "fn": 9,
         "fp": 5,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10096,
-    "runnerCasesPerSec": 9057,
-    "nativeCasesPerSec": 82977,
+    "totalElapsedMs": 10399,
+    "runnerCasesPerSec": 8792,
+    "nativeCasesPerSec": 82602,
     "totalCases": 73103
   }
 }

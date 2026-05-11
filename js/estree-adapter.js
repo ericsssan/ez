@@ -2431,10 +2431,20 @@ const NodeProto = {
       const d = ast.extraClassData(lhs);
       return d.name === NONE ? null : nodeView(ast, d.name);
     }
-    // TSInterfaceDeclaration / TSTypeAliasDeclaration / TSEnumDeclaration:
-    // name is stored as a token index in extra data (first field).
-    if (t === T.ts_interface_decl || t === T.ts_type_alias_decl || t === T.ts_enum_decl) {
-      const name_tok = ast._extraData[lhs]; // first field of InterfaceData/TypeAliasData/EnumData
+    // TSInterfaceDeclaration / TSTypeAliasDeclaration: real Identifier node
+    // stored in rhs (created by the parser specifically so it has a stable
+    // AST identity for the scope declare event — defs[0].node.parent
+    // === declaration).
+    if (t === T.ts_interface_decl || t === T.ts_type_alias_decl) {
+      const rhsId = ast.nodeRhs(this._i);
+      if (rhsId !== NONE) return nodeView(ast, rhsId);
+      // Fallback: legacy token-based identifier (no parent chain).
+      const name_tok = ast._extraData[lhs];
+      return _tokenIdentifier(ast, name_tok);
+    }
+    // TSEnumDeclaration: still token-based for now.
+    if (t === T.ts_enum_decl) {
+      const name_tok = ast._extraData[lhs];
       return _tokenIdentifier(ast, name_tok);
     }
     // TSModuleDeclaration / TSNamespaceDeclaration: id is lhs (Identifier node).
