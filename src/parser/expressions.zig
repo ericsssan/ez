@@ -6315,6 +6315,10 @@ fn parseBindingElement(p: *Parser) Error!NodeIndex {
             const node_tag = p.node_tags_ptr[node.toInt()];
             if (node_tag == .identifier) {
                 p.node_data_ptr[node.toInt()].rhs = type_ann;
+                // @typescript-eslint extends the parameter Identifier's range
+                // through its typeAnnotation; rules call sourceCode.getText(param)
+                // and expect `name: Type`, not just `name`.
+                p.node_end_toks[node.toInt()] = if (p.tok_i > 0) @intCast(p.tok_i - 1) else 0;
             }
         }
         // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).

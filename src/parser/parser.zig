@@ -5788,6 +5788,10 @@ pub const Parser = struct {
         if (binding_tag == .identifier) {
             if (param_type_annotation != .none) {
                 self.node_data_ptr[binding.toInt()].rhs = param_type_annotation;
+                // @typescript-eslint extends the parameter Identifier's range
+                // through its typeAnnotation. Update end_tok so rules calling
+                // sourceCode.getText(param) get `name: Type`, not just `name`.
+                self.node_end_toks[binding.toInt()] = if (self.tok_i > 0) @intCast(self.tok_i - 1) else 0;
             }
             // Encode optional `?` marker in lhs (lhs=root/0 means optional; lhs=none means not).
             if (is_optional_ts) {
