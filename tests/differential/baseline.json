@@ -884,8 +884,8 @@
     },
     "@typescript-eslint/consistent-type-imports": {
       "runner": {
-        "fn": 248,
-        "fp": 27,
+        "fn": 40,
+        "fp": 36,
         "crash": 0
       },
       "native": {
@@ -1946,8 +1946,8 @@
     },
     "@typescript-eslint/naming-convention": {
       "runner": {
-        "fn": 58,
-        "fp": 0,
+        "fn": 3,
+        "fp": 5,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 9801,
-    "runnerCasesPerSec": 9343,
-    "nativeCasesPerSec": 90811,
+    "totalElapsedMs": 9976,
+    "runnerCasesPerSec": 9121,
+    "nativeCasesPerSec": 90699,
     "totalCases": 73103
   }
 }

@@ -3,6 +3,34 @@
 const { nodeView, _nodeViewRaw, NONE, effectiveTypeName, T, getChainExprIfOutermost } = require("./estree-adapter");
 const { RuleMetadataIndex, DEFAULT_STRATEGY } = require("./rule-metadata");
 
+// Monkey-patch @typescript-eslint/utils' getParserServices so rules that gate
+// on parserServices.esTreeNodeToTSNodeMap (TS-aware rules with the
+// allowWithoutFullTypeInformation=true flag) can run against ez's light
+// type-aware parserServices. Without this, every such rule's create() throws
+// inside getParserServices, the runner catches silently, and zero visitors
+// are registered for the rule — gaps of 200+ cases per rule.
+//
+// We only override the throw on null maps. The original program-null check is
+// still respected for rules that genuinely require type info (allow=false).
+try {
+  const tslintUtilsGPS = require("@typescript-eslint/utils/dist/eslint-utils/getParserServices");
+  if (tslintUtilsGPS && typeof tslintUtilsGPS.getParserServices === "function") {
+    const original = tslintUtilsGPS.getParserServices;
+    tslintUtilsGPS.getParserServices = function getParserServices(context, allowWithoutFullTypeInformation = false) {
+      const ps = context.sourceCode && context.sourceCode.parserServices;
+      // ez's stub: provide a minimal services object on demand so light rules
+      // can run. Real maps/program would require running tsc — ez doesn't.
+      if (ps && ps.__ez_light__) {
+        if (!allowWithoutFullTypeInformation && ps.program == null) {
+          return original(context, allowWithoutFullTypeInformation);
+        }
+        return ps;
+      }
+      return original(context, allowWithoutFullTypeInformation);
+    };
+  }
+} catch (_) { /* package not installed; nothing to patch */ }
+
 // Singleton — lazy-built on first rule registration. Reads per-plugin metadata files
 // produced by tools/rule-analyzer.js (`.ez/rules/<plugin>.json`) to learn how each rule's
 // create() should be instantiated. Dispatcher stamps the strategy onto each rule's
@@ -1115,7 +1143,19 @@ class SourceCode {
     this._eslintUsedBits = new Uint8Array(ast._semSymbolCount || 256);
     this._tokenSkipList = null; // lazily built token position index
     this._jsxTextTokFlags = null; // lazily built: Uint8Array[tokenCount], 1 = JSX text token
-    this.parserServices = {};
+    // ez's "light" parserServices — empty WeakMaps so the patched
+    // @typescript-eslint/utils getParserServices accepts them, with `program`
+    // left null so rules that require true type info still bail. The
+    // __ez_light__ sentinel lets the patch distinguish ez's services from
+    // a real @typescript-eslint/parser's.
+    this.parserServices = {
+      __ez_light__: true,
+      esTreeNodeToTSNodeMap: new WeakMap(),
+      tsNodeToESTreeNodeMap: new WeakMap(),
+      program: null,
+      emitDecoratorMetadata: false,
+      experimentalDecorators: false,
+    };
     _activeBuilder = this;
   }
 
@@ -1151,7 +1191,19 @@ class SourceCode {
     this._jsxTextTokFlags = null;
     this._tokenObjCache = null;
     this._nodesByType = null;
-    this.parserServices = {};
+    // ez's "light" parserServices — empty WeakMaps so the patched
+    // @typescript-eslint/utils getParserServices accepts them, with `program`
+    // left null so rules that require true type info still bail. The
+    // __ez_light__ sentinel lets the patch distinguish ez's services from
+    // a real @typescript-eslint/parser's.
+    this.parserServices = {
+      __ez_light__: true,
+      esTreeNodeToTSNodeMap: new WeakMap(),
+      tsNodeToESTreeNodeMap: new WeakMap(),
+      program: null,
+      emitDecoratorMetadata: false,
+      experimentalDecorators: false,
+    };
     // _declSymIndex / _varScopeNameIndex are file-specific — clear so they
     // rebuild for the new AST. (Phase B: the heavy decl→sym Map is now Zig-
     // baked; only the lighter var-scope-name Map is still rebuilt here.)
@@ -8462,24 +8514,12 @@ function runPlugins(ast, plugins, options = {}) {
   //      access, with the file's dirname as the tsconfig search root.
   //   2. buildParserServices() — runs a full type-check prewarm per file.
   //      Only fires when a rule actually reads a parserServices field.
+  // ts-services is deliberately stubbed (no real Program). For .ts/.tsx files
+  // we leave parserServices = null here so the SourceCode default __ez_light__
+  // stub (set in SourceCode constructor/reset) survives — that's what the
+  // patched @typescript-eslint/utils getParserServices recognizes to return a
+  // usable stub for `allowWithoutFullTypeInformation: true` callers.
   let parserServices = null;
-  if (filename !== "<input>" && /\.[mc]?tsx?$/.test(filename)) {
-    const svc = tsServices();
-    if (svc) {
-      let _psCached = undefined; // undefined = not yet built, null = build failed
-      const buildOnce = () => {
-        if (_psCached !== undefined) return;
-        try {
-          svc.init(filename.slice(0, filename.lastIndexOf("/")));
-          _psCached = svc.buildParserServices(filename);
-        } catch { _psCached = null; }
-      };
-      parserServices = new Proxy({}, {
-        get(_target, prop) { buildOnce(); return _psCached == null ? undefined : _psCached[prop]; },
-        has(_target, prop) { buildOnce(); return _psCached != null && prop in _psCached; },
-      });
-    }
-  }
 
   // Cache interned tag names (same array across all files)
   if (_cachedTagNamesInput !== tagNames) {

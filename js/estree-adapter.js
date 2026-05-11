@@ -3363,8 +3363,14 @@ const NodeProto = {
       if (lhs === NONE) return { type: 'Identifier', name: '', start: this.start, end: this.start };
       return nodeView(ast, lhs);
     }
-    // StaticBlock has no key; return dummy to prevent `node.key.type` crashes.
+    // StaticBlock / TSParameterProperty / etc.: nodes whose ESTree shape has
+    // no `key`, but our prototype-based view exposes the `key` getter on every
+    // node. Some rules do `'key' in node && node.key.type === ...` — the `in`
+    // check passes (getter is on the prototype) and then the `.type` access
+    // crashes on null. Return a benign dummy Identifier so the type check
+    // fails cleanly instead of throwing.
     if (t === T.static_block) return { type: 'Identifier', name: '', start: this.start, end: this.start };
+    if (t === T.ts_parameter_property) return { type: 'Identifier', name: '', start: this.start, end: this.start };
     return null;
   },
 
