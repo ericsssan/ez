@@ -503,6 +503,8 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
         // attributes: `import("pkg", { with: { "resolution-mode": "require" } }).T`.
         // The argument is an attribute-style object literal; here we just consume
         // it as a generic expression to advance past the closing paren.
+        // Emit as `ts_import_type` so rules (e.g. consistent-type-imports'
+        // `noImportTypeAnnotations`) match the ESTree TSImportType node.
         .kw_import => {
             const tok = p.advance(); // consume `import`
             if (p.peek() == .l_paren) {
@@ -523,7 +525,7 @@ fn parsePrimaryTypeInner(p: *Parser) Error!NodeIndex {
                 }
             }
             return p.addNode(.{
-                .tag = .ts_type_reference,
+                .tag = .ts_import_type,
                 .main_token = tok,
                 .data = .{ .lhs = .none, .rhs = .none },
             });

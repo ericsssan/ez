@@ -495,6 +495,10 @@ pub fn setChildParents(parents: []u32, extra: []const u32, tag: ast_mod.Node.Tag
             sp(parents, lhs, idx);
             sp(parents, rhs, idx);
         },
+        .ts_import_type => {
+            // No AST children — argument string and qualifier dot-chain are
+            // consumed as tokens during parsing, not stored as child nodes.
+        },
     }
 }
 

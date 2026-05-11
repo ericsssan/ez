@@ -702,6 +702,9 @@ fn dumpNode(tree: *const Ast, index: NodeIndex, indent: u32, writer: anytype) an
             try dumpNode(tree, data.lhs, child_indent, writer);
             try dumpNode(tree, data.rhs, child_indent, writer);
         },
+        .ts_import_type => {
+            // No AST children.
+        },
     }
 }
 

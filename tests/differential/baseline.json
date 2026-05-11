@@ -884,7 +884,7 @@
     },
     "@typescript-eslint/consistent-type-imports": {
       "runner": {
-        "fn": 40,
+        "fn": 31,
         "fp": 36,
         "crash": 0
       },
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10202,
-    "runnerCasesPerSec": 8956,
-    "nativeCasesPerSec": 89368,
+    "totalElapsedMs": 10228,
+    "runnerCasesPerSec": 8951,
+    "nativeCasesPerSec": 87027,
     "totalCases": 73103
   }
 }

@@ -218,6 +218,7 @@ const T = {
   ts_declare_function: 209,
   ts_instantiation_expr: 210,
   ts_type_parameter: 211,
+  ts_import_type: 212,
 };
 
 // Operator strings keyed by tag ordinal, for the `operator` getter.

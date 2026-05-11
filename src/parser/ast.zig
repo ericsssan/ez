@@ -533,6 +533,9 @@ pub const Node = struct {
         /// TS type parameter: `T extends C = D`. main_token = name identifier,
         /// lhs = constraint (or .none), rhs = default (or .none).
         ts_type_parameter,
+        /// TS import-type expression in type position: `import('mod')` or
+        /// `import('mod').X`. main_token = `import` keyword. lhs/rhs unused.
+        ts_import_type,
     };
 };
 
