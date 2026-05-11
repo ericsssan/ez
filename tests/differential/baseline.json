@@ -1928,8 +1928,8 @@
     },
     "@typescript-eslint/method-signature-style": {
       "runner": {
-        "fn": 10,
-        "fp": 10,
+        "fn": 8,
+        "fp": 8,
         "crash": 0
       },
       "native": {
@@ -21207,7 +21207,7 @@
     "react/default-props-match-prop-types": {
       "runner": {
         "fn": 2,
-        "fp": 7,
+        "fp": 0,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10165,
-    "runnerCasesPerSec": 8991,
-    "nativeCasesPerSec": 87235,
+    "totalElapsedMs": 10143,
+    "runnerCasesPerSec": 9053,
+    "nativeCasesPerSec": 84905,
     "totalCases": 73103
   }
 }

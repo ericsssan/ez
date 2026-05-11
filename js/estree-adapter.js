@@ -2293,6 +2293,24 @@ const NodeProto = {
       }
       return false;
     }
+    // TS interface/type-literal members: `f?(…)` (TSMethodSignature) and
+    // `a?: T` (TSPropertySignature). The parser doesn't pre-bake an optional
+    // flag for these — scan source forward from the key end and check whether
+    // the next non-whitespace token is `?`.
+    if (t === T.ts_method_signature || t === T.ts_property_signature) {
+      const ast = this._ast;
+      const src = ast.source;
+      const key = this.key;
+      if (!key || typeof key.end !== 'number') return false;
+      let i = key.end;
+      const n = src.length;
+      while (i < n) {
+        const c = src.charCodeAt(i);
+        if (c === 32 || c === 9 || c === 10 || c === 13) { i++; continue; }
+        return c === 63 /* ? */;
+      }
+      return false;
+    }
     return t === T.optional_member_expr || t === T.optional_computed_member_expr ||
            t === T.optional_call_expr;
   },
@@ -2665,18 +2683,36 @@ const NodeProto = {
     // brackets the fix produces `f: T(a: T) => T` instead of `f: <T>(…)`.
     if (rangeStart !== Infinity) {
       const src = ast.source;
+      const isWs = c => c === 32 || c === 9 || c === 10 || c === 13;
+      // Walk back over whitespace and block comments to find `<`.
       let s = rangeStart - 1;
-      while (s >= 0 && (src.charCodeAt(s) === 32 /* space */ ||
-        src.charCodeAt(s) === 9 /* tab */ ||
-        src.charCodeAt(s) === 10 /* lf */ ||
-        src.charCodeAt(s) === 13 /* cr */)) s--;
+      while (s >= 0) {
+        const c = src.charCodeAt(s);
+        if (isWs(c)) { s--; continue; }
+        // Block-comment end `*/` — skip over the comment.
+        if (c === 47 /* / */ && s > 0 && src.charCodeAt(s - 1) === 42 /* * */) {
+          s -= 2;
+          while (s > 0 && !(src.charCodeAt(s) === 42 && src.charCodeAt(s - 1) === 47)) s--;
+          s -= 2; // skip past `/*`
+          continue;
+        }
+        break;
+      }
       if (s >= 0 && src.charCodeAt(s) === 60 /* < */) rangeStart = s;
       const srcLen = src.length;
+      // Walk forward past whitespace/block-comments to find `>`.
       let e = rangeEnd;
-      while (e < srcLen && (src.charCodeAt(e) === 32 ||
-        src.charCodeAt(e) === 9 ||
-        src.charCodeAt(e) === 10 ||
-        src.charCodeAt(e) === 13)) e++;
+      while (e < srcLen) {
+        const c = src.charCodeAt(e);
+        if (isWs(c)) { e++; continue; }
+        if (c === 47 && e + 1 < srcLen && src.charCodeAt(e + 1) === 42) {
+          e += 2;
+          while (e + 1 < srcLen && !(src.charCodeAt(e) === 42 && src.charCodeAt(e + 1) === 47)) e++;
+          e += 2; // skip past `*/`
+          continue;
+        }
+        break;
+      }
       if (e < srcLen && src.charCodeAt(e) === 62 /* > */) rangeEnd = e + 1;
     }
     const result = _syntheticNode('TSTypeParameterDeclaration',
