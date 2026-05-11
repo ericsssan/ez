@@ -2076,14 +2076,21 @@ fn parseCallOrConstructSignature(p: *Parser, member_tok: TokenIndex, is_construc
 
     _ = try p.expect(.r_paren);
 
-    // Optional return type
+    // Optional return type — wrap in ts_type_annotation so the adapter exposes
+    // it as TSTypeAnnotation { typeAnnotation: <type> } matching @typescript-eslint.
     var return_type: NodeIndex = .none;
     if (p.peek() == .colon) {
+        const colon_tok_sig = p.tokIdx();
         _ = p.advance();
         const prev_in_rt_sig = p.in_return_type;
         p.in_return_type = true;
-        return_type = try parseType(p);
+        const inner_type = try parseType(p);
         p.in_return_type = prev_in_rt_sig;
+        return_type = try p.addNode(.{
+            .tag = .ts_type_annotation,
+            .main_token = colon_tok_sig,
+            .data = .{ .lhs = inner_type, .rhs = .none },
+        });
     }
 
     try consumeMemberSeparator(p);

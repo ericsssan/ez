@@ -1692,6 +1692,15 @@ pub fn buildNodeSpans(
                     node_starts[i] = tok_starts[mt - 1];
                 }
             },
+            // TS type annotation `: Type` — ESTree wraps the annotation in a
+            // TSTypeAnnotation node whose range starts at `:` (the main_token).
+            // min_tok only sees children (the type), so widen left to include `:`.
+            .ts_type_annotation => {
+                const mt = min_tok[i];
+                if (mt > 0 and tok_tags[mt - 1] == .colon) {
+                    node_starts[i] = tok_starts[mt - 1];
+                }
+            },
             else => {},
         }
     }
