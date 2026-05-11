@@ -11864,8 +11864,8 @@
     },
     "no-var": {
       "runner": {
-        "fn": 13,
-        "fp": 13,
+        "fn": 4,
+        "fp": 4,
         "crash": 0
       },
       "native": {
@@ -21512,9 +21512,9 @@
     }
   },
   "perf": {
-    "totalElapsedMs": 10249,
-    "runnerCasesPerSec": 8950,
-    "nativeCasesPerSec": 83261,
+    "totalElapsedMs": 10202,
+    "runnerCasesPerSec": 8956,
+    "nativeCasesPerSec": 89368,
     "totalCases": 73103
   }
 }

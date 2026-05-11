@@ -2287,7 +2287,14 @@ class SourceCode {
     // reported type here so rules like no-alert, no-implicit-globals, no-unused-vars work correctly.
     // In module mode with a single scope (kind=0, no parent), treat it as "module" scope so rules
     // like no-useless-assignment that check `variable.scope.type === "module"` work correctly.
-    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global'
+    //
+    // parserOptions.ecmaFeatures.globalReturn = true: espree wraps the Program in
+    // a synthetic function scope, so top-level vars are NOT in the global scope.
+    // Report the top-level scope as "function" so rules like no-var's isGlobal
+    // check correctly classifies these vars as non-global (allowing the autofix).
+    const isTopLevel = upper === null;
+    const scopeTypeName = (this._globalReturn && isTopLevel && this._sourceType !== 'module') ? 'function'
+      : (kind === 1 && this._sourceType !== 'module') ? 'global'
       : (kind === 0 && this._sourceType === 'module' && upper === null) ? 'module'
       : (_SCOPE_KIND_NAMES[kind] || 'block');
 
