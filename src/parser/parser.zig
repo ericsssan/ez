@@ -285,6 +285,11 @@ pub const Parser = struct {
     /// Arrow functions are only valid as AssignmentExpressions, not as binary operands.
     allow_arrow: bool,
     is_module: bool,
+    /// parserOptions.ecmaFeatures.globalReturn — wraps top-level in a
+    /// function-like scope (Node-CJS / RequireJS shape). In script mode,
+    /// causes parseProgram to emit a synthetic outer global scope above the
+    /// program-level scope so top-level vars live inside the inner one.
+    global_return: bool = false,
     /// AnnexB web-compat extensions enabled. Default true (matches V8/JSC/SM).
     annex_b: bool = true,
     in_export_default: bool,
@@ -368,6 +373,8 @@ pub const Parser = struct {
     pub const ParseOptions = struct {
         language: Language = .js,
         is_module: bool = false,
+        /// parserOptions.ecmaFeatures.globalReturn (Node-CJS top-level).
+        global_return: bool = false,
         /// When non-null, overrides the strict mode that is otherwise implied by
         /// `is_module`. Use `false` for CommonJS/AMD/System modules that allow
         /// ES-module syntax but are NOT automatically strict.
@@ -425,19 +432,19 @@ pub const Parser = struct {
 
     pub fn parseWithOptions(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, opts: ParseOptions) !Ast {
         const is_strict = opts.is_strict orelse opts.is_module;
-        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, is_strict, opts.events_out, opts.emit_events, opts.streaming, opts.annex_b, opts.experimental_decorators);
+        return parseInternal(allocator, source, tokens, opts.language, opts.is_module, opts.global_return, is_strict, opts.events_out, opts.emit_events, opts.streaming, opts.annex_b, opts.experimental_decorators);
     }
 
     /// Parse with a specific language mode (js/ts/jsx/tsx).
     /// Always emits scope events — the event-driven semantic analyzer is the
     /// sole path (tree walker was removed). AnnexB extensions are ON by default.
     pub fn parseWithLanguage(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, is_module_file, null, true, null, true, false);
+        return parseInternal(allocator, source, tokens, language, is_module_file, false, is_module_file, null, true, null, true, false);
     }
 
     /// Same as parseWithLanguage but with an explicit AnnexB flag.
     pub fn parseWithLanguageOpts(allocator: std.mem.Allocator, source: []const u8, tokens: TokenList.Slice, language: Language, is_module_file: bool, annex_b: bool) !Ast {
-        return parseInternal(allocator, source, tokens, language, is_module_file, is_module_file, null, true, null, annex_b, false);
+        return parseInternal(allocator, source, tokens, language, is_module_file, false, is_module_file, null, true, null, annex_b, false);
     }
 
     fn parseInternal(
@@ -446,6 +453,7 @@ pub const Parser = struct {
         tokens: TokenList.Slice,
         language: Language,
         is_module_file: bool,
+        global_return: bool,
         is_strict_mode: bool,
         events_out: ?*ScopeEventStream,
         emit_events: bool,
@@ -491,6 +499,7 @@ pub const Parser = struct {
             .allow_in = true,
             .allow_arrow = true,
             .is_module = is_module_file,
+            .global_return = global_return,
             .annex_b = annex_b,
             .experimental_decorators = experimental_decorators,
             .in_export_default = false,
@@ -1800,19 +1809,25 @@ pub const Parser = struct {
 
         // Open module/global scope for event stream.
         //
-        // In module mode, ESLint's scope-manager creates TWO top-level scopes:
-        // an outer GLOBAL (holding builtins) and an inner MODULE (holding
-        // user declarations). Mirror that hierarchy here so rules that walk
-        // `scope.upper` from the module scope (e.g. no-shadow with
-        // builtinGlobals: true, no-restricted-globals via implicit-global
-        // tracking) can reach the builtin set.  The global wrapper holds no
-        // declarations of its own at parse time — JS-side scope building
-        // populates it with builtins / config globals at scope-construction.
-        const wrapper_global_ev: u32 = if (self.is_module)
+        // ESLint's scope-manager creates two top-level scopes in two cases:
+        //   • module mode: outer GLOBAL (builtins) + inner MODULE (user vars).
+        //   • script mode + parserOptions.ecmaFeatures.globalReturn:
+        //     outer GLOBAL (builtins) + inner FUNCTION (top-level wrapped).
+        // Mirror that hierarchy so rules walking `scope.upper` (no-shadow,
+        // no-redeclare with builtinGlobals, no-implicit-globals's
+        // user-decl-vs-global classification) see the expected structure.
+        // The wrapper holds no declarations at parse time — JS-side scope
+        // building populates builtins / config globals at scope-construction.
+        const needs_wrapper = self.is_module or self.global_return;
+        const ScopeKind = @import("scope.zig").ScopeKind;
+        const inner_kind: ScopeKind = if (self.is_module) .module
+            else if (self.global_return) .function
+            else .global;
+        const wrapper_global_ev: u32 = if (needs_wrapper)
             try self.emitScopeOpen(.global, .root)
         else
             0;
-        const program_scope_ev = try self.emitScopeOpen(if (self.is_module) .module else .global, .root);
+        const program_scope_ev = try self.emitScopeOpen(inner_kind, .root);
         // Streaming: publish the initial scope_open immediately so a concurrent
         // sem thread sees the global code path before any other events.
         if (self.events_publish_to) |p| p.store(self.ev_len, .release);
@@ -2009,9 +2024,9 @@ pub const Parser = struct {
 
         // Close module/global scope for event stream.
         try self.emitScopeClose(.root);
-        // In module mode, also close the synthetic global wrapper.
-        if (self.is_module) {
-            _ = wrapper_global_ev; // silence unused capture if optimizer needs it
+        // Close the synthetic global wrapper for module / globalReturn modes.
+        if (needs_wrapper) {
+            _ = wrapper_global_ev;
             try self.emitScopeClose(.root);
         }
     }

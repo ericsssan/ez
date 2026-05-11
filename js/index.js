@@ -212,10 +212,20 @@ function parseSource(source, options = {}) {
     ? LANG[options.lang] ?? LANG.js
     : options.filename ? detectLang(options.filename) : LANG.js;
 
-  // Bit 7 of the lang byte signals is_module to the Zig NAPI entry.
+  // Bit 7 of the lang byte signals is_module; bit 6 signals globalReturn
+  // (parserOptions.ecmaFeatures.globalReturn — Node-CJS / RequireJS style
+  // top-level wrapped in a function). In globalReturn mode the parser emits
+  // a synthetic outer GLOBAL scope above the program scope so user-declared
+  // top-level vars stay inside the function-like inner, not the global.
   const isModule = options.sourceType === "module" ||
-    (options.sourceType !== "script" && detectIsModule(options.filename));
-  const langWithFlag = lang | (isModule ? 0x80 : 0);
+    (options.sourceType !== "script" && options.sourceType !== "commonjs" && detectIsModule(options.filename));
+  // sourceType: "commonjs" is equivalent to script + globalReturn (ESLint's
+  // espree convention — the file is wrapped in a CommonJS function shell).
+  const globalReturn = options.sourceType === "commonjs" ||
+    !!(options.parserOptions &&
+       options.parserOptions.ecmaFeatures &&
+       options.parserOptions.ecmaFeatures.globalReturn);
+  const langWithFlag = lang | (isModule ? 0x80 : 0) | (globalReturn ? 0x40 : 0);
 
   const { buf, sourceStart, sourceLen } = _encodeSource(source);
   // Pass globals as null-separated UTF-8 bytes so Zig pre-declares them in scope 0,

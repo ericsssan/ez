@@ -238,7 +238,7 @@ pub export fn ez_parse(
     source_len: u32,
     lang: u8,
 ) u32 {
-    return parseImpl(buf_ptr, buf_len, source_start, source_len, lang, false, &.{}) catch 0;
+    return parseImpl(buf_ptr, buf_len, source_start, source_len, lang, false, false, &.{}) catch 0;
 }
 
 /// Lean parse: lex + parse only — no semantic analysis, no parent
@@ -301,6 +301,7 @@ fn parseImpl(
     source_len: u32,
     lang: u8,
     is_module: bool,
+    global_return: bool,
     globals: []const u8,
 ) !u32 {
     if (source_start + source_len > buf_len) return 0;
@@ -428,6 +429,7 @@ fn parseImpl(
             const t = parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
                 .language = language,
                 .is_module = is_module,
+                .global_return = global_return,
                 .emit_events = true,
                 .streaming = .{
                     .published_len = &s_published_len,
@@ -451,6 +453,7 @@ fn parseImpl(
         break :blk parser_mod.Parser.parseWithOptions(alloc, source, tokens.slice(), .{
             .language = language,
             .is_module = is_module,
+            .global_return = global_return,
             .emit_events = true,
         }) catch |e| return e;
     };
@@ -1598,14 +1601,17 @@ fn napiParse(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
     _ = n.napi_get_value_uint32(env, argv[2], &source_len);
     _ = n.napi_get_value_uint32(env, argv[3], &lang_val);
 
-    // Bit 7 of lang_val encodes is_module; bits 0–6 encode the Language enum.
+    // Bit 7 of lang_val encodes is_module, bit 6 encodes globalReturn (script
+    // mode wraps top-level in a function-like scope per Node-CJS/parserOptions),
+    // bits 0–5 encode the Language enum.
     const is_module: bool = (lang_val & 0x80) != 0;
-    const lang_enum: u8 = @intCast(lang_val & 0x7F);
+    const global_return: bool = (lang_val & 0x40) != 0;
+    const lang_enum: u8 = @intCast(lang_val & 0x3F);
 
     // Optional 5th arg: null-separated globals Uint8Array (Buffer or Uint8Array)
     const globals: []const u8 = if (argc >= 5) (getOptionalConfigBytes(env, argv[4]) orelse &.{}) else &.{};
 
-    const result = parseImpl(buf_ptr, @intCast(buf_len), source_start, source_len, lang_enum, is_module, globals) catch 0;
+    const result = parseImpl(buf_ptr, @intCast(buf_len), source_start, source_len, lang_enum, is_module, global_return, globals) catch 0;
 
     var js_result: n.Value = undefined;
     if (n.napi_create_uint32(env, result, &js_result) != n.OK) return null;
@@ -1680,7 +1686,7 @@ fn napiParseFile(env: n.Env, info: n.CallbackInfo) callconv(.c) ?n.Value {
 
     const file_info = readFileIntoBuf(buf_ptr, @intCast(buf_len), path_z) catch return returnU32(env, 0);
 
-    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val), false, &.{}) catch return returnU32(env, 0);
+    const result = parseImpl(buf_ptr, @intCast(buf_len), file_info.source_start, file_info.source_len, @intCast(lang_val), false, false, &.{}) catch return returnU32(env, 0);
     return returnU32(env, result);
 }
 

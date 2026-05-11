@@ -2306,8 +2306,11 @@ class SourceCode {
     // Report the top-level scope as "function" so rules like no-var's isGlobal
     // check correctly classifies these vars as non-global (allowing the autofix).
     const isTopLevel = upper === null;
-    const scopeTypeName = (this._globalReturn && isTopLevel && this._sourceType !== 'module') ? 'function'
-      : (kind === 1 && this._sourceType !== 'module') ? 'global'
+    // Note: when globalReturn is set in script mode, the Zig parser now
+    // emits a two-scope hierarchy (global+function) natively — no need to
+    // relabel scope 0 as "function" anymore. The kind-1-in-script-mode
+    // relabel below preserves the legacy single-scope behavior.
+    const scopeTypeName = (kind === 1 && this._sourceType !== 'module') ? 'global'
       : (_SCOPE_KIND_NAMES[kind] || 'block');
 
     // Allocate via shared prototype so V8 sees one hidden class for every scope.

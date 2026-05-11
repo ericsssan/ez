@@ -385,7 +385,8 @@ function runRunnerForRule(src, ruleName, ruleModule, ruleOptions, sourceType, tc
     // unicorn/prefer-module which checks that __dirname is an unresolved global reference.
     const tcGlobals = tcLanguageOptions.globals || null;
     const _p0 = Date.now();
-    const ast = parse(src, { filename, lang: parseLang, globals, sourceType });
+    const ast = parse(src, { filename, lang: parseLang, globals, sourceType,
+      parserOptions: tcLanguageOptions.parserOptions });
     _runnerParseMs += Date.now() - _p0;
     // Re-use the caller-provided plugin identity (same object → buildVisitorMap fast path),
     // or create a fresh one (cold path, for backward compatibility if called standalone).
