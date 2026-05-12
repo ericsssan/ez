@@ -8642,7 +8642,16 @@ function _parseRuleList(str) {
   return str.split(',').map(s => s.trim()).filter(Boolean);
 }
 
+// Cheap pre-check on the whole source: if there's no `eslint-disable` /
+// `eslint-enable` token anywhere, skip the line split entirely. The split
+// (`source.split(/\r?\n/)`) is the dominant cost on big sources that have
+// no directives at all — typescript.js is ~8.7 MB → ~200K-line array.
+// indexOf on a single substring is a SIMD-y native scan; much cheaper than
+// the regex split + per-line `includes()`.
+const _DIRECTIVE_PROBE = 'eslint-';
+
 function _parseDisableDirectives(source) {
+  if (source.indexOf(_DIRECTIVE_PROBE) === -1) return [];
   const directives = [];
   const lines = source.split(/\r?\n/);
   const blockRe = /\/\*\s*eslint-(disable-next-line|disable-line|disable|enable)((?:[^*]|\*(?!\/))*)\*\//g;
@@ -8674,6 +8683,20 @@ function _parseDisableDirectives(source) {
   return directives; // already in line order (iterated top-to-bottom)
 }
 
+// Single-slot identity cache for repeated lints of the same source string
+// (LSP rechecks, profile_one_rule.js benchmarks, watch mode). Source is
+// large and immutable — referential equality is the right key, and one
+// slot suffices because lintSource calls are serial within a session.
+let _lastDirectivesSource = null;
+let _lastDirectivesResult = null;
+function _parseDisableDirectivesCached(source) {
+  if (source === _lastDirectivesSource) return _lastDirectivesResult;
+  const result = _parseDisableDirectives(source);
+  _lastDirectivesSource = source;
+  _lastDirectivesResult = result;
+  return result;
+}
+
 /**
  * Filter violations suppressed by eslint-disable comments in source.
  * @param {string} source - File source text
@@ -8682,7 +8705,7 @@ function _parseDisableDirectives(source) {
  */
 function applyDisableDirectives(source, violations) {
   if (!violations.length) return violations;
-  const directives = _parseDisableDirectives(source);
+  const directives = _parseDisableDirectivesCached(source);
   if (!directives.length) return violations;
 
   return violations.filter(v => {
