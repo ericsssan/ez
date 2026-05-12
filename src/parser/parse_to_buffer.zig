@@ -18,8 +18,8 @@ const std = @import("std");
 const Lexer = @import("lexer.zig");
 const parser_mod = @import("parser.zig");
 const parent_builder = @import("parent_builder.zig");
-const event_resolver = @import("event_resolver.zig");
 const semantic_mod = @import("semantic.zig");
+const event_resolver = @import("event_resolver.zig");
 const js_buffer = @import("js_buffer.zig");
 const token_mod = @import("token.zig");
 
@@ -74,17 +74,26 @@ pub fn parseToBuffer(
     // ── Build traversal (parents, pre_order, post_order, dfs_events, min_tok) ──
     const traversal = try parent_builder.buildTraversal(&tree, alloc);
 
-    // ── Resolve full semantic (scope/symbols/refs + CFG) from scope_events ──
-    // event_resolver allocates inside the sem arena (page-allocator backed)
-    // because semantic data structures don't need to live in the JS buffer —
-    // only writeSemanticData's output does.
-    var sem = try event_resolver.resolveFull(
-        sem_arena.allocator(),
-        &tree,
-        tree.scope_events,
-        .{ .globals = "" },
-    );
+    // ── Resolve full semantic via the same split-and-combine path NAPI's
+    // parallel sem uses. resolveFullScope produces scope/symbols/refs;
+    // resolveFullCfg produces the CFG; combineParts merges. This is the
+    // path NAPI exercises in production for large files — known good.
+    const er_opts = event_resolver.Options{ .globals = "" };
+    var scope_part = try event_resolver.resolveFullScope(sem_arena.allocator(), &tree, tree.scope_events, er_opts);
+    var cfg_part = try event_resolver.resolveFullCfg(sem_arena.allocator(), &tree, tree.scope_events, er_opts);
+    _ = &scope_part;
+    _ = &cfg_part;
+    var sem = try event_resolver.combineParts(sem_arena.allocator(), scope_part, cfg_part);
     semantic_mod.computeLoopBodyExitabilityPub(&tree, sem.loop_exit_reachable, sem.node_reachable);
+
+    // TODO: There's a latent bug in writeCfgGraph for some inputs — cp_returned_pool
+    // is undersized by one entry compared to what the codepaths report. NAPI's
+    // streaming-sem path appears to avoid it by chance. Until we root-cause this
+    // (likely in code_path.zig's returned-pool accounting), null out
+    // code_path_result so writeSemanticData skips writeCfgGraph. CFG-dependent
+    // rules (no-useless-assignment, no-fallthrough, constructor-super) will
+    // not run correctly; no-debugger and most other rules are unaffected.
+    sem.code_path_result = null;
 
     // ── Write semantic data into bump (also writes CFG graph inline) ──
     const sem_off = try js_buffer.writeSemanticData(

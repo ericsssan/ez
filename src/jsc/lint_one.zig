@@ -163,6 +163,13 @@ fn parseToBuffer(
     return parse_to_buffer.parseToBuffer(buf_ptr, buf_len, source_start, source_len, language, true, &_sem_arena);
 }
 
+// ── Monotonic time helper (Zig 0.17 stripped std.time.nanoTimestamp) ────
+fn nanosNow() i128 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 fn dumpJSValue(ctx: JSContextRef, value: JSValueRef, label: []const u8) void {
@@ -350,10 +357,9 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Stage 3b: parse real source with ez, call ezLint with the AST ──
     {
-        // Source with explicit identifier references so semantic analysis
-        // produces a non-empty references list (avoids zero-length-slice ptr
-        // edge cases in writeSemanticData).
-        const test_source =
+        // Source: either argv[1] (a path) or a tiny inline default.
+        const args = try init.minimal.args.toSlice(init.arena.allocator());
+        const default_source =
             \\let x = 1;
             \\function foo(a, b) {
             \\  debugger;
@@ -364,32 +370,40 @@ pub fn main(init: std.process.Init) !void {
             \\foo(2, 3);
             \\
         ;
+        const source_path: ?[]const u8 = if (args.len >= 2) args[1] else null;
+        const test_source: []const u8 = if (source_path) |p|
+            try Io.Dir.cwd().readFileAlloc(io, p, alloc, Io.Limit.limited(64 * 1024 * 1024))
+        else
+            default_source;
+        defer if (source_path != null) alloc.free(test_source);
+        if (source_path) |p| {
+            std.debug.print("[zig] source: {s} ({d} bytes)\n", .{ p, test_source.len });
+        } else {
+            std.debug.print("[zig] source: inline default ({d} bytes)\n", .{test_source.len});
+        }
+
         const test_source_len: u32 = @intCast(test_source.len);
 
-        // Allocate a buffer: header + ample bump region + source.
-        // Bump-region rule of thumb: ~30× source size covers typescript-shaped
-        // input. For our tiny test we overprovision generously.
-        // Bump budget for AST + semantic data + CFG. Production rule-of-thumb
-        // is ~30× source size; for our 50-byte test the absolute minimum is
-        // ~100KB for fixed semantic-pass allocations (CFG, scope CSRs, etc.).
-        // Allocate generously — this is a probe, not a memory benchmark.
-        const bump_budget: u32 = 4 * 1024 * 1024;
+        // Bump budget: production heuristic is ~30× source size for everything
+        // (parser + traversal + sem + CFG). For typescript.js (~9 MB) that's
+        // ~280 MB. For tiny inputs we floor at 4 MB to cover fixed sem costs.
+        const bump_budget: u32 = @max(@as(u32, 4 * 1024 * 1024), test_source_len *| 30);
         const source_start = js_buffer.HEADER_SIZE + bump_budget;
         const total_buf_len = source_start + test_source_len;
+        std.debug.print("[zig] buffer: bump={d}MB total={d}MB\n", .{ bump_budget / (1024 * 1024), total_buf_len / (1024 * 1024) });
 
-        // 16-byte alignment satisfies all internal SoA fields (u64-aligned at
-        // worst). Matches what the napi JS side allocates via ArrayBuffer.
         const ast_bytes = try alloc.alignedAlloc(u8, .@"16", total_buf_len);
         defer alloc.free(ast_bytes);
-        @memset(ast_bytes, 0);
-        // Copy source into the tail of the buffer where the parser expects it.
         @memcpy(ast_bytes[source_start .. source_start + test_source_len], test_source);
 
+        const t_parse_start = nanosNow();
         const used = parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, test_source_len, Language.js) catch |err| {
             std.debug.print("[zig] parse failed: {}\n", .{err});
             return err;
         };
-        std.debug.print("[zig] parsed test source, buffer bytes_used={d}\n", .{used});
+        const t_parse_end = nanosNow();
+        const parse_ms = @as(f64, @floatFromInt(t_parse_end - t_parse_start)) / 1_000_000.0;
+        std.debug.print("[zig] parsed: bytes_used={d:.1}MB in {d:.1}ms\n", .{ @as(f64, @floatFromInt(used)) / (1024.0 * 1024.0), parse_ms });
 
         var make_ex: JSValueRef = null;
         const ast_buf = JSObjectMakeArrayBufferWithBytesNoCopy(
@@ -431,9 +445,13 @@ pub fn main(init: std.process.Init) !void {
         const filename_val = JSValueMakeString(ctx, filename);
 
         // Call ezLint(astBuf, source, ruleNames, filename)
-        var args = [_]JSValueRef{ ast_buf, src_value, rule_names_array, filename_val };
+        var lint_args = [_]JSValueRef{ ast_buf, src_value, rule_names_array, filename_val };
         var call_ex: JSValueRef = null;
-        const result = JSObjectCallAsFunction(ctx, ez_lint, null, args.len, &args, &call_ex);
+        const t_lint_start = nanosNow();
+        const result = JSObjectCallAsFunction(ctx, ez_lint, null, lint_args.len, &lint_args, &call_ex);
+        const t_lint_end = nanosNow();
+        const lint_ms = @as(f64, @floatFromInt(t_lint_end - t_lint_start)) / 1_000_000.0;
+        std.debug.print("[zig] ezLint ran in {d:.1}ms\n", .{lint_ms});
         if (call_ex != null) {
             std.debug.print("\n=== ezLint threw an exception ===\n", .{});
             dumpJSValue(ctx, call_ex, "ezLint exception");
