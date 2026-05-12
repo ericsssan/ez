@@ -569,10 +569,16 @@ pub fn build(b: *std.Build) void {
     // built from source in a later phase.
     const is_macos = target.result.os.tag == .macos;
     if (is_macos) {
+        // ReleaseFast for JSC binaries by default — Debug Zig is 5-10× slower
+        // for the parser/CFG hot loops (595ms vs 76ms parse on typescript.js),
+        // and the JSC embedding path is fundamentally a performance experiment.
+        // Override with -Doptimize=Debug if debugging Zig logic.
+        const jsc_optimize = if (optimize == .Debug) std.builtin.OptimizeMode.ReleaseFast else optimize;
+
         const jsc_hello_mod = b.createModule(.{
             .root_source_file = b.path("src/jsc/hello.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = jsc_optimize,
         });
         // Link the JavaScriptCore framework (system-provided on macOS).
         jsc_hello_mod.linkFramework("JavaScriptCore", .{});
@@ -596,7 +602,7 @@ pub fn build(b: *std.Build) void {
         const jsc_lint_mod = b.createModule(.{
             .root_source_file = b.path("src/jsc/lint_one.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = jsc_optimize,
         });
         jsc_lint_mod.linkFramework("JavaScriptCore", .{});
         jsc_lint_mod.link_libc = true;
@@ -636,7 +642,7 @@ pub fn build(b: *std.Build) void {
         const cg_mod = b.createModule(.{
             .root_source_file = b.path("src/jsc/check_globals.zig"),
             .target = target,
-            .optimize = optimize,
+            .optimize = jsc_optimize,
         });
         cg_mod.linkFramework("JavaScriptCore", .{});
         cg_mod.link_libc = true;
