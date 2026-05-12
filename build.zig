@@ -607,6 +607,25 @@ pub fn build(b: *std.Build) void {
             .root_module = jsc_lint_mod,
         });
         b.installArtifact(jsc_lint);
+
+        // Ad-hoc codesign the INSTALLED copy with JIT entitlement. Apple's
+        // JavaScriptCore.framework refuses to JIT in unentitled processes
+        // (LLInt-only is ~10-30× slower). For distribution we'd vendor a
+        // WebKit JSC build that doesn't have this restriction; for dev this
+        // is the cheap unlock.
+        // codesign with JIT entitlement. Must run AFTER install copies the
+        // binary to zig-out/bin/, so the install copy carries the signature.
+        // Run via `zig build jsc-lint-one-sign` after `zig build`; can't be
+        // chained into b.default_step because install IS default_step
+        // (would create a dependency loop).
+        const sign_jsc_lint = b.addSystemCommand(&.{
+            "codesign",       "--force",                 "--sign",    "-",
+            "--entitlements", "src/jsc/ez.entitlements", "--options", "runtime",
+            "zig-out/bin/jsc-lint-one",
+        });
+        sign_jsc_lint.step.dependOn(b.getInstallStep());
+        const sign_step = b.step("jsc-lint-one-sign", "Sign jsc-lint-one with JIT entitlement (run AFTER `zig build`)");
+        sign_step.dependOn(&sign_jsc_lint.step);
         const jsc_lint_run = b.addRunArtifact(jsc_lint);
         jsc_lint_run.step.dependOn(b.getInstallStep());
         const jsc_lint_step = b.step("jsc-lint-one", "Build the JSC bundle-loader probe");

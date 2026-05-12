@@ -169,6 +169,9 @@ fn nanosNow() i128 {
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(i128, ts.sec) * 1_000_000_000 + @as(i128, ts.nsec);
 }
+fn msSince(t0: i128) f64 {
+    return @as(f64, @floatFromInt(nanosNow() - t0)) / 1_000_000.0;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -231,11 +234,12 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
     defer alloc.free(polyfills);
+    const t_poly = nanosNow();
     evalScript(ctx, polyfills, "polyfills.js") catch |err| {
         std.debug.print("[zig] polyfills load failed: {}\n", .{err});
         return err;
     };
-    std.debug.print("[zig] polyfills loaded ({d} bytes)\n", .{polyfills.len});
+    std.debug.print("[zig] polyfills loaded ({d} bytes) in {d:.1}ms\n", .{ polyfills.len, msSince(t_poly) });
 
     // Stage 1: read the bundle from disk.
     const bundle_path = "src/jsc/runner-iife.js";
@@ -283,11 +287,12 @@ pub fn main(init: std.process.Init) !void {
     defer alloc.free(bundle_with_trigger);
     @memcpy(bundle_with_trigger[0..trimmed_len], bundle[0..trimmed_len]);
     @memcpy(bundle_with_trigger[trimmed_len..], trigger_call);
+    const t_bundle = nanosNow();
     evalScript(ctx, bundle_with_trigger, "runner-iife.js") catch |err| {
         std.debug.print("[zig] bundle eval failed: {}\n", .{err});
         return err;
     };
-    std.debug.print("[zig] bundle eval succeeded\n", .{});
+    std.debug.print("[zig] bundle eval succeeded in {d:.1}ms\n", .{msSince(t_bundle)});
 
     // Stage 3: check that ezLint is defined on globalThis.
     const global = JSContextGetGlobalObject(ctx);
@@ -444,14 +449,29 @@ pub fn main(init: std.process.Init) !void {
         defer JSStringRelease(filename);
         const filename_val = JSValueMakeString(ctx, filename);
 
-        // Call ezLint(astBuf, source, ruleNames, filename)
+        // Call ezLint(astBuf, source, ruleNames, filename) — repeated.
+        // First call pays JIT warmup + visitor-map build; subsequent calls
+        // hit warm code. Reports per-call times so we can separate cold
+        // startup from steady-state.
         var lint_args = [_]JSValueRef{ ast_buf, src_value, rule_names_array, filename_val };
+        const ITERS: usize = 20;
         var call_ex: JSValueRef = null;
-        const t_lint_start = nanosNow();
-        const result = JSObjectCallAsFunction(ctx, ez_lint, null, lint_args.len, &lint_args, &call_ex);
-        const t_lint_end = nanosNow();
-        const lint_ms = @as(f64, @floatFromInt(t_lint_end - t_lint_start)) / 1_000_000.0;
-        std.debug.print("[zig] ezLint ran in {d:.1}ms\n", .{lint_ms});
+        var result: JSValueRef = null;
+        var times_ms: [ITERS]f64 = undefined;
+        var i: usize = 0;
+        while (i < ITERS) : (i += 1) {
+            const t0 = nanosNow();
+            result = JSObjectCallAsFunction(ctx, ez_lint, null, lint_args.len, &lint_args, &call_ex);
+            const t1 = nanosNow();
+            times_ms[i] = @as(f64, @floatFromInt(t1 - t0)) / 1_000_000.0;
+            if (call_ex != null) break;
+        }
+        std.debug.print("[zig] ezLint timings over {d} iters:\n", .{ITERS});
+        for (times_ms, 0..) |t, j| {
+            std.debug.print("  iter {d}: {d:.1}ms\n", .{ j, t });
+        }
+        const lint_ms = times_ms[ITERS - 1];
+        _ = lint_ms;
         if (call_ex != null) {
             std.debug.print("\n=== ezLint threw an exception ===\n", .{});
             dumpJSValue(ctx, call_ex, "ezLint exception");
@@ -485,9 +505,9 @@ pub fn main(init: std.process.Init) !void {
         const u32s: [*]const u32 = @ptrCast(@alignCast(bytes_ptr));
         const triples = elem_count / 3;
         std.debug.print("[zig] ezLint returned {d} diagnostics:\n", .{triples});
-        var i: usize = 0;
-        while (i < triples) : (i += 1) {
-            std.debug.print("  diag {d}: rule_idx={d}  line={d}  col={d}\n", .{ i, u32s[i * 3 + 0], u32s[i * 3 + 1], u32s[i * 3 + 2] });
+        var j: usize = 0;
+        while (j < triples) : (j += 1) {
+            std.debug.print("  diag {d}: rule_idx={d}  line={d}  col={d}\n", .{ j, u32s[j * 3 + 0], u32s[j * 3 + 1], u32s[j * 3 + 2] });
         }
     }
 
