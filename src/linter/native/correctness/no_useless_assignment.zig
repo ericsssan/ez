@@ -259,6 +259,19 @@ fn analyzeSymbol(
     // Build supplementary back-edge map from seg_loop events.
     // `continue` statements make their segment unreachable, so the back-edge to
     // the loop header is missing from next_targets. We recover it from seg_loop events.
+    //
+    // Back-edge target rewrite — required for liveness correctness:
+    // ESLint's CFG points the back-edge at the body's first segment. For
+    // backward liveness that is wrong: it models a body→body self-loop, so a
+    // value written in the body is killed by the back-edge before reaching the
+    // post-loop read. The actual control-flow target is the LOOP TEST segment,
+    // which forks to body-or-after-loop. We recover it from CFG topology:
+    // for each (from, body) seg_loop pair, we look for the unique forward
+    // predecessor of `body` that ALSO has the after-loop segment as a
+    // successor (i.e., the segment that forks). If found, we rewrite the
+    // back-edge target to that fork segment so liveness flows
+    // body-end → test → after-loop. Falls back to the original target for
+    // do-while / for(;;) / unusual topologies.
     const loop_next_count = alloc.alloc(u32, seg_count) catch return;
     @memset(loop_next_count, 0);
     for (cpr.events) |ev| {
@@ -275,23 +288,97 @@ fn analyzeSymbol(
     for (cpr.events) |ev| {
         if (ev.type != .seg_loop) continue;
         if (ev.data1 < seg_count and ev.data2 < seg_count) {
-            loop_next_targets[loop_next_cursor[ev.data1]] = ev.data2;
+            const body = ev.data2;
+            // Find the unique forward predecessor of `body` that has multiple
+            // successors — that's the loop test (forks to body and after-loop).
+            var test_seg: u32 = body;
+            const ps = cpr.seg_prev_start[body];
+            const pe = cpr.seg_prev_end[body];
+            for (cpr.prev_targets[ps..pe]) |p| {
+                if (p >= seg_count) continue;
+                if (succ_count[p] > 1) {
+                    test_seg = @intCast(p);
+                    break;
+                }
+            }
+            loop_next_targets[loop_next_cursor[ev.data1]] = test_seg;
             loop_next_cursor[ev.data1] += 1;
         }
     }
 
     // Iterative backward liveness analysis.
-    // live_entry[s] = true if the variable is live at the entry of segment s.
+    // live_entry[s] = liveness AT the entry of segment s (after walking back
+    //                 through s's refs).
+    // live_exit[s]  = liveness LEAVING segment s, before walking back through
+    //                 its own refs. Equal to OR(live_entry[forward_succ]).
+    //                 Loop back-edges from a body-end segment B re-enter the
+    //                 test segment T at a point AFTER any pre-loop writes
+    //                 inside T have already executed. So the right value to
+    //                 propagate via the back-edge is live_exit[T], NOT
+    //                 live_entry[T]. Using live_entry would let pre-loop
+    //                 write_init inside the test segment kill the back-edge's
+    //                 contribution and falsely flag the body's write as dead.
     const live_entry = alloc.alloc(bool, seg_count) catch return;
+    const live_exit = alloc.alloc(bool, seg_count) catch return;
     @memset(live_entry, false);
+    @memset(live_exit, false);
 
-    const MAX_ITERS = 8;
-    for (0..MAX_ITERS) |_| {
+    // For `x = expr` where `expr` reads `x`, the LHS write does NOT kill the
+    // prior value — the prior value was read to compute `expr`. The intra-
+    // segment swap logic above handles the case when LHS-write and RHS-read
+    // land in the same segment, but `x = expr || x` puts the RHS-read in a
+    // separate (short-circuit) segment so the swap can't fire, and destructuring
+    // like `({a, b} = transform(a, b))` puts the write deep inside an object
+    // pattern so the parent isn't `.assign` directly.
+    //
+    // Mark such writes as effectively `read_write` for liveness: the kill is
+    // suppressed and the value stays live. Adds O(writes × refs) per symbol,
+    // but writes are sparse and we exit early on the first matching read.
+    const force_rw = alloc.alloc(bool, total) catch return;
+    @memset(force_rw, false);
+    for (0..total) |wi| {
+        const wref = flat_refs[wi];
+        if (refs.getKind(wref) != .write) continue;
+        const wnode = refs.getNode(wref);
+        // Walk up to find the enclosing `.assign` node (handles destructuring
+        // patterns where the write reference is nested several levels inside
+        // the LHS pattern).
+        var assign_node: NodeIndex = .none;
+        var cur = wnode;
+        var depth: u32 = 0;
+        while (depth < 6) : (depth += 1) {
+            const p = ctx.parentOf(cur);
+            if (p == .none) break;
+            if (ctx.nodeTag(p) == .assign) { assign_node = p; break; }
+            cur = p;
+        }
+        if (assign_node == .none) continue;
+        for (0..total) |ri| {
+            if (ri == wi) continue;
+            const rref = flat_refs[ri];
+            const rk = refs.getKind(rref);
+            if (rk != .read and rk != .read_write and rk != .type_of) continue;
+            const rnode = refs.getNode(rref);
+            if (isDescendantOf(ctx, rnode, assign_node)) {
+                force_rw[wi] = true;
+                break;
+            }
+        }
+    }
+
+    // Forward-iteration backward liveness: each pass propagates info one
+    // segment edge backward, so the worst-case iteration count scales with
+    // the longest backward chain. Cap at seg_count + 1 (provably enough)
+    // and break early once a pass produces no changes.
+    const max_iters = seg_count + 1;
+    var iter: u32 = 0;
+    while (iter < max_iters) : (iter += 1) {
+        var changed = false;
         for (0..seg_count) |s| {
             const seg_id: u32 = @intCast(s);
             if (cpr.seg_codepath[seg_id] != cp_id) continue;
 
-            // live_exit = OR of live_entry of reachable successors + loop back-edges
+            // live = OR(live_entry of forward successors)  ∪  OR(live_exit of back-edge targets)
             var live: bool = false;
             for (succ_flat[succ_start[seg_id]..succ_start[seg_id + 1]]) |succ| {
                 if (succ < seg_count and live_entry[succ]) {
@@ -303,11 +390,15 @@ fn analyzeSymbol(
                 const ls = loop_next_start[seg_id];
                 const le = loop_next_start[seg_id + 1];
                 for (loop_next_targets[ls..le]) |succ| {
-                    if (succ < seg_count and live_entry[succ]) {
+                    if (succ < seg_count and live_exit[succ]) {
                         live = true;
                         break;
                     }
                 }
+            }
+            if (live_exit[seg_id] != live) {
+                live_exit[seg_id] = live;
+                changed = true;
             }
 
             // Walk refs in this segment backward
@@ -316,15 +407,22 @@ fn analyzeSymbol(
             var ri: u32 = rend;
             while (ri > rstart) {
                 ri -= 1;
-                switch (refs.getKind(flat_refs[ri])) {
+                const k = refs.getKind(flat_refs[ri]);
+                if (k == .write and force_rw[ri]) {
+                    live = true;
+                } else switch (k) {
                     .read, .type_of, .type_read => live = true,
                     .write, .write_init => live = false,
                     .read_write => live = true,
                 }
             }
 
-            live_entry[seg_id] = live;
+            if (live_entry[seg_id] != live) {
+                live_entry[seg_id] = live;
+                changed = true;
+            }
         }
+        if (!changed) break;
     }
 
     // Final pass: report useless writes
@@ -343,7 +441,7 @@ fn analyzeSymbol(
             const ls = loop_next_start[seg_id];
             const le = loop_next_start[seg_id + 1];
             for (loop_next_targets[ls..le]) |succ| {
-                if (succ < seg_count and live_entry[succ]) {
+                if (succ < seg_count and live_exit[succ]) {
                     live = true;
                     break;
                 }
@@ -357,7 +455,18 @@ fn analyzeSymbol(
             ri -= 1;
             const ref_id = flat_refs[ri];
             const ref_node = refs.getNode(ref_id);
-            switch (refs.getKind(ref_id)) {
+            const k = refs.getKind(ref_id);
+            // `x = expr` where `expr` reads `x`: treat write as read_write
+            // (the prior value was consumed by the RHS, so it's not dead and
+            // the new value's liveness flows the same way). See force_rw build.
+            if (k == .write and force_rw[ri]) {
+                if (!live and ctx.nodeReachable(ref_node) and !isInTryBody(ctx, ref_node)) {
+                    ctx.report(ref_node);
+                }
+                live = true;
+                continue;
+            }
+            switch (k) {
                 .read, .type_of, .type_read => live = true,
                 .write, .write_init => {
                     if (!live and ctx.nodeReachable(ref_node) and !isInTryBody(ctx, ref_node)) {

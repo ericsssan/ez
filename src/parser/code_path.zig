@@ -292,7 +292,7 @@ fn newEmptyForkContext(alloc: Allocator, parent: *ForkContext, should_fork_leavi
 
 // ── Context Types ────────────────────────────────────────────────
 
-pub const ChoiceKind = enum { test_kind, logical_and, logical_or, nullish, loop };
+pub const ChoiceKind = enum { test_kind, logical_and, logical_or, nullish, loop, switch_kind };
 
 const ChoiceContext = struct {
     upper: ?*ChoiceContext,
@@ -1062,9 +1062,13 @@ pub const CodePathBuilder = struct {
         try self.leaveFromCurrentSegment(node, .exit);
 
         var combined = newEmptyForkContext(self.allocator, self.fork_context, false);
-        if (ctx.kind == .loop) {
+        if (ctx.kind == .loop or ctx.kind == .switch_kind) {
             // Loop: addAll entries — skip-path + all continue/break exits must all
             // become predecessors of the post-loop segment.
+            // Switch: each `case … break;` adds its head to true_fork; all such
+            // break exits must merge into the post-switch segment (not just the
+            // last one — otherwise earlier breaks lose their successor edge and
+            // backward liveness misreports their writes as useless).
             const n_tf = ctx.true_fork.totalLen();
             for (0..n_tf) |i| {
                 try combined.add(ctx.true_fork.getEntry(i), self);
@@ -1186,7 +1190,7 @@ pub const CodePathBuilder = struct {
 
         // Push fork context and choice context for the switch
         try self.pushForkContext();
-        try self.pushChoiceContext(.test_kind, false);
+        try self.pushChoiceContext(.switch_kind, false);
     }
 
     pub fn popSwitchContext(self: *CodePathBuilder, node: NodeIndex) !void {
@@ -1635,10 +1639,18 @@ pub const CodePathBuilder = struct {
                 try lc.break_fork.add(self.fork_context.head(), self);
             }
         } else {
-            // break inside switch: save the current head to the switch's choice context
-            // true_fork so popChoiceContext includes it in the post-switch merge.
-            if (self.choice_context) |cc| {
-                try cc.true_fork.add(self.fork_context.head(), self);
+            // break inside switch: save the current head to the switch's choice
+            // context true_fork so popChoiceContext includes it in the post-switch
+            // merge. Walk UP the choice-context stack to find the switch — the
+            // break may be nested inside an `if`/ternary whose own choice context
+            // is on top, and adding to that one drops the break-segment from the
+            // switch's post-merge entirely.
+            var cc_opt = self.choice_context;
+            while (cc_opt) |cc| : (cc_opt = cc.upper) {
+                if (cc.kind == .switch_kind) {
+                    try cc.true_fork.add(self.fork_context.head(), self);
+                    break;
+                }
             }
         }
         try self.makeUnreachable(node);
