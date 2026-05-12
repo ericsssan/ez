@@ -250,6 +250,92 @@ function runLint(astBytes, ruleNames, filename) {
   // Bun's stdin defaults to a non-encoded raw byte stream, but we Buffer.from()
   // the data event defensively just in case a chunk arrives as a string.
 
+  // Cheap observation-free diagnostics. Always-on, dumped on SHUTDOWN.
+  // Tracks JIT compile activity and heap stats — no overhead during the
+  // workload, just two API calls at exit. Enable via BUN_WORKER_STATS=1.
+  let _statsAtStart = null;
+  if (process.env.BUN_WORKER_STATS) {
+    try {
+      const jsc = require("bun:jsc");
+      _statsAtStart = {
+        compileTime: jsc.totalCompileTime(),
+        dfgCompiles: jsc.numberOfDFGCompiles(),
+        heap: jsc.heapStats(),
+      };
+      globalThis.__ez_dump_stats = () => {
+        const end = {
+          compileTime: jsc.totalCompileTime(),
+          dfgCompiles: jsc.numberOfDFGCompiles(),
+          heap: jsc.heapStats(),
+        };
+        process.stderr.write(`[w${process.pid}] stats:\n`);
+        process.stderr.write(`  totalCompileTime: ${end.compileTime - _statsAtStart.compileTime} (start=${_statsAtStart.compileTime}, end=${end.compileTime})\n`);
+        process.stderr.write(`  DFG compiles:     ${end.dfgCompiles - _statsAtStart.dfgCompiles}\n`);
+        process.stderr.write(`  heap (start):     size=${(_statsAtStart.heap.heapSize / 1e6).toFixed(1)}MB capacity=${(_statsAtStart.heap.heapCapacity / 1e6).toFixed(1)}MB\n`);
+        process.stderr.write(`  heap (end):       size=${(end.heap.heapSize / 1e6).toFixed(1)}MB capacity=${(end.heap.heapCapacity / 1e6).toFixed(1)}MB\n`);
+        process.stderr.write(`  heap.objectCount: ${end.heap.objectCount}\n`);
+      };
+    } catch (e) {
+      process.stderr.write("[w" + process.pid + "] stats setup failed: " + e.message + "\n");
+    }
+  }
+
+  // Optional JSC sampling profiler. Set BUN_WORKER_PROFILE=1 — the worker
+  // starts the JSC sampling profiler at module init, then on shutdown
+  // dumps the symbolicated stack-trace summary to stderr. Heavyweight; only
+  // enable for diagnostic runs.
+  let _profilerActive = false;
+  if (process.env.BUN_WORKER_PROFILE) {
+    try {
+      const jsc = require("bun:jsc");
+      jsc.startSamplingProfiler();
+      _profilerActive = true;
+      // Stash the dump function on a graceful exit hook so SHUTDOWN can flush.
+      globalThis.__ez_dump_profile = () => {
+        try {
+          // bun:jsc returns { interval, traces:[{timestamp, frames:[{name,
+          // location, line, column, category, sourceID, flags}, ...]}, ...],
+          // sources:[...] }. category = LLInt | Baseline | DFG | FTL | Unknown
+          // Executable | Host | Wasm. Aggregate by leaf-frame name+location
+          // and also by category for a tier breakdown.
+          const r = jsc.samplingProfilerStackTraces();
+          const traces = r && r.traces;
+          if (!Array.isArray(traces) || traces.length === 0) {
+            process.stderr.write(`[w${process.pid}] sampling profiler: no traces\n`);
+            return;
+          }
+          const leafCounts = Object.create(null);
+          const tierCounts = Object.create(null);
+          for (const t of traces) {
+            const fr = t && t.frames;
+            if (!Array.isArray(fr) || fr.length === 0) continue;
+            // Leaf = last frame in `frames` (innermost call).
+            const leaf = fr[fr.length - 1];
+            const key = (leaf.name || "<anon>") + "  [" + (leaf.location || "?") + "]";
+            leafCounts[key] = (leafCounts[key] || 0) + 1;
+            tierCounts[leaf.category || "?"] = (tierCounts[leaf.category || "?"] || 0) + 1;
+          }
+          const sortedLeaves = Object.entries(leafCounts).sort((a, b) => b[1] - a[1]).slice(0, 25);
+          const sortedTiers = Object.entries(tierCounts).sort((a, b) => b[1] - a[1]);
+          process.stderr.write(`[w${process.pid}] sampling profiler — ${traces.length} traces (interval ${r.interval}s)\n`);
+          process.stderr.write(`[w${process.pid}] tier breakdown:\n`);
+          for (const [tier, n] of sortedTiers) {
+            const pct = ((n / traces.length) * 100).toFixed(1);
+            process.stderr.write(`  ${String(n).padStart(6)} (${pct}%) ${tier}\n`);
+          }
+          process.stderr.write(`[w${process.pid}] top leaves:\n`);
+          for (const [name, n] of sortedLeaves) {
+            process.stderr.write(`  ${String(n).padStart(6)} ${name}\n`);
+          }
+        } catch (e) {
+          process.stderr.write("[w" + process.pid + "] profile dump failed: " + (e.stack || e.message) + "\n");
+        }
+      };
+    } catch (e) {
+      process.stderr.write("[w" + process.pid + "] could not start sampling profiler: " + e.message + "\n");
+    }
+  }
+
   // READY frame so the host knows we're past module-init.
   writeFrame(REPLY_OK, null);
 
@@ -257,6 +343,8 @@ function runLint(astBytes, ruleNames, filename) {
     const head = await readFrame();
     const op = head.opcode;
     if (op === OP_SHUTDOWN) {
+      if (globalThis.__ez_dump_stats) globalThis.__ez_dump_stats();
+      if (_profilerActive && globalThis.__ez_dump_profile) globalThis.__ez_dump_profile();
       process.exit(0);
     } else if (op === OP_INIT) {
       const spec = JSON.parse(head.payload.toString("utf-8"));
