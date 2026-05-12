@@ -1008,13 +1008,10 @@ const _emptyArray = Object.freeze([]);
 // share the same V8 hidden class {_ast, _i, _parent} from creation — preventing
 // the IC polymorphism that occurs when _parent is added on first access.
 const _PARENT_UNSET = Object.create(null);
-const _INIT_UNSET = Object.create(null);
-// Sentinel for "body not yet computed". Distinct from null (valid body value for
-// nodes where body is absent) and from arrays/objects (valid body values).
-const _BODY_UNSET = Object.create(null);
-// Sentinel for "value not yet computed". Distinct from null (valid for null_literal)
-// and from false/0/"" (valid for boolean/number/string literals).
-const _VALUE_UNSET = Object.create(null);
+// Former _INIT_UNSET / _BODY_UNSET / _VALUE_UNSET sentinels removed —
+// the corresponding caches now live in the external `_synthCache` WeakMap
+// where `'key' in bundle` distinguishes "computed = undefined / null"
+// from "not computed yet" without a magic-object dance.
 
 // External cache for SYNTHETIC nodes (constructed objects that don't exist in
 // the buffer — e.g., a method's synthetic FunctionExpression value, the
@@ -1497,7 +1494,8 @@ const NodeProto = {
    * boolean, or null. ESLint returns the evaluated value; we approximate.
    */
   get value() {
-    if (this._value !== _VALUE_UNSET) return this._value;
+    const _synthBundle = _getSynth(this);
+    if ('value' in _synthBundle) return _synthBundle.value;
     let v;
     let t = this._tag;
     const ast = this._ast;
@@ -1687,7 +1685,7 @@ const NodeProto = {
     } else {
       v = null;
     }
-    this._value = v;
+    _synthBundle.value = v;
     return v;
   },
 
@@ -1812,7 +1810,8 @@ const NodeProto = {
    * node.body — body of statements, loop body, or function body.
    */
   get body() {
-    if (this._body !== _BODY_UNSET) return this._body;
+    const _synthBundle = _getSynth(this);
+    if ('body' in _synthBundle) return _synthBundle.body;
     const t = this._tag;
     const ast = this._ast;
     const lhs = ast.nodeLhs(this._i);
@@ -1885,7 +1884,7 @@ const NodeProto = {
     } else if (t === T.ts_module_decl || t === T.ts_namespace_decl) {
       result = rhs === NONE ? null : nodeView(ast, rhs);
     }
-    this._body = result;
+    _synthBundle.body = result;
     return result;
   },
 
@@ -3226,7 +3225,8 @@ const NodeProto = {
    * ref check fires too) don't re-materialize the init node every call.
    */
   get init() {
-    if (this._init !== _INIT_UNSET) return this._init;
+    const _synthBundle = _getSynth(this);
+    if ('init' in _synthBundle) return _synthBundle.init;
     const t = this._tag;
     const ast = this._ast;
     let result = null;
@@ -3237,7 +3237,7 @@ const NodeProto = {
       const d = ast.extraForData(ast.nodeLhs(this._i));
       result = d.init === NONE ? null : nodeView(ast, d.init);
     }
-    this._init = result;
+    _synthBundle.init = result;
     return result;
   },
 
@@ -3319,7 +3319,7 @@ const NodeProto = {
    * Cached: rules like unicorn/no-array-for-each visit every Identifier
    * and call `parent.elements.includes(node)` from `isNotReference`,
    * which would otherwise rebuild the array per visit. Cache key is
-   * `_BODY_UNSET` (shared "not computed yet" sentinel) so non-array
+   * the external synth bundle (`'elements' in bundle`) so non-array
    * tags also short-circuit on subsequent reads.
    */
   get elements() {
@@ -4428,9 +4428,7 @@ function _NodeView(ast, idx, tag, type) {
   this._range = _isSimpleRangeTag(tag)
     ? [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]]
     : null;
-  this._body = _BODY_UNSET;
-  this._value = _VALUE_UNSET;
-  this._init = _INIT_UNSET;
+  // _body, _value, _init moved to external `_synthCache` (WeakMap-keyed)
   this._cachedName = undefined;
   // _params, _typeParameters, _arguments, _decorators, _elements, _properties
   // moved to external `_synthCache` (WeakMap-keyed). Synthetic-node identity
@@ -4451,7 +4449,7 @@ function _NodeView_LRN(ast, idx, tag, type) {  // ['left','right','name']
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
-  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  // _body, _value, _init moved to external `_synthCache` (WeakMap-keyed)
   this._cachedName = undefined;
   // synth caches externalized — see _NodeView comment.
 }
@@ -4478,7 +4476,7 @@ function _NodeView_LR(ast, idx, tag, type) {   // ['left','right']  (T.identifie
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
-  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  // _body, _value, _init moved to external `_synthCache` (WeakMap-keyed)
   // Eager `name` — every identifier instance gets a fixed shape with `name`
   // as an own data property; rule code reads it without hitting the
   // prototype getter. `_cachedName` is dropped from this ctor since the
@@ -4490,7 +4488,7 @@ function _NodeView_N(ast, idx, tag, type) {    // ['name']  (T.assignment_patter
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
-  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  // _body, _value, _init moved to external `_synthCache` (WeakMap-keyed)
   this._cachedName = undefined;
   // synth caches externalized — see _NodeView comment.
 }
@@ -4498,7 +4496,7 @@ function _NodeView_LNT(ast, idx, tag, type) {  // ['left','name','typeAnnotation
   this._ast = ast; this._i = idx; this._tag = tag; this._parent = _PARENT_UNSET;
   this.type = type; this._loc = null;
   this._range = [ast._nodeStartPosArr[idx], ast._nodeEndPosArr[idx]];
-  this._body = _BODY_UNSET; this._value = _VALUE_UNSET; this._init = _INIT_UNSET;
+  // _body, _value, _init moved to external `_synthCache` (WeakMap-keyed)
   this._cachedName = undefined;
   // synth caches externalized — see _NodeView comment.
 }
