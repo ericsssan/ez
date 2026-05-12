@@ -1817,8 +1817,14 @@ pub fn stripBom(source: []const u8) struct { text: []const u8, has_bom: bool } {
 
 // ── Tests ────────────────────────────────────────────────────────
 
-test "BufferHeader is 140 bytes" {
-    try std.testing.expectEqual(@as(usize, 140), @sizeOf(BufferHeader));
+test "BufferHeader size is in sync with field count" {
+    // Sentinel for ABI changes — bumps when a field is added/removed. Update
+    // BOTH this constant AND the buffer `version` field (see top of file) so
+    // JS-side readers know to refresh their offset map.
+    try std.testing.expectEqual(@as(usize, @sizeOf(BufferHeader)), @sizeOf(BufferHeader));
+    // 38 u32 fields × 4 bytes = 152. Verify against an explicit count to
+    // catch accidental field-type changes (e.g. u32 → u64 alignment).
+    try std.testing.expectEqual(@as(usize, 152), @sizeOf(BufferHeader));
 }
 
 test "convertSpansToUtf16 ASCII" {

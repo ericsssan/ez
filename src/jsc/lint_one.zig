@@ -401,14 +401,33 @@ pub fn main(init: std.process.Init) !void {
         defer alloc.free(ast_bytes);
         @memcpy(ast_bytes[source_start .. source_start + test_source_len], test_source);
 
-        const t_parse_start = nanosNow();
-        const used = parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, test_source_len, Language.js) catch |err| {
-            std.debug.print("[zig] parse failed: {}\n", .{err});
-            return err;
+        // Repeat parse N times when EZ_PARSE_ITERS env var is set (used for
+        // sampling/profiling — each parse is ~77ms; need many to capture).
+        const parse_iters: usize = blk: {
+            if (std.c.getenv("EZ_PARSE_ITERS")) |v| {
+                var n: usize = 0;
+                var i: usize = 0;
+                while (v[i] != 0 and v[i] >= '0' and v[i] <= '9') : (i += 1) {
+                    n = n * 10 + @as(usize, @intCast(v[i] - '0'));
+                }
+                if (n > 0) break :blk n;
+            }
+            break :blk 1;
         };
+
+        var used: u32 = 0;
+        const t_parse_start = nanosNow();
+        var pi: usize = 0;
+        while (pi < parse_iters) : (pi += 1) {
+            used = parseToBuffer(ast_bytes.ptr, total_buf_len, source_start, test_source_len, Language.js) catch |err| {
+                std.debug.print("[zig] parse failed: {}\n", .{err});
+                return err;
+            };
+        }
         const t_parse_end = nanosNow();
-        const parse_ms = @as(f64, @floatFromInt(t_parse_end - t_parse_start)) / 1_000_000.0;
-        std.debug.print("[zig] parsed: bytes_used={d:.1}MB in {d:.1}ms\n", .{ @as(f64, @floatFromInt(used)) / (1024.0 * 1024.0), parse_ms });
+        const parse_total_ms = @as(f64, @floatFromInt(t_parse_end - t_parse_start)) / 1_000_000.0;
+        const parse_avg_ms = parse_total_ms / @as(f64, @floatFromInt(parse_iters));
+        std.debug.print("[zig] parsed {d}× ({d} iters): avg={d:.1}ms total={d:.1}ms bytes_used={d:.1}MB\n", .{ parse_iters, parse_iters, parse_avg_ms, parse_total_ms, @as(f64, @floatFromInt(used)) / (1024.0 * 1024.0) });
 
         var make_ex: JSValueRef = null;
         const ast_buf = JSObjectMakeArrayBufferWithBytesNoCopy(

@@ -664,7 +664,27 @@ fn resolveFullImpl(
             // compaction (race) so resolver must skip inline.
             if (kind == .elided) continue;
             const parent: ScopeId = if (sp == 0) ScopeId.fromInt(std.math.maxInt(u32)) else stack[sp - 1];
-            const node: NodeIndex = @enumFromInt(e.node);
+            // Streaming-mode race: function/static_block/class_field_initializer
+            // scope_opens are emitted BEFORE the parser constructs the owning
+            // function node (parser does body first, then node, then patches
+            // the event). If the resolver gets here before that patch, e.node
+            // is NONE — which would propagate to the CodePath's codepath_start
+            // event and ultimately get dropped by writeCfgGraph's bounds check
+            // (node >= node_count), so rules never see onCodePathStart for
+            // that function. Spin-wait for the patch, same pattern as the
+            // loop_open handler below.
+            var raw_node = e.node;
+            if (opts.streaming != null and raw_node == std.math.maxInt(u32) and
+                (kind == .function or kind == .static_block or kind == .class_field_initializer))
+            {
+                const ev_u64: *const u64 = @ptrCast(&events_view[ev_i - 1]);
+                while (true) {
+                    std.atomic.spinLoopHint();
+                    raw_node = @truncate(@atomicLoad(u64, ev_u64, .acquire) >> 32);
+                    if (raw_node != std.math.maxInt(u32)) break;
+                }
+            }
+            const node: NodeIndex = @enumFromInt(raw_node);
             const sid: ScopeId = if (do_scope)
                 try scopes.addScope(kind, parent, node)
             else

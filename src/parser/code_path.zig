@@ -391,10 +391,22 @@ pub const CodePathBuilder = struct {
     /// don't pay ArrayList alloc per createSegment.
     collapse_frontier: std.ArrayList(SegmentId),
 
-    // CodePath segment lists (finals, returned, thrown)
+    // CodePath segment pools (flat — populated by `flattenCpPools()` at the
+    // end of building, consumed by writeCfgGraph). During building we
+    // accumulate per-codepath into `cp_returned_lists` / `cp_thrown_lists`
+    // because shared-pool indexing breaks when codepaths interleave (e.g.,
+    // a nested function pushes/pops while an outer codepath is still active
+    // — the outer's `(start, end)` slice would silently overlap the inner's).
     cp_final_pool: std.ArrayList(SegmentId),
     cp_returned_pool: std.ArrayList(SegmentId),
     cp_thrown_pool: std.ArrayList(SegmentId),
+    /// Per-codepath returned segments. `cp_returned_lists.items[cp_id]` is
+    /// the segment list for codepath `cp_id`. Populated by `makeReturn` and
+    /// the implicit-return path in `exitCodePath`. Flattened into
+    /// `cp_returned_pool` by `flattenCpPools()`.
+    cp_returned_lists: std.ArrayList(std.ArrayList(SegmentId)),
+    /// Per-codepath thrown segments — same shape, populated by `makeThrow`.
+    cp_thrown_lists: std.ArrayList(std.ArrayList(SegmentId)),
 
     // State
     fork_context: *ForkContext,
@@ -452,6 +464,8 @@ pub const CodePathBuilder = struct {
             .cp_final_pool = .empty,
             .cp_returned_pool = .empty,
             .cp_thrown_pool = .empty,
+            .cp_returned_lists = .empty,
+            .cp_thrown_lists = .empty,
             .fork_context = undefined,
             .current_codepath = NONE_CP,
             .choice_context = null,
@@ -498,6 +512,8 @@ pub const CodePathBuilder = struct {
         try self.cp_final_pool.ensureTotalCapacity(self.allocator, est_codepaths * 2);
         try self.cp_returned_pool.ensureTotalCapacity(self.allocator, est_codepaths);
         try self.cp_thrown_pool.ensureTotalCapacity(self.allocator, est_codepaths / 4);
+        try self.cp_returned_lists.ensureTotalCapacity(self.allocator, est_codepaths);
+        try self.cp_thrown_lists.ensureTotalCapacity(self.allocator, est_codepaths);
 
         try self.seg_collapse_visit.ensureTotalCapacity(self.allocator, est_segments);
         try self.collapse_frontier.ensureTotalCapacity(self.allocator, 64);
@@ -873,6 +889,7 @@ pub const CodePathBuilder = struct {
             .origin = origin,
             .upper = upper,
             .initial_segment = initial_seg,
+            // Pool ranges are filled in by `flattenCpPools()` at finish time.
             .final_start = 0,
             .final_end = 0,
             .returned_start = 0,
@@ -880,6 +897,9 @@ pub const CodePathBuilder = struct {
             .thrown_start = 0,
             .thrown_end = 0,
         });
+        // Per-cp scratch lists — kept parallel to `self.codepaths`.
+        try self.cp_returned_lists.append(self.allocator, .empty);
+        try self.cp_thrown_lists.append(self.allocator, .empty);
 
         // Emit events (enter phase)
         try self.events.append(self.allocator, .{
@@ -913,23 +933,26 @@ pub const CodePathBuilder = struct {
         // the REACHABLE segments at that point are added. At exit, the head may be
         // unreachable (after return/throw), but finalSegments already has the reachable ones.
         // We replicate: use returned+thrown as finals, plus any reachable head segments.
+        //
+        // `cp_final_pool` is filled CONTIGUOUSLY per codepath here, at exit time,
+        // when no other codepath can interleave — so the (start, end) range scheme
+        // is safe for finals. (`returned`/`thrown` ARE interleavable and live in
+        // per-cp lists instead — flattened by `flattenCpPools()`.)
         var cp = &self.codepaths.items[cp_id];
         cp.final_start = @intCast(self.cp_final_pool.items.len);
+        const ret_list = &self.cp_returned_lists.items[cp_id];
+        const thr_list = &self.cp_thrown_lists.items[cp_id];
         // Add returned segments first (reachable at point of return)
-        if (cp.returned_end > cp.returned_start) {
-            for (self.cp_returned_pool.items[cp.returned_start..cp.returned_end]) |seg_id| {
-                try self.cp_final_pool.append(self.allocator, seg_id);
-            }
+        for (ret_list.items) |seg_id| {
+            try self.cp_final_pool.append(self.allocator, seg_id);
         }
         // Add thrown segments
-        if (cp.thrown_end > cp.thrown_start) {
-            for (self.cp_thrown_pool.items[cp.thrown_start..cp.thrown_end]) |seg_id| {
-                var dup = false;
-                for (self.cp_final_pool.items[cp.final_start..]) |existing| {
-                    if (existing == seg_id) { dup = true; break; }
-                }
-                if (!dup) try self.cp_final_pool.append(self.allocator, seg_id);
+        for (thr_list.items) |seg_id| {
+            var dup = false;
+            for (self.cp_final_pool.items[cp.final_start..]) |existing| {
+                if (existing == seg_id) { dup = true; break; }
             }
+            if (!dup) try self.cp_final_pool.append(self.allocator, seg_id);
         }
         // Add reachable head segments (for paths that reach the end without return/throw)
         for (head) |seg_id| {
@@ -955,11 +978,7 @@ pub const CodePathBuilder = struct {
         if (cp.origin != .program) {
             for (head) |seg_id| {
                 if (seg_id != NONE_SEG and (self.seg_reachable.items[seg_id] != 0)) {
-                    if (cp.returned_end == 0 and cp.returned_start == 0) {
-                        cp.returned_start = @intCast(self.cp_returned_pool.items.len);
-                    }
-                    try self.cp_returned_pool.append(self.allocator, seg_id);
-                    cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+                    try ret_list.append(self.allocator, seg_id);
                 }
             }
         }
@@ -1564,19 +1583,16 @@ pub const CodePathBuilder = struct {
         const cp_id = self.current_codepath;
         if (cp_id == NONE_CP) return;
 
-        // Record reachable segments in returned pool (unreachable returns are dead code).
+        // Record reachable segments (unreachable returns are dead code). Append
+        // to this cp's per-cp list — flattened into `cp_returned_pool` later.
         const head = self.fork_context.head();
         var any_reachable = false;
         const reach_s = self.seg_reachable.items;
-        var cp = &self.codepaths.items[cp_id];
+        const ret_list = &self.cp_returned_lists.items[cp_id];
         for (head) |seg_id| {
             if (seg_id != NONE_SEG and reach_s[seg_id] != 0) {
                 any_reachable = true;
-                if (cp.returned_end == 0 and cp.returned_start == 0) {
-                    cp.returned_start = @intCast(self.cp_returned_pool.items.len);
-                }
-                try self.cp_returned_pool.append(self.allocator, seg_id);
-                cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+                try ret_list.append(self.allocator, seg_id);
             }
         }
 
@@ -1691,15 +1707,11 @@ pub const CodePathBuilder = struct {
         const head = self.fork_context.head();
         var any_reachable = false;
         const reach_s = self.seg_reachable.items;
-        var cp = &self.codepaths.items[cp_id];
+        const thr_list = &self.cp_thrown_lists.items[cp_id];
         for (head) |seg_id| {
             if (seg_id != NONE_SEG and reach_s[seg_id] != 0) {
                 any_reachable = true;
-                if (cp.thrown_end == 0 and cp.thrown_start == 0) {
-                    cp.thrown_start = @intCast(self.cp_thrown_pool.items.len);
-                }
-                try self.cp_thrown_pool.append(self.allocator, seg_id);
-                cp.thrown_end = @intCast(self.cp_thrown_pool.items.len);
+                try thr_list.append(self.allocator, seg_id);
             }
         }
 
@@ -1796,10 +1808,81 @@ pub const CodePathBuilder = struct {
         }
     };
 
+    /// Flatten per-codepath `cp_returned_lists` / `cp_thrown_lists` into the
+    /// flat `cp_returned_pool` / `cp_thrown_pool`, filling each codepath's
+    /// `(start, end)` slice indices. Called once, just before `finish()` returns.
+    ///
+    /// This is the crux of the interleaving fix: during building, multiple
+    /// codepaths can append returns/throws in any order (outer fn → inner fn
+    /// → back to outer). The flat pool sees an arbitrary interleave. By
+    /// keeping per-cp lists during building and only flattening at the end —
+    /// in `self.codepaths.items` order, contiguous per cp — every codepath's
+    /// `(start, end)` range covers exactly its own entries.
+    fn flattenCpPools(self: *CodePathBuilder) !void {
+        const cp_count = self.codepaths.items.len;
+        // Returned pool.
+        self.cp_returned_pool.clearRetainingCapacity();
+        for (0..cp_count) |i| {
+            var cp = &self.codepaths.items[i];
+            cp.returned_start = @intCast(self.cp_returned_pool.items.len);
+            const list = self.cp_returned_lists.items[i].items;
+            if (list.len > 0) {
+                try self.cp_returned_pool.appendSlice(self.allocator, list);
+            }
+            cp.returned_end = @intCast(self.cp_returned_pool.items.len);
+        }
+        // Thrown pool.
+        self.cp_thrown_pool.clearRetainingCapacity();
+        for (0..cp_count) |i| {
+            var cp = &self.codepaths.items[i];
+            cp.thrown_start = @intCast(self.cp_thrown_pool.items.len);
+            const list = self.cp_thrown_lists.items[i].items;
+            if (list.len > 0) {
+                try self.cp_thrown_pool.appendSlice(self.allocator, list);
+            }
+            cp.thrown_end = @intCast(self.cp_thrown_pool.items.len);
+        }
+    }
+
+    /// Optional dump of the CFG event list — fires when `EZ_DUMP_CFG_EVENTS`
+    /// points to a writable path. Used to bisect ordering divergences between
+    /// the streaming and non-streaming `resolveFullImpl` paths. Format is
+    /// stable so the two paths' dumps can be diffed line-by-line.
+    fn maybeDumpEvents(self: *const CodePathBuilder) void {
+        const path_z = std.c.getenv("EZ_DUMP_CFG_EVENTS") orelse return;
+        // Convert C string to slice.
+        var path_len: usize = 0;
+        while (path_z[path_len] != 0) path_len += 1;
+        const path = path_z[0..path_len];
+        // Open via std.c (we link libc); avoid Io complexity here.
+        const fd = std.c.open(@ptrCast(path_z), .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(c_uint, 0o644));
+        if (fd < 0) return;
+        defer _ = std.c.close(fd);
+        var buf: [256]u8 = undefined;
+        for (self.events.items, 0..) |ev, i| {
+            const slice = std.fmt.bufPrint(&buf, "{d} type={d} node={d} d1={d} d2={d} phase={d}\n", .{
+                i,
+                @intFromEnum(ev.type),
+                @intFromEnum(ev.node),
+                ev.data1,
+                ev.data2,
+                @intFromEnum(ev.phase),
+            }) catch continue;
+            _ = std.c.write(fd, slice.ptr, slice.len);
+        }
+        _ = path; // captured into the open() call already
+    }
+
     /// Consume the builder and return a Result that owns the arena.
     /// After finish(), `self` is invalid — do NOT call deinit() on it.
     /// `Result.deinit()` frees the arena.
     pub fn finish(self: *CodePathBuilder) Result {
+        // Errors here would only come from arena OOM. The caller already
+        // had to handle that during building; surface it as a hard panic so
+        // we don't have to thread errors through the finish() API and every
+        // call site. Realistically unreachable.
+        self.flattenCpPools() catch |e| @panic(@errorName(e));
+        self.maybeDumpEvents();
         const result: Result = .{
             .bump_pools_active = self.bump_pools_active,
             .seg_count = @intCast(self.segments.len),

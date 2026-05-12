@@ -2274,9 +2274,14 @@ class SourceCode {
     const upper = parentId === NONE32 ? null : this._buildScope(parentId);
 
     // block: cheap — one index lookup + nodeView.
+    // Fallback: ESLint's scope-manager invariant is that every scope has a non-null
+    // block. If the Zig parser emitted scope_open with NodeIndex.none (a few rare
+    // constructs slip through node attachment), fall back to the Program node so
+    // utilities like getInnermostScope's `childScope.block.range` don't crash.
     const scopeNodeIdx = ast._scopeNodeIds ? ast._scopeNodeIds[scopeId] : NONE;
     let block = (scopeNodeIdx !== undefined && scopeNodeIdx !== NONE32 && scopeNodeIdx < ast.nodeCount)
-      ? nodeView(ast, scopeNodeIdx) : null;
+      ? nodeView(ast, scopeNodeIdx)
+      : (ast.nodeCount > 0 ? nodeView(ast, 0) : null);
     // For function scopes created by getter/setter/method definitions, ESLint's scope manager
     // sets block = FunctionExpression (not the Property/MethodDefinition node). Rules like
     // no-accessor-recursion check scope.block.parent to find the enclosing getter/setter.
