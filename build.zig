@@ -562,4 +562,73 @@ pub fn build(b: *std.Build) void {
     bench_be_cmd.step.dependOn(b.getInstallStep());
     const bench_be_step = b.step("bench-backend", "Zig backend profile (lex+parse+resolve+traversal+writebuf)");
     bench_be_step.dependOn(&bench_be_cmd.step);
+
+    // ── Phase 0: JSC + Zig hello world (macOS only) ───────────
+    // Validates the toolchain: link JavaScriptCore.framework, eval JS from Zig,
+    // read result back. macOS-only initial cut; Linux/Windows will need libjsc
+    // built from source in a later phase.
+    const is_macos = target.result.os.tag == .macos;
+    if (is_macos) {
+        const jsc_hello_mod = b.createModule(.{
+            .root_source_file = b.path("src/jsc/hello.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        // Link the JavaScriptCore framework (system-provided on macOS).
+        jsc_hello_mod.linkFramework("JavaScriptCore", .{});
+        // We need libc since Zig's @cImport pulls in C headers.
+        jsc_hello_mod.link_libc = true;
+
+        const jsc_hello = b.addExecutable(.{
+            .name = "jsc-hello",
+            .root_module = jsc_hello_mod,
+        });
+        b.installArtifact(jsc_hello);
+
+        const jsc_hello_run = b.addRunArtifact(jsc_hello);
+        jsc_hello_run.step.dependOn(b.getInstallStep());
+        const jsc_hello_step = b.step("jsc-hello", "Build the JSC hello-world executable");
+        jsc_hello_step.dependOn(&jsc_hello.step);
+        const jsc_hello_run_step = b.step("jsc-hello-run", "Run the JSC hello-world executable");
+        jsc_hello_run_step.dependOn(&jsc_hello_run.step);
+
+        // ── Phase 1: load runner bundle in JSC ───────────────
+        const jsc_lint_mod = b.createModule(.{
+            .root_source_file = b.path("src/jsc/lint_one.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        jsc_lint_mod.linkFramework("JavaScriptCore", .{});
+        jsc_lint_mod.link_libc = true;
+        // Bring in ez's parser so we can produce a real AST buffer from this binary.
+        jsc_lint_mod.addImport("ez", test_mod);
+        const jsc_lint = b.addExecutable(.{
+            .name = "jsc-lint-one",
+            .root_module = jsc_lint_mod,
+        });
+        // napi.zig has pub export functions that reference N-API extern
+        // symbols (napi_throw_error, napi_get_cb_info, …). For the JSC binary
+        // we never CALL them, but the symbols are emitted into the object file
+        // by virtue of being public exports in an imported module. Allow the
+        // linker to leave them as undefined — they'd only crash if called.
+        // A proper refactor of parseImpl out of napi.zig removes this need.
+        jsc_lint.linker_allow_shlib_undefined = true;
+        b.installArtifact(jsc_lint);
+        const jsc_lint_run = b.addRunArtifact(jsc_lint);
+        jsc_lint_run.step.dependOn(b.getInstallStep());
+        const jsc_lint_step = b.step("jsc-lint-one", "Build the JSC bundle-loader probe");
+        jsc_lint_step.dependOn(&jsc_lint.step);
+        const jsc_lint_run_step = b.step("jsc-lint-one-run", "Run the JSC bundle-loader probe");
+        jsc_lint_run_step.dependOn(&jsc_lint_run.step);
+
+        const cg_mod = b.createModule(.{
+            .root_source_file = b.path("src/jsc/check_globals.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+        cg_mod.linkFramework("JavaScriptCore", .{});
+        cg_mod.link_libc = true;
+        const cg = b.addExecutable(.{ .name = "jsc-check-globals", .root_module = cg_mod });
+        b.installArtifact(cg);
+    }
 }
