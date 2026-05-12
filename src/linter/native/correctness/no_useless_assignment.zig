@@ -48,11 +48,12 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
     while (i < count) : (i += 1) {
         const sym_id = SymbolId.fromInt(i);
 
-        // Skip binding kinds that don't apply to value assignments
+        // Skip binding kinds that aren't reassignable (or aren't runtime values).
+        // Parameters and catch params ARE reassignable — flag useless writes to
+        // them too. The initial param/catch binding still doesn't count as an
+        // "explicit write" thanks to the has_explicit_write check below.
         const bk = symbols.getBindingKind(sym_id);
         switch (bk) {
-            .parameter,
-            .catch_param,
             .import_binding,
             .type_import_binding,
             .implicit_global,
@@ -92,7 +93,13 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // no-useless-assignment sense. ESLint's rule explicitly skips them.
         var has_any_read = false;
         const decl_node = symbols.getDeclNode(sym_id);
-        const sym_enclosing_fn = enclosingFunction(ctx, decl_node);
+        // The enclosing function for the SYMBOL is the var-scope's owner node,
+        // not enclosingFunction(decl_node). For `function log() {}` decl_node
+        // is the `log` identifier whose AST parent is the function being
+        // declared — walking up from there returns log itself, not log's
+        // enclosing function. The var-scope correctly points at the function
+        // that hoists the binding.
+        const sym_enclosing_fn = scopes.nodeId(sym_var_scope);
         {
             var r = ref_range.start;
             while (r < ref_range.end) : (r += 1) {
@@ -506,6 +513,9 @@ fn enclosingFunction(ctx: *const LintContext, node: NodeIndex) NodeIndex {
             .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
             .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
             .arrow_fn, .async_arrow_fn,
+            .method_def, .computed_method_def,
+            .getter_def, .setter_def,
+            .computed_getter_def, .computed_setter_def,
             .static_block,
             => return parent,
             else => cur = parent,
