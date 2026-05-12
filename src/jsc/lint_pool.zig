@@ -227,7 +227,7 @@ const Worker = struct {
     init_err: ?anyerror = null,
     // Shared (passed in once at spawn)
     polyfills: []const u8,
-    bundle: []const u8, // runner-iife.js (ezLint + 65 rules baked in)
+    bundle: []const u8, // runner-iife.js (ezLint + 64 rules baked in)
     tag_names: []const [*:0]const u8,
     alloc: std.mem.Allocator,
 
@@ -258,9 +258,8 @@ const Worker = struct {
         self.ctx = ctx;
         defer JSGlobalContextRelease(ctx);
 
-        // Load polyfills.
+        // Load polyfills, then runner bundle (rules bundled directly inside).
         try evalScript(ctx, self.polyfills, "polyfills.js");
-        // Load runner bundle (rules are bundled directly inside).
         try evalScript(ctx, self.bundle, "runner-iife.js");
 
         // Look up ezLint.
@@ -584,6 +583,54 @@ fn chunkRules(alloc: std.mem.Allocator, rules: []const []const u8, batch_size: u
     return out;
 }
 
+/// Run a tiny tight loop in JSC and time it. Detects whether the process
+/// has the `com.apple.security.cs.allow-jit` entitlement. Calibration:
+///   • With JIT (entitled):     ~6 ms — the sum is hoisted, loop turns into
+///                              a closed-form expression by the FTL JIT.
+///   • Without JIT (LLInt-only): ~40 ms — the same loop runs through the
+///                              bytecode interpreter, which is enough
+///                              of a signal that real rule code will be
+///                              5-10× slower (the 8× wall blow-up we saw).
+/// Threshold at 25 ms sits cleanly between the two regimes.
+///
+/// Runs on the caller's thread in a throwaway context — no interference
+/// with worker contexts.
+fn probeJitOrWarn() void {
+    const group = JSContextGroupCreate();
+    defer JSContextGroupRelease(group);
+    const ctx = JSGlobalContextCreateInGroup(group, null);
+    if (ctx == null) return;
+    defer JSGlobalContextRelease(ctx);
+
+    const probe_src = JSStringCreateWithUTF8CString("(()=>{let s=0;for(let i=0;i<10_000_000;i++)s+=i;return s;})()");
+    defer JSStringRelease(probe_src);
+
+    // Run twice — first call pays bytecode-prep cost; second is steady-state.
+    var ex: JSValueRef = null;
+    _ = JSEvaluateScript(ctx, probe_src, null, null, 0, &ex);
+    if (ex != null) return;
+
+    const t0 = nanosNow();
+    ex = null;
+    _ = JSEvaluateScript(ctx, probe_src, null, null, 0, &ex);
+    if (ex != null) return;
+    const ms = msSince(t0);
+
+    if (ms > 25.0) {
+        std.debug.print(
+            "\n[main] WARNING: JIT probe took {d:.0}ms (expected <10ms with JIT, ~40ms without).\n" ++
+                "        Binary appears to be running in LLInt-only mode — JSC's JIT\n" ++
+                "        entitlement is missing. Linting will be 5-10× slower.\n" ++
+                "        Fix: rebuild with `zig build` (the default install now signs).\n" ++
+                "        Or manually: codesign --force --sign - --entitlements src/jsc/ez.entitlements \\\n" ++
+                "                              --options runtime zig-out/bin/jsc-lint-pool\n\n",
+            .{ms},
+        );
+    } else {
+        std.debug.print("[main] JIT probe: {d:.1}ms (JIT enabled)\n", .{ms});
+    }
+}
+
 fn pushTagNames(ctx: JSContextRef, tag_names: []const [*:0]const u8, alloc: std.mem.Allocator) !void {
     var vals = try alloc.alloc(JSValueRef, tag_names.len);
     defer alloc.free(vals);
@@ -774,6 +821,10 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("[main] pool init in {d:.1}ms (per-worker: ", .{msSince(t_pool_init)});
     for (pool.workers) |*w| std.debug.print("{d:.0}ms ", .{w.init_ms});
     std.debug.print(")\n", .{});
+
+    // Probe JSC's JIT before timing any workload — a missing entitlement
+    // silently degrades wall by 5-10× and is otherwise invisible.
+    probeJitOrWarn();
 
     // ── Build the work queue ─────────────────────────────────────────────
     // Workers race to claim rule batches atomically; whoever finishes first
