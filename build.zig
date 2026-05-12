@@ -659,14 +659,27 @@ pub fn build(b: *std.Build) void {
         jsc_pool_mod.link_libc = true;
         jsc_pool_mod.addImport("ez", test_mod);
         const jsc_pool = b.addExecutable(.{ .name = "jsc-lint-pool", .root_module = jsc_pool_mod });
-        b.installArtifact(jsc_pool);
+        // Use addInstallArtifact (not installArtifact) so we can chain a sign
+        // step after JUST this artifact's install, then wire it back into the
+        // global install step. Plain `b.installArtifact` would only attach to
+        // the global install, leaving no anchor for sign to depend on without
+        // creating a cycle.
+        const install_pool = b.addInstallArtifact(jsc_pool, .{});
 
         const sign_pool = b.addSystemCommand(&.{
             "codesign",       "--force",                 "--sign",    "-",
             "--entitlements", "src/jsc/ez.entitlements", "--options", "runtime",
             "zig-out/bin/jsc-lint-pool",
         });
-        sign_pool.step.dependOn(b.getInstallStep());
+        sign_pool.step.dependOn(&install_pool.step);
+
+        // Wire signing into the DEFAULT install step. Without this, plain
+        // `zig build` would replace the executable without re-attaching the
+        // JIT entitlement — JSC then falls back to LLInt-only execution and
+        // rule passes run 5-10× slower (found via sample(1) — all stacks
+        // were LLInt symbols where DFG/B3 JIT'd frames should appear).
+        b.getInstallStep().dependOn(&sign_pool.step);
+
         const sign_pool_step = b.step("jsc-lint-pool-sign", "Sign jsc-lint-pool with JIT entitlement");
         sign_pool_step.dependOn(&sign_pool.step);
     }
