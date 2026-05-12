@@ -244,16 +244,26 @@ const ForkContext = struct {
 
         const norm_start: usize = @intCast(if (start_idx >= 0) start_idx else total + start_idx);
         const norm_end: usize = @intCast(if (end_idx >= 0) end_idx else total + end_idx);
+        const range_len = norm_end - norm_start + 1;
 
-        // Stack buffer for prev segments — avoids per-lane arena alloc.
-        var prev_buf: [16]SegmentId = undefined;
+        // Stack buffer for prev segments — avoids per-lane arena alloc for the
+        // common small case. Falls back to arena allocation when the merge
+        // range is wider than the buffer (e.g. a switch with >16 cases without
+        // breaks accumulates that many fork-context entries; capping silently
+        // would drop predecessors and disconnect break-segments from the
+        // post-switch merge).
+        var prev_stack: [16]SegmentId = undefined;
+        const prev_buf: []SegmentId = if (range_len <= prev_stack.len)
+            prev_stack[0..]
+        else
+            try self.allocator.alloc(SegmentId, range_len);
 
         for (0..self.count) |i| {
             var n_prev: usize = 0;
             var j = norm_start;
             while (j <= norm_end) : (j += 1) {
                 const entry = self.getEntry(j);
-                if (i < entry.len and n_prev < prev_buf.len) {
+                if (i < entry.len) {
                     prev_buf[n_prev] = entry[i];
                     n_prev += 1;
                 }
