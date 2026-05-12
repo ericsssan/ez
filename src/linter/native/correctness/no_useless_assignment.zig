@@ -86,7 +86,13 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
         // A symbol with only a declaration-site write (no explicit re-assignment)
         // is an unused-variable, not a useless assignment — skip it.
         var has_explicit_write = false;
+        // Same goes for symbols that have NO read references at all (in any
+        // scope): the value flowing from any write is never observed, so
+        // every write is "useless" only in the no-unused-vars sense, not the
+        // no-useless-assignment sense. ESLint's rule explicitly skips them.
+        var has_any_read = false;
         const decl_node = symbols.getDeclNode(sym_id);
+        const sym_enclosing_fn = enclosingFunction(ctx, decl_node);
         {
             var r = ref_range.start;
             while (r < ref_range.end) : (r += 1) {
@@ -94,7 +100,20 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
                 const kind = refs.getKind(ref_id);
                 const ref_scope = refs.getScope(ref_id);
                 const ref_var_scope = scopes.nearestVarScope(ref_scope);
-                if (ref_var_scope != sym_var_scope) {
+                if (kind == .read or kind == .type_of or kind == .type_read or kind == .read_write) {
+                    has_any_read = true;
+                }
+                // Belt-and-braces closure check. Scope-based comparison via
+                // nearestVarScope is the primary signal, but ez has gaps in
+                // scope tracking for some closures (notably arrow function
+                // bodies, where the arrow's function scope may not appear in
+                // the ref's scope chain). Fall back to walking the AST for
+                // the ref's enclosing function — if it differs from the
+                // symbol's enclosing function, the ref is a closure ref.
+                const is_cross_scope =
+                    ref_var_scope != sym_var_scope or
+                    enclosingFunction(ctx, refs.getNode(ref_id)) != sym_enclosing_fn;
+                if (is_cross_scope) {
                     if (kind == .read or kind == .type_of or kind == .read_write) {
                         has_closure_read = true;
                         break;
@@ -108,6 +127,7 @@ pub fn runOnSymbols(ctx: *const LintContext) void {
             }
         }
         if (has_closure_read) continue;
+        if (!has_any_read) continue;
         if (!has_write) continue;
         if (!has_explicit_write) continue;
 
@@ -472,6 +492,26 @@ fn analyzeSymbol(
             }
         }
     }
+}
+
+/// Walk parent chain to find the enclosing function-like node for `node`.
+/// Returns `.none` if `node` is at module/script top level.
+fn enclosingFunction(ctx: *const LintContext, node: NodeIndex) NodeIndex {
+    var cur = node;
+    var depth: u32 = 0;
+    while (depth < 64) : (depth += 1) {
+        const parent = ctx.parentOf(cur);
+        if (parent == .none) return .none;
+        switch (ctx.nodeTag(parent)) {
+            .fn_decl, .async_fn_decl, .generator_fn_decl, .async_generator_fn_decl,
+            .fn_expr, .async_fn_expr, .generator_fn_expr, .async_generator_fn_expr,
+            .arrow_fn, .async_arrow_fn,
+            .static_block,
+            => return parent,
+            else => cur = parent,
+        }
+    }
+    return .none;
 }
 
 fn isInDeadForLoopUpdate(ctx: *const LintContext, node: NodeIndex) bool {
