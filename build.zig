@@ -648,5 +648,26 @@ pub fn build(b: *std.Build) void {
         cg_mod.link_libc = true;
         const cg = b.addExecutable(.{ .name = "jsc-check-globals", .root_module = cg_mod });
         b.installArtifact(cg);
+
+        // ── Phase 2: multi-context lint pool ─────────────────
+        const jsc_pool_mod = b.createModule(.{
+            .root_source_file = b.path("src/jsc/lint_pool.zig"),
+            .target = target,
+            .optimize = jsc_optimize,
+        });
+        jsc_pool_mod.linkFramework("JavaScriptCore", .{});
+        jsc_pool_mod.link_libc = true;
+        jsc_pool_mod.addImport("ez", test_mod);
+        const jsc_pool = b.addExecutable(.{ .name = "jsc-lint-pool", .root_module = jsc_pool_mod });
+        b.installArtifact(jsc_pool);
+
+        const sign_pool = b.addSystemCommand(&.{
+            "codesign",       "--force",                 "--sign",    "-",
+            "--entitlements", "src/jsc/ez.entitlements", "--options", "runtime",
+            "zig-out/bin/jsc-lint-pool",
+        });
+        sign_pool.step.dependOn(b.getInstallStep());
+        const sign_pool_step = b.step("jsc-lint-pool-sign", "Sign jsc-lint-pool with JIT entitlement");
+        sign_pool_step.dependOn(&sign_pool.step);
     }
 }
