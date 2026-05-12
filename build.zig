@@ -682,5 +682,21 @@ pub fn build(b: *std.Build) void {
 
         const sign_pool_step = b.step("jsc-lint-pool-sign", "Sign jsc-lint-pool with JIT entitlement");
         sign_pool_step.dependOn(&sign_pool.step);
+
+        // ── Bun-subprocess variant ───────────────────────────────────────
+        // Same Zig-as-host architecture as jsc-lint-pool, but workers are
+        // forked Bun processes (vendored copy embedded via @embedFile at
+        // vendor/bun/bun-aarch64-darwin). No Apple-framework dependency, no
+        // codesign entitlement needed — Bun handles its own JIT inside the
+        // spawned process.
+        const bun_pool_mod = b.createModule(.{
+            .root_source_file = b.path("src/bun/bun_lint_pool.zig"),
+            .target = target,
+            .optimize = jsc_optimize,
+        });
+        bun_pool_mod.link_libc = true;
+        bun_pool_mod.addImport("ez", test_mod);
+        const bun_pool = b.addExecutable(.{ .name = "bun-lint-pool", .root_module = bun_pool_mod });
+        b.installArtifact(bun_pool);
     }
 }
