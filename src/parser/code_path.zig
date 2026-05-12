@@ -1457,7 +1457,25 @@ pub const CodePathBuilder = struct {
         // For while/for loops, save current head as the "loop skipped" path.
         // If the condition is false initially, control skips the body entirely.
         // do-while and for(;;) cannot be skipped, so no false/skip path.
+        //
+        // Insert a fresh segment between pre-loop code and the loop test BEFORE
+        // saving the skip-path head. Without this, ez merges any pre-loop
+        // statements into the same segment that holds the test fork — backward
+        // liveness then walks back through pre-loop writes when computing the
+        // back-edge entry's liveness, wrongly killing values that body writes
+        // to keep alive across iterations. ESLint's CFG already separates
+        // these; this matches the model.
+        //
+        // Fire the SEG_START event with the loop statement node (not target_node)
+        // so JS-side rules don't misclassify this segment. constructor-super in
+        // particular has a special case for `node.parent.update === node` that
+        // treats for-update segments as "super called in every path"; firing
+        // with target_node = the update expression would falsely match.
         if (has_skip_path) {
+            try self.leaveFromCurrentSegment(loop_node, .enter);
+            const test_segs = try self.fork_context.makeNext(-1, -1, self);
+            try self.fork_context.replaceHead(test_segs, self);
+            try self.forwardCurrentToHead(loop_node, .enter);
             if (self.choice_context) |cc| {
                 try cc.true_fork.add(self.fork_context.head(), self);
             }

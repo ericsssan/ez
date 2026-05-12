@@ -308,20 +308,13 @@ fn analyzeSymbol(
 
     // Iterative backward liveness analysis.
     // live_entry[s] = liveness AT the entry of segment s (after walking back
-    //                 through s's refs).
-    // live_exit[s]  = liveness LEAVING segment s, before walking back through
-    //                 its own refs. Equal to OR(live_entry[forward_succ]).
-    //                 Loop back-edges from a body-end segment B re-enter the
-    //                 test segment T at a point AFTER any pre-loop writes
-    //                 inside T have already executed. So the right value to
-    //                 propagate via the back-edge is live_exit[T], NOT
-    //                 live_entry[T]. Using live_entry would let pre-loop
-    //                 write_init inside the test segment kill the back-edge's
-    //                 contribution and falsely flag the body's write as dead.
+    //                 through s's refs). This is the value that flows back to
+    //                 s's predecessors AND the value that a loop back-edge
+    //                 sees when re-entering s. The parser inserts a clean
+    //                 (refs-free) test segment for has_skip_path loops so
+    //                 pre-loop kills don't pollute the back-edge entry.
     const live_entry = alloc.alloc(bool, seg_count) catch return;
-    const live_exit = alloc.alloc(bool, seg_count) catch return;
     @memset(live_entry, false);
-    @memset(live_exit, false);
 
     // For `x = expr` where `expr` reads `x`, the LHS write does NOT kill the
     // prior value — the prior value was read to compute `expr`. The intra-
@@ -378,7 +371,7 @@ fn analyzeSymbol(
             const seg_id: u32 = @intCast(s);
             if (cpr.seg_codepath[seg_id] != cp_id) continue;
 
-            // live = OR(live_entry of forward successors)  ∪  OR(live_exit of back-edge targets)
+            // live at exit = OR(live_entry of all successors, forward + back-edge)
             var live: bool = false;
             for (succ_flat[succ_start[seg_id]..succ_start[seg_id + 1]]) |succ| {
                 if (succ < seg_count and live_entry[succ]) {
@@ -390,15 +383,11 @@ fn analyzeSymbol(
                 const ls = loop_next_start[seg_id];
                 const le = loop_next_start[seg_id + 1];
                 for (loop_next_targets[ls..le]) |succ| {
-                    if (succ < seg_count and live_exit[succ]) {
+                    if (succ < seg_count and live_entry[succ]) {
                         live = true;
                         break;
                     }
                 }
-            }
-            if (live_exit[seg_id] != live) {
-                live_exit[seg_id] = live;
-                changed = true;
             }
 
             // Walk refs in this segment backward
@@ -441,7 +430,7 @@ fn analyzeSymbol(
             const ls = loop_next_start[seg_id];
             const le = loop_next_start[seg_id + 1];
             for (loop_next_targets[ls..le]) |succ| {
-                if (succ < seg_count and live_exit[succ]) {
+                if (succ < seg_count and live_entry[succ]) {
                     live = true;
                     break;
                 }
