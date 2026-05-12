@@ -30,6 +30,7 @@ pub const eslint_compat = @import("linter/root.zig").eslint_compat;
 pub const gitignore = @import("linter/root.zig").gitignore;
 
 pub const parser_root = @import("parser/root.zig");
+pub const parse_to_buffer = @import("parser/parse_to_buffer.zig");
 
 // ── CLI module ────────────────────────────────────────────
 pub const file_discovery = @import("cli/file_discovery.zig");

@@ -62,7 +62,8 @@ globalThis.ezLint = function (astBuffer, sourceText, ruleNames, filename, tagNam
     const r = reports[i];
     out[i * 3 + 0] = 0; // ruleIdIdx — unused for Phase 1
     out[i * 3 + 1] = r.line || (r.loc?.start?.line ?? 0);
-    out[i * 3 + 2] = (r.column ?? r.loc?.start?.column ?? 0) - 1; // 0-based
+    const col1 = r.column ?? r.loc?.start?.column ?? 0; // 1-based
+    out[i * 3 + 2] = col1 > 0 ? col1 - 1 : 0; // 0-based, no underflow
   }
   return out;
 };

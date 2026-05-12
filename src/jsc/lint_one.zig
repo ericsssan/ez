@@ -12,19 +12,12 @@
 const std = @import("std");
 const Io = std.Io;
 
-// Parser access — TEMPORARY: we call ez_parse from cli/napi.zig directly.
-//
-// This is a deliberate shortcut to validate Phase 1 end-to-end without
-// reimplementing the full parse pipeline (parseImpl is 1700 lines with
-// streaming-sem + 3-thread parallel orchestration). NAPI types are
-// architecturally irrelevant to this standalone-JSC binary, but DCE
-// should drop the NAPI bridge functions because we never reference
-// napi_register_module_v1 etc. from this binary.
-//
-// TODO Phase 2: extract parseImpl into src/parser/parse_to_buffer.zig
-// so this binary has no cli/napi.zig dependency at all.
+// Parser access via the host-agnostic parse_to_buffer module — no NAPI
+// dependency. Sequential pipeline, ~1.5-2× slower than the parallel
+// production parseImpl on huge files; fine for embedded use.
 const ez = @import("ez");
 const js_buffer = ez.js_buffer;
+const parse_to_buffer = ez.parse_to_buffer;
 const Language = ez.token.Language;
 
 // ── JSC C API surface ────────────────────────────────────────────────────
@@ -149,10 +142,12 @@ fn patchBundleStubs(alloc: std.mem.Allocator, src: []const u8) ![]u8 {
     return try alloc.realloc(out, out_len);
 }
 
-// parseToBuffer: thin wrapper around the production ez_parse export.
-// Uses the full streaming-sem + parallel orchestration pipeline, so AstView
-// gets a buffer with all the metadata (node_pos, line_starts, pre_order,
-// parent_indices, semantic_data) it expects.
+// parseToBuffer: thin wrapper around the shared parse_to_buffer pipeline.
+// Owns a thread-local arena for semantic data (lives across calls in the
+// embedded model; a multi-context pool would have one arena per context).
+threadlocal var _sem_arena: std.heap.ArenaAllocator = undefined;
+threadlocal var _sem_arena_ready: bool = false;
+
 fn parseToBuffer(
     buf_ptr: [*]u8,
     buf_len: u32,
@@ -160,10 +155,12 @@ fn parseToBuffer(
     source_len: u32,
     language: Language,
 ) !u32 {
-    const lang_byte: u8 = @intFromEnum(language);
-    const used = ez.napi.ez_parse(buf_ptr, buf_len, source_start, source_len, lang_byte);
-    if (used == 0) return error.ParseFailed;
-    return used;
+    if (!_sem_arena_ready) {
+        _sem_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        _sem_arena_ready = true;
+    }
+    _ = _sem_arena.reset(.retain_capacity);
+    return parse_to_buffer.parseToBuffer(buf_ptr, buf_len, source_start, source_len, language, true, &_sem_arena);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────

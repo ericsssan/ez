@@ -606,13 +606,6 @@ pub fn build(b: *std.Build) void {
             .name = "jsc-lint-one",
             .root_module = jsc_lint_mod,
         });
-        // napi.zig has pub export functions that reference N-API extern
-        // symbols (napi_throw_error, napi_get_cb_info, …). For the JSC binary
-        // we never CALL them, but the symbols are emitted into the object file
-        // by virtue of being public exports in an imported module. Allow the
-        // linker to leave them as undefined — they'd only crash if called.
-        // A proper refactor of parseImpl out of napi.zig removes this need.
-        jsc_lint.linker_allow_shlib_undefined = true;
         b.installArtifact(jsc_lint);
         const jsc_lint_run = b.addRunArtifact(jsc_lint);
         jsc_lint_run.step.dependOn(b.getInstallStep());

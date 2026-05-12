@@ -1195,7 +1195,12 @@ pub fn writeCfgGraph(
     }
 
     // ── Write CfgGraphHeader ────────────────────────────────
-    const header_mem = try alloc.alloc(u8, @sizeOf(CfgGraphHeader));
+    // Aligned alloc — `alloc.alloc(u8, ...)` doesn't guarantee struct alignment.
+    // NAPI's parse path happens to leave the bump cursor on a 4-byte boundary
+    // due to its allocation pattern, masking this latent bug. For embedded
+    // hosts with different allocation traces (smaller inputs, fewer prior
+    // allocs) the cursor can land on an odd byte and the @alignCast trips.
+    const header_mem = try alloc.alignedAlloc(u8, .of(CfgGraphHeader), @sizeOf(CfgGraphHeader));
     const header: *CfgGraphHeader = @ptrCast(@alignCast(header_mem.ptr));
     header.* = .{
         .segment_count = seg_count,
