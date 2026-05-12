@@ -140,19 +140,34 @@ function _drainWaiters() {
   }
 }
 
+// Reused destination buffer for _takeBytes. Grown on demand. Without this,
+// every LINT call allocs a fresh 8.7MB Buffer for the AST → big-buffer
+// allocations dominate GC. With reuse, the underlying ArrayBuffer is
+// stable across iters; AstView gets reconstructed but on the same memory.
+let _readBuf = Buffer.allocUnsafe(16 * 1024 * 1024);
+
 function _takeBytes(n) {
-  const out = Buffer.allocUnsafe(n);
+  // The contract is "give me a Buffer view of the next n bytes". We hand out
+  // a subarray of _readBuf, so the CALLER must use it before the next
+  // _takeBytes overwrites _readBuf. Workers operate on each frame
+  // synchronously before reading the next, so this is fine here.
+  if (n > _readBuf.length) {
+    // Grow geometrically — round up to next power of two.
+    let cap = _readBuf.length;
+    while (cap < n) cap *= 2;
+    _readBuf = Buffer.allocUnsafe(cap);
+  }
   let off = 0;
   while (off < n) {
     const head = _chunks[0];
     const take = Math.min(head.length, n - off);
-    head.copy(out, off, 0, take);
+    head.copy(_readBuf, off, 0, take);
     off += take;
     _pendingBytes -= take;
     if (take === head.length) _chunks.shift();
     else _chunks[0] = head.subarray(take);
   }
-  return out;
+  return _readBuf.subarray(0, n);
 }
 
 function readBytes(n) {
@@ -255,9 +270,27 @@ function runLint(astBytes, ruleNames, filename) {
         const spec = JSON.parse(head.payload.toString("utf-8"));
         // AST arrives as the very next frame (opcode ignored — the LINT
         // protocol always pairs a JSON spec frame with an AST-bytes frame).
+        const t_read = process.hrtime.bigint();
         const astFrame = await readFrame();
+        const t_lint = process.hrtime.bigint();
         const result = runLint(astFrame.payload, spec.rules, spec.filename);
+        const t_write = process.hrtime.bigint();
         writeFrame(REPLY_DIAGS, result);
+        // Hint GC at end of each LINT. Without this, accumulating heap from
+        // the 8.7MB-per-call AST + per-rule scope/symbol caches turns the
+        // next call's stdin read into a wait for the worker's mutator to
+        // make progress (host blocks on pipe-full while worker GCs). The
+        // synchronous full-GC variant (Bun.gc(true)) is the safe default and
+        // adds ~100ms/iter; experiment showed Bun.gc(false) incremental is
+        // not enough — heap still grows. Allocator reuse (the _readBuf
+        // pool above) cut the per-iter alloc churn enough that gc(true)
+        // is the lower-overhead option overall (no spiky read times).
+        if (typeof Bun !== "undefined" && Bun.gc) Bun.gc(true);
+        const t_done = process.hrtime.bigint();
+        if (process.env.BUN_WORKER_TRACE) {
+          const ms = (a, b) => Number(b - a) / 1e6;
+          process.stderr.write(`[w${process.pid}] read=${ms(t_read, t_lint).toFixed(1)}ms lint=${ms(t_lint, t_write).toFixed(1)}ms write=${ms(t_write, t_done).toFixed(1)}ms\n`);
+        }
       } catch (err) {
         const msg = (err && err.stack) ? err.stack : String(err);
         writeFrame(REPLY_ERROR, Buffer.from(msg, "utf-8"));
